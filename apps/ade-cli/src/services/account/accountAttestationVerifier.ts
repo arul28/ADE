@@ -6,6 +6,8 @@ const VERIFIED_ACCOUNT_ATTESTATION = Symbol("verified-account-attestation");
 
 export type VerifiedAccountAttestation = {
   readonly userId: string;
+  /** JWT expiry used only to bound the live Relay socket authorization. */
+  readonly expiresAtMs: number;
   readonly [VERIFIED_ACCOUNT_ATTESTATION]: true;
 };
 
@@ -62,6 +64,7 @@ export async function verifyClerkAccountAttestation(args: {
   }
   return Object.freeze({
     userId: subject,
+    expiresAtMs: payload.exp! * 1_000,
     [VERIFIED_ACCOUNT_ATTESTATION]: true as const,
   });
 }

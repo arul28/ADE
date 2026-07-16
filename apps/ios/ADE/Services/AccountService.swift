@@ -31,6 +31,7 @@ enum AccountConfig {
 /// the UI renders. Provider-aware so surfaces can accent by how the user signed
 /// in (Apple / Google / GitHub / Email).
 struct AccountIdentity: Equatable {
+  var userId: String
   var displayName: String
   var email: String?
   var imageURL: URL?
@@ -48,6 +49,86 @@ enum AccountAuthenticationOutcome: Equatable {
   case newAccount
   case returningUser
   case unknown
+}
+
+/// Device-local account boundary. Clerk can retain a cached user when a
+/// server-side sign-out fails or while its event stream catches up. Once the
+/// user signs out in ADE, that cache must not silently restore account access
+/// on a later auth event or app launch. Only a successful, user-initiated
+/// sign-in clears this durable suppression flag.
+struct AccountLocalSignOutState {
+  static let suppressionKey = "ade.account.local-sign-out-suppressed.v1"
+
+  private let defaults: UserDefaults
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  var isSuppressed: Bool {
+    defaults.bool(forKey: Self.suppressionKey)
+  }
+
+  func suppress() {
+    defaults.set(true, forKey: Self.suppressionKey)
+  }
+
+  func clearAfterInteractiveSignIn() {
+    defaults.removeObject(forKey: Self.suppressionKey)
+  }
+}
+
+/// Keep token eligibility independently testable from ClerkKit. A cached Clerk
+/// session is not enough: ADE must currently publish the same signed-in user
+/// and must not be under a device-local sign-out boundary.
+func accountSessionTokenIsAllowed(
+  localSignOutSuppressed: Bool,
+  phaseIsSignedIn: Bool,
+  identityUserId: String?,
+  clerkUserId: String?
+) -> Bool {
+  guard !localSignOutSuppressed, phaseIsSignedIn,
+        let identityUserId, let clerkUserId else { return false }
+  return identityUserId == clerkUserId
+}
+
+/// Clerk keeps the user attached to ended, expired, replaced, and revoked
+/// sessions. Those cached identities are useful to Clerk's account switcher,
+/// but they are not authorization for ADE account machines or Relay.
+func accountSessionStatusAllowsAccess(_ status: Session.SessionStatus?) -> Bool {
+  status == .active
+}
+
+/// A point-in-time account authorization used by account-created pairing.
+/// Pairing performs network work, so owner identity alone is insufficient: the
+/// generation also changes on local sign-out and account switches, invalidating
+/// every in-flight operation that started under the previous account boundary.
+struct AccountPairingAuthorization: Equatable, Sendable {
+  let ownerId: String
+  let generation: UInt64
+}
+
+struct AccountPairingSession: Sendable {
+  let authorization: AccountPairingAuthorization
+  let token: String
+}
+
+func accountPairingCommitIsAuthorized(
+  _ authorization: AccountPairingAuthorization,
+  currentGeneration: UInt64,
+  localSignOutSuppressed: Bool,
+  phaseIsSignedIn: Bool,
+  identityUserId: String?,
+  clerkUserId: String?
+) -> Bool {
+  authorization.generation == currentGeneration
+    && authorization.ownerId == identityUserId
+    && accountSessionTokenIsAllowed(
+      localSignOutSuppressed: localSignOutSuppressed,
+      phaseIsSignedIn: phaseIsSignedIn,
+      identityUserId: identityUserId,
+      clerkUserId: clerkUserId
+    )
 }
 
 /// Wraps ClerkKit behind the app's `ObservableObject` convention so SwiftUI
@@ -89,6 +170,8 @@ final class AccountService: ObservableObject {
   private var eventTask: Task<Void, Never>?
   private var emailVerificationKind: AccountEmailVerificationKind?
   private let directory = AccountDirectoryClient()
+  private let localSignOutState = AccountLocalSignOutState()
+  private var pairingAuthorizationGeneration: UInt64 = 0
 
   var isConfigured: Bool { phase != .unconfigured }
   var isSignedIn: Bool { phase == .signedIn }
@@ -136,17 +219,51 @@ final class AccountService: ObservableObject {
   /// Recompute published state from the live Clerk instance.
   private func syncFromClerk() {
     guard didConfigure else { return }
-    if let user = Clerk.shared.user {
-      identity = Self.identity(from: user)
+    guard !localSignOutState.isSuppressed else {
+      publishSignedOut()
+      return
+    }
+    if accountSessionStatusAllowsAccess(Clerk.shared.session?.status),
+       let user = Clerk.shared.user {
+      let nextIdentity = Self.identity(from: user)
+      let shouldRefreshMachines = identity?.userId != nextIdentity.userId || phase != .signedIn
+      if identity?.userId != nextIdentity.userId {
+        invalidatePairingAuthorization()
+      }
+      SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
+      identity = nextIdentity
       if phase != .signedIn {
         phase = .signedIn
       }
+      if shouldRefreshMachines {
+        Task { await self.loadMachines() }
+      }
     } else {
-      identity = nil
-      machines = []
-      machinesState = .idle
-      phase = .signedOut
+      publishSignedOut()
     }
+  }
+
+  private func publishSignedOut() {
+    invalidatePairingAuthorization()
+    SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nil)
+    identity = nil
+    machines = []
+    machinesState = .idle
+    phase = .signedOut
+  }
+
+  private func invalidatePairingAuthorization() {
+    pairingAuthorizationGeneration &+= 1
+  }
+
+  /// Called only after an explicit sign-in operation completes and Clerk has
+  /// published a real user. Merely receiving a cached auth event never clears
+  /// the local sign-out boundary.
+  private func finishInteractiveSignIn() {
+    guard accountSessionStatusAllowsAccess(Clerk.shared.session?.status),
+          Clerk.shared.user != nil else { return }
+    localSignOutState.clearAfterInteractiveSignIn()
+    syncFromClerk()
   }
 
   // MARK: - Sign in
@@ -178,7 +295,7 @@ final class AccountService: ObservableObject {
       actions: emailAuthActions()
     )
     authenticationOutcome = emailVerificationKind == .signUp ? .newAccount : .returningUser
-    syncFromClerk()
+    finishInteractiveSignIn()
   }
 
   /// OAuth sign-in via the system web session (Google / GitHub). ClerkKit
@@ -187,7 +304,7 @@ final class AccountService: ObservableObject {
     lastError = nil
     let result = try await Clerk.shared.auth.signInWithOAuth(provider: provider)
     authenticationOutcome = Self.outcome(from: result)
-    syncFromClerk()
+    finishInteractiveSignIn()
   }
 
   /// Native Sign in with Apple. Requires the Sign-in-with-Apple capability and
@@ -197,14 +314,20 @@ final class AccountService: ObservableObject {
     lastError = nil
     let result = try await Clerk.shared.auth.signInWithApple()
     authenticationOutcome = Self.outcome(from: result)
-    syncFromClerk()
+    finishInteractiveSignIn()
   }
 
   func signOut() async {
+    // Make the user's local choice authoritative before attempting network
+    // revocation. If that request fails, cached Clerk state and subsequent auth
+    // events still cannot restore account machines or issue a session token.
+    localSignOutState.suppress()
+    publishSignedOut()
     do {
       try await Clerk.shared.auth.signOut()
     } catch {
-      // Even if the network revoke fails, drop local state below.
+      // The local suppression boundary above remains authoritative even when
+      // Clerk cannot revoke the server session right now.
     }
     authenticationOutcome = .unknown
     emailVerificationKind = nil
@@ -213,11 +336,47 @@ final class AccountService: ObservableObject {
 
   // MARK: - Token
 
+  var currentPairingAuthorization: AccountPairingAuthorization? {
+    guard let ownerId = identity?.userId,
+          accountSessionStatusAllowsAccess(Clerk.shared.session?.status),
+          accountSessionTokenIsAllowed(
+            localSignOutSuppressed: localSignOutState.isSuppressed,
+            phaseIsSignedIn: phase == .signedIn,
+            identityUserId: ownerId,
+            clerkUserId: Clerk.shared.user?.id
+          ) else { return nil }
+    return AccountPairingAuthorization(
+      ownerId: ownerId,
+      generation: pairingAuthorizationGeneration
+    )
+  }
+
+  func isPairingCommitAuthorized(_ authorization: AccountPairingAuthorization) -> Bool {
+    accountPairingCommitIsAuthorized(
+      authorization,
+      currentGeneration: pairingAuthorizationGeneration,
+      localSignOutSuppressed: localSignOutState.isSuppressed,
+      phaseIsSignedIn: phase == .signedIn,
+      identityUserId: identity?.userId,
+      clerkUserId: Clerk.shared.user?.id
+    )
+  }
+
+  /// Returns an access token tied to the exact account generation that requested
+  /// it. If sign-out or an account switch occurs while Clerk is refreshing, the
+  /// result is discarded instead of escaping under stale authorization.
+  func pairingSession() async -> AccountPairingSession? {
+    guard let authorization = currentPairingAuthorization,
+          let token = try? await Clerk.shared.auth.getToken(),
+          isPairingCommitAuthorized(authorization) else { return nil }
+    return AccountPairingSession(authorization: authorization, token: token)
+  }
+
   /// The current ClerkKit session token (JWT) for presenting to the directory
   /// Worker as a Bearer credential. `nil` when signed out.
   func sessionToken() async -> String? {
     guard isConfigured else { return nil }
-    return try? await Clerk.shared.auth.getToken()
+    return await pairingSession()?.token
   }
 
   // MARK: - Machines
@@ -226,26 +385,35 @@ final class AccountService: ObservableObject {
   /// no base URL → `.unconfigured`; unreachable → `.unreachable`; the local
   /// pairing flow is never blocked on this.
   func loadMachines() async {
-    guard isSignedIn else { return }
+    guard isSignedIn, let requestedOwnerId = identity?.userId else { return }
     guard let baseURL = AccountConfig.directoryBaseURL else {
       machinesState = .unconfigured
       return
     }
     guard let token = await sessionToken() else {
+      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
       machinesState = .unreachable("Sign in again to load your machines.")
       return
     }
+    guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
 
     if machines.isEmpty {
       machinesState = .loading
     }
     do {
       let fetched = try await directory.fetchMachines(baseURL: baseURL, token: token)
+      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
       machines = fetched
+      SyncService.shared?.adoptVerifiedAccountRelayMetadata(
+        from: fetched,
+        ownerId: requestedOwnerId
+      )
       machinesState = .loaded
     } catch let error as AccountDirectoryClient.DirectoryError {
+      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
       machinesState = .unreachable(error.localizedDescription)
     } catch {
+      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
       machinesState = .unreachable("Couldn't load your machines.")
     }
   }
@@ -301,6 +469,7 @@ final class AccountService: ObservableObject {
     let (providerId, providerLabel) = Self.provider(from: provider)
 
     return AccountIdentity(
+      userId: user.id,
       displayName: displayName,
       email: email,
       imageURL: user.hasImage ? URL(string: user.imageUrl) : nil,

@@ -46,6 +46,17 @@ struct HostConnectionProfile: Codable, Equatable {
   /// Health history for direct and relay routes. Optional so profiles written
   /// before route stickiness was introduced continue to decode cleanly.
   var endpointStates: [HostConnectionEndpointState]?
+  /// Clerk user id that authorized this pairing. `nil` means the machine was
+  /// paired directly (QR, link, nearby, address, or SSH) and must survive an
+  /// ADE account sign-out. Account-owned profiles and their keychain secrets
+  /// are removed as soon as that owner signs out or switches accounts.
+  var accountOwnerId: String?
+  /// Clerk user id that is allowed to use the saved cloud-relay routes. This is
+  /// deliberately separate from `accountOwnerId`: a Mac paired directly can
+  /// learn a verified relay after the user explicitly chooses the matching Mac
+  /// from their account, while the underlying LAN/Tailscale pairing remains
+  /// local-owned and survives sign-out.
+  var relayAccountOwnerId: String?
   var updatedAt: String
 
   init(
@@ -64,6 +75,8 @@ struct HostConnectionProfile: Codable, Equatable {
     tailscaleAddress: String?,
     savedRelayCandidates: [String]? = nil,
     endpointStates: [HostConnectionEndpointState]? = nil,
+    accountOwnerId: String? = nil,
+    relayAccountOwnerId: String? = nil,
     updatedAt: String = ISO8601DateFormatter().string(from: Date())
   ) {
     self.hostIdentity = hostIdentity
@@ -81,6 +94,8 @@ struct HostConnectionProfile: Codable, Equatable {
     self.tailscaleAddress = tailscaleAddress
     self.savedRelayCandidates = savedRelayCandidates
     self.endpointStates = endpointStates
+    self.accountOwnerId = accountOwnerId
+    self.relayAccountOwnerId = relayAccountOwnerId
     self.updatedAt = updatedAt
   }
 

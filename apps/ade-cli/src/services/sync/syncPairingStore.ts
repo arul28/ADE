@@ -23,6 +23,11 @@ export type SyncPairingRecord = {
    * Once present, paired hellos from this device must carry a valid proof.
    */
   dpopPublicKey?: string | null;
+  /**
+   * Clerk user that created this trust through account adoption. Missing and
+   * null are deliberately local/manual for backward compatibility.
+   */
+  accountOwnerUserId?: string | null;
 };
 
 type PairingSecretsFile = Record<string, SyncPairingRecord>;
@@ -36,10 +41,24 @@ type SyncPairingStoreArgs = {
 type NewPairingRecordOptions = {
   dpopPublicKey?: string | null;
   runtimeHostGrant?: string | null;
+  /**
+   * The sync host sets this only after a correct PIN arrives on a direct
+   * LAN/tailnet socket. It must remain false for Relay-origin pairings.
+   */
+  allowDirectPinRuntimeHost?: boolean;
 };
+
+type PairingTrust =
+  | { kind: "pin" }
+  | { kind: "local" }
+  | { kind: "account"; userId: string };
 
 function hashSecret(secret: string): string {
   return createHash("sha256").update(secret).digest("hex");
+}
+
+function normalizeAccountOwnerUserId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 /**
@@ -127,22 +146,54 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
   const writeNewPairingRecord = (
     peer: SyncPeerMetadata,
     options?: NewPairingRecordOptions,
-    accountVerified = false,
+    trust: PairingTrust = { kind: "pin" },
   ): { deviceId: string; secret: string } => {
-    // Consume every presented grant to preserve its one-time semantics. PIN
-    // pairing still requires that grant for runtime RPC; verified same-owner
-    // account pairing may authorize a desktop hop directly.
+    // Consume every presented grant to preserve its one-time semantics. A
+    // direct LAN/tailnet PIN may authorize a desktop runtime host explicitly;
+    // Relay PIN pairing never gets that exception. Verified same-owner account
+    // pairing and local OS/SSH trust retain their existing authorization paths.
     const consumedRuntimeHostGrant = consumeRuntimeHostGrant(options?.runtimeHostGrant);
     // A same-owner Clerk attestation is itself the approved account hop gate.
     // Only desktop peers receive runtime RPC; phone/browser peers remain on the
     // mobile allowlist even when they authenticate with the same account.
-    const runtimeHostGranted = peer.deviceType === "desktop"
-      && (consumedRuntimeHostGrant || accountVerified);
     const secret = randomBytes(24).toString("hex");
     const records = readRecords();
     const existing = records[peer.deviceId] ?? null;
+    const existingAccountOwnerUserId = normalizeAccountOwnerUserId(existing?.accountOwnerUserId);
+    let accountOwnerUserId: string | null = null;
+    if (trust.kind === "account") {
+      const requestedOwnerUserId = trust.userId.trim();
+      if (!requestedOwnerUserId) {
+        throw pairingError("account_not_verified", "Account identity is required.");
+      }
+      if (existing && !existingAccountOwnerUserId) {
+        throw pairingError(
+          "account_not_verified",
+          "A local pairing cannot be replaced through account sign-in.",
+        );
+      }
+      if (existingAccountOwnerUserId && existingAccountOwnerUserId !== requestedOwnerUserId) {
+        throw pairingError(
+          "account_not_verified",
+          "This device pairing belongs to a different ADE account.",
+        );
+      }
+      accountOwnerUserId = requestedOwnerUserId;
+    }
+    const runtimeHostGranted = peer.deviceType === "desktop"
+      && (
+        consumedRuntimeHostGrant
+        || trust.kind === "account"
+        || trust.kind === "local"
+        || (trust.kind === "pin" && options?.allowDirectPinRuntimeHost === true)
+      );
     const offeredDpopKey = options?.dpopPublicKey?.trim() || null;
-    const dpopPublicKey = offeredDpopKey && isValidDpopPublicKey(offeredDpopKey) ? offeredDpopKey : null;
+    const validatedOfferedDpopKey = offeredDpopKey && isValidDpopPublicKey(offeredDpopKey)
+      ? offeredDpopKey
+      : null;
+    const dpopPublicKey = trust.kind === "account" && existing?.dpopPublicKey
+      ? existing.dpopPublicKey
+      : validatedOfferedDpopKey ?? existing?.dpopPublicKey ?? null;
     records[peer.deviceId] = {
       secretHash: hashSecret(secret),
       createdAt: existing?.createdAt ?? nowIso(),
@@ -153,7 +204,10 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       runtimeHostGranted,
       // A gated re-pair may introduce or rotate the key when its caller allows
       // that. Omitting a key preserves the existing binding without downgrade.
-      dpopPublicKey: dpopPublicKey ?? existing?.dpopPublicKey ?? null,
+      dpopPublicKey,
+      // PIN and local OS/SSH trust explicitly declassify an older account
+      // record. A legacy record with no field remains local until rewritten.
+      accountOwnerUserId,
     };
     writeRecords(records);
     return {
@@ -184,7 +238,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!args.pinStore.verifyPin(pin)) {
         throw pairingError("invalid_pin", "Incorrect pairing PIN.");
       }
-      return writeNewPairingRecord(peer, options);
+      return writeNewPairingRecord(peer, options, { kind: "pin" });
     },
 
     pairPeerViaAccount(
@@ -195,7 +249,24 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!isVerifiedAccountAttestation(attestation)) {
         throw pairingError("account_not_verified", "Account attestation was not verified.");
       }
-      return writeNewPairingRecord(peer, options, true);
+      return writeNewPairingRecord(peer, options, {
+        kind: "account",
+        userId: attestation.userId,
+      });
+    },
+
+    /**
+     * Pair a device whose operator has already authenticated as a local OS
+     * user. This is intentionally not reachable from the sync wire protocol;
+     * the machine-local RPC/CLI adapter is the only caller. A desktop peer is
+     * granted runtime-host access because the SSH login is the authorization
+     * gate, while phone/browser peers remain confined to the mobile allowlist.
+     */
+    pairPeerViaLocalTrust(
+      peer: SyncPeerMetadata,
+      options?: NewPairingRecordOptions,
+    ): { deviceId: string; secret: string } {
+      return writeNewPairingRecord(peer, options, { kind: "local" });
     },
 
     /**
@@ -247,6 +318,21 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       if (!(normalized in records)) return;
       delete records[normalized];
       writeRecords(records);
+    },
+
+    revokeAccountOwnedExcept(currentOwnerUserId: string | null): string[] {
+      const currentOwner = currentOwnerUserId?.trim() || null;
+      const records = readRecords();
+      const removed: string[] = [];
+      for (const [deviceId, record] of Object.entries(records)) {
+        const owner = normalizeAccountOwnerUserId(record?.accountOwnerUserId);
+        // Missing/null provenance is legacy or explicitly local trust.
+        if (!owner || owner === currentOwner) continue;
+        delete records[deviceId];
+        removed.push(deviceId);
+      }
+      if (removed.length > 0) writeRecords(records);
+      return removed;
     },
   };
 }

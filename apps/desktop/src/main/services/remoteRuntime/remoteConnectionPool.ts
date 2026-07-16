@@ -24,6 +24,7 @@ import { isRetryableRemoteAction } from "./retryableRemoteActions";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
   PairedRuntimeCompatibilityError,
+  PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
@@ -48,6 +49,7 @@ type PoolEntry =
   | (PoolEntryBase & {
       transport: "paired";
       pairedPortForwardClient: SyncPortForwardClient;
+      relayAccountOwnerUserId: string | null;
     });
 
 type LocalPortForwardEntry = RemoteRuntimePortForward & {
@@ -219,7 +221,8 @@ function pairedSshFallbackTarget(
     }
   }
   const routes = (target.routes ?? []).filter(
-    (route) => !relayHosts.has(route.hostname.trim().toLowerCase()),
+    (route) => route.source === "manual"
+      && !relayHosts.has(route.hostname.trim().toLowerCase()),
   );
   const primary = routes[0];
   if (!primary) return null;
@@ -341,6 +344,7 @@ export class RemoteConnectionPool {
     ConnectFailureBackoff
   >();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
+  private readonly relayAccountOwnerByTargetId = new Map<string, string>();
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
@@ -349,6 +353,12 @@ export class RemoteConnectionPool {
     private readonly registry: RemoteTargetRegistry,
     private readonly appVersion: string,
     private readonly pairedStore: DesktopPairedMachineStore = new DesktopPairedMachineStore(),
+    private readonly options: {
+      getAccountRelayProof?: () => Promise<{
+        userId: string;
+        token: string;
+      } | null>;
+    } = {},
   ) {}
 
   async connect(
@@ -400,6 +410,14 @@ export class RemoteConnectionPool {
       }
       this.clearUnsupportedOptionalActionsForTarget(target.id);
       this.connectFailureBackoffByTargetId.delete(target.id);
+      if (entry.transport === "paired" && entry.relayAccountOwnerUserId) {
+        this.relayAccountOwnerByTargetId.set(
+          target.id,
+          entry.relayAccountOwnerUserId,
+        );
+      } else {
+        this.relayAccountOwnerByTargetId.delete(target.id);
+      }
       this.resolvedEntryPromises.add(entryPromise);
       this.attachEntryLifecycle(target.id, entryPromise, entry);
       return entry;
@@ -411,6 +429,7 @@ export class RemoteConnectionPool {
       this.entries.delete(target.id);
       this.pendingDisconnects.delete(target.id);
       this.resolvedEntryPromises.delete(entryPromise);
+      this.relayAccountOwnerByTargetId.delete(target.id);
       this.noteConnectFailure(target.id, error);
       throw error;
     }
@@ -425,11 +444,26 @@ export class RemoteConnectionPool {
           registry: this.registry,
           pairedStore: this.pairedStore,
           appVersion: this.appVersion,
+          options: {
+            getAccountRelayProof: this.options.getAccountRelayProof,
+          },
         });
+        if (paired.relayAccountOwnerUserId) {
+          const refreshedProof = await this.options.getAccountRelayProof?.()
+            .catch(() => null) ?? null;
+          if (refreshedProof?.userId.trim() !== paired.relayAccountOwnerUserId) {
+            paired.portForwardClient.dispose(false);
+            paired.client.close();
+            throw new PairedRuntimeRelayAuthRequiredError(
+              "Your ADE account changed before the Relay connection finished.",
+            );
+          }
+        }
         return {
           client: paired.client,
           transport: "paired",
           pairedPortForwardClient: paired.portForwardClient,
+          relayAccountOwnerUserId: paired.relayAccountOwnerUserId,
           result: paired.result,
         };
       } catch (error) {
@@ -439,6 +473,7 @@ export class RemoteConnectionPool {
         const canFallBackToSsh = fallbackTarget != null && (
           error instanceof PairedRuntimeTransportUnavailableError
           || error instanceof PairedRuntimeCompatibilityError
+          || error instanceof PairedRuntimeRelayAuthRequiredError
         );
         if (!canFallBackToSsh) {
           throw error;
@@ -456,6 +491,7 @@ export class RemoteConnectionPool {
       registry: this.registry,
       resourcesPath: process.resourcesPath ?? app.getAppPath(),
       appVersion: this.appVersion,
+      pairedStore: this.pairedStore,
     });
     return {
       client: ssh.client,
@@ -954,6 +990,7 @@ export class RemoteConnectionPool {
 
   async disconnect(targetId: string): Promise<void> {
     this.bumpDisconnectGeneration(targetId);
+    this.relayAccountOwnerByTargetId.delete(targetId);
     const forwardsClosed = this.closeLocalPortForwardsForTarget(targetId);
     const existing = this.entries.get(targetId);
     if (!existing) {
@@ -979,6 +1016,7 @@ export class RemoteConnectionPool {
     void existing
       .then((entry) => {
         if (!this.pendingDisconnects.delete(targetId)) return;
+        this.relayAccountOwnerByTargetId.delete(targetId);
         if (this.entries.get(targetId) === existing) {
           this.entries.delete(targetId);
         }
@@ -991,6 +1029,7 @@ export class RemoteConnectionPool {
       })
       .catch(() => {
         this.pendingDisconnects.delete(targetId);
+        this.relayAccountOwnerByTargetId.delete(targetId);
         this.resolvedEntryPromises.delete(existing);
         if (this.entries.get(targetId) === existing) {
           this.entries.delete(targetId);
@@ -1001,6 +1040,24 @@ export class RemoteConnectionPool {
 
   async dispose(): Promise<void> {
     await Promise.all([...this.entries.keys()].map((targetId) => this.disconnect(targetId)));
+  }
+
+  /**
+   * Close live Relay transports whose ephemeral account proof no longer
+   * belongs to the active desktop account. Direct paired and SSH transports
+   * are deliberately untouched.
+   */
+  reconcileAccountRelayOwner(
+    currentOwnerUserIdValue: string | null,
+  ): string[] {
+    const currentOwnerUserId = currentOwnerUserIdValue?.trim() || null;
+    const disconnectedTargetIds: string[] = [];
+    for (const [targetId, relayOwnerUserId] of this.relayAccountOwnerByTargetId) {
+      if (relayOwnerUserId === currentOwnerUserId) continue;
+      disconnectedTargetIds.push(targetId);
+      void this.disconnect(targetId);
+    }
+    return disconnectedTargetIds;
   }
 
   private async closeLocalPortForwardsForTarget(targetId: string): Promise<void> {
@@ -1095,6 +1152,7 @@ export class RemoteConnectionPool {
         this.entries.delete(targetId);
       }
       this.resolvedEntryPromises.delete(entryPromise);
+      this.relayAccountOwnerByTargetId.delete(targetId);
       if (cleanedUp) return;
       cleanedUp = true;
       void this.closeLocalPortForwardsForTarget(targetId);
@@ -1125,6 +1183,7 @@ export class RemoteConnectionPool {
   }
 
   private noteConnectFailure(targetId: string, error: unknown): void {
+    if (error instanceof PairedRuntimeRelayAuthRequiredError) return;
     const normalizedError =
       error instanceof Error ? error : new Error(String(error));
     const previous = this.connectFailureBackoffByTargetId.get(targetId);

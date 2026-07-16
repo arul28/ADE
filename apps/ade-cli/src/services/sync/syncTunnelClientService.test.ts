@@ -76,6 +76,95 @@ describe("createSyncTunnelClientService", () => {
     await service.dispose();
   });
 
+  it("keeps Relay offline signed out, resumes on sign-in, and closes when token refresh fails", async () => {
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    let signedIn = false;
+    let leaseValid = true;
+    let connections = 0;
+    relay.on("connection", () => {
+      connections += 1;
+    });
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    globalThis.fetch = fetchMock;
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getRelayBridgeProof: () => "e".repeat(43),
+      isAccountSignedIn: () => signedIn,
+      getAccountLease: async () => signedIn && leaseValid
+        ? { userId: "relay-owner" }
+        : null,
+      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+    });
+
+    try {
+      await service.start();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(service.getStatus()).toMatchObject({
+        connected: false,
+        activeTunnels: 0,
+        lastError: "Sign in to ADE to use ADE Relay.",
+      });
+
+      signedIn = true;
+      await vi.waitFor(() => {
+        expect(connections).toBe(1);
+        expect(service.getStatus().connected).toBe(true);
+      }, { timeout: 3_000 });
+
+      leaseValid = false;
+      await vi.waitFor(() => {
+        expect(service.getStatus()).toMatchObject({
+          connected: false,
+          activeTunnels: 0,
+          lastError: "Sign in to ADE to use ADE Relay.",
+        });
+      }, { timeout: 3_000 });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("does not start overlapping Relay claims while account status is polling", async () => {
+    let signedIn = true;
+    let releaseClaim!: (response: Response) => void;
+    const claim = new Promise<Response>((resolve) => {
+      releaseClaim = resolve;
+    });
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => await claim);
+    globalThis.fetch = fetchMock;
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getRelayBridgeProof: () => "e".repeat(43),
+      isAccountSignedIn: () => signedIn,
+      accountStatusPollMs: 5,
+      configStore: fakeStore(true),
+    });
+
+    try {
+      const starting = service.start();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      signedIn = false;
+      releaseClaim(new Response(null, { status: 204 }));
+      await starting;
+      expect(service.getStatus().connected).toBe(false);
+      expect(service.getStatus().lastError).toBe("Sign in to ADE to use ADE Relay.");
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("refuses a relay pipe before forwarding when loopback is not ADE", async () => {
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {
@@ -125,6 +214,85 @@ describe("createSyncTunnelClientService", () => {
         relayBridgeValidated: false,
       });
       expect(service.getStatus().lastFailureAt).not.toBeNull();
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("does not open a pipe when the account lease expires during loopback validation", async () => {
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const connections: string[] = [];
+    relay.on("connection", (socket, request) => {
+      connections.push(request.url ?? "");
+      if (connections.length === 1) {
+        socket.send(JSON.stringify({ t: "open", id: "abcdef01" }));
+      }
+    });
+    let leaseValid = true;
+    let finishProbe: ((result: {
+      ok: true;
+      port: number;
+      statusCode: number;
+      statusMessage: string;
+      markerValue: string;
+      checkedAt: string;
+      reason: null;
+    }) => void) | null = null;
+    let markProbeStarted: (() => void) | null = null;
+    const probeStarted = new Promise<void>((resolve) => {
+      markProbeStarted = resolve;
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const expectedNonce = "c".repeat(32);
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      getAccountLease: async () => leaseValid ? { userId: "relay-owner" } : null,
+      accountStatusPollMs: 5,
+      configStore: fakeStore(true, `http://127.0.0.1:${relayPort}`),
+      loopbackProbe: async (port) => {
+        markProbeStarted?.();
+        return await new Promise((resolve) => {
+          finishProbe = resolve;
+        });
+      },
+    });
+
+    try {
+      await service.start();
+      await probeStarted;
+      leaseValid = false;
+      await vi.waitFor(() => {
+        expect(service.getStatus().accountLeaseValid).toBe(false);
+      });
+      finishProbe!({
+        ok: true,
+        port: 8787,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(connections).toHaveLength(1);
+      expect(service.getStatus()).toMatchObject({
+        accountLeaseValid: false,
+        activeTunnels: 0,
+        relayBridgeValidated: false,
+        lastError: "Sign in to ADE to use ADE Relay.",
+      });
     } finally {
       await service.dispose();
       globalThis.fetch = originalFetch;

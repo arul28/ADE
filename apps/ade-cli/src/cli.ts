@@ -1076,9 +1076,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
   stable machine keys to choose from. Offline machines are listed but cannot be
   connected.
 
-  Sign in with \`ade login\`. \`connect\` and its \`hop\` alias pair through the
-  account-authenticated sync bridge, save an ordinary DPoP-bound paired target,
-  then launch ADE Code through that validated target.
+  Sign in with \`ade login\`. \`connect\` and its \`hop\` alias securely save the
+  selected machine for that account, then launch ADE Code. Signing out removes
+  machines added through the account from this ADE install. Machines you pair
+  directly with a PIN, SSH, or an address stay saved after sign-out.
 `,
   search: `${ADE_BANNER}
   ADE Search
@@ -7733,6 +7734,22 @@ function readAllStdinSync(): string {
   return fs.readFileSync(0, "utf8");
 }
 
+function readBoundedStdinSync(maxBytes: number, label: string): string {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const chunk = Buffer.alloc(Math.min(8_192, maxBytes + 1 - total));
+    const bytes = fs.readSync(0, chunk, 0, chunk.length, null);
+    if (bytes === 0) break;
+    total += bytes;
+    if (total > maxBytes) {
+      throw new CliUsageError(`${label} must be ${maxBytes} bytes or fewer.`);
+    }
+    chunks.push(chunk.subarray(0, bytes));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 function readLineFromStdinSync(): string {
   const chunks: Buffer[] = [];
   const buf = Buffer.alloc(1);
@@ -11463,6 +11480,16 @@ function buildCliPlan(
     logout: "auth",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
+  // Remote ADE Code owns a dedicated, beginner-facing help surface in the TUI
+  // client. Keep ordinary `ade code --help` on the established top-level help
+  // page, but let the remote subcommand render its actual connection guidance.
+  if (
+    primary === "code"
+    && firstStandalonePositional([...args]) === "remote"
+    && hasHelpFlag(args)
+  ) {
+    return { kind: "ade-code", rest: args };
+  }
   if (hasHelpFlag(args)) {
     const helpKey = helpKeyWithSubcommand(primaryHelpKey, args);
     if (primaryHelpKey === "ios-sim") {
@@ -13259,11 +13286,12 @@ Usage:
   ade sync name <name>              Name this runtime for easy identification
   ade sync name get
   ade sync name clear
-  ade sync relay status             ADE relay (phones dial this machine via a tunnel; on by default)
+  ade sync relay status             Internet route for devices signed into the same ADE account
   ade sync relay enable
   ade sync relay disable            Kill-switch: never route sync through the relay
   ade sync security status          Machine sync security posture (require-DPoP)
   ade sync security require-dpop <on|off>
+  ade sync pair-device --json-stdin Advanced: authorize pairing through a trusted local/SSH session
 `,
     };
   }
@@ -13297,6 +13325,27 @@ Usage:
           },
         },
       ],
+    };
+  }
+  if (sub === "pair-device") {
+    if (!readFlag(args, ["--json-stdin"])) {
+      throw new CliUsageError("sync pair-device requires --json-stdin; pairing secrets are never accepted in arguments.");
+    }
+    if (args.length > 0) {
+      throw new CliUsageError(
+        "sync pair-device accepts only --json-stdin; put the complete pairing request on stdin so secrets never appear in command arguments.",
+      );
+    }
+    const request = parseObjectJson(
+      readBoundedStdinSync(64 * 1024, "SSH pairing request"),
+      "SSH pairing request",
+    );
+    return {
+      kind: "execute",
+      label: "sync pair-device",
+      machineOnly: true,
+      machineAutoStart: true,
+      steps: [{ key: "result", method: "sync.authorizeSshPairing", params: request }],
     };
   }
   if (sub === "refresh" || sub === "refresh-discovery") {

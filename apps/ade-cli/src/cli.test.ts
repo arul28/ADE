@@ -410,14 +410,23 @@ describe("ADE CLI", () => {
     expect(plan).toEqual({ kind: "ade-code", rest: ["--print-state"] });
   });
 
-  it("shows socket-aware TUI help for ade code --help", () => {
-    const plan = buildCliPlan(["code", "--help"]);
-    expect(plan.kind).toBe("help");
-    if (plan.kind !== "help") return;
-    expect(plan.text).toContain("ade code --socket /tmp/ade.sock");
-    expect(plan.text).toContain("ade code --require-socket");
-    expect(plan.text).toContain("ade code --lane <id|name|branch>");
-    expect(plan.text).toContain("Command palette");
+  it("keeps general ADE Code help local and delegates remote help to its command", () => {
+    const general = buildCliPlan(["code", "--help"]);
+    expect(general.kind).toBe("help");
+    if (general.kind !== "help") return;
+    expect(general.text).toContain("ade code --socket /tmp/ade.sock");
+    expect(general.text).toContain("ade code --require-socket");
+    expect(general.text).toContain("ade code --lane <id|name|branch>");
+    expect(general.text).toContain("Command palette");
+
+    expect(buildCliPlan(["code", "remote", "--help"])).toEqual({
+      kind: "ade-code",
+      rest: ["remote", "--help"],
+    });
+    expect(buildCliPlan(["code", "remote", "--target", "studio"])).toEqual({
+      kind: "ade-code",
+      rest: ["remote", "--target", "studio"],
+    });
   });
 
   it("shows help for bare ade invocations", () => {
@@ -883,6 +892,79 @@ describe("ADE CLI", () => {
         method: "sync.generatePin",
       },
     ]);
+  });
+
+  it("reads SSH pairing requests only from stdin and allows socketless machine recovery", () => {
+    const request = JSON.stringify({
+      version: 1,
+      device: {
+        id: "ios-device-1",
+        name: "Arul's iPhone",
+        platform: "iOS",
+        type: "phone",
+        dpopPublicKey: "public-key",
+      },
+    });
+    const bytes = Buffer.from(request);
+    let offset = 0;
+    const readSpy = vi.spyOn(fs, "readSync").mockImplementation((
+      _fd: number,
+      buffer: NodeJS.ArrayBufferView,
+      ...args: unknown[]
+    ) => {
+      const bufferOffset = typeof args[0] === "number" ? args[0] : 0;
+      const length = typeof args[1] === "number" ? args[1] : buffer.byteLength;
+      const count = Math.min(length, bytes.length - offset);
+      if (count <= 0) return 0;
+      const destination = Buffer.from(
+        buffer.buffer as ArrayBuffer,
+        buffer.byteOffset,
+        buffer.byteLength,
+      );
+      bytes.copy(destination, bufferOffset, offset, offset + count);
+      offset += count;
+      return count;
+    });
+    try {
+      const plan = expectExecutePlan(buildCliPlan([
+        "sync",
+        "pair-device",
+        "--json-stdin",
+      ]));
+      expect(plan).toMatchObject({
+        label: "sync pair-device",
+        machineOnly: true,
+        machineAutoStart: true,
+        steps: [{
+          key: "result",
+          method: "sync.authorizeSshPairing",
+          params: JSON.parse(request),
+        }],
+      });
+    } finally {
+      readSpy.mockRestore();
+    }
+
+    expect(() => buildCliPlan([
+      "sync",
+      "pair-device",
+      "--device-secret",
+      "must-not-be-an-argument",
+    ])).toThrow(/requires --json-stdin/);
+
+    const unexpectedArgReadSpy = vi.spyOn(fs, "readSync");
+    try {
+      expect(() => buildCliPlan([
+        "sync",
+        "pair-device",
+        "--json-stdin",
+        "--device-secret",
+        "must-not-be-an-argument",
+      ])).toThrow(/accepts only --json-stdin/);
+      expect(unexpectedArgReadSpy).not.toHaveBeenCalled();
+    } finally {
+      unexpectedArgReadSpy.mockRestore();
+    }
   });
 
   it("formats sync web pairing info from sync status", () => {

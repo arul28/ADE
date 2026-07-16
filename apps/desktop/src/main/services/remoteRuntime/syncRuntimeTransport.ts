@@ -32,6 +32,7 @@ import {
   type ParsedSyncEnvelope,
 } from "../sync/syncProtocol";
 import type { RuntimeRpcTransport } from "./runtimeRpcClient";
+import { PairedRuntimeRelayAuthRequiredError } from "./pairedRuntimeErrors";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
 const DEFAULT_AUTH_TIMEOUT_MS = 10_000;
@@ -62,6 +63,8 @@ export type OpenPairedSyncConnectionOptions = OpenSyncEnvelopeConnectionOptions 
   credentials: DesktopPairedMachineCredentials;
   authTimeoutMs?: number;
   appVersion?: string;
+  /** Ephemeral Clerk access token used only for this ADE Relay hello. */
+  relayAccountToken?: string | null;
 };
 
 export type OpenSyncRuntimeTransportOptions = Omit<
@@ -341,6 +344,7 @@ export function createDesktopSyncDpopProof(
 export function buildDesktopPairedHello(
   credentials: DesktopPairedMachineCredentials,
   appVersion?: string,
+  relayAccountToken?: string | null,
 ): SyncHelloPayload {
   return {
     peer: {
@@ -367,6 +371,9 @@ export function buildDesktopPairedHello(
       deviceId: credentials.deviceId,
       secret: credentials.secret,
       dpop: createDesktopSyncDpopProof(credentials),
+      ...(relayAccountToken?.trim()
+        ? { relayAccountToken: relayAccountToken.trim() }
+        : {}),
     },
   };
 }
@@ -421,7 +428,9 @@ function helloError(payload: unknown): Error {
   const message = typeof value?.message === "string" && value.message.trim()
     ? value.message.trim()
     : "Sync authentication failed.";
-  return new Error(message);
+  return value?.code === "relay_account_required"
+    ? new PairedRuntimeRelayAuthRequiredError(message)
+    : new Error(message);
 }
 
 export async function openPairedSyncConnection(
@@ -431,7 +440,11 @@ export async function openPairedSyncConnection(
   const requestId = `hello-${randomUUID()}`;
   let response: Promise<ParsedSyncEnvelope> | null = null;
   try {
-    const helloPayload = buildDesktopPairedHello(options.credentials, options.appVersion);
+    const helloPayload = buildDesktopPairedHello(
+      options.credentials,
+      options.appVersion,
+      options.relayAccountToken,
+    );
     response = waitForSyncEnvelope(
       connection,
       (envelope) => envelope.requestId === requestId

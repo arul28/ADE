@@ -22,6 +22,7 @@ import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
 import { RunPage } from "../run/RunPage";
 import { ProjectSetupPage } from "../onboarding/ProjectSetupPage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
+import { LaunchGate } from "../onboarding/LaunchGate";
 import { GlossaryPage } from "../onboarding/GlossaryPage";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
@@ -1276,18 +1277,20 @@ export function App() {
   }, [theme]);
 
   return (
-    <Router>
-      <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
-        <OnboardingBootstrap />
-        <AppNavigationBridge />
-        <CrossRepoPrBanner />
-        <ClipboardDeeplinkBanner />
-        {usesBrowserRouter ? <BrowserHashRouteBridge /> : null}
-        <Routes>
-          <Route path="/startup" element={<Navigate to="/work" replace />} />
-          <Route path="*" element={<ShellLayout />} />
-        </Routes>
-      </div>
-    </Router>
+    <LaunchGate>
+      <Router>
+        <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
+          <OnboardingBootstrap />
+          <AppNavigationBridge />
+          <CrossRepoPrBanner />
+          <ClipboardDeeplinkBanner />
+          {usesBrowserRouter ? <BrowserHashRouteBridge /> : null}
+          <Routes>
+            <Route path="/startup" element={<Navigate to="/work" replace />} />
+            <Route path="*" element={<ShellLayout />} />
+          </Routes>
+        </div>
+      </Router>
+    </LaunchGate>
   );
 }

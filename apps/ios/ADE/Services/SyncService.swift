@@ -521,10 +521,147 @@ enum SyncConnectionRouteKind: Int, Equatable {
   case relay = 2
 }
 
+enum SyncRelayAuthorizationRequirement: String, Equatable, Error, LocalizedError {
+  case signInRequired
+  case sameAccountRequired
+
+  var errorDescription: String? {
+    switch self {
+    case .signInRequired:
+      return "Sign in to the same ADE account as this Mac to connect from another network. LAN and Tailscale still work without an account."
+    case .sameAccountRequired:
+      return "This Mac's internet connection belongs to another ADE account. Sign in with the same account as the Mac, or connect over LAN or Tailscale."
+    }
+  }
+}
+
+func syncRelayAuthorizationRequirementForHostRejection(
+  relayAccountOwnerId: String?,
+  currentAccountOwnerId: String?
+) -> SyncRelayAuthorizationRequirement {
+  let relayOwner = relayAccountOwnerId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let currentOwner = currentAccountOwnerId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard let currentOwner, !currentOwner.isEmpty else {
+    return .signInRequired
+  }
+  if let relayOwner, !relayOwner.isEmpty, relayOwner != currentOwner {
+    return .sameAccountRequired
+  }
+  // The host rejected the ephemeral relay proof even though the locally known
+  // account matches (or predates relay ownership metadata). Treat this as a
+  // fresh-sign-in requirement, never as a revoked device pairing.
+  return .signInRequired
+}
+
+func syncShouldConsumeReconnectRetryBudget(for error: Error) -> Bool {
+  !(error is SyncRelayAuthorizationRequirement)
+}
+
+func syncProfileAfterDirectPairing(
+  connectedProfile: HostConnectionProfile,
+  previousProfile: HostConnectionProfile?,
+  currentAccountOwnerId: String?
+) -> HostConnectionProfile {
+  func nonEmpty(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty else { return nil }
+    return trimmed
+  }
+  var result = connectedProfile
+  result.accountOwnerId = nil
+
+  let connectedIdentity = nonEmpty(connectedProfile.hostIdentity)
+    ?? nonEmpty(connectedProfile.lastHostDeviceId)
+  let previousIdentity = previousProfile.flatMap {
+    nonEmpty($0.hostIdentity) ?? nonEmpty($0.lastHostDeviceId)
+  }
+  let currentOwner = nonEmpty(currentAccountOwnerId)
+  let previousRelayOwner = previousProfile.flatMap {
+    nonEmpty($0.relayAccountOwnerId) ?? nonEmpty($0.accountOwnerId)
+  }
+  if let connectedIdentity,
+     connectedIdentity == previousIdentity,
+     previousRelayOwner == currentOwner {
+    // The account still verifies this exact Mac, so its relay hint remains
+    // useful. Only pairing ownership changes: PIN/QR/address pairing is local.
+    result.relayAccountOwnerId = previousRelayOwner
+  } else {
+    result.relayAccountOwnerId = nil
+  }
+  return result
+}
+
+enum SyncRelayAuthorizationState: Equatable {
+  case unavailable
+  case eligible
+  case requires(SyncRelayAuthorizationRequirement)
+}
+
+func syncRelayAuthorizationState(
+  hasRelayCandidates: Bool,
+  relayAccountOwnerId: String?,
+  currentAccountOwnerId: String?
+) -> SyncRelayAuthorizationState {
+  guard hasRelayCandidates else { return .unavailable }
+  let relayOwner = relayAccountOwnerId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let currentOwner = currentAccountOwnerId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard let relayOwner, !relayOwner.isEmpty else {
+    return .requires(.signInRequired)
+  }
+  guard let currentOwner, !currentOwner.isEmpty else {
+    return .requires(.signInRequired)
+  }
+  return relayOwner == currentOwner ? .eligible : .requires(.sameAccountRequired)
+}
+
+func syncEligibleRelayCandidates(
+  for profile: HostConnectionProfile,
+  currentAccountOwnerId: String?
+) -> [String] {
+  var seen = Set<String>()
+  let candidates = (profile.savedRelayCandidates ?? []).filter { route in
+    syncIsFullWebSocketRoute(route) && seen.insert(route).inserted
+  }
+  guard syncRelayAuthorizationState(
+    hasRelayCandidates: !candidates.isEmpty,
+    relayAccountOwnerId: profile.relayAccountOwnerId,
+    currentAccountOwnerId: currentAccountOwnerId
+  ) == .eligible else {
+    return []
+  }
+  return candidates
+}
+
+func syncAddressesAllowedByRelayPolicy(
+  _ addresses: [String],
+  profile: HostConnectionProfile,
+  currentAccountOwnerId: String?
+) -> [String] {
+  let state = syncRelayAuthorizationState(
+    hasRelayCandidates: !(profile.savedRelayCandidates ?? []).filter(syncIsFullWebSocketRoute).isEmpty,
+    relayAccountOwnerId: profile.relayAccountOwnerId,
+    currentAccountOwnerId: currentAccountOwnerId
+  )
+  guard state == .eligible else {
+    return addresses.filter { !syncIsFullWebSocketRoute($0) }
+  }
+  return addresses
+}
+
 func syncConnectionRouteKind(_ address: String) -> SyncConnectionRouteKind {
   if syncIsFullWebSocketRoute(address) { return .relay }
   if syncIsTailscaleRoute(address) { return .tailnet }
   return .lan
+}
+
+func syncRelayAccountTokenForPairedHello(
+  host: String,
+  accountToken: String?
+) -> String? {
+  guard syncIsFullWebSocketRoute(host),
+        let token = accountToken?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !token.isEmpty else { return nil }
+  return token
 }
 
 private func syncConnectionRouteKey(_ address: String) -> String {
@@ -1268,6 +1405,9 @@ func syncConnectionLoadSample(
 
 enum SyncUserFacingError {
   static func message(for error: Error) -> String {
+    if let relayRequirement = error as? SyncRelayAuthorizationRequirement {
+      return relayRequirement.localizedDescription
+    }
     let nsError = error as NSError
     if nsError.userInfo[syncAmbiguousRouteAuthFailureKey] as? Bool == true {
       return "A machine on this route rejected the saved pairing — possibly a different ADE machine. ADE kept the pairing and will keep trying other routes. If you unpaired this phone on purpose, pair again from Settings."
@@ -1748,6 +1888,35 @@ func workStartShellSessionRequest(
   )
 }
 
+struct AccountPairingAuthorizationChangedError: LocalizedError, Equatable {
+  var errorDescription: String? {
+    "Your ADE account changed while this Mac was connecting. Sign in, then try again."
+  }
+}
+
+/// Treat the remote hello and the local credential write as one account
+/// authorization transaction. The first check rejects a response received
+/// after sign-out/switch; the second sits directly against the synchronous
+/// credential commit so preparation can never weaken that boundary.
+@MainActor
+func performAuthorizedAccountPairingCommit<Hello, Prepared, Committed>(
+  authorization: AccountPairingAuthorization,
+  receiveHello: () async throws -> Hello,
+  prepare: (Hello) throws -> Prepared,
+  isAuthorized: (AccountPairingAuthorization) -> Bool,
+  commit: (Prepared) throws -> Committed
+) async throws -> Committed {
+  let hello = try await receiveHello()
+  guard isAuthorized(authorization) else {
+    throw AccountPairingAuthorizationChangedError()
+  }
+  let prepared = try prepare(hello)
+  guard isAuthorized(authorization) else {
+    throw AccountPairingAuthorizationChangedError()
+  }
+  return try commit(prepared)
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
@@ -1770,6 +1939,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var lastConnectDurationMs: Int?
   @Published private(set) var lastConnectedRouteKind: SyncConnectionRouteKind?
   @Published private(set) var lastError: String?
+  @Published private(set) var relayAuthorizationRequirement: SyncRelayAuthorizationRequirement?
   /// Host error CODE from the most recent pairing attempt (e.g. `pin_not_set`),
   /// preserved alongside the friendly `lastError` string so the PIN flow can
   /// branch on the code — routing a no-PIN machine to the "Set a PIN" screen —
@@ -2883,6 +3053,10 @@ final class SyncService: ObservableObject {
       connection.pairedDeviceId
         ?? previousProfile?.pairedDeviceId
         ?? (resolvedAuthKind == "paired" ? deviceId : nil)
+    let previousProfileMatchesTarget = previousProfile.map { profile in
+      profile.hostIdentity == connection.hostIdentity.deviceId
+        || profile.lastHostDeviceId == connection.hostIdentity.deviceId
+    } ?? false
 
     let profile = HostConnectionProfile(
       hostIdentity: connection.hostIdentity.deviceId,
@@ -2901,7 +3075,9 @@ final class SyncService: ObservableObject {
         return !syncIsTailscaleRoute(host)
       },
       tailscaleAddress: addressCandidates.first(where: syncIsTailscaleRoute),
-      savedRelayCandidates: relayCandidates.isEmpty ? nil : relayCandidates
+      savedRelayCandidates: relayCandidates.isEmpty ? nil : relayCandidates,
+      accountOwnerId: previousProfileMatchesTarget ? previousProfile?.accountOwnerId : nil,
+      relayAccountOwnerId: previousProfileMatchesTarget ? previousProfile?.relayAccountOwnerId : nil
     )
 
     let connectAttemptGeneration = beginConnectAttempt()
@@ -3198,6 +3374,7 @@ final class SyncService: ObservableObject {
       keychain.saveDeviceId(fresh)
       deviceId = fresh
     }
+    MobileTrustResetPolicy.applyIfNeeded(keychain: keychain)
     activeProjectId = UserDefaults.standard.string(forKey: activeProjectIdKey)
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     activeProjectHostIdentity = UserDefaults.standard.string(forKey: activeProjectHostIdentityKey)
@@ -3726,6 +3903,17 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func installPairedHostProfile(
+    _ profile: HostConnectionProfile,
+    secret: String
+  ) {
+    keychain.saveToken(secret)
+    if let key = profileStorageKey(profile) {
+      keychain.saveToken(secret, hostKey: key)
+    }
+    saveProfile(profile)
+  }
+
   private func storedTokenForSavedProfile(_ profile: HostConnectionProfile) -> String? {
     if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
       return token
@@ -3898,6 +4086,287 @@ final class SyncService: ObservableObject {
     return true
   }
 
+  /// Connects a directory machine using the signed-in Clerk session. The
+  /// bearer token is used over the directory-verified WSS relay to mint the
+  /// same device-bound paired secret used by QR/PIN/SSH. Later direct reconnects
+  /// use only that secret + DPoP key; relay reconnects also attach a fresh,
+  /// in-memory account token so the host can re-check same-account access.
+  @discardableResult
+  func pairWithAccountMachine(
+    _ machine: AccountMachine,
+    accountToken: String,
+    authorization: AccountPairingAuthorization
+  ) async -> Bool {
+    let token = accountToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard machine.online, !token.isEmpty, !owner.isEmpty,
+          AccountService.shared.isPairingCommitAuthorized(authorization),
+          let expectedHostIdentity = syncNonEmpty(machine.deviceId) else {
+      lastError = machine.online
+        ? "Sign in again, then try connecting."
+        : "That Mac is offline. Open ADE on the Mac, then try again."
+      connectionState = .error
+      return false
+    }
+
+    let directHosts = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+      guard endpoint.kind != .relay else { return nil }
+      if let host = syncNonEmpty(endpoint.host) { return host }
+      return endpoint.url.flatMap(syncEndpointHost)
+    })
+    let relayRoutes = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+      guard endpoint.kind == .relay,
+            let url = syncNonEmpty(endpoint.url),
+            syncIsFullWebSocketRoute(url),
+            URL(string: url)?.scheme?.lowercased() == "wss" else { return nil }
+      return url
+    })
+
+    // A direct pairing to this same Mac remains direct-owned. Signing in must
+    // never retroactively make a QR/link/SSH machine disappear on sign-out.
+    if var existing = loadSavedProfiles().values.first(where: { profile in
+      (profile.hostIdentity == expectedHostIdentity || profile.lastHostDeviceId == expectedHostIdentity)
+        && tokenForProfile(profile) != nil
+    }) {
+      guard existing.accountOwnerId == nil || existing.accountOwnerId == owner else {
+        lastError = "This saved Mac belongs to a different signed-in account."
+        connectionState = .error
+        return false
+      }
+      existing.savedAddressCandidates = deduplicatedAddresses(existing.savedAddressCandidates + directHosts)
+      existing.savedRelayCandidates = deduplicatedAddresses((existing.savedRelayCandidates ?? []) + relayRoutes)
+      existing.relayAccountOwnerId = owner
+      existing.updatedAt = syncDateFormatter.string(from: Date())
+      saveProfile(existing)
+      await reconnectIfPossible(userInitiated: true)
+      return connectionState == .connected || connectionState == .syncing
+    }
+
+    guard !relayRoutes.isEmpty else {
+      lastError = "That Mac is not ready for account connection yet. Open ADE on the Mac and try again."
+      connectionState = .error
+      return false
+    }
+
+    do {
+      try ensureDatabaseReady()
+      guard let dpop = DpopKeyService.shared.buildProof(deviceId: deviceId, secret: token) else {
+        throw NSError(
+          domain: "ADE",
+          code: 31,
+          userInfo: [NSLocalizedDescriptionKey: "This iPhone could not create a secure pairing key."]
+        )
+      }
+      refreshPhoneTailnetInterfaceState()
+      cancelReconnectLoop()
+      allowAutoReconnect = false
+      setAutoReconnectPausedByUser(false)
+      disconnect(clearCredentials: false, suspendAutoReconnect: false)
+      let generation = beginConnectAttempt()
+      resetChatEventState(clearHistory: true)
+      connectionState = .connecting
+
+      var lastFailure: Error?
+      for relay in relayRoutes {
+        do {
+          guard AccountService.shared.isPairingCommitAuthorized(authorization) else {
+            throw AccountPairingAuthorizationChangedError()
+          }
+          try await openSocket(
+            host: relay,
+            port: syncParseRouteEndpoint(relay)?.port ?? SyncDirectHostPorts.defaultPort,
+            connectAttemptGeneration: generation
+          )
+          let requestId = makeRequestId()
+          _ = try await performAuthorizedAccountPairingCommit(
+            authorization: authorization,
+            receiveHello: {
+              try await self.awaitResponse(
+                requestId: requestId,
+                timeoutMessage: "That Mac did not finish account connection. Try again."
+              ) {
+                self.sendEnvelope(type: "hello", requestId: requestId, payload: [
+                  "peer": self.currentPeerMetadata(),
+                  "auth": [
+                    "kind": "account",
+                    "deviceId": self.deviceId,
+                    "accountToken": token,
+                    "dpop": dpop,
+                  ],
+                ])
+              }
+            },
+            prepare: { raw in
+              guard let payload = raw as? [String: Any],
+                    let brain = payload["brain"] as? [String: Any],
+                    self.syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
+                throw NSError(
+                  domain: "ADE",
+                  code: 32,
+                  userInfo: [NSLocalizedDescriptionKey: "The connected Mac did not match your account."]
+                )
+              }
+              let pairing = payload["accountPairing"] as? [String: Any]
+              guard self.syncNonEmpty(pairing?["deviceId"] as? String) == self.deviceId,
+                    let pairedSecret = self.syncNonEmpty(pairing?["secret"] as? String) else {
+                throw NSError(
+                  domain: "ADE",
+                  code: 33,
+                  userInfo: [NSLocalizedDescriptionKey: "The Mac did not return saved connection details. Remove this iPhone from the Mac and try again."]
+                )
+              }
+
+              let advertisedRelay = self.syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
+              let allRelays = self.deduplicatedAddresses(relayRoutes + (advertisedRelay.map { [$0] } ?? []))
+              let relayPort = syncParseRouteEndpoint(relay)?.port ?? SyncDirectHostPorts.defaultPort
+              let profile = HostConnectionProfile(
+                hostIdentity: expectedHostIdentity,
+                hostName: self.syncNonEmpty(brain["deviceName"] as? String) ?? machine.displayName,
+                siteId: self.syncNonEmpty(brain["siteId"] as? String),
+                port: machine.directConnectTarget?.port ?? relayPort,
+                authKind: "paired",
+                pairedDeviceId: self.deviceId,
+                lastRemoteDbVersion: 0,
+                lastHostDeviceId: expectedHostIdentity,
+                lastSuccessfulAddress: relay,
+                savedAddressCandidates: directHosts,
+                discoveredLanAddresses: directHosts.filter {
+                  !$0.contains(":") && $0 != "127.0.0.1" && !syncIsTailscaleRoute($0)
+                },
+                tailscaleAddress: directHosts.first(where: syncIsTailscaleRoute),
+                savedRelayCandidates: allRelays,
+                accountOwnerId: owner,
+                relayAccountOwnerId: owner
+              )
+              return (payload: payload, pairedSecret: pairedSecret, profile: profile)
+            },
+            isAuthorized: { candidate in
+              AccountService.shared.isPairingCommitAuthorized(candidate)
+            },
+            commit: { prepared in
+              self.keychain.saveToken(prepared.pairedSecret)
+              if let key = self.profileStorageKey(prepared.profile) {
+                self.keychain.saveToken(prepared.pairedSecret, hostKey: key)
+              }
+              self.saveProfile(prepared.profile)
+              try self.applyHelloPayload(
+                prepared.payload,
+                connectedHost: relay,
+                port: prepared.profile.port,
+                authKind: "paired",
+                pairedDeviceId: self.deviceId,
+                expectedHostIdentity: expectedHostIdentity,
+                connectAttemptGeneration: generation
+              )
+            }
+          )
+          await restoreTrackedOpenLanesAfterReconnect()
+          await refreshRemoteProjectCatalog()
+          Task { await PushNotificationService.shared.enableIfPaired() }
+          LiveActivityService.shared.start()
+          ProductAnalytics.shared.captureFeature(.pairing, outcome: .completed)
+          return true
+        } catch {
+          lastFailure = error
+          teardownSocket()
+        }
+      }
+      throw lastFailure ?? NSError(
+        domain: "ADE",
+        code: 34,
+        userInfo: [NSLocalizedDescriptionKey: "Could not reach that Mac."]
+      )
+    } catch {
+      let message = SyncUserFacingError.message(for: error)
+      cancelReconnectLoop()
+      allowAutoReconnect = false
+      setAutoReconnectPausedByUser(true)
+      teardownSocket(reason: message)
+      clearConnectTimingMetrics()
+      lastError = message
+      connectionState = .error
+      setDomainStatus(SyncDomain.allCases, phase: .failed, error: message)
+      ProductAnalytics.shared.captureFeature(.pairing, outcome: .failed)
+      ProductAnalytics.shared.captureError(.pairing)
+      return false
+    }
+  }
+
+  /// Adds directory-verified relay metadata to already-paired Macs without
+  /// changing how those pairings are owned. This is a local dedupe only: no
+  /// pairing secret or machine record is uploaded, and direct-owned profiles
+  /// continue to survive account sign-out.
+  func adoptVerifiedAccountRelayMetadata(
+    from machines: [AccountMachine],
+    ownerId: String?
+  ) {
+    adoptVerifiedAccountRelayMetadata(
+      from: machines,
+      ownerId: ownerId,
+      requiresStoredCredential: true
+    )
+  }
+
+  private func adoptVerifiedAccountRelayMetadata(
+    from machines: [AccountMachine],
+    ownerId: String?,
+    requiresStoredCredential: Bool
+  ) {
+    guard let owner = syncNonEmpty(ownerId) else { return }
+    var verifiedByDeviceId: [String: [String]] = [:]
+    for machine in machines {
+      guard let deviceId = syncNonEmpty(machine.deviceId) else { continue }
+      let relayRoutes = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+        guard endpoint.kind == .relay,
+              let url = syncNonEmpty(endpoint.url),
+              syncIsFullWebSocketRoute(url),
+              URL(string: url)?.scheme?.lowercased() == "wss" else { return nil }
+        return url
+      })
+      guard !relayRoutes.isEmpty else { continue }
+      verifiedByDeviceId[deviceId] = deduplicatedAddresses(
+        (verifiedByDeviceId[deviceId] ?? []) + relayRoutes
+      )
+    }
+    guard !verifiedByDeviceId.isEmpty else { return }
+
+    var profiles = loadSavedProfilesRaw()
+    let activeKey = activeHostProfile.flatMap(profileStorageKey)
+    var changed = false
+    for (key, var profile) in profiles {
+      guard let identity = syncNonEmpty(profile.hostIdentity ?? profile.lastHostDeviceId),
+            let relayRoutes = verifiedByDeviceId[identity],
+            !requiresStoredCredential || tokenForProfile(profile) != nil else { continue }
+      let merged = deduplicatedAddresses((profile.savedRelayCandidates ?? []) + relayRoutes)
+      guard profile.savedRelayCandidates != merged || profile.relayAccountOwnerId != owner else { continue }
+      profile.savedRelayCandidates = merged
+      profile.relayAccountOwnerId = owner
+      profile.updatedAt = syncDateFormatter.string(from: Date.now)
+      profiles[key] = profile
+      if activeKey == key {
+        activeHostProfile = profile
+        saveProfile(profile)
+      }
+      changed = true
+    }
+    guard changed else { return }
+    saveSavedProfiles(profiles)
+    objectWillChange.send()
+  }
+
+  #if DEBUG
+  func adoptVerifiedAccountRelayMetadataForTesting(
+    from machines: [AccountMachine],
+    ownerId: String?
+  ) {
+    adoptVerifiedAccountRelayMetadata(
+      from: machines,
+      ownerId: ownerId,
+      requiresStoredCredential: false
+    )
+  }
+  #endif
+
   func getWebPairingInfo() async -> WebPairingInfo? {
     guard canSendLiveRequests(),
           supportsRemoteAction("sync.getWebPairingInfo") else {
@@ -3943,9 +4412,11 @@ final class SyncService: ObservableObject {
       keychain.saveDeviceId(handoff.deviceId)
     }
     let directHosts = deduplicatedAddresses(
-      ([handoff.host] + handoff.addressCandidates).compactMap { syncEndpointHost($0) }
+      ([handoff.host] + handoff.addressCandidates)
+        .filter { !syncIsFullWebSocketRoute($0) }
+        .compactMap { syncEndpointHost($0) }
     )
-    let relayHosts = deduplicatedAddresses(handoff.relayCandidates.filter(syncIsFullWebSocketRoute))
+    guard let preferredAddress = directHosts.first else { return false }
     var profile = HostConnectionProfile(
       hostIdentity: handoff.hostIdentity,
       hostName: handoff.hostName,
@@ -3955,23 +4426,16 @@ final class SyncService: ObservableObject {
       pairedDeviceId: handoff.deviceId,
       lastRemoteDbVersion: 0,
       lastHostDeviceId: nil,
-      lastSuccessfulAddress: handoff.host,
+      lastSuccessfulAddress: preferredAddress,
       savedAddressCandidates: directHosts,
       discoveredLanAddresses: directHosts.filter {
         !$0.contains(":") && $0 != "127.0.0.1" && !syncIsTailscaleRoute($0)
       },
       tailscaleAddress: directHosts.first(where: syncIsTailscaleRoute),
-      savedRelayCandidates: relayHosts.isEmpty ? nil : relayHosts
+      savedRelayCandidates: nil
     )
     profile.updatedAt = ISO8601DateFormatter().string(from: Date())
-    keychain.saveToken(handoff.secret)
-    if let key = profileStorageKey(profile) {
-      keychain.saveToken(handoff.secret, hostKey: key)
-      var profiles = loadSavedProfilesRaw()
-      profiles[key] = profile
-      saveSavedProfiles(profiles)
-    }
-    saveProfile(profile)
+    installPairedHostProfile(profile, secret: handoff.secret)
     await reconnectIfPossible(userInitiated: true)
     ProductAnalytics.shared.captureFeature(
       .appClipHandoff,
@@ -3979,6 +4443,45 @@ final class SyncService: ObservableObject {
       source: .appClip
     )
     return true
+  }
+
+  /// Persists the device-bound pairing minted by `ade sync pair-device` over
+  /// an authenticated SSH channel, then switches to the normal ADE WebSocket
+  /// transport. SSH is bootstrap/recovery only and is not needed afterward.
+  @discardableResult
+  func adoptSSHBootstrapPairing(
+    _ response: SSHValidatedBootstrapResponse,
+    sshHost: String
+  ) async -> Bool {
+    guard response.pairing.pairedDeviceId == deviceId else { return false }
+    let directHosts = deduplicatedAddresses(
+      ([sshHost] + response.sync.addressCandidates
+        .filter { $0.kind.lowercased() != "relay" }
+        .map(\.host))
+        .compactMap(syncEndpointHost)
+    )
+    guard let preferredAddress = directHosts.first else { return false }
+    var profile = HostConnectionProfile(
+      hostIdentity: response.machine.deviceId,
+      hostName: response.machine.name,
+      siteId: syncNonEmpty(response.machine.siteId),
+      port: response.sync.port,
+      authKind: "paired",
+      pairedDeviceId: response.pairing.pairedDeviceId,
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: response.machine.deviceId,
+      lastSuccessfulAddress: preferredAddress,
+      savedAddressCandidates: directHosts,
+      discoveredLanAddresses: directHosts.filter {
+        !$0.contains(":") && $0 != "127.0.0.1" && !syncIsTailscaleRoute($0)
+      },
+      tailscaleAddress: directHosts.first(where: syncIsTailscaleRoute),
+      savedRelayCandidates: nil
+    )
+    profile.updatedAt = ISO8601DateFormatter().string(from: Date.now)
+    installPairedHostProfile(profile, secret: response.pairing.secret)
+    await reconnectIfPossible(userInitiated: true)
+    return hasPairedHost
   }
 
   func reconnectIfPossible(userInitiated: Bool = false) async {
@@ -4069,6 +4572,7 @@ final class SyncService: ObservableObject {
   private func publishReconnectStarted(profile: HostConnectionProfile) {
     connectionState = .connecting
     hostName = profile.hostName
+    relayAuthorizationRequirement = nil
     lastError = nil
   }
 
@@ -4329,20 +4833,22 @@ final class SyncService: ObservableObject {
       return
     }
     lastPairingErrorCode = nil
+    relayAuthorizationRequirement = nil
     let connectAttemptGeneration: UInt64
     do {
       refreshPhoneTailnetInterfaceState()
+      let previousProfile = activeHostProfile ?? loadProfile()
       cancelReconnectLoop()
       allowAutoReconnect = false
       setAutoReconnectPausedByUser(false)
       disconnect(clearCredentials: false, suspendAutoReconnect: false)
       connectAttemptGeneration = beginConnectAttempt()
       resetChatEventState(clearHistory: true)
+      guard !syncIsFullWebSocketRoute(host) else {
+        throw SyncRelayAuthorizationRequirement.signInRequired
+      }
       let endpoint = syncParseRouteEndpoint(host)
-      let requestedRoute = endpoint?.scheme == "wss"
-        ? host.trimmingCharacters(in: .whitespacesAndNewlines)
-        : nil
-      let requestedHost = requestedRoute ?? endpoint?.host ?? host.trimmingCharacters(in: .whitespacesAndNewlines)
+      let requestedHost = endpoint?.host ?? host.trimmingCharacters(in: .whitespacesAndNewlines)
       let requestedPort = endpoint?.port ?? port
       let normalizedCandidateAddresses = candidateAddresses.compactMap { syncEndpointHost($0) }
       let normalizedTailscaleAddress = tailscaleAddress.flatMap(syncEndpointHost)
@@ -4381,8 +4887,11 @@ final class SyncService: ObservableObject {
       // Relay URLs (full wss://) ride their own path/port, so they're kept out
       // of the direct port sweep. The ranked route walker gives each direct or
       // relay route one attempt before trying alternate direct ports.
-      let normalizedRelayCandidates = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
-      let relayWalkCandidates = normalizedRelayCandidates
+      // A QR/link can advertise a relay URL, but a pairing code alone does not
+      // prove that the phone and Mac share an ADE account. First-time direct
+      // pairing therefore stays on LAN/Tailscale. Account pairing has a separate
+      // verified flow that tags relay ownership before a relay is attempted.
+      let relayWalkCandidates: [String] = []
       syncConnectLog.info(
         "ADE_SYNC_TRACE pair candidates host=\(requestedHost, privacy: .public) ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] discoveryLan=[\(syncLogAddressList(discoveryAddresses), privacy: .public)] discoveryTailnet=[\(syncLogAddressList(discoveryTailscaleAddresses), privacy: .public)] explicitTailnet=[\(syncLogAddressList(explicitTailscaleAddresses), privacy: .public)] provided=[\(syncLogAddressList(normalizedCandidateAddresses), privacy: .public)] connectable=[\(syncLogAddressList(addressCandidates), privacy: .public)] relay=[\(syncLogAddressList(relayWalkCandidates), privacy: .public)]"
       )
@@ -4486,7 +4995,7 @@ final class SyncService: ObservableObject {
         tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute),
         // Persist relay candidates so later reconnects can rank them using
         // last-good route health.
-        savedRelayCandidates: normalizedRelayCandidates.isEmpty ? nil : normalizedRelayCandidates
+        savedRelayCandidates: nil
       )
       currentAddress = preferredAddress
       try await hello(
@@ -4498,8 +5007,14 @@ final class SyncService: ObservableObject {
         expectedHostIdentity: hostIdentity,
         connectAttemptGeneration: connectAttemptGeneration
       )
+      let finalizedProfile = syncProfileAfterDirectPairing(
+        connectedProfile: activeHostProfile ?? profile,
+        previousProfile: previousProfile,
+        currentAccountOwnerId: AccountService.shared.identity?.userId
+      )
       keychain.saveToken(secret)
-      keychain.saveToken(secret, hostKey: profileStorageKey(activeHostProfile ?? profile))
+      keychain.saveToken(secret, hostKey: profileStorageKey(finalizedProfile))
+      saveProfile(finalizedProfile)
       // Pairing just succeeded — this is the moment to ask for notification
       // permission (never on first launch) and begin observing Live Activity
       // tokens so the brain can start / update remote activities.
@@ -4515,6 +5030,7 @@ final class SyncService: ObservableObject {
       teardownSocket(reason: friendlyMessage)
       clearConnectTimingMetrics()
       lastError = friendlyMessage
+      relayAuthorizationRequirement = error as? SyncRelayAuthorizationRequirement
       lastPairingErrorCode = (error as NSError).userInfo["ADEErrorCode"] as? String
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
@@ -4555,6 +5071,7 @@ final class SyncService: ObservableObject {
     cancelReconnectLoop()
     teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
+    relayAuthorizationRequirement = nil
     hostCompatibilityMode = .unknown
     hostCompatibilityMissingActions = []
     hostName = activeHostProfile?.hostName
@@ -4637,6 +5154,83 @@ final class SyncService: ObservableObject {
     }
     var remaining = loadSavedProfilesRaw()
     remaining.removeValue(forKey: key)
+    saveSavedProfiles(remaining)
+    objectWillChange.send()
+  }
+
+  /// Removes only pairings created through a specific ADE account. Directly
+  /// paired machines intentionally have no owner id and remain available after
+  /// sign-out. This is also called when Clerk reports a session switch or
+  /// expiry, so another person cannot reopen this ADE install and see the
+  /// previous account's machines.
+  func removeAccountOwnedPairings(ownerId: String) {
+    let owner = ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !owner.isEmpty else { return }
+
+    removeAccountOwnedPairings(matching: { $0 == owner })
+  }
+
+  /// On cold launch, Clerk may already be signed out and there is no in-memory
+  /// "previous" identity to compare. Prune every account-owned profile except
+  /// the currently authenticated owner so stale sessions never leak machines.
+  func removeAccountOwnedPairings(exceptOwnerId ownerId: String?) {
+    let allowedOwner = ownerId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    removeAccountOwnedPairings { owner in
+      !owner.isEmpty && owner != allowedOwner
+    }
+    enforceRelayAuthorization(currentOwnerId: allowedOwner)
+  }
+
+  /// A direct-owned pairing may have a relay learned through an account without
+  /// becoming account-owned itself. When that account signs out or changes, end
+  /// an active relay session immediately, keep the local credential, and try the
+  /// direct LAN/Tailscale routes instead.
+  private func enforceRelayAuthorization(currentOwnerId: String?) {
+    guard currentAddress.map(syncIsFullWebSocketRoute) == true,
+          let profile = activeHostProfile ?? loadProfile() else { return }
+    let state = syncRelayAuthorizationState(
+      hasRelayCandidates: !(profile.savedRelayCandidates ?? []).filter(syncIsFullWebSocketRoute).isEmpty,
+      relayAccountOwnerId: profile.relayAccountOwnerId,
+      currentAccountOwnerId: currentOwnerId
+    )
+    guard case .requires(let requirement) = state else { return }
+
+    disconnect(clearCredentials: false, suspendAutoReconnect: false)
+    relayAuthorizationRequirement = requirement
+    lastError = requirement.localizedDescription
+    connectionState = .error
+    setDomainStatus(SyncDomain.allCases, phase: .failed, error: requirement.localizedDescription)
+    Task { @MainActor [weak self] in
+      await self?.reconnectIfPossible(userInitiated: true)
+    }
+  }
+
+  private func removeAccountOwnedPairings(matching shouldRemove: (String) -> Bool) {
+    let profiles = loadSavedProfilesRaw()
+    let owned = profiles.filter { _, profile in
+      guard let owner = profile.accountOwnerId else { return false }
+      return shouldRemove(owner)
+    }
+    guard !owned.isEmpty else { return }
+
+    let active = activeHostProfile ?? loadProfile()
+    let activeIsOwned = active?.accountOwnerId.map(shouldRemove) == true
+    if activeIsOwned {
+      disconnect(clearCredentials: true)
+      remoteProjectCatalog = []
+      refreshProjectCatalog()
+      lastError = nil
+      setDomainStatus(SyncDomain.allCases, phase: .disconnected)
+    }
+
+    var remaining = loadSavedProfilesRaw()
+    for (key, profile) in owned {
+      keychain.clearToken(hostKey: key)
+      for legacyKey in legacyProfileStorageKeys(profile) {
+        keychain.clearToken(hostKey: legacyKey)
+      }
+      remaining.removeValue(forKey: key)
+    }
     saveSavedProfiles(remaining)
     objectWillChange.send()
   }
@@ -8067,6 +8661,8 @@ final class SyncService: ObservableObject {
       && lhs.lastHostDeviceId == rhs.lastHostDeviceId
       && lhs.lastSuccessfulAddress == rhs.lastSuccessfulAddress
       && lhs.endpointStates == rhs.endpointStates
+      && lhs.accountOwnerId == rhs.accountOwnerId
+      && lhs.relayAccountOwnerId == rhs.relayAccountOwnerId
       && lhs.savedAddressCandidates == rhs.savedAddressCandidates
       && lhs.discoveredLanAddresses == rhs.discoveredLanAddresses
       && lhs.tailscaleAddress == rhs.tailscaleAddress
@@ -8857,7 +9453,29 @@ final class SyncService: ObservableObject {
   /// Relay `wss://` candidates for a profile. The endpoint walker ranks these
   /// alongside direct routes and applies last-good stickiness.
   private func relayFallbackCandidates(for profile: HostConnectionProfile) -> [String] {
-    return deduplicatedAddresses((profile.savedRelayCandidates ?? []).filter(syncIsFullWebSocketRoute))
+    syncEligibleRelayCandidates(
+      for: profile,
+      currentAccountOwnerId: AccountService.shared.identity?.userId
+    )
+  }
+
+  private func relayAuthorizationState(for profile: HostConnectionProfile) -> SyncRelayAuthorizationState {
+    syncRelayAuthorizationState(
+      hasRelayCandidates: !(profile.savedRelayCandidates ?? []).filter(syncIsFullWebSocketRoute).isEmpty,
+      relayAccountOwnerId: profile.relayAccountOwnerId,
+      currentAccountOwnerId: AccountService.shared.identity?.userId
+    )
+  }
+
+  private func addressesAllowedByRelayPolicy(
+    _ addresses: [String],
+    profile: HostConnectionProfile
+  ) -> [String] {
+    syncAddressesAllowedByRelayPolicy(
+      addresses,
+      profile: profile,
+      currentAccountOwnerId: AccountService.shared.identity?.userId
+    )
   }
 
   private func prioritizedAddresses(for profile: HostConnectionProfile) -> [String] {
@@ -8889,7 +9507,7 @@ final class SyncService: ObservableObject {
     candidates.append(contentsOf: savedProfileTailnet)
     candidates.append(contentsOf: savedTailnet)
     candidates.append(contentsOf: relayFallbackCandidates(for: profile))
-    return deduplicatedAddresses(candidates)
+    return deduplicatedAddresses(addressesAllowedByRelayPolicy(candidates, profile: profile))
   }
 
   private func automaticReconnectAddresses(for profile: HostConnectionProfile) -> [String] {
@@ -8902,7 +9520,7 @@ final class SyncService: ObservableObject {
       candidates.append(contentsOf: profile.tailscaleAddress.map { [$0] } ?? [])
       candidates.append(contentsOf: savedTailnet)
       candidates.append(contentsOf: relayFallbackCandidates(for: profile))
-      return deduplicatedAddresses(candidates)
+      return deduplicatedAddresses(addressesAllowedByRelayPolicy(candidates, profile: profile))
     }
 
     let liveLan = matchingDiscovery.flatMap(\.addresses)
@@ -8920,7 +9538,7 @@ final class SyncService: ObservableObject {
     candidates.append(contentsOf: profile.tailscaleAddress.map { [$0] } ?? [])
     candidates.append(contentsOf: savedTailnet)
     candidates.append(contentsOf: relayFallbackCandidates(for: profile))
-    return deduplicatedAddresses(candidates)
+    return deduplicatedAddresses(addressesAllowedByRelayPolicy(candidates, profile: profile))
   }
 
   private func connectUsingProfile(
@@ -8946,6 +9564,13 @@ final class SyncService: ObservableObject {
     // fallback port list would retry the identical URL once per port. The route
     // walker ranks relay with direct candidates after the existing direct probe.
     let relayRoutes = rawAddresses.filter(syncIsFullWebSocketRoute)
+    // Relay ingress requires a fresh account proof on every connection. Fetch
+    // it only when a relay is actually eligible, keep it in memory for this
+    // attempt, and never write it into the connection profile or keychain.
+    let relayAccountToken = relayRoutes.isEmpty
+      ? nil
+      : await AccountService.shared.sessionToken()
+    let usableRelayRoutes = relayAccountToken == nil ? [] : relayRoutes
     let addresses = connectableAddresses(from: rawAddresses.filter { !syncIsFullWebSocketRoute($0) })
     let portCandidates = syncConnectPortCandidates(
       primaryPort: primaryPort,
@@ -8953,9 +9578,15 @@ final class SyncService: ObservableObject {
       allowFallbackSweep: !preferLiveCandidatesOnly || livePorts.isEmpty
     )
     syncConnectLog.info(
-      "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)] relay=[\(syncLogAddressList(relayRoutes), privacy: .public)]"
+      "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)] relay=[\(syncLogAddressList(usableRelayRoutes), privacy: .public)]"
     )
-    guard !addresses.isEmpty || !relayRoutes.isEmpty else {
+    guard !addresses.isEmpty || !usableRelayRoutes.isEmpty else {
+      if !relayRoutes.isEmpty, relayAccountToken == nil {
+        throw SyncRelayAuthorizationRequirement.signInRequired
+      }
+      if case .requires(let requirement) = relayAuthorizationState(for: profile) {
+        throw requirement
+      }
       if rawAddresses.isEmpty {
         throw NSError(domain: "ADE", code: 18, userInfo: [NSLocalizedDescriptionKey: "No saved address is available for this machine."])
       }
@@ -8980,7 +9611,7 @@ final class SyncService: ObservableObject {
       : syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
     let orderedEndpointAttempts = syncRankedEndpointAttempts(
       directAttempts: racedDirectAttempts,
-      relayRoutes: relayRoutes,
+      relayRoutes: usableRelayRoutes,
       relayPort: portCandidates.first ?? profile.port,
       endpointStates: profile.endpointStates,
       lastSuccessfulAddress: profile.lastSuccessfulAddress,
@@ -8988,9 +9619,11 @@ final class SyncService: ObservableObject {
     )
 
     markConnectAttemptStarted(connectAttemptGeneration)
-    let connectedEndpoint = try await syncFirstSuccessfulConnectionEndpoint(
-      orderedEndpointAttempts,
-      attempt: { attempt in
+    let connectedEndpoint: SyncConnectionEndpointAttempt
+    do {
+      connectedEndpoint = try await syncFirstSuccessfulConnectionEndpoint(
+        orderedEndpointAttempts,
+        attempt: { attempt in
         guard self.isCurrentConnectAttempt(connectAttemptGeneration) else {
           return .failure(CancellationError())
         }
@@ -9009,6 +9642,7 @@ final class SyncService: ObservableObject {
             token: token,
             authKind: profile.authKind,
             pairedDeviceId: profile.pairedDeviceId,
+            relayAccountToken: syncIsFullWebSocketRoute(attempt.address) ? relayAccountToken : nil,
             expectedHostIdentity: profile.hostIdentity,
             connectAttemptGeneration: connectAttemptGeneration
           )
@@ -9033,11 +9667,18 @@ final class SyncService: ObservableObject {
           }
           return .failure(reconnectError)
         }
-      },
-      shouldContinueAfterFailure: { error in
-        !self.shouldInvalidateSavedPairing(for: error)
+        },
+        shouldContinueAfterFailure: { error in
+          !self.shouldInvalidateSavedPairing(for: error)
+        }
+      )
+    } catch {
+      if !shouldInvalidateSavedPairing(for: error),
+         case .requires(let requirement) = relayAuthorizationState(for: profile) {
+        throw requirement
       }
-    )
+      throw error
+    }
     return (host: connectedEndpoint.address, port: connectedEndpoint.port)
   }
 
@@ -9053,12 +9694,24 @@ final class SyncService: ObservableObject {
     }
     let friendlyMessage = SyncUserFacingError.message(for: error)
     clearConnectTimingMetrics()
+    relayAuthorizationRequirement = error as? SyncRelayAuthorizationRequirement
     lastError = friendlyMessage
     self.connectionState = connectionState
     if phase == .failed {
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
     } else {
       setDomainStatus(SyncDomain.allCases, phase: .disconnected)
+    }
+    if !syncShouldConsumeReconnectRetryBudget(for: error) {
+      // Account policy cannot be fixed by opening the same relay repeatedly.
+      // Stop the pending loop without resetting or advancing its network retry
+      // budget; signing in or choosing a direct route can resume from here.
+      reconnectTask?.cancel()
+      reconnectTask = nil
+      networkPathReconnectTask?.cancel()
+      networkPathReconnectTask = nil
+      autoReconnectAwaitingLiveDiscovery = false
+      return
     }
     if shouldScheduleRetry {
       scheduleReconnectIfNeeded(after: reconnectDelay())
@@ -9548,6 +10201,7 @@ final class SyncService: ObservableObject {
     token: String,
     authKind: String,
     pairedDeviceId: String?,
+    relayAccountToken: String? = nil,
     expectedHostIdentity: String?,
     connectAttemptGeneration: UInt64
   ) async throws {
@@ -9567,6 +10221,12 @@ final class SyncService: ObservableObject {
         pairedAuth["dpop"] = proof
       } else {
         syncConnectLog.info("ADE_SYNC_TRACE dpop proof unavailable; sending legacy paired hello")
+      }
+      if let relayAccountToken = syncRelayAccountTokenForPairedHello(
+        host: host,
+        accountToken: relayAccountToken
+      ) {
+        pairedAuth["relayAccountToken"] = relayAccountToken
       }
       auth = pairedAuth
     } else {
@@ -9644,6 +10304,37 @@ final class SyncService: ObservableObject {
 
   func automaticReconnectAddressesForTesting(_ profile: HostConnectionProfile) -> [String] {
     automaticReconnectAddresses(for: profile)
+  }
+
+  func installSavedProfileForTesting(
+    _ profile: HostConnectionProfile,
+    token: String,
+    makeActive: Bool = false
+  ) {
+    guard let key = profileStorageKey(profile) else { return }
+    keychain.saveToken(token, hostKey: key)
+    var profiles = loadSavedProfilesRaw()
+    profiles[key] = profile
+    saveSavedProfiles(profiles)
+    if makeActive {
+      keychain.saveToken(token)
+      saveProfile(profile)
+    }
+  }
+
+  func savedProfilesForTesting() -> [HostConnectionProfile] {
+    Array(loadSavedProfilesRaw().values)
+  }
+
+  func hasCredentialForTesting(_ profile: HostConnectionProfile) -> Bool {
+    tokenForProfile(profile) != nil
+  }
+
+  func clearSavedProfilesForTesting() {
+    disconnect(clearCredentials: false)
+    _ = keychain.clearAllConnectionTokens()
+    UserDefaults.standard.removeObject(forKey: profilesKey)
+    saveProfile(nil)
   }
 
   func prioritizedReconnectAddressesForTesting(_ profile: HostConnectionProfile) -> [String] {
@@ -10023,6 +10714,7 @@ final class SyncService: ObservableObject {
     updateReducedSyncLoad()
     lastError = nil
     lastPairingErrorCode = nil
+    relayAuthorizationRequirement = nil
     markSyncActivity(force: true)
     saveRemoteCommandDescriptors(commandDescriptors)
     Task { @MainActor [weak self] in
@@ -10085,7 +10777,9 @@ final class SyncService: ObservableObject {
       discoveredLanAddresses: discoveredLan,
       tailscaleAddress: resolvedTailscaleAddress,
       savedRelayCandidates: mergedRelayCandidates.isEmpty ? nil : mergedRelayCandidates,
-      endpointStates: endpointStates
+      endpointStates: endpointStates,
+      accountOwnerId: activeHostProfile?.accountOwnerId,
+      relayAccountOwnerId: activeHostProfile?.relayAccountOwnerId
     )
     saveProfile(profile)
     resetOutboundCursorStateForActiveProject()
@@ -10250,6 +10944,16 @@ final class SyncService: ObservableObject {
       let errorPayload = payload as? [String: Any]
       let code = (errorPayload?["code"] as? String) ?? "auth_failed"
       let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+      if code == "relay_account_required" {
+        connectionState = .error
+        let profile = activeHostProfile ?? loadProfile()
+        let requirement = syncRelayAuthorizationRequirementForHostRejection(
+          relayAccountOwnerId: profile?.relayAccountOwnerId,
+          currentAccountOwnerId: AccountService.shared.identity?.userId
+        )
+        resolve(requestId: requestId, result: .failure(requirement))
+        break
+      }
       // Newer hosts attribute the rejection: the identity of the machine that
       // refused the hello. Without it (older host, or a stranger machine on a
       // reused address) the client must never destroy its saved pairing.
@@ -11520,8 +12224,13 @@ final class SyncService: ObservableObject {
   /// True when this device is paired to a machine (active or last-saved
   /// profile). Push registration only runs while paired.
   var hasPairedHost: Bool {
-    (activeHostProfile ?? loadProfile())?.authKind == "paired"
+    guard let profile = activeHostProfile ?? loadProfile(), profile.authKind == "paired" else {
+      return false
+    }
+    return tokenForProfile(profile) != nil
   }
+
+  var pairingDeviceId: String { deviceId }
 
   /// Thin wrapper for the runtime-scoped `push.*` commands used by
   /// `PushNotificationService` / `LiveActivityService`. Runtime-scoped and never

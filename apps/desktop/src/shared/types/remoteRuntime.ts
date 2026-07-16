@@ -6,7 +6,7 @@ export type RemoteRuntimeTransportKind = "ssh" | "paired";
 export type RemoteRuntimePairedMachineReference = {
   /** Stable host device id in the desktop paired-machine credential store. */
   hostIdentity: string;
-  /** Optional tunnel-relay machine key for lookup after relay-only pairing. */
+  /** Optional tunnel-relay machine key for account internet-route lookup. */
   machineKey?: string | null;
 };
 
@@ -29,6 +29,8 @@ export type RemoteRuntimeTarget = {
   /** Missing on older records means SSH. */
   transport?: RemoteRuntimeTransportKind;
   pairedMachine?: RemoteRuntimePairedMachineReference | null;
+  /** Account that created this local target. Missing/null means user-paired. */
+  accountOwnerUserId?: string | null;
   sshUser: string | null;
   port: number | null;
   sshKeyPath: string | null;
@@ -36,6 +38,9 @@ export type RemoteRuntimeTarget = {
   lastSeenArch: string | null;
   runtimeBinaryVersion: string | null;
   lastConnectedAt: number | null;
+  /** Whether ADE should reconnect this machine automatically on launch. */
+  autoConnect?: boolean;
+  /** @deprecated Retained while migrating pre-autoConnect records. */
   manuallyDisconnectedAt?: number | null;
 };
 
@@ -44,6 +49,8 @@ export type RemoteRuntimeTargetInput = {
   hostname: string;
   transport?: RemoteRuntimeTransportKind | null;
   pairedMachine?: RemoteRuntimePairedMachineReference | null;
+  /** Account that created this local target. Omit for user-paired targets. */
+  accountOwnerUserId?: string | null;
   sshUser?: string | null;
   port?: number | null;
   sshKeyPath?: string | null;
@@ -168,7 +175,7 @@ export type RemoteRuntimeConnectionRoute = {
 };
 
 export type RemoteRuntimeConnectErrorInfo = {
-  kind: "disk_full" | "ssh_auth" | "unsupported_os" | "generic";
+  kind: "disk_full" | "ssh_auth" | "unsupported_os" | "auth_required" | "generic";
   message: string;
   detail?: string;
   freeBytes?: number;

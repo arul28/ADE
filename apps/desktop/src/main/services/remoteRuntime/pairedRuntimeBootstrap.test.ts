@@ -24,7 +24,10 @@ vi.mock("./syncPortForwardClient", () => ({
 }));
 
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
-import { PairedRuntimeCompatibilityError } from "./pairedRuntimeErrors";
+import {
+  PairedRuntimeCompatibilityError,
+  PairedRuntimeRelayAuthRequiredError,
+} from "./pairedRuntimeErrors";
 
 const credentials: DesktopPairedMachineCredentials = {
   version: 1,
@@ -216,5 +219,52 @@ describe("bootstrapPairedRuntime", () => {
       message: expect.stringMatching(/connect .* with SSH to update/i),
     }));
     expect(closeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("opens a relay only with an ephemeral signed-in account proof", async () => {
+    initializeMock.mockResolvedValue({
+      runtimeInfo: { version: "1.0.0", multiProject: true },
+      capabilities: { projects: true },
+    });
+    callMock.mockResolvedValue([]);
+    const relayCredentials = {
+      ...credentials,
+      endpoints: ["wss://relay.example/connect/host-1"],
+      relayUrl: "wss://relay.example/connect/host-1",
+    };
+    const pairedStore = {
+      getForReference: vi.fn(() => relayCredentials),
+      save: vi.fn(() => relayCredentials),
+      markEndpointSucceeded: vi.fn(() => relayCredentials),
+    };
+    const openTransport = vi.fn(async () => transport());
+
+    await expect(bootstrapPairedRuntime({
+      target,
+      registry: { update: vi.fn(() => target) } as any,
+      pairedStore: pairedStore as any,
+      appVersion: "1.0.0",
+      options: { openTransport },
+    })).rejects.toBeInstanceOf(PairedRuntimeRelayAuthRequiredError);
+    expect(openTransport).not.toHaveBeenCalled();
+
+    const result = await bootstrapPairedRuntime({
+      target,
+      registry: { update: vi.fn(() => target) } as any,
+      pairedStore: pairedStore as any,
+      appVersion: "1.0.0",
+      options: {
+        openTransport,
+        getAccountRelayProof: vi.fn(async () => ({
+          userId: "account-b",
+          token: "short-lived-account-token",
+        })),
+      },
+    });
+    expect(openTransport).toHaveBeenCalledWith(expect.objectContaining({
+      endpoint: "wss://relay.example/connect/host-1",
+      relayAccountToken: "short-lived-account-token",
+    }));
+    expect(result.result.route?.kind).toBe("relay");
   });
 });

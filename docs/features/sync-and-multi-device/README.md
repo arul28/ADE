@@ -219,16 +219,15 @@ Runtime support files outside `services/sync/`:
 
 Desktop pairing UI:
 
+- `apps/desktop/src/renderer/components/app/ConnectionsPanel.tsx` — the single
+  top-bar Connections surface with Machines, Mobile, and Web client tabs.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
-  Settings uses the default `variant="all"`; the top-bar sheets use the
-  focused `"phone"` and `"web"` variants. When a configured PIN is available
+  Connections uses the focused `"phone"` and `"web"` variants. When a configured PIN is available
   only as its at-rest PBKDF2 hash after a runtime restart, the web pairing card
   can generate and set a new six-digit PIN instead of leaving copy disabled.
-- `apps/desktop/src/renderer/components/app/TopBar.tsx` — Mobile and Web
-  connection chips, connected-peer summaries, and mutually exclusive pairing
-  sheets. Browser peers are identified by `deviceType === "browser"`.
-- `apps/desktop/src/renderer/components/app/HeaderSheet.tsx` — shared portaled
-  sheet and dialog focus-trap scaffold for the Mobile and Web panels.
+- `apps/desktop/src/renderer/components/app/TopBar.tsx` — the Connections
+  control, connected summary, dialog ownership, and external requests that open
+  a specific tab. Browser peers are identified by `deviceType === "browser"`.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`
   and `apps/desktop/src/renderer/components/app/TopBar.test.tsx` — focused
   pairing variants, hidden-PIN generation, QR/copy interactions, web-peer chip,
@@ -507,7 +506,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncPinStore.ts` — on-disk storage for the user-set 6-digit
   pairing PIN at `~/.ade/secrets/sync-pin.json`, chmodded `0600`. The
   runtime never rotates the PIN; the operator sets or clears it from
-  Settings > Sync.
+  **Connections > Mobile**.
 - `resolveTailscaleCliPath.ts` — Tailscale CLI discovery used for the
   tailnet `tailscale serve` publication path.
 - `syncDpop.ts` — device-bound pairing (DPoP) helpers: the canonical
@@ -725,9 +724,9 @@ keyed on `cluster_id = "default"` with `brain_device_id`,
 
 ## Sync authority selection and transfer
 
-Sync authority designation is an explicit user action in Settings > Sync. Only
-one runtime owns execution at a time. Phones are controller-only and
-never elect themselves.
+Sync authority transfer is an explicit runtime operation; no client elects
+itself automatically. Only one runtime owns execution at a time. Phones are
+controller-only and never elect themselves.
 
 Transfer:
 
@@ -746,10 +745,11 @@ is not supported.
 
 ## Device discovery
 
-- **Machine-to-machine**: manual address/port/bootstrap-token entry in
-  Settings > Sync. The machine bootstrap token lives under
-  `~/.ade/secrets` and legacy project-local tokens are migrated there
-  on startup.
+- **Machine-to-machine**: pair or connect from **Connections > Machines** with
+  an account machine, Share link + PIN, Nearby/network discovery, direct
+  address + PIN, or Advanced SSH. The saved result is a per-device DPoP-bound
+  secret; legacy machine bootstrap tokens remain internal compatibility state,
+  not a user pairing path.
 - **Project switch handoff carries auth.** `SyncProjectConnectionPayload`
   distinguishes `authKind: "bootstrap" | "paired"` and may carry a
   `pairedDeviceId` instead of a raw `token`. When a phone follows a
@@ -948,7 +948,7 @@ payload.
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, `work.listExternalSessions`, `work.importExternalSession`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
 | Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project home |
-| Paired desktop runtime | Full newline-delimited runtime JSON-RPC over `rpc_open` / `rpc_data` / `rpc_close`, plus host-loopback TCP previews over `fwd_open` / `fwd_data` / `fwd_close`. The host advertises both channels only when pairing consumed a short-lived, one-time server grant from the Share Machine link; client-claimed device metadata never authorizes them | ADE desktop remote machines |
+| Paired desktop runtime | Full newline-delimited runtime JSON-RPC over `rpc_open` / `rpc_data` / `rpc_close`, plus host-loopback TCP previews over `fwd_open` / `fwd_data` / `fwd_close`. A Share Machine link carries a short-lived one-time grant; a desktop found directly over LAN/Tailscale may instead receive the same capability only after its PIN succeeds. Relay PIN pairing never gets that direct-path exception. Client-claimed device metadata never authorizes either channel | ADE desktop remote machines |
 | Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
 | Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the runtime decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop runtime presence heartbeat |
 
@@ -1050,12 +1050,14 @@ feature is merged or because a deliberately isolated-port host is running.
   possible until the account session/token is sender-constrained to a device
   key or equivalent platform attestation.
 - **Pairing**: two independent paths. Machine-to-machine pairing uses
-  the shared bootstrap token from the machine secrets directory.
-  Phone pairing uses a **user-set 6-digit PIN** stored as a PBKDF2 hash in
+  the same user-approved PIN + DPoP flow and consumes the Share Machine link's
+  short-lived runtime-host grant before enabling the full RPC channel. Legacy
+  shared bootstrap-token hellos are rejected over Relay. Phone/browser pairing
+  uses a **user-set 6-digit PIN** stored as a PBKDF2 hash in
   `~/.ade/secrets/sync-pin.json` on the runtime machine. The runtime never
-  auto-rotates or TTLs the PIN; the user sets it through Settings > Sync
+  auto-rotates or TTLs the PIN; the user sets it through **Connections > Mobile**
   and clears it when they want to stop accepting new pairings. Plaintext is
-  process-local and intentionally unrecoverable after restart, so Settings
+  process-local and intentionally unrecoverable after restart, so Connections
   and CLI surfaces treat `hasPin() && getPin() == null` as "configured but
   hidden". They still allow pairing with the existing PIN if the user knows
   it, and tell the user to generate/set a new PIN only if they need to
@@ -1075,7 +1077,7 @@ feature is merged or because a deliberately isolated-port host is running.
   when over tailnet; LAN connections rely on pairing token validation.
   TLS is not enforced for localhost/LAN; the runtime listens on all
   interfaces (intended for trusted LAN and tailnets).
-- **Cloud tunnel relay (on by default; Settings > Sync is the
+- **Cloud tunnel relay (on by default; Connections is the
   kill-switch)**: the brain keeps an outbound HMAC-authenticated tunnel
   to the `apps/tunnel-relay` Cloudflare Worker so a phone off the
   LAN/tailnet can dial the machine over TLS with zero configuration.
@@ -1086,10 +1088,20 @@ feature is merged or because a deliberately isolated-port host is running.
   paired-secret / DPoP handshake still runs inside that pipe, but it is not
   end-to-end encrypted: the relay can read paired secrets and runtime/sync
   payloads. Treat the relay operator as trusted for confidentiality.
+  The host opens and advertises Relay only while its ADE account lease is
+  current. Every paired Relay hello — including first-time PIN pairing — must
+  also carry a fresh short-lived Clerk token whose subject matches the account
+  signed in on the host; the proof is never persisted. Direct LAN/Tailscale
+  hellos do not need an account token. Sign-out, account switch, expiry, or host
+  refresh failure closes Relay peers and revokes account-owned pairing records;
+  direct PIN/link/SSH records carry local provenance and survive. A verified
+  same-owner account hello with the pinned DPoP key may rotate the paired secret
+  so a lost credential-delivery response can be retried safely.
   The `machineKey` is an unguessable 32-hex identifier and the tunnel
   upgrades are HMAC-signed with a per-machine secret. Operators who
   never want traffic relayed flip the single "ADE relay" control in
-  Settings > Sync (or `ade sync relay disable`); a deliberate off is
+  **Connections > Mobile/Web client** (or `ade sync relay disable`); a
+  deliberate off is
   recorded with an `enabledSetByUser` marker in `sync-cloud-relay.json`
   and preserved across upgrades, while a legacy build's implicit
   (unmarked) off migrates to on. The live relay URL is also advertised to
@@ -1098,6 +1110,15 @@ feature is merged or because a deliberately isolated-port host is running.
   the route without re-scanning a QR.
 - **Secret isolation**: each device stores its own pairing secret in
   its OS keychain.
+- **One-release trust reset**: the first packaged desktop launch carrying the
+  migration removes only old remote-target/pairing/runtime-host grant files and
+  confirms a background-service restart before committing its marker. iOS
+  removes connection tokens plus machine-scoped profiles/cursors/queued state
+  only after Keychain clearing succeeds. Hosted web removes old IndexedDB
+  environments and selection once. Account sessions, stable machine/device and
+  DPoP identities, pairing PINs, projects, SSH files, analytics choices, and
+  unrelated browser state are preserved. New pairings created after each
+  marker follow the normal local/account ownership lifetime.
 - **Execution isolation**: the ADE runtime runs agents; controllers do not.
 - **External local files stay desktop-local.** Files opened in the desktop
   from Finder / OS open-file events or local drag-and-drop are registered as
@@ -1143,7 +1164,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | iOS Lanes / Files / Work / PRs / Settings tabs | Implemented |
 | QR pairing UX | Implemented (payload v3 smart URL + iOS camera scanner; PIN entered separately) |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
-| Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented, default on with Settings kill-switch (`syncTunnelClientService` + `apps/tunnel-relay`) |
+| Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented, default on with Settings kill-switch and same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
 | Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |
@@ -1156,6 +1177,12 @@ feature is merged or because a deliberately isolated-port host is running.
   thread ids, full transcripts, terminals, artifacts, caches, secrets, and
   dirty worktree data remain on the source. See
   [the handoff contract](./cross-machine-session-handoff.md).
+
+- **The release trust reset is deliberate and non-recurring.** Do not broaden
+  it into a general cache/account wipe or rerun it on dev launches. Desktop's
+  pending marker exists so a failed service restart is retried without deleting
+  newly created pairings again; iOS writes its marker only after connection
+  tokens clear; web scopes its version marker to the environment store.
 
 - **The runtime owns sync. Desktop is a client.** A desktop window bound
   to a remote runtime is *not* the sync authority for that project; the remote
@@ -1181,12 +1208,12 @@ feature is merged or because a deliberately isolated-port host is running.
   re-provisioned.
 - **The runtime listens on all interfaces.** Treat the current posture as
   trusted-LAN/tailnet only; TLS is not enforced for localhost/LAN.
-  Revocation works per paired device via Settings > Sync > Forget.
+  Revocation works per paired device from the appropriate **Connections** tab.
 - **The pairing PIN is user-managed, not ADE-managed.** There is no
   expiry and no rotation. A machine that leaves the PIN set is
   perpetually pairable by anyone on the network who knows the digits
   (subject to the per-IP rate limiter). Clearing the PIN from
-  Settings > Sync is how you stop accepting new pairings; already-paired
+  **Connections > Mobile** is how you stop accepting new pairings; already-paired
   devices keep their per-device secret and remain connected. Because
   only the hash persists, a restarted runtime can report that a PIN is
   configured but cannot reveal it.

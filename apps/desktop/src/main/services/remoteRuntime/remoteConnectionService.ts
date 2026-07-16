@@ -45,6 +45,7 @@ import {
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
 import { parseRemoteRuntimePairingInput } from "./pairingInput";
+import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
 import {
   findDiscoveredRuntimeForTargetInput,
   sshRoutesForDiscoveredRuntime,
@@ -52,7 +53,10 @@ import {
   syncEndpointsForDiscoveredRuntime,
 } from "./discoveredPairedRuntime";
 import { runRemoteRuntimeDoctor } from "./connectionDoctor";
-import { PairedRuntimeSshTrustRequiredError } from "./pairedRuntimeErrors";
+import {
+  PairedRuntimeRelayAuthRequiredError,
+  PairedRuntimeSshTrustRequiredError,
+} from "./pairedRuntimeErrors";
 import {
   getSshHostKeyTrustForTarget,
   trustSshHostKeyForTarget,
@@ -65,6 +69,21 @@ type RemoteConnectionServiceOptions = {
   autoconnectIntervalMs?: number;
   pingTimeoutMs?: number;
   appVersion?: string;
+  getAccountRelayProof?: () => Promise<{
+    userId: string;
+    token: string;
+  } | null>;
+  /**
+   * Returns the refresh-verified account owner allowed to use account-created
+   * machine trust. `null` means account-owned trust must be removed before use.
+   * Omit only in isolated callers that do not participate in account lifecycle.
+   */
+  getAuthorizedAccountOwnerId?: () => Promise<string | null>;
+};
+
+export type AccountMachineReconciliationResult = {
+  removedTargetIds: string[];
+  removedCredentialHostIds: string[];
 };
 
 type RemoteConnectionDisconnectOptions = {
@@ -103,6 +122,12 @@ function errorInfo(
       ...(structured.detail
         ? { detail: capRemoteRuntimeErrorDetail(structured.detail) }
         : {}),
+    };
+  }
+  if (error instanceof PairedRuntimeRelayAuthRequiredError) {
+    return {
+      kind: "auth_required",
+      message,
     };
   }
   return {
@@ -155,7 +180,9 @@ function coerceConnectionProject(value: unknown): RemoteRuntimeProjectRecord {
 }
 
 function shouldAutoconnectTarget(target: RemoteRuntimeTarget): boolean {
-  return target.lastConnectedAt != null && target.manuallyDisconnectedAt == null;
+  return target.autoConnect ?? (
+    target.lastConnectedAt != null && target.manuallyDisconnectedAt == null
+  );
 }
 
 export class RemoteConnectionService {
@@ -202,6 +229,100 @@ export class RemoteConnectionService {
 
   getTarget(targetId: string): RemoteRuntimeTarget | null {
     return this.registry.get(targetId);
+  }
+
+  /**
+   * Canonical account-trust reconciliation command. Account-owned target and
+   * credential records are one lifecycle boundary: prune them together, close
+   * any live transport immediately, clear all reconnect/trust state, then emit
+   * one authoritative snapshot. Ownerless PIN/link/SSH trust is untouched.
+   */
+  reconcileAccountOwnership(
+    currentOwnerUserIdValue: string | null,
+  ): AccountMachineReconciliationResult {
+    const currentOwnerUserId = currentOwnerUserIdValue?.trim() || null;
+    const disconnectedRelayTargetIds = this.pool.reconcileAccountRelayOwner?.(
+      currentOwnerUserId,
+    ) ?? [];
+    const removedTargets = this.registry.pruneAccountOwned(currentOwnerUserId);
+    const removedCredentials = this.pairedStore.pruneAccountOwned(currentOwnerUserId);
+    const removedCredentialIds = new Set<string>();
+    for (const credentials of removedCredentials) {
+      removedCredentialIds.add(credentials.hostIdentity.deviceId);
+      if (credentials.machineKey) removedCredentialIds.add(credentials.machineKey);
+    }
+
+    // Recover safely from a partial historical write where credentials carry
+    // account provenance but their target does not. A target without its paired
+    // secret is neither usable nor local trust and must disappear with it.
+    const removedTargetIds = new Set(removedTargets.map((target) => target.id));
+    for (const target of this.registry.list()) {
+      const reference = target.pairedMachine;
+      if (
+        !reference
+        || (!removedCredentialIds.has(reference.hostIdentity)
+          && !(reference.machineKey && removedCredentialIds.has(reference.machineKey)))
+      ) continue;
+      if (this.registry.remove(target.id)) removedTargetIds.add(target.id);
+    }
+
+    for (const targetId of removedTargetIds) {
+      this.bumpDisconnectGeneration(targetId);
+      this.pool.disconnect(targetId);
+      this.statusById.delete(targetId);
+      this.manuallyDisconnectedTargetIds.delete(targetId);
+      this.clearAutomaticReconnectBudget(targetId);
+      this.latencyProbeTargetIds.delete(targetId);
+      this.pairedFallbackSshTrustByTargetId.delete(targetId);
+    }
+    for (const targetId of disconnectedRelayTargetIds) {
+      if (removedTargetIds.has(targetId)) continue;
+      const target = this.registry.get(targetId);
+      if (!target) continue;
+      this.bumpDisconnectGeneration(targetId);
+      this.mergeStatus(targetId, { state: "idle", lastError: null });
+      this.clearAutomaticReconnectBudget(targetId);
+      if (
+        shouldAutoconnectTarget(target)
+        && !this.manuallyDisconnectedTargetIds.has(targetId)
+      ) {
+        void this.connect(targetId).catch(() => {});
+      }
+    }
+    if (
+      removedTargetIds.size > 0
+      || removedCredentials.length > 0
+      || disconnectedRelayTargetIds.length > 0
+    ) this.emit();
+    return {
+      removedTargetIds: [...removedTargetIds],
+      removedCredentialHostIds: removedCredentials.map(
+        (credentials) => credentials.hostIdentity.deviceId,
+      ),
+    };
+  }
+
+  async reconcileAuthorizedAccountOwnership(): Promise<AccountMachineReconciliationResult> {
+    if (!this.options.getAuthorizedAccountOwnerId) {
+      return { removedTargetIds: [], removedCredentialHostIds: [] };
+    }
+    const currentOwnerUserId = await this.options.getAuthorizedAccountOwnerId()
+      .catch(() => null);
+    return this.reconcileAccountOwnership(currentOwnerUserId);
+  }
+
+  setAutoConnect(targetId: string, enabled: boolean): RemoteRuntimeTarget {
+    const target = this.requireTarget(targetId);
+    const updated = this.registry.update(target.id, {
+      autoConnect: enabled,
+      ...(enabled ? { manuallyDisconnectedAt: null } : {}),
+    });
+    if (enabled) {
+      this.manuallyDisconnectedTargetIds.delete(target.id);
+      this.clearAutomaticReconnectBudget(target.id);
+    }
+    this.emit();
+    return updated;
   }
 
   saveTarget(
@@ -263,15 +384,26 @@ export class RemoteConnectionService {
   ): Promise<RemoteRuntimePairWithMachineResult> {
     const parsed = parseRemoteRuntimePairingInput(args.input);
     let paired: DesktopPairedMachineCredentials | null = null;
+    let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
     const failures: string[] = [];
     for (const endpoint of parsed.endpoints) {
       try {
+        let relayAccountToken: string | null = null;
+        if (classifyPairedRuntimeEndpoint(endpoint, parsed.relayUrl) === "relay") {
+          const proof = await this.options.getAccountRelayProof?.().catch(() => null) ?? null;
+          if (!proof?.token.trim()) {
+            relayAuthError = new PairedRuntimeRelayAuthRequiredError();
+            continue;
+          }
+          relayAccountToken = proof.token.trim();
+        }
         paired = await this.pairedStore.pairWithMachine(
           endpoint,
           args.pin,
           args.deviceName,
           {
             appVersion: this.options.appVersion,
+            relayAccountToken,
             runtimeHostGrant: parsed.runtimeHostGrant ?? null,
           },
         );
@@ -288,6 +420,7 @@ export class RemoteConnectionService {
       }
     }
     if (!paired) {
+      if (relayAuthError) throw relayAuthError;
       throw new Error(`Could not pair with the ADE machine. ${failures.join("; ")}`);
     }
     paired = this.pairedStore.save({
@@ -311,6 +444,7 @@ export class RemoteConnectionService {
         hostIdentity: paired.hostIdentity.deviceId,
         machineKey: paired.machineKey ?? null,
       },
+      accountOwnerUserId: null,
       sshUser: null,
       port: null,
       sshKeyPath: null,
@@ -413,8 +547,8 @@ export class RemoteConnectionService {
   }
 
   snapshot(): RemoteRuntimeConnectionSnapshot {
-    const connections = this.registry
-      .list()
+    const targets = this.registry.list();
+    const connections = targets
       .map((target): RemoteRuntimeConnectionStatus => {
         const status = this.statusById.get(target.id) ?? {};
         return {
@@ -476,6 +610,7 @@ export class RemoteConnectionService {
     options: RemoteConnectionConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
     const target = this.requireTarget(targetId);
+    await this.assertAccountOwnershipAuthorized(target);
     this.pairedFallbackSshTrustByTargetId.delete(target.id);
     const explicit = options.explicit === true;
     if (explicit) {
@@ -502,11 +637,17 @@ export class RemoteConnectionService {
           "Remote target was disconnected before ADE finished connecting.",
         );
       }
+      // A first successful connection enables future reconnects. Once the
+      // user disables that preference, Connect must not silently restore it.
+      const shouldPersistAutoConnect =
+        target.lastConnectedAt == null ||
+        (explicit && result.target.manuallyDisconnectedAt != null);
       const connectedResult =
-        explicit && result.target.manuallyDisconnectedAt != null
+        shouldPersistAutoConnect
           ? {
               ...result,
               target: this.registry.update(result.target.id, {
+                autoConnect: true,
                 manuallyDisconnectedAt: null,
               }),
             }
@@ -554,7 +695,10 @@ export class RemoteConnectionService {
       this.manuallyDisconnectedTargetIds.add(targetId);
       if (this.registry.get(targetId)) {
         try {
-          this.registry.update(targetId, { manuallyDisconnectedAt: Date.now() });
+          this.registry.update(targetId, {
+            autoConnect: false,
+            manuallyDisconnectedAt: Date.now(),
+          });
         } catch (error) {
           persistenceError = error;
         }
@@ -575,7 +719,7 @@ export class RemoteConnectionService {
   }
 
   async projects(targetId: string): Promise<RemoteRuntimeProjectRecord[]> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const value = await this.pool.projectsForTarget(target);
       const projects = coerceProjects(value);
@@ -596,7 +740,7 @@ export class RemoteConnectionService {
     targetId: string,
     rootPath: string,
   ): Promise<RemoteRuntimeProjectRecord> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const value = await this.pool.addProjectForTarget(target, rootPath);
       const project = coerceConnectionProject(value);
@@ -613,7 +757,7 @@ export class RemoteConnectionService {
     targetId: string,
     request: RemoteRuntimePortForwardRequest,
   ): Promise<RemoteRuntimePortForward> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     await this.connect(target.id);
     try {
       return await this.pool.ensureLocalPortForward(target.id, request);
@@ -725,7 +869,7 @@ export class RemoteConnectionService {
     projectId: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const result = await this.pool.callActionForTarget(
         target,
@@ -750,7 +894,7 @@ export class RemoteConnectionService {
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
   ): Promise<RemoteRuntimeStreamEventsResult> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const result = await this.pool.streamEventsForTarget(
         target,
@@ -778,7 +922,7 @@ export class RemoteConnectionService {
     onEnded?: () => void,
     onSubscribed?: (result: RemoteRuntimeStreamEventsResult) => void,
   ): Promise<() => void> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const cleanup = await this.pool.subscribeEventsForTarget(
         target,
@@ -805,7 +949,7 @@ export class RemoteConnectionService {
     targetId: string,
     projectId: string,
   ): Promise<AdeActionRegistryEntry[]> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const registry = await this.pool.listActionRegistryForTarget(
         target,
@@ -830,7 +974,7 @@ export class RemoteConnectionService {
     method: string,
     params: Record<string, unknown>,
   ): Promise<unknown> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     try {
       const result = await this.pool.callSyncForTarget(
         target,
@@ -857,7 +1001,7 @@ export class RemoteConnectionService {
     method: string,
     params: Record<string, unknown> = {},
   ): Promise<T> {
-    const target = this.requireTargetForImplicitUse(targetId);
+    const target = await this.requireTargetForImplicitUse(targetId);
     return (await this.callMachine(target, method, params)) as T;
   }
 
@@ -872,6 +1016,7 @@ export class RemoteConnectionService {
   private async maintainSavedConnections(
     options: { pingTimeoutMs?: number } = {},
   ): Promise<void> {
+    await this.reconcileAuthorizedAccountOwnership();
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
@@ -922,6 +1067,7 @@ export class RemoteConnectionService {
     params: Record<string, unknown>,
     options: { retryOnConnectionError?: boolean } = {},
   ): Promise<unknown> {
+    await this.assertAccountOwnershipAuthorized(target);
     this.assertImplicitReconnectAllowed(target.id);
     try {
       const result = await this.pool.callMachineForTarget(
@@ -948,8 +1094,25 @@ export class RemoteConnectionService {
     return target;
   }
 
-  private requireTargetForImplicitUse(targetId: string): RemoteRuntimeTarget {
+  private async assertAccountOwnershipAuthorized(
+    target: RemoteRuntimeTarget,
+  ): Promise<void> {
+    const expectedOwnerUserId = target.accountOwnerUserId?.trim();
+    if (!expectedOwnerUserId || !this.options.getAuthorizedAccountOwnerId) return;
+    const currentOwnerUserId = await this.options.getAuthorizedAccountOwnerId()
+      .catch(() => null);
+    if (currentOwnerUserId?.trim() === expectedOwnerUserId) return;
+    this.reconcileAccountOwnership(currentOwnerUserId);
+    throw new PairedRuntimeRelayAuthRequiredError(
+      "Sign in with the same ADE account as this machine to connect.",
+    );
+  }
+
+  private async requireTargetForImplicitUse(
+    targetId: string,
+  ): Promise<RemoteRuntimeTarget> {
     const target = this.requireTarget(targetId);
+    await this.assertAccountOwnershipAuthorized(target);
     this.assertImplicitReconnectAllowed(target.id);
     return target;
   }

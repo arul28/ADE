@@ -5590,6 +5590,48 @@ describe("preload remote project binding", () => {
     expect(remoteRuntimeProjects).toEqual(["project-1"]);
   });
 
+  it("falls back to main IPC when a local isolated runtime has no sync service", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "Repo",
+    };
+    const status = { mode: "standalone", role: "brain" };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: { rootPath: "/repo", displayName: "Repo" }, binding };
+      }
+      if (channel === IPC.localRuntimeCallSync) {
+        throw new Error("Sync service is not available.");
+      }
+      if (channel === IPC.syncGetStatus) return status;
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.sync.getStatus()).resolves.toBe(status);
+    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallSync, {
+      rootPath: "/repo",
+      method: "sync.getStatus",
+      params: {},
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.syncGetStatus, undefined);
+  });
+
   it("blocks mutating sync calls while a remote project switch is in flight", async () => {
     let resolveOpen: (value: unknown) => void = () => {};
     const binding = {

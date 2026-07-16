@@ -138,7 +138,7 @@ describe("SyncDevicesSection", () => {
     installAdeMock(makeHostSnapshot());
     render(<SyncDevicesSection variant="phone" />);
 
-    expect(await screen.findByText("Pair a phone")).toBeTruthy();
+    expect(await screen.findByText("Connect a phone")).toBeTruthy();
     expect(screen.getByText("Phones")).toBeTruthy();
     expect(screen.queryByText("Web client")).toBeNull();
     expect(screen.queryByText("Web clients")).toBeNull();
@@ -175,7 +175,7 @@ describe("SyncDevicesSection", () => {
     installAdeMock(makeHostSnapshot());
     render(<SyncDevicesSection />);
 
-    expect(await screen.findByText("Pair a phone")).toBeTruthy();
+    expect(await screen.findByText("Connect a phone")).toBeTruthy();
     expect(screen.getByText("Web client")).toBeTruthy();
     expect(screen.getByText("Phones")).toBeTruthy();
     expect(screen.getByText("Web clients")).toBeTruthy();

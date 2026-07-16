@@ -93,12 +93,40 @@ A remote target stores a primary `hostname` plus an optional `routes` array (`Re
 9. Verify the uploaded runtime by running `<layout>/bin/ade --version` with the channel/arch/worker environment prefix; abort with `Uploaded ADE service version mismatch` if the reported version doesn't match.
 10. If bundled ADE agent skills are available locally, hash the directory and upload it to `<layout>/agent-skills` when `<layout>/agent-skills.sha256` is missing or stale. The remote CLI resolves that root from its own binary path and re-seeds ADE-managed skills into runtime-native home skill directories on launch.
 11. Start `ade rpc --stdio`, initialize the JSON-RPC client, normalize capabilities and version through `validateRemoteRuntimeInitializeResult`, and read `projects.list`. Version skew, channel skew, and missing capabilities become `compatibilityWarnings` rather than throws.
-12. If the bundled binary was absent and the validated initialize still fails, walk the alternate channel homes again with `ade rpc --stdio` against each candidate. The first home that completes initialize wins; failed candidates are collected so the final error reads `Remote ADE service could not start a compatible RPC runtime. Tried <home1>: <reason>; <home2>: <reason>.`. If a fallback wins, the chosen home is recorded as a compatibility warning.
-13. Update the target registry with architecture, runtime version (preferring the value the daemon reported through `initialize`), last-connected timestamp, and a refreshed `routes` array marking the successful route's `lastSucceededAt`.
+12. If the preferred runtime fails validated initialize, walk the alternate channel homes again with `ade rpc --stdio` against each candidate even when this connection just uploaded a packaged Beta binary. The first home that completes initialize and capability negotiation wins; failed candidates are collected with their launch, initialization, or capability-negotiation phase so the final error remains actionable. If a fallback wins, the chosen home and environment prefix are retained for every follow-up command and recorded as a compatibility warning.
+13. After SSH RPC and `projects.list` succeed, send a versioned device identity and DPoP public key to that selected runtime with `ade sync pair-device --json-stdin`. The request is bounded and never placed in argv. A valid response stores the paired secret and local DPoP private key, then upgrades the saved target to paired-first while retaining SSH as recovery. This step is best-effort for older compatible runtimes.
+14. Update the target registry with architecture, runtime version (preferring the value the daemon reported through `initialize`), last-connected timestamp, explicit `autoConnect: true`, and a refreshed `routes` array marking the successful route's `lastSucceededAt`.
 
 If no bundled runtime exists locally and no channel home on the remote can start a compatible RPC, bootstrap fails with an explicit install/build error rather than silently shipping the wrong version.
 
 Channel layout: `resolveRemoteRuntimeLayout` reads `ADE_PACKAGE_CHANNEL` for the preferred home; `resolveRemoteRuntimeLayoutCandidates` enumerates that preferred home plus the stable / alpha / beta layouts (deduped by `homeDirName`) for the fallback walk. Stable uploads to `~/.ade/`; alpha to `~/.ade-alpha/`; beta to `~/.ade-beta/`. Runtime binaries, native deps, PTY worker artifacts, and bundled ADE agent skills all stay inside the selected home. Channel builds also pass `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` in the environment prefix so the channel binary doesn't fight a stable login service for the socket.
+
+### One-time machine trust reset
+
+On the first packaged launch carrying this migration,
+`machineTrustResetMigration.ts` removes only the channel-local saved target and
+pairing grant files: `remote-machines.json`, `desktop-paired-machines.json`,
+`sync-paired-devices.json`, and
+`sync-paired-devices.json.runtime-host-grants`. It deliberately preserves the
+account credential store, stable machine/device identity, sync PIN, bootstrap
+token, project registry/state, and SSH files. The migration first writes
+`.machine-trust-reset-v1.pending`; `main.ts` forces the background runtime
+service to restart and atomically renames that marker to
+`.machine-trust-reset-v1` only after installation/restart reports success. If
+ADE exits before confirmation, the next launch retries the restart without
+clearing any new pairings a second time. Source/dev launches never run it.
+
+SSH bootstrap and direct LAN/tailnet paired reconnect do not read account
+status or an account token. Before a relay candidate is opened, the desktop
+requests a current Clerk access token in memory and adds it only to that paired
+hello. The host verifies the token subject against its currently signed-in
+owner; missing, expired, or different-user proof returns
+`relay_account_required`. The token is never written to the remote target or
+paired credential store. A changed SSH host key must pass the explicit trust
+flow again. A paired
+`hello_ok` whose authoritative host device identity differs from the stored
+identity fails closed and requires re-pairing rather than rewriting the saved
+identity.
 
 ## Local-vs-remote work warning
 
@@ -108,7 +136,18 @@ Before opening a remote project, `remoteRuntimeCheckLocalWork` compares the remo
 
 The sync WebSocket service is owned by the `ade serve` runtime in normal desktop operation. `ProjectScopeRegistry.ensureSyncHost` selects the most-recently-opened registered project as the active sync project and refreshes that selection when projects are added or removed.
 
-Desktop sync Settings IPC first talks to the active runtime for status, discovery, device registry, and PIN operations. Local project windows use `LocalRuntimeConnectionPool`; remote project windows use `RemoteConnectionPool`. The old desktop-host path is guarded by `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics and migration debugging.
+Desktop Connections controls first talk to the active runtime for status,
+discovery, device registry, and PIN operations. Local project windows use
+`LocalRuntimeConnectionPool`; remote project windows use
+`RemoteConnectionPool`. The old desktop-host path is guarded by
+`ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics and migration debugging.
+
+When a packaged desktop is temporarily attached to an isolated local
+project-capable runtime whose sync service is disabled, preload recognizes only
+the specific `Sync service is not available` / `Register a project first`
+errors and retries machine-level Mobile/Web status and controls through the
+main sync IPC. Remote-bound errors never take this local fallback, so a failed
+remote sync call cannot accidentally operate on the desktop's machine brain.
 
 The sync command registry labels descriptors as `runtime` or `project` scope. Project-bound runtimes reject project-scoped commands that arrive without a matching `projectId`, while runtime-scoped commands operate on the ADE runtime as a whole. This keeps mobile/controller commands explicit in the multi-project runtime.
 
@@ -122,7 +161,9 @@ desktop runtime-host peers: the host only opens the RPC channel / port-forward
 for a peer that authenticated with `kind: "paired"` **and** whose authoritative
 stored pairing record has `runtimeHostGranted: true`. The Share Machine link
 carries a short-lived, one-time server grant that is consumed only after the
-PIN succeeds. The device type claimed in `hello.peer` is metadata, not
+PIN succeeds. Nearby desktop pairing over a direct LAN/tailnet socket may set
+the same stored capability after a correct PIN; the host never applies that
+exception to a Relay socket. The device type claimed in `hello.peer` is metadata, not
 authorization: a paired phone or browser that reconnects while claiming
 `deviceType: "desktop"` still stays on the mobile
 command allowlist. If it sends `rpc_open`/`fwd_open`, the host closes the channel
@@ -143,6 +184,31 @@ stolen paired secret. It does not authenticate the host to the client or prevent
 a relay operator from impersonating the host. Treat relay routes as
 trusted-operator paths, not confidential channels.
 
+Relay authorization is enforced again at the host, not only in route selection:
+every `kind: "paired"` hello arriving through the process-private
+`relay-bridge` origin must include a short-lived Clerk access token whose `sub`
+matches the host's current account. Direct LAN/tailnet paired hellos do not carry
+or require this proof. First-time `pairing_request` messages over the relay use
+the same proof before the host checks the PIN, so account failures do not enter
+the PIN brute-force budget. Legacy `kind: "bootstrap"` hello messages are never
+accepted over `relay-bridge`. The relay proof is intentionally not persisted.
+The host also omits its relay candidate and stops the tunnel control connection
+while signed out, then resumes it when a current account session returns. Because
+the current tunnel is not end-to-end encrypted, the trusted relay operator can
+also read this short-lived bearer; eliminating that exposure requires an
+infrastructure-level opaque relay attestation or end-to-end encrypted tunnel.
+
+Account-created host pairing records persist their Clerk owner id. The host
+periodically refreshes its own account token as a short lease: sign-out, account
+switch, expiry, or refresh failure removes records owned by the old account and
+closes both those peers and every active Relay peer. PIN and local SSH pairing
+write explicit local provenance, so they can declassify a same-device account
+record and survive account changes. Older records without provenance are
+treated as local for backward compatibility. A verified same-owner account
+hello with the already-pinned DPoP key may rotate and return a fresh paired
+secret; this makes credential delivery retryable when the previous `hello_ok`
+was lost without allowing a different account or key to take over the record.
+
 ### ADE Code saved-target resolution and launch budget
 
 The desktop Machines panel and `ade code remote` share
@@ -150,9 +216,11 @@ The desktop Machines panel and `ade code remote` share
 directory machine asks `AccountMachineDirectoryService` to perform account
 adoption over the exact allowlisted WSS relay, persist the resulting paired
 secret and DPoP reference, and save a `transport: "paired"` target with no SSH
-fallback routes. The account access token is used for directory lookup and
-adoption; subsequent LAN, tailnet, and relay connections authenticate from the
-paired store.
+fallback routes. Subsequent LAN/tailnet connections authenticate from the
+paired store. Relay reconnect adds the ephemeral same-account proof described
+above. Manual pairings remain account-independent locally; signing both machines
+into the same account makes relay eligible without converting that manual record
+to account-owned provenance.
 
 Older desktop builds could save that account row as a credentialless routed SSH
 target even though the desktop's own SSH stack happened to find a working local
@@ -162,7 +230,8 @@ all saved hosts belonging to one account-directory machine. It adopts that
 machine into the paired store and removes the obsolete record. An unavailable
 directory, offline machine, or pairing failure is a terminal paired-transport
 error for that shape. ADE never downgrades an account-created target to SSH;
-explicit SSH credentials remain the opt-in boundary for a true SSH target.
+only a route with `source: "manual"` is eligible for SSH fallback; Bonjour and
+Tailscale discovery routes are never inferred as SSH configuration.
 
 `remoteLauncher.ts` gives target resolution, account adoption, paired route
 dials, and every SSH route × channel-home × absolute/PATH binary probe one shared
@@ -204,6 +273,7 @@ Preload also guards two classes of API against remote bindings:
 
 - `withEntryForTarget` is the single funnel for all RPCs. On a recognized connection error, it disposes the entry, reconnects (via the latest `registry.get(targetId)` so an updated `routes` array applies), and either replays the operation or reports the connection error to the caller. A method timeout is not a connection error: it propagates to the original caller without reconnecting or replaying any operation. `callProjectActionForTarget` only enables automatic replay after a genuine connection failure for safe read-only actions: prefixes `diagnosticsGet|get|list|oauthGet|oauthList|portGet|portList|proxyGet|read|search` plus a small allowlist (`chat.codexFuzzyFileSearch`, `chat.fileSearch`, `chat.modelCatalog`, `file.quickOpen`, `terminal.activeForChat`, `terminal.preview`). `callProjectSyncForTarget` uses the same posture for sync: status/discovery/device/PIN reads, lane-presence announcements, and model-picker reads are retryable after a connection failure; mutating action and sync calls are never replayed automatically, because ADE cannot know whether the remote side effect completed before the connection was interrupted.
 - Connection startup failures are backoff-throttled per target so repeated implicit reconnect attempts do not saturate SSH. Explicit Connect bypasses that backoff, clears manual disconnect state, and resets the automatic reconnect failure budget. After 10 implicit connection failures, `RemoteConnectionService` pauses automatic reconnect and reports that the user must press Connect.
+- Reconnection intent is persisted as `target.autoConnect`, independent of account state. A successful explicit or implicit connection sets it to `true`; Disconnect sets it to `false`; an explicit failure preserves the previous value. Launch/wake probing considers only targets where it is enabled (with a one-time legacy coercion from old last-connected/manual-disconnect fields).
 - `ensureLocalPortForward` owns local TCP listeners keyed by `(targetId, remoteHost, remotePort)`. Each listener uses `ssh.forwardOut` into the active SSH session and is closed when the target disconnects.
 - `callMethodForTarget` is the runtime-scoped JSON-RPC entry point used by the command-palette project picker and clone flows. Before forwarding to the SSH transport it runs `assertMachineProjectCapability(entry, method)`, which checks the connection's `capabilities.machineProjects` map for the `projects.*` family. A missing capability fails the call with a self-describing message that names the action (e.g. `creating remote projects`) so the renderer can guide the user to update the remote runtime.
 - A small set of optional remote actions has compatibility fallbacks. Missing `file.refreshGitDecorations` returns an empty decoration set and marks `statusHints.optionalActionMissing`; missing `pr.listQueueStates` returns an empty queue-state list. The first not-callable response is memoized per target/project/action so old remote runtimes do not get hammered by unsupported optional calls.

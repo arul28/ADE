@@ -331,13 +331,23 @@ export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesV
   }), [runAction]);
 
   if (loading) {
-    return <div style={helperTextStyle}>Loading sync status...</div>;
+    return <div style={helperTextStyle}>Getting connection details…</div>;
   }
   if (error && !status) {
-    return <div style={{ ...helperTextStyle, color: COLORS.danger }}>Failed to load sync settings: {error}</div>;
+    return (
+      <div style={{ display: "grid", gap: 8 }}>
+        <div style={{ ...helperTextStyle, color: COLORS.danger }}>
+          ADE couldn't load connection details. Make sure the ADE background service is running, then try again.
+        </div>
+        <details style={detailBlockStyle}>
+          <summary style={detailSummaryStyle}>Technical details</summary>
+          <div style={{ ...helperTextStyle, marginTop: 8, overflowWrap: "anywhere" }}>{error}</div>
+        </details>
+      </div>
+    );
   }
   if (!status) {
-    return <div style={helperTextStyle}>Phone sync is unavailable until ADE has a project to serve.</div>;
+    return <div style={helperTextStyle}>Open a project in ADE before connecting another device.</div>;
   }
 
   const peerType: "phone" | "browser" | null =
@@ -413,22 +423,40 @@ export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesV
           cloudRelay={cloudRelay}
           busy={busy}
           onToggle={onToggleCloudRelay}
-          description="Keeps web clients connected when no LAN or Tailscale route works. On by default; turn off to never route through the relay."
+          description="ADE Relay uses your ADE account so this browser can reach your Mac away from this Wi-Fi."
         />
       ) : null}
 
       {showPhone && showTailnetDiscovery ? (
-        <TailnetDiscoveryPanel
-          status={status.tailnetDiscovery}
-          hasTailscaleAddress={hasTailscaleAddress}
-          busy={busy}
-          isLocalHost={isLocalHost}
-          onRetry={handleRetryDiscovery}
-        />
+        <details style={detailBlockStyle}>
+          <summary style={detailSummaryStyle}>
+            <span>Tailscale (optional)</span>
+            <span style={helperTextStyle}>Find your Mac outside this Wi-Fi</span>
+          </summary>
+          <div style={{ marginTop: 12 }}>
+            <TailnetDiscoveryPanel
+              status={status.tailnetDiscovery}
+              hasTailscaleAddress={hasTailscaleAddress}
+              busy={busy}
+              isLocalHost={isLocalHost}
+              onRetry={handleRetryDiscovery}
+            />
+          </div>
+        </details>
       ) : null}
 
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
-      {error ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{error}</div> : null}
+      {error ? (
+        <div style={{ display: "grid", gap: 8 }}>
+          <div style={{ ...helperTextStyle, color: COLORS.danger }}>
+            That did not work. Check that ADE is running, then try again.
+          </div>
+          <details style={detailBlockStyle}>
+            <summary style={detailSummaryStyle}>Technical details</summary>
+            <div style={{ ...helperTextStyle, marginTop: 8, overflowWrap: "anywhere" }}>{error}</div>
+          </details>
+        </div>
+      ) : null}
 
       {showPhone ? (
         <details style={detailBlockStyle}>
@@ -489,7 +517,7 @@ function CloudRelayRow({
   cloudRelay,
   busy,
   onToggle,
-  description = "Keeps your phone connected when no LAN or Tailscale route works. On by default; turn off to never route through the relay.",
+  description = "ADE Relay uses your ADE account so your phone can reach this Mac away from this Wi-Fi. Tailscale also works without an account.",
 }: {
   cloudRelay: SyncCloudRelayStatus;
   busy: boolean;
@@ -500,7 +528,7 @@ function CloudRelayRow({
     <div style={{ ...panelStyle, gap: 10 }}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center" }}>
         <div style={{ display: "grid", gap: 4 }}>
-          <div style={LABEL_STYLE}>ADE relay</div>
+          <div style={LABEL_STYLE}>Connect from anywhere</div>
           <div style={helperTextStyle}>
             {description}
           </div>
@@ -803,7 +831,7 @@ function PairPhoneCard({
   return (
     <div style={cardStyle({ display: "grid", gap: 16 })}>
       <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
-        Pair a phone
+        Connect a phone
       </div>
 
       {hasAddresses ? (
@@ -819,7 +847,7 @@ function PairPhoneCard({
           <PairQrPanel connectInfo={connectInfo as SyncPairingConnectInfo} />
           <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
             <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
-              Scan with the ADE app to pair.
+              In ADE Mobile, scan this QR code.
             </div>
             {pinSection}
           </div>
@@ -1020,9 +1048,9 @@ function WebClientCard({
   const pinHidden = pinConfigured && !pin;
   // The hidden-PIN case is handled inline by the pairing code block below, so
   // the card-level helper stays terse and only covers the other states.
-  let pairingHelpText = "Open the link, enter the pairing code in the browser, and the browser pairs to this machine.";
+  let pairingHelpText = "Open the link in your browser, then enter the six-digit code.";
   if (pinMissing) {
-    pairingHelpText = "No PIN set. Browsers cannot pair. Set a PIN in the phone pairing section.";
+    pairingHelpText = "Create a six-digit code before connecting a browser.";
   } else if (pinHidden) {
     pairingHelpText = "";
   }
@@ -1063,7 +1091,7 @@ function WebClientCard({
           <WebPairQrPanel connectInfo={connectInfo as SyncPairingConnectInfo} />
           <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
             <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
-              Scan the QR, or open the pairing link in a browser to pair.
+              Scan the QR code, or open the link in the browser you want to connect.
             </div>
             <WebPairLink connectInfo={connectInfo as SyncPairingConnectInfo} />
             <WebPairCode pin={pin} pinConfigured={pinConfigured} busy={busy} onSetPin={onSetPin} />
@@ -1363,10 +1391,10 @@ function ViewerPairingNotice() {
   return (
     <div style={cardStyle({ display: "grid", gap: 10 })}>
       <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
-        Phone pairing lives on the host runtime
+        Set up your phone on the main Mac
       </div>
       <div style={helperTextStyle}>
-        Open Sync settings on the machine running the host runtime to set the phone PIN and copy a machine address.
+        Open Connections on the Mac that currently hosts your ADE projects, then choose Mobile.
       </div>
     </div>
   );

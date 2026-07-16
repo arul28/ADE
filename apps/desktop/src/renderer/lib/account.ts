@@ -219,6 +219,10 @@ export function accountAvatarImage(
   status: AdeAccountStatus,
   githubLogin: string | null | undefined,
 ): string | null {
+  // Repository credentials and ADE account identity are separate trust
+  // boundaries. A connected GitHub CLI session must never make a signed-out
+  // ADE surface look authenticated.
+  if (!status.signedIn) return null;
   if (status.imageUrl) return status.imageUrl;
   if (githubLogin) {
     return `https://github.com/${encodeURIComponent(githubLogin)}.png?size=64`;

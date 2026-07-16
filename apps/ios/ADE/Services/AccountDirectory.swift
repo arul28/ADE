@@ -87,7 +87,8 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   /// preferred **direct** route only — a LAN or Tailscale endpoint's
   /// `host`+`port` (or the host component of a direct websocket URL). A relay
   /// route is a cloud websocket, not a dialable host, so it never yields a
-  /// direct target: a relay-only machine returns `nil` and the UI falls back to
+  /// direct target: a machine advertised only through the account's internet
+  /// route returns `nil` and the UI falls back to
   /// the pairing/discovery flow (see `ConnectionSettingsView.connectToAccountMachine`).
   var directConnectTarget: (host: String, port: Int)? {
     guard let endpoint = reachableEndpoints.first(where: { $0.kind == .lan })

@@ -21,6 +21,7 @@ import type {
   AccountLoginStartResult,
 } from "../../../../../ade-cli/src/services/account/accountAuthService";
 import { createProjectSecretService } from "../secrets/projectSecretService";
+import type { AccountMachineReconciliationResult } from "../remoteRuntime/remoteConnectionService";
 import type {
   AdeAccountMachinePairResult,
   AdeAccountMachinesResult,
@@ -36,6 +37,9 @@ import {
 type AccountBridgeOptions = {
   /** Resolves the active project root so CLERK_* project secrets win config. */
   getProjectRoot: () => string | null;
+  reconcileAccountOwnership?: (
+    currentOwnerUserId: string | null,
+  ) => AccountMachineReconciliationResult;
   logger?: {
     info(message: string, meta?: Record<string, unknown>): void;
     warn(message: string, meta?: Record<string, unknown>): void;
@@ -150,6 +154,19 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     directoryBaseUrl: () => resolveDirectoryBaseUrl(options.getProjectRoot()),
     deviceName: () => `ADE Desktop on ${os.hostname()}`,
   });
+  const reconcileLocalMachines = (currentOwnerUserId: string | null): void => {
+    const result = options.reconcileAccountOwnership?.(currentOwnerUserId);
+    if (
+      result
+      && (result.removedTargetIds.length > 0
+        || result.removedCredentialHostIds.length > 0)
+    ) {
+      options.logger?.info("account.local_machines_removed", {
+        targetCount: result.removedTargetIds.length,
+        credentialCount: result.removedCredentialHostIds.length,
+      });
+    }
+  };
 
   return {
     status: () => toAccountStatus(service().getStatus(), configured()),
@@ -161,14 +178,28 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       return service().startLogin();
     },
 
-    pollLogin: (sessionId: string) => service().pollLogin(sessionId),
+    pollLogin: async (sessionId: string) => {
+      const result = await service().pollLogin(sessionId);
+      if (result.status === "signed_in") {
+        reconcileLocalMachines(
+          result.authStatus.signedIn ? result.authStatus.userId : null,
+        );
+      }
+      return result;
+    },
 
     cancelLogin: (sessionId: string) => service().cancelLogin(sessionId),
 
-    signOut: () => toAccountStatus(service().signOut(), configured()),
+    signOut: () => {
+      const accountService = service();
+      const status = accountService.signOut();
+      reconcileLocalMachines(null);
+      return toAccountStatus(status, configured());
+    },
 
     listMachines: async (): Promise<AdeAccountMachinesResult> => {
       const result = await directoryService().listMachines();
+      if (result.state === "auth_expired") reconcileLocalMachines(null);
       if (result.state === "unavailable") {
         options.logger?.warn("account.machines_fetch_failed", { state: result.state });
       }

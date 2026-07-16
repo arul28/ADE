@@ -109,7 +109,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
       <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px 6px", gap: 10 }}>
         <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase" }}>
-          Account machines
+          Your Macs
         </span>
         {account.state === "signed_in" || account.state === "directory_unavailable" ? (
           <button type="button" onClick={onSignOut} style={{ border: "none", background: "transparent", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 10, cursor: "pointer" }}>
@@ -128,7 +128,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
           </div>
           {account.machines.length === 0 ? (
             <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>
-              No account machines
+              No Macs found
             </div>
           ) : account.machines.map((machine) => {
             const connectionState = accountMachineConnectionState(machine, account.relayBaseUrls);
@@ -140,7 +140,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
                 type="button"
                 disabled={!available || connecting}
                 onClick={() => onSelect(machine)}
-                title={connectionState === "offline" ? "Offline" : !available ? "No secure relay route" : machine.machineKey}
+                title={connectionState === "offline" ? "This Mac is offline" : !available ? "Open ADE on this Mac to finish setup" : undefined}
                 style={{
                   ...menuItemStyle,
                   height: 36,
@@ -150,14 +150,14 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
               >
                 <span style={{ display: "grid", minWidth: 0 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: COLORS.textSecondary }}>
-                    {machine.name ?? machine.machineKey}
+                    {machine.name ?? "Unnamed Mac"}
                   </span>
                   <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>
-                    {machine.lastSeenAt == null ? "last seen unknown" : new Date(machine.lastSeenAt).toLocaleString()}
+                    {machine.lastSeenAt == null ? "Last seen unknown" : `Last seen ${new Date(machine.lastSeenAt).toLocaleString()}`}
                   </span>
                 </span>
                 <span style={{ color: available ? COLORS.success : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>
-                  {connecting ? "connecting" : connectionState}
+                  {connecting ? "Connecting…" : available ? "Ready" : connectionState === "offline" ? "Offline" : "Setup needed"}
                 </span>
               </button>
             );
@@ -165,13 +165,13 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
         </div>
       ) : account.state === "directory_unavailable" ? (
         <button type="button" style={menuItemStyle} onClick={onRetry}>
-          <span style={{ color: COLORS.textMuted }}>Directory unavailable</span>
+          <span style={{ color: COLORS.textMuted }}>Couldn't load your Macs</span>
           <span style={{ color: COLORS.textSecondary }}>Retry</span>
         </button>
       ) : account.state === "auth_expired" ? (
         <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>Account session expired</div>
       ) : account.state === "unconfigured" ? (
-        <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>Account sign-in not configured</div>
+        <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>Sign-in is unavailable in this build</div>
       ) : account.state === "loading" ? (
         <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>Loading account machines…</div>
       ) : (

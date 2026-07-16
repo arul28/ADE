@@ -29,6 +29,16 @@ export class PairedRuntimeCompatibilityError extends Error {
   }
 }
 
+export class PairedRuntimeRelayAuthRequiredError extends Error {
+  readonly code = "PAIRED_RUNTIME_RELAY_AUTH_REQUIRED" as const;
+
+  constructor(message = "Sign in to ADE to connect through ADE Relay.", cause?: unknown) {
+    super(message);
+    this.name = "PairedRuntimeRelayAuthRequiredError";
+    assignCause(this, cause);
+  }
+}
+
 export class PairedRuntimeSshTrustRequiredError extends Error {
   readonly code = "PAIRED_RUNTIME_SSH_TRUST_REQUIRED" as const;
 

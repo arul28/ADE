@@ -54,6 +54,16 @@ import {
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
+import type { AccountAuthService } from "../account/accountAuthService";
+import {
+  getSharedAccountAttestationConfig,
+  getSharedAccountAuthService,
+  type AccountAttestationConfig,
+} from "../account/sharedAccountAuthService";
+import {
+  verifyClerkAccountAttestation,
+  type VerifiedAccountAttestation,
+} from "../account/accountAttestationVerifier";
 
 type BrainProjectActionsSyncHandlerArgs = {
   logger: Logger;
@@ -70,6 +80,9 @@ type BrainProjectActionsSyncHandlerArgs = {
   authTimeoutMs?: number;
   /** Mirrors SyncHostServiceArgs.getCloudRelayWssUrl for the fallback hello_ok. */
   getCloudRelayWssUrl?: () => string | null;
+  accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
+  getAccountAttestationConfig?: () => AccountAttestationConfig;
+  verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
   personalChatScope?: PersonalChatScopeContract;
 };
 
@@ -81,6 +94,9 @@ type BrainPeerState = {
   metadata: SyncPeerMetadata | null;
   personalChatSubscriptions: Map<string, { transcriptPath: string; offset: number }>;
   pairingRecord: SyncPairingRecord | null;
+  relayAccountOwnerUserId: string | null;
+  relayAccountExpiresAtMs: number | null;
+  relayAccountExpiryTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const WS_OPEN = 1;
@@ -207,6 +223,10 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
     auth?.kind === "paired"
     && optionalString(auth.deviceId)
     && optionalString(auth.secret)
+    && (
+      auth.relayAccountToken == null
+      || Boolean(optionalString(auth.relayAccountToken)?.length && auth.relayAccountToken.length <= 16_384)
+    )
   ) {
     return {
       peer,
@@ -215,6 +235,9 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
         deviceId: auth.deviceId,
         secret: auth.secret,
         ...(auth.dpop ? { dpop: auth.dpop } : {}),
+        ...(optionalString(auth.relayAccountToken)
+          ? { relayAccountToken: optionalString(auth.relayAccountToken)! }
+          : {}),
       },
     };
   }
@@ -230,10 +253,15 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
   const peer = normalizePeerMetadata(record.peer);
   const dpopPublicKey = optionalString(record.dpopPublicKey);
   const runtimeHostGrant = optionalString(record.runtimeHostGrant);
+  const relayAccountToken = optionalString(record.relayAccountToken);
+  if (record.relayAccountToken != null && (!relayAccountToken || relayAccountToken.length > 16_384)) {
+    return null;
+  }
   return code && peer ? {
     code,
     peer,
     ...(dpopPublicKey ? { dpopPublicKey } : {}),
+    ...(relayAccountToken ? { relayAccountToken } : {}),
     ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
   } : null;
 }
@@ -422,6 +450,49 @@ export function createBrainProjectActionsSyncHandler(
     pinStore,
   });
   const dpopNonceCache = createSyncDpopNonceCache();
+  const accountSecretsDir = path.dirname(args.pinPath);
+  const accountAuthService = args.accountAuthService ?? getSharedAccountAuthService({
+    secretsDir: accountSecretsDir,
+    projectRoots: () => [],
+    logger: args.logger,
+  });
+  const getAccountAttestationConfig = args.getAccountAttestationConfig ?? (() =>
+    getSharedAccountAttestationConfig({ secretsDir: accountSecretsDir }));
+  const verifyAccountAttestation = args.verifyAccountAttestation
+    ?? verifyClerkAccountAttestation;
+  const getAccountLeaseUserId = async (): Promise<string | null> => {
+    const status = accountAuthService.getStatus();
+    const ownerUserId = status.signedIn ? status.userId?.trim() || null : null;
+    if (!ownerUserId) return null;
+    try {
+      const hostToken = (await accountAuthService.getAccessToken()).trim();
+      const refreshedStatus = accountAuthService.getStatus();
+      if (!hostToken || !refreshedStatus.signedIn || refreshedStatus.userId?.trim() !== ownerUserId) {
+        pairingStore.revokeAccountOwnedExcept(null);
+        return null;
+      }
+      return ownerUserId;
+    } catch {
+      pairingStore.revokeAccountOwnedExcept(null);
+      return null;
+    }
+  };
+  const verifyRelayAccountProof = async (
+    token: string | null | undefined,
+  ): Promise<VerifiedAccountAttestation | null> => {
+    const ownerUserId = await getAccountLeaseUserId();
+    const relayAccountToken = token?.trim() ?? "";
+    if (!ownerUserId || !relayAccountToken) return null;
+    try {
+      return await verifyAccountAttestation({
+        token: relayAccountToken,
+        expectedUserId: ownerUserId,
+        config: getAccountAttestationConfig(),
+      });
+    } catch {
+      return null;
+    }
+  };
   // Same machine-level security posture file the project sync host reads, so
   // `requireDpop` binds on this ingress path too — the brain is the default
   // sync host and must not be a softer entry point than the project host.
@@ -754,7 +825,7 @@ export function createBrainProjectActionsSyncHandler(
     }
   };
 
-  return ({ ws, remoteAddress }) => {
+  return ({ ws, remoteAddress, transportOrigin }) => {
     const peer: BrainPeerState = {
       ws,
       authenticated: false,
@@ -763,12 +834,62 @@ export function createBrainProjectActionsSyncHandler(
       metadata: null,
       personalChatSubscriptions: new Map(),
       pairingRecord: null,
+      relayAccountOwnerUserId: null,
+      relayAccountExpiresAtMs: null,
+      relayAccountExpiryTimer: null,
+    };
+    const clearRelayAccountExpiry = (): void => {
+      if (peer.relayAccountExpiryTimer) clearTimeout(peer.relayAccountExpiryTimer);
+      peer.relayAccountExpiryTimer = null;
+    };
+    const armRelayAccountExpiry = (): void => {
+      clearRelayAccountExpiry();
+      const expiresAtMs = peer.relayAccountExpiresAtMs;
+      if (expiresAtMs == null || transportOrigin !== "relay-bridge") return;
+      const delayMs = Math.max(0, Math.min(2_147_483_647, expiresAtMs - Date.now()));
+      peer.relayAccountExpiryTimer = setTimeout(() => {
+        peer.relayAccountExpiryTimer = null;
+        if (Date.now() < expiresAtMs) {
+          armRelayAccountExpiry();
+          return;
+        }
+        peer.authenticated = false;
+        peer.metadata = null;
+        peer.authKind = null;
+        peer.pairingRecord = null;
+        peer.relayAccountOwnerUserId = null;
+        try {
+          peer.ws.close(4003, "ADE Relay account proof expired");
+        } catch {
+          // ignore close failures
+        }
+      }, delayMs);
+      peer.relayAccountExpiryTimer.unref?.();
     };
     let personalChatPumpRunning = false;
     const personalChatPump = setInterval(() => {
       if (!peer.authenticated || peer.ws.readyState !== WS_OPEN || personalChatPumpRunning) return;
       personalChatPumpRunning = true;
       void (async () => {
+        const expectedOwner = optionalString(peer.pairingRecord?.accountOwnerUserId)
+          ?? peer.relayAccountOwnerUserId;
+        if (expectedOwner) {
+          const currentOwner = await getAccountLeaseUserId();
+          if (currentOwner !== expectedOwner) {
+            pairingStore.revokeAccountOwnedExcept(currentOwner);
+            peer.authenticated = false;
+            peer.metadata = null;
+            peer.authKind = null;
+            peer.pairingRecord = null;
+            peer.relayAccountOwnerUserId = null;
+            try {
+              peer.ws.close(4003, "ADE account session changed");
+            } catch {
+              // ignore close failures
+            }
+            return;
+          }
+        }
         for (const [sessionId, subscription] of peer.personalChatSubscriptions) {
           const next = await readPersonalChatEventsSince(subscription.transcriptPath, subscription.offset);
           for (const event of next.events) send(peer.ws, "chat_event", event);
@@ -820,6 +941,24 @@ export function createBrainProjectActionsSyncHandler(
               }, envelope.requestId);
               try {
                 ws.close(4003, "Pairing failed");
+              } catch {
+                // ignore close failures
+              }
+              return;
+            }
+            if (
+              transportOrigin === "relay-bridge"
+              && !await verifyRelayAccountProof(payload.relayAccountToken)
+            ) {
+              send(ws, "pairing_result", {
+                ok: false,
+                error: {
+                  code: "relay_account_required",
+                  message: "Sign in with the same ADE account on both machines.",
+                },
+              }, envelope.requestId);
+              try {
+                ws.close(4003, "Account sign-in required");
               } catch {
                 // ignore close failures
               }
@@ -900,12 +1039,34 @@ export function createBrainProjectActionsSyncHandler(
           }
           const auth = hello.auth;
           let authenticatedPairingRecord: SyncPairingRecord | null = null;
-          const authFailed = (() => {
+          let relayAccountOwnerUserId: string | null = null;
+          let relayAccountExpiresAtMs: number | null = null;
+          const authFailure = {
+            code: "auth_failed" as "auth_failed" | "relay_account_required",
+          };
+          const authFailed = await (async () => {
             if (auth?.kind === "paired") {
               if (auth.deviceId !== hello.peer.deviceId) return true;
+              if (transportOrigin === "relay-bridge") {
+                const attestation = await verifyRelayAccountProof(auth.relayAccountToken);
+                if (!attestation) {
+                  authFailure.code = "relay_account_required";
+                  return true;
+                }
+                relayAccountOwnerUserId = attestation.userId;
+                relayAccountExpiresAtMs = attestation.expiresAtMs;
+              }
               if (!pairingStore.authenticate(auth.deviceId, auth.secret)) return true;
               authenticatedPairingRecord = pairingStore.getPairingRecord(auth.deviceId);
               if (!authenticatedPairingRecord) return true;
+              const pairingOwner = optionalString(authenticatedPairingRecord.accountOwnerUserId);
+              if (pairingOwner) {
+                const currentOwner = await getAccountLeaseUserId();
+                if (currentOwner !== pairingOwner) {
+                  pairingStore.revokeAccountOwnedExcept(currentOwner);
+                  return true;
+                }
+              }
               const dpopFailure = evaluatePairedHelloDpop({
                 storedPublicKey: authenticatedPairingRecord.dpopPublicKey,
                 deviceId: auth.deviceId,
@@ -928,6 +1089,10 @@ export function createBrainProjectActionsSyncHandler(
             // brain handler must reject them rather than treating them as a
             // bootstrap-shaped hello.
             if (!auth || auth.kind !== "bootstrap" || !safeStringEquals(bootstrapToken, auth.token)) return true;
+            if (transportOrigin === "relay-bridge") {
+              authFailure.code = "relay_account_required";
+              return true;
+            }
             // DPoP-upgraded devices must not enter through the shared
             // bootstrap token — that would bypass the enclave key binding.
             if (pairingStore.getPairingRecord(hello.peer.deviceId)?.dpopPublicKey) return true;
@@ -947,8 +1112,10 @@ export function createBrainProjectActionsSyncHandler(
             // rejection they cannot attribute to the paired machine.
             const rejectingHost = brainMetadata();
             send(ws, "hello_error", {
-              code: "auth_failed",
-              message: "Sync authentication failed.",
+              code: authFailure.code,
+              message: authFailure.code === "relay_account_required"
+                ? "Sign in with the same ADE account on both machines."
+                : "Sync authentication failed.",
               host: {
                 deviceId: rejectingHost.deviceId,
                 name: rejectingHost.deviceName,
@@ -968,6 +1135,11 @@ export function createBrainProjectActionsSyncHandler(
           clearAuthTimeout();
           peer.metadata = hello.peer;
           peer.pairingRecord = auth?.kind === "paired" ? authenticatedPairingRecord : null;
+          peer.relayAccountOwnerUserId = transportOrigin === "relay-bridge"
+            ? relayAccountOwnerUserId
+            : null;
+          peer.relayAccountExpiresAtMs = relayAccountExpiresAtMs;
+          armRelayAccountExpiry();
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           const brain = brainMetadata();
           const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
@@ -985,7 +1157,9 @@ export function createBrainProjectActionsSyncHandler(
             remoteCommandDescriptors: personalDescriptors,
             localCommandDescriptors: [],
             compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
-            cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
+            cloudRelayWssUrl: accountAuthService.getStatus().signedIn
+              ? args.getCloudRelayWssUrl?.() ?? null
+              : null,
             // Advertise the runtime RPC channel + port-forward only to paired
             // desktop runtime-hosts (phones/browsers stay on the allowlist).
             runtimeChannelEnabled:
@@ -1010,6 +1184,7 @@ export function createBrainProjectActionsSyncHandler(
     });
     ws.on("close", () => {
       clearAuthTimeout();
+      clearRelayAccountExpiry();
       clearInterval(personalChatPump);
       peer.personalChatSubscriptions.clear();
       pairedChannelService.closePeer(ws, "Sync socket closed.", false);

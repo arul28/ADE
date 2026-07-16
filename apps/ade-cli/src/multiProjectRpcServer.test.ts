@@ -118,6 +118,75 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("reconciles account-owned client trust on sign-out and account switch", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const reconcileAccountOwnership = vi.fn();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+        reconcileAccountOwnership,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { role: "cto" } },
+      });
+
+      await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "account.call",
+        params: { action: "signOut", args: {} },
+      });
+      expect(reconcileAccountOwnership).toHaveBeenLastCalledWith(null);
+
+      (accountAuthService.pollLogin as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        status: "signed_in",
+        message: null,
+        authStatus: {
+          signedIn: true,
+          userId: "account-b",
+          email: null,
+          name: null,
+          expiresAt: "2026-07-15T22:00:00.000Z",
+        },
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "account.call",
+        params: { action: "pollLogin", args: { sessionId: "test-session" } },
+      });
+      expect(reconcileAccountOwnership).toHaveBeenLastCalledWith("account-b");
+
+      (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+        signedIn: true,
+        userId: "account-b",
+        email: null,
+        name: null,
+        expiresAt: "2026-07-15T22:00:00.000Z",
+      });
+      (accountAuthService.getAccessToken as ReturnType<typeof vi.fn>)
+        .mockRejectedValueOnce(new Error("ADE account session expired."));
+      await handler({
+        jsonrpc: "2.0",
+        id: 4,
+        method: "account.call",
+        params: { action: "listMachines", args: {} },
+      });
+      expect(reconcileAccountOwnership).toHaveBeenLastCalledWith(null);
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
   it("exposes the machine account action domain without a project id", async () => {
     const { registry } = createRegistry();
     const accountAuthService = {

@@ -42,6 +42,7 @@ export type PairWithMachineOptions = Omit<
 > & {
   appVersion?: string;
   pairingTimeoutMs?: number;
+  relayAccountToken?: string | null;
   runtimeHostGrant?: string | null;
 };
 
@@ -52,7 +53,15 @@ export type PairWithAccountMachineOptions = Omit<
   appVersion?: string;
   pairingTimeoutMs?: number;
   relayBaseUrls?: readonly string[];
+  accountOwnerUserId: string;
+  authorizeAccountCommit?: (
+    expectedOwnerUserId: string,
+  ) => boolean | Promise<boolean>;
 };
+
+class AccountPairingAuthorizationError extends Error {
+  readonly code = "account_session_changed";
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -137,6 +146,7 @@ function coerceMachine(value: unknown): DesktopPairedMachineCredentials | null {
     version: 1,
     hostIdentity,
     machineKey: requiredString(value.machineKey),
+    accountOwnerUserId: requiredString(value.accountOwnerUserId),
     deviceId,
     siteId,
     deviceName,
@@ -214,7 +224,7 @@ function hostIdentityFromPeer(
   };
 }
 
-function generateDpopKeyPair(): { privateKey: string; publicKey: string } {
+export function generateDesktopDpopKeyPair(): { privateKey: string; publicKey: string } {
   const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   const jwk = pair.publicKey.export({ format: "jwk" }) as { x?: string; y?: string };
   if (!jwk.x || !jwk.y) throw new Error("Could not export the desktop pairing public key.");
@@ -300,8 +310,15 @@ export class DesktopPairedMachineStore {
       entry.hostIdentity.deviceId === machine.hostIdentity.deviceId
       || (machine.machineKey && entry.machineKey === machine.machineKey)
     );
+    const accountOwnerUserId = Object.prototype.hasOwnProperty.call(
+      credentials,
+      "accountOwnerUserId",
+    )
+      ? requiredString(credentials.accountOwnerUserId)
+      : existing?.accountOwnerUserId ?? null;
     const saved: DesktopPairedMachineCredentials = {
       ...machine,
+      accountOwnerUserId,
       createdAt: existing?.createdAt ?? machine.createdAt,
       updatedAt: nowIso(),
       endpoints: options.replaceConnectionMetadata
@@ -345,6 +362,45 @@ export class DesktopPairedMachineStore {
     return true;
   }
 
+  removeAccountOwned(ownerUserIdValue: string): DesktopPairedMachineCredentials[] {
+    const ownerUserId = ownerUserIdValue.trim();
+    if (!ownerUserId) return [];
+    const file = this.read();
+    const removed = file.machines.filter(
+      (machine) => machine.accountOwnerUserId === ownerUserId,
+    );
+    if (removed.length === 0) return [];
+    this.write({
+      version: 1,
+      machines: file.machines.filter(
+        (machine) => machine.accountOwnerUserId !== ownerUserId,
+      ),
+    });
+    return removed;
+  }
+
+  pruneAccountOwned(
+    currentOwnerUserIdValue: string | null,
+  ): DesktopPairedMachineCredentials[] {
+    const currentOwnerUserId = currentOwnerUserIdValue?.trim() || null;
+    const file = this.read();
+    const removed = file.machines.filter((machine) =>
+      machine.accountOwnerUserId != null
+      && machine.accountOwnerUserId !== currentOwnerUserId
+    );
+    if (removed.length === 0) return [];
+    const removedHostIds = new Set(
+      removed.map((machine) => machine.hostIdentity.deviceId),
+    );
+    this.write({
+      version: 1,
+      machines: file.machines.filter(
+        (machine) => !removedHostIds.has(machine.hostIdentity.deviceId),
+      ),
+    });
+    return removed;
+  }
+
   markEndpointSucceeded(
     hostDeviceIdOrMachineKey: string,
     endpointValue: string,
@@ -377,7 +433,7 @@ export class DesktopPairedMachineStore {
     if (!/^\d{6}$/.test(pin)) throw new Error("Pairing PIN must contain exactly 6 digits.");
     if (!deviceName) throw new Error("Desktop device name is required.");
 
-    const keys = generateDpopKeyPair();
+    const keys = generateDesktopDpopKeyPair();
     const localDeviceId = randomUUID();
     const siteId = randomUUID();
     const createdAt = nowIso();
@@ -414,6 +470,9 @@ export class DesktopPairedMachineStore {
             dbVersion: 0,
           },
           dpopPublicKey: keys.publicKey,
+          ...(options.relayAccountToken
+            ? { relayAccountToken: options.relayAccountToken }
+            : {}),
           ...(options.runtimeHostGrant
             ? { runtimeHostGrant: options.runtimeHostGrant }
             : {}),
@@ -445,6 +504,7 @@ export class DesktopPairedMachineStore {
           deviceType: "unknown",
         },
         machineKey: machineKeyFromEndpoint(endpoint),
+        accountOwnerUserId: null,
         deviceId,
         siteId,
         deviceName,
@@ -467,7 +527,11 @@ export class DesktopPairedMachineStore {
       try {
         connection.send(
           "hello",
-          buildDesktopPairedHello(provisional, options.appVersion),
+          buildDesktopPairedHello(
+            provisional,
+            options.appVersion,
+            options.relayAccountToken,
+          ),
           helloRequestId,
         );
       } catch (error) {
@@ -507,13 +571,15 @@ export class DesktopPairedMachineStore {
     machine: AdeAccountMachine,
     accountTokenValue: string,
     deviceNameValue: string,
-    options: PairWithAccountMachineOptions = {},
+    options: PairWithAccountMachineOptions,
   ): Promise<DesktopPairedMachineCredentials> {
     const accountToken = accountTokenValue.trim();
+    const accountOwnerUserId = options.accountOwnerUserId.trim();
     const deviceName = deviceNameValue.trim();
     const expectedHostDeviceId = machine.deviceId?.trim() ?? "";
     if (!machine.online) throw new Error("That account machine is offline.");
     if (!accountToken) throw new Error("ADE account sign-in is required.");
+    if (!accountOwnerUserId) throw new Error("ADE account identity is required.");
     if (!deviceName) throw new Error("Desktop device name is required.");
     if (!expectedHostDeviceId) throw new Error("The account machine is missing a stable device id.");
 
@@ -529,10 +595,14 @@ export class DesktopPairedMachineStore {
       options.relayBaseUrls,
     );
 
-    const existing = this.get(expectedHostDeviceId) ?? this.get(machine.machineKey);
+    const savedCandidate = this.get(expectedHostDeviceId) ?? this.get(machine.machineKey);
+    const existing = savedCandidate?.accountOwnerUserId == null
+      || savedCandidate.accountOwnerUserId === accountOwnerUserId
+      ? savedCandidate
+      : null;
     const keys = existing
       ? { privateKey: existing.dpopPrivateKey, publicKey: existing.dpopPublicKey }
-      : generateDpopKeyPair();
+      : generateDesktopDpopKeyPair();
     const localDeviceId = existing?.deviceId ?? randomUUID();
     const siteId = existing?.siteId ?? randomUUID();
     const createdAt = existing?.createdAt ?? nowIso();
@@ -622,10 +692,21 @@ export class DesktopPairedMachineStore {
           ...pairedEndpoints,
           helloOk.cloudRelayWssUrl,
         );
+        if (
+          options.authorizeAccountCommit
+          && !await options.authorizeAccountCommit(accountOwnerUserId)
+        ) {
+          throw new AccountPairingAuthorizationError(
+            "Your ADE account changed before this machine could be saved.",
+          );
+        }
         return this.save({
           version: 1,
           hostIdentity,
           machineKey: machine.machineKey,
+          accountOwnerUserId: existing?.accountOwnerUserId == null && existing
+            ? null
+            : accountOwnerUserId,
           deviceId: localDeviceId,
           siteId,
           deviceName,
@@ -643,6 +724,7 @@ export class DesktopPairedMachineStore {
         });
       } catch (error) {
         throwIfAborted(options.signal);
+        if (error instanceof AccountPairingAuthorizationError) throw error;
         failures.push(error instanceof Error ? error.message : String(error));
       } finally {
         connection.close(1000, "Account pairing finished.");

@@ -16,6 +16,7 @@ import {
   execSsh,
   getSshHostKeyTrustForTarget,
   hasKnownSshHostKeyForTarget,
+  openSshRuntimeTransport,
   parseOpenSshHostConfig,
   scanSshHostKeyForTarget,
   trustSshHostKeyForTarget,
@@ -734,6 +735,30 @@ describe("execSsh", () => {
       "Timed out waiting for SSH command to finish after 75ms.",
     );
     expect(closed || destroyed).toBe(true);
+  });
+});
+
+describe("openSshRuntimeTransport", () => {
+  it("reports helper stderr, exit code, and signal when stdio RPC closes", async () => {
+    const stream = new PassThrough() as PassThrough & { stderr: PassThrough };
+    stream.stderr = new PassThrough();
+    const client = {
+      exec(_command: string, callback: (error: Error | null, channel: typeof stream) => void) {
+        callback(null, stream);
+      },
+    } as unknown as Client;
+    const transport = await openSshRuntimeTransport(client, "ade rpc --stdio");
+    const close = new Promise<unknown>((resolve) => transport.onClose?.(resolve));
+
+    stream.stderr.write("beta socket missing\n");
+    stream.emit("exit", 1, "TERM");
+    stream.emit("close");
+
+    await expect(close).resolves.toEqual({
+      exitCode: 1,
+      signal: "TERM",
+      stderr: "beta socket missing",
+    });
   });
 });
 

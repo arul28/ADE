@@ -4,10 +4,17 @@ import type {
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
+import {
+  buildPairingQrPayload,
+  encodePairingQrUrl,
+} from "../../../shared/pairingQr";
 import type { RemoteConnectionPool } from "./remoteConnectionPool";
 import { RemoteConnectionService } from "./remoteConnectionService";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
-import { PairedRuntimeSshTrustRequiredError } from "./pairedRuntimeErrors";
+import {
+  PairedRuntimeRelayAuthRequiredError,
+  PairedRuntimeSshTrustRequiredError,
+} from "./pairedRuntimeErrors";
 
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
 const trustSshHostKeyForTargetMock = vi.hoisted(() => vi.fn());
@@ -31,6 +38,7 @@ function target(
     lastSeenArch: null,
     runtimeBinaryVersion: null,
     lastConnectedAt,
+    autoConnect: lastConnectedAt != null,
   };
 }
 
@@ -61,6 +69,115 @@ describe("RemoteConnectionService", () => {
   beforeEach(() => {
     getSshHostKeyTrustForTargetMock.mockReset();
     trustSshHostKeyForTargetMock.mockReset();
+  });
+
+  it("does not send a Relay PIN pairing request while signed out", async () => {
+    const registry = {
+      list: vi.fn(() => []),
+      get: vi.fn(() => null),
+      save: vi.fn(),
+    } as unknown as RemoteTargetRegistry;
+    const pool = { onEntryEvicted: vi.fn(() => () => {}) } as unknown as RemoteConnectionPool;
+    const pairedStore = {
+      pairWithMachine: vi.fn(),
+    };
+    const service = new RemoteConnectionService(
+      registry,
+      pool,
+      { getAccountRelayProof: vi.fn(async () => null) },
+      pairedStore as any,
+    );
+    const input = encodePairingQrUrl(buildPairingQrPayload({
+      connectInfo: {
+        hostIdentity: {
+          deviceId: "relay-host",
+          siteId: "relay-host-site",
+          name: "Relay host",
+          platform: "macOS",
+          deviceType: "desktop",
+        },
+        port: 8787,
+        addressCandidates: [],
+      },
+      relayUrl: "wss://relay.example/connect/machine-1",
+    }));
+
+    await expect(service.pairWithMachine({
+      input,
+      pin: "123456",
+      deviceName: "Laptop",
+    })).rejects.toBeInstanceOf(PairedRuntimeRelayAuthRequiredError);
+    expect(pairedStore.pairWithMachine).not.toHaveBeenCalled();
+  });
+
+  it("sends the ephemeral account proof for Relay PIN pairing and saves it as manual", async () => {
+    const savedCredentials = {
+      version: 1 as const,
+      hostIdentity: {
+        deviceId: "relay-host",
+        siteId: "relay-host-site",
+        name: "Relay host",
+        platform: "macOS" as const,
+        deviceType: "desktop" as const,
+      },
+      machineKey: "machine-1",
+      accountOwnerUserId: null,
+      deviceId: "desktop-device",
+      siteId: "desktop-site",
+      deviceName: "Laptop",
+      secret: "secret",
+      dpopPrivateKey: "private",
+      dpopPublicKey: "public",
+      endpoints: ["wss://relay.example/connect/machine-1"],
+      relayUrl: "wss://relay.example/connect/machine-1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    const registry = {
+      list: vi.fn(() => []),
+      get: vi.fn(() => null),
+      save: vi.fn((input) => ({
+        id: "relay-target",
+        ...input,
+        lastSeenArch: null,
+        runtimeBinaryVersion: null,
+        lastConnectedAt: null,
+      })),
+    } as unknown as RemoteTargetRegistry;
+    const pool = { onEntryEvicted: vi.fn(() => () => {}) } as unknown as RemoteConnectionPool;
+    const pairedStore = {
+      pairWithMachine: vi.fn(async () => savedCredentials),
+      save: vi.fn((value) => value),
+    };
+    const service = new RemoteConnectionService(
+      registry,
+      pool,
+      { getAccountRelayProof: vi.fn(async () => ({ userId: "user-1", token: "short-lived" })) },
+      pairedStore as any,
+    );
+    const input = encodePairingQrUrl(buildPairingQrPayload({
+      connectInfo: {
+        hostIdentity: savedCredentials.hostIdentity,
+        port: 8787,
+        addressCandidates: [],
+      },
+      relayUrl: savedCredentials.relayUrl,
+    }));
+
+    await expect(service.pairWithMachine({
+      input,
+      pin: "123456",
+      deviceName: "Laptop",
+    })).resolves.toEqual({ targetId: "relay-target" });
+    expect(pairedStore.pairWithMachine).toHaveBeenCalledWith(
+      "wss://relay.example/connect/machine-1",
+      "123456",
+      "Laptop",
+      expect.objectContaining({ relayAccountToken: "short-lived" }),
+    );
+    expect(registry.save).toHaveBeenCalledWith(expect.objectContaining({
+      accountOwnerUserId: null,
+    }));
   });
 
   it("upgrades a discovered ADE sync machine to a paired-first target", () => {
@@ -159,6 +276,7 @@ describe("RemoteConnectionService", () => {
     const registry = {
       list: vi.fn(() => [remote]),
       get: vi.fn((id: string) => id === remote.id ? remote : null),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({ ...remote, ...patch })),
     } as unknown as RemoteTargetRegistry;
     const error = new RemoteRuntimeConnectError({
       kind: "disk_full",
@@ -196,6 +314,7 @@ describe("RemoteConnectionService", () => {
     const registry = {
       list: vi.fn(() => [remote]),
       get: vi.fn((id: string) => id === remote.id ? remote : null),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({ ...remote, ...patch })),
     } as unknown as RemoteTargetRegistry;
     const pool = {
       connect: vi.fn(async () => ({
@@ -359,6 +478,133 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).toHaveBeenCalledWith(previouslyConnected);
   });
 
+  it("reconciles account-owned target, credentials, and live pool entry as one command", () => {
+    const accountOwned = {
+      ...target("account-owned", 1_700_000_000),
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: "owned-host", machineKey: "owned-key" },
+      accountOwnerUserId: "account-a",
+    };
+    const localOwned = {
+      ...target("local-owned", 1_700_000_000),
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: "local-host", machineKey: "local-key" },
+      accountOwnerUserId: null,
+    };
+    let targets = [accountOwned, localOwned];
+    const registry = {
+      list: vi.fn(() => targets),
+      get: vi.fn((id: string) => targets.find((entry) => entry.id === id) ?? null),
+      pruneAccountOwned: vi.fn((owner: string | null) => {
+        const removed = targets.filter((entry) => (
+          entry.accountOwnerUserId != null && entry.accountOwnerUserId !== owner
+        ));
+        targets = targets.filter((entry) => !removed.includes(entry));
+        return removed;
+      }),
+      remove: vi.fn((id: string) => {
+        const before = targets.length;
+        targets = targets.filter((entry) => entry.id !== id);
+        return targets.length !== before;
+      }),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const pairedStore = {
+      pruneAccountOwned: vi.fn(() => [{
+        hostIdentity: { deviceId: "owned-host" },
+        machineKey: "owned-key",
+      }]),
+    };
+    const service = new RemoteConnectionService(registry, pool, {}, pairedStore as any);
+    const snapshots: unknown[] = [];
+    service.onSnapshotChanged((snapshot) => snapshots.push(snapshot));
+
+    expect(service.reconcileAccountOwnership(null)).toEqual({
+      removedTargetIds: [accountOwned.id],
+      removedCredentialHostIds: ["owned-host"],
+    });
+    expect(pool.disconnect).toHaveBeenCalledWith(accountOwned.id);
+    expect(pool.disconnect).not.toHaveBeenCalledWith(localOwned.id);
+    expect(targets).toEqual([localOwned]);
+    expect(snapshots).toHaveLength(1);
+  });
+
+  it("keeps snapshot pure when a target disappears outside a service command", async () => {
+    const connectedTarget = target("externally-removed", 1_700_000_000);
+    let targets = [connectedTarget];
+    const registry = {
+      list: vi.fn(() => targets),
+      get: vi.fn((id: string) => targets.find((entry) => entry.id === id) ?? null),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({
+        ...connectedTarget,
+        ...patch,
+      })),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (entry: RemoteRuntimeTarget) => connectResult(entry)),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+
+    await service.connect(connectedTarget.id, { explicit: true });
+    targets = [];
+    vi.mocked(pool.disconnect).mockClear();
+
+    expect(service.snapshot().connections).toEqual([]);
+    expect(pool.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("never opens the pool for an unauthorized account-owned target but preserves local autoconnect", async () => {
+    const accountOwned = {
+      ...target("account-owned", 1_700_000_000),
+      accountOwnerUserId: "expired-account",
+    };
+    const localOwned = {
+      ...target("local-owned", 1_700_000_000),
+      accountOwnerUserId: null,
+    };
+    let targets = [accountOwned, localOwned];
+    const registry = {
+      list: vi.fn(() => targets),
+      get: vi.fn((id: string) => targets.find((entry) => entry.id === id) ?? null),
+      pruneAccountOwned: vi.fn((owner: string | null) => {
+        const removed = targets.filter((entry) => (
+          entry.accountOwnerUserId != null && entry.accountOwnerUserId !== owner
+        ));
+        targets = targets.filter((entry) => !removed.includes(entry));
+        return removed;
+      }),
+      remove: vi.fn(() => false),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (entry: RemoteRuntimeTarget) => connectResult(entry)),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const pairedStore = { pruneAccountOwned: vi.fn(() => []) };
+    const service = new RemoteConnectionService(
+      registry,
+      pool,
+      { getAuthorizedAccountOwnerId: vi.fn(async () => null) },
+      pairedStore as any,
+    );
+
+    await expect(service.connect(accountOwned.id, { explicit: true })).rejects.toBeInstanceOf(
+      PairedRuntimeRelayAuthRequiredError,
+    );
+    service.startAutoconnect();
+    await Promise.resolve();
+    service.stopAutoconnect();
+
+    expect(pool.disconnect).toHaveBeenCalledWith(accountOwned.id);
+    expect(pool.connect).toHaveBeenCalledTimes(1);
+    expect(pool.connect).toHaveBeenCalledWith(localOwned);
+  });
+
   it("does not autoconnect a manually disconnected saved target", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
@@ -387,6 +633,59 @@ describe("RemoteConnectionService", () => {
 
     expect(pool.disconnect).toHaveBeenCalledWith(previouslyConnected.id);
     expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it("persists the auto-connect preference without disconnecting an active target", () => {
+    let persisted = { ...target("saved", 1_700_000_000), autoConnect: true };
+    const registry = {
+      list: vi.fn(() => [persisted]),
+      get: vi.fn(() => persisted),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => {
+        persisted = { ...persisted, ...patch };
+        return persisted;
+      }),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+
+    expect(service.setAutoConnect(persisted.id, false).autoConnect).toBe(false);
+    expect(pool.disconnect).not.toHaveBeenCalled();
+    expect(service.setAutoConnect(persisted.id, true)).toMatchObject({
+      autoConnect: true,
+      manuallyDisconnectedAt: null,
+    });
+  });
+
+  it("keeps auto-connect disabled after a manual Connect succeeds", async () => {
+    let persisted = { ...target("saved", 1_700_000_000), autoConnect: false };
+    const registry = {
+      list: vi.fn(() => [persisted]),
+      get: vi.fn(() => persisted),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => {
+        persisted = { ...persisted, ...patch };
+        return persisted;
+      }),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (savedTarget: RemoteRuntimeTarget) =>
+        connectResult(savedTarget),
+      ),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+
+    await expect(
+      service.connect(persisted.id, { explicit: true }),
+    ).resolves.toMatchObject({ target: { autoConnect: false } });
+    expect(persisted.autoConnect).toBe(false);
+    expect(registry.update).not.toHaveBeenCalledWith(persisted.id, {
+      autoConnect: true,
+      manuallyDisconnectedAt: null,
+    });
   });
 
   it("disconnects the pool even when persisting the manual marker fails", () => {
@@ -555,6 +854,7 @@ describe("RemoteConnectionService", () => {
       service.connect(persistedTarget.id, { explicit: true }),
     ).resolves.toMatchObject({ target: { manuallyDisconnectedAt: null } });
     expect(registry.update).toHaveBeenCalledWith(persistedTarget.id, {
+      autoConnect: true,
       manuallyDisconnectedAt: null,
     });
     expect(pool.connect).toHaveBeenCalledTimes(1);
@@ -591,6 +891,7 @@ describe("RemoteConnectionService", () => {
 
     expect(persistedTarget.manuallyDisconnectedAt).toBe(1_700_000_100);
     expect(registry.update).not.toHaveBeenCalledWith(persistedTarget.id, {
+      autoConnect: true,
       manuallyDisconnectedAt: null,
     });
     service.startAutoconnect();
@@ -720,6 +1021,38 @@ describe("RemoteConnectionService", () => {
       /Retrying in 3s/i,
     );
     expect(pool.connect).toHaveBeenCalledTimes(11);
+  });
+
+  it("does not spend the reconnect budget when relay needs sign-in", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async () => {
+        throw new PairedRuntimeRelayAuthRequiredError();
+      }),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    for (let attempt = 0; attempt < 11; attempt += 1) {
+      await expect(service.connect(previouslyConnected.id)).rejects.toBeInstanceOf(
+        PairedRuntimeRelayAuthRequiredError,
+      );
+    }
+
+    expect(pool.connect).toHaveBeenCalledTimes(11);
+    expect(service.snapshot().connections[0]?.lastErrorInfo).toMatchObject({
+      kind: "auth_required",
+    });
+    expect(service.snapshot().connections[0]?.lastError).not.toMatch(
+      /stopped automatic reconnecting/i,
+    );
   });
 
   it("spends the reconnect budget on normalized SSH handshake failures", async () => {

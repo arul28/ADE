@@ -2,58 +2,103 @@ import SwiftUI
 
 struct SettingsPairingSection: View {
   let snapshot: SettingsPairingSnapshot
+  let showsWebClientOption: Bool
   @Binding var presentedSheet: SettingsPairSheetRoute?
+  @State private var showsOtherWays = false
+  @ObservedObject private var accountService = AccountService.shared
 
   var body: some View {
-    // Header lives in the parent "MACHINE" subsection now — this just renders
-    // the pairing action rows.
-    GlassEffectContainer(spacing: 8) {
+    VStack(alignment: .leading, spacing: 12) {
       VStack(spacing: 8) {
         SettingsPairActionRow(
-          icon: "qrcode.viewfinder",
-          title: "Scan pairing code",
-          subtitle: "Point at the QR in ADE on your computer"
-        ) {
-          presentedSheet = .scan
-        }
-
-        SettingsPairActionRow(
-          icon: "globe",
-          title: "Pair a browser",
-          subtitle: "Use ADE in any browser, signed in to this machine"
-        ) {
-          presentedSheet = .webClient
-        }
-
-        SettingsPairActionRow(
           icon: "dot.radiowaves.left.and.right",
-          title: "Discover on network",
+          title: "Find a nearby Mac",
           subtitle: discoverSubtitle
         ) {
           presentedSheet = .discover
         }
 
         SettingsPairActionRow(
-          icon: "keyboard",
-          title: "Enter machine details",
-          subtitle: "Machine address and port"
+          icon: "qrcode.viewfinder",
+          title: "Scan a pairing code",
+          subtitle: "Scan the code shown in ADE on your Mac"
         ) {
-          presentedSheet = .manual
+          presentedSheet = .scan
         }
       }
+
+      DisclosureGroup(isExpanded: $showsOtherWays) {
+        VStack(spacing: 8) {
+          SettingsPairActionRow(
+            icon: "link",
+            title: "Paste a pairing link",
+            subtitle: "Use a link copied from ADE on your Mac"
+          ) {
+            presentedSheet = .link
+          }
+
+          SettingsPairActionRow(
+            icon: "keyboard",
+            title: "Enter an address manually",
+            subtitle: "Use the address shown in ADE on your Mac"
+          ) {
+            presentedSheet = .manual
+          }
+
+          SettingsPairActionRow(
+            icon: "terminal",
+            title: "Set up with SSH",
+            subtitle: "Advanced: use SSH once to create an ADE pairing"
+          ) {
+            presentedSheet = .ssh
+          }
+
+          if showsWebClientOption {
+            SettingsPairActionRow(
+              icon: "globe",
+              title: "Pair a browser",
+              subtitle: "Open this Mac from ADE's web client"
+            ) {
+              presentedSheet = .webClient
+            }
+          }
+        }
+        .padding(.top, 8)
+      } label: {
+        Label("Other ways to connect", systemImage: "ellipsis.circle")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+      }
+      .tint(ADEColor.textSecondary)
+
+      Label(
+        awayFromMacHelp,
+        systemImage: "network"
+      )
+      .font(.footnote)
+      .foregroundStyle(ADEColor.textSecondary)
+      .fixedSize(horizontal: false, vertical: true)
     }
+  }
+
+  private var awayFromMacHelp: String {
+    if accountService.identity != nil {
+      return "Connect from anywhere with ADE Relay. It uses your ADE account; Tailscale also works."
+    }
+    return "Connect from anywhere: sign in to use ADE Relay, or use Tailscale on both devices."
   }
 
   private var discoverSubtitle: String? {
     let count = snapshot.discoveredHostCount
     let savedCount = snapshot.savedReconnectHostCount
     if count == 0, savedCount > 0 {
-      return savedCount == 1 ? "1 saved machine" : "\(savedCount) saved machines"
+      return savedCount == 1 ? "1 saved Mac" : "\(savedCount) saved Macs"
     }
     if count == 0 {
-      return "Looking nearby"
+      return "Choose your Mac, then enter its ADE PIN"
     }
-    return count == 1 ? "1 nearby machine found" : "\(count) nearby machines found"
+    return count == 1 ? "1 nearby Mac found · enter its ADE PIN" : "\(count) nearby Macs found"
   }
 }
 
@@ -114,27 +159,9 @@ struct SettingsPairActionRow: View {
     Button(action: action) {
       HStack(spacing: 14) {
         Image(systemName: icon)
-          .font(.system(size: 18, weight: .semibold))
+          .font(.body)
           .foregroundStyle(ADEColor.purpleAccent)
-          .frame(width: 38, height: 38)
-          .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .fill(
-                LinearGradient(
-                  colors: [
-                    ADEColor.purpleAccent.opacity(0.30),
-                    ADEColor.purpleAccent.opacity(0.10),
-                  ],
-                  startPoint: .top,
-                  endPoint: .bottom
-                )
-              )
-          )
-          .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .strokeBorder(ADEColor.purpleAccent.opacity(0.35), lineWidth: 0.6)
-          )
-          .shadow(color: ADEColor.purpleGlow.opacity(0.25), radius: 6, y: 2)
+          .frame(width: 28)
 
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
@@ -152,38 +179,16 @@ struct SettingsPairActionRow: View {
           .foregroundStyle(ADEColor.purpleAccent.opacity(0.55))
       }
       .padding(.horizontal, 16)
-      .padding(.vertical, 14)
+      .padding(.vertical, 12)
+      .frame(minHeight: 60)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .fill(
-            LinearGradient(
-              colors: [
-                ADEColor.purpleAccent.opacity(0.06),
-                Color.clear,
-              ],
-              startPoint: .topLeading,
-              endPoint: .bottomTrailing
-            )
-          )
+        RoundedRectangle(cornerRadius: 12)
+          .fill(ADEColor.surfaceBackground.opacity(0.55))
       )
-      .glassEffect(in: .rect(cornerRadius: 16))
-      .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .strokeBorder(
-            LinearGradient(
-              colors: [
-                ADEColor.purpleAccent.opacity(0.32),
-                ADEColor.border.opacity(0.10),
-              ],
-              startPoint: .topLeading,
-              endPoint: .bottomTrailing
-            ),
-            lineWidth: 0.75
-          )
-      )
+      .overlay(RoundedRectangle(cornerRadius: 12).stroke(ADEColor.border.opacity(0.45), lineWidth: 0.75))
     }
-    .buttonStyle(ADEScaleButtonStyle())
+    .buttonStyle(.plain)
     .accessibilityLabel(subtitle.map { "\(title), \($0)" } ?? title)
   }
 
@@ -470,7 +475,7 @@ struct DiscoverHostsSheet: View {
             VStack(spacing: 14) {
               ADESkeletonView(height: 56, cornerRadius: 14)
               ADESkeletonView(height: 56, cornerRadius: 14)
-              Text("Looking for ADE machines on your network...")
+              Text("Looking for Macs running ADE nearby…")
                 .font(.caption)
                 .foregroundStyle(ADEColor.textSecondary)
                 .padding(.top, 4)
@@ -486,7 +491,7 @@ struct DiscoverHostsSheet: View {
               } label: {
                 DiscoveredHostRow(
                   host: savedHost,
-                  detailPrefix: savedHost.tailscaleAddress == nil ? "Saved" : "Saved Tailscale",
+                  detailPrefix: "Saved",
                   accessoryText: "Reconnect"
                 )
               }
@@ -508,7 +513,7 @@ struct DiscoverHostsSheet: View {
       }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Nearby machines")
+      .navigationTitle("Nearby Macs")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -591,14 +596,14 @@ struct ManualEntrySheet: View {
     NavigationStack {
       ScrollView {
         VStack(alignment: .leading, spacing: 14) {
-          Text("Reach your machine directly")
+          Text("Enter your Mac's address")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Use a machine address from ADE Sync settings or Tailscale.")
+          Text("Use the address shown in ADE on your Mac. A Tailscale address can find your Mac outside the current Wi-Fi.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
 
-          TextField("Machine address or IP", text: $host)
+          TextField("Mac address or IP", text: $host)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .keyboardType(.asciiCapable)
@@ -631,7 +636,67 @@ struct ManualEntrySheet: View {
       }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Enter machine details")
+      .navigationTitle("Enter a Mac address")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+        }
+      }
+    }
+  }
+}
+
+// MARK: - Pairing link sheet
+
+struct PairingLinkPasteSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  @State private var pairingLink = ""
+  @State private var errorMessage: String?
+
+  let onContinue: (String) -> Void
+
+  var body: some View {
+    NavigationStack {
+      VStack(alignment: .leading, spacing: 14) {
+        Text("Paste the pairing link from ADE on your Mac.")
+          .font(.subheadline)
+          .foregroundStyle(ADEColor.textSecondary)
+
+        TextField("Pairing link", text: $pairingLink, axis: .vertical)
+          .lineLimit(3...6)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .keyboardType(.URL)
+          .textFieldStyle(.plain)
+          .manualEntryField()
+
+        if let errorMessage {
+          Text(errorMessage)
+            .font(.caption)
+            .foregroundStyle(ADEColor.danger)
+        }
+
+        Button("Continue") {
+          let value = pairingLink.trimmingCharacters(in: .whitespacesAndNewlines)
+          guard PairingQrPayload.parse(value) != nil else {
+            errorMessage = "That link is not an ADE pairing link. Copy it again from ADE on your Mac."
+            return
+          }
+          dismiss()
+          onContinue(value)
+        }
+        .buttonStyle(.glassProminent)
+        .tint(ADEColor.purpleAccent)
+        .frame(maxWidth: .infinity)
+        .disabled(pairingLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        Spacer()
+      }
+      .padding(20)
+      .adeScreenBackground()
+      .adeNavigationGlass()
+      .navigationTitle("Paste a pairing link")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {

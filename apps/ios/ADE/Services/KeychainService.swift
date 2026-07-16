@@ -101,4 +101,46 @@ final class KeychainService {
   func loadDeviceId() -> String? {
     loadString(account: deviceIdAccount)
   }
+
+  /// Removes every saved machine pairing secret while preserving this
+  /// installation's device identity. Used by the versioned trust reset: ADE
+  /// must not accidentally revive a pre-reset machine through a keyed or
+  /// legacy token alias.
+  @discardableResult
+  func clearAllConnectionTokens() -> Bool {
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecMatchLimit as String: kSecMatchLimitAll,
+      kSecReturnAttributes as String: true,
+    ]
+    var result: CFTypeRef?
+    let status = SecItemCopyMatching(query as CFDictionary, &result)
+    if status == errSecItemNotFound { return true }
+    guard status == errSecSuccess else { return false }
+    let items: [[String: Any]]
+    if let allItems = result as? [[String: Any]] {
+      items = allItems
+    } else if let item = result as? [String: Any] {
+      items = [item]
+    } else {
+      return false
+    }
+    for item in items {
+      guard let account = item[kSecAttrAccount as String] as? String,
+            account == tokenAccount || account.hasPrefix("\(tokenAccount):") || account.hasPrefix("\(tokenAccount).") else {
+        continue
+      }
+      let deleteQuery: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: service,
+        kSecAttrAccount as String: account,
+      ]
+      let deleteStatus = SecItemDelete(deleteQuery as CFDictionary)
+      guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+        return false
+      }
+    }
+    return true
+  }
 }

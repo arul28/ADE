@@ -31,8 +31,10 @@ different trust model and lifecycle. It uses Durable Objects with SQLite storage
    (`/host/:machineKey`). Only one control socket per machine; a newer one
    supersedes the old (close `4505`).
 - `4506` client — pre-pipe frame buffer overflow (phone should reconnect)
-2. A phone dials `/connect/:machineKey` (no relay-level auth — the `machineKey`
-   is unguessable and the ADE sync hello/pairing runs end-to-end). The DO mints
+2. A client dials `/connect/:machineKey` (no **Worker-level** client auth — the
+   `machineKey` is unguessable). ADE's bridged sync listener still requires a
+   paired/PIN/DPoP handshake plus a fresh same-account proof for every Relay
+   connection. The DO mints
    a short `connectionId`, holds the phone socket, and signals the brain
    `{t:"open", id}` over the control socket.
 3. The brain opens a signed **pipe** socket (`/host/:machineKey/pipe/:id`) plus
@@ -55,8 +57,9 @@ Same claim + HMAC design as `apps/push-relay`:
   `sig = HMAC_SHA256(secret, "host:<machineKey>:<ts>")`, `±5 min` skew.
 - **Pipe** upgrade `/host/:machineKey/pipe/:id?ts=<unix>&sig=<hex>` where
   `sig = HMAC_SHA256(secret, "pipe:<machineKey>:<id>:<ts>")`.
-- **Phone** `/connect/:machineKey` — no relay-level auth beyond `machineKey`
-  unguessability.
+- **Client** `/connect/:machineKey` — no Worker-level auth beyond `machineKey`
+  unguessability. This is only transport admission; ADE authorizes the socket
+  after it reaches the host.
 
 ## Trust model — read this
 
@@ -69,16 +72,17 @@ encryption — that is future work.
 What the relay's position does **not** grant:
 
 - It cannot impersonate a device to the brain: pairing uses per-device secrets
-  and DPoP-bound hellos, and the brain still enforces `hello_error` / auth
-  end-to-end through the tunnel.
+  and DPoP-bound hellos. The in-process relay bridge also requires a fresh
+  short-lived Clerk proof whose subject matches the account currently signed in
+  on the host. Direct LAN/tailnet hellos do not carry this proof.
 - The claim `secret` is scoped to opening tunnels for one `machineKey`; it
   carries no project data and grants no access to any brain internals beyond the
   sync port the brain itself bridges to.
 
 ## Known limits (accepted)
 
-- `/connect` is unauthenticated by design (the sync hello authenticates
-  end-to-end), so anyone who learns a `machineKey` can hold up to the 16
+- `/connect` is unauthenticated at the Worker by design (ADE authenticates and
+  authorizes after transport setup), so anyone who learns a `machineKey` can hold up to the 16
   concurrent-tunnel cap until the 10-minute idle sweep closes them — a bounded,
   self-healing DoS. They still cannot authenticate to the brain.
 - Early phone frames are buffered in DO memory (bounded, 64 frames) while the
@@ -88,6 +92,12 @@ What the relay's position does **not** grant:
 Treat the relay like any other network hop you don't fully control: fine for
 transport, not a place to rely on for confidentiality until E2E payload
 encryption lands.
+
+The brain opens the host control socket only while its ADE account lease is
+current. Sign-out, account switch, expiry, or refresh failure closes the control
+socket and active Relay peers. A connecting client must present a fresh
+same-account token inside its ADE hello; the relay Worker does not validate or
+store that token, but it can read it because TLS terminates at Cloudflare.
 
 ## Close codes
 

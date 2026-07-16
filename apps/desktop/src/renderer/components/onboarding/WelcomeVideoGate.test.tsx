@@ -68,7 +68,7 @@ describe("WelcomeVideoGate", () => {
     expect(screen.queryByRole("dialog", { name: DIALOG_NAME })).toBeNull();
   });
 
-  it("lazily loads the sandboxed video iframe only after the poster is clicked", async () => {
+  it("renders the privacy-enhanced YouTube player with its native thumbnail", async () => {
     getWelcomeVideoState.mockResolvedValue({
       videoId: ADE_WELCOME_VIDEO_ID,
       version: ADE_WELCOME_VIDEO_VERSION,
@@ -80,17 +80,13 @@ describe("WelcomeVideoGate", () => {
 
     await screen.findByRole("dialog", { name: DIALOG_NAME });
 
-    // No iframe up front; the poster stands in until the user opts to play.
-    expect(screen.queryByTitle("Welcome to ADE video")).toBeNull();
-
-    fireEvent.click(screen.getByRole("button", { name: /play the ade intro video/i }));
-
     const video = screen.getByTitle("Welcome to ADE video");
     expect(video.getAttribute("sandbox")).toBe(
       "allow-scripts allow-same-origin allow-presentation allow-popups",
     );
-    expect(video.getAttribute("allow")).toBe("autoplay; encrypted-media; picture-in-picture");
-    expect(video.getAttribute("src")).toContain("autoplay=1");
+    expect(video.getAttribute("allow")).toBe("encrypted-media; picture-in-picture");
+    expect(video.getAttribute("src")).toContain("youtube-nocookie.com/embed/");
+    expect(video.getAttribute("src")).not.toContain("autoplay=1");
   });
 
   it("uses route-stable public asset URLs on nested browser routes", async () => {
@@ -168,6 +164,22 @@ describe("WelcomeVideoGate", () => {
     fireEvent.click(await screen.findByRole("button", { name: /download for ios/i }));
 
     expect(openExternal).toHaveBeenCalledWith(ADE_MOBILE_TESTFLIGHT_URL);
+  });
+
+  it("offers an external fallback when the embedded player is unavailable", async () => {
+    getWelcomeVideoState.mockResolvedValue({
+      videoId: ADE_WELCOME_VIDEO_ID,
+      version: ADE_WELCOME_VIDEO_VERSION,
+      completedAt: null,
+      dismissedAt: null,
+    });
+
+    render(<WelcomeVideoGate />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /open the ade intro video on youtube/i }));
+    expect(openExternal).toHaveBeenCalledWith(
+      expect.stringContaining("youtube.com/watch"),
+    );
   });
 
   it("copies the install link through the desktop clipboard bridge when available", async () => {

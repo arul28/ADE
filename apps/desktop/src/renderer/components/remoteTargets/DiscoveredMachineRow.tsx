@@ -3,7 +3,6 @@ import type { RemoteRuntimeDiscoveredMachine } from "../../../shared/types";
 import { primaryButton, outlineButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import {
-  discoveredMachineSummary,
   discoveredRoute,
   type MachineSection,
 } from "./remoteMachineModel";
@@ -49,13 +48,11 @@ export function DiscoveredMachineRow({
         >
           <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
             <div style={nameStyle}>{machine.machineName}</div>
-            <div style={subTextStyle}>
-              {route ? `${route}:${machine.port}` : "No route advertised"}
-            </div>
+            <div style={subTextStyle}>Found nearby</div>
             <div style={helperTextStyle}>
               {unavailable && machine.unsupportedReason
                 ? machine.unsupportedReason
-                : discoveredMachineSummary(machine)}
+                : "Ready to connect"}
             </div>
           </div>
           <div
@@ -82,7 +79,7 @@ export function DiscoveredMachineRow({
                   }}
                 >
                   <PlugsConnected size={14} weight="bold" />
-                  {busyId === machine.id ? "Connecting…" : "Connect"}
+                  {busyId === machine.id ? "Opening…" : "Pair"}
                 </button>
                 <button
                   type="button"

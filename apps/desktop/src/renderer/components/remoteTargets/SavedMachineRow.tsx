@@ -23,9 +23,7 @@ import { HostKeyTrustCard } from "./HostKeyTrustCard";
 import {
   connectionStateLabel,
   formatLastSeen,
-  formatRouteChip,
   selectMachineErrorCard,
-  targetConnectionLabel,
   type MachineSection,
   type SavedMachineRow as SavedMachineRowModel,
 } from "./remoteMachineModel";
@@ -60,6 +58,7 @@ type SavedMachineRowProps = {
   onToggleEdit: (target: RemoteRuntimeTarget) => void;
   onRemove: (targetId: string) => void;
   onSaveAndConnect: (input: RemoteRuntimeTargetInput) => void | Promise<void>;
+  onAutoConnectChange: (targetId: string, enabled: boolean) => void;
   onTrustAndConnect: () => void;
   onCancelHostKeyTrust: () => void;
 };
@@ -82,26 +81,13 @@ export function SavedMachineRow({
   onToggleEdit,
   onRemove,
   onSaveAndConnect,
+  onAutoConnectChange,
   onTrustAndConnect,
   onCancelHostKeyTrust,
 }: SavedMachineRowProps) {
   const { target, status } = row;
   const targetConnecting =
     busyId === target.id || status?.state === "connecting";
-  const version =
-    status?.version ??
-    (connected?.target.id === target.id ? connected.version : null) ??
-    target.runtimeBinaryVersion ??
-    null;
-  const arch =
-    status?.arch ??
-    (connected?.target.id === target.id ? connected.arch : null) ??
-    target.lastSeenArch ??
-    null;
-  const route =
-    status?.route ??
-    (connected?.target.id === target.id ? connected.route : undefined);
-  const routeChip = row.connected ? formatRouteChip(route) : null;
   const statusLabel = connectionStateLabel(
     status ?? null,
     connected?.target.id === target.id,
@@ -150,30 +136,16 @@ export function SavedMachineRow({
               {row.connected ? (
                 <CheckCircle size={15} weight="fill" color={COLORS.success} />
               ) : null}
-              {routeChip ? (
-                <span
-                  style={{
-                    color: COLORS.textMuted,
-                    fontFamily: SANS_FONT,
-                    fontSize: 11,
-                    whiteSpace: "nowrap",
-                    flexShrink: 0,
-                  }}
-                >
-                  {routeChip}
-                </span>
-              ) : null}
             </div>
-            <div style={subTextStyle}>{targetConnectionLabel(target)}</div>
+            <div style={subTextStyle}>
+              {target.transport === "paired" ? "Paired with this Mac" : "Saved SSH connection"}
+            </div>
             <div style={helperTextStyle}>
               {section === "unavailable" && row.unavailableReason ? (
                 <span>{row.unavailableReason}</span>
               ) : (
                 <>
                   <span>{statusLabel}</span>
-                  {version || arch ? (
-                    <span>{` · ADE ${version ?? "unknown"} on ${arch ?? "unknown"}`}</span>
-                  ) : null}
                   <span>{` · ${formatLastSeen(target.lastConnectedAt)}`}</span>
                 </>
               )}
@@ -328,6 +300,33 @@ export function SavedMachineRow({
           >
             Edit {target.name}
           </div>
+          <label
+            style={{
+              display: "grid",
+              gridTemplateColumns: "16px minmax(0, 1fr)",
+              gap: 8,
+              alignItems: "start",
+              color: COLORS.textPrimary,
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={target.autoConnect ?? (
+                target.lastConnectedAt != null && target.manuallyDisconnectedAt == null
+              )}
+              disabled={busyId != null}
+              onChange={(event) => onAutoConnectChange(target.id, event.target.checked)}
+              style={{ margin: "2px 0 0" }}
+            />
+            <span>
+              Reconnect automatically
+              <span style={{ display: "block", ...helperTextStyle, marginTop: 2 }}>
+                ADE will reconnect when the app opens. LAN and Tailscale work without signing in; ADE Relay needs the same account on both Macs.
+              </span>
+            </span>
+          </label>
           <RemoteTargetForm
             busy={saving || busyId != null}
             prefill={formPrefill}

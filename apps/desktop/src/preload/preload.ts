@@ -1543,7 +1543,20 @@ async function callProjectRuntimeSyncOr<T>(
   }
   const remote = await callRemoteProjectSyncIfBound<T>(method, params);
   if (remote.handled) return remote.result;
-  const localRuntime = await callLocalProjectSyncIfBound<T>(method, params);
+  let localRuntime: Awaited<ReturnType<typeof callLocalProjectSyncIfBound<T>>>;
+  try {
+    localRuntime = await callLocalProjectSyncIfBound<T>(method, params);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/Sync service is not available|Register a project first/i.test(message)) {
+      throw error;
+    }
+    // A packaged desktop can temporarily use a project-capable isolated
+    // no-sync brain while its channel-owned primary brain is being repaired.
+    // Route machine/mobile sync through main IPC so it can resolve the
+    // authoritative sync service instead of surfacing the isolated RPC error.
+    return await local();
+  }
   return localRuntime.handled ? localRuntime.result : local();
 }
 
@@ -3231,6 +3244,10 @@ contextBridge.exposeInMainWorld("ade", {
       reason: "completed" | "dismissed",
     ): Promise<AppWelcomeVideoState> =>
       ipcRenderer.invoke(IPC.appMarkWelcomeVideoSeen, { reason }),
+    getLaunchGateState: async (): Promise<{ resolved: boolean }> =>
+      ipcRenderer.invoke(IPC.appGetLaunchGateState),
+    resolveLaunchGate: async (): Promise<{ resolved: true }> =>
+      ipcRenderer.invoke(IPC.appResolveLaunchGate),
     setWindowProjectTabs: async (
       rootPaths: string[],
     ): Promise<{ openProjectTabs: ProjectInfo[] }> =>
@@ -3582,6 +3599,11 @@ contextBridge.exposeInMainWorld("ade", {
       input: RemoteRuntimeTargetInput,
     ): Promise<RemoteRuntimeTarget> =>
       ipcRenderer.invoke(IPC.remoteRuntimeSaveTarget, input),
+    setAutoConnect: async (
+      id: string,
+      enabled: boolean,
+    ): Promise<RemoteRuntimeTarget> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeSetAutoConnect, { id, enabled }),
     removeTarget: async (id: string): Promise<{ removed: boolean }> =>
       ipcRenderer.invoke(IPC.remoteRuntimeRemoveTarget, { id }),
     getSshHostKeyTrust: async (

@@ -29,6 +29,12 @@ function renderPicker(snapshot: BrowserAccountSnapshot) {
     <MachinePicker
       environments={[]}
       account={snapshot}
+      relayAccess={snapshot.userId ? {
+        kind: "signed_in",
+        userId: snapshot.userId,
+        hostDeviceIds: snapshot.machines.flatMap((machine) => machine.deviceId ? [machine.deviceId] : []),
+        getAccessToken: async () => "test-token",
+      } : { kind: "signed_out" }}
       connectingMachineKey={null}
       onSelect={vi.fn()}
       onSelectAccountMachine={onSelectAccountMachine}
@@ -42,11 +48,15 @@ function renderPicker(snapshot: BrowserAccountSnapshot) {
 }
 
 describe("MachinePicker account states", () => {
-  it("keeps pairing available while signed out", () => {
+  it("makes account sign-in the clear path while keeping direct pairing advanced", () => {
     const { onSignIn } = renderPicker(account());
 
-    expect(screen.getByText("Optional — pairing works without an account")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Pair a new machine" })).toBeTruthy();
+    expect(screen.getByText("Sign in to connect this browser to your Macs, wherever they are.")).toBeTruthy();
+    const directSummary = screen.getByText("Connect directly (advanced)");
+    expect((directSummary.closest("details") as HTMLDetailsElement).open).toBe(false);
+    fireEvent.click(directSummary);
+    expect((directSummary.closest("details") as HTMLDetailsElement).open).toBe(true);
+    expect(screen.getByRole("button", { name: "Use a pairing link" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(onSignIn).toHaveBeenCalledOnce();
   });
@@ -71,12 +81,14 @@ describe("MachinePicker account states", () => {
     };
     const { onSelectAccountMachine } = renderPicker(account({
       state: "signed_in",
+      userId: "user-1",
       email: "owner@example.test",
       machines: [available, offline],
     }));
 
-    const onlineButton = screen.getByRole("button", { name: /Online Studio.*available.*mk-online/i });
-    const offlineButton = screen.getByRole("button", { name: /Offline Studio.*offline.*mk-offline/i });
+    const onlineButton = screen.getByRole("button", { name: /Online Studio.*Ready/i });
+    const offlineButton = screen.getByRole("button", { name: /Offline Studio.*Offline/i });
+    expect(screen.queryByText("mk-online")).toBeNull();
     expect((onlineButton as HTMLButtonElement).disabled).toBe(false);
     expect((offlineButton as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("Signed in as owner@example.test")).toBeTruthy();
@@ -98,13 +110,14 @@ describe("MachinePicker account states", () => {
   it("keeps account identity visible while the directory is unavailable", () => {
     const { onRetryDirectory } = renderPicker(account({
       state: "directory_unavailable",
+      userId: "user-1",
       email: "owner@example.test",
       message: "Couldn't reach the machine directory.",
     }));
 
     expect(screen.getByText("Signed in as owner@example.test")).toBeTruthy();
-    expect(screen.getByText("Couldn't reach the machine directory.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.getByText("We couldn't load your Macs. Your saved direct connections still work.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(onRetryDirectory).toHaveBeenCalledOnce();
   });
 });

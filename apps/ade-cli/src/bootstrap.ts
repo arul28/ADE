@@ -1526,6 +1526,24 @@ export async function createAdeRuntime(args: {
         resolvedArgs.syncRuntime?.sharedSyncListener?.getExpectedLoopbackNonce() ?? null,
       getRelayBridgeProof: () =>
         resolvedArgs.syncRuntime?.sharedSyncListener?.getRelayBridgeProof() ?? null,
+      isAccountSignedIn: () => {
+        const status = accountAuthService.getStatus();
+        return status.signedIn && Boolean(status.userId?.trim());
+      },
+      getAccountLease: async () => {
+        const status = accountAuthService.getStatus();
+        const userId = status.signedIn ? status.userId?.trim() || null : null;
+        if (!userId) return null;
+        try {
+          const token = (await accountAuthService.getAccessToken()).trim();
+          const refreshed = accountAuthService.getStatus();
+          return token && refreshed.signedIn && refreshed.userId?.trim() === userId
+            ? { userId }
+            : null;
+        } catch {
+          return null;
+        }
+      },
     }));
   // Only the runtime that actually hosts phone sync (owns the brain-level
   // shared listener) may register the relay tunnel. The relay DO keeps ONE

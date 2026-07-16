@@ -13,6 +13,15 @@ export type BrowserDialCandidate = {
   source?: SyncAddressCandidate;
 };
 
+/**
+ * Returns whether dialing this endpoint consumes an ADE Relay account lease.
+ * Unknown cached WSS endpoints are intentionally treated as Relay until their
+ * direct provenance is explicitly stored.
+ */
+export function browserEndpointRequiresRelayAccess(candidate: BrowserDialCandidate): boolean {
+  return candidate.kind === "relay" || candidate.kind === "lastGood";
+}
+
 export type EndpointDerivationInput = {
   payload?: SyncPairingQrPayload | string | null;
   environment?: WebClientEnvironmentRecord | null;
@@ -45,7 +54,7 @@ function urlForCandidate(host: string, port: number): string {
   return `ws://${bracketed}:${port}`;
 }
 
-function relayUrls(payload: SyncPairingQrPayload | null, environment: WebClientEnvironmentRecord | null): string[] {
+export function browserRelayUrls(payload: SyncPairingQrPayload | null, environment: WebClientEnvironmentRecord | null): string[] {
   const urls: string[] = [];
   const add = (value: string | null | undefined) => {
     if (value && /^wss:\/\//i.test(value) && !urls.includes(value)) urls.push(value);
@@ -90,12 +99,24 @@ export function deriveBrowserSyncEndpoints(input: EndpointDerivationInput): Brow
   const page = currentLocation(input.location);
   const candidates: BrowserDialCandidate[] = [];
   const port = Math.floor(environment?.port ?? payload?.port ?? 0);
+  const knownRelayUrls = browserRelayUrls(payload, environment);
+  const explicitWssEndpoints = environment?.explicitWssEndpoints ?? [];
 
   if (environment?.lastGoodEndpoint) {
-    addUnique(candidates, classifyUrl(environment.lastGoodEndpoint, page, "lastGood"));
+    const lastGoodKind: BrowserDialCandidate["kind"] = knownRelayUrls.includes(environment.lastGoodEndpoint)
+      ? "relay"
+      : explicitWssEndpoints.includes(environment.lastGoodEndpoint)
+        ? "explicitWss"
+        // Plain WS is necessarily a direct browser route. Preserve that
+        // provenance when promoting it to last-good so signed-out LAN/localhost
+        // reconnect does not get mistaken for an unknown secure Relay route.
+        : /^ws:\/\//i.test(environment.lastGoodEndpoint)
+          ? "candidate"
+          : "lastGood";
+    addUnique(candidates, classifyUrl(environment.lastGoodEndpoint, page, lastGoodKind));
   }
 
-  for (const relayUrl of relayUrls(payload, environment)) {
+  for (const relayUrl of knownRelayUrls) {
     addUnique(candidates, { url: relayUrl, kind: "relay", dialable: true });
   }
 
@@ -122,7 +143,7 @@ export function deriveBrowserSyncEndpoints(input: EndpointDerivationInput): Brow
     }
   }
 
-  for (const endpoint of environment?.explicitWssEndpoints ?? []) {
+  for (const endpoint of explicitWssEndpoints) {
     if (/^wss:\/\//i.test(endpoint)) {
       addUnique(candidates, { url: endpoint, kind: "explicitWss", dialable: true });
     }

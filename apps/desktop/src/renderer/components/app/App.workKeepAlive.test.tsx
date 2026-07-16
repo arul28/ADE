@@ -149,6 +149,10 @@ vi.mock("../onboarding/OnboardingBootstrap", () => ({
   OnboardingBootstrap: () => null,
 }));
 
+vi.mock("../onboarding/LaunchGate", () => ({
+  LaunchGate: ({ children }: { children: React.ReactNode }) => children,
+}));
+
 vi.mock("../run/RunPage", () => ({
   RunPage: () => <div data-testid="project-page" />,
 }));

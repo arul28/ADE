@@ -140,7 +140,12 @@ Requirements: macOS 13+, git on `PATH`, Node 22.13+ for headless CLI workflows.
 
 ### iOS
 
-Install ADE Mobile from [TestFlight](https://testflight.apple.com/join/ZSdJGKPy), then pair it with the Mac from the desktop **Mobile** control or with `ade brain pin generate`.
+Install ADE Mobile from [TestFlight](https://testflight.apple.com/join/ZSdJGKPy).
+Sign in on the phone and Mac to see your machines automatically and use ADE
+Relay away from home, or choose **Continue without an account** and pair from
+desktop **Connections > Mobile** / `ade brain pin generate`. Direct QR/link,
+Nearby, address/PIN, and SSH pairing work without an account; Tailscale keeps a
+direct pairing reachable when the devices are on different networks.
 
 ### Windows
 
@@ -165,7 +170,7 @@ ade actions list --text   # discover every service action
 
 ## Architecture
 
-Local-first, on purpose. The center of ADE is the **brain** — the always-on, machine-owned ADE process for a channel. The brain owns the project catalog, sync websocket, and executor authority; desktop, `ade code`, the iOS app, and SSH-attached desktop windows attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and machine-wide state lives under `~/.ade` or `~/.ade-<channel>`. When desktop is running, its Electron main process also hosts a **desktop bridge endpoint** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the brain can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
+Local-first, on purpose. The center of ADE is the **brain** — the always-on, machine-owned ADE process for a channel. The brain owns the project catalog, sync websocket, and executor authority; desktop, `ade code`, the iOS app, and paired/SSH-attached desktop windows attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and machine-wide state lives under `~/.ade` or `~/.ade-<channel>`. When desktop is running, its Electron main process also hosts a **desktop bridge endpoint** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the brain can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
 
 ```text
 apps/ade-cli   ADE brain + manual runtime entry points + `ade` CLI + `ade code` terminal client
@@ -414,7 +419,7 @@ launchctl print gui/$(id -u)/com.ade.runtime.beta
 ls -l ~/Library/LaunchAgents/com.ade.runtime.beta.plist ~/.ade-beta/sock/ade.sock
 ```
 
-Set or rotate the channel's mobile pairing PIN from the Desktop Mobile control,
+Set or rotate the channel's mobile pairing PIN from **Connections > Mobile**,
 or from the CLI against that channel home:
 
 ```bash

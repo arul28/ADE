@@ -180,6 +180,10 @@ import {
   readMachineRegistryRecentProjects,
   runMachineStateMigration,
 } from "./services/runtime/machineStateMigration";
+import {
+  markMachineTrustResetComplete,
+  runMachineTrustResetMigration,
+} from "./services/runtime/machineTrustResetMigration";
 import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
@@ -1149,6 +1153,21 @@ app.whenReady().then(async () => {
     layout: machineAdeLayout,
     recentProjects: cleanedRecentProjects,
   });
+  // Ship the clarified connection trust model with a clean slate. Development
+  // launches never touch a developer's saved machine list; each packaged
+  // Stable/Beta/Alpha home owns an independent one-time marker.
+  let machineTrustResetRestartRequired = false;
+  if (app.isPackaged) {
+    try {
+      machineTrustResetRestartRequired = runMachineTrustResetMigration(machineAdeLayout).restartRequired;
+    } catch (error) {
+      // Leave the reset incomplete so the next launch retries. A filesystem
+      // permission problem must not prevent ADE itself from starting.
+      console.warn("[warn] machine_trust_reset.failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
   const shouldAttemptRuntimeServiceInstall =
     app.isPackaged
     && process.env.NODE_ENV !== "test"
@@ -1326,11 +1345,16 @@ app.whenReady().then(async () => {
     },
   });
   if (shouldAttemptRuntimeServiceInstall) {
-    void localRuntimePool.installServiceBestEffort()
+    void localRuntimePool.installServiceBestEffort({
+      forceRestart: machineTrustResetRestartRequired,
+    })
       .then(() => {
         const status = localRuntimePool.getStatus().serviceInstall;
         if (status.state === "installed") {
           markMachineStateMigrationComplete({ layout: machineAdeLayout });
+          if (machineTrustResetRestartRequired) {
+            markMachineTrustResetComplete(machineAdeLayout);
+          }
         }
       })
       .catch((error) => {

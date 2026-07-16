@@ -18,7 +18,9 @@ struct AccountConnectionsSection: View {
         VStack(alignment: .leading, spacing: 12) {
           SettingsSectionHeader(
             label: "ACCOUNT",
-            hint: account.isSignedIn ? "Your machines, from anywhere" : "Continue to find your machines"
+            hint: account.isSignedIn
+              ? "Your Macs on other networks"
+              : "Sign in or create an account for internet connections"
           )
 
           switch account.phase {
@@ -64,7 +66,7 @@ struct AccountSignInPromptCard: View {
           Text("Continue to ADE")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text("See every machine on your account and connect with one tap.")
+          Text("Connect to a Mac on another network. Use the same ADE account on your iPhone and Mac.")
             .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -206,7 +208,7 @@ struct AccountMachinesList: View {
       if account.machines.isEmpty {
         AccountMachinesNote(
           icon: "desktopcomputer",
-          text: "No machines on your account yet. Pair one below to add it."
+          text: "No Macs are signed in to this account yet. Open ADE on your Mac and sign in there too."
         )
       } else {
         machineRows

@@ -2,35 +2,72 @@ import React from "react";
 import type { BrowserAccountSnapshot } from "../account/client";
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine } from "../../../shared/types/account";
-import type { WebClientEnvironmentRecord } from "../sync";
+import {
+  canUseRelayForEnvironment,
+  deriveBrowserSyncEndpoints,
+  filterEnvironmentEndpoints,
+  type WebClientEnvironmentRecord,
+  type WebRelayAccess,
+} from "../sync";
 import { ScreenShell } from "./ScreenShell";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton, recessedStyle } from "./shellTokens";
+import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton, recessedStyle } from "./shellTokens";
 
 function lastConnectedLabel(value: string | null | undefined): string {
-  if (!value) return "Never connected";
-  try {
-    return `Last connected ${new Date(value).toLocaleString()}`;
-  } catch {
-    return "Previously connected";
-  }
+  if (!value) return "Not connected yet";
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? `Last connected ${date.toLocaleString()}` : "Connected before";
 }
 
 function lastSeenLabel(value: number | null): string {
   if (value == null) return "Last seen unavailable";
   const date = new Date(value);
-  return Number.isFinite(date.getTime())
-    ? `Last seen ${date.toLocaleString()}`
-    : "Last seen unavailable";
+  return Number.isFinite(date.getTime()) ? `Last seen ${date.toLocaleString()}` : "Last seen unavailable";
 }
 
 function accountIdentity(account: BrowserAccountSnapshot): string {
   return account.email ?? account.name ?? account.userId ?? "ADE account";
 }
 
-/** Full-screen chooser when several machines are paired and none is selected. */
+function hasDirectRoute(environment: WebClientEnvironmentRecord): boolean {
+  const endpoints = deriveBrowserSyncEndpoints({ environment });
+  return filterEnvironmentEndpoints(environment, endpoints, { kind: "signed_out" })
+    .some((candidate) => candidate.dialable);
+}
+
+function EnvironmentButton({
+  environment,
+  onSelect,
+}: {
+  environment: WebClientEnvironmentRecord;
+  onSelect: (environment: WebClientEnvironmentRecord) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(environment)}
+      style={recessedStyle({
+        display: "grid",
+        gap: 4,
+        textAlign: "left",
+        cursor: "pointer",
+        border: `1px solid ${COLORS.border}`,
+      })}
+    >
+      <span style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
+        {environment.machineName}
+      </span>
+      <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 11 }}>
+        {lastConnectedLabel(environment.lastConnectedAt)}
+      </span>
+    </button>
+  );
+}
+
+/** Beginner-first account chooser with direct connections kept as an advanced path. */
 export function MachinePicker({
   environments,
   account,
+  relayAccess,
   connectingMachineKey,
   onSelect,
   onSelectAccountMachine,
@@ -41,6 +78,7 @@ export function MachinePicker({
 }: {
   environments: WebClientEnvironmentRecord[];
   account: BrowserAccountSnapshot;
+  relayAccess: WebRelayAccess;
   connectingMachineKey: string | null;
   onSelect: (environment: WebClientEnvironmentRecord) => void;
   onSelectAccountMachine: (machine: AdeAccountMachine) => void;
@@ -49,74 +87,81 @@ export function MachinePicker({
   onSignOut: () => void;
   onRetryDirectory: () => void;
 }) {
-  return (
-    <ScreenShell title="Choose a machine" subtitle="Pair directly, or sign in to use your ADE account machine directory.">
-      {environments.length > 0 ? (
-        <div style={{ display: "grid", gap: 10 }}>
-          <div style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10, letterSpacing: "0.05em", textTransform: "uppercase" }}>
-            Paired machines
-          </div>
-          {environments.map((environment) => (
-            <button
-              key={environment.envId}
-              type="button"
-              onClick={() => onSelect(environment)}
-              style={recessedStyle({
-                display: "grid",
-                gap: 4,
-                textAlign: "left",
-                cursor: "pointer",
-                border: `1px solid ${COLORS.border}`,
-              })}
-            >
-              <span style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
-                {environment.machineName}
-              </span>
-              <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 11 }}>
-                {lastConnectedLabel(environment.lastConnectedAt)}
-              </span>
-            </button>
-          ))}
-        </div>
-      ) : null}
+  const signedIn = account.state === "signed_in" || account.state === "directory_unavailable";
+  const directEnvironments = environments.filter((environment) => (
+    environment.accountOwnerUserId == null && hasDirectRoute(environment)
+  ));
+  const savedRelayEnvironments = environments.filter((environment) => (
+    canUseRelayForEnvironment(environment, relayAccess)
+    && !account.machines.some((machine) => machine.deviceId === environment.hostDeviceId)
+  ));
 
-      <div style={{ height: 1, background: COLORS.border }} />
-      <div style={{ display: "grid", gap: 10 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div>
-            <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
-              Account machines
-            </div>
-            <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11, marginTop: 2 }}>
-              {account.state === "signed_in" || account.state === "directory_unavailable"
-                ? `Signed in as ${accountIdentity(account)}`
-                : "Optional — pairing works without an account"}
-            </div>
-          </div>
-          {account.state === "signed_in" || account.state === "directory_unavailable" ? (
-            <button type="button" style={outlineButton()} onClick={onSignOut}>Sign out</button>
-          ) : account.state !== "unconfigured" && account.state !== "loading" ? (
-            <button type="button" style={outlineButton()} onClick={onSignIn}>
-              {account.state === "auth_expired" ? "Sign in again" : "Sign in"}
-            </button>
-          ) : null}
-        </div>
-
+  if (!signedIn) {
+    const signInAvailable = account.state !== "unconfigured";
+    return (
+      <ScreenShell
+        title="Sign in to ADE"
+        subtitle="Sign in to connect this browser to your Macs, wherever they are."
+      >
         {account.state === "loading" ? (
-          <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>Loading account machines…</div>
-        ) : account.state === "unconfigured" || account.state === "auth_expired" ? (
-          <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>{account.message}</div>
-        ) : account.state === "directory_unavailable" ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
-              {account.message ?? "Machine directory is unavailable."}
-            </span>
-            <button type="button" style={outlineButton()} onClick={onRetryDirectory}>Retry</button>
+          <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13 }}>Checking your account…</div>
+        ) : signInAvailable ? (
+          <button type="button" style={primaryButton({ justifySelf: "start", height: 38 })} onClick={onSignIn}>
+            {account.state === "auth_expired" ? "Sign in again" : "Sign in"}
+          </button>
+        ) : (
+          <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55 }}>
+            Sign-in is not available on this web client. You can still use a direct connection below.
           </div>
-        ) : account.state === "signed_in" ? (
-          account.machines.length === 0 ? (
-            <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>No machines are registered to this account.</div>
-          ) : account.machines.map((machine) => {
+        )}
+
+        {account.message && account.state === "auth_expired" ? (
+          <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>{account.message}</div>
+        ) : null}
+
+        <details style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14 }}>
+          <summary style={{ color: COLORS.textSecondary, cursor: "pointer", fontFamily: SANS_FONT, fontSize: 13 }}>
+            Connect directly (advanced)
+          </summary>
+          <div style={{ display: "grid", gap: 10, paddingTop: 12 }}>
+            <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.55 }}>
+              For localhost or a secure address you manage. Sign in to connect over the internet.
+            </div>
+            {directEnvironments.map((environment) => (
+              <EnvironmentButton key={environment.envId} environment={environment} onSelect={onSelect} />
+            ))}
+            <button type="button" style={outlineButton({ justifySelf: "start" })} onClick={onPair}>
+              Use a pairing link
+            </button>
+          </div>
+        </details>
+      </ScreenShell>
+    );
+  }
+
+  return (
+    <ScreenShell title="Choose a Mac" subtitle="Choose a Mac on your ADE account.">
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
+          Signed in as {accountIdentity(account)}
+        </div>
+        <button type="button" style={outlineButton()} onClick={onSignOut}>Sign out</button>
+      </div>
+
+      {account.state === "directory_unavailable" ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
+            We couldn't load your Macs. Your saved direct connections still work.
+          </span>
+          <button type="button" style={outlineButton()} onClick={onRetryDirectory}>Try again</button>
+        </div>
+      ) : account.machines.length === 0 ? (
+        <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55 }}>
+          No Macs are connected to this account yet. Open ADE on your Mac and sign in with this account.
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {account.machines.map((machine) => {
             const connectionState = accountMachineConnectionState(machine, account.relayBaseUrls);
             const available = connectionState === "available";
             const connecting = connectingMachineKey === machine.machineKey;
@@ -126,7 +171,7 @@ export function MachinePicker({
                 type="button"
                 disabled={!available || connecting}
                 onClick={() => onSelectAccountMachine(machine)}
-                title={connectionState === "offline" ? "This machine is offline." : !available ? "No secure relay route is available." : undefined}
+                title={connectionState === "offline" ? "This Mac is offline." : !available ? "Open ADE on this Mac to finish connecting it." : undefined}
                 style={recessedStyle({
                   display: "grid",
                   gap: 4,
@@ -141,20 +186,38 @@ export function MachinePicker({
                     {machine.name ?? machine.machineKey}
                   </span>
                   <span style={{ color: available ? COLORS.success : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
-                    {connecting ? "connecting" : connectionState}
+                    {connecting ? "Connecting…" : available ? "Ready" : connectionState === "offline" ? "Offline" : "Open ADE on this Mac"}
                   </span>
                 </span>
                 <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 11 }}>
-                  {lastSeenLabel(machine.lastSeenAt)} · {machine.machineKey}
+                  {lastSeenLabel(machine.lastSeenAt)}
                 </span>
               </button>
             );
-          })
-        ) : null}
-      </div>
-      <button type="button" style={outlineButton({ justifySelf: "start" })} onClick={onPair}>
-        Pair a new machine
-      </button>
+          })}
+        </div>
+      )}
+
+      {savedRelayEnvironments.map((environment) => (
+        <EnvironmentButton key={environment.envId} environment={environment} onSelect={onSelect} />
+      ))}
+
+      <details style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14 }}>
+        <summary style={{ color: COLORS.textSecondary, cursor: "pointer", fontFamily: SANS_FONT, fontSize: 13 }}>
+          More ways to connect
+        </summary>
+        <div style={{ display: "grid", gap: 10, paddingTop: 12 }}>
+          <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.55 }}>
+            Use a pairing link, localhost, or a secure address you manage.
+          </div>
+          {directEnvironments.map((environment) => (
+            <EnvironmentButton key={environment.envId} environment={environment} onSelect={onSelect} />
+          ))}
+          <button type="button" style={outlineButton({ justifySelf: "start" })} onClick={onPair}>
+            Use a pairing link
+          </button>
+        </div>
+      </details>
     </ScreenShell>
   );
 }

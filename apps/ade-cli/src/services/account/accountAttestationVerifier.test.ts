@@ -83,7 +83,10 @@ describe("verifyClerkAccountAttestation", () => {
       token: audienceToken,
       expectedUserId: OWNER_USER_ID,
       config: config(),
-    })).resolves.toMatchObject({ userId: OWNER_USER_ID });
+    })).resolves.toMatchObject({
+      userId: OWNER_USER_ID,
+      expiresAtMs: expect.any(Number),
+    });
     await expect(verifyClerkAccountAttestation({
       token: azpToken,
       expectedUserId: OWNER_USER_ID,
@@ -214,6 +217,7 @@ describe("pairPeerViaAccount", () => {
       dpopPublicKey: publicKey,
       runtimeHostGranted: false,
       peerDeviceType: "phone",
+      accountOwnerUserId: OWNER_USER_ID,
       lastUsedAt: expect.any(String),
     });
     const rotatedPhonePairing = store.pairPeerViaAccount(phonePeer, attestation);
@@ -235,6 +239,7 @@ describe("pairPeerViaAccount", () => {
       dpopPublicKey: publicKey,
       runtimeHostGranted: true,
       peerDeviceType: "desktop",
+      accountOwnerUserId: OWNER_USER_ID,
     });
 
     const directAccountDesktop = store.pairPeerViaAccount({
@@ -248,6 +253,55 @@ describe("pairPeerViaAccount", () => {
       dpopPublicKey: publicKey,
       runtimeHostGranted: true,
       peerDeviceType: "desktop",
+      accountOwnerUserId: OWNER_USER_ID,
     });
+  });
+
+  it("revokes only account-owned records and lets explicit PIN trust declassify one", async () => {
+    const { store, pinStore, pairingFile } = harness();
+    const attestation = await verifyClerkAccountAttestation({
+      token: await mintToken({ audience: OAUTH_CLIENT_ID }),
+      expectedUserId: OWNER_USER_ID,
+      config: config(),
+    });
+    const otherUserId = "user_other_owner";
+    const otherAttestation = await verifyClerkAccountAttestation({
+      token: await mintToken({ sub: otherUserId, audience: OAUTH_CLIENT_ID }),
+      expectedUserId: otherUserId,
+      config: config(),
+    });
+    const publicKey = dpopPublicKey();
+    const accountPeer = { ...phonePeer, deviceId: "account-revocable" };
+    store.pairPeerViaAccount(accountPeer, attestation, { dpopPublicKey: publicKey });
+    expect(() => store.pairPeerViaAccount(accountPeer, otherAttestation, {
+      dpopPublicKey: publicKey,
+    })).toThrow(/different ADE account/i);
+    store.pairPeerViaAccount({ ...phonePeer, deviceId: "other-account" }, otherAttestation, {
+      dpopPublicKey: publicKey,
+    });
+    store.pairPeerViaLocalTrust({ ...phonePeer, deviceId: "ssh-local" }, {
+      dpopPublicKey: publicKey,
+    });
+    const legacy = JSON.parse(fs.readFileSync(pairingFile, "utf8"));
+    legacy["legacy-local"] = {
+      ...legacy["ssh-local"],
+      peerName: "Legacy local",
+    };
+    delete legacy["legacy-local"].accountOwnerUserId;
+    fs.writeFileSync(pairingFile, `${JSON.stringify(legacy, null, 2)}\n`);
+
+    expect(store.revokeAccountOwnedExcept(otherUserId)).toEqual(["account-revocable"]);
+    expect(store.getPairingRecord("account-revocable")).toBeNull();
+    expect(store.getPairingRecord("other-account")?.accountOwnerUserId).toBe(otherUserId);
+    expect(store.getPairingRecord("ssh-local")?.accountOwnerUserId).toBeNull();
+    expect(store.getPairingRecord("legacy-local")).not.toBeNull();
+    expect(store.revokeAccountOwnedExcept(null)).toEqual(["other-account"]);
+
+    store.pairPeerViaAccount(accountPeer, attestation, { dpopPublicKey: publicKey });
+    pinStore.setPin("428193");
+    store.pairPeer(accountPeer, "428193", { dpopPublicKey: publicKey });
+    expect(store.getPairingRecord(accountPeer.deviceId)?.accountOwnerUserId).toBeNull();
+    expect(store.revokeAccountOwnedExcept(null)).toEqual([]);
+    expect(store.getPairingRecord(accountPeer.deviceId)).not.toBeNull();
   });
 });

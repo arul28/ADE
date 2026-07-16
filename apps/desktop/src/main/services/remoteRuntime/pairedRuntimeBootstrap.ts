@@ -23,6 +23,7 @@ import {
 import { buildPairedEndpointCandidates } from "./pairedRuntimeRoutes";
 import {
   PairedRuntimeCompatibilityError,
+  PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
 
@@ -30,11 +31,17 @@ export type PairedRuntimeBootstrapResult = {
   client: RuntimeRpcClient;
   transport: SyncRuntimeTransport;
   portForwardClient: SyncPortForwardClient;
+  /** Ephemeral owner whose proof authorized the active Relay route. */
+  relayAccountOwnerUserId: string | null;
   result: RemoteRuntimeConnectResult;
 };
 
 type PairedRuntimeBootstrapOptions = {
   openTransport?: typeof openSyncRuntimeTransport;
+  getAccountRelayProof?: () => Promise<{
+    userId: string;
+    token: string;
+  } | null>;
 };
 
 function errorMessage(error: unknown): string {
@@ -101,15 +108,46 @@ export async function bootstrapPairedRuntime(args: {
 
   const openTransport = args.options?.openTransport ?? openSyncRuntimeTransport;
   const routeErrors: string[] = [];
+  let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   for (const candidate of candidates) {
+    let relayAccountToken: string | null = null;
+    let relayAccountOwnerUserId: string | null = null;
+    if (candidate.kind === "relay") {
+      let proof: { userId: string; token: string } | null = null;
+      try {
+        proof = await args.options?.getAccountRelayProof?.() ?? null;
+      } catch (error) {
+        relayAuthError = new PairedRuntimeRelayAuthRequiredError(
+          "Sign in to ADE to connect through ADE Relay.",
+          error,
+        );
+        continue;
+      }
+      if (
+        !proof?.userId.trim()
+        || !proof.token.trim()
+      ) {
+        relayAuthError = new PairedRuntimeRelayAuthRequiredError(
+          "Sign in to ADE to connect through ADE Relay.",
+        );
+        continue;
+      }
+      relayAccountToken = proof.token.trim();
+      relayAccountOwnerUserId = proof.userId.trim();
+    }
     let transport: SyncRuntimeTransport;
     try {
       transport = await openTransport({
         credentials,
         endpoint: candidate.endpoint,
         appVersion: args.appVersion,
+        relayAccountToken,
       });
     } catch (error) {
+      if (error instanceof PairedRuntimeRelayAuthRequiredError) {
+        relayAuthError = error;
+        continue;
+      }
       routeErrors.push(`${candidate.endpoint}: ${errorMessage(error)}`);
       continue;
     }
@@ -199,6 +237,7 @@ export async function bootstrapPairedRuntime(args: {
         client,
         transport,
         portForwardClient,
+        relayAccountOwnerUserId,
         result: {
           target: updated,
           arch: updated.lastSeenArch ?? "unknown",
@@ -218,6 +257,8 @@ export async function bootstrapPairedRuntime(args: {
       throw error;
     }
   }
+
+  if (relayAuthError) throw relayAuthError;
 
   throw new PairedRuntimeTransportUnavailableError(
     "Could not reach the paired ADE runtime over LAN, tailnet, or relay. "

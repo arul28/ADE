@@ -57,6 +57,7 @@ import type {
   SyncFileRequest,
   SyncFileResponsePayload,
   SyncHelloPayload,
+  SyncHelloErrorPayload,
   SyncMobileProjectSummary,
   SyncPairingRequestPayload,
   PairedRuntimeHelloOkPayload,
@@ -432,6 +433,8 @@ type PeerState = {
   remoteAddress: string | null;
   remotePort: number | null;
   transportOrigin: SyncTransportOrigin;
+  relayAccountExpiresAtMs: number | null;
+  relayAccountExpiryTimer: ReturnType<typeof setTimeout> | null;
   subscribedSessionIds: Set<string>;
   subscribedChatSessionIds: Set<string>;
   chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
@@ -678,8 +681,12 @@ type SyncHostServiceArgs = {
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   pinStore: SyncPinStore;
-  accountAuthService?: Pick<AccountAuthService, "getStatus">;
+  accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
   getAccountAttestationConfig?: () => AccountAttestationConfig;
+  /** Test seam for controlling an in-flight account attestation. */
+  verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
+  /** Test seam for account-session lease reconciliation. */
+  accountLeasePollMs?: number;
   runtimeNameStore?: SyncRuntimeNameStore;
   bootstrapTokenPath?: string;
   pairingSecretsPath?: string;
@@ -1062,6 +1069,13 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
     if (!toOptionalString(normalizedAuth.token)) return null;
   } else if (normalizedAuth.kind === "paired") {
     if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.secret)) return null;
+    if (
+      normalizedAuth.relayAccountToken != null
+      && (
+        !toOptionalString(normalizedAuth.relayAccountToken)
+        || normalizedAuth.relayAccountToken.length > 16_384
+      )
+    ) return null;
   } else if (normalizedAuth.kind === "account") {
     if (!toOptionalString(normalizedAuth.deviceId) || !toOptionalString(normalizedAuth.accountToken)) return null;
     if (
@@ -1128,6 +1142,10 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
     return null;
   }
   const dpopPublicKey = toOptionalString(value?.dpopPublicKey);
+  const relayAccountToken = toOptionalString(value?.relayAccountToken);
+  if (value?.relayAccountToken != null && (!relayAccountToken || relayAccountToken.length > 16_384)) {
+    return null;
+  }
   const runtimeHostGrant = toOptionalString(value?.runtimeHostGrant);
   return {
     code,
@@ -1140,6 +1158,7 @@ function parsePairingRequestPayload(payload: unknown): SyncPairingRequestPayload
       dbVersion: Number(peer.dbVersion ?? 0),
     },
     ...(dpopPublicKey ? { dpopPublicKey } : {}),
+    ...(relayAccountToken ? { relayAccountToken } : {}),
     ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
   };
 }
@@ -1474,6 +1493,8 @@ export function planChatEventResume(
 }
 
 export function createSyncHostService(args: SyncHostServiceArgs) {
+  const verifyAccountAttestation = args.verifyAccountAttestation
+    ?? verifyClerkAccountAttestation;
   void recoverOrphanedNativeLanDiscoveryProcesses(args.logger);
   const layout = resolveAdeLayout(args.projectRoot);
   const bootstrapTokenPath = args.bootstrapTokenPath ?? path.join(layout.secretsDir, "sync-bootstrap-token");
@@ -1587,6 +1608,133 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const peers = new Set<PeerState>();
+  let accountLeaseUserId: string | null = null;
+  let accountLeaseTokenHash: string | null = null;
+  let accountLeaseGeneration = 0;
+  let accountLeaseInitialized = false;
+  let accountLeaseCheckInFlight: Promise<{
+    userId: string | null;
+    tokenHash: string | null;
+  }> | null = null;
+
+  const clearRelayAccountExpiry = (peer: PeerState): void => {
+    if (peer.relayAccountExpiryTimer) clearTimeout(peer.relayAccountExpiryTimer);
+    peer.relayAccountExpiryTimer = null;
+  };
+
+  const armRelayAccountExpiry = (peer: PeerState): void => {
+    clearRelayAccountExpiry(peer);
+    const expiresAtMs = peer.relayAccountExpiresAtMs;
+    if (expiresAtMs == null || peer.transportOrigin !== "relay-bridge") return;
+    const delayMs = Math.max(0, Math.min(2_147_483_647, expiresAtMs - Date.now()));
+    peer.relayAccountExpiryTimer = setTimeout(() => {
+      peer.relayAccountExpiryTimer = null;
+      if (Date.now() < expiresAtMs) {
+        armRelayAccountExpiry(peer);
+        return;
+      }
+      peer.authenticated = false;
+      peer.metadata = null;
+      peer.authKind = null;
+      peer.pairedDeviceId = null;
+      peer.pairingRecord = null;
+      try {
+        peer.ws.close(4003, "ADE Relay account proof expired");
+      } catch {
+        // ignore close failures
+      }
+    }, delayMs);
+    peer.relayAccountExpiryTimer.unref?.();
+  };
+
+  const closePeerForAccountLease = (peer: PeerState, reason: string): void => {
+    clearRelayAccountExpiry(peer);
+    const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId;
+    if (deviceId) removeAllPresenceForDevice(deviceId, "remote");
+    pairedChannelService.closePeer(peer.ws, reason, true);
+    peer.authenticated = false;
+    peer.metadata = null;
+    peer.authKind = null;
+    peer.pairedDeviceId = null;
+    peer.pairingRecord = null;
+    try {
+      peer.ws.close(4003, reason);
+    } catch {
+      // ignore close failures
+    }
+  };
+
+  const applyAccountLease = (nextUserId: string | null, nextTokenHash: string | null): void => {
+    const previousUserId = accountLeaseUserId;
+    const changed = !accountLeaseInitialized
+      || previousUserId !== nextUserId
+      || accountLeaseTokenHash !== nextTokenHash;
+    accountLeaseInitialized = true;
+    accountLeaseUserId = nextUserId;
+    accountLeaseTokenHash = nextTokenHash;
+    if (!changed) return;
+    accountLeaseGeneration += 1;
+    const revokedDeviceIds = new Set(pairingStore.revokeAccountOwnedExcept(nextUserId));
+    let closedAny = false;
+    for (const peer of peers) {
+      if (!peer.authenticated) continue;
+      const recordOwner = toOptionalString(peer.pairingRecord?.accountOwnerUserId);
+      const relayLeaseChanged = peer.transportOrigin === "relay-bridge"
+        && previousUserId !== nextUserId;
+      const accountTrustRevoked = Boolean(
+        recordOwner
+        && (recordOwner !== nextUserId || revokedDeviceIds.has(peer.pairedDeviceId ?? "")),
+      );
+      if (!relayLeaseChanged && !accountTrustRevoked) continue;
+      closePeerForAccountLease(peer, "ADE account session changed");
+      closedAny = true;
+    }
+    if (revokedDeviceIds.size > 0 || closedAny) {
+      args.logger.info("sync_host.account_trust_revoked", {
+        previousUserId,
+        nextUserId,
+        revokedDeviceCount: revokedDeviceIds.size,
+      });
+      args.onStateChanged?.();
+      broadcastBrainStatus();
+    }
+  };
+
+  const refreshAccountLease = async (): Promise<string | null> => {
+    if (accountLeaseCheckInFlight) return (await accountLeaseCheckInFlight).userId;
+    const check = (async (): Promise<{
+      userId: string | null;
+      tokenHash: string | null;
+    }> => {
+      const status = args.accountAuthService?.getStatus();
+      const userId = status?.signedIn ? status.userId?.trim() || null : null;
+      if (!userId || !args.accountAuthService) return { userId: null, tokenHash: null };
+      try {
+        const token = (await args.accountAuthService.getAccessToken()).trim();
+        const refreshed = args.accountAuthService.getStatus();
+        return token && refreshed.signedIn && refreshed.userId?.trim() === userId
+          ? { userId, tokenHash: createHash("sha256").update(token).digest("hex") }
+          : { userId: null, tokenHash: null };
+      } catch {
+        return { userId: null, tokenHash: null };
+      }
+    })();
+    accountLeaseCheckInFlight = check;
+    try {
+      const lease = await check;
+      applyAccountLease(lease.userId, lease.tokenHash);
+      return lease.userId;
+    } finally {
+      if (accountLeaseCheckInFlight === check) accountLeaseCheckInFlight = null;
+    }
+  };
+  const captureAccountAuthorization = async (): Promise<{
+    userId: string;
+    generation: number;
+  } | null> => {
+    const userId = await refreshAccountLease();
+    return userId ? { userId, generation: accountLeaseGeneration } : null;
+  };
   const mobileCommandResultCache = new Map<string, CachedMobileCommand>();
   let commandReplayCount = 0;
   let commandConflictCount = 0;
@@ -2144,6 +2292,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const brainStatusTimer = setInterval(() => {
     broadcastBrainStatus();
   }, brainStatusIntervalMs);
+  const accountLeaseTimer = setInterval(() => {
+    void refreshAccountLease();
+  }, Math.max(250, Math.floor(args.accountLeasePollMs ?? 1_000)));
+  accountLeaseTimer.unref?.();
+  void refreshAccountLease();
   const chatEventSubscription = args.agentChatService?.subscribeToEvents(
     (event) => {
       broadcastChatEvent(event);
@@ -2201,6 +2354,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       remoteAddress,
       remotePort,
       transportOrigin,
+      relayAccountExpiresAtMs: null,
+      relayAccountExpiryTimer: null,
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
       chatSubscriptionScopes: new Map(),
@@ -2260,6 +2415,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     ws.on("close", (code, reason) => {
       clearPeerAuthTimeout(peer);
+      clearRelayAccountExpiry(peer);
       // The close frame is the only record of WHY a peer left: a deliberate
       // client teardown carries a code + reason string ("Network route
       // changed.", "The machine took too long to respond.", …) while 1006
@@ -2364,6 +2520,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.authKind = snapshot.authKind;
         peer.pairedDeviceId = snapshot.pairedDeviceId;
         peer.pairingRecord = pairingRecord;
+        peer.relayAccountExpiresAtMs = snapshot.relayAccountExpiresAtMs ?? null;
+        armRelayAccountExpiry(peer);
         peer.connectedAt = snapshot.connectedAt;
         peer.lastKnownServerDbVersion = Math.max(
           0,
@@ -4591,6 +4749,47 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           try { peer.ws.close(4003, "Pairing failed"); } catch { /* ignore */ }
           return;
         }
+        let relayPairingAuthorization: Awaited<ReturnType<typeof captureAccountAuthorization>> = null;
+        if (peer.transportOrigin === "relay-bridge") {
+          relayPairingAuthorization = await captureAccountAuthorization();
+          const ownerUserId = relayPairingAuthorization?.userId ?? null;
+          const relayAccountToken = pairing.relayAccountToken?.trim() ?? "";
+          const config = args.getAccountAttestationConfig?.();
+          let accepted = Boolean(ownerUserId && relayAccountToken && config);
+          if (accepted) {
+            try {
+              await verifyAccountAttestation({
+                token: relayAccountToken,
+                expectedUserId: ownerUserId!,
+                config: config!,
+              });
+            } catch (error) {
+              accepted = false;
+              args.logger.warn("sync_host.pairing_relay_account_rejected", {
+                deviceId: pairing.peer.deviceId,
+                reason: typeof (error as { code?: unknown } | null)?.code === "string"
+                  ? (error as { code: string }).code
+                  : "verification_failed",
+              });
+            }
+          }
+          if (!accepted) {
+            args.logger.warn("sync_host.pairing_relay_account_required", {
+              deviceId: pairing.peer.deviceId,
+              hostSignedIn: Boolean(ownerUserId),
+              proofPresent: Boolean(relayAccountToken),
+            });
+            send(peer.ws, "pairing_result", {
+              ok: false,
+              error: {
+                code: "relay_account_required",
+                message: "Sign in with the same ADE account on both machines.",
+              },
+            }, envelope.requestId);
+            try { peer.ws.close(4003, "Account sign-in required"); } catch { /* ignore */ }
+            return;
+          }
+        }
         const cooldownMs = pairingCooldownMsRemaining(peer.remoteAddress);
         if (cooldownMs > 0) {
           const minutes = Math.ceil(cooldownMs / 60_000);
@@ -4604,11 +4803,34 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           try { peer.ws.close(4004, "Pairing cooldown"); } catch { /* ignore */ }
           return;
         }
+        if (relayPairingAuthorization) {
+          const commitAuthorization = await captureAccountAuthorization();
+          if (
+            !commitAuthorization
+            || commitAuthorization.userId !== relayPairingAuthorization.userId
+            || commitAuthorization.generation !== relayPairingAuthorization.generation
+          ) {
+            send(peer.ws, "pairing_result", {
+              ok: false,
+              error: {
+                code: "relay_account_required",
+                message: "Sign in with the same ADE account on both machines.",
+              },
+            }, envelope.requestId);
+            try { peer.ws.close(4003, "Account session changed"); } catch { /* ignore */ }
+            return;
+          }
+        }
         try {
           const result = pairingStore.pairPeer(pairing.peer, pairing.code, {
             dpopPublicKey: pairing.dpopPublicKey ?? null,
             runtimeHostGrant: pairing.runtimeHostGrant ?? null,
+            // A correct PIN on a direct LAN/tailnet route is the first-time
+            // Nearby authorization gate for desktop runtime access. Relay has
+            // a separate same-account proof and never inherits this exception.
+            allowDirectPinRuntimeHost: peer.transportOrigin !== "relay-bridge",
           });
+          closeExistingPeersForDevice(pairing.peer.deviceId, peer);
           clearPairFailuresAfterSuccessfulPair(peer.remoteAddress);
           args.deviceRegistryService?.upsertPeerMetadata(pairing.peer, {
             lastSeenAt: nowIso(),
@@ -4659,11 +4881,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
       let accountPairing: { deviceId: string; secret: string } | null = null;
+      let relayAccountExpiresAtMs: number | null = null;
+      let authFailureCode: SyncHelloErrorPayload["code"] = "auth_failed";
+      let authFailureMessage = "Sync authentication failed.";
       // Return semantics: `true` means authentication FAILED -> the caller below
       // sends a `hello_error` (auth_failed) and closes the socket (4003).
       // `false` means the device is authenticated.
       const authFailed = await (async () => {
         if (hello.auth?.kind === "bootstrap") {
+          if (peer.transportOrigin === "relay-bridge") {
+            authFailureCode = "relay_account_required";
+            authFailureMessage = "Sign in with the same ADE account on both machines.";
+            args.logger.warn("sync_host.bootstrap_relay_rejected", {
+              deviceId: hello.peer.deviceId,
+            });
+            return true;
+          }
           // The bootstrap token is a shared, plaintext, never-rotating secret.
           // Once the sync host is bound to the LAN (the new 0.0.0.0 default),
           // anyone who can read it off disk / a previous handshake could pair a
@@ -4707,9 +4940,59 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (hello.auth?.kind === "paired") {
           const pairedAuth = hello.auth;
           if (pairedAuth.deviceId !== hello.peer.deviceId) return true;
+          if (peer.transportOrigin === "relay-bridge") {
+            const authorization = await captureAccountAuthorization();
+            const ownerUserId = authorization?.userId ?? null;
+            const relayAccountToken = pairedAuth.relayAccountToken?.trim() ?? "";
+            const config = args.getAccountAttestationConfig?.();
+            if (!ownerUserId || !relayAccountToken || !config) {
+              authFailureCode = "relay_account_required";
+              authFailureMessage = "Sign in with the same ADE account on both machines.";
+              args.logger.warn("sync_host.paired_relay_account_required", {
+                deviceId: pairedAuth.deviceId,
+                hostSignedIn: Boolean(ownerUserId),
+                proofPresent: Boolean(relayAccountToken),
+              });
+              return true;
+            }
+            try {
+              const attestation = await verifyAccountAttestation({
+                token: relayAccountToken,
+                expectedUserId: ownerUserId,
+                config,
+              });
+              relayAccountExpiresAtMs = attestation.expiresAtMs;
+            } catch (error) {
+              authFailureCode = "relay_account_required";
+              authFailureMessage = "Sign in with the same ADE account on both machines.";
+              args.logger.warn("sync_host.paired_relay_account_rejected", {
+                deviceId: pairedAuth.deviceId,
+                reason: typeof (error as { code?: unknown } | null)?.code === "string"
+                  ? (error as { code: string }).code
+                  : "verification_failed",
+              });
+              return true;
+            }
+            const commitAuthorization = await captureAccountAuthorization();
+            if (
+              !authorization
+              || !commitAuthorization
+              || commitAuthorization.userId !== authorization.userId
+              || commitAuthorization.generation !== authorization.generation
+            ) {
+              authFailureCode = "relay_account_required";
+              authFailureMessage = "Sign in with the same ADE account on both machines.";
+              return true;
+            }
+          }
           if (!pairingStore.authenticate(pairedAuth.deviceId, pairedAuth.secret)) return true;
           authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
           if (!authenticatedPairingRecord) return true;
+          const pairingAccountOwner = toOptionalString(authenticatedPairingRecord.accountOwnerUserId);
+          if (pairingAccountOwner) {
+            const currentOwner = await refreshAccountLease();
+            if (currentOwner !== pairingAccountOwner) return true;
+          }
           const dpopFailure = evaluatePairedHelloDpop({
             storedPublicKey: authenticatedPairingRecord.dpopPublicKey,
             deviceId: pairedAuth.deviceId,
@@ -4746,9 +5029,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }
           const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
           try {
-            const ownerStatus = args.accountAuthService?.getStatus();
-            const ownerUserId = ownerStatus?.signedIn ? ownerStatus.userId?.trim() || null : null;
-            if (!ownerUserId) {
+            const authorization = await captureAccountAuthorization();
+            if (!authorization) {
               args.logger.warn("sync_host.account_owner_missing", {
                 deviceId: accountAuth.deviceId,
               });
@@ -4756,11 +5038,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             }
             const config = args.getAccountAttestationConfig?.();
             if (!config) return true;
-            const attestation = await verifyClerkAccountAttestation({
+            const attestation = await verifyAccountAttestation({
               token: accountAuth.accountToken,
-              expectedUserId: ownerUserId,
+              expectedUserId: authorization.userId,
               config,
             });
+            relayAccountExpiresAtMs = attestation.expiresAtMs;
             if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
               args.logger.warn("sync_host.account_existing_keyless_rejected", {
                 deviceId: accountAuth.deviceId,
@@ -4786,17 +5069,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               });
               return true;
             }
-            if (existingPairingRecord) {
-              // Account re-authentication proves the same Clerk owner and the
-              // already-pinned device key. Reuse the record verbatim: rotating
-              // here would silently invalidate the paired secret held by the
-              // browser/desktop. Only first-time account adoption below mints
-              // credentials and includes accountPairing in hello_ok.
+            const commitAuthorization = await captureAccountAuthorization();
+            if (
+              !commitAuthorization
+              || commitAuthorization.userId !== authorization.userId
+              || commitAuthorization.generation !== authorization.generation
+            ) {
+              args.logger.warn("sync_host.account_auth_session_changed", {
+                deviceId: accountAuth.deviceId,
+              });
+              return true;
+            }
+            const existingAccountOwner = toOptionalString(existingPairingRecord?.accountOwnerUserId);
+            if (existingPairingRecord && !existingAccountOwner) {
+              // A manual/PIN/SSH pairing stays local. Same-account Relay may
+              // use it, but account sign-in never converts or rotates it.
               authenticatedPairingRecord = existingPairingRecord;
               return false;
             }
+            if (existingAccountOwner && existingAccountOwner !== authorization.userId) return true;
             const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
-              dpopPublicKey: accountAuth.dpop?.publicKey ?? null,
+              // Reissue keeps the already-verified pinned key. The inline key
+              // is TOFU input only for a genuinely new account pairing.
+              dpopPublicKey: existingPairingRecord
+                ? null
+                : accountAuth.dpop?.publicKey ?? null,
               runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
             });
             if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
@@ -4822,8 +5119,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // the client safely drop its credentials.
         const rejectingHost = readBrainMetadata();
         send(peer.ws, "hello_error", {
-          code: "auth_failed",
-          message: "Sync authentication failed.",
+          code: authFailureCode,
+          message: authFailureMessage,
           host: {
             deviceId: rejectingHost.deviceId,
             name: rejectingHost.deviceName,
@@ -4846,6 +5143,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const recordBackedAuth = auth.kind === "paired" || auth.kind === "account";
       peer.pairedDeviceId = recordBackedAuth ? auth.deviceId : null;
       peer.pairingRecord = recordBackedAuth ? authenticatedPairingRecord : null;
+      peer.relayAccountExpiresAtMs = peer.transportOrigin === "relay-bridge"
+        ? relayAccountExpiresAtMs
+        : null;
+      armRelayAccountExpiry(peer);
       // Prefer the client's cursor for THIS project DB. The legacy single
       // dbVersion is only meaningful when the client last synced this same
       // DB; after a hosted-project change it points into a different DB's
@@ -5711,6 +6012,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(pollTimer);
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
+      clearInterval(accountLeaseTimer);
       stopRosterSafetyPoll();
       clearRosterFlushTimers();
       unpublishLanDiscovery();
@@ -5732,6 +6034,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         for (const peer of peers) {
           pairedChannelService.closePeer(peer.ws, "Sync host changed.", true);
           clearPeerAuthTimeout(peer);
+          clearRelayAccountExpiry(peer);
           peer.ws.removeAllListeners("message");
           peer.ws.removeAllListeners("close");
           peer.ws.removeAllListeners("error");
@@ -5760,6 +6063,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             authKind: peer.authKind,
             pairedDeviceId: peer.pairedDeviceId,
             connectedAt: peer.connectedAt,
+            relayAccountExpiresAtMs: peer.relayAccountExpiresAtMs,
             serverDbSiteId: args.db.sync.getSiteId(),
             lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
             subscribedSessionIds: [...peer.subscribedSessionIds],

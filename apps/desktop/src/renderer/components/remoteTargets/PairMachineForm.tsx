@@ -29,45 +29,47 @@ function friendlyPairError(error: unknown): string {
     .replace(/^Error:\s*/i, "")
     .trim();
   if (/pin|unauthor|forbidden|401|403|invalid code/i.test(message)) {
-    return "That PIN didn't work. Check the 6-digit code shown on the other machine and try again.";
+    return "That code didn't work. Check the six digits shown on the other Mac and try again.";
   }
   if (/unreachable|timed out|timeout|ECONN|ENOTFOUND|network|connect|offline/i.test(message)) {
-    return "Couldn't reach that machine. Make sure it's awake and on the same network, Tailscale, or relay.";
+    return "Couldn't reach that Mac. Make sure ADE is open there, then try again.";
   }
   return message || "Pairing failed.";
 }
 
 type PairMachineFormProps = {
   defaultDeviceName: string;
+  initialInput?: string | null;
   busy?: boolean;
   /** Runs after pairing succeeds; parent connects on the returned target id. */
   onPaired: (targetId: string) => void | Promise<void>;
 };
 
 /**
- * Pair tab: paste a pairing code/link, enter the 6-digit PIN, confirm this
- * Mac's name, and connect. The link is validated live via parsePairingInput so
- * the machine name shows before the user commits.
+ * Pair tab: paste a pairing link, enter the 6-digit PIN, and connect. The link
+ * is validated live via parsePairingInput so the machine name shows before the
+ * user commits.
  */
 export function PairMachineForm({
   defaultDeviceName,
+  initialInput = null,
   busy = false,
   onPaired,
 }: PairMachineFormProps) {
-  const [rawInput, setRawInput] = useState("");
+  const [rawInput, setRawInput] = useState(initialInput ?? "");
   const [parsed, setParsed] = useState<RemoteRuntimeParsedPairingInput | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
   const [pin, setPin] = useState("");
-  const [deviceName, setDeviceName] = useState(defaultDeviceName);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setDeviceName((current) => (current.trim() ? current : defaultDeviceName));
-  }, [defaultDeviceName]);
+  const deviceName = defaultDeviceName.trim() || "This Mac";
 
   const trimmedInput = rawInput.trim();
+
+  useEffect(() => {
+    if (initialInput) setRawInput(initialInput);
+  }, [initialInput]);
 
   useEffect(() => {
     if (!trimmedInput) {
@@ -90,7 +92,7 @@ export function PairMachineForm({
           setParsed(null);
           setParseError(
             extractError(err).replace(/^Error:\s*/i, "").trim() ||
-              "That doesn't look like a valid pairing code or link.",
+              "That doesn't look like a valid pairing link.",
           );
         } finally {
           if (!cancelled) setParsing(false);
@@ -105,7 +107,7 @@ export function PairMachineForm({
 
   const pinValid = /^\d{6}$/.test(pin.trim());
   const canSubmit = useMemo(
-    () => Boolean(parsed) && pinValid && deviceName.trim().length > 0 && !busy && !submitting,
+    () => Boolean(parsed) && pinValid && !busy && !submitting,
     [parsed, pinValid, deviceName, busy, submitting],
   );
 
@@ -118,7 +120,7 @@ export function PairMachineForm({
       const { targetId } = await window.ade.remoteRuntime.pairWithMachine({
         input: trimmedInput,
         pin: pin.trim(),
-        deviceName: deviceName.trim(),
+        deviceName,
       });
       await onPaired(targetId);
     } catch (err) {
@@ -130,17 +132,25 @@ export function PairMachineForm({
 
   return (
     <form onSubmit={(event) => void handleSubmit(event)} style={{ display: "grid", gap: 12 }}>
-      <label style={{ display: "grid", gap: 6 }}>
-        <span style={LABEL_STYLE}>Pairing code or link</span>
-        <input
-          value={rawInput}
-          onChange={(event) => setRawInput(event.target.value)}
-          placeholder="Paste the code or link from the other machine"
-          style={fieldStyle}
-          disabled={busy || submitting}
-          autoComplete="off"
-          spellCheck={false}
-        />
+      <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45 }}>
+        {initialInput
+          ? "ADE found this Mac nearby. On that Mac, open Connections and choose Share, then enter its 6-digit code."
+          : "On the other Mac, open Connections and choose Share. Paste its link here, then enter the 6-digit code."}
+      </div>
+      <div style={{ display: "grid", gap: 6 }}>
+        <span style={LABEL_STYLE}>{initialInput ? "Nearby Mac" : "Pairing link"}</span>
+        {!initialInput ? (
+          <input
+            aria-label="Pairing link"
+            value={rawInput}
+            onChange={(event) => setRawInput(event.target.value)}
+            placeholder="Paste the link from the other Mac"
+            style={fieldStyle}
+            disabled={busy || submitting}
+            autoComplete="off"
+            spellCheck={false}
+          />
+        ) : null}
         {parsing ? (
           <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11.5 }}>
             Checking…
@@ -164,31 +174,26 @@ export function PairMachineForm({
             {parseError}
           </span>
         ) : null}
-      </label>
+      </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "140px minmax(0,1fr)", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "140px minmax(0,1fr)", gap: 12, alignItems: "end" }}>
         <label style={{ display: "grid", gap: 6 }}>
-          <span style={LABEL_STYLE}>PIN</span>
+          <span style={LABEL_STYLE}>6-digit code</span>
           <input
             value={pin}
             onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 6))}
             inputMode="numeric"
-            placeholder="6-digit"
+            placeholder="000000"
             style={{ ...fieldStyle, letterSpacing: "0.24em" }}
             disabled={busy || submitting}
             autoComplete="off"
           />
         </label>
-        <label style={{ display: "grid", gap: 6 }}>
-          <span style={LABEL_STYLE}>This device's name</span>
-          <input
-            value={deviceName}
-            onChange={(event) => setDeviceName(event.target.value)}
-            placeholder="Mac name"
-            style={fieldStyle}
-            disabled={busy || submitting}
-          />
-        </label>
+        <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.4 }}>
+          {initialInput
+            ? "This confirms that you can see the code on the other Mac."
+            : "This code is shown beside the pairing link."}
+        </div>
       </div>
 
       {error ? (

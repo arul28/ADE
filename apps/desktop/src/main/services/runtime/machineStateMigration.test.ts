@@ -11,6 +11,12 @@ import {
   readMachineRegistryRecentProjects,
   runMachineStateMigration,
 } from "./machineStateMigration";
+import {
+  MACHINE_TRUST_RESET_MARKER,
+  MACHINE_TRUST_RESET_PENDING_MARKER,
+  markMachineTrustResetComplete,
+  runMachineTrustResetMigration,
+} from "./machineTrustResetMigration";
 
 function makeLayout(root: string): MachineAdeLayout {
   return {
@@ -203,5 +209,83 @@ describe("machine state migration", () => {
       })
     ).not.toThrow();
     expect(JSON.parse(fs.readFileSync(path.join(layout.secretsDir, "sync-paired-devices.json"), "utf8"))).toEqual({});
+  });
+});
+
+describe("machine trust reset migration", () => {
+  it("clears only saved machine trust and preserves identity, account, PIN, and projects", () => {
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-trust-reset-"));
+    const secretsDir = path.join(adeDir, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    for (const fileName of [
+      "remote-machines.json",
+      "desktop-paired-machines.json",
+      "sync-paired-devices.json",
+      "sync-paired-devices.json.runtime-host-grants",
+    ]) {
+      fs.writeFileSync(path.join(secretsDir, fileName), "{}\n", "utf8");
+    }
+    for (const fileName of [
+      "account-session.v1.enc",
+      "machine-identity.json",
+      "machine-key.json",
+      "sync-pin.json",
+      "sync-bootstrap-token",
+    ]) {
+      fs.writeFileSync(path.join(secretsDir, fileName), `${fileName}\n`, "utf8");
+    }
+    fs.writeFileSync(path.join(adeDir, "projects.json"), "[]\n", "utf8");
+
+    const result = runMachineTrustResetMigration({ adeDir, secretsDir });
+
+    expect(result.didRun).toBe(true);
+    expect(result.removedFiles).toEqual([
+      "remote-machines.json",
+      "desktop-paired-machines.json",
+      "sync-paired-devices.json",
+      "sync-paired-devices.json.runtime-host-grants",
+    ]);
+    expect(result.restartRequired).toBe(true);
+    expect(fs.existsSync(path.join(adeDir, MACHINE_TRUST_RESET_MARKER))).toBe(false);
+    expect(fs.existsSync(path.join(adeDir, MACHINE_TRUST_RESET_PENDING_MARKER))).toBe(true);
+    expect(fs.existsSync(path.join(adeDir, "projects.json"))).toBe(true);
+    expect(fs.readdirSync(secretsDir).sort()).toEqual([
+      "account-session.v1.enc",
+      "machine-identity.json",
+      "machine-key.json",
+      "sync-bootstrap-token",
+      "sync-pin.json",
+    ]);
+  });
+
+  it("keeps restart pending across relaunch until service restart is confirmed", () => {
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-trust-reset-"));
+    const secretsDir = path.join(adeDir, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+
+    expect(runMachineTrustResetMigration({ adeDir, secretsDir })).toMatchObject({
+      didRun: true,
+      restartRequired: true,
+    });
+    fs.writeFileSync(path.join(secretsDir, "remote-machines.json"), "{}\n", "utf8");
+
+    expect(runMachineTrustResetMigration({ adeDir, secretsDir })).toMatchObject({
+      didRun: false,
+      restartRequired: true,
+      removedFiles: [],
+    });
+    expect(fs.existsSync(path.join(adeDir, MACHINE_TRUST_RESET_MARKER))).toBe(false);
+    expect(fs.existsSync(path.join(secretsDir, "remote-machines.json"))).toBe(true);
+
+    markMachineTrustResetComplete({ adeDir });
+
+    expect(fs.existsSync(path.join(adeDir, MACHINE_TRUST_RESET_PENDING_MARKER))).toBe(false);
+    expect(fs.existsSync(path.join(adeDir, MACHINE_TRUST_RESET_MARKER))).toBe(true);
+    expect(runMachineTrustResetMigration({ adeDir, secretsDir })).toMatchObject({
+      didRun: false,
+      restartRequired: false,
+      removedFiles: [],
+    });
+    expect(fs.existsSync(path.join(secretsDir, "remote-machines.json"))).toBe(true);
   });
 });

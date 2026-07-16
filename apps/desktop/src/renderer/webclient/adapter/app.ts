@@ -180,6 +180,12 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       localState.set<AppWelcomeVideoState>("welcomeVideo", next);
       return next;
     },
+    async getLaunchGateState() {
+      return { resolved: true };
+    },
+    async resolveLaunchGate() {
+      return { resolved: true as const };
+    },
     onProjectChanged(listener: (project: ProjectInfo | null) => void) {
       return events.on("projectChanged", listener);
     },
