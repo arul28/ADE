@@ -285,17 +285,18 @@ Renderer — settings:
   disk-pressure monitor and `storageInsightsService` behind those IPCs.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
   — shared multi-device sync management used by the focused
-  **Connections > Mobile** and **Connections > Web client** tabs. It
-  surfaces the phone-pairing PIN (set / clear / reveal, or generate a new
-  six-digit PIN when only the at-rest hash remains), the v3 smart pairing URL
-  with LAN / Tailscale / loopback / relay candidates, the web-client link and
-  QR, the bootstrap token for desktop peers, relay/discovery status, and the
-  per-device panels used to forget paired phones or revoke web clients.
+  **Connections > Phone** and **Connections > Web** tabs beneath a shared
+  **This Mac** card. The card owns the phone-pairing PIN (set / clear / reveal,
+  or generate a new six-digit PIN when only the at-rest hash remains) and the
+  internal phone QR encoding the v3 smart pairing URL with LAN / Tailscale /
+  loopback / relay candidates. The Phone tab explains QR + PIN and Nearby + PIN,
+  while the Web tab is account-sign-in only. It also surfaces the bootstrap
+  token for desktop peers, relay/discovery status, and the per-device panels
+  used to forget paired phones or revoke web clients.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` — the single top-bar Connections control and its
-  Machines, Mobile, and Web client tabs. Mobile includes the TestFlight install
-  action; Web client reports connected browser peers and exposes focused
-  browser pairing.
+  Machines, Phone, and Web tabs. The Web tab reports connected browser peers
+  and directs signed-out users to account sign-in.
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
   and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget

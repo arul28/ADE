@@ -1023,6 +1023,58 @@ describe("RemoteTargetList", () => {
     );
   });
 
+  it("never lists this Mac as its own remote target (self-filter by machineKey or deviceId)", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+
+    const machines: AdeAccountMachine[] = [
+      {
+        machineKey: "local-mk", // matches getLocalMachineIdentity().machineKey
+        deviceId: "other-dev",
+        name: "This Very Mac",
+        platform: "darwin",
+        deviceType: "desktop",
+        reachableEndpoints: [],
+        lastSeenAt: Date.now(),
+        online: true,
+      },
+      {
+        machineKey: "reinstalled-mk",
+        deviceId: "local-dev", // matches getLocalMachineIdentity().deviceId (pre-reinstall row)
+        name: "This Mac Before Reinstall",
+        platform: "darwin",
+        deviceType: "desktop",
+        reachableEndpoints: [],
+        lastSeenAt: Date.now() - 60_000,
+        online: false,
+      },
+      {
+        machineKey: "mk_other",
+        deviceId: "dev_other",
+        name: "Other Studio",
+        platform: "darwin",
+        deviceType: "desktop",
+        reachableEndpoints: [],
+        lastSeenAt: Date.now(),
+        online: true,
+      },
+    ];
+
+    render(
+      <RemoteTargetList
+        accountMachines={machines}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Other Studio")).toBeTruthy());
+    expect(accountMock.getLocalMachineIdentity).toHaveBeenCalled();
+    expect(screen.queryByText("This Very Mac")).toBeNull();
+    expect(screen.queryByText("This Mac Before Reinstall")).toBeNull();
+  });
+
   it("explains how to finish setup when an online account Mac has no ready route", () => {
     const machine: AdeAccountMachine = {
       machineKey: "studio",

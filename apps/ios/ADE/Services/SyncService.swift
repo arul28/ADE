@@ -10700,10 +10700,11 @@ final class SyncService: ObservableObject {
       matchingDiscovery?.addresses ?? activeHostProfile?.discoveredLanAddresses ?? []
     )
     // The host advertises its live cloud-relay URL in `hello_ok`: a wss route
-    // when the relay is up, JSON null when the kill-switch is off (the brain
-    // fallback handler never sends brain_status, so this is the only clear
-    // signal on that path), and no key at all on older hosts. Fold a route in
-    // freshest-first; clear on explicit null; keep saved routes when absent.
+    // when the relay is up, JSON null when no relay route is live — e.g. the
+    // host is signed out (the brain fallback handler never sends brain_status,
+    // so this is the only clear signal on that path), and no key at all on
+    // older hosts. Fold a route in freshest-first; clear on explicit null;
+    // keep saved routes when absent.
     let mergedRelayCandidates: [String] = payload["cloudRelayWssUrl"] is NSNull
       ? []
       : syncMergedRelayCandidates(
