@@ -72,15 +72,17 @@ import {
   validateLaunchProfilePermissionMode,
   type LaunchProfile,
 } from "../../desktop/src/shared/cliLaunch";
-import type {
-  SyncMobileProjectSummary,
-  SyncPairingConnectInfo,
-  SyncProjectForgetRequestPayload,
-  SyncProjectForgetResultPayload,
-  SyncProjectOpenRequestPayload,
-  SyncProjectSwitchRequestPayload,
-  SyncProjectSwitchResultPayload,
-  SyncRoleSnapshot,
+import {
+  createSyncAccountDirectoryHealth,
+  type SyncMobileProjectSummary,
+  type SyncAccountDirectoryHealth,
+  type SyncPairingConnectInfo,
+  type SyncProjectForgetRequestPayload,
+  type SyncProjectForgetResultPayload,
+  type SyncProjectOpenRequestPayload,
+  type SyncProjectSwitchRequestPayload,
+  type SyncProjectSwitchResultPayload,
+  type SyncRoleSnapshot,
 } from "../../desktop/src/shared/types/sync";
 import {
   isCurrentProcessDescendantOfPid,
@@ -221,6 +223,7 @@ type FormatterId =
   | "external-sessions"
   | "storage-snapshot"
   | "storage-compress"
+  | "sync-status"
   | "sync-web";
 
 type ChatWaitTarget =
@@ -13320,6 +13323,7 @@ Usage:
     return {
       kind: "execute",
       label: "sync status",
+      formatter: "sync-status",
       steps: [
         {
           key: "result",
@@ -15130,6 +15134,12 @@ async function runServe(
   const machineCloudRelayStore = createSyncCloudRelayStore({
     filePath: path.join(layout.secretsDir, "sync-cloud-relay.json"),
   });
+  let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth =>
+    accountMachinePublisher?.getPublisherHealth() ?? createSyncAccountDirectoryHealth(
+      "sync_disabled",
+      "Account-directory publishing has not started.",
+    );
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
@@ -15155,6 +15165,7 @@ async function runServe(
       appVersion: VERSION,
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       phonePairingStateDir: layout.secretsDir,
+      getAccountDirectoryHealth,
       projectCatalogProvider: machineProjectCatalogProvider,
       // All-projects chat roster (mobile hub). Closes over `scopeRegistry`,
       // which is assigned by this very `new ProjectScopeRegistry(...)` call —
@@ -15179,7 +15190,6 @@ async function runServe(
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   let clearSyncRuntimeRpcHandlerFactory: (() => void) | null = null;
-  let accountMachinePublisher: AccountMachinePublisherService | null = null;
   process.env.ADE_DEFAULT_ROLE = options.role;
   try {
 
@@ -15199,6 +15209,7 @@ async function runServe(
       projectRegistry,
       scopeRegistry,
       personalChatScope,
+      getAccountDirectoryHealth,
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
@@ -15364,7 +15375,14 @@ async function runServe(
     const { createBrainAccountMachinePublisherService } = await import(
       "./services/account/accountMachinePublisherService"
     );
-    const accountProjectRoots = () => projectRegistry.list().map((record) => record.rootPath);
+    // Match the active sync-host/desktop project priority so a project Clerk
+    // issuer cannot send the brain to a different directory Worker.
+    const accountProjectRoots = () => {
+      const activeProjectId = scopeRegistry.getActiveSyncHostProjectId();
+      if (!activeProjectId) return [];
+      const activeProject = projectRegistry.get(activeProjectId);
+      return activeProject ? [activeProject.rootPath] : [];
+    };
     accountMachinePublisher = createBrainAccountMachinePublisherService({
       secretsDir: layout.secretsDir,
       projectRoots: accountProjectRoots,
@@ -15886,6 +15904,93 @@ function isSyncWebPairingCliOutput(value: unknown): value is SyncWebPairingCliOu
     Object.prototype.hasOwnProperty.call(value, "machineName") &&
     Object.prototype.hasOwnProperty.call(value, "relayEnabled")
   );
+}
+
+function formatSyncStatus(value: unknown): string {
+  const snapshot = isRecord(value) ? value : {};
+  const routeHealth = isRecord(snapshot.routeHealth) ? snapshot.routeHealth : {};
+  const listener = isRecord(routeHealth.listener) ? routeHealth.listener : {};
+  const tailscale = isRecord(routeHealth.tailscale) ? routeHealth.tailscale : {};
+  const relay = isRecord(routeHealth.relay) ? routeHealth.relay : {};
+  const accountDirectory = isRecord(routeHealth.accountDirectory)
+    ? routeHealth.accountDirectory
+    : {};
+  const accountParts = [asString(accountDirectory.state) ?? "unavailable"];
+  const reachableEndpointCount = typeof accountDirectory.reachableEndpointCount === "number"
+    ? accountDirectory.reachableEndpointCount
+    : null;
+  if (reachableEndpointCount != null) {
+    accountParts.push(`${reachableEndpointCount} reachable endpoint${reachableEndpointCount === 1 ? "" : "s"}`);
+  }
+  if (typeof accountDirectory.lastHttpStatus === "number") {
+    accountParts.push(`HTTP ${accountDirectory.lastHttpStatus}`);
+  }
+  const origin = asString(accountDirectory.directoryOrigin);
+  if (origin) accountParts.push(origin);
+  const skipReason = asString(accountDirectory.skipReason);
+  let lastAttempt: string | null = null;
+  if (
+    typeof accountDirectory.lastAttemptAt === "number"
+    && Number.isFinite(accountDirectory.lastAttemptAt)
+  ) {
+    lastAttempt = new Date(accountDirectory.lastAttemptAt).toISOString();
+  }
+  const lastSuccess = typeof accountDirectory.lastSuccessAt === "number"
+    && Number.isFinite(accountDirectory.lastSuccessAt)
+    ? new Date(accountDirectory.lastSuccessAt).toISOString()
+    : null;
+
+  const peers = Array.isArray(snapshot.connectedPeers)
+    ? snapshot.connectedPeers.length
+    : null;
+  const listenerState = listener.listenerBound === true
+    ? listener.loopbackAdeValidated === true
+      ? `ready${typeof listener.port === "number" ? ` on ${listener.port}` : ""}`
+      : asString(listener.reason) ?? "bound but not validated"
+    : asString(listener.reason) ?? "not bound";
+  const tailscaleState = tailscale.tailscaleReachable === true
+    ? "reachable"
+    : asString(tailscale.reason) ?? (tailscale.enabled === true ? "not reachable" : "disabled");
+  const relayState = relay.relayControlConnected === true && relay.relayBridgeValidated === true
+    ? "reachable"
+    : asString(relay.reason) ?? (relay.enabled === true ? "not reachable" : "disabled");
+  const transferReadiness = isRecord(snapshot.transferReadiness)
+    ? snapshot.transferReadiness
+    : null;
+  const transferBlockers = Array.isArray(transferReadiness?.blockers)
+    ? transferReadiness.blockers.filter(isRecord)
+    : [];
+  const transferState = transferReadiness?.ready === true
+    ? "ready"
+    : transferReadiness
+      ? transferBlockers.length > 0
+        ? `blocked by ${transferBlockers.length} active item${transferBlockers.length === 1 ? "" : "s"}`
+        : "not ready"
+      : null;
+  const transferRows: Array<[string, unknown]> = transferBlockers.map((blocker, index) => {
+    const label = asString(blocker.label) ?? asString(blocker.kind) ?? `blocker ${index + 1}`;
+    const detail = asString(blocker.detail);
+    return [`transfer blocker ${index + 1}`, detail ? `${label}: ${detail}` : label];
+  });
+
+  return renderKeyValues("ADE sync status", [
+    ["mode", snapshot.mode],
+    ["role", snapshot.role],
+    ["runtime role", snapshot.runtimeRole],
+    ["runtime name", snapshot.runtimeName],
+    ["connected peers", peers],
+    ["listener", listenerState],
+    ["tailscale", tailscaleState],
+    ["relay", relayState],
+    ["account directory", accountParts.join(" · ")],
+    ["directory reason", skipReason],
+    ["directory attempt", lastAttempt],
+    ["directory success", lastSuccess],
+    ["transfer readiness", transferState],
+    ...transferRows,
+    ["survivable state", snapshot.survivableStateText],
+    ["blocking state", snapshot.blockingStateText],
+  ]);
 }
 
 function formatSyncWebPairing(value: unknown): string {
@@ -17673,6 +17778,8 @@ function formatTextOutput(
       return formatSearchStatus(value);
     case "external-sessions":
       return formatExternalSessions(value);
+    case "sync-status":
+      return formatSyncStatus(value);
     case "sync-web":
       return formatSyncWebPairing(value);
     case "storage-snapshot":

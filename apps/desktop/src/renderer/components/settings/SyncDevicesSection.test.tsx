@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { parsePairingQrUrl } from "../../../shared/pairingQr";
 import type {
   SyncDeviceRuntimeState,
   SyncRoleSnapshot,
@@ -12,6 +13,12 @@ import {
   WebConnectionsTab,
   type SyncConnections,
 } from "./SyncDevicesSection";
+
+vi.mock("qrcode.react", () => ({
+  QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
+    <svg data-testid="pairing-qr" data-value={value} aria-label={title} />
+  ),
+}));
 
 const originalAde = (globalThis.window as any)?.ade;
 
@@ -62,7 +69,20 @@ function makeStatus(overrides: Partial<SyncRoleSnapshot> = {}): SyncRoleSnapshot
       error: null,
       stderr: null,
     },
-    routeHealth: {} as SyncRoleSnapshot["routeHealth"],
+    routeHealth: {
+      listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      relay: { enabled: false, relayControlConnected: false, relayBridgeValidated: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      accountDirectory: {
+        state: "published",
+        skipReason: null,
+        directoryOrigin: "https://directory.example",
+        lastAttemptAt: 1_752_600_000_000,
+        lastSuccessAt: 1_752_600_000_000,
+        lastHttpStatus: 200,
+        reachableEndpointCount: 1,
+      },
+    },
     client: { state: "disconnected" } as SyncRoleSnapshot["client"],
     transferReadiness: { ready: true, blockers: [], survivableState: [] } as SyncRoleSnapshot["transferReadiness"],
     survivableStateText: "",
@@ -116,8 +136,23 @@ describe("ThisMacCard", () => {
   it("shows the account state line for a signed-in Mac", () => {
     render(<ThisMacCard sync={makeSync()} accountSignedIn />);
     expect(screen.getByText("Studio")).toBeTruthy();
-    expect(screen.getByText("Connected to your ADE account")).toBeTruthy();
+    expect(screen.getByText("Connected to your ADE account · 1 route published")).toBeTruthy();
     expect(screen.getByText("Ready to accept connections")).toBeTruthy();
+  });
+
+  it("surfaces when desktop sign-in and brain publication disagree", () => {
+    const status = makeStatus();
+    status.routeHealth.accountDirectory = {
+      ...status.routeHealth.accountDirectory,
+      state: "account_signed_out",
+      skipReason: "The ADE brain is signed out of the ADE account.",
+      lastHttpStatus: null,
+    };
+    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+
+    expect(screen.getByText(
+      "Signed in, but this Mac is not published · The ADE brain is signed out of the ADE account.",
+    )).toBeTruthy();
   });
 
   it("explains nearby fallback when signed out", () => {
@@ -177,6 +212,7 @@ describe("ThisMacCard", () => {
         listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
         tailscale: { enabled: true, tailscalePublished: true, tailscaleReachable: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
         relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        accountDirectory: makeStatus().routeHealth.accountDirectory,
       },
     });
     render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
@@ -193,6 +229,7 @@ describe("ThisMacCard", () => {
         tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: "off", lastSuccessAt: null },
         // Relay control connected but bridge not yet validated → not reachable.
         relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        accountDirectory: makeStatus().routeHealth.accountDirectory,
       },
     });
     render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
@@ -211,6 +248,22 @@ describe("ThisMacCard", () => {
 
 describe("PhoneConnectionsTab", () => {
   afterEach(() => cleanup());
+
+  it.each([true, false])(
+    "includes pinConfigured=%s in the desktop pairing QR",
+    (pairingPinConfigured) => {
+      const status = makeStatus({ pairingPinConfigured });
+      render(
+        <PhoneConnectionsTab
+          sync={makeSync({ status })}
+          confirmRevoke={vi.fn(autoConfirm)}
+        />,
+      );
+
+      const qrValue = screen.getByTestId("pairing-qr").getAttribute("data-value") ?? "";
+      expect(parsePairingQrUrl(qrValue)?.pinConfigured).toBe(pairingPinConfigured);
+    },
+  );
 
   it("lists paired phones and revokes after confirmation", async () => {
     const forgetDevice = vi.fn();

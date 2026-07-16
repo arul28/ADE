@@ -197,6 +197,7 @@ export type AdeRuntimeSyncOptions = {
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
   personalChatScope?: Parameters<typeof createSyncService>[0]["personalChatScope"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
+  getAccountDirectoryHealth?: Parameters<typeof createSyncService>[0]["getAccountDirectoryHealth"];
   /**
    * Brain-level websocket listener shared by every project scope's sync host
    * so connected phones survive hosted-project switches. Owned (created and
@@ -1576,6 +1577,7 @@ export async function createAdeRuntime(args: {
       usageTrackingService,
       productAnalyticsService,
       logger,
+      getAccountDirectoryHealth: resolvedArgs.syncRuntime.getAccountDirectoryHealth,
       accountAuthService,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
       runtimeProjectId: projectId,

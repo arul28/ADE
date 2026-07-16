@@ -43,7 +43,11 @@ import {
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
-import type { SyncPeerDeviceType } from "../../desktop/src/shared/types";
+import {
+  createSyncAccountDirectoryHealth,
+  type SyncAccountDirectoryHealth,
+  type SyncPeerDeviceType,
+} from "../../desktop/src/shared/types";
 import {
   callAccountAction,
   type AccountAuthService,
@@ -79,6 +83,7 @@ export type MultiProjectRpcHandlerOptions = {
   onShutdown?: (() => void) | null;
   personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
   accountAuthService?: AccountAuthService;
+  getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
   registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
 };
@@ -660,6 +665,60 @@ export function createMultiProjectRpcRequestHandler(
     return syncService;
   };
 
+  const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
+    try {
+      return options.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
+        "sync_disabled",
+        "Account-directory publishing is not enabled in this brain.",
+      );
+    } catch {
+      return createSyncAccountDirectoryHealth(
+        "transport_error",
+        "Account-directory publisher health is unavailable.",
+      );
+    }
+  };
+
+  const getMachineOnlySyncStatus = () => ({
+    mode: "standalone",
+    role: "brain",
+    connectedPeers: [],
+    routeHealth: {
+      listener: {
+        listenerBound: false,
+        loopbackAdeValidated: false,
+        port: null,
+        lastFailureAt: null,
+        reason: "No active sync project scope.",
+        lastSuccessAt: null,
+      },
+      tailscale: {
+        enabled: false,
+        tailscalePublished: false,
+        tailscaleReachable: false,
+        lastFailureAt: null,
+        reason: null,
+        lastSuccessAt: null,
+      },
+      relay: {
+        enabled: false,
+        relayControlConnected: false,
+        relayBridgeValidated: false,
+        lastFailureAt: null,
+        reason: null,
+        lastSuccessAt: null,
+      },
+      accountDirectory: getAccountDirectoryHealth(),
+    },
+    transferReadiness: {
+      ready: false,
+      blockers: [],
+      survivableState: [],
+    },
+    survivableStateText: "No active sync project scope.",
+    blockingStateText: "Register or open a project to start machine sync.",
+  });
+
   const trimmedEnvOrNull = (key: string): string | null => {
     const value = process.env[key];
     return typeof value === "string" && value.trim() ? value.trim() : null;
@@ -1028,7 +1087,9 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getStatus") {
-      const syncService = await getSyncService();
+      const scope = await scopeRegistry.resolveActiveSyncHost();
+      const syncService = scope?.runtime.syncService ?? null;
+      if (!syncService) return getMachineOnlySyncStatus();
       return await syncService.getStatus({
         includeTransferReadiness: params.includeTransferReadiness === true,
         forceTransferReadiness: params.forceTransferReadiness === true,

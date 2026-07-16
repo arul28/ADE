@@ -11,6 +11,7 @@
 import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
+  resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
@@ -31,7 +32,6 @@ import type {
 import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
-  officialAccountDirectoryUrlForIssuer,
   parseTrustedAccountDirectoryBaseUrl,
 } from "../../../shared/accountDirectory";
 
@@ -92,21 +92,21 @@ export function parseTrustedDirectoryBaseUrl(
  * Trust model: the bearer is the MACHINE's account token (machine-scoped
  * infrastructure), so where it is sent must be controlled by the machine owner
  * alone. A machine-level `ADE_ACCOUNT_DIRECTORY_URL` env override may select a
- * self-hosted directory; otherwise ADE uses its compiled Cloudflare Worker
- * origin. Per-project secrets are deliberately NOT consulted, so an opened
- * project can never redirect the token to a host it controls. The selected
- * value is passed through `parseTrustedDirectoryBaseUrl`, so the token is only
- * ever attached to a trusted https (or loopback) origin.
+ * self-hosted directory; otherwise ADE maps the active project's official
+ * Clerk issuer to its compiled Cloudflare Worker origin. Project configuration
+ * can select an official issuer but cannot provide an arbitrary directory host.
+ * The selected value is passed through `parseTrustedDirectoryBaseUrl`, so the
+ * token is only ever attached to a trusted https (or loopback) origin.
  */
 function resolveDirectoryBaseUrl(projectRoot: string | null): string | null {
   const machineOverride = process.env.ADE_ACCOUNT_DIRECTORY_URL;
   if (machineOverride?.trim()) {
     return parseTrustedAccountDirectoryBaseUrl(machineOverride);
   }
-  const issuer = readProjectSecret(projectRoot, "CLERK_ISSUER")
-    ?? process.env.CLERK_ISSUER?.trim()
-    ?? DEFAULT_ADE_CLERK_ISSUER;
-  return officialAccountDirectoryUrlForIssuer(issuer);
+  return resolveOfficialAccountDirectoryBaseUrl({
+    env: process.env,
+    projectRoots: projectRoot ? [projectRoot] : [],
+  });
 }
 
 function toAccountStatus(

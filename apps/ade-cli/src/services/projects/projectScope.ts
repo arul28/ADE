@@ -153,6 +153,7 @@ export class ProjectScopeRegistry {
     const limit = Math.min(2, Math.max(0, Math.trunc(options.limit ?? 2)));
     const candidates = this.projectRegistry
       .list()
+      .filter((record) => record.catalogVisibility === "recent")
       .filter((record) => record.projectId !== options.excludeProjectId)
       .filter((record) => !this.scopes.has(record.projectId))
       .sort((left, right) => {
@@ -180,6 +181,10 @@ export class ProjectScopeRegistry {
     options?: SwitchSyncHostOptions,
   ): Promise<ProjectScope | null> {
     return projectId ? this.switchSyncHost(projectId, options) : this.resolveActiveSyncHost();
+  }
+
+  getActiveSyncHostProjectId(): ProjectId | null {
+    return this.syncHostProjectId;
   }
 
   async resolveActiveSyncHost(): Promise<ProjectScope | null> {

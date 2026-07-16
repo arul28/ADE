@@ -872,6 +872,7 @@ describe("ADE CLI", () => {
     ]);
     expect(status.kind).toBe("execute");
     if (status.kind !== "execute") return;
+    expect(status.formatter).toBe("sync-status");
     expect(status.steps).toEqual([
       {
         key: "result",
@@ -1002,6 +1003,58 @@ describe("ADE CLI", () => {
     } finally {
       unexpectedArgReadSpy.mockRestore();
     }
+  });
+
+  it("formats account-directory publisher health in sync status text", () => {
+    const plan = expectExecutePlan(buildCliPlan(["sync", "status"]));
+    const output = formatOutput({
+      mode: "brain",
+      role: "brain",
+      runtimeRole: "host",
+      runtimeName: "Studio",
+      connectedPeers: [],
+      routeHealth: {
+        listener: {
+          listenerBound: true,
+          loopbackAdeValidated: true,
+          port: 8787,
+          reason: null,
+        },
+        tailscale: { enabled: false, tailscaleReachable: false, reason: null },
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, reason: "Relay bridge is not validated." },
+        accountDirectory: {
+          state: "http_error",
+          skipReason: "The account directory returned HTTP 401.",
+          directoryOrigin: "https://directory.example",
+          lastAttemptAt: Date.parse("2026-07-16T12:00:00.000Z"),
+          lastSuccessAt: null,
+          lastHttpStatus: 401,
+          reachableEndpointCount: 2,
+        },
+      },
+      transferReadiness: {
+        ready: false,
+        blockers: [{
+          kind: "terminal_session",
+          id: "terminal-1",
+          label: "Shell",
+          detail: "Stop the active shell before transferring the host.",
+        }],
+        survivableState: ["Paused chats"],
+      },
+      survivableStateText: "Paused chats remain available.",
+      blockingStateText: "Live processes must stop first.",
+    }, { text: true } as any, inferFormatter(plan));
+
+    expect(output).toContain("ADE sync status");
+    expect(output).toContain("account directory");
+    expect(output).toContain("http_error · 2 reachable endpoints · HTTP 401");
+    expect(output).toContain("The account directory returned HTTP 401.");
+    expect(output).toContain("https://directory.example");
+    expect(output).toContain("blocked by 1 active item");
+    expect(output).toContain("Shell: Stop the active shell before transferring the host.");
+    expect(output).toContain("Paused chats remain available.");
+    expect(output).toContain("Live processes must stop first.");
   });
 
   it("formats sync web pairing info from sync status", () => {

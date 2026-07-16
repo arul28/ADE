@@ -10,10 +10,16 @@ export interface CredentialStore {
   delete(key: string): Promise<void>;
 }
 
+export type CredentialStoreReadState = "available" | "missing" | "unreadable";
+
 export type SyncCredentialStore = CredentialStore & {
   getSync(key: string): string | null;
   setSync(key: string, value: string): void;
   deleteSync(key: string): void;
+  /** Best-effort cross-process notification that persisted credentials changed. */
+  onDidChange?(listener: () => void): () => void;
+  /** Result of the most recent synchronous credential-file read. */
+  getLastReadState?(): CredentialStoreReadState;
 };
 
 type StoredCredentialEnvelope = {
@@ -439,6 +445,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly machineKeyPath: string;
   private readonly lockPath: string;
   private readonly keyMaterialProvider: () => Buffer | null;
+  private lastReadState: CredentialStoreReadState = "missing";
 
   constructor(args: {
     secretsDir?: string;
@@ -471,6 +478,10 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     return this.readAll({ allowRewrite: false })[normalized] ?? null;
   }
 
+  getLastReadState(): CredentialStoreReadState {
+    return this.lastReadState;
+  }
+
   setSync(key: string, value: string): void {
     const normalized = normalizeKey(key);
     const nextValue = value.trim();
@@ -495,6 +506,25 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     });
   }
 
+  onDidChange(listener: () => void): () => void {
+    ensureDirMode700(path.dirname(this.credentialsPath));
+    const handleChange = (current: fs.Stats, previous: fs.Stats): void => {
+      if (
+        current.mtimeMs !== previous.mtimeMs
+        || current.size !== previous.size
+        || current.ino !== previous.ino
+      ) {
+        listener();
+      }
+    };
+    fs.watchFile(
+      this.credentialsPath,
+      { persistent: false, interval: 250 },
+      handleChange,
+    );
+    return () => fs.unwatchFile(this.credentialsPath, handleChange);
+  }
+
   updateSync(updater: (values: Record<string, string>) => boolean | void): void {
     this.withLock(() => {
       const values = this.readAll({ allowRewrite: true });
@@ -510,18 +540,28 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   private readAll(args: { allowRewrite: boolean }): Record<string, string> {
+    const credentialsExist = fs.existsSync(this.credentialsPath);
     const raw = readJsonObject(this.credentialsPath);
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
     const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
     if (!key.equals(machineKey)) {
       try {
-        return deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+        const values = deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+        this.lastReadState = credentialsExist ? "available" : "missing";
+        return values;
       } catch {
         // Only the genuine legacy machine-key ciphertext should trigger a rewrite.
         // If the legacy decrypt ALSO fails (true key rotation/corruption), propagate
         // the error so the ciphertext is preserved instead of being overwritten with
         // an empty store.
-        const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+        let values: Record<string, string>;
+        try {
+          values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+        } catch (error) {
+          this.lastReadState = "unreadable";
+          throw error;
+        }
+        this.lastReadState = credentialsExist ? "available" : "missing";
         if (args.allowRewrite) {
           try {
             this.writeAll(values);
@@ -532,7 +572,16 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         return values;
       }
     }
-    return deserializeStore(raw, machineKey, { emptyOnDecryptFailure: true });
+    try {
+      const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+      this.lastReadState = credentialsExist ? "available" : "missing";
+      return values;
+    } catch {
+      // Preserve the historical fail-closed empty read while exposing why the
+      // account record could not be obtained to publisher health.
+      this.lastReadState = "unreadable";
+      return {};
+    }
   }
 
   private writeAll(values: Record<string, string>): void {

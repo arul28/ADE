@@ -77,6 +77,8 @@ export type AccountAuthStatus = {
   imageUrl?: string | null;
 };
 
+export type AccountSessionReadState = "available" | "missing" | "unreadable";
+
 export type AccountLoginStartResult = {
   sessionId: string;
   authorizeUrl: string;
@@ -152,10 +154,14 @@ export type AccountAuthService = {
   startDeviceLogin(options?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
+  /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
+  getSessionReadState(): AccountSessionReadState;
   getAccessToken(): Promise<string>;
   createToken(): Promise<AccountTokenCreateResult>;
   cancelLogin(sessionId: string): void;
   signOut(): AccountAuthStatus;
+  /** Notification emitted after a local or externally persisted sign-in. */
+  onSignedIn(listener: () => void): () => void;
   dispose(): void;
 };
 
@@ -636,6 +642,9 @@ export function createAccountAuthService(args: {
   let envRefreshToken: string | null = null;
   let envCredentialEpoch = 0;
   let authEpoch = 0;
+  let sessionReadState: AccountSessionReadState = "missing";
+  let lastObservedSignedIn: boolean | null = null;
+  const signedInListeners = new Set<() => void>();
 
   const readEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
 
@@ -676,12 +685,32 @@ export function createAccountAuthService(args: {
 
   const readSession = (): AccountSessionRecord | null => {
     try {
-      return parseStoredSession(args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY));
+      const stored = args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+      const session = parseStoredSession(stored);
+      sessionReadState = stored == null
+        ? args.credentialStore.getLastReadState?.() === "unreadable"
+          ? "unreadable"
+          : "missing"
+        : session
+          ? "available"
+          : "unreadable";
+      return session;
     } catch (error) {
+      sessionReadState = "unreadable";
       logger.warn("account.session_read_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
       return null;
+    }
+  };
+
+  const notifySignedIn = (): void => {
+    for (const listener of signedInListeners) {
+      try {
+        listener();
+      } catch {
+        // Account persistence has already succeeded. Observers are best-effort.
+      }
     }
   };
 
@@ -691,6 +720,7 @@ export function createAccountAuthService(args: {
     } else {
       args.credentialStore.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
     }
+    lastObservedSignedIn = record != null;
   };
 
   const finishPendingSession = (
@@ -857,6 +887,7 @@ export function createAccountAuthService(args: {
       }
       persistSession(record);
       authEpoch += 1;
+      notifySignedIn();
       finishPendingSession(session, "signed_in", null);
       logger.info("account.login_completed");
       respondHtml(response, 200, SUCCESS_HTML);
@@ -1226,6 +1257,7 @@ export function createAccountAuthService(args: {
       : baseRecord;
     persistSession(record);
     authEpoch += 1;
+    notifySignedIn();
     pendingDeviceSessions.delete(normalizedSessionId);
     logger.info("account.device_login_completed");
     return {
@@ -1468,6 +1500,19 @@ export function createAccountAuthService(args: {
     return getStatus();
   };
 
+  let credentialChangeTimer: ReturnType<typeof setTimeout> | null = null;
+  lastObservedSignedIn = getStatus().signedIn;
+  const unsubscribeCredentialChanges = args.credentialStore.onDidChange?.(() => {
+    if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
+    credentialChangeTimer = setTimeout(() => {
+      credentialChangeTimer = null;
+      const signedIn = getStatus().signedIn;
+      if (signedIn && lastObservedSignedIn === false) notifySignedIn();
+      lastObservedSignedIn = signedIn;
+    }, 25);
+    credentialChangeTimer.unref?.();
+  }) ?? (() => {});
+
   const dispose = (): void => {
     for (const session of pendingSessions.values()) {
       clearTimeout(session.expiryTimer);
@@ -1475,6 +1520,10 @@ export function createAccountAuthService(args: {
     }
     pendingSessions.clear();
     pendingDeviceSessions.clear();
+    if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
+    credentialChangeTimer = null;
+    unsubscribeCredentialChanges();
+    signedInListeners.clear();
   };
 
   return {
@@ -1483,10 +1532,15 @@ export function createAccountAuthService(args: {
     startDeviceLogin,
     pollDeviceLogin,
     getStatus,
+    getSessionReadState: () => sessionReadState,
     getAccessToken,
     createToken,
     cancelLogin,
     signOut,
+    onSignedIn: (listener: () => void) => {
+      signedInListeners.add(listener);
+      return () => signedInListeners.delete(listener);
+    },
     dispose,
   };
 }

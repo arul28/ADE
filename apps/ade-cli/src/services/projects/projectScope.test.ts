@@ -102,6 +102,68 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
+  it("prewarms only recent projects after starting an explicit system host", async () => {
+    const { registry, first, second } = createRegistry();
+    const projectsRoot = path.dirname(first.rootPath);
+    const thirdProjectRoot = path.join(projectsRoot, "third");
+    const healthProbeRoot = path.join(projectsRoot, "health-probe");
+    fs.mkdirSync(thirdProjectRoot, { recursive: true });
+    fs.mkdirSync(healthProbeRoot, { recursive: true });
+
+    const recentSecond = registry.add(second.rootPath, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    const recentThird = registry.add(thirdProjectRoot, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    const healthProbe = registry.add(healthProbeRoot);
+    const file = JSON.parse(fs.readFileSync(registry.path, "utf8")) as {
+      projects: Array<{ projectId: string; lastOpenedAt: number; addedAt: number }>;
+    };
+    const recency = new Map([
+      [first.projectId, 4_000],
+      [healthProbe.projectId, 3_000],
+      [recentSecond.projectId, 2_000],
+      [recentThird.projectId, 1_000],
+    ]);
+    file.projects = file.projects.map((project) => ({
+      ...project,
+      lastOpenedAt: recency.get(project.projectId) ?? 0,
+      addedAt: recency.get(project.projectId) ?? 0,
+    }));
+    fs.writeFileSync(registry.path, JSON.stringify(file, null, 2));
+
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+
+    await scopeRegistry.ensureSyncHost(first.projectId);
+    const warmed = await scopeRegistry.prewarmRecentScopes({
+      excludeProjectId: first.projectId,
+      limit: 2,
+    });
+
+    expect(warmed).toEqual([recentSecond.projectId, recentThird.projectId]);
+    expect(createAdeRuntimeMock.mock.calls.map(([args]) => args.projectRoot)).toEqual([
+      first.rootPath,
+      recentSecond.rootPath,
+      recentThird.rootPath,
+    ]);
+    expect(createAdeRuntimeMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ projectRoot: healthProbe.rootPath }),
+    );
+
+    await scopeRegistry.disposeAll();
+  });
+
   it("warms the most recently opened project as the sync host", async () => {
     const { registry, first, second } = createRegistry();
     const file = JSON.parse(fs.readFileSync(registry.path, "utf8")) as {
@@ -171,7 +233,9 @@ describe("ProjectScopeRegistry", () => {
     });
 
     await scopeRegistry.ensureSyncHost(first.projectId);
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
     await scopeRegistry.ensureSyncHost(second.projectId);
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(second.projectId);
 
     expect(firstDispose).not.toHaveBeenCalled();
     expect(secondDispose).not.toHaveBeenCalled();

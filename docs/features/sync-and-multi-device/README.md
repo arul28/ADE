@@ -211,6 +211,17 @@ Runtime support files outside `services/sync/`:
   in the directory without waiting for an external client to open the first
   tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
   window without turning sync retries or status polling into product analytics.
+  Successful account sign-in also requests an immediate publish; the brain
+  observes both its local auth event and cross-process credential-file changes
+  from desktop sign-in. Every heartbeat re-reads the active sync snapshot and
+  token so a brain started before sign-in still recovers. The last typed
+  publisher outcome is exposed as `routeHealth.accountDirectory` in
+  `sync.getStatus`, `ade sync status`, and the desktop This Mac card, including
+  the selected directory origin, HTTP status, timestamps, and reachable-route
+  count. The publisher and desktop account bridge derive the official directory
+  from the same project-aware Clerk issuer resolver, while the machine-owned
+  `ADE_ACCOUNT_DIRECTORY_URL` override remains fail-closed behind the
+  trusted-origin parser.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
   origin, response decoding, route allowlisting, machine selection, and paired
   endpoint validation shared by desktop, the brain, ADE Code, and hosted web.

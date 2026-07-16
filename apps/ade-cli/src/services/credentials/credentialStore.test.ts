@@ -44,6 +44,23 @@ describe("EncryptedFileCredentialStore", () => {
     expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(true);
   });
 
+  it("notifies another service instance when the credential file changes", async () => {
+    const reader = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    const writer = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    let unsubscribe = () => {};
+    const changed = new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timed out waiting for credential change.")), 1_000);
+      unsubscribe = reader.onDidChange(() => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+
+    writer.setSync("account.session.v1", "session");
+    await changed;
+    unsubscribe();
+  });
+
   it("creates the secrets directory and files with private permissions", async () => {
     if (process.platform === "win32") return;
     const secretsDir = path.join(tempDir, "secrets");
@@ -63,6 +80,7 @@ describe("EncryptedFileCredentialStore", () => {
     fs.writeFileSync(path.join(tempDir, ".machine-key"), `${Buffer.alloc(32, 1).toString("base64")}\n`);
 
     expect(store.getSync("agent.token")).toBeNull();
+    expect(store.getLastReadState()).toBe("unreadable");
     store.setSync("agent.other", "next-secret");
     expect(store.getSync("agent.other")).toBe("next-secret");
   });

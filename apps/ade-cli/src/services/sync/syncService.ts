@@ -2,21 +2,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomInt } from "node:crypto";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
-import type {
-  SyncCloudRelayStatus,
-  SyncDesktopConnectionDraft,
-  SyncDeviceRuntimeState,
-  SyncGetStatusArgs,
-  SyncPairingConnectInfo,
-  SyncPeerDeviceType,
-  SyncPeerMetadata,
-  SyncPeerPlatform,
-  PersonalChatScopeContract,
-  SyncRouteHealth,
-  SyncRoleSnapshot,
-  SyncTailnetDiscoveryStatus,
-  SyncTransferBlocker,
-  SyncTransferReadiness,
+import {
+  createSyncAccountDirectoryHealth,
+  type SyncCloudRelayStatus,
+  type SyncAccountDirectoryHealth,
+  type SyncDesktopConnectionDraft,
+  type SyncDeviceRuntimeState,
+  type SyncGetStatusArgs,
+  type SyncPairingConnectInfo,
+  type SyncPeerDeviceType,
+  type SyncPeerMetadata,
+  type SyncPeerPlatform,
+  type PersonalChatScopeContract,
+  type SyncRouteHealth,
+  type SyncRoleSnapshot,
+  type SyncTailnetDiscoveryStatus,
+  type SyncTransferBlocker,
+  type SyncTransferReadiness,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
@@ -98,6 +100,7 @@ type SyncServiceArgs = {
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
+  getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
   accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   projectId?: string | null;
@@ -1365,6 +1368,18 @@ export function createSyncService(args: SyncServiceArgs) {
               : !relayBridgeValidated
                 ? tunnelStatus.lastError ?? `Relay bridge to 127.0.0.1:${listenerPort} has not been validated against the current sync port.`
                 : tunnelStatus.lastError;
+      let accountDirectory: SyncAccountDirectoryHealth;
+      try {
+        accountDirectory = args.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
+          "sync_disabled",
+          "Account-directory publishing is not enabled in this runtime.",
+        );
+      } catch {
+        accountDirectory = createSyncAccountDirectoryHealth(
+          "transport_error",
+          "Account-directory publisher health is unavailable.",
+        );
+      }
       const routeHealth: SyncRouteHealth = {
         listener: {
           listenerBound,
@@ -1396,6 +1411,7 @@ export function createSyncService(args: SyncServiceArgs) {
           reason: relayReason,
           lastSuccessAt: relayReason == null ? (tunnelStatus?.lastSuccessAt ?? null) : null,
         },
+        accountDirectory,
       };
       return {
         mode,

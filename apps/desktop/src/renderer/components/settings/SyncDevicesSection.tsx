@@ -7,6 +7,7 @@ import {
   Globe,
   Laptop,
 } from "@phosphor-icons/react";
+import { accountDirectorySummary } from "./accountDirectorySummary";
 import { QRCodeSVG } from "qrcode.react";
 import { createPortal } from "react-dom";
 import type {
@@ -334,6 +335,7 @@ export function ThisMacCard({
   const machineName = status.runtimeName?.trim() || status.localDevice.name || "This Mac";
   const acceptsConnections = acceptsConnectionsState(status, host);
   const routeLabels = reachableRouteLabels(status);
+  const directorySummary = accountDirectorySummary(status, accountSignedIn);
 
   return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
@@ -375,14 +377,25 @@ export function ThisMacCard({
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
             {accountSignedIn ? (
-              <Cloud size={13} weight="fill" color={COLORS.accent} style={{ flexShrink: 0 }} />
+              <Cloud
+                size={13}
+                weight="fill"
+                color={directorySummary.healthy ? COLORS.accent : COLORS.warning}
+                style={{ flexShrink: 0 }}
+              />
             ) : (
               <CloudSlash size={13} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
             )}
-            <span style={{ ...helperTextStyle, lineHeight: 1.35 }}>
-              {accountSignedIn
-                ? "Connected to your ADE account"
-                : "Not signed in — nearby devices can still connect with the pairing code"}
+            <span
+              style={{
+                ...helperTextStyle,
+                lineHeight: 1.35,
+                color: directorySummary.healthy || !accountSignedIn
+                  ? helperTextStyle.color
+                  : COLORS.warning,
+              }}
+            >
+              {directorySummary.label}
             </span>
           </div>
         </div>
@@ -609,7 +622,11 @@ function ConnectNewPhone({ status }: { status: SyncRoleSnapshot }) {
             minWidth: 0,
           }}
         >
-          <PairQrPanel connectInfo={status.pairingConnectInfo} title="Pairing QR code" />
+          <PairQrPanel
+            connectInfo={status.pairingConnectInfo}
+            pinConfigured={status.pairingPinConfigured}
+            title="Pairing QR code"
+          />
           <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
             <div style={helperTextStyle}>
               Or scan this code with your iPhone camera, then enter this Mac's pairing code.
@@ -835,10 +852,18 @@ function QrCodeBox({ value, title }: { value: string; title: string }) {
   );
 }
 
-function PairQrPanel({ connectInfo, title }: { connectInfo: SyncPairingConnectInfo; title: string }) {
+function PairQrPanel({
+  connectInfo,
+  pinConfigured,
+  title,
+}: {
+  connectInfo: SyncPairingConnectInfo;
+  pinConfigured: boolean;
+  title: string;
+}) {
   const qrUrl = useMemo(
-    () => encodePairingQrUrl(buildPairingQrPayload({ connectInfo })),
-    [connectInfo],
+    () => encodePairingQrUrl(buildPairingQrPayload({ connectInfo, pinConfigured })),
+    [connectInfo, pinConfigured],
   );
   return <QrCodeBox value={qrUrl} title={title} />;
 }

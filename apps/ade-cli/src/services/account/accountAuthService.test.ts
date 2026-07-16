@@ -12,6 +12,8 @@ import {
 
 class MemoryCredentialStore implements SyncCredentialStore {
   readonly values = new Map<string, string>();
+  private readonly changeListeners = new Set<() => void>();
+  readState: "available" | "missing" | "unreadable" = "available";
 
   async get(key: string): Promise<string | null> {
     return this.getSync(key);
@@ -35,6 +37,19 @@ class MemoryCredentialStore implements SyncCredentialStore {
 
   deleteSync(key: string): void {
     this.values.delete(key);
+  }
+
+  onDidChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  notifyExternalChange(): void {
+    for (const listener of this.changeListeners) listener();
+  }
+
+  getLastReadState() {
+    return this.readState;
   }
 }
 
@@ -70,7 +85,52 @@ function storedSession(overrides: Partial<AccountSessionRecord> = {}): AccountSe
 const activeServices: AccountAuthService[] = [];
 
 afterEach(() => {
+  vi.useRealTimers();
   for (const service of activeServices.splice(0)) service.dispose();
+});
+
+describe("AccountAuthService persisted session notifications", () => {
+  it("preserves an unreadable credential-file diagnosis when the account key is absent", () => {
+    const store = new MemoryCredentialStore();
+    store.readState = "unreadable";
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client" }),
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus().signedIn).toBe(false);
+    expect(service.getSessionReadState()).toBe("unreadable");
+  });
+
+  it("detects a sign-in persisted by another process", async () => {
+    vi.useFakeTimers();
+    const store = new MemoryCredentialStore();
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client" }),
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      fetchImpl: vi.fn(),
+    });
+    activeServices.push(service);
+    const listener = vi.fn();
+    service.onSignedIn(listener);
+
+    store.values.set(
+      ACCOUNT_SESSION_CREDENTIAL_KEY,
+      JSON.stringify(storedSession({ expiresAt: "2026-07-14T13:00:00.000Z" })),
+    );
+    store.notifyExternalChange();
+    await vi.advanceTimersByTimeAsync(25);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(service.getStatus().signedIn).toBe(true);
+
+    store.notifyExternalChange();
+    await vi.advanceTimersByTimeAsync(25);
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("AccountAuthService CLERK_ISSUER scheme enforcement", () => {
@@ -182,6 +242,8 @@ describe("AccountAuthService OAuth PKCE login", () => {
       fetchImpl,
     });
     activeServices.push(service);
+    const onSignedIn = vi.fn();
+    service.onSignedIn?.(onSignedIn);
 
     expect(service.getStatus()).toEqual({
       signedIn: false,
@@ -191,6 +253,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
       expiresAt: null,
       source: null,
     });
+    expect(service.getSessionReadState?.()).toBe("missing");
     const start = await service.startLogin();
     const authorizeUrl = new URL(start.authorizeUrl);
     const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
@@ -199,6 +262,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
     const html = await callback.text();
 
     expect(callback.status).toBe(200);
+    expect(onSignedIn).toHaveBeenCalledTimes(1);
     expect(html).toContain("You can close this tab — signed in to ADE");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     const [tokenUrl, init] = fetchImpl.mock.calls[0]!;
@@ -215,6 +279,8 @@ describe("AccountAuthService OAuth PKCE login", () => {
     });
 
     const persisted = JSON.parse(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)!) as AccountSessionRecord;
+    expect(service.getStatus().signedIn).toBe(true);
+    expect(service.getSessionReadState?.()).toBe("available");
     expect(persisted).toMatchObject({
       accessToken,
       refreshToken: "refresh-123",

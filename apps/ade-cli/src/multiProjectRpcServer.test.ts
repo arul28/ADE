@@ -73,6 +73,7 @@ function makeAccountAuthServiceMock() {
       name: null,
       expiresAt: null,
     })),
+    getSessionReadState: vi.fn(() => "missing" as const),
     getAccessToken: vi.fn(async () => "test-access-token"),
     createToken: vi.fn(async () => ({
       token: "test-refresh-token",
@@ -87,6 +88,7 @@ function makeAccountAuthServiceMock() {
       name: null,
       expiresAt: null,
     })),
+    onSignedIn: vi.fn(() => () => {}),
     dispose: vi.fn(),
   };
 }
@@ -201,10 +203,12 @@ describe("multi-project RPC server", () => {
         name: null,
         expiresAt: null,
       })),
+      getSessionReadState: vi.fn(() => "missing" as const),
       getAccessToken: vi.fn(),
       createToken: vi.fn(),
       cancelLogin: vi.fn(),
       signOut: vi.fn(),
+      onSignedIn: vi.fn(() => () => {}),
       dispose: vi.fn(),
     };
     const handler = createMultiProjectRpcRequestHandler({
@@ -1038,6 +1042,49 @@ describe("multi-project RPC server", () => {
     expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
 
+    handler.dispose();
+  });
+
+  it("returns machine publisher health when no project sync scope exists", async () => {
+    const { registry } = createRegistry();
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => null),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+      getAccountDirectoryHealth: () => ({
+        state: "no_active_sync_scope",
+        skipReason: "No active sync project scope is available.",
+        directoryOrigin: "https://directory.example",
+        lastAttemptAt: 123,
+        lastSuccessAt: null,
+        lastHttpStatus: null,
+        reachableEndpointCount: 0,
+      }),
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    const status = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sync.getStatus",
+      params: {},
+    }) as { routeHealth: { accountDirectory: { state: string } } };
+
+    expect(status.routeHealth.accountDirectory.state).toBe("no_active_sync_scope");
+    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
     handler.dispose();
   });
 
