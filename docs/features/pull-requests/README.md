@@ -78,7 +78,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayRowForCurrentLaneBranch`: it returns the most recently updated PR whose head branch matches the lane's current branch ref, ranked open/draft → merged → closed, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayCandidateForCurrentLaneBranch`: it returns the best PR whose head branch matches the lane's current branch ref, considering both mapped `pull_requests` rows and unmapped `github_pr_projections` rows (folded in as synthetic `gh:owner/repo#num` summaries with `unmapped: true`), ranked open/draft → merged → closed then most-recently-updated / created / highest PR number, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state — and a lane whose PR was created outside ADE still badges from the projection alone. A primary lane whose branch equals its base is excluded. `listPrsByLane()` walks `laneService.list` and applies the same candidate selection over one shared read of mapped rows + projection rows. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. |
 | `prService.mobileSnapshot.test.ts` | Coverage for the mobile snapshot builder: stack chaining, capability gates, per-lane create eligibility, workflow-card aggregation |
 | `prService.mergeInto.test.ts` | Coverage for integration proposals that preview or adopt an existing merge target lane, including dirty-worktree handling and drift metadata. |
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) so background polling and PR events run for runtime-bound windows; the desktop main process still owns one for local-bound windows. When zero PRs are tracked yet, the forced full-snapshot `discoverLanePullRequests` fetch is throttled to a 10-minute cadence instead of running every tick — user-driven surfaces discover PRs on their own reads anyway |
@@ -99,7 +99,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `prsRouteState.ts` | URL ↔ page state mapping plus project-scoped last-route storage. When a project root is known, the PRs tab reads only that project's stored route and does not fall back to the legacy global route from another project. |
 | `CreatePrModal.tsx` | Normal/queue/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. Normal PRs default the title to `source lane -> target lane`; a `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
 | `tabs/NormalTab.tsx` | Normal PR list |
-| `tabs/GitHubTab.tsx` | Repository PR browser with label filters, CI badges, review indicators, ADE-vs-unmanaged scope counts, and linked-lane context. State filter is one of `open` / `closed` / `merged` / `all`. The tab ignores legacy cross-repo `externalPullRequests` payloads; the "External" scope means repo PRs that are not managed by ADE. The "create lane from PR branch" affordance has been removed — open/closed PRs on branches without a lane no longer offer the preflight + create dialog (`prsPreflightCreateLaneFromPrBranch` / `prsCreateLaneFromPrBranch` IPC channels have been deleted), so creating a lane for an existing PR now goes through the standard lane creation flow. Snapshot rows are mapped through `reconcileLinkedPrState` (using `isTerminalPrState` from `renderer/lib/prState.ts`) into `displayedItems`, so a terminal ADE PR state (merged/closed) overrides a stale non-terminal GitHub row for the same linked PR across the list, filter counts, and selection (see [Terminal-state precedence](#terminal-state-precedence)). |
+| `tabs/GitHubTab.tsx` | Repository PR browser with label filters, CI badges, review indicators, ADE-vs-unmanaged scope counts, and linked-lane context. State filter is one of `open` / `closed` / `merged` / `all`. The tab ignores legacy cross-repo `externalPullRequests` payloads; the "External" scope means repo PRs that are not managed by ADE. The "create lane from PR branch" affordance has been removed — open/closed PRs on branches without a lane no longer offer the preflight + create dialog (`prsPreflightCreateLaneFromPrBranch` / `prsCreateLaneFromPrBranch` IPC channels have been deleted), so creating a lane for an existing PR now goes through the standard lane creation flow. Snapshot rows are mapped through `reconcileLinkedPrState` (using `isTerminalPrState` from `renderer/lib/prState.ts`) into `reconciledItems`; `computeTerminalOverlayItems` then appends last-seen rows for linked ADE PRs that went terminal but dropped from an open-only snapshot, producing `displayedItems`, so a terminal ADE PR state (merged/closed) overrides a stale non-terminal GitHub row and a just-merged row is not erased before a full-history fetch (see [Terminal-state precedence](#terminal-state-precedence)). The selection effect follows a PR into its new bucket on merge/close and the detail pane pins the selected PR through the transition behind a `PrBucketTransitionBanner` rather than blanking (see [Selection follow and detail-pane pinning](#selection-follow-and-detail-pane-pinning)). |
 | `tabs/QueueTab.tsx` | Merge queue UI showing queued stack members and their landing state. |
 | `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution, including merge-into-lane selection, apply-and-resimulate, and adopted-lane cleanup messaging |
 | `tabs/RebaseTab.tsx` | Lane rebase needs (base + queue + PR target) and attention items. Hide/snooze controls only affect the lane rebase suggestion banner; still-behind needs remain actionable in the Rebase view. |
@@ -107,8 +107,8 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `tabs/queueWorkflowModel.ts` | Pure model for queue tab rendering (active/history bucketing, guidance computation) |
 | `tabs/rebaseWorkflowModel.ts` | Pure model for active rebase bucketing and operation-history filtering |
 | `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, resolver modals. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live detail/files/commits already loaded for the selected PR. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab. The detail view has four tabs: Overview, Files, CI / Checks, and Activity. |
-| `detail/PrDetailTimelineRails.tsx` | Timeline+Rails overview: hosts the central `PrTimeline`, the left commit/checks rail, the right merge/metadata rail, the inline comment composer, and the command palette. Seeds the timeline with a synthetic `pr_opened` event followed by description, review threads, activity-stream entries (commits, comments, reviews, label changes, merges, deployments) and falls back to `args.checks` for any check that did not appear in the activity stream. Owns the deep-link scroll behaviour and the merge-bypass plumbing through to the right rail. |
-| `shared/PrTimeline.tsx` | Timeline column: renders the pre-computed `PrTimelineEvent[]` from `PrDetailTimelineRails`, handles per-PR filters (`PrTimelineFilters`), and groups events |
+| `detail/PrDetailTimelineRails.tsx` | Timeline+Rails overview: hosts the central `PrTimeline`, the left commit/checks rail, the right merge/metadata rail, the inline comment composer, and the command palette. Seeds the timeline with a synthetic `pr_opened` event followed by description, review threads, activity-stream entries (commits, comments, reviews, label changes, merges, deployments) and falls back to `args.checks` for any check that did not appear in the activity stream. `buildTimelineEvents` pins the `description` event to the top after the stable timestamp sort, so an adopted/linked PR with a wrong `createdAt` still renders its description first the way GitHub does. Owns the deep-link scroll behaviour and the merge-bypass plumbing through to the right rail. |
+| `shared/PrTimeline.tsx` | Timeline column: renders the pre-computed `PrTimelineEvent[]` from `PrDetailTimelineRails`, handles per-PR filters (`PrTimelineFilters`), and groups events. Bot review cards (`PrBotReviewCard`) and long bot-authored issue comments render collapsed by default so a late Greptile/Copilot/codex review or a large "## ADE review" summary shows a clamped preview with a Show more/less affordance (`CollapsibleCommentBody`) instead of dumping a wall of text at the end of the thread; `isLongBotCommentBody` gates a comment as long at >12 lines or >900 chars. |
 | `shared/PrDetailLeftRail.tsx` | Left timeline rail. Stacks the commit list (`PrCommitRail` in `layout: "pane"` mode) on top of `PrPushChecksRail`, sharing the same accent gradient that bleeds into the timeline background. |
 | `shared/PrDetailRightRail.tsx` | Right timeline rail. Splits into two resizable panels: a top `PrDetailMergeRail` (merge readiness + actions) and a bottom `PrDetailRightMetadataRail` (reviewers, labels, participants, review-submit affordance). |
 | `shared/PrDetailMergeRail.tsx` | Merge readiness panel. Hosts the GitHub-style `PrMergeChecklist` (one row per requirement, with the inline "Update branch" split button on the behind-base row), the primary "Merge" button that opens the portaled `PrMergeDialog`, the branch-cleanup affordance, and the inline lane-management entry. Owns the per-PR live-status re-poll loop that keeps `mergeStateStatus` fresh and clears the "Checking mergeability…" state. Calls helpers from `prMergeRailUtils.ts` to build the checklist and derive merge-method labels. |
@@ -147,7 +147,7 @@ Shared contracts:
 
 | File | Responsibility |
 |------|---------------|
-| `apps/desktop/src/shared/types/prs.ts` | PR DTOs and integration proposal contracts, including `preferredIntegrationLaneId`, `mergeIntoHeadSha`, `integrationLaneOrigin`, and `additionalInstructions` fields. `MergeStateStatus` (lowercase mirror of GitHub's GraphQL merge-box enum) and `PrReviewDecision` drive the merge checklist; `PrStatus` carries `mergeStateStatus`, `reviewDecision`, `approvalsCount` / `requiredApprovals`, `mergeabilityComputing`, `canBypass`, and `headSha`. `LandPrArgs` adds `commitTitle` / `commitBody` (editable merge-commit message) and `expectedHeadSha` (stale-head guard) alongside `bypassRules`, which opts the merge into a `gh pr merge --admin` retry when GitHub rejects the standard merge. `UpdateBranchArgs` / `UpdateBranchResult` back the `merge` / `rebase` update-branch flow. `PrActionCapabilities` adds `mergeStateStatus`, `canBypass`, and `canUpdateBranch` so mobile renders the same merge state. `PrTimelineEvent` carries a `pr_opened` variant plus `lifecycle`, `cross_reference`, `renamed`, `branch_ref`, `assignment`, expanded `review_request`, and `review_dismissed` variants so the timeline reaches GitHub event parity; review-thread events now carry the full `comments` list (with `diffHunk`) and force-push commit events carry before/after SHAs. |
+| `apps/desktop/src/shared/types/prs.ts` | PR DTOs and integration proposal contracts, including `preferredIntegrationLaneId`, `mergeIntoHeadSha`, `integrationLaneOrigin`, and `additionalInstructions` fields. `PrSummary.unmapped?: true` flags a projection-synthesized summary with no `pull_requests` row. `syntheticGithubPrId(coords)` / `parseSyntheticGithubPrId(id)` are the single source of the `gh:owner/repo#num` id format — both the service (projection-only summaries, coordinate fetches) and the renderer (keying unmapped GitHub-tab rows) import them from here instead of re-deriving the string. `MergeStateStatus` (lowercase mirror of GitHub's GraphQL merge-box enum) and `PrReviewDecision` drive the merge checklist; `PrStatus` carries `mergeStateStatus`, `reviewDecision`, `approvalsCount` / `requiredApprovals`, `mergeabilityComputing`, `canBypass`, and `headSha`. `LandPrArgs` adds `commitTitle` / `commitBody` (editable merge-commit message) and `expectedHeadSha` (stale-head guard) alongside `bypassRules`, which opts the merge into a `gh pr merge --admin` retry when GitHub rejects the standard merge. `UpdateBranchArgs` / `UpdateBranchResult` back the `merge` / `rebase` update-branch flow. `PrActionCapabilities` adds `mergeStateStatus`, `canBypass`, and `canUpdateBranch` so mobile renders the same merge state. `PrTimelineEvent` carries a `pr_opened` variant plus `lifecycle`, `cross_reference`, `renamed`, `branch_ref`, `assignment`, expanded `review_request`, and `review_dismissed` variants so the timeline reaches GitHub event parity; review-thread events now carry the full `comments` list (with `diffHunk`) and force-push commit events carry before/after SHAs. |
 | `apps/desktop/src/shared/types/git.ts` | `BranchPullRequest` (branch / prNumber / title / state / url / author / updatedAt) — the lightweight PR shape returned by `prService.listOpenPullRequests` and consumed by the branch picker without going through `PrSummary`. `GitHubAutolink` (id / keyPrefix / urlTemplate / isAlphanumeric) backs the new `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink` IPC channels. |
 | `apps/desktop/src/shared/types/conflicts.ts` | Conflict resolver DTOs; `PrepareResolverSessionArgs.additionalInstructions` is appended to generated resolver prompts. |
 | `apps/desktop/src/shared/linearMagicWords.ts` | Pure helpers for PR/commit Linear references. `linearPrMagicWord` / `buildLinearPrReference` / `ensureLinearPrReference` (single-issue magic word in the PR body), `dedupeLinearPrIssueReferences` / `ensureLinearPrReferences` (multi-issue dedupe + injection), and `renderLinearPrIssueLinkSection` / `ensureLinearPrIssueLinkSection` (the `<!-- ade:linear-links v=1 -->`-fenced "Linked Linear issues" markdown block appended to PR bodies by `prService.applyLinearPrLinkage`). |
@@ -161,6 +161,7 @@ Shared contracts:
 ```ts
 type PrSummary = {
   id: string;
+  unmapped?: true;         // synthesized from a GitHub projection row; no pull_requests row
   laneId: string;
   projectId: string;
   repoOwner: string;
@@ -184,6 +185,12 @@ type PrSummary = {
 
 `PrStatus` adds live fields not cached on the summary row
 (mergeability, behind-by, merge conflicts, activity events).
+
+`unmapped: true` marks a summary that was synthesized from a
+`github_pr_projections` row rather than a real `pull_requests` row — its `id`
+is the synthetic `gh:owner/repo#num` coordinate (`syntheticGithubPrId`), and
+consumers that need a DB-backed PR (chat live-refresh, `getChecks`) skip
+unmapped summaries. See [Lane PR resolution](#lane-pr-resolution-mapped--unmapped).
 
 ## IPC surface
 
@@ -275,18 +282,97 @@ reopen, so a terminal local state is never overwritten by an out-of-date
 `open` / `draft` snapshot. Two renderer surfaces apply it:
 
 - **GitHub tab** — `GitHubTab.tsx` maps each snapshot row through
-  `reconcileLinkedPrState` into `displayedItems`. When a row's linked ADE
+  `reconcileLinkedPrState` into `reconciledItems`. When a row's linked ADE
   PR (`linkedPrId`) is terminal but the snapshot still shows it
   non-terminal, the row is rewritten to the ADE state (clearing `isDraft`
   and adopting the ADE title / `updatedAt`) before filtering, counting,
-  and selection all read `displayedItems`, so a just-merged PR is not
-  still counted or listed as open.
+  and selection all read the derived `displayedItems`, so a just-merged PR
+  is not still counted or listed as open.
+
+  **Terminal-row overlay.** An open-only snapshot drops a PR entirely once it
+  merges/closes, which would erase a just-merged row before a full-history
+  fetch catches up. `GitHubTab` records every row it has actually displayed
+  (`lastSeenRowByCoordRef`, keyed by `owner/repo#num`), and
+  `computeTerminalOverlayItems` resurrects the last-seen row — reusing its id,
+  lane, and labels — under the merged/closed bucket for any linked ADE PR that
+  is terminal but absent from the snapshot. The overlay disappears once a
+  full-history fetch reintroduces the authoritative row, or when a reopen makes
+  the linked state non-terminal again. Rows never previously displayed produce
+  no overlay (there is no lane/label context to synthesize).
 - **Lane PR tag** — `lanePageModel.ts` `shouldPreferGithubPrTag` uses the
   same helper to decide whether a lane's GitHub-by-branch PR tag should
   override the ADE PR tag. It never prefers the GitHub tag when the ADE
   state is terminal and the GitHub state is not, so a lane badge does not
   flip back to "open" after the PR merges; when both states are
   comparable it still prefers the GitHub tag on a genuine state mismatch.
+
+### Selection follow and detail-pane pinning
+
+The GitHub tab keeps the selected PR usable across a state transition (open →
+merged/closed) instead of stranding the user on an empty filter:
+
+- **Follow into the new bucket.** The selection effect tracks the selected PR
+  together with its current effective bucket (`lastHandledSelectedRef`). On a
+  fresh selection, or when the already-selected PR's bucket changes, it moves
+  the active filter to the PR's bucket (`bucketForState`). A manual filter
+  switch leaves the PR's bucket unchanged, so it never re-triggers the follow.
+- **Pinned detail pane.** `selectedItem` is resolved by `selectedItemId` first,
+  then falls back to the linked `selectedPrId` coordinate, so the detail pane
+  survives a row momentarily dropping out of the list and never blanks
+  mid-transition. When the selected PR's state no longer matches the active
+  filter (`selectedBucketMismatch`), the pane shows a slim
+  `PrBucketTransitionBanner` ("This PR is now Merged/Closed" with a "Show in …"
+  action) instead of clearing, reusing the neighboring banner idiom (no new
+  colors).
+
+## Lane PR resolution (mapped + unmapped)
+
+A lane's PR badge draws from two row sources, unified so a lane shows a PR
+whether or not ADE created it:
+
+1. **Mapped rows** — real `pull_requests` rows created/linked through ADE.
+2. **Unmapped projection rows** — `github_pr_projections` rows for repo PRs
+   ADE has seen over the GitHub snapshot / webhook path but that have no
+   `pull_requests` row. `listUnmappedGithubProjectionRowsForDisplay` selects
+   only projections with no matching mapped row (by
+   `project + owner/repo + number`). `projectionToLanePrSummary` turns one into
+   a `PrSummary` with `unmapped: true`, the synthetic `gh:owner/repo#num` id,
+   and `checksStatus`/`reviewStatus` of `none` (projections carry no check or
+   review detail).
+
+`selectLanePrDisplayCandidate` filters both sources to the lane's normalized
+branch, then `compareLanePrDisplayCandidates` picks one: terminal rank
+(open/draft `0` → merged `1` → closed `2`), then newest `updatedAt`, then
+newest `createdAt`, then highest PR number, with a mapped row breaking a final
+tie. Projection matching (`projectionMatchesLaneBranchForDisplay`) also requires
+the head repo to match the base repo (no fork PRs) and the projection's repo to
+match the tracked `activeGithubRepo` (captured from the GitHub snapshot / status
+so lane display never leaks a projection from a different repo).
+
+`getForLane` and `listPrsByLane` both go through this path; `listPrsByLane`
+only attaches live check counts for candidates backed by a mapped row (an
+unmapped projection has no snapshot to read).
+
+### Projection sync on material refresh
+
+When `upsertFromGithub` detects a material summary change it now also writes the
+matching `github_pr_projections` row (state, `is_draft`, title, `updated_at`,
+`synced_at`) and calls `emitPrsUpdated()`, so an unmapped lane badge and the
+GitHub tab both track a PR's state without waiting for the next full snapshot.
+The same path backfills GitHub's real `created_at` onto both the mapped row and
+the projection: `upsertFromGithub` and `linkToLane` store the PR's GitHub
+`created_at` (falling back to link time only when GitHub omits it) while keeping
+`updated_at` as the link/observe time, so an adopted or externally-created PR
+sorts by its true age.
+
+### PR event fan-out (runtime)
+
+In the daemon, the PR service's event emitter is wired through
+`createPrEventFanout` (`apps/ade-cli/src/prEventFanout.ts`), which forwards every
+`PrEventPayload` to multiple sinks with each sink isolated in its own
+try/catch. Today those sinks are the runtime `pr_event` emitter (surfaced to
+runtime-bound windows) and search indexing (`searchService.notifyPrChanged` on
+`prs-updated`). A throw in one sink can no longer suppress the others.
 
 ## GitHub connectivity model
 
@@ -590,7 +676,12 @@ user's last PR selection when they click the PRs tab from elsewhere.
 Event sources: `buildTimelineEvents` prepends a synthetic `pr_opened`
 event (title, PR number, head/base branches, draft flag, additions /
 deletions) before folding in description, review threads, activity
-entries, and per-check status. The activity stream reaches GitHub-event
+entries, and per-check status. After the stable timestamp sort it moves the
+`description` event back to the top, so a PR carrying a wrong `createdAt`
+(common on adopted / linked PRs) still shows its description first.
+Bot-authored review cards and long bot issue comments render collapsed by
+default (`CollapsibleCommentBody`), matching GitHub's treatment of noisy
+review-bot output. The activity stream reaches GitHub-event
 parity: alongside commits, comments, reviews, label changes, merges, and
 deployments it carries lifecycle changes (closed / reopened / ready /
 converted-to-draft), cross-references, renames, head/base branch ref
