@@ -5,6 +5,8 @@ import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import { createPendingLaneDeleteProgress } from "../../lib/laneDeleteProgress";
+import { useAppStore } from "../../state/appStore";
 import { SessionListPane } from "./SessionListPane";
 
 vi.mock("./useSessionDelta", () => ({
@@ -102,6 +104,7 @@ function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {})
 describe("SessionListPane", () => {
   afterEach(() => {
     cleanup();
+    useAppStore.setState({ laneDeleteProgressByLaneId: {} });
   });
 
   it("renders by-lane sessions whose lane is missing from the cached lane list", () => {
@@ -109,6 +112,34 @@ describe("SessionListPane", () => {
 
     expect(screen.getByText("Mobile-created lane")).toBeTruthy();
     expect(screen.getByText("Mobile Tool Streaming UI")).toBeTruthy();
+  });
+
+  it("disables a lane and its chats while lane deletion is in progress", () => {
+    const onSelectSession = vi.fn();
+    const session = makeSession({
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Deleting lane chat",
+    });
+    useAppStore.setState({
+      laneDeleteProgressByLaneId: {
+        "lane-known": createPendingLaneDeleteProgress("lane-known"),
+      },
+    });
+
+    renderPane({
+      runningFiltered: [session],
+      allSessionsUnfiltered: [session],
+      sessionsGroupedByLane: new Map([[session.laneId, [session]]]),
+      onSelectSession,
+    });
+
+    const chatButton = screen.getByRole("button", { name: "Deleting lane chat: Deleting lane" });
+    const laneHeaderButton = screen.getByText("Known Lane").closest("button");
+    expect((chatButton as HTMLButtonElement).disabled).toBe(true);
+    expect((laneHeaderButton as HTMLButtonElement | null)?.disabled).toBe(true);
+    fireEvent.click(chatButton);
+    expect(onSelectSession).not.toHaveBeenCalled();
   });
 
   it("renders in-flight handoff placeholders in the matching lane group", () => {

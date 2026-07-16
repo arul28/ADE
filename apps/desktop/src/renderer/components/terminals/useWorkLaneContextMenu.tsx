@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useAppStore, selectActiveProjectRoot } from "../../state/appStore";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import { LaneContextMenu } from "../lanes/LaneContextMenu";
+import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 
 type MenuState = { laneId: string; x: number; y: number };
 
@@ -23,6 +24,7 @@ export function useWorkLaneContextMenu(): {
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
 
   const [menuState, setMenuState] = useState<MenuState | null>(null);
+  const [managedLaneId, setManagedLaneId] = useState<string | null>(null);
 
   const lanesById = useMemo(() => {
     const map = new Map<string, (typeof lanes)[number]>();
@@ -67,35 +69,46 @@ export function useWorkLaneContextMenu(): {
     navigate,
   });
 
-  const menu = menuState
+  const menu = menuState || managedLaneId
     ? createPortal(
-        <LaneContextMenu
-          laneContextMenu={menuState}
-          lanesById={lanesById}
-          visibleLaneIds={visibleLaneIds}
-          onClose={close}
-          onAdoptAttached={(laneId) => goToLanesAction(laneId, "adopt")}
-          onManage={(laneId) => goToLanesAction(laneId, "manage")}
-          onOpenRun={(laneId) => {
-            selectLane(laneId);
-            void navigate("/project");
-          }}
-          selectLane={(laneId) => {
-            if (!laneId) return;
-            goToLanesAction(laneId, "split-open");
-          }}
-          onRemoveFromSplit={(laneId) => goToLanesAction(laneId, "split-remove")}
-          onCloseOtherSplits={(keepLaneId) => goToLanesAction(keepLaneId, "split-close-others")}
-          onSelectAll={() => {
-            if (!menuState) return;
-            goToLanesAction(null, "select-all");
-          }}
-          onBatchManage={(laneIds) => {
-            if (!laneIds.length) return;
-            goToLanesAction(laneIds[0], "batch", { laneIds: laneIds.join(",") });
-          }}
-          onStartChatInLane={startChatInLane}
-        />,
+        <>
+          {menuState ? (
+            <LaneContextMenu
+              laneContextMenu={menuState}
+              lanesById={lanesById}
+              visibleLaneIds={visibleLaneIds}
+              onClose={close}
+              onAdoptAttached={(laneId) => goToLanesAction(laneId, "adopt")}
+              onManage={(laneId) => {
+                close();
+                setManagedLaneId(laneId);
+              }}
+              onOpenRun={(laneId) => {
+                selectLane(laneId);
+                void navigate("/project");
+              }}
+              selectLane={(laneId) => {
+                if (!laneId) return;
+                goToLanesAction(laneId, "split-open");
+              }}
+              onRemoveFromSplit={(laneId) => goToLanesAction(laneId, "split-remove")}
+              onCloseOtherSplits={(keepLaneId) => goToLanesAction(keepLaneId, "split-close-others")}
+              onSelectAll={() => {
+                if (!menuState) return;
+                goToLanesAction(null, "select-all");
+              }}
+              onBatchManage={(laneIds) => {
+                if (!laneIds.length) return;
+                goToLanesAction(laneIds[0], "batch", { laneIds: laneIds.join(",") });
+              }}
+              onStartChatInLane={startChatInLane}
+            />
+          ) : null}
+          <WorkManageLaneDialogHost
+            laneId={managedLaneId}
+            onClose={() => setManagedLaneId(null)}
+          />
+        </>,
         document.body,
       )
     : null;
