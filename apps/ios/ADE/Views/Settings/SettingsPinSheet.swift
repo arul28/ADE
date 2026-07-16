@@ -59,6 +59,21 @@ struct SettingsPinSheet: View {
 
         if noPairingCode {
           noPairingCodeCard
+          // Escape hatch: a PIN may have been set on that Mac *after* its QR was
+          // scanned (or after discovery reported no code). Let the user flip back
+          // to the keypad and try a code anyway instead of dead-ending here.
+          Button {
+            withAnimation(.easeInOut(duration: 0.2)) { noPairingCode = false }
+          } label: {
+            Text("Enter code anyway")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.accent)
+              .frame(maxWidth: .infinity)
+              .frame(minHeight: 44)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .accessibilityHint("Shows the keypad in case a pairing code was set after this Mac was scanned.")
         } else {
           pinEntry
         }

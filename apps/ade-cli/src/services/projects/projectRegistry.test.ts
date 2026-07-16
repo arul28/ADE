@@ -133,6 +133,37 @@ describe("ProjectRegistry", () => {
     expect(registry.listRecent()).toEqual([]);
   });
 
+  it("does not rewrite the registry when catalog metadata already matches", () => {
+    const homeDir = makeTempRoot("ade-project-registry-noop-visibility-");
+    const projectRoot = path.join(homeDir, "ADE");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath: path.join(registryDir, "projects.json"),
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+    const registered = registry.add(projectRoot, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    const writeFileSync = vi.spyOn(fs, "writeFileSync");
+
+    const unchanged = registry.setCatalogVisibilityByRootPath(
+      projectRoot,
+      "recent",
+      "desktop",
+    );
+
+    expect(unchanged).toEqual(registered);
+    expect(writeFileSync).not.toHaveBeenCalled();
+  });
+
   it("rejects registering the user home directory", () => {
     const homeDir = makeTempRoot("ade-project-registry-home-");
     vi.spyOn(os, "homedir").mockReturnValue(homeDir);

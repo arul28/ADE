@@ -14714,6 +14714,19 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
   }
 }
 
+export function includeHostProjectInCatalog<T extends { projectId: string }>(
+  recentProjects: T[],
+  hostProject: T | null,
+): T[] {
+  if (
+    !hostProject ||
+    recentProjects.some((project) => project.projectId === hostProject.projectId)
+  ) {
+    return recentProjects;
+  }
+  return [...recentProjects, hostProject];
+}
+
 async function runServe(
   rest: string[],
   options: GlobalOptions,
@@ -14977,8 +14990,12 @@ async function runServe(
   };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
     listProjects: async () => ({
-      projects: projectRegistry
-        .listRecent()
+      projects: includeHostProjectInCatalog(
+        projectRegistry.listRecent(),
+        preferredSyncProjectId
+          ? projectRegistry.get(preferredSyncProjectId)
+          : null,
+      )
         .map((record) =>
           toMobileProjectSummary(record, {
             isAvailable: fs.existsSync(record.rootPath),

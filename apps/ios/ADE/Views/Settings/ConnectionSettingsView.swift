@@ -618,7 +618,7 @@ struct SettingsMachinesSection: View {
       result.append(Entry(
         id: "account-\(machine.id)",
         name: machine.displayName,
-        routeHint: machine.routeLabel ?? (machine.online ? "Available now" : "Offline"),
+        routeHint: machine.routeLabel ?? machineStatusHint(online: machine.online),
         online: machine.online,
         isCurrent: current,
         kind: .account(machine)
@@ -630,7 +630,7 @@ struct SettingsMachinesSection: View {
       let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
       let key = (identity?.isEmpty == false) ? identity!.lowercased() : "name:\(host.hostName.lowercased())"
       guard seen.insert(key).inserted else { continue }
-      let online = live.contains { settingsSameMachine(host, $0) }
+      let online = live.contains { sameSyncHost(host, $0) }
       let current = isConnected && (
         (currentIdentity != nil && identity != nil && currentIdentity!.caseInsensitiveCompare(identity!) == .orderedSame)
           || (currentHostName?.caseInsensitiveCompare(host.hostName) == .orderedSame)
@@ -638,7 +638,7 @@ struct SettingsMachinesSection: View {
       result.append(Entry(
         id: "saved-\(host.id)",
         name: host.hostName,
-        routeHint: online ? "Paired · online" : "Paired · offline",
+        routeHint: machineStatusHint(online: online),
         online: online,
         isCurrent: current,
         kind: .saved(host)
@@ -732,65 +732,14 @@ struct SettingsMachinesSection: View {
       Button {
         connect(entry)
       } label: {
-        HStack(spacing: 14) {
-          Image(systemName: deviceSymbol(entry))
-            .font(.system(size: 18, weight: .semibold))
-            .foregroundStyle(entry.online ? ADEColor.success : ADEColor.textMuted)
-            .frame(width: 38, height: 38)
-            .background(
-              RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill((entry.online ? ADEColor.success : ADEColor.textMuted).opacity(0.14))
-            )
-
-          VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-              Text(entry.name)
-                .font(.body.weight(.medium))
-                .foregroundStyle(ADEColor.textPrimary)
-                .lineLimit(1)
-              if entry.isCurrent {
-                ADEStatusPill(text: "CONNECTED", tint: ADEColor.success)
-              } else {
-                ADEStatusPill(
-                  text: entry.online ? "ONLINE" : "OFFLINE",
-                  tint: entry.online ? ADEColor.success : ADEColor.textMuted
-                )
-              }
-            }
-            Text(entry.routeHint)
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-              .lineLimit(1)
-          }
-
-          Spacer(minLength: 8)
-
-          if isConnecting {
-            ProgressView().controlSize(.small)
-          } else if entry.isCurrent {
-            Image(systemName: "checkmark.circle.fill")
-              .font(.system(size: 15, weight: .semibold))
-              .foregroundStyle(ADEColor.success)
-          } else if entry.online {
-            HStack(spacing: 4) {
-              Text("Connect")
-                .font(.caption.weight(.semibold))
-              Image(systemName: "chevron.right")
-                .font(.system(size: 11, weight: .bold))
-            }
-            .foregroundStyle(ADEColor.accent)
-          }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-          RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(ADEColor.surfaceBackground.opacity(0.5))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+        MachineRowView(
+          deviceSymbol: deviceSymbol(entry),
+          title: entry.name,
+          routeHint: entry.routeHint,
+          online: entry.online,
+          statusPill: entry.isCurrent ? .connected : (entry.online ? .online : .offline),
+          affordance: rowAffordance(entry, isConnecting: isConnecting),
+          surface: .row
         )
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
       }
@@ -812,16 +761,18 @@ struct SettingsMachinesSection: View {
     }
   }
 
+  private func rowAffordance(_ entry: Entry, isConnecting: Bool) -> MachineRowView.Affordance {
+    if isConnecting { return .connecting }
+    if entry.isCurrent { return .connected }
+    return entry.online ? .connect : .none
+  }
+
   private func deviceSymbol(_ entry: Entry) -> String {
     switch entry.kind {
     case .account(let machine):
-      switch (machine.deviceType ?? machine.platform ?? "").lowercased() {
-      case let value where value.contains("phone") || value.contains("ios"): return "iphone"
-      case let value where value.contains("pad"): return "ipad"
-      default: return "laptopcomputer"
-      }
+      return machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform)
     case .saved:
-      return "laptopcomputer"
+      return machineDeviceSymbol(deviceType: nil, platform: nil)
     }
   }
 
@@ -862,15 +813,6 @@ struct SettingsMachinesSection: View {
       }
     }
   }
-}
-
-private func settingsSameMachine(_ lhs: DiscoveredSyncHost, _ rhs: DiscoveredSyncHost) -> Bool {
-  if let lid = lhs.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !lid.isEmpty,
-     let rid = rhs.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !rid.isEmpty {
-    return lid.caseInsensitiveCompare(rid) == .orderedSame
-  }
-  if !Set(lhs.addresses).isDisjoint(with: Set(rhs.addresses)) { return true }
-  return lhs.hostName.caseInsensitiveCompare(rhs.hostName) == .orderedSame
 }
 
 private struct SettingsAuroraBackground: View {

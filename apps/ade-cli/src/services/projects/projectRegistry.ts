@@ -260,8 +260,15 @@ export class ProjectRegistry {
       (record) => record.rootPath === normalized,
     );
     if (index < 0) return null;
+    const current = file.projects[index]!;
+    if (
+      current.catalogVisibility === catalogVisibility &&
+      current.registrationSource === registrationSource
+    ) {
+      return current;
+    }
     const next: ProjectRecord = {
-      ...file.projects[index]!,
+      ...current,
       catalogVisibility,
       registrationSource,
     };

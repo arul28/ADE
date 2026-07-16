@@ -145,15 +145,23 @@ afterEach(() => {
 });
 
 describe("buildRosterSnapshot", () => {
-  it("excludes system projects from the mobile roster", async () => {
+  it("includes the system host but excludes other system projects", async () => {
+    const hostProjectId = "project_system_host";
     const registry = {
       list: () => [
         ...projectRegistry.list(),
         {
-          projectId: "project_system",
+          projectId: hostProjectId,
           rootPath: projectRoot,
-          displayName: "System",
+          displayName: "System host",
           lastOpenedAt: 1_800_000_000_000,
+          catalogVisibility: "system" as const,
+        },
+        {
+          projectId: "project_system_other",
+          rootPath: projectRoot,
+          displayName: "Other system project",
+          lastOpenedAt: 1_900_000_000_000,
           catalogVisibility: "system" as const,
         },
       ],
@@ -162,9 +170,13 @@ describe("buildRosterSnapshot", () => {
     const projects = await buildRosterSnapshot({
       projectRegistry: registry,
       scopeRegistry: unbootedScopes,
+      hostProjectId,
     });
 
-    expect(projects.map((project) => project.projectId)).toEqual([PROJECT_ID]);
+    expect(projects.map((project) => project.projectId)).toEqual([
+      hostProjectId,
+      PROJECT_ID,
+    ]);
   });
 
   it("maps lanes and chats from disk for an un-booted project", async () => {

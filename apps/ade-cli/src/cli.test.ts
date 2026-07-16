@@ -16,6 +16,7 @@ import {
   formatOutput,
   graphWaitState,
   inferFormatter,
+  includeHostProjectInCatalog,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
@@ -131,6 +132,32 @@ function writeSyncHostSingletonLock(args: {
 }
 
 describe("ADE CLI", () => {
+  it("includes the system host in the mobile catalog without exposing other system projects", () => {
+    const projects = [
+      { projectId: "project_recent", catalogVisibility: "recent" as const },
+      { projectId: "project_system_host", catalogVisibility: "system" as const },
+      { projectId: "project_system_other", catalogVisibility: "system" as const },
+    ];
+    const recentProjects = projects.filter(
+      (project) => project.catalogVisibility === "recent",
+    );
+    const hostProject = projects.find(
+      (project) => project.projectId === "project_system_host",
+    )!;
+
+    expect(
+      includeHostProjectInCatalog(recentProjects, hostProject).map(
+        (project) => project.projectId,
+      ),
+    ).toEqual(["project_recent", "project_system_host"]);
+    expect(
+      includeHostProjectInCatalog(
+        [...recentProjects, hostProject],
+        hostProject,
+      ).map((project) => project.projectId),
+    ).toEqual(["project_recent", "project_system_host"]);
+  });
+
   it("builds projectless account commands and reports the signed-out local-first message", () => {
     const statusPlan = expectExecutePlan(buildCliPlan(["auth", "status"]));
     expect(statusPlan).toMatchObject({
