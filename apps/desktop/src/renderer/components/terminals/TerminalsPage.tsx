@@ -30,6 +30,8 @@ import {
   buildHandoffLaunchJobsScopeKey,
   type HandoffLaunchJob,
 } from "../../lib/handoffLaunchJobs";
+import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
+import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -138,6 +140,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
   const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
   const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
+
+  const refreshWorkSessionsAfterLaneDelete = useCallback(
+    () => work.refresh({ showLoading: false, force: true }),
+    [work.refresh],
+  );
+  useWorkLaneDeleteProgress({
+    active,
+    projectRoot,
+    lanes: work.lanes,
+    refreshSessions: refreshWorkSessionsAfterLaneDelete,
+  });
 
   const sessionsPaneRefCb = useCallback((el: HTMLDivElement | null) => {
     if (sessionsPaneRoRef.current) {
@@ -631,6 +644,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     if (selectedLaneId && sortedLanes.some((lane) => lane.id === selectedLaneId)) return selectedLaneId;
     return sortedLanes.find((lane) => lane.laneType === "primary")?.id ?? sortedLanes[0]?.id ?? null;
   }, [activeWorkSession?.laneId, selectedLaneId, sortedLanes, work.draftLaneId]);
+  const activeLaneDeleteProgress = useAppStore((state) => (
+    activeLaneId ? state.laneDeleteProgressByLaneId[activeLaneId] ?? null : null
+  ));
 
   const draftContextTargetId = useMemo(() => (
     !activeWorkSession && activeLaneId
@@ -958,7 +974,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const workViewWithSidebar = useMemo(
     () => (
-      <div className="flex h-full min-h-0 min-w-0 overflow-hidden">
+      <div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
         <div
           ref={workContentPaneRef}
           className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
@@ -1003,6 +1019,18 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             </motion.div>
           ) : null}
         </AnimatePresence>
+        {activeLaneDeleteProgress ? (
+          <div
+            className="absolute inset-0 z-30 flex items-center justify-center bg-bg/75 backdrop-blur-[2px]"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div className="flex items-center gap-2 rounded-lg border border-white/10 bg-card/95 px-3 py-2 text-[12px] font-medium text-muted-fg shadow-xl">
+              <span className="h-3.5 w-3.5 animate-spin rounded-full border border-muted-fg/35 border-t-accent" />
+              {getLaneDeleteStatusLabel(activeLaneDeleteProgress)} lane
+            </div>
+          </div>
+        ) : null}
       </div>
     ),
     [
@@ -1019,6 +1047,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.workSidebarWidthPct,
       workSidebarVisible,
       workViewArea,
+      activeLaneDeleteProgress,
     ],
   );
 

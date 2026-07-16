@@ -31,6 +31,7 @@ import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialog
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
 import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection } from "./ManageLaneDialog";
+import { AdoptAttachedLaneConfirmDialog } from "./AdoptAttachedLaneConfirmDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
 import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
@@ -78,6 +79,11 @@ import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warm
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
+import {
+  createPendingLaneDeleteProgress,
+  getLaneDeleteStatusLabel,
+  isLaneDeleteProgressActive,
+} from "../../lib/laneDeleteProgress";
 import type {
   DeleteLaneArgs,
   GitCommitSummary,
@@ -193,10 +199,6 @@ function isTrustedGitHubUrl(rawUrl: string): boolean {
   }
 }
 
-export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null | undefined): boolean {
-  return progress?.overallStatus === "running";
-}
-
 function isLaneDeleteProgressHydratable(progress: LaneDeleteProgress | null | undefined): boolean {
   return progress?.overallStatus === "running"
     || progress?.overallStatus === "completed"
@@ -308,21 +310,6 @@ function LaneLoadingSkeleton() {
       </div>
     </div>
   );
-}
-
-function createPendingDeleteProgress(laneId: string): LaneDeleteProgress {
-  return {
-    laneId,
-    steps: [],
-    startedAt: new Date().toISOString(),
-    overallStatus: "running",
-    cancellable: false,
-  };
-}
-
-function getLaneDeleteStatusLabel(progress: LaneDeleteProgress | null | undefined): string {
-  if (progress?.overallStatus === "completed_with_warnings") return "Deleted with warnings";
-  return progress?.overallStatus === "completed" ? "Deleted" : "Deleting";
 }
 
 const LANE_DELETE_STEP_LABELS: Record<string, string> = {
@@ -1705,7 +1692,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setDeleteProgressByLaneId((prev) => {
       const next = { ...prev };
       for (const laneId of laneIds) {
-        next[laneId] = createPendingDeleteProgress(laneId);
+        next[laneId] = createPendingLaneDeleteProgress(laneId);
       }
       return next;
     });
@@ -3878,54 +3865,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         }}
       />
 
-      {adoptConfirmOpen ? (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div style={{ width: "min(620px, 100%)", background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 20 }}>
-            <div style={{ ...LABEL_STYLE, color: COLORS.info }}>MOVE ATTACHED LANE</div>
-            <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
-              Move <strong>{adoptTargetLane?.name ?? "this lane"}</strong> into <code>.ade/worktrees</code>.
-            </div>
-            <div style={{ marginTop: 8, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.5 }}>
-              ADE uses <code>git worktree move</code>, so branch history and commits stay exactly the same.
-            </div>
-            {adoptTargetLane ? (
-              <div style={{ marginTop: 10, padding: "8px 10px", background: COLORS.recessedBg, border: `1px solid ${COLORS.border}`, borderRadius: 12 }}>
-                <div style={{ fontSize: 11, color: COLORS.textSecondary }}>Current path</div>
-                <div className="truncate" style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textPrimary }}>
-                  {adoptTargetLane.worktreePath}
-                </div>
-              </div>
-            ) : null}
-            {adoptError ? (
-              <div style={{ marginTop: 10, padding: "8px 10px", background: "color-mix(in srgb, var(--color-error) 12%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)", borderRadius: 8, color: "#FCA5A5", fontSize: 12 }}>
-                {adoptError}
-              </div>
-            ) : null}
-            <div className="flex justify-end gap-2" style={{ marginTop: 12 }}>
-              <button
-                type="button"
-                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 10 })}
-                disabled={adoptBusy}
-                onClick={() => {
-                  setAdoptConfirmOpen(false);
-                  setAdoptTargetLaneId(null);
-                  setAdoptError(null);
-                }}
-              >
-                CANCEL
-              </button>
-              <button
-                type="button"
-                style={primaryButton({ height: 30, padding: "0 10px", fontSize: 10 })}
-                disabled={adoptBusy || !adoptTargetLane}
-                onClick={() => { void confirmAdoptAttachedLane(); }}
-              >
-                {adoptBusy ? "MOVING..." : "MOVE TO .ADE"}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <AdoptAttachedLaneConfirmDialog
+        open={adoptConfirmOpen}
+        lane={adoptTargetLane}
+        busy={adoptBusy}
+        error={adoptError}
+        onCancel={() => {
+          setAdoptConfirmOpen(false);
+          setAdoptTargetLaneId(null);
+          setAdoptError(null);
+        }}
+        onConfirm={() => { void confirmAdoptAttachedLane(); }}
+      />
 
       {rebaseScopePrompt ? (
         <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
