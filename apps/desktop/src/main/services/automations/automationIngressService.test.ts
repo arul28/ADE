@@ -708,7 +708,7 @@ describe("automationIngressService", () => {
     expect(cursors.get("github-relay")).toBe("seq:5");
   });
 
-  it("does not advance the relay cursor when processing a page fails", async () => {
+  it("skips a failing event and still advances the relay cursor (poison-event guard)", async () => {
     const logger = makeLogger();
     const setIngressCursor = vi.fn();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
@@ -742,11 +742,91 @@ describe("automationIngressService", () => {
 
     await service.pollNow();
 
+    // A deterministically-failing event must not stall ingest for the repo:
+    // it is logged and skipped, and the durable cursor moves past it so the
+    // next drain does not replay the same poisoned page forever.
     expect(dispatchIngressTrigger).toHaveBeenCalledTimes(2);
-    expect(setIngressCursor).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith("automations.github_relay_poll_failed", {
+    expect(setIngressCursor).toHaveBeenCalledWith({ source: "github-relay", cursor: "seq:4" });
+    expect(logger.warn).toHaveBeenCalledWith("automations.github_relay_dispatch_failed", expect.objectContaining({
+      eventId: "delivery-4",
       error: "dispatch failed",
+    }));
+  });
+
+  it("skips a failing PR ingest and still advances the relay cursor", async () => {
+    const logger = makeLogger();
+    const setIngressCursor = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      events: [
+        { cursor: "seq:3", eventId: "delivery-3", githubEvent: "pull_request", payload: {} },
+        { cursor: "seq:4", eventId: "delivery-4", githubEvent: "pull_request", payload: {} },
+      ],
+      nextCursor: "seq:4",
+      hasMore: false,
+    }), { headers: { "content-type": "application/json" } }));
+    const ingestGithubWebhook = vi.fn(async ({ deliveryId }: { deliveryId: string }) => {
+      if (deliveryId === "delivery-3") throw new Error("ingest failed");
+      return { processed: true, duplicate: false, linkedPrIds: [] };
     });
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: {
+        updateIngressStatus: vi.fn(),
+        dispatchIngressTrigger: vi.fn(async () => {}),
+        getIngressCursor: () => "seq:2",
+        setIngressCursor,
+        getIngressStatus: () => ({}),
+      } as never,
+      prService: { ingestGithubWebhook } as never,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+    });
+
+    await service.pollNow();
+
+    expect(ingestGithubWebhook).toHaveBeenCalledTimes(2);
+    expect(setIngressCursor).toHaveBeenCalledWith({ source: "github-relay", cursor: "seq:4" });
+    expect(logger.warn).toHaveBeenCalledWith("automations.github_relay_pr_ingest_failed", expect.objectContaining({
+      eventId: "delivery-3",
+      error: "ingest failed",
+    }));
+  });
+
+  it("does not advance the relay cursor when the page fetch fails", async () => {
+    const logger = makeLogger();
+    const setIngressCursor = vi.fn();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("upstream unavailable", { status: 503 }));
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: {
+        updateIngressStatus: vi.fn(),
+        dispatchIngressTrigger: vi.fn(async () => {}),
+        getIngressCursor: () => "seq:2",
+        setIngressCursor,
+        getIngressStatus: () => ({}),
+      } as never,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+    });
+
+    await service.pollNow();
+
+    // Transport/page failures must abort the drain without moving the durable
+    // cursor — only per-event processing failures are skip-and-advance.
+    expect(setIngressCursor).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith("automations.github_relay_poll_failed", expect.objectContaining({
+      error: expect.stringContaining("503"),
+    }));
   });
 
   it("polls immediately for subscription wake-up frames", async () => {

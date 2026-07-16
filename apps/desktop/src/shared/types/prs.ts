@@ -1254,6 +1254,23 @@ export type PrGithubCoords = {
   githubPrNumber: number;
 };
 
+/**
+ * Stable synthetic PR id for a GitHub PR with no `pull_requests` row
+ * ("gh:owner/repo#num"). The single source of the format — the service uses it
+ * for projection-only summaries and coordinate-based fetches; the renderer uses
+ * it to key unmapped GitHub-tab rows.
+ */
+export function syntheticGithubPrId(coords: PrGithubCoords): string {
+  return `gh:${coords.repoOwner}/${coords.repoName}#${coords.githubPrNumber}`;
+}
+
+/** Reverse of `syntheticGithubPrId`: "gh:owner/repo#num" → coords (else null). */
+export function parseSyntheticGithubPrId(prId: string): PrGithubCoords | null {
+  const m = /^gh:([^/]+)\/(.+)#(\d+)$/.exec(prId);
+  if (!m) return null;
+  return { repoOwner: m[1]!, repoName: m[2]!, githubPrNumber: Number(m[3]!) };
+}
+
 /** Full PR detail fetched from GitHub API with body, labels, assignees, etc. */
 export type PrDetail = {
   prId: string;

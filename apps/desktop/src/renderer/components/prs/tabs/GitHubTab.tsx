@@ -16,6 +16,7 @@ import type {
   PrSummary,
   PrWithConflicts,
 } from "../../../../shared/types";
+import { syntheticGithubPrId } from "../../../../shared/types/prs";
 import { EmptyState } from "../../ui/EmptyState";
 import { ResizeGutter } from "../../ui/ResizeGutter";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
@@ -534,12 +535,11 @@ function sameGitHubPr(left: GitHubPrListItem, right: GitHubPrListItem): boolean 
 
 /**
  * Stable synthetic PR id for an unmapped GitHub PR (no ADE lane / DB row).
- * Mirrors the backend's `syntheticGithubPrId` so the same coordinate-based
- * fetches that the pane issues resolve consistently. Must be deterministic
- * across renders — it keys both per-id effects in the pane and the React `key`.
+ * Must be deterministic across renders — it keys both per-id effects in the
+ * pane and the React `key`.
  */
 function syntheticUnmappedPrId(item: GitHubPrListItem): string {
-  return `gh:${item.repoOwner}/${item.repoName}#${item.githubPrNumber}`;
+  return syntheticGithubPrId(item);
 }
 
 /**

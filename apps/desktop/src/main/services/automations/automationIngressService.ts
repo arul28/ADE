@@ -878,6 +878,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           const summary = typeof event.summary === "string" ? event.summary : `GitHub ${githubEvent} event`;
           const rawPayload = isRecord(event.payload) ? event.payload : event;
           lastDeliveryAt = String(event.createdAt ?? new Date().toISOString());
+          // Per-event failures must not stall the drain: the delivery is
+          // already durably recorded (status="error") for diagnosis, and the
+          // direct GitHub poller corrects PR state independently. A throwing
+          // event would otherwise replay from the same cursor forever and
+          // freeze all ingest for the repo.
           const ingested = await args.prService?.ingestGithubWebhook({
             eventName: githubEvent,
             deliveryId: eventId,
@@ -888,23 +893,31 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               eventId,
               error: error instanceof Error ? error.message : String(error),
             });
-            throw error;
+            return null;
           });
           // Same as the local-webhook path: a relay-delivered PR change should
           // refresh the poller immediately instead of waiting for its next tick.
           if (ingested?.processed && !ingested.duplicate && ingested.linkedPrIds.length > 0) {
             args.onPrStateIngested?.();
           }
-          await args.automationService?.dispatchIngressTrigger({
-            source: "github-relay",
-            eventKey: eventId,
-            triggerType: "github-webhook",
-            eventName: githubEvent,
-            summary,
-            cursor: eventCursor ?? eventId,
-            keywords: summary.split(/\s+/g).filter(Boolean),
-            rawPayload,
-          });
+          try {
+            await args.automationService?.dispatchIngressTrigger({
+              source: "github-relay",
+              eventKey: eventId,
+              triggerType: "github-webhook",
+              eventName: githubEvent,
+              summary,
+              cursor: eventCursor ?? eventId,
+              keywords: summary.split(/\s+/g).filter(Boolean),
+              rawPayload,
+            });
+          } catch (error) {
+            args.logger.warn("automations.github_relay_dispatch_failed", {
+              githubEvent,
+              eventId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           pageLastCursor = eventCursor ?? eventId;
         }
         const responseCursor = typeof payload.nextCursor === "string" && payload.nextCursor

@@ -153,6 +153,7 @@ import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { LinearLiveStatusService } from "../cto/linearLiveStatusService";
 import { publishLinearPrCard } from "../cto/linearLaneCardService";
+import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/types/prs";
 import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
@@ -335,15 +336,6 @@ function defaultPrTitleForLane(lane: LaneSummary, baseBranch: string, lanes: Lan
   return `${lane.name} -> ${targetName}`;
 }
 
-/**
- * Synthetic, stable id for an unmapped GitHub PR (no DB row). Used as the
- * `PrDetail.prId` for coordinate-based fetches so the renderer can key per-PR
- * state without a real row id. Mirrors the renderer's stable-id derivation.
- */
-function syntheticGithubPrId(coords: PrGithubCoords): string {
-  return `gh:${coords.repoOwner}/${coords.repoName}#${coords.githubPrNumber}`;
-}
-
 // GitHub falls back to a Gravatar identicon (keyed on the commit author email)
 // when a commit isn't linked to a GitHub account — this mirrors that so commit
 // rows show the same avatar GitHub does instead of a generic placeholder.
@@ -352,13 +344,6 @@ function gravatarIdenticon(email: string): string | null {
   if (!normalized) return null;
   const hash = createHash("md5").update(normalized).digest("hex");
   return `https://www.gravatar.com/avatar/${hash}?d=identicon&s=80`;
-}
-
-/** Reverse of `syntheticGithubPrId`: "gh:owner/repo#num" → coords (else null). */
-function parseSyntheticGithubPrId(prId: string): PrGithubCoords | null {
-  const m = /^gh:([^/]+)\/(.+)#(\d+)$/.exec(prId);
-  if (!m) return null;
-  return { repoOwner: m[1]!, repoName: m[2]!, githubPrNumber: Number(m[3]!) };
 }
 
 /**
