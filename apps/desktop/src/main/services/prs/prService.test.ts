@@ -129,6 +129,36 @@ function makePrRow(overrides?: Partial<Record<string, unknown>>) {
   };
 }
 
+function makeGithubProjectionRow(overrides?: Partial<Record<string, unknown>>) {
+  return {
+    project_id: "proj-1",
+    repo_owner: REPO.owner,
+    repo_name: REPO.name,
+    github_pr_number: 404,
+    github_node_id: "PR_node404",
+    github_url: "https://github.com/test-owner/test-repo/pull/404",
+    title: "External PR",
+    state: "open",
+    is_draft: 0,
+    base_branch: "main",
+    head_branch: "my-feature",
+    head_repo_owner: REPO.owner,
+    head_repo_name: REPO.name,
+    head_sha: "head-sha-404",
+    base_sha: "base-sha-404",
+    author: "octocat",
+    labels_json: "[]",
+    is_bot: 0,
+    comment_count: 0,
+    created_at: "2026-01-03T00:00:00Z",
+    updated_at: "2026-01-04T00:00:00Z",
+    synced_at: "2026-01-04T00:01:00Z",
+    last_event_name: "snapshot",
+    last_delivery_id: null,
+    ...overrides,
+  };
+}
+
 function makeGitHubPull(overrides?: Partial<Record<string, unknown>>) {
   return {
     node_id: "PR_node_1",
@@ -419,10 +449,17 @@ describe("prService.getForLane", () => {
     vi.clearAllMocks();
   });
 
-  function buildGetForLaneService(lane: ReturnType<typeof makeFakeLane>, rows: unknown[]) {
+  function buildGetForLaneService(
+    laneOrLanes: ReturnType<typeof makeFakeLane> | ReturnType<typeof makeFakeLane>[],
+    rows: Array<ReturnType<typeof makePrRow>>,
+    projectionRows: Array<ReturnType<typeof makeGithubProjectionRow>> = [],
+  ) {
+    const lanes = Array.isArray(laneOrLanes) ? laneOrLanes : [laneOrLanes];
     const db = makeMockDb();
-    db.get.mockImplementation((sql: string) => {
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
       if (String(sql).includes("from lanes")) {
+        const lane = lanes.find((candidate) => candidate.id === params[0]);
+        if (!lane) return null;
         return {
           lane_type: lane.laneType,
           branch_ref: lane.branchRef,
@@ -432,8 +469,29 @@ describe("prService.getForLane", () => {
       }
       return null;
     });
-    db.all.mockReturnValue(rows);
-    return buildService({ db, laneService: makeLaneService([lane]) }).service;
+    db.all.mockImplementation((sql: string, params: unknown[] = []) => {
+      const text = String(sql);
+      if (text.includes("from github_pr_projections")) {
+        const mappedKeys = new Set(rows.map((row) => (
+          `${String(row.repo_owner).toLowerCase()}/${String(row.repo_name).toLowerCase()}#${Number(row.github_pr_number)}`
+        )));
+        return projectionRows.filter((row) =>
+          row.project_id === params[0]
+          && !mappedKeys.has(`${String(row.repo_owner).toLowerCase()}/${String(row.repo_name).toLowerCase()}#${Number(row.github_pr_number)}`)
+        );
+      }
+      if (text.includes("from pull_requests")) {
+        if (text.includes("where lane_id = ?")) {
+          return rows.filter((row) => row.lane_id === params[0] && row.project_id === params[1]);
+        }
+        if (text.includes("where project_id = ?")) {
+          return rows.filter((row) => row.project_id === params[0]);
+        }
+        return rows;
+      }
+      return [];
+    });
+    return buildService({ db, laneService: makeLaneService(lanes) }).service;
   }
 
   it("does not surface a PR for primary when primary is on its base branch", () => {
@@ -553,6 +611,127 @@ describe("prService.getForLane", () => {
     ]);
 
     expect(service.getForLane(lane.id)?.githubPrNumber).toBe(91);
+  });
+
+  it("synthesizes a stable unmapped summary for a projection-only PR on the lane branch", () => {
+    const lane = makeFakeLane({ branchRef: "refs/heads/external-feature" });
+    const service = buildGetForLaneService(lane, [], [
+      makeGithubProjectionRow({
+        github_pr_number: 404,
+        head_branch: "origin/external-feature",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toMatchObject({
+      id: "gh:test-owner/test-repo#404",
+      unmapped: true,
+      laneId: lane.id,
+      projectId: "proj-1",
+      repoOwner: "test-owner",
+      repoName: "test-repo",
+      githubPrNumber: 404,
+      state: "open",
+      headBranch: "origin/external-feature",
+      checksStatus: "none",
+      reviewStatus: "none",
+    });
+  });
+
+  it("keeps a terminal mapped row over a stale non-terminal projection for the same PR", () => {
+    const lane = makeFakeLane();
+    const mapped = makePrRow({
+      state: "merged",
+      github_pr_number: 404,
+      updated_at: "2026-01-05T00:00:00Z",
+    });
+    const service = buildGetForLaneService(lane, [mapped], [
+      makeGithubProjectionRow({
+        state: "open",
+        github_pr_number: 404,
+        updated_at: "2026-01-06T00:00:00Z",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toMatchObject({
+      id: mapped.id,
+      state: "merged",
+      githubPrNumber: 404,
+    });
+  });
+
+  it("ranks active projection-only PRs ahead of terminal mapped PRs across the union", () => {
+    const lane = makeFakeLane();
+    const service = buildGetForLaneService(lane, [
+      makePrRow({ state: "merged", github_pr_number: 90 }),
+    ], [
+      makeGithubProjectionRow({ state: "open", github_pr_number: 405 }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toMatchObject({
+      id: "gh:test-owner/test-repo#405",
+      unmapped: true,
+      state: "open",
+      githubPrNumber: 405,
+    });
+  });
+
+  it("uses recency to rank mapped and projection-only PRs in the same state bucket", () => {
+    const lane = makeFakeLane();
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        state: "open",
+        github_pr_number: 406,
+        updated_at: "2026-01-04T00:00:00Z",
+      }),
+    ], [
+      makeGithubProjectionRow({
+        state: "draft",
+        is_draft: 1,
+        github_pr_number: 407,
+        updated_at: "2026-01-05T00:00:00Z",
+      }),
+    ]);
+
+    expect(service.getForLane(lane.id)).toMatchObject({
+      id: "gh:test-owner/test-repo#407",
+      unmapped: true,
+      state: "draft",
+      githubPrNumber: 407,
+    });
+  });
+
+  it("keeps listPrsByLane in parity with the branch-first per-lane resolver", async () => {
+    const mappedLane = makeFakeLane({ id: "lane-mapped", branchRef: "refs/heads/mapped-feature" });
+    const projectedLane = makeFakeLane({ id: "lane-projected", branchRef: "refs/heads/projected-feature" });
+    const emptyLane = makeFakeLane({ id: "lane-empty", branchRef: "refs/heads/empty-feature" });
+    const service = buildGetForLaneService(
+      [mappedLane, projectedLane, emptyLane],
+      [makePrRow({
+        id: "mapped-pr",
+        lane_id: mappedLane.id,
+        github_pr_number: 501,
+        state: "draft",
+        head_branch: "mapped-feature",
+      })],
+      [makeGithubProjectionRow({
+        github_pr_number: 502,
+        state: "merged",
+        head_branch: "projected-feature",
+      })],
+    );
+
+    const perLane = [mappedLane, projectedLane, emptyLane]
+      .map((lane) => service.getForLane(lane.id))
+      .filter((pr): pr is NonNullable<typeof pr> => pr != null)
+      .map((pr) => ({
+        laneId: pr.laneId,
+        number: pr.githubPrNumber,
+        state: pr.state === "draft" ? "open" : pr.state,
+        checksPassed: 0,
+        checksTotal: 0,
+      }));
+
+    await expect(service.listPrsByLane()).resolves.toEqual(perLane);
   });
 });
 

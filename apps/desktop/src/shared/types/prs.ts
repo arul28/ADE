@@ -54,6 +54,8 @@ export type PrReviewDecision = "approved" | "changes_requested" | "review_requir
 
 export type PrSummary = {
   id: string;
+  /** True when this summary is synthesized from GitHub projection data and has no pull_requests row. */
+  unmapped?: true;
   laneId: string;
   projectId: string;
   repoOwner: string;

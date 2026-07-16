@@ -277,6 +277,10 @@ function isActivePrState(state: string | null | undefined): boolean {
   return state === "open" || state === "draft";
 }
 
+function isTerminalPrState(state: string | null | undefined): state is "merged" | "closed" {
+  return state === "merged" || state === "closed";
+}
+
 type IntegrationProposalRow = {
   id: string;
   source_lane_ids_json: string;
@@ -1414,6 +1418,12 @@ export function createPrService({
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
     created_at, updated_at, creation_strategy, merge_conflicts, behind_base_by, head_sha`;
+  const GITHUB_PROJECTION_COLUMNS = `project_id, repo_owner, repo_name, github_pr_number,
+    github_node_id, github_url, title, state, is_draft, base_branch, head_branch,
+    head_repo_owner, head_repo_name, head_sha, base_sha, author, labels_json,
+    is_bot, comment_count, created_at, updated_at, synced_at, last_event_name,
+    last_delivery_id`;
+  let activeGithubRepo: GitHubRepoRef | null = null;
   let agentChatService: ReturnType<typeof createAgentChatService> | null = null;
   // Late-bound PR event emitter. main.ts constructs `emitPrEvent` after the PR
   // service (the polling service needs the service first), so it is injected via
@@ -1780,28 +1790,148 @@ export function createPrService({
     return true;
   };
 
-  const getDisplayRowForCurrentLaneBranch = (laneId: string): PullRequestRow | null => {
-    const lane = getLanePrLookupRow(laneId);
-    if (!lane || lane.archived_at) return null;
+  type LanePrDisplayCandidate = {
+    summary: PrSummary;
+    mappedRow: PullRequestRow | null;
+  };
 
-    const rows = db.all<PullRequestRow>(
+  const projectionToLanePrSummary = (row: GitHubPrProjectionRow, laneId: string): PrSummary => {
+    const githubPrNumber = Number(row.github_pr_number);
+    const state: PrState = isTerminalPrState(row.state)
+      ? row.state
+      : Number(row.is_draft ?? 0) !== 0 || row.state === "draft"
+        ? "draft"
+        : "open";
+    return {
+      id: syntheticGithubPrId({
+        repoOwner: row.repo_owner,
+        repoName: row.repo_name,
+        githubPrNumber,
+      }),
+      unmapped: true,
+      laneId,
+      projectId: row.project_id,
+      repoOwner: row.repo_owner,
+      repoName: row.repo_name,
+      githubPrNumber,
+      githubUrl: row.github_url || `https://github.com/${row.repo_owner}/${row.repo_name}/pull/${githubPrNumber}`,
+      githubNodeId: row.github_node_id,
+      title: row.title || `PR #${githubPrNumber}`,
+      state,
+      baseBranch: row.base_branch ?? "",
+      headBranch: row.head_branch ?? "",
+      checksStatus: "none",
+      reviewStatus: "none",
+      additions: 0,
+      deletions: 0,
+      mergeConflicts: null,
+      behindBaseBy: null,
+      headSha: row.head_sha ?? null,
+      lastSyncedAt: row.synced_at || null,
+      createdAt: row.created_at || row.synced_at,
+      updatedAt: row.updated_at || row.synced_at,
+      creationStrategy: null,
+    };
+  };
+
+  const displayStateRank = (state: PrState): number => {
+    if (!isTerminalPrState(state)) return 0;
+    return state === "merged" ? 1 : 2;
+  };
+
+  const compareLanePrDisplayCandidates = (a: LanePrDisplayCandidate, b: LanePrDisplayCandidate): number => {
+    const byState = displayStateRank(a.summary.state) - displayStateRank(b.summary.state);
+    if (byState !== 0) return byState;
+
+    const aUpdatedAt = Date.parse(a.summary.updatedAt);
+    const bUpdatedAt = Date.parse(b.summary.updatedAt);
+    if (Number.isFinite(aUpdatedAt) && Number.isFinite(bUpdatedAt) && aUpdatedAt !== bUpdatedAt) {
+      return bUpdatedAt - aUpdatedAt;
+    }
+
+    const aCreatedAt = Date.parse(a.summary.createdAt);
+    const bCreatedAt = Date.parse(b.summary.createdAt);
+    if (Number.isFinite(aCreatedAt) && Number.isFinite(bCreatedAt) && aCreatedAt !== bCreatedAt) {
+      return bCreatedAt - aCreatedAt;
+    }
+
+    const byNumber = b.summary.githubPrNumber - a.summary.githubPrNumber;
+    if (byNumber !== 0) return byNumber;
+    return a.mappedRow ? -1 : b.mappedRow ? 1 : 0;
+  };
+
+  const projectionMatchesLaneBranchForDisplay = (
+    row: GitHubPrProjectionRow,
+    laneBranch: string,
+  ): boolean => {
+    if (normalizeBranchName(row.head_branch ?? "") !== laneBranch) return false;
+
+    const headOwner = row.head_repo_owner?.trim().toLowerCase() ?? "";
+    const headRepo = row.head_repo_name?.trim().toLowerCase() ?? "";
+    if (headOwner && headOwner !== row.repo_owner.trim().toLowerCase()) return false;
+    if (headRepo && headRepo !== row.repo_name.trim().toLowerCase()) return false;
+
+    const activeRepoKey = repoRefKey(activeGithubRepo);
+    return !activeRepoKey || repoRefKey({ owner: row.repo_owner, name: row.repo_name }) === activeRepoKey;
+  };
+
+  const listUnmappedGithubProjectionRowsForDisplay = (): GitHubPrProjectionRow[] =>
+    db.all<GitHubPrProjectionRow>(
       `
-        select ${PR_COLUMNS}
-          from pull_requests
-         where lane_id = ?
-           and project_id = ?
-         order by
-           case when state in ('open', 'draft') then 0 when state = 'merged' then 1 else 2 end,
-           updated_at desc,
-           created_at desc
+        select ${GITHUB_PROJECTION_COLUMNS}
+          from github_pr_projections projection
+         where projection.project_id = ?
+           and not exists (
+             select 1
+               from pull_requests mapped
+              where mapped.project_id = projection.project_id
+                and lower(mapped.repo_owner) = lower(projection.repo_owner)
+                and lower(mapped.repo_name) = lower(projection.repo_name)
+                and mapped.github_pr_number = projection.github_pr_number
+           )
+         order by projection.updated_at desc, projection.created_at desc
       `,
-      [laneId, projectId],
+      [projectId],
     );
 
-    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+  const selectLanePrDisplayCandidate = (args: {
+    laneId: string;
+    lane: LanePrLookupRow;
+    mappedRows: PullRequestRow[];
+    projectionRows: GitHubPrProjectionRow[];
+  }): LanePrDisplayCandidate | null => {
+    if (args.lane.archived_at) return null;
+    const laneBranch = normalizeBranchName(branchNameFromRef(args.lane.branch_ref ?? ""));
     if (!laneBranch) return null;
 
-    return rows.find((row) => rowMatchesLaneBranchForDisplay(row, lane)) ?? null;
+    if (args.lane.lane_type === "primary") {
+      const laneBaseBranch = normalizeBranchName(branchNameFromRef(args.lane.base_ref ?? ""));
+      if (laneBaseBranch && laneBranch === laneBaseBranch) return null;
+    }
+
+    const mappedCandidates: LanePrDisplayCandidate[] = args.mappedRows
+      .filter((row) => row.lane_id === args.laneId && rowMatchesLaneBranchForDisplay(row, args.lane))
+      .map((row) => ({ summary: rowToSummary(row), mappedRow: row }));
+    const projectionCandidates: LanePrDisplayCandidate[] = args.projectionRows
+      .filter((row) => projectionMatchesLaneBranchForDisplay(row, laneBranch))
+      .map((row) => ({ summary: projectionToLanePrSummary(row, args.laneId), mappedRow: null }));
+
+    return [...mappedCandidates, ...projectionCandidates].sort(compareLanePrDisplayCandidates)[0] ?? null;
+  };
+
+  const getDisplayCandidateForCurrentLaneBranch = (laneId: string): LanePrDisplayCandidate | null => {
+    const lane = getLanePrLookupRow(laneId);
+    if (!lane || lane.archived_at) return null;
+    const mappedRows = db.all<PullRequestRow>(
+      `select ${PR_COLUMNS} from pull_requests where lane_id = ? and project_id = ?`,
+      [laneId, projectId],
+    );
+    return selectLanePrDisplayCandidate({
+      laneId,
+      lane,
+      mappedRows,
+      projectionRows: listUnmappedGithubProjectionRowsForDisplay(),
+    });
   };
 
   const getActiveRowForCurrentLaneBranch = (laneId: string): PullRequestRow | null => {
@@ -1853,11 +1983,11 @@ export function createPrService({
       [projectId]
     );
 
-  const rowToLanePrSummary = (row: PullRequestRow, checks: PrCheck[] = []): PrLaneSummary => {
-    const state: PrLaneSummary["state"] = row.state === "merged" || row.state === "closed" ? row.state : "open";
+  const summaryToLanePrSummary = (pr: PrSummary, checks: PrCheck[] = []): PrLaneSummary => {
+    const state: PrLaneSummary["state"] = pr.state === "merged" || pr.state === "closed" ? pr.state : "open";
     return {
-      laneId: row.lane_id,
-      number: Number(row.github_pr_number),
+      laneId: pr.laneId,
+      number: Number(pr.githubPrNumber),
       state,
       checksPassed: checks.filter((check) => check.status === "completed" && check.conclusion === "success").length,
       checksTotal: checks.length,
@@ -7922,6 +8052,7 @@ export function createPrService({
     includeExternalClosed = false,
     historyPageLimit = 0,
   ): void => {
+    if (snapshot.repo) activeGithubRepo = snapshot.repo;
     cachedGithubSnapshot = snapshot;
     cachedGithubSnapshotAt = capturedAt;
     cachedGithubSnapshotIncludesClosed = includeExternalClosed;
@@ -7948,6 +8079,7 @@ export function createPrService({
 
   const requireGithubSnapshotAuth = async (): Promise<GitHubStatus> => {
     const githubStatus = await githubService.getStatus();
+    if (githubStatus.repo) activeGithubRepo = githubStatus.repo;
     if (!githubStatus.tokenStored || !githubStatus.connected) {
       clearGithubSnapshotAuthCache();
       throw new Error(buildGithubSnapshotAuthError(githubStatus));
@@ -9509,8 +9641,7 @@ export function createPrService({
     },
 
     getForLane(laneId: string): PrSummary | null {
-      const row = getDisplayRowForCurrentLaneBranch(laneId);
-      return row ? rowToSummary(row) : null;
+      return getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null;
     },
 
     listAll(args: { laneId?: string } = {}): PrSummary[] {
@@ -9520,12 +9651,27 @@ export function createPrService({
     },
 
     async listPrsByLane(): Promise<PrLaneSummary[]> {
-      const laneIds = Array.from(new Set(listRows().map((row) => row.lane_id).filter(Boolean)));
-      const rows = laneIds
-        .map((laneId) => getDisplayRowForCurrentLaneBranch(laneId))
-        .filter((row): row is PullRequestRow => row != null);
+      const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+      const mappedRows = listRows();
+      const projectionRows = listUnmappedGithubProjectionRowsForDisplay();
+      const candidates = lanes
+        .map((lane) => selectLanePrDisplayCandidate({
+          laneId: lane.id,
+          lane: {
+            lane_type: lane.laneType,
+            branch_ref: lane.branchRef,
+            base_ref: lane.baseRef,
+            archived_at: lane.archivedAt ?? null,
+          },
+          mappedRows,
+          projectionRows,
+        }))
+        .filter((candidate): candidate is LanePrDisplayCandidate => candidate != null);
       const checksByPrId = new Map(listSnapshotRows().map((snapshot) => [snapshot.prId, snapshot.checks] as const));
-      return rows.map((row) => rowToLanePrSummary(row, isActivePrState(row.state) ? checksByPrId.get(row.id) ?? [] : []));
+      return candidates.map(({ summary, mappedRow }) => summaryToLanePrSummary(
+        summary,
+        mappedRow && isActivePrState(summary.state) ? checksByPrId.get(mappedRow.id) ?? [] : [],
+      ));
     },
 
     /**
