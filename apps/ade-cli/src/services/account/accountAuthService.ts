@@ -9,6 +9,7 @@ const LOGIN_SESSION_TTL_MS = 5 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
 const DEVICE_BRIDGE_REQUEST_TIMEOUT_MS = 15_000;
+const USERINFO_REQUEST_TIMEOUT_MS = 5_000;
 const ACCOUNT_TOKEN_ENV_KEY = "ADE_ACCOUNT_TOKEN";
 const PROVISIONED_ACCOUNT_TOKEN_PREFIX = "ade_account_v1.";
 const SUCCESS_HTML = `<!doctype html>
@@ -54,12 +55,16 @@ export type AccountSessionRecord = {
   userId: string | null;
   email: string | null;
   name: string | null;
+  provider?: AccountIdentityProvider | null;
+  imageUrl?: string | null;
   authSource?: Exclude<AccountAuthSource, "env-token" | null>;
   suppressEnvCredential?: true;
   oauthConfig?: AccountOAuthConfig;
 };
 
 export type AccountAuthSource = "loopback" | "device" | "env-token" | null;
+
+export type AccountIdentityProvider = "github" | "google" | "apple" | "email";
 
 export type AccountAuthStatus = {
   signedIn: boolean;
@@ -68,6 +73,8 @@ export type AccountAuthStatus = {
   name: string | null;
   expiresAt: string | null;
   source?: AccountAuthSource;
+  provider?: AccountIdentityProvider | null;
+  imageUrl?: string | null;
 };
 
 export type AccountLoginStartResult = {
@@ -212,6 +219,19 @@ function readPositiveNumber(value: unknown): number | null {
 
 function readAuthSource(value: unknown): AccountSessionRecord["authSource"] {
   return value === "device" ? "device" : value === "loopback" ? "loopback" : undefined;
+}
+
+function readIdentityProvider(value: unknown): AccountIdentityProvider | null {
+  const normalized = readNonEmptyString(value)?.toLowerCase().replace(/^oauth_/, "");
+  if (
+    normalized === "github"
+    || normalized === "google"
+    || normalized === "apple"
+    || normalized === "email"
+  ) {
+    return normalized;
+  }
+  return null;
 }
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
@@ -410,10 +430,14 @@ function decodeAccountClaims(accessToken: string): {
   userId: string | null;
   email: string | null;
   name: string | null;
+  provider: AccountIdentityProvider | null;
+  imageUrl: string | null;
 } {
   try {
     const claims = decodeJwtPayload(accessToken);
-    if (!claims) return { userId: null, email: null, name: null };
+    if (!claims) {
+      return { userId: null, email: null, name: null, provider: null, imageUrl: null };
+    }
     const givenName = readNonEmptyString(claims.given_name ?? claims.first_name);
     const familyName = readNonEmptyString(claims.family_name ?? claims.last_name);
     const derivedName = [givenName, familyName].filter(Boolean).join(" ") || null;
@@ -421,9 +445,13 @@ function decodeAccountClaims(accessToken: string): {
       userId: readNonEmptyString(claims.sub),
       email: readNonEmptyString(claims.email ?? claims.primary_email ?? claims.email_address),
       name: readNonEmptyString(claims.name) ?? derivedName,
+      provider: readIdentityProvider(
+        claims.provider ?? claims.identity_provider ?? claims.idp,
+      ),
+      imageUrl: readNonEmptyString(claims.picture ?? claims.image_url ?? claims.avatar_url),
     };
   } catch {
-    return { userId: null, email: null, name: null };
+    return { userId: null, email: null, name: null, provider: null, imageUrl: null };
   }
 }
 
@@ -450,6 +478,8 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
       userId: readNonEmptyString(parsed.userId),
       email: readNonEmptyString(parsed.email),
       name: readNonEmptyString(parsed.name),
+      provider: readIdentityProvider(parsed.provider),
+      imageUrl: readNonEmptyString(parsed.imageUrl),
       authSource: readAuthSource(parsed.authSource),
       ...(parsed.suppressEnvCredential === true ? { suppressEnvCredential: true } : {}),
       ...(oauthConfig ? { oauthConfig } : {}),
@@ -500,6 +530,8 @@ function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
     name: record?.name ?? null,
     expiresAt: record?.expiresAt ?? null,
     source: record ? record.authSource ?? "loopback" : null,
+    ...(record?.provider ? { provider: record.provider } : {}),
+    ...(record?.imageUrl ? { imageUrl: record.imageUrl } : {}),
   };
 }
 
@@ -569,6 +601,7 @@ export function createAccountAuthService(args: {
   getDeviceBridgeUrl?: () => string | Promise<string>;
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
   deviceBridgeRequestTimeoutMs?: number;
+  userinfoRequestTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
@@ -587,6 +620,12 @@ export function createAccountAuthService(args: {
     && requestedDeviceBridgeTimeoutMs > 0
     ? Math.trunc(requestedDeviceBridgeTimeoutMs)
     : DEVICE_BRIDGE_REQUEST_TIMEOUT_MS;
+  const requestedUserinfoTimeoutMs = args.userinfoRequestTimeoutMs;
+  const userinfoRequestTimeoutMs = typeof requestedUserinfoTimeoutMs === "number"
+    && Number.isFinite(requestedUserinfoTimeoutMs)
+    && requestedUserinfoTimeoutMs > 0
+    ? Math.trunc(requestedUserinfoTimeoutMs)
+    : USERINFO_REQUEST_TIMEOUT_MS;
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
@@ -621,7 +660,7 @@ export function createAccountAuthService(args: {
     const expiresAt = accessToken ? accessTokenExpiresAt(accessToken) : null;
     const claims = expiresAt && accessToken
       ? decodeAccountClaims(accessToken)
-      : { userId: null, email: null, name: null };
+      : { userId: null, email: null, name: null, provider: null, imageUrl: null };
     const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     return {
       signedIn: isAccessToken && Number.isFinite(expiresAtMs) && expiresAtMs > now(),
@@ -630,6 +669,8 @@ export function createAccountAuthService(args: {
       name: claims.name,
       expiresAt,
       source: "env-token",
+      ...(claims.provider ? { provider: claims.provider } : {}),
+      ...(claims.imageUrl ? { imageUrl: claims.imageUrl } : {}),
     };
   };
 
@@ -678,23 +719,72 @@ export function createAccountAuthService(args: {
     }
   };
 
-  const buildSessionRecord = (
+  const fetchUserinfoProfile = async (
+    token: TokenResponse,
+    oauthConfig: AccountOAuthConfig | null,
+  ): Promise<ReturnType<typeof decodeAccountClaims> | null> => {
+    if (!oauthConfig) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), userinfoRequestTimeoutMs);
+    timer.unref?.();
+    try {
+      const response = await fetchImpl(`${oauthConfig.issuer}/oauth/userinfo`, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${token.accessToken}`,
+        },
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+      });
+      if (!response.ok) return null;
+      const profile = asRecord(await response.json().catch(() => ({})));
+      const givenName = readNonEmptyString(profile.given_name ?? profile.first_name);
+      const familyName = readNonEmptyString(profile.family_name ?? profile.last_name);
+      const derivedName = [givenName, familyName].filter(Boolean).join(" ") || null;
+      return {
+        userId: readNonEmptyString(profile.sub),
+        email: readNonEmptyString(
+          profile.email ?? profile.primary_email ?? profile.email_address,
+        ),
+        name: readNonEmptyString(profile.name) ?? derivedName,
+        provider: readIdentityProvider(
+          profile.provider ?? profile.identity_provider ?? profile.idp,
+        ),
+        imageUrl: readNonEmptyString(
+          profile.picture ?? profile.image_url ?? profile.avatar_url,
+        ),
+      };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const buildSessionRecord = async (
     token: TokenResponse,
     previous?: AccountSessionRecord | null,
     authSource: AccountSessionRecord["authSource"] = previous?.authSource ?? "loopback",
     oauthConfig: AccountOAuthConfig | null = previous?.oauthConfig ?? null,
-  ): AccountSessionRecord => {
+  ): Promise<AccountSessionRecord> => {
     const obtainedAtMs = now();
     const claims = decodeAccountClaims(token.accessToken);
+    const userinfo = await fetchUserinfoProfile(token, oauthConfig);
     return {
       accessToken: token.accessToken,
       refreshToken: token.refreshToken ?? previous?.refreshToken ?? null,
       tokenType: token.tokenType,
       expiresAt: new Date(obtainedAtMs + Math.trunc(token.expiresInSec * 1000)).toISOString(),
       obtainedAt: new Date(obtainedAtMs).toISOString(),
-      userId: claims.userId ?? previous?.userId ?? null,
-      email: claims.email ?? previous?.email ?? null,
-      name: claims.name ?? previous?.name ?? null,
+      userId: claims.userId ?? userinfo?.userId ?? previous?.userId ?? null,
+      email: claims.email ?? userinfo?.email ?? previous?.email ?? null,
+      name: claims.name ?? userinfo?.name ?? previous?.name ?? null,
+      provider: claims.provider ?? userinfo?.provider ?? previous?.provider ?? null,
+      imageUrl: userinfo?.imageUrl ?? claims.imageUrl ?? previous?.imageUrl ?? null,
       authSource,
       ...(previous?.suppressEnvCredential ? { suppressEnvCredential: true } : {}),
       ...(oauthConfig ? { oauthConfig } : {}),
@@ -717,7 +807,7 @@ export function createAccountAuthService(args: {
         redirect_uri: session.redirectUri,
       },
     });
-    return buildSessionRecord(token, null, "loopback", config);
+    return await buildSessionRecord(token, null, "loopback", config);
   };
 
   const handleLoopbackRequest = async (
@@ -1125,7 +1215,7 @@ export function createAccountAuthService(args: {
         authStatus: toStatus(readSession()),
       };
     }
-    const baseRecord = buildSessionRecord({
+    const baseRecord = await buildSessionRecord({
       accessToken,
       refreshToken: readNonEmptyString(payload.refresh_token),
       tokenType: readNonEmptyString(payload.token_type) ?? "Bearer",
@@ -1271,7 +1361,7 @@ export function createAccountAuthService(args: {
             return getAccessToken();
           }
           envRefreshToken = token.refreshToken ?? refreshTokenAtRefresh;
-          const refreshed = buildSessionRecord(token, envSession, "loopback");
+          const refreshed = await buildSessionRecord(token, envSession, "loopback", config);
           envSession = refreshed;
           return refreshed.accessToken;
         })();
@@ -1311,7 +1401,7 @@ export function createAccountAuthService(args: {
             client_id: config.clientId,
           },
         });
-        const refreshed = buildSessionRecord(token, record);
+        const refreshed = await buildSessionRecord(token, record, undefined, config);
         if (authEpoch === epochAtJoin) persistSession(refreshed);
         return refreshed;
       })().finally(() => {

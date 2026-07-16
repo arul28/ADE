@@ -1,26 +1,28 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check } from "@phosphor-icons/react";
+import {
+  ArrowSquareOut,
+  Check,
+  Cloud,
+  CloudSlash,
+  DeviceMobile,
+  Globe,
+} from "@phosphor-icons/react";
 import { QRCodeSVG } from "qrcode.react";
 import { createPortal } from "react-dom";
 import type {
-  SyncAddressCandidate,
-  SyncCloudRelayStatus,
-  SyncDeviceRecord,
   SyncDeviceRuntimeState,
   SyncPeerDeviceType,
   SyncPairingConnectInfo,
   SyncRoleSnapshot,
-  SyncTailnetDiscoveryStatus,
 } from "../../../shared/types";
 import { buildPairingQrPayload, encodePairingQrUrl } from "../../../shared/pairingQr";
 import { publicAssetUrl } from "../onboarding/WelcomeVideoGate";
-import { WEB_CLIENT_BASE_URL, buildWebClientPairUrl } from "../../../shared/webClientUrl";
+import { WEB_CLIENT_BASE_URL } from "../../../shared/webClientUrl";
 import {
   isLocalReleaseBuildOutputError,
   isProjectRegistrationRequiredError,
 } from "../../../shared/runtimeErrors";
 import { openExternalUrl } from "../../lib/openExternal";
-import { SettingsToggle } from "./settingsSectionUi";
 import {
   COLORS,
   LABEL_STYLE,
@@ -34,35 +36,16 @@ import {
 
 const helperTextStyle: React.CSSProperties = {
   color: COLORS.textMuted,
-  fontFamily: MONO_FONT,
-  fontSize: 11,
-  lineHeight: 1.6,
-};
-
-export type SyncDevicesVariant = "all" | "phone" | "web";
-
-function generateSixDigitPin(): string {
-  const range = 1_000_000;
-  const maxUnbiasedValue = Math.floor(0x1_0000_0000 / range) * range;
-  const sample = new Uint32Array(1);
-  do {
-    globalThis.crypto.getRandomValues(sample);
-  } while (sample[0] >= maxUnbiasedValue);
-  return String(sample[0] % range).padStart(6, "0");
-}
-
-const inputStyle: React.CSSProperties = {
-  height: 32,
-  width: "100%",
-  background: "rgba(255,255,255,0.03)",
-  border: "1px solid rgba(255,255,255,0.06)",
-  borderRadius: 8,
-  color: COLORS.textPrimary,
-  fontFamily: MONO_FONT,
+  fontFamily: SANS_FONT,
   fontSize: 12,
-  padding: "0 10px",
-  outline: "none",
+  lineHeight: 1.5,
 };
+
+/** Prompt shown before revoking a device; the caller resolves true to proceed. */
+export type RevokeConfirm = (args: {
+  name: string;
+  connected: boolean;
+}) => Promise<boolean>;
 
 const detailBlockStyle: React.CSSProperties = {
   border: `1px solid ${COLORS.border}`,
@@ -75,7 +58,7 @@ const detailSummaryStyle: React.CSSProperties = {
   cursor: "pointer",
   color: COLORS.textPrimary,
   fontFamily: SANS_FONT,
-  fontSize: 14,
+  fontSize: 13,
   fontWeight: 600,
   listStyle: "none",
   display: "flex",
@@ -92,29 +75,6 @@ const panelStyle: React.CSSProperties = {
   gap: 6,
 };
 
-const codeValueStyle: React.CSSProperties = {
-  color: COLORS.textPrimary,
-  fontFamily: MONO_FONT,
-  fontSize: 12,
-  lineHeight: 1.8,
-};
-
-function tagStyle(color: string): React.CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "3px 8px",
-    borderRadius: 8,
-    border: `1px solid ${color}33`,
-    background: `${color}14`,
-    color,
-    fontFamily: MONO_FONT,
-    fontSize: 10,
-    fontWeight: 700,
-    letterSpacing: "0.04em",
-  };
-}
-
 function deviceTypeLabel(deviceType: SyncPeerDeviceType): string {
   switch (deviceType) {
     case "desktop":
@@ -128,47 +88,6 @@ function deviceTypeLabel(deviceType: SyncPeerDeviceType): string {
     case "unknown":
       return "Unknown";
   }
-}
-
-function formatEndpoint(host: string | null | undefined, port: number | null | undefined): string {
-  if (!host) return "Not published yet";
-  return port ? `${host}:${port}` : host;
-}
-
-function addressKindLabel(kind: SyncAddressCandidate["kind"]): string {
-  switch (kind) {
-    case "tailscale":
-      return "Tailscale";
-    case "lan":
-      return "LAN";
-    case "loopback":
-      return "Loopback";
-    case "saved":
-      return "Saved";
-    case "relay":
-      return "ADE relay";
-    default:
-      return "Manual";
-  }
-}
-
-function addressKindColor(kind: SyncAddressCandidate["kind"]): string {
-  switch (kind) {
-    case "tailscale":
-      return COLORS.success;
-    case "relay":
-      return COLORS.accent;
-    default:
-      return COLORS.textMuted;
-  }
-}
-
-function primaryPairingCandidate(connectInfo: SyncPairingConnectInfo | null): SyncAddressCandidate | null {
-  const candidates = connectInfo?.addressCandidates ?? [];
-  return candidates.find((candidate) => candidate.kind === "tailscale")
-    ?? candidates.find((candidate) => candidate.kind === "lan")
-    ?? candidates[0]
-    ?? null;
 }
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -185,28 +104,6 @@ function formatLatency(value: number | null | undefined): string {
   return `${value} ms`;
 }
 
-function connectionColor(state: SyncDeviceRuntimeState["connectionState"]): string {
-  switch (state) {
-    case "self":
-      return COLORS.accent;
-    case "connected":
-      return COLORS.success;
-    default:
-      return COLORS.textMuted;
-  }
-}
-
-function deviceConnectionLabel(device: SyncDeviceRuntimeState): string {
-  switch (device.connectionState) {
-    case "self":
-      return "This machine";
-    case "connected":
-      return "Connected";
-    default:
-      return "Offline";
-  }
-}
-
 function connectionLoadGuidance(error: string): string {
   if (isLocalReleaseBuildOutputError(error)) {
     return "Install this ADE build in Applications, reopen it, then try again.";
@@ -217,24 +114,29 @@ function connectionLoadGuidance(error: string): string {
   return "Restart ADE, then try again.";
 }
 
-export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesVariant } = {}) {
+// ---------------------------------------------------------------------------
+// Shared data hook — one status + device subscription serving the This-Mac
+// card and the Phone / Web tabs. Actions surface a `busy` flag and a `notice`
+// so callers can render them wherever they choose.
+// ---------------------------------------------------------------------------
+
+export type SyncConnections = ReturnType<typeof useSyncConnections>;
+
+export function useSyncConnections() {
   const [status, setStatus] = useState<SyncRoleSnapshot | null>(null);
   const [devices, setDevices] = useState<SyncDeviceRuntimeState[]>([]);
-  const [cloudRelay, setCloudRelay] = useState<SyncCloudRelayStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
-    const [nextStatus, nextDevices, nextCloudRelay] = await Promise.all([
+    const [nextStatus, nextDevices] = await Promise.all([
       window.ade.sync.getStatus(),
       window.ade.sync.listDevices(),
-      window.ade.sync.getCloudRelayStatus().catch(() => null),
     ]);
     setStatus(nextStatus);
     setDevices(nextDevices);
-    setCloudRelay(nextCloudRelay);
     setError(null);
   }, []);
 
@@ -259,9 +161,7 @@ export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesV
       }).catch(() => {});
     });
     const refreshWhenVisible = () => {
-      if (!cancelled) {
-        void refresh().catch(() => {});
-      }
+      if (!cancelled) void refresh().catch(() => {});
     };
     const interval = window.setInterval(refreshWhenVisible, 5_000);
     window.addEventListener("focus", refreshWhenVisible);
@@ -287,31 +187,24 @@ export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesV
     }
   }, [refresh]);
 
-  const handleSetPin = useCallback((pin: string) => runAction(async () => {
-    await window.ade.sync.setPin(pin);
-    setNotice("PIN updated.");
-  }), [runAction]);
-
-  // Throwing variant used by the web pairing code's inline "Generate new PIN"
-  // control so it can surface errors next to the button instead of at the
-  // section level. The setter returns the authoritative snapshot, avoiding a
-  // second refresh that could fail after the credential was already changed.
-  const handleSetPinValue = useCallback(async (pin: string) => {
+  // Throwing setter for the inline PIN editor so it can surface errors next to
+  // the control. Returns the authoritative snapshot rather than re-fetching.
+  const setPinValue = useCallback(async (pin: string) => {
     const nextStatus = await window.ade.sync.setPin(pin);
     setStatus(nextStatus);
   }, []);
 
-  const handleClearPin = useCallback(() => runAction(async () => {
-    await window.ade.sync.clearPin();
-    setNotice("PIN removed. Phones can no longer pair.");
-  }), [runAction]);
-
-  const handleGeneratePin = useCallback(() => runAction(async () => {
+  const generatePin = useCallback(() => runAction(async () => {
     await window.ade.sync.generatePin();
-    setNotice("PIN generated.");
+    setNotice("Pairing code generated.");
   }), [runAction]);
 
-  const handleSetRuntimeName = useCallback((name: string) => runAction(async () => {
+  const clearPin = useCallback(() => runAction(async () => {
+    await window.ade.sync.clearPin();
+    setNotice("Pairing code removed. New devices can no longer connect.");
+  }), [runAction]);
+
+  const saveRuntimeName = useCallback((name: string) => runAction(async () => {
     const trimmed = name.trim();
     if (trimmed) {
       await window.ade.sync.setRuntimeName(trimmed);
@@ -322,26 +215,9 @@ export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesV
     }
   }), [runAction]);
 
-  const handleClearRuntimeName = useCallback(() => runAction(async () => {
-    await window.ade.sync.clearRuntimeName();
-    setNotice("Machine name cleared.");
-  }), [runAction]);
-
-  const handleRenameLocal = useCallback((name: string) => runAction(async () => {
-    if (!name.trim()) throw new Error("Name cannot be empty.");
-    await window.ade.sync.updateLocalDevice({ name: name.trim() });
-    setNotice("Name updated.");
-  }), [runAction]);
-
-  const handleForgetDevice = useCallback((device: SyncDeviceRuntimeState) => runAction(async () => {
+  const forgetDevice = useCallback((device: SyncDeviceRuntimeState) => runAction(async () => {
     await window.ade.sync.forgetDevice(device.deviceId);
     setNotice(device.connectionState === "connected" ? "Device revoked." : "Device removed.");
-  }), [runAction]);
-
-  const handleRetryDiscovery = useCallback(() => runAction(async () => {
-    const nextStatus = await window.ade.sync.refreshDiscovery();
-    setStatus(nextStatus);
-    setNotice("Tailnet discovery retry started.");
   }), [runAction]);
 
   const retryInitialLoad = useCallback(() => {
@@ -354,29 +230,56 @@ export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesV
       .finally(() => setLoading(false));
   }, [refresh]);
 
-  if (loading) {
+  return {
+    status,
+    devices,
+    loading,
+    busy,
+    notice,
+    error,
+    setPinValue,
+    generatePin,
+    clearPin,
+    saveRuntimeName,
+    forgetDevice,
+    retryInitialLoad,
+  };
+}
+
+export function isSyncHost(status: SyncRoleSnapshot): boolean {
+  return status.runtimeRole === "host" || status.role === "brain";
+}
+
+// ---------------------------------------------------------------------------
+// This-Mac card — persistent header block above the Connections tabs.
+// ---------------------------------------------------------------------------
+
+export function ThisMacCard({
+  sync,
+  accountSignedIn,
+}: {
+  sync: SyncConnections;
+  accountSignedIn: boolean;
+}) {
+  const { status, busy, error, notice } = sync;
+
+  if (sync.loading) {
     return <div style={helperTextStyle}>Getting connection details…</div>;
   }
   if (error && !status) {
     return (
-      <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ ...detailBlockStyle, display: "grid", gap: 10 }}>
         <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
           Couldn't load connection details
         </div>
-        <div style={{ ...helperTextStyle, fontFamily: SANS_FONT }}>
-          {connectionLoadGuidance(error)}
-        </div>
+        <div style={helperTextStyle}>{connectionLoadGuidance(error)}</div>
         <button
           type="button"
-          onClick={retryInitialLoad}
+          onClick={sync.retryInitialLoad}
           style={outlineButton({ width: "fit-content", height: 30, padding: "0 11px" })}
         >
           Try again
         </button>
-        <details style={detailBlockStyle}>
-          <summary style={detailSummaryStyle}>Technical details</summary>
-          <div style={{ ...helperTextStyle, marginTop: 8, overflowWrap: "anywhere" }}>{error}</div>
-        </details>
       </div>
     );
   }
@@ -384,562 +287,385 @@ export function SyncDevicesSection({ variant = "all" }: { variant?: SyncDevicesV
     return <div style={helperTextStyle}>Open a project in ADE before connecting another device.</div>;
   }
 
-  const peerType: "phone" | "browser" | null =
-    variant === "phone" ? "phone" : variant === "web" ? "browser" : null;
-  const connectedPeers = peerType
-    ? status.connectedPeers.filter((peer) => peer.deviceType === peerType)
-    : status.connectedPeers;
-  const peerCount = connectedPeers.length;
-  const phones = devices.filter((device) => !device.isLocal && device.deviceType === "phone");
-  const phonesConnected = phones.filter((d) => d.connectionState === "connected").length;
-  const phonesOffline = phones.length - phonesConnected;
-  const browsers = devices.filter((device) => !device.isLocal && device.deviceType === "browser");
-  const browsersConnected = browsers.filter((d) => d.connectionState === "connected").length;
-  const browsersOffline = browsers.length - browsersConnected;
-  const isLocalHost = status.runtimeRole === "host" || status.role === "brain";
-  const hasTailscaleAddress = Boolean(status.localDevice.tailscaleIp);
-  const showTailnetDiscovery = shouldShowTailnetDiscoveryPanel(status.tailnetDiscovery);
-
-  // A "phone" surface keeps phone pairing, discovery, this-computer and the
-  // phones list. A "web" surface keeps only the web client card, its relay row
-  // and the web clients list. "all" (Settings > Sync) shows everything.
-  const showPhone = variant === "all" || variant === "phone";
-  const showWeb = variant === "all" || variant === "web";
-  const onToggleCloudRelay = (enabled: boolean) => runAction(async () => {
-    const next = await window.ade.sync.setCloudRelayEnabled(enabled);
-    setCloudRelay(next);
-  });
+  const host = isSyncHost(status);
+  const machineName = status.runtimeName?.trim() || status.localDevice.name || "This Mac";
+  const acceptsConnections = acceptsConnectionsState(status, host);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <StatusBar
-        connected={peerCount > 0}
-        peerCount={peerCount}
-        ready={isPhoneSyncReady(status)}
-        readyLabel={variant === "web" ? "Ready - no web clients connected" : undefined}
-      />
+    <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 32,
+            height: 32,
+            borderRadius: 9,
+            flexShrink: 0,
+            background: "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+            border: `1px solid ${COLORS.accentBorder}`,
+          }}
+        >
+          <DeviceMobile size={17} weight="duotone" color={COLORS.accent} />
+        </span>
+        <div style={{ minWidth: 0 }}>
+          <div
+            style={{
+              color: COLORS.textPrimary,
+              fontFamily: SANS_FONT,
+              fontSize: 14,
+              fontWeight: 700,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {machineName}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+            {accountSignedIn ? (
+              <Cloud size={13} weight="fill" color={COLORS.accent} style={{ flexShrink: 0 }} />
+            ) : (
+              <CloudSlash size={13} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
+            )}
+            <span style={{ ...helperTextStyle, lineHeight: 1.35 }}>
+              {accountSignedIn
+                ? "Connected to your ADE account"
+                : "Not signed in — nearby devices can still connect with the pairing code"}
+            </span>
+          </div>
+        </div>
+      </div>
 
-      {showPhone ? (
-        isLocalHost ? (
-          <PairPhoneCard
-            connectInfo={status.pairingConnectInfo}
-            pin={status.pairingPin}
-            pinConfigured={status.pairingPinConfigured}
-            runtimeName={status.runtimeName}
-            busy={busy}
-            cloudRelay={cloudRelay}
-            onToggleCloudRelay={onToggleCloudRelay}
-            onSavePin={handleSetPin}
-            onGeneratePin={handleGeneratePin}
-            onClearPin={handleClearPin}
-            onSaveRuntimeName={handleSetRuntimeName}
-            onClearRuntimeName={handleClearRuntimeName}
-          />
-        ) : (
-          <ViewerPairingNotice />
-        )
-      ) : null}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          fontFamily: SANS_FONT,
+          fontSize: 12,
+        }}
+      >
+        <span
+          aria-hidden
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            flexShrink: 0,
+            background: acceptsConnections.ready ? COLORS.success : COLORS.warning,
+          }}
+        />
+        <span style={{ color: acceptsConnections.ready ? COLORS.textSecondary : COLORS.warning }}>
+          {acceptsConnections.label}
+        </span>
+      </div>
 
-      {showWeb && isLocalHost ? (
-        <WebClientCard
-          connectInfo={status.pairingConnectInfo}
-          pinConfigured={status.pairingPinConfigured}
+      {host ? (
+        <PinManager
           pin={status.pairingPin}
+          pinConfigured={status.pairingPinConfigured}
           busy={busy}
-          onSetPin={handleSetPinValue}
+          onSetPin={sync.setPinValue}
+          onGenerate={sync.generatePin}
+          onRemove={sync.clearPin}
         />
       ) : null}
 
-      {/* In "web" mode the relay lives standalone; in "all"/"phone" it renders
-          inside the phone card so we do not duplicate the control. */}
-      {showWeb && !showPhone && isLocalHost && cloudRelay ? (
-        <CloudRelayRow
-          cloudRelay={cloudRelay}
-          busy={busy}
-          onToggle={onToggleCloudRelay}
-          description="ADE Relay uses your ADE account so this browser can reach your Mac away from this Wi-Fi."
-        />
-      ) : null}
-
-      {showPhone && showTailnetDiscovery ? (
-        <details style={detailBlockStyle}>
+      {host && status.pairingConnectInfo ? (
+        <details style={{ ...panelStyle, gap: 0 }}>
           <summary style={detailSummaryStyle}>
-            <span>Tailscale (optional)</span>
-            <span style={helperTextStyle}>Find your Mac outside this Wi-Fi</span>
+            <span>Connect a phone</span>
+            <span style={helperTextStyle}>Scan to pair</span>
           </summary>
-          <div style={{ marginTop: 12 }}>
-            <TailnetDiscoveryPanel
-              status={status.tailnetDiscovery}
-              hasTailscaleAddress={hasTailscaleAddress}
-              busy={busy}
-              isLocalHost={isLocalHost}
-              onRetry={handleRetryDiscovery}
-            />
+          <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
+            <PairQrPanel connectInfo={status.pairingConnectInfo} title="Pairing QR code" />
           </div>
         </details>
       ) : null}
 
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
-      {error ? (
-        <div style={{ display: "grid", gap: 8 }}>
-          <div style={{ ...helperTextStyle, color: COLORS.danger }}>
-            That did not work. Check that ADE is running, then try again.
-          </div>
-          <details style={detailBlockStyle}>
-            <summary style={detailSummaryStyle}>Technical details</summary>
-            <div style={{ ...helperTextStyle, marginTop: 8, overflowWrap: "anywhere" }}>{error}</div>
-          </details>
+      {error && status ? (
+        <div style={{ ...helperTextStyle, color: COLORS.danger }}>
+          That did not work. Check that ADE is running, then try again.
         </div>
       ) : null}
-
-      {showPhone ? (
-        <details style={detailBlockStyle}>
-          <summary style={detailSummaryStyle}>
-            <span>This computer</span>
-            <span style={helperTextStyle}>
-              {status.localDevice.name}
-              {" "}&middot;{" "}
-              {formatEndpoint(status.localDevice.lastHost, status.localDevice.lastPort ?? 8787)}
-            </span>
-          </summary>
-          <div style={{ marginTop: 12 }}>
-            <ThisComputerDetails
-              localDevice={status.localDevice}
-              busy={busy}
-              onRename={handleRenameLocal}
-            />
-          </div>
-        </details>
-      ) : null}
-
-      {showPhone ? (
-        <details style={detailBlockStyle}>
-          <summary style={detailSummaryStyle}>
-            <span>Phones</span>
-            <span style={helperTextStyle}>
-              {phones.length === 0
-                ? "None paired"
-                : `${phonesConnected} connected, ${phonesOffline} offline`}
-            </span>
-          </summary>
-          <div style={{ marginTop: 12 }}>
-            <PhonesList devices={phones} busy={busy} onForget={handleForgetDevice} />
-          </div>
-        </details>
-      ) : null}
-
-      {showWeb ? (
-        <details style={detailBlockStyle}>
-          <summary style={detailSummaryStyle}>
-            <span>Web clients</span>
-            <span style={helperTextStyle}>
-              {browsers.length === 0
-                ? "None paired"
-                : `${browsersConnected} connected, ${browsersOffline} offline`}
-            </span>
-          </summary>
-          <div style={{ marginTop: 12 }}>
-            <BrowsersList devices={browsers} busy={busy} onForget={handleForgetDevice} />
-          </div>
-        </details>
-      ) : null}
     </div>
   );
 }
 
-function CloudRelayRow({
-  cloudRelay,
-  busy,
-  onToggle,
-  description = "ADE Relay uses your ADE account so your phone can reach this Mac away from this Wi-Fi. Tailscale also works without an account.",
-}: {
-  cloudRelay: SyncCloudRelayStatus;
-  busy: boolean;
-  onToggle: (enabled: boolean) => void;
-  description?: string;
-}) {
-  return (
-    <div style={{ ...panelStyle, gap: 10 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center" }}>
-        <div style={{ display: "grid", gap: 4 }}>
-          <div style={LABEL_STYLE}>Connect from anywhere</div>
-          <div style={helperTextStyle}>
-            {description}
-          </div>
-        </div>
-        <SettingsToggle
-          id="sync-cloud-relay-toggle"
-          checked={cloudRelay.enabled}
-          disabled={busy}
-          onChange={onToggle}
-        />
-      </div>
-    </div>
-  );
-}
-
-function isPhoneSyncReady(status: SyncRoleSnapshot): boolean {
-  return (status.runtimeRole === "host" || status.role === "brain") && Boolean(status.pairingConnectInfo);
-}
-
-function StatusBar({
-  connected,
-  peerCount,
-  ready,
-  readyLabel = "Ready - no phones connected",
-}: {
-  connected: boolean;
-  peerCount: number;
-  ready: boolean;
-  readyLabel?: string;
-}) {
-  let dotColor: string;
-  if (connected) {
-    dotColor = COLORS.accent;
-  } else if (ready) {
-    dotColor = COLORS.textMuted;
-  } else {
-    dotColor = COLORS.warning;
+function acceptsConnectionsState(
+  status: SyncRoleSnapshot,
+  host: boolean,
+): { ready: boolean; label: string } {
+  if (!host) {
+    return { ready: false, label: "This Mac connects through your main Mac" };
   }
-  let label: string;
-  if (!connected) {
-    label = ready ? readyLabel : "Unavailable";
-  } else if (peerCount === 1) {
-    label = "Connected";
-  } else {
-    label = `Connected - ${peerCount} devices`;
+  if (!status.pairingConnectInfo) {
+    return { ready: false, label: "Starting up — connection details will appear shortly" };
   }
-  return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-      <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 22, fontWeight: 700 }}>
-        Sync
-      </div>
-      <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-        <span
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: 999,
-            background: dotColor,
-            boxShadow: connected ? `0 0 8px color-mix(in srgb, var(--color-accent) 55%, transparent)` : undefined,
-          }}
-        />
-        <span style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 500 }}>
-          {label}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function displayTailnetHost(status: SyncTailnetDiscoveryStatus): string {
-  return `${status.serviceName.replace(/^svc:/, "")}:${status.servicePort}`;
-}
-
-function tailnetRequiresTaggedNode(status: SyncTailnetDiscoveryStatus): boolean {
-  return /service hosts must be tagged nodes/i.test(
-    [status.stderr, status.error].filter(Boolean).join("\n"),
-  );
-}
-
-function shouldShowTailnetDiscoveryPanel(status: SyncTailnetDiscoveryStatus): boolean {
-  if (status.state === "disabled" && !status.error && !status.stderr) return false;
-  return true;
-}
-
-function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
-  isLocalHost: boolean;
-  hasTailscaleAddress: boolean;
-}): {
-  label: string;
-  color: string;
-  title: string;
-  detail: string;
-  canRetry: boolean;
-} {
-  const host = displayTailnetHost(status);
-  if (tailnetRequiresTaggedNode(status)) {
-    if (args.hasTailscaleAddress) {
-      return {
-        label: "Direct Tailscale ready",
-        color: COLORS.success,
-        title: "Phones can connect through Tailscale",
-        detail: [
-          "The machine address list includes this machine's normal Tailscale address, so pairing can work without extra setup.",
-          "Only the optional stable shortcut is blocked by Tailscale policy.",
-        ].join(" "),
-        canRetry: false,
-      };
-    }
-    return {
-      label: "Tailscale setup needed",
-      color: COLORS.warning,
-      title: "Automatic phone discovery is blocked",
-      detail: [
-        "ADE tried to create a stable Tailscale address that phones can find automatically.",
-        "Tailscale only allows that on computers configured by a tailnet admin for service hosting.",
-        "Manual address pairing still works; retry after service hosting is enabled for this machine.",
-      ].join(" "),
-      canRetry: true,
-    };
+  if (!status.pairingPinConfigured) {
+    return { ready: false, label: "Set a pairing code below so new devices can connect" };
   }
-  switch (status.state) {
-    case "published":
-      return {
-        label: "Published",
-        color: COLORS.success,
-        title: `Published as ${host}`,
-        detail: "Phones on this tailnet can find this machine automatically.",
-        canRetry: true,
-      };
-    case "pending_approval":
-      return {
-        label: "Pending approval",
-        color: COLORS.warning,
-        title: `Waiting on ${host}`,
-        detail: status.stderr || status.error || "Tailscale accepted the service, but tailnet policy may need admin approval.",
-        canRetry: true,
-      };
-    case "publishing":
-      return {
-        label: "Publishing",
-        color: COLORS.accent,
-        title: `Publishing ${host}`,
-        detail: status.target ? `Forwarding to ${status.target}.` : "Publishing tailnet discovery.",
-        canRetry: false,
-      };
-    case "unavailable":
-      return {
-        label: "Tailscale not available",
-        color: COLORS.warning,
-        title: `Cannot publish ${host}`,
-        detail: status.stderr || status.error || "Install or open Tailscale on this machine, then retry.",
-        canRetry: true,
-      };
-    case "failed":
-      return {
-        label: "Failed",
-        color: COLORS.danger,
-        title: `Could not publish ${host}`,
-        detail: status.stderr || status.error || "Tailscale Serve returned an error.",
-        canRetry: true,
-      };
-    default:
-      return {
-        label: "Not active",
-        color: COLORS.textMuted,
-        title: args.isLocalHost ? `Not published as ${host}` : "Only the host runtime publishes tailnet discovery",
-        detail: status.error || "Start the ADE runtime to publish tailnet discovery.",
-        canRetry: false,
-      };
-  }
+  return { ready: true, label: "Ready to accept connections" };
 }
 
-function TailnetDiscoveryPanel({
-  status,
-  hasTailscaleAddress,
-  busy,
-  isLocalHost,
-  onRetry,
-}: {
-  status: SyncTailnetDiscoveryStatus;
-  hasTailscaleAddress: boolean;
-  busy: boolean;
-  isLocalHost: boolean;
-  onRetry: () => void;
-}) {
-  const copy = tailnetStatusCopy(status, { isLocalHost, hasTailscaleAddress });
-  const disabled = busy || !copy.canRetry;
-  return (
-    <div style={panelStyle}>
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
-              Automatic discovery
-            </span>
-            <span style={tagStyle(copy.color)}>{copy.label}</span>
-          </div>
-          <div style={{ ...codeValueStyle, marginTop: 4 }}>{copy.title}</div>
-        </div>
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={onRetry}
-          style={outlineButton({
-            height: 30,
-            opacity: disabled ? 0.55 : 1,
-            cursor: disabled ? "not-allowed" : "pointer",
-          })}
-        >
-          Retry
-        </button>
-      </div>
-      <div style={{ ...helperTextStyle, overflowWrap: "anywhere" }}>
-        {copy.detail}
-      </div>
-      {status.updatedAt ? (
-        <div style={helperTextStyle}>Updated {formatTimestamp(status.updatedAt)}</div>
-      ) : null}
-    </div>
-  );
-}
+// ---------------------------------------------------------------------------
+// PIN manager — moved here from the old Mobile tab. Three states:
+//   no PIN          → Set / Generate
+//   visible PIN     → show + Copy + Change + Remove
+//   configured-hidden (plaintext unrecoverable after restart) → Generate new / Remove
+// ---------------------------------------------------------------------------
 
-function PairPhoneCard({
-  connectInfo,
+function PinManager({
   pin,
   pinConfigured,
-  runtimeName,
   busy,
-  cloudRelay,
-  onToggleCloudRelay,
-  onSavePin,
-  onGeneratePin,
-  onClearPin,
-  onSaveRuntimeName,
-  onClearRuntimeName,
+  onSetPin,
+  onGenerate,
+  onRemove,
 }: {
-  connectInfo: SyncPairingConnectInfo | null;
   pin: string | null;
   pinConfigured: boolean;
-  runtimeName: string | null;
   busy: boolean;
-  cloudRelay: SyncCloudRelayStatus | null;
-  onToggleCloudRelay: (enabled: boolean) => void;
-  onSavePin: (pin: string) => Promise<void>;
-  onGeneratePin: () => Promise<void>;
-  onClearPin: () => Promise<void>;
-  onSaveRuntimeName: (name: string) => Promise<void>;
-  onClearRuntimeName: () => Promise<void>;
+  onSetPin: (pin: string) => Promise<void>;
+  onGenerate: () => void;
+  onRemove: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-
-  const pinMissing = !pinConfigured;
-  const primaryCandidate = primaryPairingCandidate(connectInfo);
-  const primaryEndpoint = formatEndpoint(primaryCandidate?.host, connectInfo?.port ?? 8787);
-  const hasAddresses = (connectInfo?.addressCandidates.length ?? 0) > 0;
 
   const handleSave = async (value: string) => {
     setPinError(null);
     try {
-      await onSavePin(value);
+      await onSetPin(value);
       setEditing(false);
     } catch (err) {
       setPinError(err instanceof Error ? err.message : String(err));
     }
   };
 
-  const pinSection = editing ? (
-    <PinEditor
-      initial={pin ?? ""}
-      busy={busy}
-      onCancel={() => { setEditing(false); setPinError(null); }}
-      onSave={handleSave}
-      error={pinError}
-    />
-  ) : pinMissing ? (
-    <EmptyPinBlock
-      busy={busy}
-      onSet={() => { setPinError(null); setEditing(true); }}
-      onGenerate={() => { void onGeneratePin(); }}
-    />
-  ) : pin ? (
-    <PinDisplay
-      pin={pin}
-      busy={busy}
-      onChange={() => { setPinError(null); setEditing(true); }}
-      onGenerate={() => { void onGeneratePin(); }}
-      onRemove={() => { void onClearPin(); }}
-    />
-  ) : (
-    <SavedPinBlock
-      busy={busy}
-      onChange={() => { setPinError(null); setEditing(true); }}
-      onGenerate={() => { void onGeneratePin(); }}
-      onRemove={() => { void onClearPin(); }}
-    />
-  );
+  if (editing) {
+    return (
+      <div style={panelStyle}>
+        <PinEditor
+          initial={pin ?? ""}
+          busy={busy}
+          onCancel={() => { setEditing(false); setPinError(null); }}
+          onSave={handleSave}
+          error={pinError}
+        />
+      </div>
+    );
+  }
 
   return (
-    <div style={cardStyle({ display: "grid", gap: 16 })}>
-      <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
-        Connect a phone
+    <div style={{ ...panelStyle, gap: 10 }}>
+      <div style={LABEL_STYLE}>Pairing code</div>
+      <div style={{ ...helperTextStyle, marginTop: -2 }}>
+        New nearby devices enter this code the first time they connect to this Mac.
+      </div>
+      {!pinConfigured ? (
+        <EmptyPinBlock
+          busy={busy}
+          onSet={() => { setPinError(null); setEditing(true); }}
+          onGenerate={onGenerate}
+        />
+      ) : pin ? (
+        <PinDisplay
+          pin={pin}
+          busy={busy}
+          onChange={() => { setPinError(null); setEditing(true); }}
+          onGenerate={onGenerate}
+          onRemove={onRemove}
+        />
+      ) : (
+        <HiddenPinBlock busy={busy} onGenerate={onGenerate} onRemove={onRemove} />
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Phone tab
+// ---------------------------------------------------------------------------
+
+export function PhoneConnectionsTab({
+  sync,
+  confirmRevoke,
+}: {
+  sync: SyncConnections;
+  confirmRevoke: RevokeConfirm;
+}) {
+  const { status } = sync;
+  if (sync.loading) return <div style={helperTextStyle}>Getting connection details…</div>;
+  if (!status) return <div style={helperTextStyle}>Open a project in ADE before connecting a phone.</div>;
+
+  const host = isSyncHost(status);
+  const phones = sync.devices.filter((device) => !device.isLocal && device.deviceType === "phone");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
+          Paired phones
+        </div>
+        <DeviceList
+          devices={phones}
+          busy={sync.busy}
+          emptyLabel="No phones connected yet."
+          confirmRevoke={confirmRevoke}
+          onForget={sync.forgetDevice}
+        />
       </div>
 
-      {hasAddresses ? (
+      {host ? (
+        <ConnectNewPhone status={status} />
+      ) : (
+        <div style={helperTextStyle}>
+          Set up phones on the Mac that hosts your ADE projects.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConnectNewPhone({ status }: { status: SyncRoleSnapshot }) {
+  const pinReadout = status.pairingPin
+    ? status.pairingPin
+    : status.pairingPinConfigured
+      ? "Pairing code is set — see This Mac above"
+      : "Set a pairing code in This Mac above";
+
+  return (
+    <div style={cardStyle({ display: "grid", gap: 14 })}>
+      <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
+        Connect a new phone
+      </div>
+      <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.5 }}>
+        Sign in to ADE on your iPhone — this Mac appears automatically.
+      </div>
+      {status.pairingConnectInfo ? (
         <div
           style={{
             display: "grid",
             gridTemplateColumns: "auto minmax(0, 1fr)",
             gap: 16,
-            alignItems: "start",
+            alignItems: "center",
             minWidth: 0,
           }}
         >
-          <PairQrPanel connectInfo={connectInfo as SyncPairingConnectInfo} />
-          <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
-            <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
-              In ADE Mobile, scan this QR code.
+          <PairQrPanel connectInfo={status.pairingConnectInfo} title="Pairing QR code" />
+          <div style={{ display: "grid", gap: 8, minWidth: 0 }}>
+            <div style={helperTextStyle}>
+              Or scan this code with your iPhone camera, then enter this Mac's pairing code.
             </div>
-            {pinSection}
+            <div style={{ ...panelStyle, gap: 4 }}>
+              <span style={LABEL_STYLE}>Pairing code</span>
+              <span
+                style={{
+                  color: status.pairingPin ? COLORS.textPrimary : COLORS.textMuted,
+                  fontFamily: MONO_FONT,
+                  fontSize: status.pairingPin ? 18 : 12,
+                  letterSpacing: status.pairingPin ? "0.28em" : undefined,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {pinReadout}
+              </span>
+            </div>
           </div>
         </div>
       ) : (
-        <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
-          <div style={helperTextStyle}>No machine addresses are published yet.</div>
-          {pinSection}
-        </div>
+        <div style={helperTextStyle}>No machine addresses are published yet.</div>
       )}
+    </div>
+  );
+}
 
-      <HostNameEditor
-        runtimeName={runtimeName}
-        busy={busy}
-        onSave={onSaveRuntimeName}
-        onClear={onClearRuntimeName}
-      />
+// ---------------------------------------------------------------------------
+// Web tab — sign-in only, plus connected browsers list.
+// ---------------------------------------------------------------------------
 
-      {cloudRelay ? (
-        <CloudRelayRow cloudRelay={cloudRelay} busy={busy} onToggle={onToggleCloudRelay} />
-      ) : null}
+export function WebConnectionsTab({
+  sync,
+  accountSignedIn,
+  confirmRevoke,
+  onAccountRequested,
+}: {
+  sync: SyncConnections;
+  accountSignedIn: boolean;
+  confirmRevoke: RevokeConfirm;
+  onAccountRequested?: () => void;
+}) {
+  const { status } = sync;
+  if (sync.loading) return <div style={helperTextStyle}>Getting connection details…</div>;
 
-      <div style={{ display: "grid", gap: 10 }}>
-        <button
-          type="button"
-          style={outlineButton({ justifySelf: "start", height: 30 })}
-          onClick={() => setDetailsOpen((open) => !open)}
-        >
-          {detailsOpen ? "Hide connection details" : "Connection details"}
-        </button>
-        {detailsOpen ? (
-          <div style={{ ...panelStyle, gap: 10 }}>
-            <div style={LABEL_STYLE}>Machine address</div>
-            <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 15, overflowWrap: "break-word" }}>
-              {primaryEndpoint}
-            </div>
-            <div style={helperTextStyle}>
-              Choose this machine in ADE mobile discovery. If it does not appear, enter one of these addresses manually.
-            </div>
-            <EndpointList connectInfo={connectInfo} />
+  const browsers = sync.devices.filter((device) => !device.isLocal && device.deviceType === "browser");
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={cardStyle({ display: "grid", gap: 12 })}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Globe size={18} weight="duotone" color={COLORS.accent} />
+          <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 14, fontWeight: 600 }}>
+            ADE in the browser
           </div>
-        ) : null}
+        </div>
+        {accountSignedIn ? (
+          <>
+            <div style={helperTextStyle}>
+              Open the web client and sign in with your ADE account to reach this Mac.
+            </div>
+            <button
+              type="button"
+              style={primaryButton({ height: 32, justifySelf: "start" })}
+              onClick={() => openExternalUrl(WEB_CLIENT_BASE_URL)}
+            >
+              <ArrowSquareOut size={15} weight="bold" />
+              Open ADE in browser
+            </button>
+          </>
+        ) : (
+          <>
+            <div style={helperTextStyle}>
+              Sign in to use the web client. Once you're signed in, this Mac appears in the browser
+              automatically.
+            </div>
+            <button
+              type="button"
+              style={primaryButton({ height: 32, justifySelf: "start" })}
+              onClick={() => onAccountRequested?.()}
+            >
+              Sign in to use the web client
+            </button>
+          </>
+        )}
       </div>
 
-      <div style={helperTextStyle}>
-        {pinMissing
-          ? "No PIN set. Phones cannot pair."
-          : pin
-            ? "Scan the QR, then enter this PIN on your phone to pair."
-            : "Scan the QR, then enter the saved PIN on your phone, or set a new one."}
+      <div style={{ display: "grid", gap: 10 }}>
+        <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
+          Connected browsers
+        </div>
+        <DeviceList
+          devices={browsers}
+          busy={sync.busy}
+          emptyLabel="No browsers connected yet."
+          confirmRevoke={confirmRevoke}
+          onForget={sync.forgetDevice}
+        />
       </div>
     </div>
   );
 }
 
-// Same ADE-branded treatment as the welcome modal's TestFlight QR: white tile,
-// accent-tinted border, excavated ADE mark in the center (which is why the
-// error-correction level is H). Shared by phone and web-client pairing panels.
+// ---------------------------------------------------------------------------
+// QR tile (shared) — QR only, never carries the PIN.
+// ---------------------------------------------------------------------------
+
+// White tile, accent-tinted border, excavated ADE mark in the center (hence
+// error-correction level H). Shared by the This-Mac card and Phone tab.
 function QrCodeSvgTile({ value, title, size }: { value: string; title: string; size: number }) {
   const iconSize = Math.round(size * (32 / 148));
   return (
@@ -1056,89 +782,17 @@ function QrCodeBox({ value, title }: { value: string; title: string }) {
   );
 }
 
-function PairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
+function PairQrPanel({ connectInfo, title }: { connectInfo: SyncPairingConnectInfo; title: string }) {
   const qrUrl = useMemo(
     () => encodePairingQrUrl(buildPairingQrPayload({ connectInfo })),
     [connectInfo],
   );
-  return <QrCodeBox value={qrUrl} title="Pairing QR code" />;
+  return <QrCodeBox value={qrUrl} title={title} />;
 }
 
-function WebClientCard({
-  connectInfo,
-  pinConfigured,
-  pin,
-  busy,
-  onSetPin,
-}: {
-  connectInfo: SyncPairingConnectInfo | null;
-  pinConfigured: boolean;
-  pin: string | null;
-  busy: boolean;
-  onSetPin: (pin: string) => Promise<void>;
-}) {
-  const hasAddresses = (connectInfo?.addressCandidates.length ?? 0) > 0;
-  const pinMissing = !pinConfigured;
-  const pinHidden = pinConfigured && !pin;
-  // The hidden-PIN case is handled inline by the pairing code block below, so
-  // the card-level helper stays terse and only covers the other states.
-  let pairingHelpText = "Open the link in your browser, then enter the six-digit code.";
-  if (pinMissing) {
-    pairingHelpText = "Create a six-digit code before connecting a browser.";
-  } else if (pinHidden) {
-    pairingHelpText = "";
-  }
-
-  return (
-    <div style={cardStyle({ display: "grid", gap: 16 })}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
-          flexWrap: "wrap",
-        }}
-      >
-        <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
-          Web client
-        </div>
-        <button
-          type="button"
-          style={outlineButton({ height: 30 })}
-          onClick={() => openExternalUrl(WEB_CLIENT_BASE_URL)}
-        >
-          Open in browser
-        </button>
-      </div>
-
-      {hasAddresses ? (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "auto minmax(0, 1fr)",
-            gap: 16,
-            alignItems: "start",
-            minWidth: 0,
-          }}
-        >
-          <WebPairQrPanel connectInfo={connectInfo as SyncPairingConnectInfo} />
-          <div style={{ display: "grid", gap: 12, minWidth: 0 }}>
-            <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
-              Scan the QR code, or open the link in the browser you want to connect.
-            </div>
-            <WebPairLink connectInfo={connectInfo as SyncPairingConnectInfo} />
-            <WebPairCode pin={pin} pinConfigured={pinConfigured} busy={busy} onSetPin={onSetPin} />
-          </div>
-        </div>
-      ) : (
-        <div style={helperTextStyle}>No machine addresses are published yet.</div>
-      )}
-
-      {pairingHelpText ? <div style={helperTextStyle}>{pairingHelpText}</div> : null}
-    </div>
-  );
-}
+// ---------------------------------------------------------------------------
+// Copy feedback (shared)
+// ---------------------------------------------------------------------------
 
 function flashHighlightStyle(active: boolean): React.CSSProperties {
   return {
@@ -1196,243 +850,9 @@ function useCopyFeedback() {
   return { copied, flash, showFeedback };
 }
 
-function WebPairCode({
-  pin,
-  pinConfigured,
-  busy,
-  onSetPin,
-}: {
-  pin: string | null;
-  pinConfigured: boolean;
-  busy: boolean;
-  onSetPin: (pin: string) => Promise<void>;
-}) {
-  const { copied, flash, showFeedback } = useCopyFeedback();
-  const [generating, setGenerating] = useState(false);
-  const [genError, setGenError] = useState<string | null>(null);
-
-  const handleCopy = useCallback(async () => {
-    if (!pin) return;
-    try {
-      const writeClipboardText = window.ade?.app?.writeClipboardText;
-      if (!writeClipboardText) return;
-      await writeClipboardText(pin);
-      showFeedback();
-    } catch {
-      // Clipboard may be unavailable; the code stays visible to copy manually.
-    }
-  }, [pin, showFeedback]);
-
-  const handleGenerate = useCallback(async () => {
-    if (busy || generating) return;
-    setGenError(null);
-    setGenerating(true);
-    try {
-      await onSetPin(generateSixDigitPin());
-    } catch (err) {
-      setGenError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setGenerating(false);
-    }
-  }, [busy, generating, onSetPin]);
-
-  const hiddenPin = pinConfigured && !pin;
-
-  return (
-    <div style={{ ...panelStyle, gap: 8 }}>
-      <div style={LABEL_STYLE}>Pairing code</div>
-      <div
-        style={{
-          ...codeValueStyle,
-          fontSize: 18,
-          letterSpacing: "0.32em",
-          fontVariantNumeric: "tabular-nums",
-          alignSelf: "start",
-          padding: "0 4px",
-          ...flashHighlightStyle(flash),
-        }}
-      >
-        {pin ? pin : pinConfigured ? "••••••" : "Not set"}
-      </div>
-      {hiddenPin ? (
-        <>
-          <button
-            type="button"
-            style={outlineButton({ justifySelf: "start", height: 30, opacity: busy || generating ? 0.6 : 1 })}
-            onClick={() => void handleGenerate()}
-            disabled={busy || generating}
-          >
-            {generating ? "Generating…" : "Generate new PIN"}
-          </button>
-          <div style={helperTextStyle}>Existing PIN still pairs if you know it.</div>
-        </>
-      ) : (
-        <button
-          type="button"
-          style={outlineButton({ justifySelf: "start", height: 30 })}
-          onClick={() => void handleCopy()}
-          disabled={!pin}
-          title={pin ? undefined : "Set a PIN in the phone pairing section to enable copy."}
-        >
-          <CopiedGlyphLabel copied={copied} idle="Copy code" />
-        </button>
-      )}
-      {genError ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{genError}</div> : null}
-    </div>
-  );
-}
-
-function WebPairQrPanel({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
-  const qrUrl = useMemo(
-    () => buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
-    [connectInfo],
-  );
-  return <QrCodeBox value={qrUrl} title="Web client pairing QR code" />;
-}
-
-function WebPairLink({ connectInfo }: { connectInfo: SyncPairingConnectInfo }) {
-  const url = useMemo(
-    () => buildWebClientPairUrl(buildPairingQrPayload({ connectInfo })),
-    [connectInfo],
-  );
-  const { copied, flash, showFeedback } = useCopyFeedback();
-
-  const handleCopy = useCallback(async () => {
-    try {
-      const writeClipboardText = window.ade?.app?.writeClipboardText;
-      if (!writeClipboardText) return;
-      await writeClipboardText(url);
-      showFeedback();
-    } catch {
-      // Clipboard may be unavailable; leave the link visible to copy manually.
-    }
-  }, [showFeedback, url]);
-
-  return (
-    <div style={{ ...panelStyle, gap: 8 }}>
-      <div style={LABEL_STYLE}>Pairing link</div>
-      <div
-        style={{
-          ...codeValueStyle,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          padding: "0 4px",
-          ...flashHighlightStyle(flash),
-        }}
-        title={url}
-      >
-        {url}
-      </div>
-      <button
-        type="button"
-        style={outlineButton({ justifySelf: "start", height: 30 })}
-        onClick={() => void handleCopy()}
-      >
-        <CopiedGlyphLabel copied={copied} idle="Copy link" />
-      </button>
-    </div>
-  );
-}
-
-function HostNameEditor({
-  runtimeName,
-  busy,
-  onSave,
-  onClear,
-}: {
-  runtimeName: string | null;
-  busy: boolean;
-  onSave: (name: string) => Promise<void> | void;
-  onClear: () => Promise<void> | void;
-}) {
-  const [name, setName] = useState(runtimeName ?? "");
-
-  useEffect(() => {
-    setName(runtimeName ?? "");
-  }, [runtimeName]);
-
-  const trimmed = name.trim();
-  const current = (runtimeName ?? "").trim();
-  const dirty = trimmed !== current;
-
-  return (
-    <div style={{ ...panelStyle, gap: 10 }}>
-      <div style={LABEL_STYLE}>Name this machine</div>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) auto", gap: 8, alignItems: "center" }}>
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          style={inputStyle}
-          placeholder="e.g. MacBook"
-          disabled={busy}
-        />
-        <button
-          type="button"
-          style={primaryButton({ opacity: busy || !dirty ? 0.5 : 1 })}
-          disabled={busy || !dirty}
-          onClick={() => void onSave(name)}
-        >
-          Save
-        </button>
-      </div>
-      <div style={helperTextStyle}>Name this machine for easy identification</div>
-      {current ? (
-        <button
-          type="button"
-          style={outlineButton({ justifySelf: "start" })}
-          disabled={busy}
-          onClick={() => void onClear()}
-        >
-          Clear name
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function EndpointList({ connectInfo }: { connectInfo: SyncPairingConnectInfo | null }) {
-  const candidates = connectInfo?.addressCandidates ?? [];
-  if (candidates.length === 0) {
-    return <div style={helperTextStyle}>No machine addresses are published yet.</div>;
-  }
-  return (
-    <div style={{ display: "grid", gap: 6 }}>
-      {candidates.map((candidate) => (
-        <div
-          key={`${candidate.kind}:${candidate.host}`}
-          style={{
-            display: "grid",
-            gridTemplateColumns: "76px minmax(0, 1fr)",
-            gap: 8,
-            alignItems: "baseline",
-            minWidth: 0,
-          }}
-        >
-          <span style={tagStyle(addressKindColor(candidate.kind))}>
-            {addressKindLabel(candidate.kind)}
-          </span>
-          <span style={{ ...codeValueStyle, overflowWrap: "break-word" }}>
-            {formatEndpoint(candidate.host, connectInfo?.port ?? 8787)}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function ViewerPairingNotice() {
-  return (
-    <div style={cardStyle({ display: "grid", gap: 10 })}>
-      <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
-        Set up your phone on the main Mac
-      </div>
-      <div style={helperTextStyle}>
-        Open Connections on the Mac that currently hosts your ADE projects, then choose Mobile.
-      </div>
-    </div>
-  );
-}
+// ---------------------------------------------------------------------------
+// PIN blocks
+// ---------------------------------------------------------------------------
 
 function PinDisplay({
   pin,
@@ -1447,11 +867,23 @@ function PinDisplay({
   onGenerate: () => void;
   onRemove: () => void;
 }) {
+  const { copied, flash, showFeedback } = useCopyFeedback();
   const digits = pin.padEnd(6, " ").slice(0, 6).split("");
+
+  const handleCopy = useCallback(async () => {
+    try {
+      const writeClipboardText = window.ade?.app?.writeClipboardText;
+      if (!writeClipboardText) return;
+      await writeClipboardText(pin);
+      showFeedback();
+    } catch {
+      // Clipboard may be unavailable; the code stays visible to copy manually.
+    }
+  }, [pin, showFeedback]);
+
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <div style={LABEL_STYLE}>PIN</div>
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, ...flashHighlightStyle(flash) }}>
         {digits.map((digit, index) => (
           <div
             key={index}
@@ -1474,7 +906,10 @@ function PinDisplay({
           </div>
         ))}
       </div>
-      <div style={{ display: "flex", gap: 8 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleCopy()}>
+          <CopiedGlyphLabel copied={copied} idle="Copy" />
+        </button>
         <button type="button" style={outlineButton()} disabled={busy} onClick={onChange}>
           Change
         </button>
@@ -1499,14 +934,13 @@ function EmptyPinBlock({
   onGenerate: () => void;
 }) {
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={LABEL_STYLE}>PIN</div>
+    <div style={{ display: "grid", gap: 10 }}>
       <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
-        No PIN set yet.
+        No pairing code set yet.
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button type="button" style={primaryButton()} disabled={busy} onClick={onGenerate}>
-          Generate PIN
+          Generate code
         </button>
         <button type="button" style={outlineButton()} disabled={busy} onClick={onSet}>
           Set manually
@@ -1516,29 +950,23 @@ function EmptyPinBlock({
   );
 }
 
-function SavedPinBlock({
+function HiddenPinBlock({
   busy,
-  onChange,
   onGenerate,
   onRemove,
 }: {
   busy: boolean;
-  onChange: () => void;
   onGenerate: () => void;
   onRemove: () => void;
 }) {
   return (
-    <div style={{ display: "grid", gap: 12 }}>
-      <div style={LABEL_STYLE}>PIN</div>
+    <div style={{ display: "grid", gap: 10 }}>
       <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
-        A PIN is saved. Set a new PIN if you need to show it again.
+        A pairing code is set. It stays hidden after ADE restarts — generate a new one to see it again.
       </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button type="button" style={outlineButton()} disabled={busy} onClick={onChange}>
-          Set new PIN
-        </button>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button type="button" style={outlineButton()} disabled={busy} onClick={onGenerate}>
-          Generate
+          Generate new code
         </button>
         <button type="button" style={dangerButton()} disabled={busy} onClick={onRemove}>
           Remove
@@ -1636,7 +1064,7 @@ function PinEditor({
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <div style={LABEL_STYLE}>Set a 6-digit PIN</div>
+      <div style={LABEL_STYLE}>Set a 6-digit pairing code</div>
       <div style={{ display: "flex", gap: 8 }}>
         {values.map((value, index) => {
           const isFocused = focusedIndex === index;
@@ -1653,7 +1081,7 @@ function PinEditor({
               inputMode="numeric"
               pattern="[0-9]*"
               maxLength={1}
-              aria-label={`PIN digit ${index + 1}`}
+              aria-label={`Pairing code digit ${index + 1}`}
               style={{
                 width: 40,
                 height: 48,
@@ -1675,9 +1103,7 @@ function PinEditor({
                 }`,
                 borderRadius: 10,
                 outline: "none",
-                boxShadow: isFocused
-                  ? `0 0 0 3px rgba(167, 139, 250, 0.18)`
-                  : "none",
+                boxShadow: isFocused ? `0 0 0 3px rgba(167, 139, 250, 0.18)` : "none",
                 transition: "border-color 120ms ease, box-shadow 120ms ease, background 120ms ease",
               }}
             />
@@ -1691,7 +1117,7 @@ function PinEditor({
           disabled={!complete || busy}
           onClick={attemptSave}
         >
-          Save PIN
+          Save code
         </button>
         <button type="button" style={outlineButton()} disabled={busy} onClick={onCancel}>
           Cancel
@@ -1702,82 +1128,33 @@ function PinEditor({
   );
 }
 
-function ThisComputerDetails({
-  localDevice,
-  busy,
-  onRename,
-}: {
-  localDevice: SyncDeviceRecord;
-  busy: boolean;
-  onRename: (name: string) => Promise<void> | void;
-}) {
-  const [name, setName] = useState(localDevice.name);
+// ---------------------------------------------------------------------------
+// Device rows (phones / browsers)
+// ---------------------------------------------------------------------------
 
-  useEffect(() => {
-    setName(localDevice.name);
-  }, [localDevice.name]);
-
-  const dirty = name.trim().length > 0 && name.trim() !== localDevice.name;
-
-  return (
-    <div style={{ display: "grid", gap: 14 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) auto", gap: 12, alignItems: "end" }}>
-        <label style={{ display: "grid", gap: 6 }}>
-          <span style={LABEL_STYLE}>Name shown to phones</span>
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            style={inputStyle}
-            placeholder="This machine"
-          />
-        </label>
-        <button
-          type="button"
-          style={primaryButton({ opacity: dirty ? 1 : 0.5 })}
-          disabled={busy || !dirty}
-          onClick={() => void onRename(name)}
-        >
-          Save
-        </button>
-      </div>
-
-      <div style={panelStyle}>
-        <div style={LABEL_STYLE}>Network</div>
-        <div style={codeValueStyle}>
-          <div>Port: {localDevice.lastPort ?? 8787}</div>
-          {localDevice.ipAddresses.length > 0 ? (
-            <div>Addresses: {localDevice.ipAddresses.join(", ")}</div>
-          ) : (
-            <div>Addresses: not published yet</div>
-          )}
-          {localDevice.tailscaleIp ? <div>Tailscale: {localDevice.tailscaleIp}</div> : null}
-        </div>
-      </div>
-
-      <div style={panelStyle}>
-        <div style={LABEL_STYLE}>Device</div>
-        <div style={codeValueStyle}>
-          <div>Platform: {localDevice.platform}</div>
-          <div>Type: {deviceTypeLabel(localDevice.deviceType)}</div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PairedDeviceRow({
+function DeviceRow({
   device,
   busy,
+  confirmRevoke,
   onForget,
 }: {
   device: SyncDeviceRuntimeState;
   busy: boolean;
-  onForget: (device: SyncDeviceRuntimeState) => Promise<void> | void;
+  confirmRevoke: RevokeConfirm;
+  onForget: (device: SyncDeviceRuntimeState) => void;
 }) {
+  const [hovered, setHovered] = useState(false);
   const connected = device.connectionState === "connected";
-  const pillColor = connectionColor(device.connectionState);
+
+  const handleRevoke = async () => {
+    const ok = await confirmRevoke({ name: device.name || "This device", connected });
+    if (ok) onForget(device);
+  };
+
   return (
     <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         border: `1px solid ${COLORS.border}`,
         borderRadius: 10,
@@ -1789,67 +1166,69 @@ function PairedDeviceRow({
         flexWrap: "wrap",
       }}
     >
-      <div style={{ display: "grid", gap: 4, minWidth: 180 }}>
-        <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
-          {device.name}
+      <div style={{ display: "grid", gap: 4, minWidth: 160 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            aria-hidden
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              flexShrink: 0,
+              background: connected ? COLORS.success : COLORS.textDim,
+            }}
+          />
+          <span style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
+            {device.name}
+          </span>
         </div>
         <div style={helperTextStyle}>
           {device.platform} &middot; {deviceTypeLabel(device.deviceType)}
-        </div>
-      </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={tagStyle(pillColor)}>{deviceConnectionLabel(device)}</span>
-        <div style={helperTextStyle}>
+          {" · "}
           {connected
-            ? `Latency ${formatLatency(device.latencyMs)}`
+            ? `Connected · ${formatLatency(device.latencyMs)}`
             : `Last seen ${formatTimestamp(device.lastSeenAt)}`}
         </div>
-        <button type="button" style={dangerButton()} disabled={busy} onClick={() => void onForget(device)}>
-          {connected ? "Revoke" : "Remove"}
-        </button>
       </div>
+
+      <button
+        type="button"
+        style={{ ...dangerButton({ height: 30, padding: "0 12px", fontSize: 11 }), opacity: hovered ? 1 : 0.7 }}
+        disabled={busy}
+        onClick={() => void handleRevoke()}
+      >
+        Revoke
+      </button>
     </div>
   );
 }
 
-function PhonesList({
+function DeviceList({
   devices,
   busy,
+  emptyLabel,
+  confirmRevoke,
   onForget,
 }: {
   devices: SyncDeviceRuntimeState[];
   busy: boolean;
-  onForget: (device: SyncDeviceRuntimeState) => Promise<void> | void;
+  emptyLabel: string;
+  confirmRevoke: RevokeConfirm;
+  onForget: (device: SyncDeviceRuntimeState) => void;
 }) {
   if (devices.length === 0) {
-    return <div style={helperTextStyle}>No phones paired yet.</div>;
+    return <div style={helperTextStyle}>{emptyLabel}</div>;
   }
   return (
     <div style={{ display: "grid", gap: 10 }}>
       {devices.map((device) => (
-        <PairedDeviceRow key={device.deviceId} device={device} busy={busy} onForget={onForget} />
-      ))}
-    </div>
-  );
-}
-
-function BrowsersList({
-  devices,
-  busy,
-  onForget,
-}: {
-  devices: SyncDeviceRuntimeState[];
-  busy: boolean;
-  onForget: (device: SyncDeviceRuntimeState) => Promise<void> | void;
-}) {
-  if (devices.length === 0) {
-    return <div style={helperTextStyle}>No browsers paired yet.</div>;
-  }
-  return (
-    <div style={{ display: "grid", gap: 10 }}>
-      {devices.map((device) => (
-        <PairedDeviceRow key={device.deviceId} device={device} busy={busy} onForget={onForget} />
+        <DeviceRow
+          key={device.deviceId}
+          device={device}
+          busy={busy}
+          confirmRevoke={confirmRevoke}
+          onForget={onForget}
+        />
       ))}
     </div>
   );

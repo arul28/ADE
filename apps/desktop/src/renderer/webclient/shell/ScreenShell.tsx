@@ -2,7 +2,7 @@ import React from "react";
 import { COLORS, SANS_FONT, cardStyle } from "./shellTokens";
 
 /**
- * Full-viewport surface for the pre-app screens (welcome, pairing, machine +
+ * Full-viewport surface for the pre-app screens (sign-in, machine +
  * project pickers). The ADE logo is pinned to the page's top-left; a soft accent
  * glow sits behind a centered glass card, matching ADE's onboarding feel.
  */

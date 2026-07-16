@@ -4,6 +4,7 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { BrowserAccountSnapshot } from "../../account/client";
+import type { WebClientEnvironmentRecord } from "../../sync";
 import { MachinePicker } from "../MachinePicker";
 
 afterEach(cleanup);
@@ -21,13 +22,42 @@ function account(overrides: Partial<BrowserAccountSnapshot> = {}): BrowserAccoun
   };
 }
 
-function renderPicker(snapshot: BrowserAccountSnapshot) {
+function savedEnvironment(): WebClientEnvironmentRecord {
+  return {
+    envId: "saved-env",
+    machineName: "Saved Studio",
+    hostDeviceId: "saved-host",
+    accountOwnerUserId: null,
+    relayUrl: null,
+    machineKeyUrl: null,
+    addressCandidates: [],
+    explicitWssEndpoints: ["wss://studio.example.test:8787"],
+    port: 8787,
+    pairedDeviceId: "browser-device",
+    secret: "paired-secret",
+    dpopKeys: {} as CryptoKeyPair,
+    dpopPublicKeyX963: "public-key",
+    siteId: "site-id",
+    localDeviceId: "browser-device",
+    localDeviceName: "ADE Web",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    lastConnectedAt: "2026-01-02T00:00:00.000Z",
+    lastGoodEndpoint: "wss://studio.example.test:8787",
+    activeProjectId: null,
+  };
+}
+
+function renderPicker(
+  snapshot: BrowserAccountSnapshot,
+  environments: WebClientEnvironmentRecord[] = [],
+) {
+  const onSelect = vi.fn();
   const onSelectAccountMachine = vi.fn();
   const onSignIn = vi.fn();
   const onRetryDirectory = vi.fn();
   render(
     <MachinePicker
-      environments={[]}
+      environments={environments}
       account={snapshot}
       relayAccess={snapshot.userId ? {
         kind: "signed_in",
@@ -36,29 +66,36 @@ function renderPicker(snapshot: BrowserAccountSnapshot) {
         getAccessToken: async () => "test-token",
       } : { kind: "signed_out" }}
       connectingMachineKey={null}
-      onSelect={vi.fn()}
+      onSelect={onSelect}
       onSelectAccountMachine={onSelectAccountMachine}
-      onPair={vi.fn()}
       onSignIn={onSignIn}
       onSignOut={vi.fn()}
       onRetryDirectory={onRetryDirectory}
     />,
   );
-  return { onSelectAccountMachine, onSignIn, onRetryDirectory };
+  return { onSelect, onSelectAccountMachine, onSignIn, onRetryDirectory };
 }
 
 describe("MachinePicker account states", () => {
-  it("makes account sign-in the clear path while keeping direct pairing advanced", () => {
+  it("uses account sign-in for new connections without showing PIN or pairing-link entry points", () => {
     const { onSignIn } = renderPicker(account());
 
     expect(screen.getByText("Sign in to connect this browser to your Macs, wherever they are.")).toBeTruthy();
-    const directSummary = screen.getByText("Connect directly (advanced)");
-    expect((directSummary.closest("details") as HTMLDetailsElement).open).toBe(false);
-    fireEvent.click(directSummary);
-    expect((directSummary.closest("details") as HTMLDetailsElement).open).toBe(true);
-    expect(screen.getByRole("button", { name: "Use a pairing link" })).toBeTruthy();
+    expect(screen.queryByText(/pairing link/i)).toBeNull();
+    expect(screen.queryByText(/pairing code/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect(onSignIn).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an existing saved environment available while signed out", () => {
+    const environment = savedEnvironment();
+    const { onSelect } = renderPicker(account(), [environment]);
+
+    expect(screen.getByText("Saved on this browser")).toBeTruthy();
+    const savedButton = screen.getByRole("button", { name: /Saved Studio/i });
+    fireEvent.click(savedButton);
+    expect(onSelect).toHaveBeenCalledWith(environment);
+    expect(screen.queryByText(/pairing link/i)).toBeNull();
   });
 
   it("lists reachable and offline account machines without making offline rows connectable", () => {
@@ -116,7 +153,7 @@ describe("MachinePicker account states", () => {
     }));
 
     expect(screen.getByText("Signed in as owner@example.test")).toBeTruthy();
-    expect(screen.getByText("We couldn't load your Macs. Your saved direct connections still work.")).toBeTruthy();
+    expect(screen.getByText("We couldn't load your Macs. Your saved connections still work.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(onRetryDirectory).toHaveBeenCalledOnce();
   });

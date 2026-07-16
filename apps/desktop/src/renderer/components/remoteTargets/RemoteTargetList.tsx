@@ -3,8 +3,6 @@ import {
   CaretLeft,
   CaretRight,
   DesktopTower,
-  LinkSimple,
-  ShareNetwork,
   TerminalWindow,
   UserCircle,
   Warning,
@@ -33,7 +31,6 @@ import {
   RemoteTargetForm,
   type RemoteTargetFormPrefill,
 } from "./RemoteTargetForm";
-import { ShareMachineCard } from "./ShareMachineCard";
 import { PairMachineForm } from "./PairMachineForm";
 import {
   assignMachineSections,
@@ -44,7 +41,6 @@ import {
   machineMatchesSavedTarget,
   type MachineSection,
 } from "./remoteMachineModel";
-import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
@@ -74,7 +70,7 @@ type ConnectTargetOptions = {
   skipHostKeyTrustCheck?: boolean;
 };
 
-type AddMode = "choose" | "account" | "nearby" | "pair" | "ssh";
+type AddMode = "choose" | "nearby" | "pair" | "ssh";
 
 function targetFormPrefill(
   target: RemoteRuntimeTarget,
@@ -130,10 +126,25 @@ export function RemoteTargetList({
   const [hostKeyTrust, setHostKeyTrust] =
     useState<RemoteRuntimeSshHostKeyTrustStatus | null>(null);
   const [addMode, setAddMode] = useState<AddMode | null>(null);
-  const [shareOpen, setShareOpen] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [localMachineName, setLocalMachineName] = useState("");
+  const [localMachineIdentity, setLocalMachineIdentity] =
+    useState<{ machineKey: string; deviceId: string } | null>(null);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
+
+  // Never surface THIS Mac in its own account list. Match on the stable
+  // machineKey OR deviceId reported by the local identity IPC (#A3).
+  const visibleAccountMachines = useMemo(() => {
+    if (!accountMachines) return accountMachines;
+    const identity = localMachineIdentity;
+    if (!identity) return accountMachines;
+    return accountMachines.filter((machine) => {
+      const keyMatch = identity.machineKey && machine.machineKey === identity.machineKey;
+      const deviceMatch =
+        identity.deviceId && machine.deviceId != null && machine.deviceId === identity.deviceId;
+      return !keyMatch && !deviceMatch;
+    });
+  }, [accountMachines, localMachineIdentity]);
 
   const selectedTarget = useMemo(
     () => targets.find((target) => target.id === selectedId) ?? null,
@@ -159,10 +170,10 @@ export function RemoteTargetList({
         statusById,
         connectedFallbackId: connected?.target.id ?? null,
         discoveredMachines,
-        accountMachines,
+        accountMachines: visibleAccountMachines,
         includeDiscoveredRows: false,
       }),
-    [targets, statusById, connected, discoveredMachines, accountMachines],
+    [targets, statusById, connected, discoveredMachines, visibleAccountMachines],
   );
 
   const loadTargets = useCallback(async () => {
@@ -264,19 +275,28 @@ export function RemoteTargetList({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const identity = await window.ade.account?.getLocalMachineIdentity?.();
+        if (!cancelled && identity) setLocalMachineIdentity(identity);
+      } catch {
+        // Identity is best-effort; without it the account list simply isn't self-filtered.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const openAddMachine = useCallback(() => {
     setSelectedId(null);
-    setShareOpen(false);
     setFormPrefill(null);
     setError(null);
     setHostKeyTrust(null);
     setPairingPrefill(null);
     setAddMode((current) => (current ? null : "choose"));
-  }, []);
-
-  const toggleShare = useCallback(() => {
-    setShareOpen((open) => !open);
-    setAddMode(null);
   }, []);
 
   const toggleTest = useCallback((rowId: string) => {
@@ -684,13 +704,48 @@ export function RemoteTargetList({
   );
 
   const chooseAddMode = useCallback((next: Exclude<AddMode, "choose">) => {
-    if (next === "account" && !accountSignedIn) {
-      onAccountRequested?.();
-      return;
-    }
     if (next !== "pair") setPairingPrefill(null);
     setAddMode(next);
-  }, [accountSignedIn, onAccountRequested]);
+  }, []);
+
+  // Signed in, account Macs appear in the list automatically, so the add sheet
+  // only offers Nearby + SSH. Signed out, we lead with the account sign-in.
+  const addChoices = useMemo(
+    () => {
+      const choices: Array<{
+        key: string;
+        icon: typeof WifiHigh;
+        label: string;
+        detail: string;
+        onSelect: () => void;
+      }> = [];
+      if (!accountSignedIn) {
+        choices.push({
+          key: "signin",
+          icon: UserCircle,
+          label: "Sign in to ADE",
+          detail: "The easiest way to find and connect to your other Macs.",
+          onSelect: () => onAccountRequested?.(),
+        });
+      }
+      choices.push({
+        key: "nearby",
+        icon: WifiHigh,
+        label: "Find nearby Macs",
+        detail: "Search this Wi-Fi for Macs with ADE open.",
+        onSelect: () => chooseAddMode("nearby"),
+      });
+      choices.push({
+        key: "ssh",
+        icon: TerminalWindow,
+        label: "Add over SSH (Advanced)",
+        detail: "Connect with the Mac's SSH address and private key.",
+        onSelect: () => chooseAddMode("ssh"),
+      });
+      return choices;
+    },
+    [accountSignedIn, chooseAddMode, onAccountRequested],
+  );
 
   return (
     <div style={panelStyle}>
@@ -723,19 +778,6 @@ export function RemoteTargetList({
           <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
             <button
               type="button"
-              onClick={toggleShare}
-              aria-expanded={shareOpen}
-              style={outlineButton({
-                height: 30,
-                padding: "0 10px",
-                fontSize: 11,
-              })}
-            >
-              <ShareNetwork size={14} weight="bold" />
-              Share
-            </button>
-            <button
-              type="button"
               disabled={loadingDiscovered}
               onClick={() => void loadDiscoveredMachines()}
               style={{
@@ -764,8 +806,6 @@ export function RemoteTargetList({
           </div>
         </div>
 
-        {shareOpen ? <ShareMachineCard /> : null}
-
         {addMode ? (
           <div style={inlineDetailStyle}>
             {addMode !== "choose" ? (
@@ -784,38 +824,11 @@ export function RemoteTargetList({
 
             {addMode === "choose" ? (
               <div style={{ display: "grid" }}>
-                {([
-                  {
-                    key: "account",
-                    icon: UserCircle,
-                    label: !accountSignedIn ? "Sign in to ADE" : "Your ADE account",
-                    detail: !accountSignedIn
-                      ? "The easiest way to find and connect to your other Macs."
-                      : "Choose a Mac already connected to your account.",
-                  },
-                  {
-                    key: "nearby",
-                    icon: WifiHigh,
-                    label: "Find nearby Macs",
-                    detail: "Search this Wi-Fi for Macs with ADE open.",
-                  },
-                  {
-                    key: "pair",
-                    icon: LinkSimple,
-                    label: "Paste a pairing link",
-                    detail: "Use the link and six-digit code shown on the other Mac.",
-                  },
-                  {
-                    key: "ssh",
-                    icon: TerminalWindow,
-                    label: "SSH (advanced)",
-                    detail: "Connect with the Mac's SSH address and private key.",
-                  },
-                ] as const).map(({ key, icon: Icon, label, detail }, index) => (
+                {addChoices.map(({ key, icon: Icon, label, detail, onSelect }, index) => (
                   <button
                     key={key}
                     type="button"
-                    onClick={() => chooseAddMode(key)}
+                    onClick={onSelect}
                     style={{
                       display: "grid",
                       gridTemplateColumns: "22px minmax(0, 1fr) 16px",
@@ -865,7 +878,7 @@ export function RemoteTargetList({
                 {loadingDiscovered ? <div style={helperTextStyle}>Scanning nearby machines…</div> : null}
                 {!loadingDiscovered && nearbyMachines.length === 0 ? (
                   <div style={helperTextStyle}>
-                    No Macs found. Open ADE on the other Mac and use the same Wi-Fi. If you use Tailscale, paste its pairing link instead.
+                    No Macs found. Open ADE on the other Mac and make sure both are on the same Wi-Fi or Tailscale network.
                   </div>
                 ) : null}
                 {nearbyMachines.map((machine) => (
@@ -880,35 +893,6 @@ export function RemoteTargetList({
                     onToggleTest={toggleTest}
                   />
                 ))}
-              </div>
-            ) : null}
-            {addMode === "account" ? (
-              <div style={{ display: "grid", gap: 8 }}>
-                {(accountMachines ?? []).length === 0 ? (
-                  <div style={helperTextStyle}>
-                    {accountMachinesState === "ok"
-                      ? "No other Macs are connected to this account yet. Sign in to this same account on another Mac, then refresh."
-                      : "We couldn't load your account Macs. Saved and nearby Macs still work."}
-                  </div>
-                ) : null}
-                {(accountMachines ?? []).map((machine) => {
-                  const rowId = `account:${machine.machineKey}`;
-                  const section = accountMachineConnectionState(machine) === "available"
-                    ? "available"
-                    : "unavailable";
-                  return (
-                    <AccountMachineRow
-                      key={rowId}
-                      row={{ kind: "account", id: rowId, machine, matchedTargetId: null }}
-                      section={section}
-                      busy={busyId != null}
-                      connecting={busyId === rowId}
-                      detailOpen={testingId === rowId}
-                      onToggleDetail={toggleTest}
-                      onConnect={(next) => void connectAccountMachine(next)}
-                    />
-                  );
-                })}
               </div>
             ) : null}
           </div>
@@ -956,7 +940,7 @@ export function RemoteTargetList({
 
         {!loading && totalRows === 0 && !addMode && !loadingDiscovered ? (
           <div style={helperTextStyle}>
-            No Macs yet. Choose Add machine, or Share to connect this Mac from another device.
+            No Macs yet. Choose Add machine to connect one.
           </div>
         ) : null}
         {loadingDiscovered ? (

@@ -1,18 +1,19 @@
 # Web Client
 
 The web client is an owner-only browser controller for an ADE machine runtime.
-It is a hosted static SPA. The normal hosted path uses ADE Relay to carry the
-machine's sync WebSocket protocol; localhost and operator-managed `wss://`
-endpoints remain available as an advanced direct path.
+It is a hosted static SPA. New connections are account-only: the browser signs
+in to ADE, loads the account machine directory, and adopts the chosen Mac over
+ADE Relay. Localhost pages retain direct `ws://` for development.
 
 Hosted Relay connections require the browser and Mac to be signed in to the
 same ADE account. The browser sends a fresh short-lived account proof with each
 paired Relay hello, and never persists that proof. Signing out immediately
 stops the Relay connection. Environments created from the account machine
-directory are removed on sign-out or account switch. Link/PIN and manual direct
-pairings remain locally owned and stay in IndexedDB, but cannot use Relay while
-signed out; after signing in, they may use Relay only when the account directory
-verifies that the saved host belongs to the current account.
+directory are removed on sign-out or account switch. Browser environments
+paired before this release remain locally owned in IndexedDB and can keep using
+their saved direct routes, but the hosted client no longer creates non-account
+pairings. Its retired `/pair` route discards the payload and opens the normal
+account sign-in flow.
 
 Production hosting is Cloudflare Pages. The Pages URL is
 `https://ade-web-client.pages.dev`; the canonical product URL in source is
@@ -39,7 +40,7 @@ Build and static host:
 
 Browser sync client:
 
-- `apps/desktop/src/renderer/webclient/account/client.ts` - optional Clerk
+- `apps/desktop/src/renderer/webclient/account/client.ts` - Clerk
   OAuth authorization-code + PKCE session for the static client. Access and
   refresh tokens remain in module memory, the callback is scrubbed from the
   address bar before directory loading, and account requests use exact trusted
@@ -51,12 +52,12 @@ Browser sync client:
   transient token/directory failure preserves it for retry. A direct-owned
   environment using Relay is disconnected but not deleted.
 - `apps/desktop/src/renderer/webclient/sync/client.ts` - high-level browser
-  sync client. Pairs with PIN or adopts a machine through the verified account
-  relay, stores only the resulting paired credentials, sends remote commands,
-  requests files, subscribes to chat and terminal streams, switches projects,
-  and treats `changeset_batch` as invalidation input.
+  sync client. Adopts a machine through the verified account relay, reconnects
+  saved environments, stores only the resulting paired credentials, sends
+  remote commands, requests files, subscribes to chat and terminal streams,
+  switches projects, and treats `changeset_batch` as invalidation input.
 - `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
-  lifecycle, pairing request, paired hello, DPoP proof on reconnect,
+  lifecycle, account adoption, paired hello, DPoP proof on reconnect,
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
   attribution.
 - `apps/desktop/src/renderer/webclient/sync/relayPolicy.ts` - typed hosted Relay
@@ -115,22 +116,20 @@ Browser shell and routes:
   `window.ade` placeholder before shared renderer modules import, then mounts
   `WebClientRoot`.
 - `apps/desktop/src/renderer/webclient/shell/WebClientRoot.tsx` - boot
-  sequence, account privacy pruning, machine-first launch picker, pair flow,
+  sequence, retired-`/pair` scrubbing, account privacy pruning, account-first
+  machine picker,
   30-second active-account lease monitor, project picker, adapter load, pending
   `/open` target stash, project binding, and projectless `/chats` routing before
   a project is selected. Saved machines are shown first instead of reconnecting
   automatically on page load.
-- `apps/desktop/src/renderer/webclient/shell/PairFlow.tsx` - pairing-link
-  parser, PIN entry, and hosted-page reachability errors. Same-account Relay is
-  the normal path; localhost and manual `wss://` are secondary advanced paths.
 - `apps/desktop/src/renderer/webclient/shell/WebShell.tsx` - machine
   switcher, project switcher, forget machine, reconnect hint, and "Open in
   desktop" button.
 - `apps/desktop/src/renderer/webclient/shell/MachinePicker.tsx`,
-  `ProjectPicker.tsx`, `PinInput.tsx`, and `ScreenShell.tsx` -
-  the pair/switch UI pieces the boot sequence composes (saved-machine list,
-  account machines, project list, 6-digit PIN entry, and the shared screen
-  frame); `shellTokens.ts` holds the standalone-shell design tokens.
+  `ProjectPicker.tsx`, and `ScreenShell.tsx` - the account/switch UI pieces the
+  boot sequence composes (account machines, compatible saved-machine list,
+  project list, and the shared screen frame); `shellTokens.ts` holds the
+  standalone-shell design tokens.
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
   layer over `apps/desktop/src/shared/deeplinks.ts`.
 
@@ -146,9 +145,9 @@ Reused desktop renderer (web-mode adaptation):
   of rendering broken affordances.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` - the single desktop Connections control and its
-  Machines, Mobile, and Web client tabs. The Web client tab reports connected
-  browser peers and exposes pairing; the entire native control is omitted from
-  the hosted web-client shell.
+  Machines, Phone, and Web tabs. The Web tab reports connected browser peers
+  and directs signed-out users to account sign-in; the entire native control is
+  omitted from the hosted web-client shell.
 - `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx`
   - reused route/project lifecycle capture plus the hosted-web consent banner.
   It sends only normalized inputs through `window.ade.analytics`; the browser
@@ -163,9 +162,9 @@ Machine runtime and sync host:
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - remote
   command registry. It carries 45 web-parity `register("...")` entries for
   Work, chat, terminal, files/git, PRs, project config, AI status, GitHub
-  status, history, orchestration, and rebase surfaces, plus the
-  runtime-scoped `sync.getWebPairingInfo` command (pairing URL, PIN,
-  machine name, relay availability) that backs the iOS "Pair a browser" sheet.
+  status, history, orchestration, and rebase surfaces. The legacy runtime-scoped
+  `sync.getWebPairingInfo` descriptor remains in the protocol, but no current
+  iOS or hosted-web UI uses it to create browser pairings.
 - `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` and
   `syncHostService.ts` - bind untrusted browser capture requests to the host's
   `web` surface/project and keep `analytics.setClientEnabled` peer-scoped. A
@@ -175,9 +174,10 @@ Machine runtime and sync host:
   provenance used for owner-scoped revocation.
 - `apps/ade-cli/src/services/sync/syncDpop.ts` - host-side P-256 proof
   validation and replay guard.
-- `apps/ade-cli/src/services/sync/syncCloudRelayStore.ts` - default-on cloud
-  tunnel identity, persisted Settings/CLI kill-switch, and browser/phone-facing
-  `wss://<relay>/connect/<machineKey>` URL.
+- `apps/ade-cli/src/services/sync/syncCloudRelayStore.ts` - stable cloud-tunnel
+  `machineKey`/HMAC identity and browser/phone-facing
+  `wss://<relay>/connect/<machineKey>` URL. Deprecated enablement fields are
+  removed when the file is read; account sign-in is the only availability gate.
 - `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` and
   `apps/tunnel-relay/` - brain-side Cloudflare tunnel client and the relay
   Worker/Durable Object.
@@ -187,20 +187,20 @@ Machine runtime and sync host:
 - `apps/ade-cli/src/services/sync/deviceRegistryService.ts` - device records;
   `SyncPeerDeviceType` includes `browser`.
 
-Pairing, links, and entry points:
+Account connection and entry points:
 
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` -
-  the focused **Connections > Mobile** and **Connections > Web client** tab
-  bodies. Its `variant?: "all" | "phone" | "web"` prop keeps the shared
-  implementation reusable while those tabs show only their relevant controls.
-  The web variant can generate a new six-digit PIN when the configured PIN is
-  hashed at rest and no longer displayable, and provides copy feedback plus an
-  enlarged pairing-QR dialog.
+  the focused **Connections > Phone** and **Connections > Web** tab bodies plus
+  the shared **This Mac** card. The Web variant is account-sign-in only; the
+  This Mac card owns the PIN manager and internal phone QR.
 - `apps/desktop/src/shared/pairingQr.ts` - smart pairing URL
   `https://ade-app.dev/pair#<base64url(JSON)>`; the fragment carries host
   identity, port, address candidates, and optional relay URL, never the PIN.
+  This remains internal wire encoding for the phone's system-camera/App Clip
+  flow, not a user-facing browser pairing link.
 - `apps/desktop/src/shared/webClientUrl.ts` - canonical
-  `https://app.ade-app.dev` URL builder for `/open` and `/pair`.
+  `https://app.ade-app.dev` URL builder. `/open` remains user-facing; `/pair`
+  is retired in the hosted shell.
 - `apps/desktop/src/shared/deeplinks.ts` - shared deeplink grammar layered
   under the web client's `/open` route.
 - `apps/ade-cli/src/commands/deeplinks.ts` - `ade link --web`.
@@ -209,17 +209,12 @@ Pairing, links, and entry points:
 - `apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx` and
   `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` /
   `SessionContextMenu.tsx` - desktop "Open in web" entry points.
-- `apps/web/src/app/pages/PairPage.tsx` - marketing-site `/pair` hash-forward
-  to the hosted web client.
+- `apps/web/src/app/pages/PairPage.tsx` - compatibility hash-forward for the
+  internal smart-QR URL; the hosted client scrubs `/pair` and enters sign-in.
 - `apps/web/scripts/check-entities.mjs` - dependency-free TypeScript-AST guard
   run by the marketing-site build. It rejects unsupported named HTML entities
   in JSX text, expressions, and attributes before they can ship as literal UI
   text.
-- `apps/ios/ADE/Views/Settings/SettingsWebClientPairSheet.swift` - iOS
-  Settings > Pairing > "Pair a browser" sheet. It fetches the machine's
-  pairing URL, PIN, machine name, and relay availability over the
-  `sync.getWebPairingInfo` remote command and renders a QR, copyable link,
-  and pairing code so a browser can be paired from the phone.
 
 Tests:
 
@@ -228,6 +223,8 @@ Tests:
 - `apps/desktop/src/renderer/webclient/sync/__tests__/sync.test.ts`.
 - `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts`.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/webRoutes.test.ts`.
+- `apps/desktop/src/renderer/webclient/shell/__tests__/WebClientRoot.test.tsx` -
+  verifies that legacy `/pair#...` entry is scrubbed and lands on account sign-in.
 - `apps/desktop/src/shared/webClientUrl.test.ts`.
 - `apps/ade-cli/src/commands/deeplinks.test.ts`.
 - `apps/ade-cli/src/tuiClient/__tests__/deeplinkKeybind.test.ts`.
@@ -236,9 +233,10 @@ Tests:
 ## Gotchas
 
 - **The hosted page cannot dial raw LAN or Tailscale-IP `ws://` endpoints.**
-  Browsers block mixed content from `https://app.ade-app.dev`. Use the cloud
-  tunnel relay or an operator-provided `wss://` endpoint such as Tailscale
-  Serve. `ws://127.0.0.1:<port>` is for local web-client development only.
+  Browsers block mixed content from `https://app.ade-app.dev`. New connections
+  use the account-authorized cloud relay. A saved pre-release environment may
+  still use an already-verified direct `wss://` route.
+  `ws://127.0.0.1:<port>` is for local web-client development only.
 - **The browser has no ADE database.** It does not load cr-sqlite, does not
   apply changesets, and does not advertise the `changesetAck` capability. A
   `changeset_batch` only tells the adapter which table domains to refresh.
@@ -247,22 +245,27 @@ Tests:
   desktop-only `rpc_*` and `fwd_*` channels. Unknown `hello_ok.features` keys
   are harmless, and missing additive keys mean the related capability is not
   available rather than failing the handshake.
-- **IndexedDB is the pairing store.** Clearing site data removes the paired
-  secret and the non-extractable DPoP private key, so the browser must pair
-  again. The private key cannot be exported for backup or migration.
+- **IndexedDB is the connection store.** Clearing site data removes paired
+  secrets and non-extractable DPoP private keys. The browser must sign in and
+  adopt the account machine again; a legacy direct environment cannot be
+  recreated through the hosted UI. The private key cannot be exported for
+  backup or migration.
 - **Analytics consent is browser-local and fail-closed.** The preference lives
   in local storage, while the host keeps an in-memory consent bit for that
   paired socket. Every adapter connection reasserts the local choice before
   capture; missing storage or a failed disable acknowledgement does not fall
   back to machine-wide consent. Accepted events still consume the host's
   shared 200-event daily budget. See [logging and product analytics](../../logging.md).
-- **The pairing URL fragment must stay a fragment.** The payload is safe to
-  copy because it omits the PIN and fragments are not sent to servers. Do not
-  move it into a query parameter or server route.
+- **The smart-QR payload must stay a fragment.** The
+  `https://ade-app.dev/pair#...` form survives only as internal wire encoding
+  for phone system-camera/App Clip pairing. It omits the PIN, and fragments are
+  not sent to servers. Do not turn it back into a user-facing hosted pairing
+  route or move it into a query parameter.
 - **The relay is transport, not cloud state.** The Cloudflare tunnel relay is a
-  trusted intermediary for sync frames when enabled; it does not store ADE
-  project state, but it can read the frames it pipes. End-to-end payload
-  encryption is not implemented in `apps/tunnel-relay/README.md`.
+  trusted intermediary for sync frames while the Mac is signed in; it does not
+  store ADE project state, but it can read the frames it pipes. There is no
+  separate relay toggle. End-to-end payload encryption is not implemented;
+  adding it is planned security work.
 - **Remote-command descriptors are the host authority.** The adapter may have a
   method name, but it only executes when the host advertises the action in
   `hello_ok.features.commandRouting.actions`; otherwise it falls back or
@@ -284,8 +287,8 @@ https://app.ade-app.dev
   v
 Browser shell
 apps/desktop/src/renderer/webclient/shell/
-  - pair flow
-  - saved machine switcher
+  - account sign-in + machine directory
+  - saved-environment compatibility switcher
   - project picker
   - /open resolver
   - open-in-desktop
@@ -302,7 +305,7 @@ apps/desktop/src/renderer/webclient/sync/
   v
 Browser-safe WebSocket transport
   - wss://<relay>/connect/<machineKey>
-  - wss://<manual endpoint>
+  - saved pre-release direct wss:// endpoint
   - ws://127.0.0.1:<port> only from local/http dev
   |
   v
@@ -324,48 +327,47 @@ The hosted SPA is only the controller UI. The machine runtime remains the
 authority for project state, file access, process execution, terminal IO, and
 agent/chat mutations.
 
-## Pairing and auth flow
+## Account connection and auth flow
 
-1. The operator opens the top-bar **Connections** panel, chooses **Web client**,
-   and uses the pairing card.
-   The QR/link is built with `buildWebClientPairUrl(buildPairingQrPayload(...))`.
-2. The pairing URL is `https://app.ade-app.dev/pair#<payload>` for web, with
-   the same payload shape as `https://ade-app.dev/pair#<payload>` for mobile.
-   The payload contains host identity, port, address candidates, and optional
-   relay URL. It does not contain the PIN.
-3. `PairFlow.tsx` parses the fragment with `parsePairingQrText`, derives
-   browser-safe endpoints, and asks for the 6-digit PIN shown in desktop
-   Settings.
-4. `client.ts` generates a WebCrypto P-256 ECDSA key pair with
-   `extractable: false`, exports the public key, and sends a
-   `pairing_request` with `deviceType: "browser"`, the PIN, and
-   `dpopPublicKey`.
-5. The runtime validates the PIN in `syncPairingStore.ts`, stores a
-   per-device secret and the browser's DPoP public key, and returns the paired
-   device id plus secret.
-6. The browser saves the environment in IndexedDB: host identity, endpoints,
-   active project id, paired device id, secret, site id, local device id, and
-   the non-extractable key pair.
-7. Every reconnect sends a paired `hello` with the secret plus a signed DPoP
-   proof. `syncHostService.ts` validates the stored secret, public key, nonce,
-   and timestamp before the peer is authenticated.
-8. Revocation is machine-owned. In **Connections > Web client**, `Revoke`
-   calls the same device-forget path as phones. Connected browser sockets are
-   closed; future paired hellos fail. The browser deletes its saved environment
-   only when the auth failure is attributed to the same host device id.
+1. The operator opens `https://app.ade-app.dev` and signs in to ADE. Desktop's
+   **Connections > Web** surface points to this account flow; it exposes no QR,
+   link, PIN, or manual endpoint entry.
+2. The browser loads the Clerk-scoped account machine directory and shows the
+   signed-in owner's available Macs.
+3. Selecting a Mac captures the exact browser account-session generation,
+   obtains a fresh access token, and dials only the directory-verified
+   `wss://<relay>/connect/<machineKey>` endpoint.
+4. `client.ts` generates a non-extractable WebCrypto P-256 ECDSA key pair and
+   performs account adoption. The runtime requires the same-account proof,
+   stores the browser's DPoP public key, and returns a per-device paired secret.
+5. Before committing anything, the browser rechecks that the account-session
+   generation is unchanged. It then saves the environment, paired secret, and
+   non-extractable key pair in IndexedDB.
+6. Every reconnect sends a paired `hello` with the secret plus a signed DPoP
+   proof. Relay reconnects additionally fetch a fresh in-memory account proof;
+   direct routes saved after adoption use the paired credential without sending
+   the Clerk bearer over plaintext `ws://`.
+7. Sign-out or account switch closes the Relay socket and removes account-owned
+   environments. Machine-side revocation closes connected browser sockets and
+   makes future paired hellos fail.
 
-The first web-client load after this release performs a versioned trust reset:
-all older saved machine environments and the selected-environment pointer are
-removed once, while browser account state and unrelated storage are preserved.
-Pairings created after the marker is written persist according to the local vs.
-account ownership rules above.
+The hosted `/pair` route and `PairFlow`/`PinInput` UI are removed. Older browser
+environments already paired locally remain listed under **Saved on this
+browser** and can keep reconnecting over their saved direct routes. This is a
+compatibility exception only; new non-account web pairings are not possible.
+
+This release does not bump the existing versioned trust-reset marker or clear
+saved environments. The historical version-1 migration still runs once on a
+browser profile that has never completed it; after that marker is present,
+account-owned and legacy-local environments persist according to the ownership
+rules above.
 
 ## Transport matrix
 
 | Transport | Endpoint shape | Hosted page | Use |
 |---|---|---:|---|
-| Cloud tunnel relay | `wss://<relay>/connect/<machineKey>` | Yes | Default-on browser-safe route with an explicit Settings/CLI kill-switch. The default relay base is in `syncCloudRelayStore.ts`; the runtime keeps the outbound host socket open through `syncTunnelClientService.ts`. |
-| Manual secure endpoint | `wss://...` | Yes | Operator-managed TLS endpoint, commonly Tailscale Serve or another local reverse proxy that forwards to the machine sync socket. `PairFlow.tsx` exposes this as the manual endpoint field. |
+| Cloud tunnel relay | `wss://<relay>/connect/<machineKey>` | Yes | Account-authorized route for every new hosted connection. The runtime keeps the outbound host socket open through `syncTunnelClientService.ts` whenever the Mac is signed in; there is no separate Settings/CLI toggle. |
+| Saved direct endpoint | `wss://...` | Yes | Compatibility only for an environment paired before hosted non-account pairing was removed; there is no manual endpoint field for new connections. |
 | Local dev loopback | `ws://127.0.0.1:<port>` or `ws://localhost:<port>` | No | Allowed only from `http:` / localhost pages. Use with `npm --prefix apps/desktop run dev:webclient` or local browser testing. |
 | Raw LAN / Tailscale IP | `ws://192.168.x.x:<port>` or `ws://100.x.x.x:<port>` | No | Works only from local/http contexts. Blocked from the hosted HTTPS page as mixed content. |
 
@@ -375,10 +377,11 @@ flows through the selected sync WebSocket transport to the machine runtime.
 
 ## Account machine directory
 
-Pairing remains the no-account fallback. A configured deployment also offers
-ADE account sign-in in the machine picker, then loads the user's machines from
-the existing Clerk-verified account-directory Worker. Offline machines remain
-listed with their last-seen state and cannot be selected.
+ADE account sign-in is the only way to create a new hosted-web connection. The
+machine picker loads the user's machines from the Clerk-verified
+account-directory Worker. Offline machines remain listed with their last-seen
+state and cannot be selected. Saved pre-release direct environments are shown
+separately as a local compatibility path; they are not a pairing fallback.
 
 Hosted builds use ADE's production Clerk application and production directory
 by default. Vite development uses the isolated development Clerk application
@@ -412,15 +415,15 @@ tailnet, and direct `ws://` routes are eligible only at that point. A verified
 same-owner account hello with the already-pinned DPoP key may rotate and return
 a fresh paired secret, making a lost credential-delivery response retryable
 without allowing a different account or key to take over the record. If no
-verified WSS relay exists, account connection fails closed and the explicit PIN
-flow remains available.
+verified WSS relay exists, account connection fails closed.
 
 Every account-adopted IndexedDB environment records the Clerk user id that
 created it. Sign-out removes that user's environments, paired secrets, and
-non-extractable DPoP keys and disconnects an active owned environment. PIN/link
-pairings have no account owner and remain available. If an already direct-paired
-machine also appears in the account directory, selecting it keeps the existing
-direct provenance instead of making it disappear on sign-out.
+non-extractable DPoP keys and disconnects an active owned environment. Legacy
+local pairings have no account owner and remain available for their saved
+direct routes. If an already direct-paired machine also appears in the account
+directory, selecting it keeps the existing direct provenance instead of making
+it disappear on sign-out.
 
 Account pairing captures the exact browser session generation before network
 work and checks it again before persistence, so a late response after sign-out
@@ -470,7 +473,7 @@ URL contract.
   `webRoutes.ts`, then mapped to the same in-app routes the desktop renderer
   uses (`/lanes`, `/work`, `/prs`).
 - If a user opens `/open` before a machine is connected, `WebClientRoot.tsx`
-  stores the target in session storage and applies it after pairing/connect.
+  stores the target in session storage and applies it after sign-in/connect.
 - "Open in desktop" in `WebShell.tsx` maps the current web route back through
   `parseWebPath` and emits the `ade://` form.
 
@@ -481,9 +484,11 @@ Entry points:
 - Desktop lanes: "Open in web" in `LaneContextMenu.tsx`.
 - Desktop sessions: "Open in web" in `TerminalsPage.tsx` /
   `SessionContextMenu.tsx`.
-- Marketing pairing URL: `apps/web/src/app/pages/PairPage.tsx` forwards
-  `https://ade-app.dev/pair#...` to `https://app.ade-app.dev/pair#...` without
-  moving the fragment into server-visible state.
+- Compatibility smart-QR URL: `apps/web/src/app/pages/PairPage.tsx` preserves
+  the fragment during its handoff, but the hosted client retires `/pair` by
+  scrubbing the payload and entering the normal sign-in flow. The
+  `https://ade-app.dev/pair#...` form is internal phone QR/App Clip encoding,
+  not a browser pairing link.
 
 ## Deploy and ops
 
@@ -527,8 +532,8 @@ Ops checks after deploy:
   storage.
 - `https://ade-web-client.pages.dev/open?type=lane&id=<uuid>` falls back to
   `index.html` and the shell parses the target.
-- `https://ade-web-client.pages.dev/pair#<payload>` loads `PairFlow` without
-  sending the fragment to the server.
+- `https://ade-web-client.pages.dev/pair#<payload>` scrubs the obsolete route
+  and fragment, then shows account sign-in; no pairing UI is rendered.
 - Response headers include the CSP from `_headers`.
 
 ## Known limitations
@@ -548,8 +553,10 @@ Ops checks after deploy:
   the exact desktop event stream.
 - Hosted HTTPS cannot dial LAN or Tailscale-IP `ws://` candidates. Use relay
   or `wss://`.
-- Browser pairing is per browser profile. Clearing site data or using another
-  profile requires pairing again.
+- Account-adopted browser trust is per browser profile. Clearing site data or
+  using another profile requires signing in and adopting the Mac again. A
+  legacy direct environment lost this way cannot be recreated through the
+  hosted client.
 
 ## Cross-links
 

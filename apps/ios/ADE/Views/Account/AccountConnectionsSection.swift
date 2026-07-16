@@ -11,6 +11,7 @@ struct AccountConnectionsSection: View {
 
   @ObservedObject private var account = AccountService.shared
   @State private var signInPresented = false
+  @State private var confirmSignOut = false
 
   var body: some View {
     Group {
@@ -27,7 +28,7 @@ struct AccountConnectionsSection: View {
           case .signedIn:
             if let identity = account.identity {
               AccountIdentityCard(identity: identity) {
-                Task { await account.signOut() }
+                confirmSignOut = true
               }
             }
             AccountMachinesList(onConnect: onConnectMachine)
@@ -43,6 +44,18 @@ struct AccountConnectionsSection: View {
     }
     .sheet(isPresented: $signInPresented) {
       AccountSignInView(onConnect: onConnectMachine)
+    }
+    .confirmationDialog(
+      "Sign out of ADE?",
+      isPresented: $confirmSignOut,
+      titleVisibility: .visible
+    ) {
+      Button("Sign out", role: .destructive) {
+        Task { await account.signOut() }
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text("Signing out removes this iPhone's access to your account and its account-connected machines. Devices paired directly with a code stay connected.")
     }
   }
 }

@@ -1,4 +1,3 @@
-import type { SyncPairingQrPayload } from "../../../shared/types/sync";
 import {
   browserEndpointRequiresRelayAccess,
   type BrowserDialCandidate,
@@ -50,28 +49,12 @@ export function canUseRelayForEnvironment(
   return relayAccessMatchesHost(access, environment.hostDeviceId);
 }
 
-export function canUseRelayForPairing(
-  payload: SyncPairingQrPayload,
-  access: WebRelayAccess,
-): boolean {
-  return relayAccessMatchesHost(access, payload.hostIdentity.deviceId);
-}
-
 export function filterEnvironmentEndpoints(
   environment: WebClientEnvironmentRecord,
   endpoints: readonly BrowserDialCandidate[],
   access: WebRelayAccess,
 ): BrowserDialCandidate[] {
   const relayAllowed = canUseRelayForEnvironment(environment, access);
-  return endpoints.filter((candidate) => !browserEndpointRequiresRelayAccess(candidate) || relayAllowed);
-}
-
-export function filterPairingEndpoints(
-  payload: SyncPairingQrPayload,
-  endpoints: readonly BrowserDialCandidate[],
-  access: WebRelayAccess,
-): BrowserDialCandidate[] {
-  const relayAllowed = canUseRelayForPairing(payload, access);
   return endpoints.filter((candidate) => !browserEndpointRequiresRelayAccess(candidate) || relayAllowed);
 }
 

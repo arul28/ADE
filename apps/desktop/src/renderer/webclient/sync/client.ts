@@ -10,7 +10,6 @@ import type {
   SyncFileResponsePayload,
   SyncHelloOkPayload,
   SyncMobileProjectSummary,
-  SyncPairingQrPayload,
   SyncProjectCatalogPayload,
   SyncProjectSwitchResultPayload,
   SyncRemoteCommandDescriptor,
@@ -30,7 +29,6 @@ import { exportPublicKeyX963Base64, generateDpopKeyPair, signDpopProof } from ".
 import { deriveBrowserSyncEndpoints } from "./endpoints";
 import {
   filterEnvironmentEndpoints,
-  filterPairingEndpoints,
   requireDialableAuthorizedEndpoint,
   SIGNED_OUT_RELAY_ACCESS,
   WebRelayAuthRequiredError,
@@ -218,90 +216,6 @@ export class AdeSyncClient {
       this.resolveProjectCatalog(payload);
       this.emit("projectCatalog", payload);
     });
-  }
-
-  async pair(args: {
-    payload: SyncPairingQrPayload;
-    pin: string;
-    deviceName: string;
-    relayAccess?: WebRelayAccess;
-    directWssEndpoint?: string | null;
-  }): Promise<WebClientEnvironmentRecord> {
-    const existing = await this.envStore.findByHostDeviceId(args.payload.hostIdentity.deviceId);
-    const dpopKeys = await generateDpopKeyPair();
-    const dpopPublicKeyX963 = await exportPublicKeyX963Base64(dpopKeys.publicKey);
-    const localDeviceId = existing?.localDeviceId ?? uuid();
-    const siteId = existing?.siteId ?? randomHex(16);
-    const peer = {
-      deviceId: localDeviceId,
-      deviceName: args.deviceName,
-      platform: platformFromNavigator(),
-      deviceType: "browser" as const,
-      siteId,
-      dbVersion: 0,
-      capabilities: [],
-    };
-    const derivedEndpoints = deriveBrowserSyncEndpoints({ payload: args.payload });
-    const directWssEndpoint = args.directWssEndpoint?.trim() ?? "";
-    const originalEndpoints = directWssEndpoint.startsWith("wss://")
-      ? [
-          { url: directWssEndpoint, kind: "explicitWss" as const, dialable: true },
-          ...derivedEndpoints,
-        ]
-      : derivedEndpoints;
-    const relayAccess = args.relayAccess ?? SIGNED_OUT_RELAY_ACCESS;
-    this.relayAccess = relayAccess;
-    const endpoints = filterPairingEndpoints(args.payload, originalEndpoints, relayAccess);
-    requireDialableAuthorizedEndpoint(originalEndpoints, endpoints);
-    const paired = await this.connection.pairAndConnect({
-      endpoints,
-      peer,
-      pin: args.pin,
-      dpopPublicKey: dpopPublicKeyX963,
-      relayAccountTokenProvider: relayAccess.kind === "signed_in"
-        ? relayAccess.getAccessToken
-        : undefined,
-      buildEnvironment: (result, endpoint) => {
-        if (!result.secret) throw new AdeSyncError("Pairing succeeded without a secret.", "pairing_failed", result);
-        return {
-          envId: existing?.envId ?? uuid(),
-          machineName: args.payload.hostIdentity.name,
-          hostDeviceId: args.payload.hostIdentity.deviceId,
-          // Link/PIN pairing is always locally owned, even when it replaces an
-          // account-adopted record or happens to travel through Relay.
-          accountOwnerUserId: null,
-          relayUrl: args.payload.relayUrl ?? existing?.relayUrl ?? null,
-          machineKeyUrl: existing?.machineKeyUrl ?? null,
-          addressCandidates: args.payload.addressCandidates,
-          explicitWssEndpoints: [...new Set([
-            ...(existing?.explicitWssEndpoints ?? []),
-            ...(directWssEndpoint ? [directWssEndpoint] : []),
-          ])],
-          port: args.payload.port,
-          pairedDeviceId: result.deviceId ?? localDeviceId,
-          secret: result.secret,
-          dpopKeys,
-          dpopPublicKeyX963,
-          siteId,
-          localDeviceId,
-          localDeviceName: args.deviceName,
-          createdAt: existing?.createdAt ?? nowIso(),
-          lastConnectedAt: nowIso(),
-          lastGoodEndpoint: endpoint,
-          activeProjectId: existing?.activeProjectId ?? null,
-          hostIdentity: args.payload.hostIdentity,
-        };
-      },
-    }).catch(mapRelayAuthError);
-    paired.environment.activeProjectId = openProjectFromCatalog(paired.helloOk.projects) ?? paired.environment.activeProjectId ?? null;
-    paired.environment.lastConnectedAt = nowIso();
-    paired.environment.lastGoodEndpoint = paired.endpoint;
-    await this.envStore.saveEnvironment(paired.environment);
-    await this.envStore.setSelectedEnvId(paired.environment.envId);
-    this.selectedEnvId = paired.environment.envId;
-    this.activeProjectId = paired.environment.activeProjectId ?? null;
-    this.emitStatus();
-    return paired.environment;
   }
 
   async pairWithAccountMachine(args: {

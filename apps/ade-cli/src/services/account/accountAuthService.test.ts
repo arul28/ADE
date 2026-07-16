@@ -149,15 +149,30 @@ describe("AccountAuthService OAuth PKCE login", () => {
     const store = new MemoryCredentialStore();
     const accessToken = jwt({
       sub: "user_123",
-      email: "person@example.com",
-      name: "Person Example",
+      provider: "github",
     });
-    const fetchImpl = vi.fn(async (_input: string, _init?: RequestInit): Promise<Response> => jsonResponse({
-      access_token: accessToken,
-      refresh_token: "refresh-123",
-      expires_in: 3600,
-      token_type: "Bearer",
-    }));
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) {
+        expect(init).toMatchObject({
+          method: "GET",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          redirect: "error",
+        });
+        expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${accessToken}`);
+        return jsonResponse({
+          email: "person@example.com",
+          name: "Person Example",
+          picture: "https://images.example/person.png",
+        });
+      }
+      return jsonResponse({
+        access_token: accessToken,
+        refresh_token: "refresh-123",
+        expires_in: 3600,
+        token_type: "Bearer",
+      });
+    });
     const service = createAccountAuthService({
       credentialStore: store,
       getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
@@ -185,7 +200,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
 
     expect(callback.status).toBe(200);
     expect(html).toContain("You can close this tab — signed in to ADE");
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     const [tokenUrl, init] = fetchImpl.mock.calls[0]!;
     expect(tokenUrl).toBe("https://clerk.example.test/oauth/token");
     expect(init?.headers).toMatchObject({
@@ -208,6 +223,8 @@ describe("AccountAuthService OAuth PKCE login", () => {
       userId: "user_123",
       email: "person@example.com",
       name: "Person Example",
+      provider: "github",
+      imageUrl: "https://images.example/person.png",
       oauthConfig: {
         issuer: "https://clerk.example.test",
         clientId: "client-public",
@@ -221,6 +238,8 @@ describe("AccountAuthService OAuth PKCE login", () => {
         userId: "user_123",
         email: "person@example.com",
         name: "Person Example",
+        provider: "github",
+        imageUrl: "https://images.example/person.png",
         expiresAt: "2026-07-14T13:00:00.000Z",
         source: "loopback",
       },
@@ -237,6 +256,7 @@ describe("AccountAuthService OAuth PKCE login", () => {
     const refreshedAccessToken = jwt({ sub: "config-a-user", version: 2 });
     const tokenRequests: Array<{ url: string; body: Record<string, string> }> = [];
     const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
       const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
       tokenRequests.push({ url: input, body });
       if (body.grant_type === "authorization_code") {
@@ -741,6 +761,7 @@ describe("AccountAuthService device authorization", () => {
 
     nowMs += 61_000;
     const refreshFetch = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
       expect(input).toBe("https://public-clerk.example.test/oauth/token");
       expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toEqual({
         grant_type: "refresh_token",
@@ -774,7 +795,7 @@ describe("AccountAuthService device authorization", () => {
       clientId: "directory-public-client",
     });
     expect(localConfig).not.toHaveBeenCalled();
-    expect(refreshFetch).toHaveBeenCalledTimes(1);
+    expect(refreshFetch).toHaveBeenCalledTimes(2);
   });
 
   it("rejects malformed OAuth context in a successful bridge token response", async () => {
@@ -1037,6 +1058,7 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
       exp: Math.floor((nowMs + 3600_000) / 1000),
     });
     const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
       expect(input).toBe("https://clerk.example.test/oauth/token");
       expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toEqual({
         grant_type: "refresh_token",
@@ -1061,7 +1083,7 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     });
     await expect(getSignedInAccountAccessToken(consumingService)).resolves.toBe(refreshedAccessToken);
     expect(localConfig).not.toHaveBeenCalled();
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
 
     const rejectedService = createAccountAuthService({
       credentialStore: new MemoryCredentialStore(),
@@ -1158,7 +1180,8 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     });
     let resolveAccountA: ((response: Response) => void) | null = null;
     const refreshBodies: Record<string, string>[] = [];
-    const fetchImpl = vi.fn(async (_input: string, init?: RequestInit): Promise<Response> => {
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      if (input.endsWith("/oauth/userinfo")) return jsonResponse({});
       const body = Object.fromEntries(new URLSearchParams(String(init?.body)));
       refreshBodies.push(body);
       if (body.refresh_token === "refresh-account-a") {
@@ -1231,11 +1254,14 @@ describe("AccountAuthService refresh and sign-out", () => {
     const store = new MemoryCredentialStore();
     store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
     const refreshedAccessToken = jwt({ sub: "user_old", email: "old@example.com" });
-    const fetchImpl = vi.fn(async (_input: string, _init?: RequestInit): Promise<Response> => jsonResponse({
-      access_token: refreshedAccessToken,
-      expires_in: 86_400,
-      token_type: "Bearer",
-    }));
+    const fetchImpl = vi.fn(async (input: string, _init?: RequestInit): Promise<Response> =>
+      input.endsWith("/oauth/userinfo")
+        ? jsonResponse({ picture: "https://images.example/refreshed.png" })
+        : jsonResponse({
+            access_token: refreshedAccessToken,
+            expires_in: 86_400,
+            token_type: "Bearer",
+          }));
     const service = createAccountAuthService({
       credentialStore: store,
       getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
@@ -1245,7 +1271,7 @@ describe("AccountAuthService refresh and sign-out", () => {
     activeServices.push(service);
 
     await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     const [, init] = fetchImpl.mock.calls[0]!;
     expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toEqual({
       grant_type: "refresh_token",
@@ -1258,7 +1284,47 @@ describe("AccountAuthService refresh and sign-out", () => {
       userId: "user_old",
       email: "old@example.com",
       name: "Old User",
+      imageUrl: "https://images.example/refreshed.png",
       expiresAt: "2026-07-15T12:00:00.000Z",
+    });
+  });
+
+  it("bounds userinfo enrichment and keeps token refresh best-effort", async () => {
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
+    const refreshedAccessToken = jwt({ sub: "user_old" });
+    const fetchImpl = vi.fn(async (input: string, init?: RequestInit): Promise<Response> => {
+      if (!input.endsWith("/oauth/userinfo")) {
+        return jsonResponse({ access_token: refreshedAccessToken, expires_in: 3_600 });
+      }
+      return await new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({
+        issuer: "https://clerk.example.test",
+        clientId: "client-public",
+      }),
+      fetchImpl,
+      now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      userinfoRequestTimeoutMs: 5,
+    });
+    activeServices.push(service);
+
+    await expect(service.getAccessToken()).resolves.toBe(refreshedAccessToken);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "user_old",
+      email: "old@example.com",
+      name: "Old User",
     });
   });
 
@@ -1266,9 +1332,11 @@ describe("AccountAuthService refresh and sign-out", () => {
     const store = new MemoryCredentialStore();
     store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession()));
     let resolveRefresh: ((response: Response) => void) | null = null;
-    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => {
-      resolveRefresh = resolve;
-    }));
+    const fetchImpl = vi.fn((input: string) => input.endsWith("/oauth/userinfo")
+      ? Promise.resolve(jsonResponse({}))
+      : new Promise<Response>((resolve) => {
+          resolveRefresh = resolve;
+        }));
     const service = createAccountAuthService({
       credentialStore: store,
       getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),

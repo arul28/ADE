@@ -623,16 +623,8 @@ export type SyncWebPairingInfo = {
   hasRelayCandidate: boolean;
 };
 
-/**
- * Machine-level cloud tunnel relay posture. Enabled by default so paired
- * phones stay reachable off LAN/tailnet with zero configuration: the brain
- * keeps an outbound tunnel registered and a `relay`-kind address candidate
- * (a full wss:// URL) is advertised to phones as the lowest-priority
- * transport. Settings > Sync keeps a single quiet kill-switch for operators
- * who never want traffic relayed.
- */
+/** Machine-level cloud tunnel relay identity and connection posture. */
 export type SyncCloudRelayStatus = {
-  enabled: boolean;
   /** `wss://…/connect/<machineKey>` — what phones dial. */
   relayWssUrl: string;
   machineKey: string;
@@ -955,10 +947,7 @@ export type SyncBrainStatusPayload = {
     lastCommandResultLatencyMs?: number | null;
     lastChangesetAckLatencyMs?: number | null;
   };
-  /**
-   * Mirrors `SyncHelloOkPayload.cloudRelayWssUrl` so an already-connected
-   * phone picks up a relay enable/disable flip without reconnecting.
-   */
+  /** Mirrors `SyncHelloOkPayload.cloudRelayWssUrl` for connected clients. */
   cloudRelayWssUrl?: string | null;
 };
 

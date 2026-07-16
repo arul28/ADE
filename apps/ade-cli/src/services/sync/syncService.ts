@@ -171,8 +171,6 @@ type SyncServiceArgs = {
    */
   cloudRelayStore?: SyncCloudRelayStore;
   syncTunnelClientService?: Pick<SyncTunnelClientService, "getStatus"> | null;
-  /** Fired when the ADE relay kill-switch flips (start/stop tunnel). */
-  onCloudRelayEnabledChanged?: (enabled: boolean) => void;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
@@ -573,8 +571,7 @@ export function createSyncService(args: SyncServiceArgs) {
     return status.signedIn && Boolean(status.userId?.trim());
   };
   const isCloudRelayUsable = (): boolean =>
-    cloudRelayStore.isEnabled()
-    && isRelayAccountSignedIn()
+    isRelayAccountSignedIn()
     && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true);
 
   const deviceRegistryService = createDeviceRegistryService({
@@ -1349,7 +1346,7 @@ export function createSyncService(args: SyncServiceArgs) {
           : tailscalePublished
             ? null
             : tailnetDiscovery.error ?? `Tailscale Serve is ${tailnetDiscovery.state}.`;
-      const relayConfigured = canHostPhonePairing && cloudRelayStore.isEnabled();
+      const relayConfigured = canHostPhonePairing;
       const relayAccountSignedIn = isRelayAccountSignedIn()
         && (tunnelStatus?.accountLeaseValid ?? true);
       const relayEnabled = relayConfigured && relayAccountSignedIn;
@@ -1626,7 +1623,6 @@ export function createSyncService(args: SyncServiceArgs) {
       const accountSignedIn = isRelayAccountSignedIn()
         && (tunnelStatus?.accountLeaseValid ?? true);
       return {
-        enabled: config.enabled,
         relayWssUrl: cloudRelayStore.getRelayWssUrl(),
         machineKey: config.machineKey,
         relayUrl: cloudRelayStore.getRelayUrl(),
@@ -1635,24 +1631,10 @@ export function createSyncService(args: SyncServiceArgs) {
         relayBridgeValidated: accountSignedIn && (tunnelStatus?.relayBridgeValidated ?? false),
         lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
         lastSuccessAt: tunnelStatus?.lastSuccessAt ?? null,
-        lastError: !config.enabled
-          ? null
-          : accountSignedIn
-            ? tunnelStatus?.lastError ?? null
-            : "Sign in to ADE to use ADE Relay.",
+        lastError: accountSignedIn
+          ? tunnelStatus?.lastError ?? null
+          : "Sign in to ADE to use ADE Relay.",
       };
-    },
-
-    async setCloudRelayEnabled(enabled: boolean): Promise<SyncCloudRelayStatus> {
-      cloudRelayStore.setEnabled(enabled);
-      args.onCloudRelayEnabledChanged?.(enabled);
-      // Connected phones learn the flip from brain_status (cloudRelayWssUrl)
-      // without waiting for the next scheduled broadcast.
-      hostService?.broadcastBrainStatusNow?.();
-      // The relay candidate rides pairingConnectInfo, so republish status.
-      const snapshot = await service.getStatus();
-      args.onStatusChanged?.(snapshot);
-      return service.getCloudRelayStatus();
     },
 
     async setActiveLanePresence(laneIds: string[]): Promise<void> {

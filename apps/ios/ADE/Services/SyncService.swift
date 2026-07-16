@@ -1831,29 +1831,6 @@ enum SyncChatCommandScope: Equatable {
   case personal
 }
 
-struct WebPairingInfo: Decodable, Equatable {
-  let pairingUrl: String
-  let code: String?
-  let pinConfigured: Bool
-  let machineName: String
-  let relayEnabled: Bool
-  let hasRelayCandidate: Bool
-}
-
-enum WebPairingPinState: Equatable {
-  case notConfigured
-  case configuredHidden
-  case visible(String)
-}
-
-extension WebPairingInfo {
-  var pinState: WebPairingPinState {
-    guard pinConfigured else { return .notConfigured }
-    let trimmedCode = code?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmedCode.isEmpty ? .configuredHidden : .visible(trimmedCode)
-  }
-}
-
 /// Delivery events for the full-screen terminal. The active screen attaches a
 /// handler per session id and receives hydration snapshots, ordered live
 /// chunks, and process exit without polling `terminalBuffers`.
@@ -4366,24 +4343,6 @@ final class SyncService: ObservableObject {
     )
   }
   #endif
-
-  func getWebPairingInfo() async -> WebPairingInfo? {
-    guard canSendLiveRequests(),
-          supportsRemoteAction("sync.getWebPairingInfo") else {
-      return nil
-    }
-
-    do {
-      return try await sendDecodableCommand(
-        action: "sync.getWebPairingInfo",
-        args: [:],
-        disconnectOnTimeout: false,
-        as: WebPairingInfo.self
-      )
-    } catch {
-      return nil
-    }
-  }
 
   /// Adopts pairing credentials handed off by the ADE App Clip (scan QR →
   /// pair before the full app is installed). The clip writes a one-shot blob
@@ -10741,10 +10700,11 @@ final class SyncService: ObservableObject {
       matchingDiscovery?.addresses ?? activeHostProfile?.discoveredLanAddresses ?? []
     )
     // The host advertises its live cloud-relay URL in `hello_ok`: a wss route
-    // when the relay is up, JSON null when the kill-switch is off (the brain
-    // fallback handler never sends brain_status, so this is the only clear
-    // signal on that path), and no key at all on older hosts. Fold a route in
-    // freshest-first; clear on explicit null; keep saved routes when absent.
+    // when the relay is up, JSON null when no relay route is live — e.g. the
+    // host is signed out (the brain fallback handler never sends brain_status,
+    // so this is the only clear signal on that path), and no key at all on
+    // older hosts. Fold a route in freshest-first; clear on explicit null;
+    // keep saved routes when absent.
     let mergedRelayCandidates: [String] = payload["cloudRelayWssUrl"] is NSNull
       ? []
       : syncMergedRelayCandidates(

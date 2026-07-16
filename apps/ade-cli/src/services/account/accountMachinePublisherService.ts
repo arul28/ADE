@@ -100,7 +100,6 @@ export function buildAccountMachineRegistration(args: {
     if (
       candidate.kind === "relay"
       && args.snapshot.routeHealth.listener.loopbackAdeValidated
-      && args.snapshot.routeHealth.relay.enabled
       && args.snapshot.routeHealth.relay.relayControlConnected
       && args.snapshot.routeHealth.relay.relayBridgeValidated
       && args.snapshot.routeHealth.relay.reason == null

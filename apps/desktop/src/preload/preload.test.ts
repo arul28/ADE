@@ -77,6 +77,32 @@ describe("preload OAuth bridge", () => {
     expect(removeListener).toHaveBeenCalledWith(IPC.lanesOAuthEvent, listener);
   });
 
+  it("exposes local account identity and machine removal IPC", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.account.getLocalMachineIdentity();
+    await bridge.account.removeMachine("machine-a");
+
+    expect(invoke).toHaveBeenCalledWith(IPC.accountGetLocalMachineIdentity);
+    expect(invoke).toHaveBeenCalledWith(IPC.accountRemoveMachine, {
+      machineKey: "machine-a",
+    });
+  });
+
   it("exposes per-window project tab session IPC", async () => {
     const project = { rootPath: "/repo/a", displayName: "A", baseRef: "main" };
     const openProjectTabs = [

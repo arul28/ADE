@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import type {
   OpenProjectBinding,
@@ -114,7 +117,10 @@ vi.mock("../git/git", () => ({
   runGit: vi.fn(),
 }));
 
-import { registerRuntimeBridge } from "./runtimeBridge";
+import {
+  getOrCreateLocalAccountMachineIdentity,
+  registerRuntimeBridge,
+} from "./runtimeBridge";
 import { registerIpc } from "./registerIpc";
 
 const target: RemoteRuntimeTarget = {
@@ -207,6 +213,30 @@ describe("registerRuntimeBridge", () => {
       },
     });
     browserWindowFromWebContents.mockReturnValue({ id: 7 });
+  });
+
+  it("reads stable local account identity from the relay and sync device stores", () => {
+    const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-account-identity-"));
+    try {
+      const first = getOrCreateLocalAccountMachineIdentity({
+        secretsDir,
+        randomUUID: () => "local-device-id",
+      });
+      const second = getOrCreateLocalAccountMachineIdentity({
+        secretsDir,
+        randomUUID: () => "should-not-replace-device-id",
+      });
+
+      expect(first).toEqual({
+        machineKey: expect.stringMatching(/^[a-f0-9]{32}$/),
+        deviceId: "local-device-id",
+      });
+      expect(second).toEqual(first);
+      expect(fs.readFileSync(path.join(secretsDir, "sync-device-id"), "utf8").trim())
+        .toBe("local-device-id");
+    } finally {
+      fs.rmSync(secretsDir, { recursive: true, force: true });
+    }
   });
 
   it("reads local pairing info from the local runtime connection", async () => {

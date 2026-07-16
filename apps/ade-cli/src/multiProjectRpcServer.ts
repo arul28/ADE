@@ -127,7 +127,6 @@ const RUNTIME_METHODS = new Set([
   "sync.getDesktopPairingInfo",
   "sync.setActiveLanePresence",
   "sync.getCloudRelayStatus",
-  "sync.setCloudRelayEnabled",
   "sync.getRequireDpop",
   "sync.setRequireDpop",
 ]);
@@ -1081,10 +1080,6 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.getCloudRelayStatus") {
       return (await getSyncService()).getCloudRelayStatus();
-    }
-
-    if (method === "sync.setCloudRelayEnabled") {
-      return await (await getSyncService()).setCloudRelayEnabled(params.enabled === true);
     }
 
     if (method === "sync.getRequireDpop") {

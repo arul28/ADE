@@ -24,9 +24,12 @@ const accountStatus = vi.hoisted(() => ({
   name: null,
   expiresAt: null,
   source: null,
+  provider: null as "github" | null,
+  imageUrl: null as string | null,
 }));
 const pollLogin = vi.hoisted(() => vi.fn());
 const signOut = vi.hoisted(() => vi.fn());
+const deleteMachine = vi.hoisted(() => vi.fn());
 
 vi.mock(
   "../../../../../ade-cli/src/services/account/sharedAccountAuthService",
@@ -52,6 +55,10 @@ vi.mock(
 
       async pairMachine() {
         throw new Error("not used");
+      }
+
+      async deleteMachine(machineKey: string) {
+        return deleteMachine(machineKey);
       }
     },
   }),
@@ -310,8 +317,11 @@ describe("desktop account machine lifecycle", () => {
   beforeEach(() => {
     accountStatus.signedIn = false;
     accountStatus.userId = null;
+    accountStatus.provider = null;
+    accountStatus.imageUrl = null;
     pollLogin.mockReset();
     signOut.mockReset().mockReturnValue({ ...accountStatus });
+    deleteMachine.mockReset();
   });
 
   it("keeps status pure and reconciles only authoritative auth transitions", async () => {
@@ -342,5 +352,25 @@ describe("desktop account machine lifecycle", () => {
 
     bridge.signOut();
     expect(reconcileAccountOwnership).toHaveBeenLastCalledWith(null);
+  });
+
+  it("surfaces enriched profile fields and wires account machine removal", async () => {
+    accountStatus.signedIn = true;
+    accountStatus.userId = "account-a";
+    accountStatus.provider = "github";
+    accountStatus.imageUrl = "https://images.example/account-a.png";
+    deleteMachine.mockResolvedValue({ ok: true, machineKey: "machine-a" });
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({ getProjectRoot: () => null });
+
+    expect(bridge.status()).toMatchObject({
+      provider: "github",
+      imageUrl: "https://images.example/account-a.png",
+    });
+    await expect(bridge.removeMachine("machine-a")).resolves.toEqual({
+      ok: true,
+      machineKey: "machine-a",
+    });
+    expect(deleteMachine).toHaveBeenCalledWith("machine-a");
   });
 });

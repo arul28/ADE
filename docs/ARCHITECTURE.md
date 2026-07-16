@@ -228,15 +228,17 @@ Native SwiftUI app acting as a controller. It pairs with an ADE machine over Web
 - Shipped project tabs: Lanes, Files, Work, PRs, CTO, Settings (including a Push delivery panel). The projectless Chats surface is entered only from the Hub, outside the project tab bar. It uses runtime-scoped commands and the same chat event union/Work transcript renderer while suppressing lane/project actions. The Work chat decodes the same chat event union as desktop for live transcripts, including scheduled-work updates and transcript retractions; scheduled work appears in a native Chat Info popup/sheet while the phone remains a controller only. Durable active rows expose Cancel through the non-queueable `chat.cancelScheduledWork` remote action only when the connected host advertises that capability, so a newer phone remains view-only against an older brain.
 - Shipped widgets: a Lock Screen widget for prioritized agent/PR/sync/offline/idle status, plus an ActivityKit Live Activity + Dynamic Island for active agent runs (`ADEWidgets/ADEAgentActivityWidget.swift`).
 - Push: APNs alert pushes (deep-linked) and Live Activity updates arrive via the Cloudflare push relay (§2.7); the phone hands tokens/prefs to the brain over the paired sync WebSocket.
-- Pairing: user-set 6-digit PIN over a v3 smart-URL QR (or discovery / manual entry), hardened with device-bound DPoP proofs.
+- Connection: ADE account sign-in is the primary PIN-less path; direct pairing uses a user-set 6-digit PIN after scanning the v3 smart-URL QR or choosing a Nearby machine. Pairing is hardened with device-bound DPoP proofs.
 - Planned: Automations, Graph, History tabs; iPad layout; Spotlight.
 - Target: iOS 26+, iPhone + iPad.
 
 ### 2.5 Hosted web client (`apps/desktop/src/renderer/webclient/`)
 
-Static Cloudflare Pages controller built from the desktop renderer package. It
-pairs to the machine sync WebSocket with PIN + DPoP, keeps no local ADE DB, and
-installs a sync-backed subset of `window.ade`. Its project routes use remote
+Static Cloudflare Pages controller built from the desktop renderer package. New
+connections start with ADE account sign-in and adopt a machine from the
+account directory over Relay; the resulting credential is DPoP-bound. The
+client keeps no local ADE DB and installs a sync-backed subset of `window.ade`.
+Its project routes use remote
 commands plus file/chat/terminal sub-protocols; `/chats` is also reachable from
 the project picker and uses runtime-scoped `personalChats.*` commands without
 selecting a project. Product analytics requires an affirmative browser-local
@@ -246,7 +248,7 @@ browser PostHog transport. See [Web client](./features/web-client/README.md).
 
 ### 2.6 Web app (`apps/web/`)
 
-A Vite/React SPA that serves the public marketing site, download page, pairing handoff, deeplink landing page, privacy/terms pages, and not-found route. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
+A Vite/React SPA that serves the public marketing site, download page, the internal smart-QR/App Clip pairing handoff, deeplink landing page, privacy/terms pages, and not-found route. Independent package (`ade-web`), deployed via Vercel (`apps/web/vercel.json`). Not a runtime dependency of the desktop app. Shared-origin with the Mintlify docs site (`docs.json` at repo root).
 
 Public-site product analytics is separately consented and uses the `ade_marketing_*` namespace. `marketingAnalytics.ts` owns its closed taxonomy and durable 40-event browser/day budget; `marketingAnalyticsBrowser.ts` sends directly from the browser to PostHog's US Capture API with credentials and referrers omitted. It does not route through `apps/web/api/`, add a Vercel Function or Edge Function, enable Vercel Web Analytics, or create a log drain. The only Vercel impact is the small static JavaScript added to the normally cached site bundle. Production receives the public `VITE_POSTHOG_*` values; Preview and Development remain analytics-inert.
 
@@ -257,7 +259,7 @@ The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade-app
 Four independent Cloudflare Workers, each its own npm package / lockfile / `wrangler.jsonc` with its own trust model. None is a runtime dependency of the desktop app; the brain talks to them over HTTPS/WebSocket.
 
 - **`apps/push-relay/`** — fans ADE agent-state transitions out to iPhones as APNs alert pushes and Live Activity updates (Worker + a single D1 database; free-plan compatible, no Durable Objects). The brain is the only publisher: it claims an unguessable 32–64-hex `machineKey` with a relay secret (`POST /machines/:key/claim`, first-writer-wins) and HMAC-signs every later call (`x-ade-push-signature: sha256=HMAC(secret, "<ts>.<METHOD>.<path>.<sha256(body)>")`). It stores only device tokens and in-flight notification payloads — no chat/PR content. APNs auth is an ES256 provider JWT from the `.p8` (wrangler secrets `APNS_KEY` / `APNS_KEY_ID` / `APNS_TEAM_ID`). Brain-side publisher lives at `apps/ade-cli/src/services/push/`. See [features/sync-and-multi-device/push-notifications.md](./features/sync-and-multi-device/push-notifications.md).
-- **`apps/tunnel-relay/`** — pipes ADE **sync** WebSocket frames between a phone and a brain when there is no direct LAN/Tailscale path (Worker + Durable Object with SQLite storage, one instance per `machineKey`, WebSocket Hibernation API). The brain holds a persistent HMAC-signed outbound control socket; a phone dials `/connect/:machineKey`; the DO pairs the phone with a dedicated brain-side pipe socket and passes bytes through 1:1 with no frame wrapping, so the normal ADE hello / PIN / DPoP handshake is unchanged. Brain-side client is `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`. The deployed relay is **on by default**; **Connections > Mobile/Web client** and `ade sync relay disable` are explicit kill-switches whose choice survives upgrades. It is advertised as the lowest-priority `relay` address candidate.
+- **`apps/tunnel-relay/`** — pipes ADE **sync** WebSocket frames between a controller and a brain when there is no direct LAN/Tailscale path (Worker + Durable Object with SQLite storage, one instance per `machineKey`, WebSocket Hibernation API). The brain holds a persistent HMAC-signed outbound control socket while the machine has a valid ADE account session; a controller dials `/connect/:machineKey`; the DO pairs it with a dedicated brain-side pipe socket and passes bytes through 1:1 with no frame wrapping, so the normal ADE hello / pairing / DPoP handshake is unchanged. Brain-side client is `apps/ade-cli/src/services/sync/syncTunnelClientService.ts`. There is no user relay toggle: sign-in starts and advertises Relay, while sign-out closes it. It remains the lowest-priority `relay` address candidate after LAN and Tailscale. TLS terminates at the Worker, so this is a trusted-operator plaintext path rather than end-to-end encryption; relay payload E2E encryption is planned security work.
 - **`apps/account-directory/`** — Clerk-authenticated machine directory and OAuth device-authorization bridge (Worker + D1). The machine brain publishes one health-filtered registration every 30 seconds through `accountMachinePublisherService.ts`; the Worker scopes rows by Clerk `sub` and treats a machine as online for 90 seconds. Desktop, ADE Code, hosted web, and iOS use the compiled HTTPS Worker origin by default. Headless login binds each short-lived device code to a daemon secret, uses Clerk OAuth + PKCE in any browser, and atomically burns the approved token pair on redemption.
 - **`apps/webhook-relay/`** — the pre-existing GitHub webhook relay (different trust model and lifecycle again). See its own docs.
 
@@ -1018,9 +1020,11 @@ The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/s
 
 ### 13.3 iOS companion sync model
 
-- Every fresh signed-out app launch starts at the account choice; sign-in is
-  optional and **Continue without an account** keeps QR/link, Nearby,
-  address/PIN, and SSH pairing available. Signed-in launches enter directly.
+- Every fresh signed-out app launch starts at the account choice. Sign-in is
+  the primary, PIN-less path through the account directory and Relay;
+  **Continue without an account** keeps QR + PIN, Nearby + PIN, and the
+  advanced SSH bootstrap available. There is no pairing-link paste or manual
+  address + PIN surface. Signed-in launches enter directly.
 - App launch reads pairing secret from iOS Keychain after that choice.
 - Opens WebSocket to host after racing all saved address candidates with concurrent TCP probes (happy eyeballs) — a dead LAN IP no longer delays the live Tailscale route. Sends local `db_version` plus the per-host-DB cursor map (`remoteDbVersionBySite`); host replies with its `serverDbSiteId` and sends catch-up changesets.
 - `hello_ok` can include the host's mobile project catalog and project-action feature flag. The iOS app shows a native project home until an active project is selected, can browse/open/create/clone projects on the paired machine when project actions are available, then drives `project_switch_request` / `project_switch_result`; the port stays stable across switches.
@@ -1042,8 +1046,8 @@ The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/s
   personal chats without switching projects. The iOS cache is keyed by paired
   host; creates require a live host, while sends are the only personal action
   allowed into the offline command queue.
-- Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is a **v3 smart URL** (`https://ade-app.dev/pair#<base64url(JSON)>` — host identity + port + address candidates + optional cloud-relay URL, no pairing code); the iOS camera scanner parses it. Pairing is hardened with **device-bound DPoP**: iOS keeps a Secure Enclave P-256 key and every paired hello carries a signed proof (`requireDpop` / `ADE_SYNC_REQUIRE_DPOP` on the host, enforced on both the project host and the brain ingress path).
-- Off-LAN transport: a default-on **cloud tunnel relay** (`apps/tunnel-relay`, §2.7) advertised as the lowest-priority `relay` address candidate. Direct LAN/Tailscale routes remain preferred and work without an account. Relay requires a fresh in-memory account token on every connection and the host accepts it only when both clients are signed in to the same account; sign-out closes Relay immediately. Account-created pairing records are owner-scoped and deleted with that account, while direct PIN/link/Nearby/SSH pairings remain local. **Connections > Mobile/Web client** and `ade sync relay disable` are the explicit kill-switches; a deliberate off is persisted with `enabledSetByUser` and survives upgrades.
+- Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once after scanning the QR or choosing a Nearby machine; the host returns a durable per-device secret. The QR payload is a **v3 smart URL** (`https://ade-app.dev/pair#<base64url(JSON)>` — host identity + port + address candidates + optional cloud-relay URL, no pairing code) used only as the internal system-camera/App Clip wire encoding; there is no user-facing pairing link. Pairing is hardened with **device-bound DPoP**: iOS keeps a Secure Enclave P-256 key and every paired hello carries a signed proof (`requireDpop` / `ADE_SYNC_REQUIRE_DPOP` on the host, enforced on both the project host and the brain ingress path).
+- Off-LAN transport: an account-gated **cloud tunnel relay** (`apps/tunnel-relay`, §2.7) advertised as the lowest-priority `relay` address candidate. Direct LAN/Tailscale routes remain preferred and work without an account. Relay is active whenever the host is signed in and has a current account lease; there is no separate user toggle or CLI kill-switch. Every Relay connection carries a fresh in-memory account token, and the host accepts it only when both clients are signed in to the same account; sign-out closes Relay immediately. Account-created pairing records are owner-scoped and deleted with that account, while direct QR/Nearby/SSH pairings remain local. Relay TLS terminates at the operator, so payloads are not end-to-end encrypted; adding relay E2E encryption remains planned security work.
 - Push: APNs alert pushes (deep-linked) and Live Activity updates via `apps/push-relay` (§2.7); the phone hands tokens/prefs to the brain over the paired sync WebSocket (`push.*` runtime-scoped commands) and never talks to the relay directly.
 - Widgets: `ADELockScreenWidget` reads from a shared `WorkspaceSnapshot` in the App Group container. `ADEAgentActivityWidget` registers an ActivityKit Live Activity + Dynamic Island for active agent runs. Home Screen and Control Center surfaces are not registered.
 - Tabs: Lanes, Files, Work, PRs, CTO, Settings.

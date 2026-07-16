@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- ADE Relay now follows account sign-in with no separate toggle; machines that previously disabled the relay are re-enabled by this release.
+
 ## [1.2.27] - 2026-07-14
 
 ### Added

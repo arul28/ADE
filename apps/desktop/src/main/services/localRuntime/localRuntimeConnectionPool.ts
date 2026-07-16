@@ -1075,10 +1075,6 @@ export class LocalRuntimeConnectionPool {
     return await this.callSyncForRoot<SyncCloudRelayStatus>(rootPath, "sync.getCloudRelayStatus");
   }
 
-  async setSyncCloudRelayEnabledForRoot(rootPath: string, enabled: boolean): Promise<SyncCloudRelayStatus> {
-    return await this.callSyncForRoot<SyncCloudRelayStatus>(rootPath, "sync.setCloudRelayEnabled", { enabled });
-  }
-
   async callSync<T>(
     method: string,
     params: Record<string, unknown> = {},

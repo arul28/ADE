@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SettingsPairingSection: View {
   let snapshot: SettingsPairingSnapshot
-  let showsWebClientOption: Bool
   @Binding var presentedSheet: SettingsPairSheetRoute?
   @State private var showsOtherWays = false
   @ObservedObject private var accountService = AccountService.shared
@@ -11,56 +10,30 @@ struct SettingsPairingSection: View {
     VStack(alignment: .leading, spacing: 12) {
       VStack(spacing: 8) {
         SettingsPairActionRow(
-          icon: "dot.radiowaves.left.and.right",
-          title: "Find a nearby Mac",
-          subtitle: discoverSubtitle
-        ) {
-          presentedSheet = .discover
-        }
-
-        SettingsPairActionRow(
           icon: "qrcode.viewfinder",
           title: "Scan a pairing code",
           subtitle: "Scan the code shown in ADE on your Mac"
         ) {
           presentedSheet = .scan
         }
+
+        SettingsPairActionRow(
+          icon: "dot.radiowaves.left.and.right",
+          title: "Find a nearby Mac",
+          subtitle: discoverSubtitle
+        ) {
+          presentedSheet = .discover
+        }
       }
 
       DisclosureGroup(isExpanded: $showsOtherWays) {
         VStack(spacing: 8) {
-          SettingsPairActionRow(
-            icon: "link",
-            title: "Paste a pairing link",
-            subtitle: "Use a link copied from ADE on your Mac"
-          ) {
-            presentedSheet = .link
-          }
-
-          SettingsPairActionRow(
-            icon: "keyboard",
-            title: "Enter an address manually",
-            subtitle: "Use the address shown in ADE on your Mac"
-          ) {
-            presentedSheet = .manual
-          }
-
           SettingsPairActionRow(
             icon: "terminal",
             title: "Set up with SSH",
             subtitle: "Advanced: use SSH once to create an ADE pairing"
           ) {
             presentedSheet = .ssh
-          }
-
-          if showsWebClientOption {
-            SettingsPairActionRow(
-              icon: "globe",
-              title: "Pair a browser",
-              subtitle: "Open this Mac from ADE's web client"
-            ) {
-              presentedSheet = .webClient
-            }
           }
         }
         .padding(.top, 8)
@@ -84,9 +57,9 @@ struct SettingsPairingSection: View {
 
   private var awayFromMacHelp: String {
     if accountService.identity != nil {
-      return "Connect from anywhere with ADE Relay. It uses your ADE account; Tailscale also works."
+      return "You're signed in, so your Macs stay reachable from any network. Tailscale on both devices keeps it fastest."
     }
-    return "Connect from anywhere: sign in to use ADE Relay, or use Tailscale on both devices."
+    return "Sign in to reach your Macs from any network, or use Tailscale on both devices."
   }
 
   private var discoverSubtitle: String? {
@@ -579,149 +552,5 @@ private struct DiscoveredHostRow: View {
 
   private var detailText: String {
     syncDiscoveredHostDetailText(host: host, detailPrefix: detailPrefix)
-  }
-}
-
-// MARK: - Manual entry sheet
-
-struct ManualEntrySheet: View {
-  @Environment(\.dismiss) private var dismiss
-
-  @State private var host: String = ""
-  @State private var port: String = String(SyncDirectHostPorts.defaultPort)
-
-  let onConnect: (String, Int) -> Void
-
-  var body: some View {
-    NavigationStack {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 14) {
-          Text("Enter your Mac's address")
-            .font(.headline)
-            .foregroundStyle(ADEColor.textPrimary)
-          Text("Use the address shown in ADE on your Mac. A Tailscale address can find your Mac outside the current Wi-Fi.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-
-          TextField("Mac address or IP", text: $host)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .keyboardType(.asciiCapable)
-            .textFieldStyle(.plain)
-            .manualEntryField()
-
-          TextField("Port", text: $port)
-            .keyboardType(.numberPad)
-            .textFieldStyle(.plain)
-            .manualEntryField()
-
-          Button {
-            let endpoint = syncParseRouteEndpoint(host)
-            let parsedPort = Int(port.trimmingCharacters(in: .whitespacesAndNewlines)) ?? SyncDirectHostPorts.defaultPort
-            guard let endpoint else { return }
-            onConnect(endpoint.host, endpoint.port ?? parsedPort)
-          } label: {
-            Text("Continue")
-              .font(.subheadline.weight(.semibold))
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 10)
-          }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.purpleAccent)
-          .disabled(host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          .padding(.top, 4)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 20)
-      }
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle("Enter a Mac address")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
-        }
-      }
-    }
-  }
-}
-
-// MARK: - Pairing link sheet
-
-struct PairingLinkPasteSheet: View {
-  @Environment(\.dismiss) private var dismiss
-  @State private var pairingLink = ""
-  @State private var errorMessage: String?
-
-  let onContinue: (String) -> Void
-
-  var body: some View {
-    NavigationStack {
-      VStack(alignment: .leading, spacing: 14) {
-        Text("Paste the pairing link from ADE on your Mac.")
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-
-        TextField("Pairing link", text: $pairingLink, axis: .vertical)
-          .lineLimit(3...6)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
-          .keyboardType(.URL)
-          .textFieldStyle(.plain)
-          .manualEntryField()
-
-        if let errorMessage {
-          Text(errorMessage)
-            .font(.caption)
-            .foregroundStyle(ADEColor.danger)
-        }
-
-        Button("Continue") {
-          let value = pairingLink.trimmingCharacters(in: .whitespacesAndNewlines)
-          guard PairingQrPayload.parse(value) != nil else {
-            errorMessage = "That link is not an ADE pairing link. Copy it again from ADE on your Mac."
-            return
-          }
-          dismiss()
-          onContinue(value)
-        }
-        .buttonStyle(.glassProminent)
-        .tint(ADEColor.purpleAccent)
-        .frame(maxWidth: .infinity)
-        .disabled(pairingLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-        Spacer()
-      }
-      .padding(20)
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle("Paste a pairing link")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
-        }
-      }
-    }
-  }
-}
-
-private struct ManualEntryFieldModifier: ViewModifier {
-  func body(content: Content) -> some View {
-    content
-      .padding(12)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(ADEColor.recessedBackground.opacity(0.78), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-      )
-  }
-}
-
-private extension View {
-  func manualEntryField() -> some View {
-    modifier(ManualEntryFieldModifier())
   }
 }

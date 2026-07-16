@@ -1185,29 +1185,10 @@ describe("ADE CLI", () => {
       .toBe("No machine addresses are published yet — is the sync host running? (ade sync status)\n");
   });
 
-  it("builds sync cloud relay and security commands", () => {
-    expect(expectExecutePlan(buildCliPlan(["sync", "relay"])).steps).toEqual([
-      { key: "result", method: "sync.getCloudRelayStatus" },
-    ]);
-    expect(
-      expectExecutePlan(buildCliPlan(["sync", "relay", "enable"])).steps,
-    ).toEqual([
-      {
-        key: "result",
-        method: "sync.setCloudRelayEnabled",
-        params: { enabled: true },
-      },
-    ]);
-    expect(
-      expectExecutePlan(buildCliPlan(["sync", "relay", "disable"])).steps,
-    ).toEqual([
-      {
-        key: "result",
-        method: "sync.setCloudRelayEnabled",
-        params: { enabled: false },
-      },
-    ]);
-
+  it("removes the sync relay command and keeps security commands", () => {
+    expect(() => buildCliPlan(["sync", "relay"])).toThrow(
+      "Unsupported sync command: relay",
+    );
     expect(expectExecutePlan(buildCliPlan(["sync", "security"])).steps).toEqual([
       { key: "result", method: "sync.getRequireDpop" },
     ]);

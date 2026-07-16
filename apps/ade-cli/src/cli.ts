@@ -13286,9 +13286,6 @@ Usage:
   ade sync name <name>              Name this runtime for easy identification
   ade sync name get
   ade sync name clear
-  ade sync relay status             Internet route for devices signed into the same ADE account
-  ade sync relay enable
-  ade sync relay disable            Kill-switch: never route sync through the relay
   ade sync security status          Machine sync security posture (require-DPoP)
   ade sync security require-dpop <on|off>
   ade sync pair-device --json-stdin Advanced: authorize pairing through a trusted local/SSH session
@@ -13426,45 +13423,6 @@ Usage:
       label: "sync name set",
       steps: [{ key: "result", method: "sync.setRuntimeName", params: { name } }],
     };
-  }
-  if (sub === "relay") {
-    // Cloud relay toggle. Headless brains have no desktop Settings popover, so
-    // the CLI is the only surface for enabling the tunnel phones dial into.
-    const action = firstPositional(args) ?? "status";
-    if (action === "status" || action === "show" || action === "get") {
-      return {
-        kind: "execute",
-        label: "sync relay status",
-        steps: [{ key: "result", method: "sync.getCloudRelayStatus" }],
-      };
-    }
-    if (action === "enable" || action === "on") {
-      return {
-        kind: "execute",
-        label: "sync relay enable",
-        steps: [
-          {
-            key: "result",
-            method: "sync.setCloudRelayEnabled",
-            params: { enabled: true },
-          },
-        ],
-      };
-    }
-    if (action === "disable" || action === "off") {
-      return {
-        kind: "execute",
-        label: "sync relay disable",
-        steps: [
-          {
-            key: "result",
-            method: "sync.setCloudRelayEnabled",
-            params: { enabled: false },
-          },
-        ],
-      };
-    }
-    throw new CliUsageError(`Unsupported sync relay action: ${action}`);
   }
   if (sub === "security") {
     // Machine-level sync security posture. Today the only knob is require-DPoP,
@@ -15137,8 +15095,7 @@ async function runServe(
       pinPath: path.join(layout.secretsDir, "sync-pin.json"),
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
-      getCloudRelayWssUrl: () =>
-        machineCloudRelayStore.isEnabled() ? machineCloudRelayStore.getRelayWssUrl() : null,
+      getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
       personalChatScope,
     }),
   );
@@ -15905,8 +15862,7 @@ function formatSyncWebPairing(value: unknown): string {
     ...codeLines,
     "",
     nextStep,
-    "Off your LAN or tailnet? Turn on the relay so the browser can reach this machine:",
-    "  ade sync relay enable",
+    "Off your LAN or tailnet? Sign in to ADE so the browser can reach this machine through the relay.",
   ].join("\n");
 }
 

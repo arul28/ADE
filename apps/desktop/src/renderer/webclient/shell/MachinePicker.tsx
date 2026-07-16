@@ -63,7 +63,32 @@ function EnvironmentButton({
   );
 }
 
-/** Beginner-first account chooser with direct connections kept as an advanced path. */
+function SavedEnvironmentList({
+  environments,
+  onSelect,
+}: {
+  environments: WebClientEnvironmentRecord[];
+  onSelect: (environment: WebClientEnvironmentRecord) => void;
+}) {
+  if (environments.length === 0) return null;
+  return (
+    <section style={{ display: "grid", gap: 10, borderTop: `1px solid ${COLORS.border}`, paddingTop: 14 }}>
+      <div style={{ display: "grid", gap: 4 }}>
+        <span style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
+          Saved on this browser
+        </span>
+        <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.55 }}>
+          Existing connections saved in this browser remain available.
+        </span>
+      </div>
+      {environments.map((environment) => (
+        <EnvironmentButton key={environment.envId} environment={environment} onSelect={onSelect} />
+      ))}
+    </section>
+  );
+}
+
+/** Account-first machine chooser that preserves already-saved browser connections. */
 export function MachinePicker({
   environments,
   account,
@@ -71,7 +96,6 @@ export function MachinePicker({
   connectingMachineKey,
   onSelect,
   onSelectAccountMachine,
-  onPair,
   onSignIn,
   onSignOut,
   onRetryDirectory,
@@ -82,7 +106,6 @@ export function MachinePicker({
   connectingMachineKey: string | null;
   onSelect: (environment: WebClientEnvironmentRecord) => void;
   onSelectAccountMachine: (machine: AdeAccountMachine) => void;
-  onPair: () => void;
   onSignIn: () => void;
   onSignOut: () => void;
   onRetryDirectory: () => void;
@@ -95,6 +118,10 @@ export function MachinePicker({
     canUseRelayForEnvironment(environment, relayAccess)
     && !account.machines.some((machine) => machine.deviceId === environment.hostDeviceId)
   ));
+  const savedEnvironments = [...new Map(
+    [...directEnvironments, ...savedRelayEnvironments]
+      .map((environment) => [environment.envId, environment]),
+  ).values()];
 
   if (!signedIn) {
     const signInAvailable = account.state !== "unconfigured";
@@ -111,30 +138,14 @@ export function MachinePicker({
           </button>
         ) : (
           <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55 }}>
-            Sign-in is not available on this web client. You can still use a direct connection below.
+            Account sign-in is not available on this web client.
           </div>
         )}
 
         {account.message && account.state === "auth_expired" ? (
           <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>{account.message}</div>
         ) : null}
-
-        <details style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14 }}>
-          <summary style={{ color: COLORS.textSecondary, cursor: "pointer", fontFamily: SANS_FONT, fontSize: 13 }}>
-            Connect directly (advanced)
-          </summary>
-          <div style={{ display: "grid", gap: 10, paddingTop: 12 }}>
-            <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.55 }}>
-              For localhost or a secure address you manage. Sign in to connect over the internet.
-            </div>
-            {directEnvironments.map((environment) => (
-              <EnvironmentButton key={environment.envId} environment={environment} onSelect={onSelect} />
-            ))}
-            <button type="button" style={outlineButton({ justifySelf: "start" })} onClick={onPair}>
-              Use a pairing link
-            </button>
-          </div>
-        </details>
+        <SavedEnvironmentList environments={savedEnvironments} onSelect={onSelect} />
       </ScreenShell>
     );
   }
@@ -151,7 +162,7 @@ export function MachinePicker({
       {account.state === "directory_unavailable" ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
-            We couldn't load your Macs. Your saved direct connections still work.
+            We couldn't load your Macs. Your saved connections still work.
           </span>
           <button type="button" style={outlineButton()} onClick={onRetryDirectory}>Try again</button>
         </div>
@@ -198,26 +209,7 @@ export function MachinePicker({
         </div>
       )}
 
-      {savedRelayEnvironments.map((environment) => (
-        <EnvironmentButton key={environment.envId} environment={environment} onSelect={onSelect} />
-      ))}
-
-      <details style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 14 }}>
-        <summary style={{ color: COLORS.textSecondary, cursor: "pointer", fontFamily: SANS_FONT, fontSize: 13 }}>
-          More ways to connect
-        </summary>
-        <div style={{ display: "grid", gap: 10, paddingTop: 12 }}>
-          <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.55 }}>
-            Use a pairing link, localhost, or a secure address you manage.
-          </div>
-          {directEnvironments.map((environment) => (
-            <EnvironmentButton key={environment.envId} environment={environment} onSelect={onSelect} />
-          ))}
-          <button type="button" style={outlineButton({ justifySelf: "start" })} onClick={onPair}>
-            Use a pairing link
-          </button>
-        </div>
-      </details>
+      <SavedEnvironmentList environments={savedEnvironments} onSelect={onSelect} />
     </ScreenShell>
   );
 }

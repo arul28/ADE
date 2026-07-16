@@ -1155,38 +1155,6 @@ final class ADETests: XCTestCase {
     XCTAssertNil(syncOutboundEnvelopeProjectId(type: "file_request", activeProjectId: "  "))
   }
 
-  func testWebPairingInfoPinStateDistinguishesHiddenConfiguredPin() {
-    let visible = WebPairingInfo(
-      pairingUrl: "https://app.ade-app.dev/pair#payload",
-      code: " 123456 ",
-      pinConfigured: true,
-      machineName: "Arul's Mac Studio",
-      relayEnabled: true,
-      hasRelayCandidate: true
-    )
-    XCTAssertEqual(visible.pinState, .visible("123456"))
-
-    let hidden = WebPairingInfo(
-      pairingUrl: "https://app.ade-app.dev/pair#payload",
-      code: nil,
-      pinConfigured: true,
-      machineName: "Arul's Mac Studio",
-      relayEnabled: true,
-      hasRelayCandidate: true
-    )
-    XCTAssertEqual(hidden.pinState, .configuredHidden)
-
-    let missing = WebPairingInfo(
-      pairingUrl: "https://app.ade-app.dev/pair#payload",
-      code: nil,
-      pinConfigured: false,
-      machineName: "Arul's Mac Studio",
-      relayEnabled: true,
-      hasRelayCandidate: true
-    )
-    XCTAssertEqual(missing.pinState, .notConfigured)
-  }
-
   func testDecodeHydrationPayloadWrapsMalformedHostData() {
     XCTAssertThrowsError(
       try decodeHydrationPayload(

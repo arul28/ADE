@@ -1,4 +1,5 @@
 import { BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
+import { randomUUID as nodeRandomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -6,6 +7,7 @@ import type {
   CloneProjectInput,
   CreateProjectInput,
   AdeActionRegistryEntry,
+  AdeAccountLocalMachineIdentity,
   ListMyGitHubReposInput,
   ListMyGitHubReposResult,
   OpenProjectBinding,
@@ -64,6 +66,8 @@ import { readGlobalState } from "../state/globalState";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { createSyncCloudRelayStore } from "../../../../../ade-cli/src/services/sync/syncCloudRelayStore";
 
 // Lane attach/adopt performed through the runtime action path never touches the
 // in-process IPC.lanesAttach handler, so the project-path inspection cache must
@@ -91,6 +95,7 @@ type RuntimeBridgeArgs = {
   ) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
   getGitHubTokenForRemoteClone?: (() => string | null) | null;
+  getLocalMachineIdentity?: (() => AdeAccountLocalMachineIdentity) | null;
 };
 
 const RUNTIME_ACTION_CLIENT_ID_FIELD = "__adeRuntimeClientId";
@@ -321,12 +326,56 @@ export type RuntimeBridgeRegistration = {
   reconcileAccountOwnership(
     currentOwnerUserId: string | null,
   ): AccountMachineReconciliationResult;
+  getLocalMachineIdentity(): AdeAccountLocalMachineIdentity;
 };
+
+export function getOrCreateLocalAccountMachineIdentity(args: {
+  secretsDir?: string;
+  randomUUID?: () => string;
+} = {}): AdeAccountLocalMachineIdentity {
+  const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
+  const deviceIdPath = path.join(secretsDir, "sync-device-id");
+  fs.mkdirSync(secretsDir, { recursive: true });
+
+  const readDeviceId = (): string | null => {
+    try {
+      const value = fs.readFileSync(deviceIdPath, "utf8").trim();
+      return value || null;
+    } catch {
+      return null;
+    }
+  };
+
+  let deviceId = readDeviceId();
+  if (!deviceId) {
+    const candidate = (args.randomUUID ?? nodeRandomUUID)();
+    try {
+      fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx", mode: 0o600 });
+      deviceId = candidate;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      deviceId = readDeviceId();
+    }
+  }
+  if (!deviceId) throw new Error("Local ADE device identity is unavailable.");
+  try {
+    fs.chmodSync(deviceIdPath, 0o600);
+  } catch {
+    // Best-effort on filesystems without POSIX mode support.
+  }
+
+  const machineCloudRelayStore = createSyncCloudRelayStore({
+    filePath: path.join(secretsDir, "sync-cloud-relay.json"),
+  });
+  const { machineKey } = machineCloudRelayStore.getMachineIdentity();
+  return { machineKey, deviceId };
+}
 
 export function registerRuntimeBridge({
   appVersion,
   bindRemoteProject,
   getGitHubTokenForRemoteClone,
+  getLocalMachineIdentity,
   getWindowSession,
   globalStatePath,
   localRuntimeConnectionPool,
@@ -412,6 +461,8 @@ export function registerRuntimeBridge({
   const registration: RuntimeBridgeRegistration = {
     reconcileAccountOwnership: (currentOwnerUserId) =>
       remoteConnectionService.reconcileAccountOwnership(currentOwnerUserId),
+    getLocalMachineIdentity: () =>
+      getLocalMachineIdentity?.() ?? getOrCreateLocalAccountMachineIdentity(),
   };
 
   const cleanupRuntimeEventSubscription = (senderId: number): void => {

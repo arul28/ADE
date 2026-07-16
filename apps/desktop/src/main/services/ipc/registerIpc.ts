@@ -196,6 +196,8 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountLocalMachineIdentity,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
@@ -1805,6 +1807,7 @@ export function registerIpc({
     [IPC.accountPollLogin]: new Set(["sessionId"]),
     [IPC.accountCancelLogin]: new Set(["sessionId"]),
     [IPC.accountPairMachine]: new Set(["machineKey"]),
+    [IPC.accountRemoveMachine]: new Set(["machineKey"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1948,6 +1951,19 @@ export function registerIpc({
         machineKey: "[redacted]",
         deviceId: "[redacted]",
         name: "[redacted]",
+      };
+    }
+    if (channel === IPC.accountGetLocalMachineIdentity) {
+      return {
+        ...record,
+        machineKey: "[redacted]",
+        deviceId: "[redacted]",
+      };
+    }
+    if (channel === IPC.accountRemoveMachine) {
+      return {
+        ...record,
+        machineKey: "[redacted]",
       };
     }
     return result;
@@ -4803,18 +4819,6 @@ export function registerIpc({
     );
     if (runtimeResult.handled) return runtimeResult.result;
     return (await requireSyncService()).getCloudRelayStatus();
-  });
-
-  ipcMain.handle(IPC.syncSetCloudRelayEnabled, async (event, enabled: boolean): Promise<SyncCloudRelayStatus> => {
-    const normalized = enabled === true;
-    const runtimeResult = await tryRuntimeSync<SyncCloudRelayStatus>(
-      event,
-      "sync.setCloudRelayEnabled",
-      { enabled: normalized },
-      (pool, rootPath) => pool.setSyncCloudRelayEnabledForRoot(rootPath, normalized),
-    );
-    if (runtimeResult.handled) return runtimeResult.result;
-    return await (await requireSyncService()).setCloudRelayEnabled(normalized);
   });
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
@@ -8620,6 +8624,13 @@ export function registerIpc({
     return accountBridge.status();
   });
 
+  ipcMain.handle(
+    IPC.accountGetLocalMachineIdentity,
+    async (): Promise<AdeAccountLocalMachineIdentity> => {
+      return runtimeBridge.getLocalMachineIdentity();
+    },
+  );
+
   ipcMain.handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {
     return accountBridge.startLogin();
   });
@@ -8651,6 +8662,16 @@ export function registerIpc({
     IPC.accountPairMachine,
     async (_event, arg: { machineKey?: string }): Promise<AdeAccountMachinePairResult> => {
       return await accountBridge.pairMachine(arg?.machineKey ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountRemoveMachine,
+    async (
+      _event,
+      arg: { machineKey?: string },
+    ): Promise<AdeAccountMachineRemovalResult> => {
+      return await accountBridge.removeMachine(arg?.machineKey ?? "");
     },
   );
 
