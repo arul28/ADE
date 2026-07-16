@@ -224,12 +224,18 @@ export function createProjectSecretService(projectRoot: string, options: { downl
     },
 
     exportEnv(): ProjectSecretsExportResult {
-      const index = readIndex();
-      const secrets = sortSummaries(index.entries).map(({ name }) => {
-        const value = store.getSync(valueKey(name));
-        if (value == null) throw new Error(`ADE secret '${name}' was not found.`);
-        return { name, value };
-      });
+      let secrets: Array<{ name: string; value: string }> = [];
+      if (fs.existsSync(credentialsPath)) {
+        store.updateSync((values) => {
+          const index = parseIndex(values[INDEX_KEY] ?? null);
+          secrets = sortSummaries(index.entries).map(({ name }) => {
+            const value = values[valueKey(name)];
+            if (value == null) throw new Error(`ADE secret '${name}' was not found.`);
+            return { name, value };
+          });
+          return false;
+        });
+      }
       const downloadsDir = options.downloadsDir ?? path.join(os.homedir(), "Downloads");
       fs.mkdirSync(downloadsDir, { recursive: true, mode: 0o700 });
       let filePath = path.join(downloadsDir, "ade-secrets.env");

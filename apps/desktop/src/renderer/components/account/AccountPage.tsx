@@ -188,7 +188,7 @@ export function SignInCard({
                 opacity: busy || !configured ? 0.55 : 1,
                 cursor: busy || !configured ? "not-allowed" : "pointer",
                 WebkitAppRegion: "no-drag",
-              }),
+              } as CSSProperties),
             }}
           >
             {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <ArrowRight size={17} weight="bold" />}
@@ -225,7 +225,7 @@ export function SignInCard({
                 color: COLORS.textMuted,
                 cursor: "pointer",
                 WebkitAppRegion: "no-drag",
-              }}
+              } as CSSProperties}
             >
               <Question size={13} weight="bold" />
             </button>

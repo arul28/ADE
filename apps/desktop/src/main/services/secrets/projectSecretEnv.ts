@@ -27,15 +27,16 @@ function decodeDoubleQuotedValue(value: string): string {
   return decoded;
 }
 
-function findClosingQuote(value: string, quote: string): number {
-  for (let index = 1; index < value.length; index += 1) {
-    if (value[index] !== quote) continue;
-    if (quote !== "\"") return index;
-    let precedingBackslashes = 0;
-    for (let previous = index - 1; previous >= 0 && value[previous] === "\\"; previous -= 1) {
+function findClosingQuote(value: string, quote: string, startIndex = 1): number {
+  let precedingBackslashes = 0;
+  for (let index = Math.max(1, startIndex); index < value.length; index += 1) {
+    const char = value[index];
+    if (char === "\\") {
       precedingBackslashes += 1;
+      continue;
     }
-    if (precedingBackslashes % 2 === 0) return index;
+    if (char === quote && (quote !== "\"" || precedingBackslashes % 2 === 0)) return index;
+    precedingBackslashes = 0;
   }
   return -1;
 }
@@ -82,9 +83,14 @@ export function parseProjectSecretEnv(content: string): ParsedProjectSecretEnvEn
     let rawValue = statement.slice(equalsIndex + 1);
     const openingQuote = rawValue.trimStart()[0];
     if (openingQuote === "'" || openingQuote === "\"" || openingQuote === "`") {
-      while (findClosingQuote(rawValue.trim(), openingQuote) < 0 && index + 1 < lines.length) {
+      rawValue = rawValue.trimStart();
+      let scanFrom = 1;
+      let closingIndex = findClosingQuote(rawValue, openingQuote, scanFrom);
+      while (closingIndex < 0 && index + 1 < lines.length) {
+        scanFrom = rawValue.length;
         index += 1;
         rawValue += `\n${lines[index] ?? ""}`;
+        closingIndex = findClosingQuote(rawValue, openingQuote, scanFrom);
       }
     }
     const value = parseValue(rawValue, lineNumber);

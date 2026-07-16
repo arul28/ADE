@@ -161,6 +161,11 @@ describe("project secret .env formatting", () => {
     ]);
   });
 
+  it("rejects a large unterminated multiline value", () => {
+    const malformed = `BROKEN="${Array.from({ length: 10_000 }, () => "value").join("\n")}`;
+    expect(() => parseProjectSecretEnv(malformed)).toThrow(/unterminated quoted value on line 1/);
+  });
+
   it("reports malformed and empty variables with line context", () => {
     expect(() => parseProjectSecretEnv("GOOD=value\nnot-an-assignment")).toThrow(/line 2/);
     expect(() => parseProjectSecretEnv("EMPTY=")).toThrow(/empty value on line 1/);

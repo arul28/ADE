@@ -4407,12 +4407,12 @@ export function registerIpc({
     const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
     const selectedPath = result.canceled ? null : result.filePaths[0];
     if (!selectedPath) return null;
-    const stat = fs.statSync(selectedPath);
+    const stat = await fs.promises.stat(selectedPath);
     if (!stat.isFile()) throw new Error("Select a .env file to import.");
     if (stat.size > PROJECT_SECRET_ENV_MAX_BYTES) throw new Error("The selected .env file is larger than 1 MB.");
     return {
       fileName: path.basename(selectedPath),
-      content: fs.readFileSync(selectedPath, "utf8"),
+      content: await fs.promises.readFile(selectedPath, "utf8"),
     };
   });
 

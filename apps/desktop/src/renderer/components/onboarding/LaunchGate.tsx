@@ -135,7 +135,7 @@ export function LaunchGate({ children }: LaunchGateProps) {
               fontFamily: SANS_FONT,
               fontSize: 12.5,
               WebkitAppRegion: "no-drag",
-            }}
+            } as CSSProperties}
           >
             Continue without an account
             <ArrowRight size={13} weight="bold" />

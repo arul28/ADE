@@ -1,6 +1,7 @@
 import React from "react";
 import { X } from "@phosphor-icons/react";
 import type { ProjectSecretsImportPreview } from "../../../shared/types";
+import { useDialogFocusTrap } from "../app/HeaderSheet";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 
 const secondaryButtonStyle: React.CSSProperties = {
@@ -32,14 +33,11 @@ export function SecretsImportEnvModal({
   onSave: () => void;
 }) {
   const allSelected = selectedNames.size === preview.secrets.length;
-
-  React.useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !importing) onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  const closeIfIdle = React.useCallback(() => {
+    if (!importing) onClose();
   }, [importing, onClose]);
+  const handleKeyDown = useDialogFocusTrap(dialogRef, closeIfIdle, true);
 
   return (
     <div
@@ -58,10 +56,13 @@ export function SecretsImportEnvModal({
         if (event.target === event.currentTarget && !importing) onClose();
       }}
     >
-      <section
+      <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="import-env-title"
+        tabIndex={-1}
+        onKeyDown={handleKeyDown}
         style={{
           width: "min(760px, 100%)",
           maxHeight: "min(760px, calc(100vh - 40px))",
@@ -161,7 +162,7 @@ export function SecretsImportEnvModal({
             {importing ? "Saving…" : `Save ${selectedNames.size} secret${selectedNames.size === 1 ? "" : "s"}`}
           </button>
         </footer>
-      </section>
+      </div>
     </div>
   );
 }

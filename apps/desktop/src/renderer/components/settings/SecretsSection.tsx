@@ -83,6 +83,7 @@ export function SecretsSection() {
   const [importing, setImporting] = React.useState(false);
   const [importError, setImportError] = React.useState<string | null>(null);
   const [exporting, setExporting] = React.useState(false);
+  const [confirmingExport, setConfirmingExport] = React.useState(false);
   const [importPreview, setImportPreview] = React.useState<ProjectSecretsImportPreview | null>(null);
   const [selectedImportNames, setSelectedImportNames] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
@@ -268,6 +269,13 @@ export function SecretsSection() {
   };
 
   const exportSecrets = async () => {
+    if (!confirmingExport) {
+      setConfirmingExport(true);
+      setMessage(null);
+      setError(null);
+      return;
+    }
+    setConfirmingExport(false);
     setExporting(true);
     setMessage(null);
     setError(null);
@@ -293,7 +301,7 @@ export function SecretsSection() {
       <div style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: SANS_FONT }}>
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div style={{ color: COLORS.textMuted, fontSize: 12, lineHeight: 1.5 }}>
-            Import reads a file from this Mac. Export writes to Downloads on the machine hosting this project.
+            Import reads a file from this Mac. Export writes an unencrypted .env file containing all project secret values to Downloads on the machine hosting this project.
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <button
@@ -312,7 +320,7 @@ export function SecretsSection() {
               style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: exporting || secrets.length === 0 ? "not-allowed" : "pointer", opacity: exporting || secrets.length === 0 ? 0.55 : 1 }}
             >
               <DownloadSimple size={14} />
-              {exporting ? "Exporting…" : "Export .env"}
+              {exporting ? "Exporting…" : confirmingExport ? "Confirm plaintext export" : "Export .env"}
             </button>
           </div>
         </div>
