@@ -103,6 +103,15 @@ end-to-end encrypted tunnel; see the trust boundary in
   `Sync service is not available` / `Register a project first` failures retry
   through main-process sync IPC; remote-bound failures never fall back to the
   local machine.
+- Settings > Secrets keeps file ownership explicit across this boundary. The
+  controller desktop opens Finder and reads at most 1 MB from the file the user
+  selected, then sends only its basename and content through the active
+  `project_secret.previewEnvImport` runtime action. Parsing, replacement
+  detection, and the selected batch import therefore run on the remote project
+  host. `project_secret.exportEnv` also runs on that host and writes a new
+  `ade-secrets.env` (or a numbered non-overwriting variant) to that machine's
+  Downloads folder; it never falls back to the controller's Downloads folder
+  while a remote project is bound.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
   and sync methods, machine-scoped personal-chat methods, plus project-scoped
   action dispatch. `projects.getHandoffStoragePreflight` validates a proposed

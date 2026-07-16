@@ -808,6 +808,13 @@ Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-su
 | Sync bootstrap token | `.ade/secrets/sync-bootstrap-token` | Plaintext, never syncs |
 | External-ADE CLI secrets | `.ade/local.secret.yaml` | Plaintext, never syncs |
 
+ADE project-secret dotenv imports are explicit transfers, not background
+sync: the desktop reads a user-selected local file (1 MB cap) and sends its
+content to the active project runtime for parsing and atomic import. Exports are
+also runtime-owned and create a mode-`0600` plaintext file in that runtime
+machine's Downloads folder. The review modal intentionally displays imported
+values before save; the encrypted store remains the normal at-rest location.
+
 ### 8.2 Preload as only cross-boundary surface
 
 ```

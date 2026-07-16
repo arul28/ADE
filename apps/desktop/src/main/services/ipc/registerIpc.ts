@@ -40,6 +40,7 @@ import {
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
+import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { runGit } from "../git/git";
 import type {
   AdeCleanupResult,
@@ -50,7 +51,12 @@ import type {
   IosSimulatorToolStatus,
   IosSimulatorWindowState,
   ProjectSecretDeleteArgs,
+  ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretsExportResult,
+  ProjectSecretsImportArgs,
+  ProjectSecretsImportPreview,
+  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
@@ -4385,6 +4391,47 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return ctx.projectSecretService.delete(arg);
+  });
+
+  ipcMain.handle(IPC.projectSecretsChooseEnvFile, async (event): Promise<ProjectSecretEnvFile | null> => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const options: Electron.OpenDialogOptions = {
+      title: "Import ADE secrets from .env",
+      defaultPath: app.getPath("home"),
+      properties: ["openFile"],
+      filters: [
+        { name: "Environment files", extensions: ["env"] },
+        { name: "All files", extensions: ["*"] },
+      ],
+    };
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const selectedPath = result.canceled ? null : result.filePaths[0];
+    if (!selectedPath) return null;
+    const stat = fs.statSync(selectedPath);
+    if (!stat.isFile()) throw new Error("Select a .env file to import.");
+    if (stat.size > PROJECT_SECRET_ENV_MAX_BYTES) throw new Error("The selected .env file is larger than 1 MB.");
+    return {
+      fileName: path.basename(selectedPath),
+      content: fs.readFileSync(selectedPath, "utf8"),
+    };
+  });
+
+  ipcMain.handle(IPC.projectSecretsPreviewEnvImport, async (_event, arg: ProjectSecretEnvFile): Promise<ProjectSecretsImportPreview> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.previewEnvImport(arg);
+  });
+
+  ipcMain.handle(IPC.projectSecretsImportEnv, async (_event, arg: ProjectSecretsImportArgs): Promise<ProjectSecretsImportResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.importEnv(arg);
+  });
+
+  ipcMain.handle(IPC.projectSecretsExportEnv, async (): Promise<ProjectSecretsExportResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.exportEnv();
   });
 
   ipcMain.handle(IPC.aiCursorCloudListRepositories, async (): Promise<CursorCloudRepository[]> => {
