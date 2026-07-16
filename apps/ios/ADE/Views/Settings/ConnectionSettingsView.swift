@@ -609,22 +609,30 @@ struct SettingsMachinesSection: View {
     var result: [Entry] = []
     var seen = Set<String>()
 
-    for machine in account.machines {
-      let key = (machine.deviceId ?? machine.machineKey).lowercased()
-      guard seen.insert(key).inserted else { continue }
+    let accountEntries = account.machines.map { machine in
       let current = if let currentIdentity, let deviceId = machine.deviceId {
         isConnected && deviceId.caseInsensitiveCompare(currentIdentity) == .orderedSame
       } else {
         false
       }
-      result.append(Entry(
-        id: "account-\(machine.id)",
-        name: machine.displayName,
-        routeHint: machine.routeLabel ?? machineStatusHint(online: machine.online),
-        online: machine.online,
-        isCurrent: current,
-        kind: .account(machine)
-      ))
+      return (
+        key: (machine.deviceId ?? machine.machineKey).lowercased(),
+        entry: Entry(
+          id: "account-\(machine.id)",
+          name: machine.displayName,
+          routeHint: machine.routeLabel ?? machineStatusHint(online: machine.online),
+          online: machine.online,
+          isCurrent: current,
+          kind: .account(machine)
+        )
+      )
+    }
+
+    // Reachable account routes are preferred, but stale directory rows must
+    // not hide a currently-discovered saved route for the same Mac.
+    for candidate in accountEntries where candidate.entry.online || candidate.entry.isCurrent {
+      guard seen.insert(candidate.key).inserted else { continue }
+      result.append(candidate.entry)
     }
 
     let live = syncService.discoveredHosts
@@ -651,6 +659,11 @@ struct SettingsMachinesSection: View {
         isCurrent: current,
         kind: .saved(host)
       ))
+    }
+
+    for candidate in accountEntries where !candidate.entry.online && !candidate.entry.isCurrent {
+      guard seen.insert(candidate.key).inserted else { continue }
+      result.append(candidate.entry)
     }
 
     return result.sorted { lhs, rhs in
