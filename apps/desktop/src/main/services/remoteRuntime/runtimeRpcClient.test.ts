@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { RuntimeRpcClient, type RuntimeRpcTransport } from "./runtimeRpcClient";
+import { RuntimeRpcClient, type RuntimeRpcTransport, type RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 
 class MockTransport implements RuntimeRpcTransport {
   readonly writes: string[] = [];
   private readonly dataCallbacks = new Set<(chunk: Buffer) => void>();
-  private readonly closeCallbacks = new Set<() => void>();
+  private readonly closeCallbacks = new Set<(info?: RuntimeRpcTransportCloseInfo) => void>();
   private readonly errorCallbacks = new Set<(error: Error) => void>();
   writeError: Error | null = null;
   closed = false;
@@ -13,7 +13,7 @@ class MockTransport implements RuntimeRpcTransport {
     this.dataCallbacks.add(callback);
   }
 
-  onClose(callback: () => void): void {
+  onClose(callback: (info?: RuntimeRpcTransportCloseInfo) => void): void {
     this.closeCallbacks.add(callback);
   }
 
@@ -38,9 +38,9 @@ class MockTransport implements RuntimeRpcTransport {
     }
   }
 
-  emitClose(): void {
+  emitClose(info?: RuntimeRpcTransportCloseInfo): void {
     for (const callback of this.closeCallbacks) {
-      callback();
+      callback(info);
     }
   }
 
@@ -100,6 +100,22 @@ describe("RuntimeRpcClient", () => {
     await firstAssertion;
     await secondAssertion;
     await expect(client.call("projects.list", {})).rejects.toThrow("Remote ADE service connection closed.");
+  });
+
+  it("includes bounded SSH process details when the runtime helper exits", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+    const pending = client.call("projects.list", {});
+
+    transport.emitClose({
+      exitCode: 1,
+      signal: "TERM",
+      stderr: "ADE beta brain socket was not available",
+    });
+
+    await expect(pending).rejects.toThrow(
+      /exit code 1, signal TERM, stderr: ADE beta brain socket was not available/i,
+    );
   });
 
   it("rejects pending calls and notifies disconnect listeners when the transport errors", async () => {

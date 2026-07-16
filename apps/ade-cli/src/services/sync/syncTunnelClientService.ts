@@ -23,6 +23,7 @@ type Logger = {
 
 export type SyncTunnelClientStatus = {
   enabled: boolean;
+  accountLeaseValid?: boolean;
   connected: boolean;
   activeTunnels: number;
   lastError: string | null;
@@ -51,15 +52,23 @@ type SyncTunnelClientArgs = {
   getExpectedLoopbackNonce?: () => string | null;
   /** Private proof accepted only by the active in-process sync listener. */
   getRelayBridgeProof: () => string | null;
+  /** Relay is usable only while the host has a current ADE account session. */
+  isAccountSignedIn?: () => boolean;
+  /** Refresh-aware lease; the account token is validated upstream and never retained here. */
+  getAccountLease?: () => Promise<{ userId: string } | null>;
   configStore: SyncCloudRelayStore;
   /** Overrides the identity from configStore (e.g. a shared machine store). */
   machineIdentity?: () => MachineIdentity | null;
   /** Test seam; production always uses the HTTP 426 loopback probe. */
   loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
+  /** Test seam for account-session lifecycle reconciliation. */
+  accountStatusPollMs?: number;
 };
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
+const ACCOUNT_STATUS_POLL_MS = 1_000;
+export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay.";
 
 /**
  * Exponential backoff with full jitter, capped at 60s. Exposed for tests so the
@@ -106,6 +115,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const log = args.logger ?? {};
   let control: WebSocket | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
+  let accountStatusTimer: NodeJS.Timeout | null = null;
+  let connectingControl = false;
+  let accountLeaseCheckInFlight: Promise<void> | null = null;
+  let accountLeaseUserId: string | null = args.getAccountLease ? null : "legacy";
   let attempt = 0;
   let started = false;
   let stopped = false;
@@ -130,6 +143,9 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const relayHttpUrl = (): string => args.configStore.getRelayUrl() || defaultRelayUrl();
+  const accountSignedIn = (): boolean =>
+    (args.isAccountSignedIn?.() ?? true)
+    && (!args.getAccountLease || accountLeaseUserId != null);
 
   const clearReconnect = (): void => {
     if (reconnectTimer) {
@@ -139,7 +155,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const scheduleReconnect = (): void => {
-    if (stopped || reconnectTimer) return;
+    if (stopped || reconnectTimer || !accountSignedIn()) return;
     const delay = computeBackoffMs(attempt);
     attempt += 1;
     reconnectTimer = setTimeout(() => {
@@ -166,50 +182,64 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const connectControl = async (): Promise<void> => {
-    if (stopped || control) return;
-    const id = identity();
-    try {
-      await claimOnce(id);
-    } catch (error) {
-      recordFailure(error instanceof Error ? error.message : String(error));
-      log.warn?.("sync_tunnel.claim_failed", { error: lastError });
-      scheduleReconnect();
+    if (stopped || control || connectingControl) return;
+    if (!accountSignedIn()) {
+      lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
       return;
     }
+    connectingControl = true;
+    try {
+      const id = identity();
+      try {
+        await claimOnce(id);
+      } catch (error) {
+        recordFailure(error instanceof Error ? error.message : String(error));
+        log.warn?.("sync_tunnel.claim_failed", { error: lastError });
+        scheduleReconnect();
+        return;
+      }
+      if (stopped || !accountSignedIn() || control) return;
 
-    const ts = nowSeconds();
-    const sig = signRelayHmacHex(id.secret, buildHostSignatureBase(id.machineKey, ts));
-    const wsBase = httpToWsUrl(relayHttpUrl());
-    const url = `${wsBase}/host/${id.machineKey}?ts=${ts}&sig=${sig}`;
-    const socket = new WebSocket(url);
-    control = socket;
-    armOpenDeadline(socket, () => {
-      recordFailure("relay control socket connect timed out");
-    });
+      const ts = nowSeconds();
+      const sig = signRelayHmacHex(id.secret, buildHostSignatureBase(id.machineKey, ts));
+      const wsBase = httpToWsUrl(relayHttpUrl());
+      const url = `${wsBase}/host/${id.machineKey}?ts=${ts}&sig=${sig}`;
+      const socket = new WebSocket(url);
+      control = socket;
+      armOpenDeadline(socket, () => {
+        recordFailure("relay control socket connect timed out");
+      });
 
-    socket.on("open", () => {
-      attempt = 0;
-      connected = true;
-      lastError = null;
-      lastSuccessAt = new Date().toISOString();
-      log.info?.("sync_tunnel.control_open", { machineKey: id.machineKey });
-    });
-    socket.on("message", (raw: RawData) => {
-      const message = parseControlMessage(rawToText(raw));
-      if (message?.t === "open") void openTunnel(id, message.id);
-    });
-    socket.on("error", (error: Error) => {
-      recordFailure(error.message);
-      log.warn?.("sync_tunnel.control_error", { error: error.message });
-    });
-    socket.on("close", () => {
-      connected = false;
-      if (control === socket) control = null;
-      if (!stopped) scheduleReconnect();
-    });
+      socket.on("open", () => {
+        attempt = 0;
+        connected = true;
+        lastError = null;
+        lastSuccessAt = new Date().toISOString();
+        log.info?.("sync_tunnel.control_open", { machineKey: id.machineKey });
+      });
+      socket.on("message", (raw: RawData) => {
+        const message = parseControlMessage(rawToText(raw));
+        if (message?.t === "open") void openTunnel(id, message.id);
+      });
+      socket.on("error", (error: Error) => {
+        recordFailure(error.message);
+        log.warn?.("sync_tunnel.control_error", { error: error.message });
+      });
+      socket.on("close", () => {
+        connected = false;
+        if (control === socket) control = null;
+        if (!stopped) scheduleReconnect();
+      });
+    } finally {
+      connectingControl = false;
+    }
   };
 
   const openTunnel = async (id: MachineIdentity, connectionId: string): Promise<void> => {
+    if (!accountSignedIn()) {
+      recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
+      return;
+    }
     const port = args.getSyncPort();
     if (port == null) {
       recordFailure("Relay bridge refused because the ADE sync listener is not bound.");
@@ -224,16 +254,14 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       log.warn?.("sync_tunnel.no_loopback_identity", { connectionId, port });
       return;
     }
+    let loopbackCheckedAt: string;
     try {
       const result = await assertAdeLoopbackListener(
         port,
         expectedLoopbackNonce,
         loopbackProbe,
       );
-      validatedPort = port;
-      validatedLoopbackNonce = expectedLoopbackNonce;
-      lastError = null;
-      lastSuccessAt = result.checkedAt;
+      loopbackCheckedAt = result.checkedAt;
     } catch (error) {
       validatedPort = null;
       validatedLoopbackNonce = null;
@@ -246,6 +274,16 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       });
       return;
     }
+    if (!accountSignedIn()) {
+      validatedPort = null;
+      validatedLoopbackNonce = null;
+      recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
+      return;
+    }
+    validatedPort = port;
+    validatedLoopbackNonce = expectedLoopbackNonce;
+    lastError = null;
+    lastSuccessAt = loopbackCheckedAt;
     const relayBridgeProof = args.getRelayBridgeProof();
     if (!relayBridgeProof) {
       validatedPort = null;
@@ -308,6 +346,71 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     log.debug?.("sync_tunnel.open", { connectionId });
   };
 
+  const closeRelayConnections = (): void => {
+    if (control) {
+      try {
+        control.close();
+      } catch {
+        // ignore
+      }
+      control = null;
+    }
+    for (const tunnel of [...tunnels]) {
+      tunnels.delete(tunnel);
+      try {
+        tunnel.pipe.close();
+      } catch {
+        // ignore
+      }
+      try {
+        tunnel.local.close();
+      } catch {
+        // ignore
+      }
+    }
+    connected = false;
+    validatedPort = null;
+    validatedLoopbackNonce = null;
+  };
+
+  const reconcileAccountEligibility = (): void => {
+    if (stopped || !started || !args.configStore.isEnabled()) return;
+    if (!accountSignedIn()) {
+      clearReconnect();
+      lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
+      closeRelayConnections();
+      return;
+    }
+    if (lastError === RELAY_SIGN_IN_REQUIRED_MESSAGE) lastError = null;
+    if (!control) void connectControl();
+  };
+
+  const refreshAccountLease = async (): Promise<void> => {
+    if (!args.getAccountLease) {
+      reconcileAccountEligibility();
+      return;
+    }
+    if (accountLeaseCheckInFlight) return await accountLeaseCheckInFlight;
+    const check = (async () => {
+      const previousUserId = accountLeaseUserId;
+      let nextUserId: string | null = null;
+      try {
+        nextUserId = (await args.getAccountLease?.())?.userId.trim() || null;
+      } catch {
+        nextUserId = null;
+      }
+      accountLeaseUserId = nextUserId;
+      if (previousUserId !== nextUserId) closeRelayConnections();
+      reconcileAccountEligibility();
+    })();
+    accountLeaseCheckInFlight = check;
+    try {
+      await check;
+    } finally {
+      if (accountLeaseCheckInFlight === check) accountLeaseCheckInFlight = null;
+    }
+  };
+
   return {
     async start(): Promise<void> {
       if (started) return;
@@ -317,6 +420,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         log.info?.("sync_tunnel.disabled");
         return;
       }
+      accountStatusTimer = setInterval(
+        () => { void refreshAccountLease(); },
+        args.accountStatusPollMs ?? ACCOUNT_STATUS_POLL_MS,
+      );
+      accountStatusTimer.unref?.();
+      await refreshAccountLease();
       await connectControl();
     },
 
@@ -324,40 +433,31 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       stopped = true;
       started = false;
       clearReconnect();
-      if (control) {
-        try {
-          control.close();
-        } catch {
-          // ignore
-        }
-        control = null;
+      if (accountStatusTimer) {
+        clearInterval(accountStatusTimer);
+        accountStatusTimer = null;
       }
-      for (const tunnel of [...tunnels]) {
-        tunnels.delete(tunnel);
-        try {
-          tunnel.pipe.close();
-        } catch {
-          // ignore
-        }
-        try {
-          tunnel.local.close();
-        } catch {
-          // ignore
-        }
-      }
-      connected = false;
+      closeRelayConnections();
     },
 
     getStatus(): SyncTunnelClientStatus {
       const { machineKey } = identity();
       const currentPort = args.getSyncPort();
       const currentLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
+      const eligible = accountSignedIn();
+      const enabled = args.configStore.isEnabled();
       return {
-        enabled: args.configStore.isEnabled(),
-        connected,
-        activeTunnels: tunnels.size,
-        lastError,
-        relayBridgeValidated: currentPort != null
+        enabled,
+        accountLeaseValid: eligible,
+        connected: eligible && connected,
+        activeTunnels: eligible ? tunnels.size : 0,
+        lastError: !enabled
+          ? null
+          : eligible
+            ? lastError
+            : RELAY_SIGN_IN_REQUIRED_MESSAGE,
+        relayBridgeValidated: eligible
+          && currentPort != null
           && currentLoopbackNonce != null
           && validatedPort === currentPort
           && validatedLoopbackNonce === currentLoopbackNonce,

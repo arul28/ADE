@@ -6,7 +6,6 @@ import {
   Check,
   Copy,
   GithubLogo,
-  Play,
   X,
 } from "@phosphor-icons/react";
 import { docs } from "../../onboarding/docsLinks";
@@ -14,6 +13,7 @@ import { openExternalUrl } from "../../lib/openExternal";
 import {
   ADE_WELCOME_VIDEO_EMBED_URL,
   ADE_WELCOME_VIDEO_REPLAY_EVENT,
+  ADE_WELCOME_VIDEO_WATCH_URL,
 } from "../../../shared/welcomeVideo";
 import {
   ADE_GITHUB_URL,
@@ -22,6 +22,7 @@ import {
 
 type WelcomeVideoGateProps = {
   onVisibilityChange?: (visible: boolean, checking: boolean) => void;
+  onDismissed?: () => void;
 };
 
 type DeviceKind = "macbook" | "phone" | "terminal";
@@ -50,7 +51,7 @@ const SURFACES: ReadonlyArray<Surface> = [
   {
     key: "desktop",
     label: "Desktop",
-    blurb: "The full lane workspace",
+    blurb: "Build and manage your projects",
     img: publicAssetUrl("welcome/desktop.webp"),
     url: docs.home,
     device: "macbook",
@@ -58,7 +59,7 @@ const SURFACES: ReadonlyArray<Surface> = [
   {
     key: "mobile",
     label: "Mobile",
-    blurb: "Review & approve on the go",
+    blurb: "Check work and reply anywhere",
     img: publicAssetUrl("welcome/mobile.webp"),
     url: docs.syncMultiDevice,
     device: "phone",
@@ -66,17 +67,16 @@ const SURFACES: ReadonlyArray<Surface> = [
   {
     key: "tui",
     label: "Terminal",
-    blurb: "ADE Code in your shell",
+    blurb: "Use ADE from your terminal",
     img: publicAssetUrl("welcome/tui.webp"),
     url: docs.terminals,
     device: "terminal",
   },
 ];
 
-export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) {
+export function WelcomeVideoGate({ onVisibilityChange, onDismissed }: WelcomeVideoGateProps) {
   const [visible, setVisible] = useState(false);
   const [checking, setChecking] = useState(true);
-  const [playing, setPlaying] = useState(false);
   const [copyState, setCopyState] = useState<CopyState>("idle");
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -101,7 +101,6 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
 
     const replay = () => {
       setChecking(false);
-      setPlaying(false);
       setCopyState("idle");
       setVisible(true);
     };
@@ -115,10 +114,12 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
 
   const dismissWelcome = useCallback(() => {
     setVisible(false);
-    setPlaying(false);
     setCopyState("idle");
-    void window.ade.app.markWelcomeVideoSeen("dismissed").catch(() => {});
-  }, []);
+    void window.ade.app
+      .markWelcomeVideoSeen("dismissed")
+      .catch(() => undefined)
+      .finally(() => onDismissed?.());
+  }, [onDismissed]);
 
   const openGitHub = useCallback(() => openExternalUrl(ADE_GITHUB_URL), []);
   const openDocs = useCallback(() => openExternalUrl(docs.home), []);
@@ -303,10 +304,7 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
             <div style={{ padding: "18px 24px 24px" }}>
               {/* Body: video (left) + iOS QR panel (right) */}
               <div className="ade-welcome-card__body">
-                <VideoPanel
-                  playing={playing}
-                  onPlay={() => setPlaying(true)}
-                />
+                <VideoPanel />
                 <PhonePanel
                   copyState={copyState}
                   onDownload={openMobileApp}
@@ -345,13 +343,7 @@ export function WelcomeVideoGate({ onVisibilityChange }: WelcomeVideoGateProps) 
   );
 }
 
-function VideoPanel({
-  playing,
-  onPlay,
-}: {
-  playing: boolean;
-  onPlay: () => void;
-}) {
+function VideoPanel() {
   return (
     <div
       style={{
@@ -364,84 +356,47 @@ function VideoPanel({
         boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.04)",
       }}
     >
-      {playing ? (
-        <iframe
-          title="Welcome to ADE video"
-          src={`${ADE_WELCOME_VIDEO_EMBED_URL}&autoplay=1`}
-          sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
-          allow="autoplay; encrypted-media; picture-in-picture"
-          allowFullScreen
-          referrerPolicy="strict-origin-when-cross-origin"
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            border: 0,
-          }}
-        />
-      ) : (
-        <button
-          type="button"
-          onClick={onPlay}
-          aria-label="Play the ADE intro video"
-          className="ade-welcome-card__poster"
-          style={{
-            position: "absolute",
-            inset: 0,
-            width: "100%",
-            height: "100%",
-            border: 0,
-            padding: 0,
-            cursor: "pointer",
-            backgroundImage: [
-              // Soft radial vignette centered behind the play button so it pops
-              // cleanly off a busy poster instead of reading as clutter.
-              "radial-gradient(circle at 50% 47%, rgba(6,5,16,0.66) 0%, rgba(6,5,16,0.34) 22%, rgba(6,5,16,0) 52%)",
-              // Top/bottom darkening keeps the caption legible and frames the video.
-              "linear-gradient(180deg, rgba(8,6,18,0.30) 0%, rgba(8,6,18,0) 34%, rgba(8,6,18,0.12) 64%, rgba(8,6,18,0.68) 100%)",
-              `url("${publicAssetUrl("welcome/video-poster.jpg")}")`,
-            ].join(", "),
-            backgroundSize: "cover",
-            backgroundPosition: "center",
-          }}
-        >
-          <span
-            className="ade-welcome-card__play"
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: "50%",
-              transform: "translate(-50%, -50%)",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 68,
-              height: 68,
-              borderRadius: "999px",
-              background: "var(--color-accent, #A78BFA)",
-              color: "var(--color-accent-fg, #0B0A14)",
-              boxShadow:
-                "0 14px 34px -10px rgba(124,58,237,0.78), 0 0 0 6px rgba(255,255,255,0.10)",
-            }}
-          >
-            <Play size={28} weight="fill" />
-          </span>
-          <span
-            style={{
-              position: "absolute",
-              left: 14,
-              bottom: 12,
-              fontSize: 12.5,
-              fontWeight: 600,
-              color: "#fff",
-              textShadow: "0 1px 6px rgba(0,0,0,0.6)",
-            }}
-          >
-            Watch the intro guide
-          </span>
-        </button>
-      )}
+      <iframe
+        title="Welcome to ADE video"
+        src={ADE_WELCOME_VIDEO_EMBED_URL}
+        sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
+        allow="encrypted-media; picture-in-picture"
+        allowFullScreen
+        referrerPolicy="strict-origin-when-cross-origin"
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          border: 0,
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => openExternalUrl(ADE_WELCOME_VIDEO_WATCH_URL)}
+        aria-label="Open the ADE intro video on YouTube"
+        style={{
+          position: "absolute",
+          right: 10,
+          bottom: 10,
+          zIndex: 1,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 5,
+          height: 28,
+          padding: "0 9px",
+          borderRadius: 7,
+          border: "1px solid rgba(255,255,255,0.22)",
+          background: "rgba(8,6,18,0.82)",
+          color: "#fff",
+          fontSize: 11,
+          fontWeight: 600,
+          cursor: "pointer",
+        }}
+      >
+        YouTube
+        <ArrowSquareOut size={11} />
+      </button>
     </div>
   );
 }

@@ -61,6 +61,8 @@ describe("DesktopPairedMachineStore", () => {
     let pairedPublicKey: string | null = null;
     let pairedDeviceType: unknown = null;
     let pairedRuntimeHostGrant: unknown = null;
+    let pairedRelayAccountToken: unknown = null;
+    let helloRelayAccountToken: unknown = null;
     let dpopVerdict: SyncDpopVerification | null = null;
 
     const createWebSocket = () => new FakeWebSocket((text, ws) => {
@@ -69,11 +71,13 @@ describe("DesktopPairedMachineStore", () => {
           const payload = envelope.payload as {
             code: string;
             dpopPublicKey?: string;
+            relayAccountToken?: string;
             runtimeHostGrant?: string;
             peer: { deviceId: string; deviceType: unknown };
           };
           pairedPublicKey = payload.dpopPublicKey ?? null;
           pairedDeviceType = payload.peer.deviceType;
+          pairedRelayAccountToken = payload.relayAccountToken;
           pairedRuntimeHostGrant = payload.runtimeHostGrant;
           ws.receive(encodeSyncEnvelope({
             type: "pairing_result",
@@ -93,8 +97,10 @@ describe("DesktopPairedMachineStore", () => {
             deviceId: string;
             secret: string;
             dpop: SyncDpopProof;
+            relayAccountToken?: string | null;
           };
         };
+        helloRelayAccountToken = payload.auth.relayAccountToken;
         if (pairedPublicKey) {
           dpopVerdict = verifySyncDpopProof({
             publicKeyX963Base64: pairedPublicKey,
@@ -133,11 +139,14 @@ describe("DesktopPairedMachineStore", () => {
       {
         pairingTimeoutMs: 2_000,
         createWebSocket,
+        relayAccountToken: "short-lived-account-token",
         runtimeHostGrant: "server-issued-runtime-grant",
       },
     );
 
     expect(pairedDeviceType).toBe("desktop");
+    expect(pairedRelayAccountToken).toBe("short-lived-account-token");
+    expect(helloRelayAccountToken).toBe("short-lived-account-token");
     expect(pairedRuntimeHostGrant).toBe("server-issued-runtime-grant");
     expect(dpopVerdict).toEqual({ ok: true });
     expect(paired).toMatchObject({
@@ -240,6 +249,49 @@ describe("DesktopPairedMachineStore", () => {
     }]);
   });
 
+  it("removes one account's credentials without touching user-paired or other-account credentials", () => {
+    const filePath = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "ade-account-pairing-store-")),
+      "paired.json",
+    );
+    const store = new DesktopPairedMachineStore({ filePath });
+    const credentials = (
+      hostDeviceId: string,
+      accountOwnerUserId: string | null,
+    ): DesktopPairedMachineCredentials => ({
+      version: 1,
+      hostIdentity: {
+        deviceId: hostDeviceId,
+        siteId: `${hostDeviceId}-site`,
+        name: hostDeviceId,
+        platform: "macOS",
+        deviceType: "desktop",
+      },
+      accountOwnerUserId,
+      deviceId: `${hostDeviceId}-client`,
+      siteId: `${hostDeviceId}-client-site`,
+      deviceName: "Laptop",
+      secret: `${hostDeviceId}-secret`,
+      dpopPrivateKey: `${hostDeviceId}-private`,
+      dpopPublicKey: `${hostDeviceId}-public`,
+      endpoints: [`ws://${hostDeviceId}.local:8787`],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const manual = store.save(credentials("manual", null));
+    const owned = store.save(credentials("owned", "account-a"));
+    const other = store.save(credentials("other", "account-b"));
+
+    expect(store.removeAccountOwned("account-a")).toEqual([owned]);
+    expect(store.list().map((machine) => machine.hostIdentity.deviceId)).toEqual([
+      other.hostIdentity.deviceId,
+      manual.hostIdentity.deviceId,
+    ]);
+    expect(store.pruneAccountOwned("account-b")).toEqual([]);
+    expect(store.pruneAccountOwned(null)).toEqual([other]);
+    expect(store.list()).toEqual([manual]);
+  });
+
   it("uses account auth only on a verified WSS relay and preserves an existing paired secret", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-account-pairing-"));
     process.env.ADE_HOME = adeHome;
@@ -314,11 +366,13 @@ describe("DesktopPairedMachineStore", () => {
             pollIntervalMs: 1_500,
             cloudRelayWssUrl: "wss://relay-two.example/connect/machine-account-1",
             features: { rpcChannel: true, portForward: true },
-            ...(successfulHelloCount === 1
+            ...(successfulHelloCount === 1 || successfulHelloCount === 3
               ? {
                   accountPairing: {
                     deviceId: payload.auth.deviceId,
-                    secret: "account-issued-paired-secret",
+                    secret: successfulHelloCount === 1
+                      ? "account-issued-paired-secret"
+                      : "second-account-secret",
                   },
                 }
               : {}),
@@ -333,6 +387,7 @@ describe("DesktopPairedMachineStore", () => {
       "clerk-access-token",
       "Web account client",
       {
+        accountOwnerUserId: "account-user-1",
         pairingTimeoutMs: 2_000,
         createWebSocket,
         relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
@@ -343,6 +398,18 @@ describe("DesktopPairedMachineStore", () => {
       "clerk-access-token",
       "Web account client",
       {
+        accountOwnerUserId: "account-user-1",
+        pairingTimeoutMs: 2_000,
+        createWebSocket,
+        relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
+      },
+    );
+    const secondAccount = await store.pairWithAccountMachine(
+      machine,
+      "clerk-access-token",
+      "Second account client",
+      {
+        accountOwnerUserId: "account-user-2",
         pairingTimeoutMs: 2_000,
         createWebSocket,
         relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
@@ -354,8 +421,12 @@ describe("DesktopPairedMachineStore", () => {
       "wss://relay-two.example/connect/machine-account-1",
       "wss://relay-one.example/connect/machine-account-1",
       "wss://relay-two.example/connect/machine-account-1",
+      "wss://relay-one.example/connect/machine-account-1",
+      "wss://relay-two.example/connect/machine-account-1",
     ]);
     expect(accountDpopVerdicts).toEqual([
+      { ok: true },
+      { ok: true },
       { ok: true },
       { ok: true },
       { ok: true },
@@ -365,10 +436,93 @@ describe("DesktopPairedMachineStore", () => {
     expect(reauthenticated.secret).toBe("account-issued-paired-secret");
     expect(reauthenticated.deviceId).toBe(adopted.deviceId);
     expect(reauthenticated.dpopPublicKey).toBe(adopted.dpopPublicKey);
+    expect(adopted.accountOwnerUserId).toBe("account-user-1");
+    expect(secondAccount.accountOwnerUserId).toBe("account-user-2");
+    expect(secondAccount.deviceId).not.toBe(adopted.deviceId);
+    expect(secondAccount.dpopPublicKey).not.toBe(adopted.dpopPublicKey);
+    expect(secondAccount.secret).toBe("second-account-secret");
     expect(reauthenticated.endpoints).toContain("ws://studio.local:8787/");
     expect(reauthenticated.endpoints).not.toContain("wss://arbitrary.example/account");
     expect(reauthenticated.endpoints).not.toContain("ws://relay-one.example/connect/plaintext");
     expect(fs.readFileSync(store.path, "utf8")).not.toContain("clerk-access-token");
+  });
+
+  it.each([
+    { name: "sign-out", ownerUserId: null },
+    { name: "account switch", ownerUserId: "account-user-2" },
+  ])("does not commit credentials when $name wins a deferred account hello", async ({
+    ownerUserId,
+  }) => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-account-race-"));
+    process.env.ADE_HOME = adeHome;
+    let currentOwnerUserId: string | null = "account-user-1";
+    let releaseHello: (() => void) | null = null;
+    let markHelloSent: (() => void) | null = null;
+    const helloSent = new Promise<void>((resolve) => {
+      markHelloSent = resolve;
+    });
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-race",
+      deviceId: "host-race",
+      name: "Race Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "relay", url: "wss://relay.example/connect/machine-race" },
+      ],
+    };
+    const store = new DesktopPairedMachineStore();
+    const pairing = store.pairWithAccountMachine(
+      machine,
+      "account-token",
+      "Laptop",
+      {
+        accountOwnerUserId: "account-user-1",
+        relayBaseUrls: ["https://relay.example"],
+        authorizeAccountCommit: (expectedOwnerUserId) => (
+          currentOwnerUserId === expectedOwnerUserId
+        ),
+        createWebSocket: () => new FakeWebSocket((text, ws) => {
+          const envelope = parseSyncEnvelope(wsDataToText(text));
+          if (envelope.type !== "hello") return;
+          const payload = envelope.payload as { peer: unknown; auth: { deviceId: string } };
+          releaseHello = () => ws.receive(encodeSyncEnvelope({
+            type: "hello_ok",
+            requestId: envelope.requestId,
+            payload: {
+              peer: payload.peer,
+              brain: {
+                deviceId: "host-race",
+                deviceName: "Race Studio",
+                platform: "macOS",
+                deviceType: "desktop",
+                siteId: "host-race-site",
+                dbVersion: 0,
+              },
+              serverDbVersion: 0,
+              heartbeatIntervalMs: 5_000,
+              pollIntervalMs: 1_500,
+              cloudRelayWssUrl: "wss://relay.example/connect/machine-race",
+              features: { rpcChannel: true, portForward: true },
+              accountPairing: {
+                deviceId: payload.auth.deviceId,
+                secret: "account-paired-secret",
+              },
+            },
+          }));
+          markHelloSent?.();
+        }) as unknown as WebSocket,
+      },
+    );
+
+    await helloSent;
+    currentOwnerUserId = ownerUserId;
+    releaseHello!();
+
+    await expect(pairing).rejects.toThrow(/account changed/i);
+    expect(store.list()).toEqual([]);
   });
 
   it("stops account endpoint fallback immediately when authentication is cancelled", async () => {
@@ -395,6 +549,7 @@ describe("DesktopPairedMachineStore", () => {
       "account-token",
       "Laptop",
       {
+        accountOwnerUserId: "account-user-1",
         signal: controller.signal,
         relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
         createWebSocket: (endpoint) => {
@@ -438,6 +593,7 @@ describe("DesktopPairedMachineStore", () => {
       "account-token",
       "Laptop",
       {
+        accountOwnerUserId: "account-user-1",
         signal: controller.signal,
         relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
         createWebSocket: (endpoint) => {

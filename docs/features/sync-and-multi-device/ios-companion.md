@@ -18,7 +18,7 @@ ADE Mobile connects to a **machine**, not to a desktop window. The
 machine is shown by its computer name, with LAN and Tailscale routes
 kept as connection details behind the row.
 
-1. On the computer, open ADE Settings > Sync > Pair a phone, or run
+1. On the computer, open **Connections > Mobile**, or run
    `ade sync pin generate` from the CLI.
 2. On the phone, open Settings > Pairing and either scan the pairing QR
    shown in ADE on the computer (a smart URL carrying machine identity,
@@ -32,6 +32,52 @@ kept as connection details behind the row.
    listener on a stable port; switching projects swaps which project
    host owns the connection, and the user-facing model stays
    machine -> projects.
+
+Every fresh signed-out launch shows the account choice before the app. Signing
+in is not required for local-first use: **Continue without an account** keeps
+QR/link, Nearby discovery, manual address + PIN, and SSH pairing available. If
+the phone already has a direct pairing, continuing resumes its ordinary saved
+reconnect without asking for the PIN again. A signed-in launch enters the app
+directly.
+
+Choosing a signed-in account machine performs first-time adoption through the
+directory-verified WSS relay. The phone stores the returned per-device secret
+and DPoP key for direct reconnects, and adds a fresh in-memory account token to
+every later Relay hello. The token is never saved with the machine. Those
+profiles are tagged with the Clerk user id that created them. Signing out,
+switching accounts, or confirmed session loss removes only that account's
+profiles and Keychain pairing secrets. Machines paired directly by QR/link,
+Nearby, address + PIN, or SSH have no account owner and remain saved after
+sign-out.
+
+Pairing ownership and Relay eligibility are intentionally separate. A direct
+profile can learn verified Relay metadata for the current account without
+becoming account-owned. On sign-out or account switch, an active Relay socket
+is closed immediately and ADE tries the saved LAN/Tailscale routes; the direct
+profile and its pairing secret remain. A transient Clerk or directory outage is
+not treated as logout and does not erase saved machines.
+
+### Pair with SSH
+
+SSH pairing is a one-time bootstrap for a Mac that already has ADE installed.
+The phone accepts a Nearby machine or a manually entered host/Tailscale address,
+port, and macOS username. It then:
+
+1. authenticates with a private key;
+2. displays the Mac's `SHA256:` SSH host-key fingerprint for explicit trust on
+   first use (and rejects a changed fingerprint later);
+3. invokes `ade sync pair-device --json-stdin` over SSH, with the phone's public
+   DPoP identity only in JSON stdin; and
+4. stores the returned device pairing as a normal ADE machine pairing. SSH is
+   no longer used for routine sync after that point.
+
+Supported client keys are Ed25519 OpenSSH private keys, encrypted or
+unencrypted, and unencrypted ECDSA P-256, P-384, or P-521 OpenSSH private keys.
+Citadel 0.12.1 cannot decrypt encrypted ECDSA OpenSSH keys; import an
+unencrypted copy or use Ed25519. RSA keys are deliberately rejected. Imported
+keys are ephemeral by default. If the user opts into SSH recovery, the key and
+passphrase are stored in this device's Keychain with current-biometric-set
+access control and are not synced to an ADE account.
 
 The same machine token works across LAN and Tailscale routes and across
 that machine's projects. `siteId` remains an internal per-project
@@ -82,7 +128,8 @@ apps/ios/
 │   │   ├── ADEAppDelegate.swift     # UIApplicationDelegate: APNs device-token
 │   │   │                            # callbacks + notification presentation,
 │   │   │                            # feeds PushNotificationService
-│   │   ├── ContentView.swift        # 5-tab TabView with a custom
+│   │   ├── ContentView.swift        # signed-in-or-continue launch gate, then
+│   │   │                            # 5-tab TabView with a custom
 │   │   │                            # `ADERootBottomTabBar` overlay
 │   │   │                            # (Work/Lanes/PRs/Files/CTO + Work
 │   │   │                            # running-chat badge); the system tab
@@ -118,15 +165,25 @@ apps/ios/
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
 │   │   ├── AccountService.swift     # Clerk-backed optional account identity,
-│   │   │                            # transferable social auth outcomes, and
-│   │   │                            # account-directory machine lookup
+│   │   │                            # transferable social auth outcomes,
+│   │   │                            # durable sign-out boundary, and exact
+│   │   │                            # pairing generations
 │   │   ├── AccountEmailAuthFlow.swift # identifier-first email sign-in-or-up:
 │   │   │                              # precise account-not-found fallback and
 │   │   │                              # matching attempt verification
+│   │   ├── AccountDirectory.swift   # account machine directory client
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
-│   │   ├── KeychainService.swift    # paired device secret storage
+│   │   ├── KeychainService.swift    # per-host pairing secrets, stable device
+│   │   │                            # identity, and SSH credential storage
+│   │   ├── MobileTrustResetPolicy.swift # one-time connection-token/profile
+│   │   │                                 # reset; preserves account + identity
 │   │   ├── DpopKeyService.swift     # Secure Enclave P-256 key + signed
 │   │   │                            # DPoP proof for every paired hello
+│   │   ├── SSHBootstrapModels.swift, SSHBootstrapService.swift,
+│   │   │   SSHCredentialStore.swift, SSHGeneratedKey.swift,
+│   │   │   SSHHostFingerprintValidator.swift, SSHHostKeyPinStore.swift,
+│   │   │   SSHPrivateKeyParser.swift # one-time SSH pairing bootstrap,
+│   │   │                              # key handling, and host-key pinning
 │   │   ├── PairingQrPayload.swift   # smart-URL QR parser (port of
 │   │   │                            # shared/pairingQr.ts)
 │   │   ├── PushNotificationService.swift # APNs registration, alert/deep-link
@@ -159,6 +216,8 @@ apps/ios/
 │   │   │                            # ContentState (shared app ↔ widget)
 │   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
 │   ├── Views/
+│   │   ├── Account/                 # account choice/sign-in plus the mobile
+│   │   │                            # access gate and connections section
 │   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
 │   │   │                            # ADEUIKitAppearance.configureTabBar(),
 │   │   │                            # ADERootTabBarHiddenPreferenceKey),
@@ -270,10 +329,8 @@ apps/ios/
 │   │   │                            #   full usage limits + refresh section,
 │   │   │                            # SettingsPinSheet, SettingsPushDeliverySection
 │   │   │                            #   (push + Live Activity diagnostics/toggles),
-│   │   │                            # SettingsVoiceInputSection
-│   │   ├── Account/                 # AccountSignInView and account connection
-│   │   │                            # cards; account access is optional and
-│   │   │                            # does not gate direct machine pairing
+│   │   │                            # SettingsVoiceInputSection, SSHPairingView
+│   │   │                            #   + view model/state
 │   │   └── LanesTabView.swift
 │   └── Assets.xcassets/             # App icon, brand mark, provider logos
 │                                    # (Anthropic, Claude, Codex, Cursor,
@@ -288,7 +345,8 @@ apps/ios/
     ├── ADETests.swift
     ├── AccountEmailAuthFlowTests.swift # returning email sign-in, new-email
     │                                   # sign-up fallback, exact error codes
-    └── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
+    ├── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
+    └── SSHBootstrapTests.swift      # key parsing, fingerprint, bootstrap policy
 ```
 
 Each tab is factored into a root screen, one `+Actions` extension for
@@ -545,6 +603,13 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    profile's `savedRelayCandidates` (an explicit `cloudRelayWssUrl:
    null` in `brain_status` means the operator flipped the machine's
    relay kill-switch, and the phone clears its saved relay routes).
+   Relay candidates are eligible only when the profile's verified
+   `relayAccountOwnerId` matches the currently signed-in account. ADE fetches a
+   fresh account token in memory for every Relay attempt and adds it only to the
+   paired hello. Missing/different account state reports a clear sign-in or
+   same-account requirement without consuming the reconnect retry budget; LAN
+   and Tailscale attempts remain available. `accountOwnerId` separately marks
+   profiles created by account adoption and therefore deleted on owner loss.
    When the ACTIVE connection is a relay route, the Settings connection
    header shows one quiet line: "Using ADE relay. For faster, more
    stable sync, connect both devices with Tailscale." `reconnectIfPossible` is
@@ -746,7 +811,7 @@ yet arrived in the catchup batch.
 
 ### PIN pairing flow
 
-1. User opens Settings > Sync on the machine and sets or generates a
+1. User opens **Connections > Mobile** on the machine and sets or generates a
    6-digit PIN. The runtime writes a PBKDF2 hash under `~/.ade/secrets`
    (chmod `0600`) and keeps the plaintext in process memory only while
    that runtime is alive, so a restarted machine can still verify
@@ -800,7 +865,7 @@ available yet). When no PIN is set it tells the user to set one in ADE on the
 computer; when a PIN is configured but hidden it says the existing PIN still
 pairs if known and tells the user to generate or set a new one only to
 display/copy it. This is the phone-side mirror of the desktop's
-Settings > Sync web client card.
+**Connections > Web client** card.
 
 ### Background App Refresh
 
@@ -1403,8 +1468,12 @@ different machine's cached limits.
 | WebSocket client | Implemented |
 | PIN pairing flow | Implemented |
 | QR pairing payload (v3 smart URL) + camera scanner (`SettingsPairingScannerSheet`) | Implemented |
+| Account launch gate + account machine directory | Implemented; signed-in launches enter directly, signed-out launches can sign in or continue with direct pairing |
+| Account-owned pairing and same-account Relay lifetime | Implemented; exact session-generation commit checks, owner-scoped deletion, fresh Relay token per connection |
+| SSH one-time pairing bootstrap | Implemented; explicit host fingerprint trust, JSON-stdin device grant, optional Keychain recovery credentials |
+| One-time mobile machine-trust reset | Implemented; clears connection tokens/profiles after update while preserving account and stable device/DPoP identity |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
-| Cloud relay (automatic `relay` transport, promoted when the phone has no Tailscale tunnel, no user setup) | Implemented |
+| Cloud relay (same-account `relay` transport, promoted when the phone has no Tailscale tunnel) | Implemented; fresh in-memory account proof on every Relay connection |
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, and project/lane actions suppressed |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
@@ -1445,6 +1514,20 @@ different machine's cached limits.
 - **Keychain items survive app uninstall on some iOS builds.**
   Pairing forget should both clear Keychain and clear the draft row;
   the Settings tab's "Forget machine" flow does both.
+- **The release trust reset is intentionally narrower than an account reset.**
+  `MobileTrustResetPolicy` clears every connection token plus machine-scoped
+  drafts/profiles, selected-project state, pending operations, cursors,
+  descriptors, hidden projects, and reconnect pause once. It preserves Clerk
+  account keys, the stable device id and DPoP identity, analytics preferences,
+  and pairing-PIN state. The completion marker is written only after Keychain
+  token clearing succeeds, so a failed Keychain operation retries next launch.
+- **Account ownership and Relay ownership are different fields.**
+  `accountOwnerId` decides whether sign-out deletes a saved profile;
+  `relayAccountOwnerId` decides whether its Relay route may be used. Never make
+  a QR/link/Nearby/address/SSH profile account-owned just because the same Mac
+  later appears in the account directory. On account loss, disconnect Relay
+  and retry direct routes; delete only account-owned profiles. Treat transient
+  account/directory failures as retryable, not as logout.
 - **The ADE iOS bootstrap SQL is generated.** When desktop `kvDb.ts`
   schema changes, regenerate `DatabaseBootstrap.sql`. Schema drift
   between desktop and iOS breaks the first-launch bootstrap.

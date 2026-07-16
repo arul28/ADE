@@ -15,13 +15,25 @@ extension WorkSessionSettingsSheet {
         : loadedModels
       models = scopedModels
 
-      let matchedModelId =
-        scopedModels.first(where: { workModelIdsEquivalent($0.id, selectedModelId) || workModelIdsEquivalent($0.modelId, selectedModelId) })?.id
-        ?? scopedModels.first(where: { workModelIdsEquivalent($0.id, summary.modelId) || workModelIdsEquivalent($0.modelId, summary.modelId) })?.id
-        ?? scopedModels.first(where: { workModelIdsEquivalent($0.id, summary.model) || workModelIdsEquivalent($0.modelId, summary.model) })?.id
-        ?? scopedModels.first(where: { $0.displayName == summary.model })?.id
-        ?? scopedModels.first(where: \.isDefault)?.id
-        ?? scopedModels.first?.id
+      func modelId(matching candidate: String?) -> String? {
+        scopedModels.first { model in
+          workModelIdsEquivalent(model.id, candidate)
+            || workModelIdsEquivalent(model.modelId, candidate)
+        }?.id
+      }
+
+      let selectedMatch = modelId(matching: selectedModelId)
+      let storedIdMatch = modelId(matching: summary.modelId)
+      let storedNameMatch = modelId(matching: summary.model)
+      let displayNameMatch = scopedModels.first(where: { $0.displayName == summary.model })?.id
+      let defaultMatch = scopedModels.first(where: \.isDefault)?.id
+      let firstMatch = scopedModels.first?.id
+      let matchedModelId = selectedMatch
+        ?? storedIdMatch
+        ?? storedNameMatch
+        ?? displayNameMatch
+        ?? defaultMatch
+        ?? firstMatch
         ?? ""
 
       selectedModelId = matchedModelId

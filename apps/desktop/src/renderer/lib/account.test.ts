@@ -84,3 +84,19 @@ describe("account status cache", () => {
     unsubscribe();
   });
 });
+
+describe("account avatar presentation", () => {
+  it("never uses a GitHub integration avatar while ADE is signed out", async () => {
+    const { accountAvatarImage } = await import("./account");
+
+    expect(accountAvatarImage(staleSignedOutStatus, "repo-user")).toBeNull();
+  });
+
+  it("allows the GitHub fallback only for a signed-in ADE account", async () => {
+    const { accountAvatarImage } = await import("./account");
+
+    expect(accountAvatarImage(publishedSignedInStatus, "repo-user")).toBe(
+      "https://github.com/repo-user.png?size=64",
+    );
+  });
+});

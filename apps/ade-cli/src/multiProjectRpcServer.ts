@@ -51,7 +51,10 @@ import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
-import { AccountMachineDirectoryService } from "./services/account/accountMachineDirectoryService";
+import {
+  AccountMachineDirectoryService,
+  reconcileAccountOwnedMachineTrust,
+} from "./services/account/accountMachineDirectoryService";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -74,6 +77,7 @@ export type MultiProjectRpcHandlerOptions = {
   personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
   accountAuthService?: AccountAuthService;
   registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
+  reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
 };
 
 const RUNTIME_METHODS = new Set([
@@ -119,6 +123,7 @@ const RUNTIME_METHODS = new Set([
   "sync.getRuntimeName",
   "sync.setRuntimeName",
   "sync.clearRuntimeName",
+  "sync.authorizeSshPairing",
   "sync.getDesktopPairingInfo",
   "sync.setActiveLanePresence",
   "sync.getCloudRelayStatus",
@@ -462,6 +467,16 @@ export function createMultiProjectRpcRequestHandler(
   const accountAuthService = options.accountAuthService ?? getSharedAccountAuthService({
     projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
   });
+  const reconcileAccountOwnership = options.reconcileAccountOwnership
+    ?? reconcileAccountOwnedMachineTrust;
+  const currentAccountOwnerUserId = (): string | null => {
+    const status = accountAuthService.getStatus();
+    return status.signedIn ? status.userId?.trim() || null : null;
+  };
+  const accountOwnerUserIdFromStatus = (value: unknown): string | null => {
+    if (!isRecord(value) || value.signedIn !== true) return null;
+    return typeof value.userId === "string" ? value.userId.trim() || null : null;
+  };
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? new PersonalChatScope();
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
@@ -798,6 +813,7 @@ export function createMultiProjectRpcRequestHandler(
       }
       registerAccountProjects();
       if (action === "listMachines" || action === "pairMachine") {
+        reconcileAccountOwnership(currentAccountOwnerUserId());
         const machineDirectory = new AccountMachineDirectoryService(accountAuthService, {
           appVersion: options.serverVersion,
           directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
@@ -805,11 +821,14 @@ export function createMultiProjectRpcRequestHandler(
           }),
         });
         const actionArgs = isRecord(params.args) ? params.args : {};
-        const result = action === "listMachines"
-          ? await machineDirectory.listMachines()
-          : await machineDirectory.pairMachine(
-              typeof actionArgs.machine === "string" ? actionArgs.machine : "",
-            );
+        if (action === "listMachines") {
+          const result = await machineDirectory.listMachines();
+          if (result.state === "auth_expired") reconcileAccountOwnership(null);
+          return { domain: "account", action, result, statusHints: {} };
+        }
+        const result = await machineDirectory.pairMachine(
+          typeof actionArgs.machine === "string" ? actionArgs.machine : "",
+        );
         return { domain: "account", action, result, statusHints: {} };
       }
       const response = await callAccountAction({
@@ -817,6 +836,15 @@ export function createMultiProjectRpcRequestHandler(
         action,
         actionArgs: isRecord(params.args) ? params.args : {},
       });
+      const completedLogin = (
+        action === "pollLogin" || action === "pollDeviceLogin"
+      ) && isRecord(response.result) && response.result.status === "signed_in";
+      if (action === "signOut" || completedLogin) {
+        const status = completedLogin && isRecord(response.result)
+          ? response.result.authStatus
+          : response.result;
+        reconcileAccountOwnership(accountOwnerUserIdFromStatus(status));
+      }
       return action === "status"
         ? { ...response, result: scopeAccountStatusForRole(response.result, callerRole) }
         : response;
@@ -1033,6 +1061,10 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.clearRuntimeName") {
       return await (await getSyncService()).clearRuntimeName();
+    }
+
+    if (method === "sync.authorizeSshPairing") {
+      return await (await getSyncService()).authorizeSshPairing(params);
     }
 
     if (method === "sync.getDesktopPairingInfo") {

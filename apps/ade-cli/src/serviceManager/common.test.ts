@@ -427,6 +427,38 @@ describe("launchd service install", () => {
     ]);
   });
 
+  it("reloads an unchanged running launch agent when a packaged trust reset requests it", () => {
+    const homeDir = makeTempHome("ade-launchd-trust-reset-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+
+    const result = installLaunchdService({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" },
+      currentPid: 9999,
+      parentPid: () => null,
+      terminateDeps: { kill: () => {}, pidAlive: () => false },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
+      { command: "launchctl", args: ["unload", servicePath] },
+      { command: "ps", args: ["-axo", "pid=,command="] },
+      { command: "launchctl", args: ["load", servicePath] },
+    ]);
+  });
+
   it("reloads an unchanged launch agent when it is loaded but stopped", () => {
     const homeDir = makeTempHome("ade-launchd-stopped-");
     const servicePath = launchAgentPath(homeDir);
@@ -502,7 +534,8 @@ describe("launchd service install", () => {
     expect(calls).toEqual([
       { command: "launchctl", args: ["print", currentLaunchdDomain()] },
     ]);
-    expect(fs.existsSync(servicePath)).toBe(false);
+    expect(fs.existsSync(servicePath)).toBe(true);
+    expect(fs.readFileSync(servicePath, "utf8")).toBe(renderLaunchdPlist(serviceCommand, homeDir));
   });
 
   it("reaps a stale same-channel sync brain and installs anyway", () => {

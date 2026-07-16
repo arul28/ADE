@@ -11,6 +11,9 @@ struct AccountSignInView: View {
   /// Invoked when the user taps Connect on a machine in the first-run step. The
   /// presenter dismisses and routes into the existing pairing/connect flow.
   var onConnect: (AccountMachine) -> Void = { _ in }
+  /// Called when an interactive sign-in is complete and the user chooses to
+  /// enter the app without selecting a machine from this sheet.
+  var onFinish: () -> Void = {}
 
   @ObservedObject private var account = AccountService.shared
   @Environment(\.dismiss) private var dismiss
@@ -55,6 +58,7 @@ struct AccountSignInView: View {
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
           Button {
+            if account.isSignedIn { onFinish() }
             dismiss()
           } label: {
             Image(systemName: "xmark")
@@ -70,6 +74,11 @@ struct AccountSignInView: View {
           step = .machines
           Task { await account.loadMachines() }
         }
+      }
+      .onAppear {
+        guard account.isSignedIn, step != .machines else { return }
+        step = .machines
+        Task { await account.loadMachines() }
       }
     }
   }
@@ -254,6 +263,7 @@ struct AccountSignInView: View {
       )
 
       Button {
+        onFinish()
         dismiss()
       } label: {
         Text("Done")

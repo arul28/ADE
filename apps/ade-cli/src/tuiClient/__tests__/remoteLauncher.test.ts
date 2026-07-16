@@ -4,12 +4,17 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { RemoteRuntimeTarget } from "../../../../desktop/src/shared/types/remoteRuntime";
 import {
+  assertRelayAccountUnchanged,
   buildSshArgs,
   buildRemoteRuntimeRpcCommand,
+  getCurrentAccountRelayProof,
+  hasExplicitSshFallback,
   listRemoteSessions,
   openRemoteRpcSession,
+  pairedRouteAccountProof,
   parseRemoteAdeCodeArgs,
   remoteRuntimeLayoutCandidates,
+  remoteTargetChoiceLabel,
   resolveRemoteTargetForLaunch,
   selectProject,
   takeAdeCodeRemoteArgs,
@@ -124,6 +129,92 @@ describe("ade code remote launcher", () => {
     expect(args).toContain("arul@arul-studio");
     expect(args).not.toContain("arul@100.75.20.63");
     expect(args).toContain("StrictHostKeyChecking=yes");
+  });
+
+  it("keeps signed-out LAN and Tailscale pairing independent from Relay auth", async () => {
+    const getAccountRelayProof = vi.fn(async () => null);
+    const credentials = { accountOwnerUserId: null };
+
+    await expect(pairedRouteAccountProof({
+      kind: "lan",
+      credentials,
+      getAccountRelayProof,
+    })).resolves.toBeNull();
+    await expect(pairedRouteAccountProof({
+      kind: "tailnet",
+      credentials,
+      getAccountRelayProof,
+    })).resolves.toBeNull();
+    expect(getAccountRelayProof).not.toHaveBeenCalled();
+  });
+
+  it("requires a fresh same-account proof before offering Relay", async () => {
+    const getStatus = vi.fn(() => ({
+      signedIn: true,
+      userId: "account-a",
+      email: "a@example.test",
+      name: "A",
+      expiresAt: "2026-07-15T22:00:00.000Z",
+      source: "loopback" as const,
+    }));
+    const getAccessToken = vi.fn(async () => "fresh-short-lived-token");
+    await expect(getCurrentAccountRelayProof({ getStatus, getAccessToken })).resolves.toEqual({
+      userId: "account-a",
+      token: "fresh-short-lived-token",
+    });
+    expect(getAccessToken).toHaveBeenCalledOnce();
+
+    await expect(pairedRouteAccountProof({
+      kind: "relay",
+      credentials: { accountOwnerUserId: "account-a" },
+      getAccountRelayProof: async () => ({
+        userId: "account-a",
+        token: "fresh-short-lived-token",
+      }),
+    })).resolves.toEqual({
+      userId: "account-a",
+      token: "fresh-short-lived-token",
+    });
+  });
+
+  it("keeps Relay absent when signed out or signed in to a different account", async () => {
+    await expect(pairedRouteAccountProof({
+      kind: "relay",
+      credentials: { accountOwnerUserId: "account-a" },
+      getAccountRelayProof: async () => null,
+    })).rejects.toThrow(/Sign in to ADE.*Relay.*Local network and Tailscale/i);
+
+    await expect(pairedRouteAccountProof({
+      kind: "relay",
+      credentials: { accountOwnerUserId: "account-a" },
+      getAccountRelayProof: async () => ({ userId: "account-b", token: "token-b" }),
+    })).rejects.toThrow(/same ADE account.*Relay/i);
+
+    await expect(assertRelayAccountUnchanged(
+      { userId: "account-a", token: "token-a" },
+      async () => ({ userId: "account-b", token: "token-b" }),
+    )).rejects.toThrow(/account changed.*same account/i);
+  });
+
+  it("never invents SSH fallback from a paired LAN or Tailscale route", () => {
+    const paired = {
+      ...legacyAccountTarget(),
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: "host-1", machineKey: null },
+      routes: [
+        { hostname: "192.168.1.63", port: null, source: "bonjour" as const, lastSucceededAt: null },
+        { hostname: "100.75.20.63", port: null, source: "tailscale" as const, lastSucceededAt: null },
+      ],
+    };
+    expect(hasExplicitSshFallback(paired)).toBe(false);
+    expect(hasExplicitSshFallback({
+      ...paired,
+      routes: [{ hostname: "studio", port: 22, source: "manual", lastSucceededAt: null }],
+    })).toBe(true);
+    expect(hasExplicitSshFallback({ ...paired, sshUser: "arul" })).toBe(true);
+    expect(remoteTargetChoiceLabel(paired)).toBe("Arul's Mac Studio (saved connection)");
+    expect(remoteTargetChoiceLabel({ ...legacyAccountTarget(), sshUser: "arul" }))
+      .toContain("advanced SSH: arul@100.75.20.63");
   });
 
   it("upgrades the exact desktop-connected account target before broken SSH can run", async () => {

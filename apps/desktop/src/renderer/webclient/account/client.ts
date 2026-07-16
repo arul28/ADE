@@ -53,6 +53,11 @@ export type BrowserAccountSnapshot = {
   message: string | null;
 };
 
+export type BrowserAccountSessionLease = Readonly<{
+  userId: string;
+  generation: number;
+}>;
+
 type TokenPayload = {
   accessToken: string;
   refreshToken: string | null;
@@ -151,6 +156,7 @@ function parseTokenPayload(value: unknown, priorRefreshToken: string | null): To
 
 export class BrowserAccountClient {
   private session: BrowserAccountSession | null = null;
+  private sessionGeneration = 0;
   private refreshPromise: Promise<string> | null = null;
   private snapshot: BrowserAccountSnapshot;
 
@@ -172,7 +178,7 @@ export class BrowserAccountClient {
       relayBaseUrls: config?.relayBaseUrls ?? trustedAccountRelayBaseUrls(),
       message: config
         ? null
-        : "Account sign-in isn't configured for this hosted client. Pairing still works.",
+        : "Account sign-in isn't configured for this web client. Direct pairing is still available.",
     };
   }
 
@@ -200,6 +206,22 @@ export class BrowserAccountClient {
 
   getRelayBaseUrls(): string[] {
     return [...this.snapshot.relayBaseUrls];
+  }
+
+  captureSessionLease(): BrowserAccountSessionLease | null {
+    const userId = this.session?.userId?.trim() ?? "";
+    if (
+      !userId
+      || (this.snapshot.state !== "signed_in" && this.snapshot.state !== "directory_unavailable")
+    ) {
+      return null;
+    }
+    return { userId, generation: this.sessionGeneration };
+  }
+
+  isSessionLeaseCurrent(lease: BrowserAccountSessionLease): boolean {
+    const current = this.captureSessionLease();
+    return current?.userId === lease.userId && current.generation === lease.generation;
   }
 
   async bootstrap(): Promise<BrowserAccountSnapshot> {
@@ -241,6 +263,7 @@ export class BrowserAccountClient {
       return await this.loadMachines();
     } catch {
       this.session = null;
+      this.sessionGeneration += 1;
       this.snapshot = {
         ...this.snapshot,
         state: "auth_expired",
@@ -276,6 +299,7 @@ export class BrowserAccountClient {
 
   signOut(): BrowserAccountSnapshot {
     this.session = null;
+    this.sessionGeneration += 1;
     this.refreshPromise = null;
     this.clearPendingOAuth();
     this.snapshot = {
@@ -392,16 +416,20 @@ export class BrowserAccountClient {
 
   private setSession(token: TokenPayload): void {
     const claims = decodeClaims(token.accessToken);
+    const machines = this.session?.userId === claims.userId
+      ? this.snapshot.machines
+      : [];
     this.session = {
       ...claims,
       accessToken: token.accessToken,
       refreshToken: token.refreshToken,
       expiresAtMs: (this.options.now?.() ?? Date.now()) + token.expiresInSec * 1000,
     };
+    this.sessionGeneration += 1;
     this.snapshot = {
       state: "signed_in",
       ...claims,
-      machines: [],
+      machines,
       relayBaseUrls: this.snapshot.relayBaseUrls,
       message: null,
     };
@@ -426,6 +454,7 @@ export class BrowserAccountClient {
 
   private expireSession(): void {
     this.session = null;
+    this.sessionGeneration += 1;
     this.refreshPromise = null;
     this.snapshot = {
       ...this.snapshot,

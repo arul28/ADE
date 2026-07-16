@@ -25,8 +25,73 @@ type AccountMachinePairer = {
     accountToken: string,
     deviceName: string,
     options?: PairWithAccountMachineOptions,
-  ): Promise<Pick<DesktopPairedMachineCredentials, "hostIdentity" | "endpoints">>;
+  ): Promise<Pick<
+    DesktopPairedMachineCredentials,
+    "hostIdentity" | "endpoints"
+  > & Partial<Pick<DesktopPairedMachineCredentials, "accountOwnerUserId">>>;
+  get?(hostDeviceIdOrMachineKey: string): DesktopPairedMachineCredentials | null;
+  save?(credentials: DesktopPairedMachineCredentials): DesktopPairedMachineCredentials;
+  remove?(hostDeviceIdOrMachineKey: string): boolean;
 };
+
+type AccountMachineCredentialPruner = Pick<
+  DesktopPairedMachineStore,
+  "pruneAccountOwned"
+>;
+
+type AccountMachineTargetPruner = Pick<
+  RemoteTargetRegistry,
+  "pruneAccountOwned" | "list" | "remove"
+>;
+
+export type AccountMachineTrustReconciliationResult = {
+  removedTargetIds: string[];
+  removedCredentialHostIds: string[];
+};
+
+/**
+ * Remove client-side machine trust that belongs to a different (or signed-out)
+ * ADE account. Ownerless PIN/address/SSH credentials are deliberately kept.
+ * Any target left pointing at a removed credential is unusable and is removed
+ * in the same pass so a partial historical write cannot leak its machine name.
+ */
+export function reconcileAccountOwnedMachineTrust(
+  currentOwnerUserIdValue: string | null,
+  options: {
+    pairedStore?: AccountMachineCredentialPruner;
+    targetRegistry?: AccountMachineTargetPruner;
+  } = {},
+): AccountMachineTrustReconciliationResult {
+  const currentOwnerUserId = currentOwnerUserIdValue?.trim() || null;
+  const pairedStore = options.pairedStore ?? new DesktopPairedMachineStore();
+  const targetRegistry = options.targetRegistry ?? new RemoteTargetRegistry();
+  const removedCredentials = pairedStore.pruneAccountOwned(currentOwnerUserId);
+  const removedCredentialIds = new Set<string>();
+  for (const credentials of removedCredentials) {
+    removedCredentialIds.add(credentials.hostIdentity.deviceId);
+    if (credentials.machineKey) removedCredentialIds.add(credentials.machineKey);
+  }
+
+  const removedTargetIds = new Set(
+    targetRegistry.pruneAccountOwned(currentOwnerUserId).map((target) => target.id),
+  );
+  for (const target of targetRegistry.list()) {
+    const reference = target.pairedMachine;
+    if (
+      !reference
+      || (!removedCredentialIds.has(reference.hostIdentity)
+        && !(reference.machineKey && removedCredentialIds.has(reference.machineKey)))
+    ) continue;
+    if (targetRegistry.remove(target.id)) removedTargetIds.add(target.id);
+  }
+
+  return {
+    removedTargetIds: [...removedTargetIds],
+    removedCredentialHostIds: removedCredentials.map(
+      (credentials) => credentials.hostIdentity.deviceId,
+    ),
+  };
+}
 
 export type AccountMachinePairOptions = Pick<
   PairWithAccountMachineOptions,
@@ -101,8 +166,42 @@ export class AccountMachineDirectoryService {
     const hostDeviceId = machine.deviceId?.trim();
     if (!hostDeviceId) throw new Error(`${machine.name ?? machine.machineKey} is missing a stable device id.`);
 
-    const token = await this.account.getAccessToken();
+    const initialStatus = this.account.getStatus();
+    const accountOwnerUserId = initialStatus.signedIn
+      ? initialStatus.userId?.trim() ?? ""
+      : "";
+    if (!accountOwnerUserId) {
+      throw new Error("Your ADE account identity is unavailable. Sign in again.");
+    }
+    const token = (await this.account.getAccessToken()).trim();
+    const refreshedStatus = this.account.getStatus();
+    if (
+      !token
+      || !refreshedStatus.signedIn
+      || refreshedStatus.userId?.trim() !== accountOwnerUserId
+    ) {
+      throw new Error("Your ADE account changed before the connection started. Try again.");
+    }
+    const authorizeAccountCommit = async (expectedOwnerUserId: string): Promise<boolean> => {
+      const before = this.account.getStatus();
+      if (!before.signedIn || before.userId?.trim() !== expectedOwnerUserId) return false;
+      try {
+        const currentToken = (await this.account.getAccessToken()).trim();
+        const after = this.account.getStatus();
+        return Boolean(
+          currentToken
+          && currentToken === token
+          && after.signedIn
+          && after.userId?.trim() === expectedOwnerUserId,
+        );
+      } catch {
+        return false;
+      }
+    };
     const pairedStore = this.options.pairedStore ?? new DesktopPairedMachineStore();
+    const priorCredentials = pairedStore.get?.(hostDeviceId)
+      ?? pairedStore.get?.(machine.machineKey)
+      ?? null;
     const credentials = await pairedStore.pairWithAccountMachine(
       machine,
       token,
@@ -111,8 +210,19 @@ export class AccountMachineDirectoryService {
         ...options,
         appVersion: this.options.appVersion,
         relayBaseUrls: this.options.relayBaseUrls ?? [defaultRelayUrl()],
+        accountOwnerUserId,
+        authorizeAccountCommit,
       },
     );
+    if (!await authorizeAccountCommit(accountOwnerUserId)) {
+      this.reconcileStaleAccountCommit({
+        pairedStore,
+        credentials,
+        priorCredentials,
+        expectedOwnerUserId: accountOwnerUserId,
+      });
+      throw new Error("Your ADE account changed before this machine could be saved. Try again.");
+    }
     const firstEndpoint = credentials.endpoints[0];
     const fallbackHostname = (() => {
       if (!firstEndpoint) return machine.name ?? machine.machineKey;
@@ -130,6 +240,7 @@ export class AccountMachineDirectoryService {
         hostIdentity: credentials.hostIdentity.deviceId,
         machineKey: machine.machineKey,
       },
+      accountOwnerUserId,
       sshUser: null,
       port: null,
       sshKeyPath: null,
@@ -143,5 +254,32 @@ export class AccountMachineDirectoryService {
       deviceId: hostDeviceId,
       name: machine.name ?? credentials.hostIdentity.name,
     };
+  }
+
+  private reconcileStaleAccountCommit(args: {
+    pairedStore: AccountMachinePairer;
+    credentials: Pick<DesktopPairedMachineCredentials, "hostIdentity" | "endpoints">
+      & Partial<Pick<DesktopPairedMachineCredentials, "accountOwnerUserId">>;
+    priorCredentials: DesktopPairedMachineCredentials | null;
+    expectedOwnerUserId: string;
+  }): void {
+    if (args.credentials.accountOwnerUserId !== args.expectedOwnerUserId) return;
+    const current = args.pairedStore.get?.(args.credentials.hostIdentity.deviceId);
+    if (!current || current.accountOwnerUserId !== args.expectedOwnerUserId) return;
+
+    const currentStatus = this.account.getStatus();
+    const activeOwnerUserId = currentStatus.signedIn
+      ? currentStatus.userId?.trim() ?? null
+      : null;
+    const prior = args.priorCredentials;
+    if (
+      prior
+      && (prior.accountOwnerUserId == null || prior.accountOwnerUserId === activeOwnerUserId)
+      && args.pairedStore.save
+    ) {
+      args.pairedStore.save(prior);
+      return;
+    }
+    args.pairedStore.remove?.(args.credentials.hostIdentity.deviceId);
   }
 }

@@ -4,6 +4,7 @@ import UserNotifications
 
 struct ConnectionSettingsView: View {
   let syncService: SyncService
+  let pairingOnly: Bool
 
   @Environment(\.dismiss) private var dismiss
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
@@ -12,6 +13,11 @@ struct ConnectionSettingsView: View {
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
   @State private var pinSetupRoute: PinSetupRoute?
+
+  init(syncService: SyncService, pairingOnly: Bool = false) {
+    self.syncService = syncService
+    self.pairingOnly = pairingOnly
+  }
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
     ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
@@ -24,16 +30,18 @@ struct ConnectionSettingsView: View {
           // ACCOUNT subsection: identity + account machines (directory Worker),
           // shown above the local pairing so both routes to a machine read as
           // one connections surface. Self-hides when no Clerk key is wired.
-          AccountConnectionsSection(onConnectMachine: connectToAccountMachine)
-            .padding(.horizontal, 16)
-            .padding(.top, 4)
+          if !pairingOnly {
+            AccountConnectionsSection(onConnectMachine: connectToAccountMachine)
+              .padding(.horizontal, 16)
+              .padding(.top, 4)
+          }
 
           // One "MACHINE" subsection: header → connection status card → pair
           // actions, so the whole machine area reads as a single group.
           VStack(alignment: .leading, spacing: 12) {
             SettingsSectionHeader(
-              label: "MACHINE",
-              hint: "Your machine connection"
+              label: "MAC",
+              hint: "Your Mac connection"
             )
 
             SettingsConnectionHeader(
@@ -50,32 +58,35 @@ struct ConnectionSettingsView: View {
 
             SettingsPairingSection(
               snapshot: presentationModel.pairingSnapshot,
+              showsWebClientOption: !pairingOnly,
               presentedSheet: $presentedSheet
             )
           }
             .padding(.horizontal, 16)
             .padding(.top, 4)
 
-          SettingsAppearanceSection()
-            .padding(.horizontal, 16)
+          if !pairingOnly {
+            SettingsAppearanceSection()
+              .padding(.horizontal, 16)
 
-          SettingsUsageQuotaSection(syncService: syncService)
-            .padding(.horizontal, 16)
+            SettingsUsageQuotaSection(syncService: syncService)
+              .padding(.horizontal, 16)
 
-          SettingsVoiceInputSection()
-            .padding(.horizontal, 16)
+            SettingsVoiceInputSection()
+              .padding(.horizontal, 16)
 
-          SettingsAnalyticsSection()
-            .padding(.horizontal, 16)
+            SettingsAnalyticsSection()
+              .padding(.horizontal, 16)
 
-          SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot)
-            .padding(.horizontal, 16)
+            SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot)
+              .padding(.horizontal, 16)
 
-          SettingsPushDeliverySection(
-            snapshot: presentationModel.pushDeliverySnapshot,
-            pushService: PushNotificationService.shared
-          )
-            .padding(.horizontal, 16)
+            SettingsPushDeliverySection(
+              snapshot: presentationModel.pushDeliverySnapshot,
+              pushService: PushNotificationService.shared
+            )
+              .padding(.horizontal, 16)
+          }
 
           Spacer(minLength: 20)
         }
@@ -83,7 +94,7 @@ struct ConnectionSettingsView: View {
       }
       .background(SettingsAuroraBackground().ignoresSafeArea())
       .adeNavigationGlass()
-      .navigationTitle("Settings")
+      .navigationTitle(pairingOnly ? "Connect a Mac" : "Settings")
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
           Button {
@@ -159,21 +170,35 @@ struct ConnectionSettingsView: View {
         routePairingQr(payload)
       }
 
+    case .link:
+      PairingLinkPasteSheet { value in
+        presentedSheet = nil
+        handleScannedPairingCode(value)
+      }
+      .presentationDetents([.medium])
+
+    case .ssh:
+      SSHPairingView(syncService: syncService)
+        .presentationDetents([.large])
+
     case .webClient:
       SettingsWebClientPairSheet(syncService: syncService)
         .presentationDetents([.large])
     }
   }
 
-  /// Route a chosen account machine into the existing, vetted pairing/connect
-  /// flow. A direct host+port endpoint pre-fills the manual PIN entry (the same
-  /// path "Enter machine details" uses); a relay-only machine falls back to the
-  /// discover sheet so the user can pick a reachable route.
+  /// Account machines pair through the verified relay and then reconnect with
+  /// a device-bound secret. The user does not need to find or re-enter a PIN.
   private func connectToAccountMachine(_ machine: AccountMachine) {
-    if let target = machine.directConnectTarget {
-      pinPreset = .manual(host: target.host, port: target.port)
-    } else {
-      presentedSheet = .discover
+    Task { @MainActor in
+      guard let session = await AccountService.shared.pairingSession() else {
+        return
+      }
+      _ = await syncService.pairWithAccountMachine(
+        machine,
+        accountToken: session.token,
+        authorization: session.authorization
+      )
     }
   }
 

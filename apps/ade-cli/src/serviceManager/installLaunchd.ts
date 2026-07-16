@@ -209,8 +209,9 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
     ? fs.readFileSync(servicePath, "utf8")
     : null;
   const plistUnchanged = existingPlist === plist;
+  const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
   const loaded = getLoadedLaunchdState(run);
-  if (plistUnchanged && loaded?.running === true) {
+  if (!forceRestart && plistUnchanged && loaded?.running === true) {
     return {
       ok: true,
       serviceName: ADE_RUNTIME_SERVICE_NAME,
@@ -239,12 +240,24 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
   if (conflict) {
     const ownEnv = command.env ? { ...env, ...command.env } : env;
     if (!isSameChannelSyncHostOwner(conflict.owner, ownEnv)) {
+      // Keep the channel-owned launch-agent definition current even while a
+      // different channel owns the machine-wide mobile-sync singleton. Older
+      // Beta builds could leave com.ade.runtime.beta pointing into ADE.app;
+      // refusing before writing preserved that mismatch forever and made the
+      // desktop attach to an app-owned no-sync brain on every launch.
+      if (!plistUnchanged) {
+        fs.writeFileSync(servicePath, plist, "utf8");
+        if (loaded?.running === true) {
+          run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+          terminatePidGracefully(loaded.pid, deps.terminateDeps);
+        }
+      }
       return {
         ok: false,
         serviceName: ADE_RUNTIME_SERVICE_NAME,
         action: "install",
         path: servicePath,
-        message: formatSyncHostSingletonConflictMessage(conflict),
+        message: `${formatSyncHostSingletonConflictMessage(conflict)} The ${ADE_RUNTIME_SERVICE_NAME} launch agent was updated for this ADE channel and will start when mobile sync is available.`,
       };
     }
     terminatePidGracefully(conflict.owner.pid, deps.terminateDeps);

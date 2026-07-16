@@ -16,6 +16,7 @@ const remoteRegistryListMock = vi.hoisted(() => vi.fn<[], RemoteRuntimeTarget[]>
 const remoteRegistrySaveMock = vi.hoisted(() => vi.fn());
 const remoteRegistryRemoveMock = vi.hoisted(() => vi.fn());
 const remoteRegistryUpdateMock = vi.hoisted(() => vi.fn());
+const remoteRegistryPruneAccountOwnedMock = vi.hoisted(() => vi.fn(() => []));
 const remoteConnectMock = vi.hoisted(() => vi.fn());
 const remoteProjectsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallActionForTargetMock = vi.hoisted(() => vi.fn());
@@ -78,6 +79,7 @@ vi.mock("../remoteRuntime/remoteTargetRegistry", () => ({
     save: remoteRegistrySaveMock,
     remove: remoteRegistryRemoveMock,
     update: remoteRegistryUpdateMock,
+    pruneAccountOwned: remoteRegistryPruneAccountOwnedMock,
   })),
 }));
 
@@ -162,7 +164,11 @@ describe("registerRuntimeBridge", () => {
     remoteRegistryListMock.mockReset().mockReturnValue([]);
     remoteRegistrySaveMock.mockReset();
     remoteRegistryRemoveMock.mockReset();
-    remoteRegistryUpdateMock.mockReset();
+    remoteRegistryUpdateMock.mockReset().mockImplementation((_id, patch) => ({
+      ...target,
+      ...patch,
+    }));
+    remoteRegistryPruneAccountOwnedMock.mockReset().mockReturnValue([]);
     remoteConnectMock.mockReset().mockResolvedValue({
       target,
       arch: "darwin-arm64",

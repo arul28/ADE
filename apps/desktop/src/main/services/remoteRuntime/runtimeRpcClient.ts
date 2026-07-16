@@ -1,7 +1,13 @@
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
+export type RuntimeRpcTransportCloseInfo = {
+  exitCode?: number | null;
+  signal?: string | null;
+  stderr?: string | null;
+};
+
 export type RuntimeRpcTransport = JsonRpcTransport & {
-  onClose?: (callback: () => void) => void;
+  onClose?: (callback: (info?: RuntimeRpcTransportCloseInfo) => void) => void;
   onError?: (callback: (error: Error) => void) => void;
 };
 
@@ -61,8 +67,17 @@ export class RuntimeRpcClient {
     this.transport.onError?.((error) => {
       this.failConnection(new Error(`Remote ADE service connection failed: ${error.message}`));
     });
-    this.transport.onClose?.(() => {
-      this.failConnection(new Error("Remote ADE service connection closed."));
+    this.transport.onClose?.((info) => {
+      const details = [
+        info?.exitCode != null ? `exit code ${info.exitCode}` : null,
+        info?.signal ? `signal ${info.signal}` : null,
+        info?.stderr?.trim() ? `stderr: ${info.stderr.trim()}` : null,
+      ].filter((value): value is string => value != null);
+      this.failConnection(new Error(
+        details.length > 0
+          ? `Remote ADE service connection closed (${details.join(", ")}).`
+          : "Remote ADE service connection closed.",
+      ));
     });
   }
 

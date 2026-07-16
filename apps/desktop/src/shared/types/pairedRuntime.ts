@@ -108,6 +108,8 @@ export type DesktopPairedMachineCredentials = {
   hostIdentity: SyncPairingHostIdentity;
   /** Optional tunnel-relay machine key parsed from a saved relay endpoint. */
   machineKey?: string | null;
+  /** Account that created this credential. Missing/null means user-paired. */
+  accountOwnerUserId?: string | null;
   /** Device id registered in the host's pairing store. */
   deviceId: string;
   /** Stable local site id used in the sync hello metadata. */

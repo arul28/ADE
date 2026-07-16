@@ -39,11 +39,9 @@ function relativeLastSeen(lastSeenAt: number | null): string {
 function accountMachineStatusLabel(
   machine: AdeAccountMachine,
   connectionState: ReturnType<typeof accountMachineConnectionState>,
-  relayOnly: boolean,
 ): string {
-  if (connectionState === "unreachable") return "Online · no verified paired relay";
-  if (relayOnly) return "Online · reachable through paired relay";
-  if (machine.online) return "Online · reachable on your account";
+  if (connectionState === "unreachable") return "Setup needed on other Mac";
+  if (machine.online) return "Ready to connect";
   return relativeLastSeen(machine.lastSeenAt);
 }
 
@@ -57,18 +55,15 @@ export function AccountMachineRow({
   onConnect,
 }: AccountMachineRowProps) {
   const { machine } = row;
-  const primaryEndpoint = machine.reachableEndpoints[0];
   const connectionState = accountMachineConnectionState(machine);
   const available = connectionState === "available";
-  const isOffline = section === "unavailable";
-  const relayOnly = machine.online
-    && machine.reachableEndpoints.length > 0
-    && machine.reachableEndpoints.every((endpoint) => endpoint.kind === "relay");
   const trulyOffline = !machine.online;
+  const needsSetup = connectionState === "unreachable";
+  const canExplain = trulyOffline || needsSetup;
 
   return (
     <div style={{ display: "grid", gap: 8 }}>
-      <div style={{ ...machineRowStyle, opacity: isOffline ? 0.62 : 1 }}>
+      <div style={{ ...machineRowStyle, opacity: trulyOffline && section === "unavailable" ? 0.62 : 1 }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 12, alignItems: "start" }}>
           <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
@@ -87,17 +82,12 @@ export function AccountMachineRow({
                 <Cloud size={11} weight="fill" />
                 account
               </span>
-              {primaryEndpoint ? (
-                <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11, whiteSpace: "nowrap", flexShrink: 0 }}>
-                  {endpointLabel(primaryEndpoint)}
-                </span>
-              ) : null}
             </div>
             <div style={subTextStyle}>
-              {[machine.platform, machine.deviceType].filter(Boolean).join(" · ") || "Registered on your account"}
+              Connected to your ADE account
             </div>
             <div style={helperTextStyle}>
-              {accountMachineStatusLabel(machine, connectionState, relayOnly)}
+              {accountMachineStatusLabel(machine, connectionState)}
             </div>
           </div>
 
@@ -113,7 +103,7 @@ export function AccountMachineRow({
                 {connecting ? "Connecting…" : "Connect"}
               </button>
             ) : null}
-            {trulyOffline ? (
+            {canExplain ? (
               <button
                 type="button"
                 aria-expanded={detailOpen}
@@ -121,7 +111,7 @@ export function AccountMachineRow({
                 onClick={() => onToggleDetail(row.id)}
                 style={outlineButton({ height: 30, padding: "0 10px", fontSize: 11 })}
               >
-                Why offline?
+                {needsSetup ? "How to connect" : "Why offline?"}
                 {detailOpen ? <CaretUp size={12} weight="bold" /> : <CaretDown size={12} weight="bold" />}
               </button>
             ) : null}
@@ -129,16 +119,17 @@ export function AccountMachineRow({
         </div>
       </div>
 
-      {trulyOffline && detailOpen ? (
+      {canExplain && detailOpen ? (
         <div id={`account-machine-detail-${row.id}`} style={inlineDetailStyle}>
           <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600 }}>
-            {relativeLastSeen(machine.lastSeenAt)}
+            {needsSetup ? "Finish setup on the other Mac" : relativeLastSeen(machine.lastSeenAt)}
           </div>
           <div style={helperTextStyle}>
-            This machine hasn't checked in recently — it's likely asleep or offline. It'll reappear here
-            the moment it comes back online.
+            {needsSetup
+              ? "On that Mac, open ADE and sign in to this same account. Then open Connections > Mobile and turn on Connect from anywhere."
+              : "This Mac hasn't checked in recently. Open ADE on it, then try again."}
           </div>
-          {machine.reachableEndpoints.length > 0 ? (
+          {!needsSetup && machine.reachableEndpoints.length > 0 ? (
             <div style={{ display: "grid", gap: 4 }}>
               <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600 }}>
                 Last-known routes
@@ -149,9 +140,7 @@ export function AccountMachineRow({
                 </div>
               ))}
             </div>
-          ) : (
-            <div style={helperTextStyle}>No reachable routes advertised.</div>
-          )}
+          ) : null}
           {row.matchedTargetId ? <ConnectionDoctorPanel machineId={row.matchedTargetId} /> : null}
         </div>
       ) : null}

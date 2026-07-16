@@ -80,6 +80,8 @@ export type SyncPeerHandoffSnapshot = {
   authKind: "bootstrap" | "paired" | "account" | null;
   pairedDeviceId: string | null;
   connectedAt: string;
+  /** Ephemeral Relay account-proof expiry; never contains the bearer. */
+  relayAccountExpiresAtMs?: number | null;
   /**
    * Site id of the project DB the depositing host was serving plus the peer's
    * live ack watermark on that DB. When the adopting host serves the SAME DB

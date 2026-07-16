@@ -10,7 +10,11 @@ import {
   wsDataToText,
 } from "../sync/syncProtocol";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
-import { openSyncEnvelopeConnection, openSyncRuntimeTransport } from "./syncRuntimeTransport";
+import {
+  buildDesktopPairedHello,
+  openSyncEnvelopeConnection,
+  openSyncRuntimeTransport,
+} from "./syncRuntimeTransport";
 
 class FakeWebSocket extends EventEmitter {
   readyState = 0;
@@ -75,6 +79,21 @@ function credentials(): DesktopPairedMachineCredentials {
 }
 
 describe("openSyncRuntimeTransport", () => {
+  it("adds an ephemeral account proof only to the relay hello", () => {
+    const paired = credentials();
+    const hello = buildDesktopPairedHello(
+      paired,
+      "1.2.3",
+      "short-lived-clerk-token",
+    );
+
+    expect(hello.auth).toMatchObject({
+      kind: "paired",
+      relayAccountToken: "short-lived-clerk-token",
+    });
+    expect(paired).not.toHaveProperty("relayAccountToken");
+  });
+
   it("does not construct a WebSocket for an already-cancelled attempt", async () => {
     const controller = new AbortController();
     controller.abort(new Error("cancel before connect"));
@@ -129,7 +148,7 @@ describe("openSyncRuntimeTransport", () => {
     expect(socket.readyState).toBe(3);
   });
 
-  it("authenticates, opens RPC, and lets RuntimeRpcClient parse a response split across rpc_data frames", async () => {
+  it("authenticates from saved paired credentials without an account token and opens RPC", async () => {
     let observedHello: Record<string, unknown> | null = null;
     let observedChannelId: string | null = null;
     const createWebSocket = () => new FakeWebSocket((text, ws) => {
@@ -218,8 +237,44 @@ describe("openSyncRuntimeTransport", () => {
         },
       },
     });
+    expect((observedHello as unknown as { auth?: Record<string, unknown> }).auth).not.toHaveProperty(
+      "accountToken",
+    );
     client.close();
     expect(transport.connection.endpoint).toBe("ws://sync.test/");
     expect(transport.connection).toBeDefined();
+  });
+
+  it("rejects a saved endpoint when the host identity changed", async () => {
+    const socket = new FakeWebSocket((text, ws) => {
+      const envelope = parseSyncEnvelope(wsDataToText(text));
+      if (envelope.type !== "hello") return;
+      ws.receive(encodeSyncEnvelope({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: {
+          peer: (envelope.payload as { peer: unknown }).peer,
+          brain: {
+            deviceId: "replacement-host",
+            deviceName: "Different Mac",
+            platform: "macOS",
+            deviceType: "desktop",
+            siteId: "replacement-site",
+            dbVersion: 0,
+          },
+          serverDbVersion: 0,
+          heartbeatIntervalMs: 5_000,
+          pollIntervalMs: 1_500,
+          features: { rpcChannel: true, portForward: true },
+        },
+      }));
+    });
+
+    await expect(openSyncRuntimeTransport({
+      credentials: credentials(),
+      endpoint: "ws://replacement.test",
+      createWebSocket: () => socket as unknown as WebSocket,
+    })).rejects.toThrow("Sync endpoint identity mismatch");
+    expect(socket.readyState).toBe(3);
   });
 });

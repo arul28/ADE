@@ -14,7 +14,7 @@ import type {
   SyncProjectCatalogPayload,
 } from "../../../shared/types/sync";
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
-import { deriveBrowserSyncEndpoints, type BrowserDialCandidate } from "./endpoints";
+import type { BrowserDialCandidate } from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
 import { signDpopProof } from "./dpop";
 import {
@@ -82,6 +82,7 @@ export type PairAndConnectArgs = {
   peer: SyncPeerMetadata;
   pin: string;
   dpopPublicKey: string;
+  relayAccountTokenProvider?: () => Promise<string>;
   buildEnvironment: (result: SyncPairingResultPayload, endpoint: string) => WebClientEnvironmentRecord;
 };
 
@@ -89,6 +90,7 @@ export type AccountPairAndConnectArgs = {
   endpoints: BrowserDialCandidate[];
   peer: SyncPeerMetadata;
   accountToken: string;
+  relayAccountTokenProvider?: () => Promise<string>;
   createDpop: () => Promise<SyncDpopProof>;
   expectedHostDeviceId: string;
   existingPairing: { deviceId: string; secret: string } | null;
@@ -103,7 +105,7 @@ type ListenerMap = {
   [K in keyof SyncConnectionEvents]: Set<(payload: SyncConnectionEvents[K]) => void>;
 };
 
-class SyncConnectionError extends Error {
+export class SyncConnectionError extends Error {
   constructor(message: string, readonly code: string, readonly payload?: SyncHelloErrorPayload) {
     super(message);
   }
@@ -128,6 +130,10 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function usesRelayAccountProof(candidate: BrowserDialCandidate): boolean {
+  return candidate.kind === "relay" || candidate.kind === "lastGood";
+}
+
 function asMessageEvent(data: unknown): MessageEvent<string> {
   return { data: dataToText(data) } as MessageEvent<string>;
 }
@@ -144,6 +150,7 @@ export class SyncConnection {
   private lastDialStartedAtMs = 0;
   private intentionalClose = false;
   private latestHello: SyncHelloOkPayload | null = null;
+  private relayAccountTokenProvider: (() => Promise<string>) | null = null;
   private readonly listeners: ListenerMap = {
     statusChanged: new Set(),
     envelope: new Set(),
@@ -199,8 +206,13 @@ export class SyncConnection {
     return this.ws?.readyState === SOCKET_OPEN && this.status.state === "connected";
   }
 
-  async connect(environment: WebClientEnvironmentRecord, endpoints: BrowserDialCandidate[]): Promise<void> {
+  async connect(
+    environment: WebClientEnvironmentRecord,
+    endpoints: BrowserDialCandidate[],
+    relayAccountTokenProvider?: () => Promise<string>,
+  ): Promise<void> {
     this.disconnect({ reconnect: false, code: 1000, reason: "Reconnect" });
+    this.relayAccountTokenProvider = relayAccountTokenProvider ?? null;
     this.environment = environment;
     this.endpoints = endpoints;
     this.shouldReconnect = true;
@@ -210,6 +222,7 @@ export class SyncConnection {
 
   async pairAndConnect(args: PairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     this.disconnect({ reconnect: false, code: 1000, reason: "Pairing" });
+    this.relayAccountTokenProvider = args.relayAccountTokenProvider ?? null;
     this.endpoints = args.endpoints;
     this.consecutiveAuthFailures = 0;
     const dialable = args.endpoints.filter((candidate) => candidate.dialable);
@@ -217,7 +230,7 @@ export class SyncConnection {
     let lastError: Error | null = null;
     for (const candidate of dialable) {
       try {
-        return await this.pairOnEndpoint(candidate.url, args);
+        return await this.pairOnEndpoint(candidate, args);
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         this.cleanupSocket();
@@ -228,6 +241,7 @@ export class SyncConnection {
 
   async pairWithAccount(args: AccountPairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     this.disconnect({ reconnect: false, code: 1000, reason: "Account pairing" });
+    this.relayAccountTokenProvider = args.relayAccountTokenProvider ?? (() => Promise.resolve(args.accountToken));
     this.endpoints = args.endpoints;
     this.consecutiveAuthFailures = 0;
     const dialable = args.endpoints.filter((candidate) => candidate.dialable);
@@ -254,6 +268,7 @@ export class SyncConnection {
 
   disconnect(options: { reconnect?: boolean; code?: number; reason?: string } = {}): void {
     this.shouldReconnect = options.reconnect ?? false;
+    this.relayAccountTokenProvider = null;
     this.intentionalClose = true;
     this.stopTimers();
     if (this.reconnectTimer) {
@@ -298,7 +313,7 @@ export class SyncConnection {
     let lastError: Error | null = null;
     for (const candidate of dialable) {
       try {
-        await this.connectEndpoint(environment, candidate.url);
+        await this.connectEndpoint(environment, candidate);
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -325,7 +340,8 @@ export class SyncConnection {
     throw lastError ?? new Error(message);
   }
 
-  private async connectEndpoint(environment: WebClientEnvironmentRecord, endpoint: string): Promise<void> {
+  private async connectEndpoint(environment: WebClientEnvironmentRecord, candidate: BrowserDialCandidate): Promise<void> {
+    const endpoint = candidate.url;
     const socket = this.socketFactory(endpoint);
     this.ws = socket;
     this.status.endpoint = endpoint;
@@ -342,7 +358,7 @@ export class SyncConnection {
       }, this.connectTimeoutMs);
 
       socket.onopen = () => {
-        void this.sendHello(environment).catch(reject);
+        void this.sendHello(environment, usesRelayAccountProof(candidate)).catch(reject);
       };
       socket.onmessage = (event) => {
         void this.handleMessage(asMessageEvent(event.data), {
@@ -386,7 +402,8 @@ export class SyncConnection {
     });
   }
 
-  private async pairOnEndpoint(endpoint: string, args: PairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
+  private async pairOnEndpoint(candidate: BrowserDialCandidate, args: PairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
+    const endpoint = candidate.url;
     const socket = this.socketFactory(endpoint);
     this.ws = socket;
     this.shouldReconnect = true;
@@ -404,12 +421,20 @@ export class SyncConnection {
       }, this.connectTimeoutMs * 2);
 
       socket.onopen = () => {
-        const payload: SyncPairingRequestPayload = {
-          code: args.pin,
-          peer: args.peer,
-          dpopPublicKey: args.dpopPublicKey,
-        };
-        socket.send(encodeEnvelopeText({ type: "pairing_request", requestId: "pairing", payload }));
+        void this.getRelayAccountToken(usesRelayAccountProof(candidate)).then((relayAccountToken) => {
+          const payload: SyncPairingRequestPayload = {
+            code: args.pin,
+            peer: args.peer,
+            dpopPublicKey: args.dpopPublicKey,
+            ...(relayAccountToken ? { relayAccountToken } : {}),
+          };
+          socket.send(encodeEnvelopeText({ type: "pairing_request", requestId: "pairing", payload }));
+        }).catch((error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          reject(error);
+        });
       };
       socket.onmessage = (event) => {
         void this.handleMessage(asMessageEvent(event.data), {
@@ -422,7 +447,7 @@ export class SyncConnection {
             }
             pairedEnvironment = args.buildEnvironment(payload, endpoint);
             this.environment = pairedEnvironment;
-            void this.sendHello(pairedEnvironment).catch((error) => {
+            void this.sendHello(pairedEnvironment, usesRelayAccountProof(candidate)).catch((error) => {
               settled = true;
               clearTimeout(timeout);
               reject(error);
@@ -556,7 +581,7 @@ export class SyncConnection {
     });
   }
 
-  private async sendHello(environment: WebClientEnvironmentRecord): Promise<void> {
+  private async sendHello(environment: WebClientEnvironmentRecord, throughRelay: boolean): Promise<void> {
     if (!this.ws || this.ws.readyState !== SOCKET_OPEN) return;
     const dpop = environment.dpopPublicKeyX963
       ? await signDpopProof({
@@ -566,6 +591,7 @@ export class SyncConnection {
           secret: environment.secret,
         })
       : null;
+    const relayAccountToken = await this.getRelayAccountToken(throughRelay);
     const payload: SyncHelloPayload = {
       peer: {
         deviceId: environment.localDeviceId,
@@ -581,9 +607,17 @@ export class SyncConnection {
         deviceId: environment.pairedDeviceId,
         secret: environment.secret,
         ...(dpop ? { dpop } : {}),
+        ...(relayAccountToken ? { relayAccountToken } : {}),
       },
     };
     this.ws.send(encodeEnvelopeText({ type: "hello", requestId: "hello", payload }));
+  }
+
+  private async getRelayAccountToken(throughRelay: boolean): Promise<string> {
+    if (!throughRelay) return "";
+    const token = (await this.relayAccountTokenProvider?.() ?? "").trim();
+    if (!token) throw new Error("Sign in again to connect through ADE Relay.");
+    return token;
   }
 
   private async handleMessage(
@@ -648,7 +682,10 @@ export class SyncConnection {
 
   private finishConnected(environment: WebClientEnvironmentRecord, endpoint: string, helloOk: SyncHelloOkPayload): void {
     this.environment = environment;
-    this.endpoints = deriveBrowserSyncEndpoints({ environment });
+    this.endpoints = [
+      ...this.endpoints.filter((candidate) => candidate.url === endpoint),
+      ...this.endpoints.filter((candidate) => candidate.url !== endpoint),
+    ];
     this.latestHello = helloOk;
     this.backoffMs = BACKOFF_MIN_MS;
     this.consecutiveAuthFailures = 0;
@@ -667,6 +704,11 @@ export class SyncConnection {
   }
 
   private handleAuthFailure(environment: WebClientEnvironmentRecord, payload: SyncHelloErrorPayload): SyncConnectionError {
+    if (payload.code === "relay_account_required") {
+      this.shouldReconnect = false;
+      this.setStatus({ state: "error", error: payload.message });
+      return new SyncConnectionError(payload.message, "relay_account_required", payload);
+    }
     const attributedToPairing = payload.host?.deviceId === environment.hostDeviceId;
     this.consecutiveAuthFailures += 1;
     this.emit("authFailed", { payload, attributedToPairing });

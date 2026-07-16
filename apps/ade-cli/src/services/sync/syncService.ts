@@ -8,6 +8,9 @@ import type {
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
   SyncPairingConnectInfo,
+  SyncPeerDeviceType,
+  SyncPeerMetadata,
+  SyncPeerPlatform,
   PersonalChatScopeContract,
   SyncRouteHealth,
   SyncRoleSnapshot,
@@ -58,6 +61,7 @@ import {
   type SyncRuntimeKind,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
+import { isValidDpopPublicKey } from "./syncPairingStore";
 import { createSyncSecurityStore } from "./syncSecurityStore";
 import { createSyncCloudRelayStore, type SyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSyncPeerService } from "./syncPeerService";
@@ -94,7 +98,7 @@ type SyncServiceArgs = {
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
-  accountAuthService?: Pick<AccountAuthService, "getStatus">;
+  accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   projectId?: string | null;
   runtimeProjectId?: string | null;
@@ -198,6 +202,95 @@ const PAIRED_DEVICES_FILE = "sync-paired-devices.json";
 const RUNTIME_NAME_FILE = "sync-runtime-name.json";
 const SECURITY_FILE = "sync-security.json";
 const CLOUD_RELAY_FILE = "sync-cloud-relay.json";
+
+const SSH_PAIRING_PROTOCOL_VERSION = 1 as const;
+const SSH_PAIRING_MAX_CAPABILITIES = 32;
+const SSH_PAIRING_MAX_TEXT_LENGTH = 256;
+
+type SshPairingDeviceInput = {
+  id: string;
+  name: string;
+  platform: SyncPeerPlatform;
+  type: SyncPeerDeviceType;
+  siteId?: string;
+  dpopPublicKey: string;
+  capabilities?: string[];
+  appVersion?: string;
+  appBuild?: string;
+  bundleIdentifier?: string;
+};
+
+export type SshPairingRequest = {
+  version: typeof SSH_PAIRING_PROTOCOL_VERSION;
+  device: SshPairingDeviceInput;
+};
+
+function requiredSshPairingText(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new Error(`${label} must be a string.`);
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`${label} is required.`);
+  if (normalized.length > SSH_PAIRING_MAX_TEXT_LENGTH) {
+    throw new Error(`${label} must be ${SSH_PAIRING_MAX_TEXT_LENGTH} characters or fewer.`);
+  }
+  return normalized;
+}
+
+function optionalSshPairingText(value: unknown, label: string): string | undefined {
+  if (value == null) return undefined;
+  return requiredSshPairingText(value, label);
+}
+
+function parseSshPairingRequest(value: unknown): SshPairingRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("SSH pairing request must be a JSON object.");
+  }
+  const request = value as Record<string, unknown>;
+  if (request.version !== SSH_PAIRING_PROTOCOL_VERSION) {
+    throw new Error(`Unsupported SSH pairing protocol version: ${String(request.version)}.`);
+  }
+  if (!request.device || typeof request.device !== "object" || Array.isArray(request.device)) {
+    throw new Error("device must be a JSON object.");
+  }
+  const device = request.device as Record<string, unknown>;
+  const platform = requiredSshPairingText(device.platform, "device.platform") as SyncPeerPlatform;
+  if (!["macOS", "linux", "windows", "iOS", "unknown"].includes(platform)) {
+    throw new Error("device.platform is not supported.");
+  }
+  const type = requiredSshPairingText(device.type, "device.type") as SyncPeerDeviceType;
+  if (!["desktop", "phone", "vps", "browser", "unknown"].includes(type)) {
+    throw new Error("device.type is not supported.");
+  }
+  const dpopPublicKey = requiredSshPairingText(device.dpopPublicKey, "device.dpopPublicKey");
+  if (!isValidDpopPublicKey(dpopPublicKey)) {
+    throw new Error("device.dpopPublicKey must be a base64 X9.63 P-256 public key.");
+  }
+  const capabilities = device.capabilities == null
+    ? undefined
+    : Array.isArray(device.capabilities)
+      ? [...new Set(device.capabilities.map((entry, index) => (
+          requiredSshPairingText(entry, `device.capabilities[${index}]`)
+        )))]
+      : null;
+  if (capabilities === null) throw new Error("device.capabilities must be an array of strings.");
+  if (capabilities && capabilities.length > SSH_PAIRING_MAX_CAPABILITIES) {
+    throw new Error(`device.capabilities supports at most ${SSH_PAIRING_MAX_CAPABILITIES} entries.`);
+  }
+  return {
+    version: SSH_PAIRING_PROTOCOL_VERSION,
+    device: {
+      id: requiredSshPairingText(device.id, "device.id"),
+      name: requiredSshPairingText(device.name, "device.name"),
+      platform,
+      type,
+      siteId: optionalSshPairingText(device.siteId, "device.siteId"),
+      dpopPublicKey,
+      capabilities,
+      appVersion: optionalSshPairingText(device.appVersion, "device.appVersion"),
+      appBuild: optionalSshPairingText(device.appBuild, "device.appBuild"),
+      bundleIdentifier: optionalSshPairingText(device.bundleIdentifier, "device.bundleIdentifier"),
+    },
+  };
+}
 
 function readPairingRecords(filePath: string): Record<string, unknown> {
   try {
@@ -471,6 +564,18 @@ export function createSyncService(args: SyncServiceArgs) {
   const cloudRelayStore = args.cloudRelayStore ?? createSyncCloudRelayStore({
     filePath: path.join(pairingStateDir, CLOUD_RELAY_FILE),
   });
+  const accountAuthService = args.accountAuthService ?? getSharedAccountAuthService({
+    projectRoots: () => [args.projectRoot],
+    logger: args.logger,
+  });
+  const isRelayAccountSignedIn = (): boolean => {
+    const status = accountAuthService.getStatus();
+    return status.signedIn && Boolean(status.userId?.trim());
+  };
+  const isCloudRelayUsable = (): boolean =>
+    cloudRelayStore.isEnabled()
+    && isRelayAccountSignedIn()
+    && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true);
 
   const deviceRegistryService = createDeviceRegistryService({
     db: args.db,
@@ -606,7 +711,7 @@ export function createSyncService(args: SyncServiceArgs) {
     }
     return buildPairingConnectInfo({
       localDevice,
-      relayWssUrl: cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
+      relayWssUrl: isCloudRelayUsable() ? cloudRelayStore.getRelayWssUrl() : null,
     });
   };
 
@@ -652,7 +757,7 @@ export function createSyncService(args: SyncServiceArgs) {
     syncPinStore: pinStore,
     getPairingConnectInfo: buildCurrentPairingConnectInfo,
     issueRuntimeHostPairingGrant: () => pairingStore.issueRuntimeHostGrant(),
-    isCloudRelayEnabled: () => cloudRelayStore.isEnabled(),
+    isCloudRelayEnabled: isCloudRelayUsable,
     logger: args.logger,
   });
 
@@ -734,10 +839,7 @@ export function createSyncService(args: SyncServiceArgs) {
       dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
       computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
       pinStore,
-      accountAuthService: args.accountAuthService ?? getSharedAccountAuthService({
-        projectRoots: () => [args.projectRoot],
-        logger: args.logger,
-      }),
+      accountAuthService,
       getAccountAttestationConfig: args.getAccountAttestationConfig ?? (() =>
         getSharedAccountAttestationConfig({ projectRoots: () => [args.projectRoot] })),
       runtimeNameStore,
@@ -757,7 +859,7 @@ export function createSyncService(args: SyncServiceArgs) {
       productAnalyticsService: args.productAnalyticsService,
       requireDpop: () => securityStore.getRequireDpop(),
       getCloudRelayWssUrl: () =>
-        cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
+        isCloudRelayUsable() ? cloudRelayStore.getRelayWssUrl() : null,
       loopbackProbe: args.loopbackProbe,
       onStateChanged: () => {
         void refreshRoleState();
@@ -1247,10 +1349,15 @@ export function createSyncService(args: SyncServiceArgs) {
           : tailscalePublished
             ? null
             : tailnetDiscovery.error ?? `Tailscale Serve is ${tailnetDiscovery.state}.`;
-      const relayEnabled = canHostPhonePairing && cloudRelayStore.isEnabled();
+      const relayConfigured = canHostPhonePairing && cloudRelayStore.isEnabled();
+      const relayAccountSignedIn = isRelayAccountSignedIn()
+        && (tunnelStatus?.accountLeaseValid ?? true);
+      const relayEnabled = relayConfigured && relayAccountSignedIn;
       const relayControlConnected = tunnelStatus?.connected === true;
       const relayBridgeValidated = tunnelStatus?.relayBridgeValidated === true;
-      const relayReason = !relayEnabled
+      const relayReason = relayConfigured && !relayAccountSignedIn
+        ? "Sign in to ADE to use ADE Relay."
+        : !relayEnabled
         ? null
         : !loopbackAdeValidated
           ? `Relay route is unusable because ${listenerReason ?? "the loopback ADE check failed"}`
@@ -1311,7 +1418,7 @@ export function createSyncService(args: SyncServiceArgs) {
           canHostPhonePairing
             ? buildPairingConnectInfo({
                 localDevice,
-                relayWssUrl: cloudRelayStore.isEnabled() ? cloudRelayStore.getRelayWssUrl() : null,
+                relayWssUrl: isCloudRelayUsable() ? cloudRelayStore.getRelayWssUrl() : null,
               })
             : null,
         connectedPeers,
@@ -1460,6 +1567,49 @@ export function createSyncService(args: SyncServiceArgs) {
       return snapshot;
     },
 
+    async authorizeSshPairing(value: unknown) {
+      assertPhonePairingAvailable();
+      const current = await service.getStatus({ includeTransferReadiness: false });
+      if ((current.runtimeRole ?? current.role) !== "host" && current.role !== "brain") {
+        throw new Error("SSH pairing is only available on the host ADE runtime.");
+      }
+      const request = parseSshPairingRequest(value);
+      const peer: SyncPeerMetadata = {
+        deviceId: request.device.id,
+        deviceName: request.device.name,
+        platform: request.device.platform,
+        deviceType: request.device.type,
+        siteId: request.device.siteId ?? request.device.id,
+        dbVersion: 0,
+        ...(request.device.capabilities ? { capabilities: request.device.capabilities } : {}),
+        ...(request.device.appVersion ? { appVersion: request.device.appVersion } : {}),
+        ...(request.device.appBuild ? { appBuild: request.device.appBuild } : {}),
+        ...(request.device.bundleIdentifier ? { bundleIdentifier: request.device.bundleIdentifier } : {}),
+      };
+      const paired = pairingStore.pairPeerViaLocalTrust(peer, {
+        dpopPublicKey: request.device.dpopPublicKey,
+      });
+      const connectInfo = buildCurrentPairingConnectInfo();
+      return {
+        version: SSH_PAIRING_PROTOCOL_VERSION,
+        ok: true as const,
+        machine: connectInfo.hostIdentity,
+        pairing: {
+          pairedDeviceId: paired.deviceId,
+          secret: paired.secret,
+        },
+        sync: {
+          port: connectInfo.port,
+          addressCandidates: connectInfo.addressCandidates,
+        },
+        runtime: {
+          name: runtimeNameStore.getRuntimeName(),
+          version: args.appVersion ?? null,
+          channel: process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() || "stable",
+        },
+      };
+    },
+
     getRequireDpop(): boolean {
       return securityStore.getRequireDpop();
     },
@@ -1473,17 +1623,23 @@ export function createSyncService(args: SyncServiceArgs) {
     getCloudRelayStatus(): SyncCloudRelayStatus {
       const config = cloudRelayStore.getConfig();
       const tunnelStatus = args.syncTunnelClientService?.getStatus() ?? null;
+      const accountSignedIn = isRelayAccountSignedIn()
+        && (tunnelStatus?.accountLeaseValid ?? true);
       return {
         enabled: config.enabled,
         relayWssUrl: cloudRelayStore.getRelayWssUrl(),
         machineKey: config.machineKey,
         relayUrl: cloudRelayStore.getRelayUrl(),
-        connected: tunnelStatus?.connected ?? false,
-        activeTunnels: tunnelStatus?.activeTunnels ?? 0,
-        relayBridgeValidated: tunnelStatus?.relayBridgeValidated ?? false,
+        connected: accountSignedIn && (tunnelStatus?.connected ?? false),
+        activeTunnels: accountSignedIn ? (tunnelStatus?.activeTunnels ?? 0) : 0,
+        relayBridgeValidated: accountSignedIn && (tunnelStatus?.relayBridgeValidated ?? false),
         lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
         lastSuccessAt: tunnelStatus?.lastSuccessAt ?? null,
-        lastError: tunnelStatus?.lastError ?? null,
+        lastError: !config.enabled
+          ? null
+          : accountSignedIn
+            ? tunnelStatus?.lastError ?? null
+            : "Sign in to ADE to use ADE Relay.",
       };
     },
 

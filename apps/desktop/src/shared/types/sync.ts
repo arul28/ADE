@@ -527,7 +527,14 @@ export type SyncDpopProof = {
 
 export type SyncHelloAuth =
   | { kind: "bootstrap"; token: string }
-  | { kind: "paired"; deviceId: string; secret: string; dpop?: SyncDpopProof | null }
+  | {
+      kind: "paired";
+      deviceId: string;
+      secret: string;
+      dpop?: SyncDpopProof | null;
+      /** Short-lived Clerk proof sent only over an ADE Relay connection. */
+      relayAccountToken?: string | null;
+    }
   | {
       kind: "account";
       deviceId: string;
@@ -570,7 +577,7 @@ export type SyncHelloOkPayload = {
 };
 
 export type SyncHelloErrorPayload = {
-  code: "auth_failed" | "invalid_hello";
+  code: "auth_failed" | "invalid_hello" | "relay_account_required";
   message: string;
   /**
    * Identity of the machine that rejected this hello. Lets a client tell
@@ -663,6 +670,12 @@ export type SyncPairingRequestPayload = {
   code: string;
   peer: SyncPeerMetadata;
   /**
+   * Short-lived account bearer presented only when this request crosses ADE
+   * Relay. The host verifies that it belongs to its current signed-in user;
+   * direct LAN and tailnet pairing never require or receive it.
+   */
+  relayAccountToken?: string | null;
+  /**
    * Base64 X9.63 P-256 public key of the device's Secure Enclave DPoP key.
    * Stored with the pairing record so later hellos must prove possession.
    */
@@ -683,6 +696,7 @@ export type SyncPairingResultPayload = {
     code:
       | "invalid_pin"
       | "pin_not_set"
+      | "relay_account_required"
       | "pairing_failed";
     message: string;
   };

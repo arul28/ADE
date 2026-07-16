@@ -48,7 +48,10 @@ import type {
 } from "../../../shared/types";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
 import { RemoteConnectionPool } from "../remoteRuntime/remoteConnectionPool";
-import { RemoteConnectionService } from "../remoteRuntime/remoteConnectionService";
+import {
+  RemoteConnectionService,
+  type AccountMachineReconciliationResult,
+} from "../remoteRuntime/remoteConnectionService";
 import { discoverLanRuntimes } from "../remoteRuntime/runtimeDiscovery";
 import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
 import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineStore";
@@ -60,6 +63,7 @@ import { invalidateProjectPathInspectionCache } from "../projects/projectPathIns
 import { readGlobalState } from "../state/globalState";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
+import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 
 // Lane attach/adopt performed through the runtime action path never touches the
 // in-process IPC.lanesAttach handler, so the project-path inspection cache must
@@ -313,6 +317,12 @@ function stripCloneAuthHeader(input: CloneProjectInput): CloneProjectInput {
   return safeInput;
 }
 
+export type RuntimeBridgeRegistration = {
+  reconcileAccountOwnership(
+    currentOwnerUserId: string | null,
+  ): AccountMachineReconciliationResult;
+};
+
 export function registerRuntimeBridge({
   appVersion,
   bindRemoteProject,
@@ -320,18 +330,42 @@ export function registerRuntimeBridge({
   getWindowSession,
   globalStatePath,
   localRuntimeConnectionPool,
-}: RuntimeBridgeArgs): void {
+}: RuntimeBridgeArgs): RuntimeBridgeRegistration {
   const remoteTargetRegistry = new RemoteTargetRegistry();
   const pairedMachineStore = new DesktopPairedMachineStore();
+  const accountAuthService = getSharedAccountAuthService({
+    projectRoots: () => [],
+  });
+  const getAccountRelayProof = async (): Promise<{
+    userId: string;
+    token: string;
+  } | null> => {
+    const status = accountAuthService.getStatus();
+    const userId = status.signedIn ? status.userId?.trim() ?? "" : "";
+    if (!userId) return null;
+    const token = (await accountAuthService.getAccessToken()).trim();
+    const refreshedStatus = accountAuthService.getStatus();
+    if (
+      !token
+      || !refreshedStatus.signedIn
+      || refreshedStatus.userId?.trim() !== userId
+    ) return null;
+    return { userId, token };
+  };
+  const getAuthorizedAccountOwnerId = async (): Promise<string | null> =>
+    (await getAccountRelayProof())?.userId ?? null;
   const remoteConnectionPool = new RemoteConnectionPool(
     remoteTargetRegistry,
     appVersion,
     pairedMachineStore,
+    {
+      getAccountRelayProof,
+    },
   );
   const remoteConnectionService = new RemoteConnectionService(
     remoteTargetRegistry,
     remoteConnectionPool,
-    { appVersion },
+    { appVersion, getAccountRelayProof, getAuthorizedAccountOwnerId },
     pairedMachineStore,
   );
   const runtimeEventSubscriptions = new Map<
@@ -354,7 +388,18 @@ export function registerRuntimeBridge({
   });
   if (process.env.ADE_DISABLE_REMOTE_AUTOCONNECT !== "1") {
     const autoconnectTimer = setTimeout(() => {
-      remoteConnectionService.startAutoconnect();
+      // Refresh or reject the persisted account lease before any saved target is
+      // allowed to open the pool. A failed refresh authoritatively means signed
+      // out for account-owned machine trust; local PIN/link/SSH trust remains.
+      void remoteConnectionService.reconcileAuthorizedAccountOwnership()
+        .then(() => remoteConnectionService.startAutoconnect())
+        .catch((error) => {
+          // Fail closed: do not start saved-target autoconnect when account trust
+          // could not be reconciled. Explicit connection paths remain guarded.
+          console.warn("remote_runtime.account_reconciliation_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
     }, 0);
     autoconnectTimer.unref?.();
   }
@@ -363,6 +408,11 @@ export function registerRuntimeBridge({
   };
   powerMonitor?.on?.("resume", probeRemoteConnectionsAfterWake);
   powerMonitor?.on?.("unlock-screen", probeRemoteConnectionsAfterWake);
+
+  const registration: RuntimeBridgeRegistration = {
+    reconcileAccountOwnership: (currentOwnerUserId) =>
+      remoteConnectionService.reconcileAccountOwnership(currentOwnerUserId),
+  };
 
   const cleanupRuntimeEventSubscription = (senderId: number): void => {
     const existing = runtimeEventSubscriptions.get(senderId);
@@ -634,6 +684,18 @@ export function registerRuntimeBridge({
         arg,
       );
       return remoteConnectionService.saveTarget(arg, discovered);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeSetAutoConnect,
+    async (
+      _event,
+      arg: { id?: string; enabled?: boolean },
+    ): Promise<RemoteRuntimeTarget> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      if (!id) throw new Error("Remote target id is required.");
+      return remoteConnectionService.setAutoConnect(id, arg?.enabled === true);
     },
   );
 
@@ -1379,4 +1441,6 @@ export function registerRuntimeBridge({
       return { disconnected: true };
     },
   );
+
+  return registration;
 }

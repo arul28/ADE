@@ -5,6 +5,25 @@ import UIKit
 @testable import ADE
 
 @MainActor
+private final class DeferredAccountPairingHello<Value> {
+  private var continuation: CheckedContinuation<Value, Never>?
+
+  var isWaiting: Bool { continuation != nil }
+
+  func wait() async -> Value {
+    await withCheckedContinuation { continuation in
+      self.continuation = continuation
+    }
+  }
+
+  func resume(returning value: Value) {
+    let pending = continuation
+    continuation = nil
+    pending?.resume(returning: value)
+  }
+}
+
+@MainActor
 private final class WorkAutoLaneNamingClientSpy: WorkAutoLaneNamingClient {
   enum SuggestResult {
     case success(String)
@@ -1963,6 +1982,496 @@ final class ADETests: XCTestCase {
       [],
       "A project switch to a different host must not inherit the old host's relay URL."
     )
+  }
+
+  func testRelayRequiresTheSameSignedInAccount() {
+    XCTAssertEqual(
+      syncRelayAuthorizationState(
+        hasRelayCandidates: true,
+        relayAccountOwnerId: "user_123",
+        currentAccountOwnerId: nil
+      ),
+      .requires(.signInRequired)
+    )
+    XCTAssertEqual(
+      syncRelayAuthorizationState(
+        hasRelayCandidates: true,
+        relayAccountOwnerId: "user_123",
+        currentAccountOwnerId: "user_other"
+      ),
+      .requires(.sameAccountRequired)
+    )
+    XCTAssertEqual(
+      syncRelayAuthorizationState(
+        hasRelayCandidates: true,
+        relayAccountOwnerId: "user_123",
+        currentAccountOwnerId: "user_123"
+      ),
+      .eligible
+    )
+  }
+
+  func testRelayHostRejectionBecomesTypedAccountRequirement() {
+    XCTAssertEqual(
+      syncRelayAuthorizationRequirementForHostRejection(
+        relayAccountOwnerId: "user_123",
+        currentAccountOwnerId: nil
+      ),
+      .signInRequired
+    )
+    XCTAssertEqual(
+      syncRelayAuthorizationRequirementForHostRejection(
+        relayAccountOwnerId: "user_123",
+        currentAccountOwnerId: "user_other"
+      ),
+      .sameAccountRequired
+    )
+    XCTAssertEqual(
+      syncRelayAuthorizationRequirementForHostRejection(
+        relayAccountOwnerId: "user_123",
+        currentAccountOwnerId: "user_123"
+      ),
+      .signInRequired,
+      "A rejected fresh proof is an account-session problem, not a revoked device pairing."
+    )
+  }
+
+  func testRelayPolicyFailureDoesNotConsumeReconnectBudget() {
+    XCTAssertFalse(
+      syncShouldConsumeReconnectRetryBudget(for: SyncRelayAuthorizationRequirement.signInRequired)
+    )
+    XCTAssertFalse(
+      syncShouldConsumeReconnectRetryBudget(for: SyncRelayAuthorizationRequirement.sameAccountRequired)
+    )
+    XCTAssertTrue(
+      syncShouldConsumeReconnectRetryBudget(
+        for: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
+      )
+    )
+  }
+
+  func testRelayAccountProofIsAddedOnlyToRelayHello() {
+    XCTAssertNil(
+      syncRelayAccountTokenForPairedHello(
+        host: "192.168.1.2",
+        accountToken: "fresh-clerk-token"
+      )
+    )
+    XCTAssertEqual(
+      syncRelayAccountTokenForPairedHello(
+        host: "wss://relay.ade.app/connect/machine-key",
+        accountToken: "fresh-clerk-token"
+      ),
+      "fresh-clerk-token"
+    )
+  }
+
+  func testLocalAccountSignOutSurvivesRelaunchAndCachedAuthEvents() {
+    let suite = "ade.account-sign-out.tests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let currentLaunch = AccountLocalSignOutState(defaults: defaults)
+    currentLaunch.suppress()
+
+    let relaunched = AccountLocalSignOutState(defaults: defaults)
+    XCTAssertTrue(relaunched.isSuppressed)
+    XCTAssertFalse(
+      accountSessionTokenIsAllowed(
+        localSignOutSuppressed: relaunched.isSuppressed,
+        phaseIsSignedIn: true,
+        identityUserId: "user_123",
+        clerkUserId: "user_123"
+      ),
+      "A matching cached Clerk user must not restore account access after local sign-out."
+    )
+  }
+
+  func testOnlyActiveClerkSessionPublishesAccountAccess() {
+    XCTAssertTrue(accountSessionStatusAllowsAccess(.active))
+    XCTAssertFalse(accountSessionStatusAllowsAccess(.expired))
+    XCTAssertFalse(accountSessionStatusAllowsAccess(.ended))
+    XCTAssertFalse(accountSessionStatusAllowsAccess(.revoked))
+    XCTAssertFalse(accountSessionStatusAllowsAccess(nil))
+  }
+
+  func testMobileLaunchAccessRequiresAnExplicitChoiceAfterStartingSignedOut() {
+    var signedOutLaunch = MobileLaunchAccessPolicy()
+    signedOutLaunch.observeInitialAccountPhase(.loading)
+    XCTAssertFalse(signedOutLaunch.checkedInitialAccountState)
+    signedOutLaunch.observeInitialAccountPhase(.signedOut)
+    XCTAssertTrue(signedOutLaunch.checkedInitialAccountState)
+    XCTAssertFalse(signedOutLaunch.hasAccess)
+
+    // A later interactive sign-in must leave the gate mounted so its machine
+    // choice can finish; the sign-in sheet grants access explicitly on Done or
+    // after a successful account-machine pairing.
+    signedOutLaunch.observeInitialAccountPhase(.signedIn)
+    XCTAssertFalse(signedOutLaunch.hasAccess)
+    signedOutLaunch.grantAccess()
+    XCTAssertTrue(signedOutLaunch.hasAccess)
+
+    var cachedSignedInLaunch = MobileLaunchAccessPolicy()
+    cachedSignedInLaunch.observeInitialAccountPhase(.signedIn)
+    XCTAssertTrue(cachedSignedInLaunch.hasAccess)
+  }
+
+  func testOnlySuccessfulInteractiveSignInClearsLocalSignOutBoundary() {
+    let suite = "ade.account-sign-in.tests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let state = AccountLocalSignOutState(defaults: defaults)
+    state.suppress()
+    XCTAssertTrue(state.isSuppressed)
+
+    state.clearAfterInteractiveSignIn()
+
+    XCTAssertFalse(state.isSuppressed)
+    XCTAssertTrue(
+      accountSessionTokenIsAllowed(
+        localSignOutSuppressed: state.isSuppressed,
+        phaseIsSignedIn: true,
+        identityUserId: "user_123",
+        clerkUserId: "user_123"
+      )
+    )
+    XCTAssertFalse(
+      accountSessionTokenIsAllowed(
+        localSignOutSuppressed: state.isSuppressed,
+        phaseIsSignedIn: true,
+        identityUserId: "user_123",
+        clerkUserId: "user_other"
+      ),
+      "ADE must never mint a token for a cached Clerk identity different from the published account."
+    )
+  }
+
+  @MainActor
+  func testAccountPairingDiscardsDeferredHelloAfterLocalSignOut() async {
+    let suite = "ade.account-pairing-sign-out.tests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let localSignOut = AccountLocalSignOutState(defaults: defaults)
+    let authorization = AccountPairingAuthorization(ownerId: "user_123", generation: 7)
+    let hello = DeferredAccountPairingHello<String>()
+    var currentGeneration: UInt64 = 7
+    var credentialPersisted = false
+    var profilePersisted = false
+    var connectionActivated = false
+
+    let pairing = Task { @MainActor in
+      try await performAuthorizedAccountPairingCommit(
+        authorization: authorization,
+        receiveHello: { await hello.wait() },
+        prepare: { $0 },
+        isAuthorized: { candidate in
+          accountPairingCommitIsAuthorized(
+            candidate,
+            currentGeneration: currentGeneration,
+            localSignOutSuppressed: localSignOut.isSuppressed,
+            phaseIsSignedIn: true,
+            identityUserId: "user_123",
+            clerkUserId: "user_123"
+          )
+        },
+        commit: { _ in
+          credentialPersisted = true
+          profilePersisted = true
+          connectionActivated = true
+        }
+      )
+    }
+
+    while !hello.isWaiting { await Task.yield() }
+    localSignOut.suppress()
+    currentGeneration &+= 1
+    hello.resume(returning: "hello_ok")
+
+    do {
+      try await pairing.value
+      XCTFail("Pairing must not commit after local sign-out.")
+    } catch {
+      XCTAssertTrue(error is AccountPairingAuthorizationChangedError)
+    }
+    XCTAssertFalse(credentialPersisted)
+    XCTAssertFalse(profilePersisted)
+    XCTAssertFalse(connectionActivated)
+  }
+
+  @MainActor
+  func testAccountPairingDiscardsDeferredHelloAfterOwnerSwitch() async {
+    let authorization = AccountPairingAuthorization(ownerId: "user_a", generation: 11)
+    let hello = DeferredAccountPairingHello<String>()
+    var currentGeneration: UInt64 = 11
+    var currentOwnerId = "user_a"
+    var didCommit = false
+
+    let pairing = Task { @MainActor in
+      try await performAuthorizedAccountPairingCommit(
+        authorization: authorization,
+        receiveHello: { await hello.wait() },
+        prepare: { $0 },
+        isAuthorized: { candidate in
+          accountPairingCommitIsAuthorized(
+            candidate,
+            currentGeneration: currentGeneration,
+            localSignOutSuppressed: false,
+            phaseIsSignedIn: true,
+            identityUserId: currentOwnerId,
+            clerkUserId: currentOwnerId
+          )
+        },
+        commit: { _ in didCommit = true }
+      )
+    }
+
+    while !hello.isWaiting { await Task.yield() }
+    currentOwnerId = "user_b"
+    currentGeneration &+= 1
+    hello.resume(returning: "hello_ok")
+
+    do {
+      try await pairing.value
+      XCTFail("Pairing must not commit under a different ADE account.")
+    } catch {
+      XCTAssertTrue(error is AccountPairingAuthorizationChangedError)
+    }
+    XCTAssertFalse(didCommit)
+  }
+
+  func testSignedOutRelayPolicyKeepsDirectRoutesAndSkipsRelay() {
+    let relay = "wss://relay.ade.app/connect/manual-host"
+    let profile = HostConnectionProfile(
+      hostIdentity: "manual-host",
+      hostName: "My Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "manual-host",
+      lastSuccessfulAddress: relay,
+      savedAddressCandidates: ["192.168.1.2", "100.75.20.63"],
+      discoveredLanAddresses: ["192.168.1.2"],
+      tailscaleAddress: "100.75.20.63",
+      savedRelayCandidates: [relay],
+      relayAccountOwnerId: "user_123"
+    )
+    let candidates = [relay, "192.168.1.2", "100.75.20.63"]
+
+    XCTAssertEqual(
+      syncAddressesAllowedByRelayPolicy(
+        candidates,
+        profile: profile,
+        currentAccountOwnerId: nil
+      ),
+      ["192.168.1.2", "100.75.20.63"]
+    )
+    XCTAssertEqual(
+      syncAddressesAllowedByRelayPolicy(
+        candidates,
+        profile: profile,
+        currentAccountOwnerId: "user_123"
+      ),
+      candidates
+    )
+  }
+
+  @MainActor
+  func testMatchingAccountRelayMetadataPreservesDirectPairingOwnership() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let direct = HostConnectionProfile(
+      hostIdentity: "manual-host",
+      hostName: "My Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "manual-host",
+      lastSuccessfulAddress: "192.168.1.2",
+      savedAddressCandidates: ["192.168.1.2"],
+      discoveredLanAddresses: ["192.168.1.2"],
+      tailscaleAddress: nil
+    )
+    service.installSavedProfileForTesting(direct, token: "manual-secret", makeActive: true)
+    let machineJSON = try XCTUnwrap("""
+      {
+        "machineKey": "machine-key",
+        "deviceId": "manual-host",
+        "name": "My Mac",
+        "reachableEndpoints": [
+          { "kind": "relay", "url": "wss://relay.ade.app/connect/machine-key" }
+        ],
+        "online": true
+      }
+      """.data(using: .utf8))
+    let machine = try JSONDecoder().decode(AccountMachine.self, from: machineJSON)
+
+    service.adoptVerifiedAccountRelayMetadataForTesting(
+      from: [machine],
+      ownerId: "user_123"
+    )
+
+    let adopted = try XCTUnwrap(service.savedProfilesForTesting().first)
+    XCTAssertNil(adopted.accountOwnerId, "Signing in must not convert a direct pairing into account-owned state.")
+    XCTAssertEqual(adopted.relayAccountOwnerId, "user_123")
+    XCTAssertEqual(adopted.savedRelayCandidates, ["wss://relay.ade.app/connect/machine-key"])
+
+    service.removeAccountOwnedPairings(exceptOwnerId: nil)
+    XCTAssertEqual(service.savedProfilesForTesting().map(\.hostIdentity), ["manual-host"])
+  }
+
+  @MainActor
+  func testAccountSignOutRemovesOnlyAccountOwnedMachineCredentials() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+
+    let manual = HostConnectionProfile(
+      hostIdentity: "manual-host",
+      hostName: "My Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "manual-host",
+      lastSuccessfulAddress: "192.168.1.2",
+      savedAddressCandidates: ["192.168.1.2"],
+      discoveredLanAddresses: ["192.168.1.2"],
+      tailscaleAddress: nil
+    )
+    let account = HostConnectionProfile(
+      hostIdentity: "account-host",
+      hostName: "Account Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "account-host",
+      lastSuccessfulAddress: "wss://relay.ade.app/connect/account-host",
+      savedAddressCandidates: [],
+      discoveredLanAddresses: [],
+      tailscaleAddress: nil,
+      savedRelayCandidates: ["wss://relay.ade.app/connect/account-host"],
+      accountOwnerId: "user_123"
+    )
+    service.installSavedProfileForTesting(manual, token: "manual-secret", makeActive: true)
+    service.installSavedProfileForTesting(account, token: "account-secret")
+
+    service.removeAccountOwnedPairings(exceptOwnerId: nil)
+
+    XCTAssertEqual(service.savedProfilesForTesting().map(\.hostIdentity), ["manual-host"])
+    XCTAssertTrue(service.hasCredentialForTesting(manual))
+    XCTAssertFalse(service.hasCredentialForTesting(account))
+  }
+
+  @MainActor
+  func testAccountSwitchRemovesPreviousOwnerAndKeepsCurrentOwner() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+
+    func accountProfile(host: String, owner: String) -> HostConnectionProfile {
+      HostConnectionProfile(
+        hostIdentity: host,
+        hostName: host,
+        port: 8787,
+        authKind: "paired",
+        pairedDeviceId: "phone",
+        lastRemoteDbVersion: 0,
+        lastHostDeviceId: host,
+        lastSuccessfulAddress: "wss://relay.ade.app/connect/\(host)",
+        savedAddressCandidates: [],
+        discoveredLanAddresses: [],
+        tailscaleAddress: nil,
+        savedRelayCandidates: ["wss://relay.ade.app/connect/\(host)"],
+        accountOwnerId: owner,
+        relayAccountOwnerId: owner
+      )
+    }
+    let previousOwner = accountProfile(host: "old-account-mac", owner: "user_old")
+    let currentOwner = accountProfile(host: "current-account-mac", owner: "user_current")
+    service.installSavedProfileForTesting(previousOwner, token: "old-secret")
+    service.installSavedProfileForTesting(currentOwner, token: "current-secret")
+
+    service.removeAccountOwnedPairings(exceptOwnerId: "user_current")
+
+    XCTAssertEqual(service.savedProfilesForTesting().map(\.hostIdentity), ["current-account-mac"])
+    XCTAssertFalse(service.hasCredentialForTesting(previousOwner))
+    XCTAssertTrue(service.hasCredentialForTesting(currentOwner))
+  }
+
+  @MainActor
+  func testManualRepairDeclassifiesAccountMachineBeforeSignOut() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let accountProfile = HostConnectionProfile(
+      hostIdentity: "same-host",
+      hostName: "My Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "same-host",
+      lastSuccessfulAddress: "wss://relay.ade.app/connect/same-host",
+      savedAddressCandidates: [],
+      discoveredLanAddresses: [],
+      tailscaleAddress: nil,
+      savedRelayCandidates: ["wss://relay.ade.app/connect/same-host"],
+      accountOwnerId: "user_123",
+      relayAccountOwnerId: "user_123"
+    )
+    var connectedProfile = accountProfile
+    connectedProfile.lastSuccessfulAddress = "192.168.1.2"
+    connectedProfile.savedAddressCandidates = ["192.168.1.2"]
+
+    let repaired = syncProfileAfterDirectPairing(
+      connectedProfile: connectedProfile,
+      previousProfile: accountProfile,
+      currentAccountOwnerId: "user_123"
+    )
+    XCTAssertNil(repaired.accountOwnerId)
+    XCTAssertEqual(repaired.relayAccountOwnerId, "user_123")
+
+    service.installSavedProfileForTesting(repaired, token: "manual-secret", makeActive: true)
+    service.removeAccountOwnedPairings(exceptOwnerId: nil)
+
+    let surviving = try XCTUnwrap(service.savedProfilesForTesting().first)
+    XCTAssertEqual(surviving.hostIdentity, "same-host")
+    XCTAssertNil(surviving.accountOwnerId)
+  }
+
+  @MainActor
+  func testAccountSignOutClearsActiveAccountMachine() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let account = HostConnectionProfile(
+      hostIdentity: "account-host",
+      hostName: "Account Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "account-host",
+      lastSuccessfulAddress: "wss://relay.ade.app/connect/account-host",
+      savedAddressCandidates: [],
+      discoveredLanAddresses: [],
+      tailscaleAddress: nil,
+      savedRelayCandidates: ["wss://relay.ade.app/connect/account-host"],
+      accountOwnerId: "user_123"
+    )
+    service.installSavedProfileForTesting(account, token: "account-secret", makeActive: true)
+
+    service.removeAccountOwnedPairings(ownerId: "user_123")
+
+    XCTAssertTrue(service.savedProfilesForTesting().isEmpty)
+    XCTAssertNil(service.activeHostProfile)
+    XCTAssertFalse(service.hasCredentialForTesting(account))
   }
 
   func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {

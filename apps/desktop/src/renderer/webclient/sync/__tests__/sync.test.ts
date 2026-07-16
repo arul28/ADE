@@ -12,6 +12,7 @@ import { AdeSyncClient } from "../client";
 import type { WebSocketLike } from "../connection";
 import { deriveBrowserSyncEndpoints } from "../endpoints";
 import { MemoryStorage, WebClientEnvStore, type WebClientEnvironmentRecord } from "../envStore";
+import { WebRelayAuthRequiredError, type WebRelayAccess } from "../relayPolicy";
 import { generateDpopKeyPair, exportPublicKeyX963Base64, rawEcdsaSignatureToDer, signDpopProof } from "../dpop";
 import { randomHex } from "../ids";
 import {
@@ -28,6 +29,10 @@ import {
   encodeSyncEnvelope,
   parseSyncEnvelope,
 } from "../../../../../../ade-cli/src/services/sync/syncProtocol";
+import {
+  accountLeaseOwnerForActiveConnection,
+  reconcileActiveAccountLease,
+} from "../../account/leaseMonitor";
 
 const hostPeer: SyncPeerMetadata = {
   deviceId: "host-device",
@@ -76,6 +81,18 @@ const pairingPayload: SyncPairingQrPayload = {
     { host: "192.168.1.10", kind: "lan" },
     { host: "100.64.0.2", kind: "tailscale" },
   ],
+};
+
+const signedInRelayAccess: WebRelayAccess = {
+  kind: "signed_in",
+  userId: "account-user-1",
+  hostDeviceIds: [hostPeer.deviceId],
+  getAccessToken: async () => "relay-account-token",
+};
+
+const currentAccountSessionLease = {
+  userId: "account-user-1",
+  generation: 1,
 };
 
 function helloOk(projectId = "project-1"): SyncHelloOkPayload {
@@ -414,15 +431,304 @@ describe("browser sync connection and client", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not open ADE Relay while signed out", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { addressCandidates: [] });
+    const script = createSocketFactory(() => {
+      throw new Error("signed-out Relay must not open a socket");
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await expect(client.connect(environment.envId)).rejects.toBeInstanceOf(WebRelayAuthRequiredError);
+    expect(script.sockets).toHaveLength(0);
+    client.dispose();
+  });
+
+  it("reconnects a signed-out direct LAN last-good endpoint without Relay authorization", async () => {
+    vi.stubGlobal("location", { protocol: "http:", hostname: "localhost" });
+    const storage = new MemoryStorage();
+    const directUrl = "ws://192.168.1.10:8787";
+    const environment = await makeEnvironment(storage, {
+      relayUrl: null,
+      machineKeyUrl: null,
+      explicitWssEndpoints: [],
+      addressCandidates: [{ host: "192.168.1.10", kind: "lan" }],
+      lastGoodEndpoint: directUrl,
+      accountOwnerUserId: null,
+    });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        expect(envelope.payload).not.toMatchObject({
+          auth: expect.objectContaining({ accountToken: expect.anything() }),
+        });
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: helloOk(),
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await client.connect(environment.envId);
+
+    expect(script.sockets.map((socket) => socket.url)).toEqual([directUrl]);
+    client.dispose();
+  });
+
+  it("lets a locally paired environment use Relay only after the account directory verifies its host", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { accountOwnerUserId: null, addressCandidates: [] });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await expect(client.connect(environment.envId, {
+      kind: "signed_in",
+      userId: "account-user-1",
+      hostDeviceIds: ["another-host"],
+      getAccessToken: async () => "relay-account-token",
+    })).rejects.toBeInstanceOf(WebRelayAuthRequiredError);
+    expect(script.sockets).toHaveLength(0);
+
+    await client.connect(environment.envId, signedInRelayAccess);
+    expect(script.sockets.map((socket) => socket.url)).toEqual([pairingPayload.relayUrl]);
+    expect((await client.listEnvironments())[0]?.accountOwnerUserId).toBeNull();
+    client.dispose();
+  });
+
+  it("keeps a signed-out secure direct pairing local", async () => {
+    const storage = new MemoryStorage();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "pairing_request") {
+        expect(envelope.payload).not.toMatchObject({ relayAccountToken: expect.anything() });
+        socket.serverSend({
+          type: "pairing_result",
+          requestId: envelope.requestId,
+          payload: {
+            ok: true,
+            deviceId: (envelope.payload as { peer: SyncPeerMetadata }).peer.deviceId,
+            secret: "direct-secret",
+          },
+        });
+      }
+      if (envelope.type === "hello") {
+        expect(envelope.payload).not.toMatchObject({ auth: { relayAccountToken: expect.anything() } });
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    const environment = await client.pair({
+      payload: pairingPayload,
+      pin: "123456",
+      deviceName: "ADE Browser",
+      directWssEndpoint: "wss://studio.example.test:8787",
+    });
+
+    expect(script.sockets[0]?.url).toBe("wss://studio.example.test:8787");
+    expect(environment.accountOwnerUserId).toBeNull();
+    expect(environment.explicitWssEndpoints).toContain("wss://studio.example.test:8787");
+    client.disconnect();
+    await client.connect(environment.envId);
+    expect(script.sockets[1]?.url).toBe("wss://studio.example.test:8787");
+    client.dispose();
+  });
+
+  it("turns a Relay account rejection into sign-in guidance without deleting the pairing", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { addressCandidates: [] });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      socket.serverSend({
+        type: "hello_error",
+        requestId: envelope.requestId,
+        payload: {
+          code: "relay_account_required",
+          message: "Sign in with the same ADE account on both machines.",
+          host: { deviceId: hostPeer.deviceId, name: hostPeer.deviceName },
+        },
+      });
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    await expect(client.connect(environment.envId, signedInRelayAccess)).rejects.toBeInstanceOf(WebRelayAuthRequiredError);
+    expect(await client.listEnvironments()).toHaveLength(1);
+    expect(client.getStatus().state).toBe("error");
+    client.dispose();
+  });
+
+  it("disconnects and prunes revoked account trust while connected without deleting local pairings", async () => {
+    const storage = new MemoryStorage();
+    await makeEnvironment(storage, {
+      envId: "local-env",
+      hostDeviceId: "local-host",
+      accountOwnerUserId: null,
+    });
+    const accountEnvironment = await makeEnvironment(storage, {
+      envId: "account-env",
+      accountOwnerUserId: "account-user-1",
+    });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    await client.connect(accountEnvironment.envId, signedInRelayAccess);
+    expect(client.getStatus().state).toBe("connected");
+
+    const result = await reconcileActiveAccountLease({
+      accountClient: {
+        getAccessToken: async () => {
+          throw new Error("ADE account session expired.");
+        },
+        getSnapshot: () => ({
+          state: "auth_expired",
+          userId: null,
+          email: null,
+          name: null,
+          machines: [],
+          relayBaseUrls: [],
+          message: "Your ADE account session expired. Sign in again.",
+        }),
+      },
+      syncClient: client,
+      expectedOwnerUserId: "account-user-1",
+    });
+
+    expect(result.state).toBe("revoked");
+    expect(client.getStatus().state).toBe("disconnected");
+    expect((await client.listEnvironments()).map((environment) => environment.envId)).toEqual(["local-env"]);
+    client.dispose();
+  });
+
+  it("disconnects a local pairing on confirmed Relay account expiry but preserves it for direct reconnect", async () => {
+    const storage = new MemoryStorage();
+    const localEnvironment = await makeEnvironment(storage, {
+      envId: "local-relay-env",
+      accountOwnerUserId: null,
+    });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    await client.connect(localEnvironment.envId, signedInRelayAccess);
+    const expectedOwnerUserId = accountLeaseOwnerForActiveConnection({
+      environment: localEnvironment,
+      endpoint: client.getStatus().endpoint,
+      relayAccess: signedInRelayAccess,
+    });
+    expect(expectedOwnerUserId).toBe("account-user-1");
+
+    const result = await reconcileActiveAccountLease({
+      accountClient: {
+        getAccessToken: async () => {
+          throw new Error("ADE account session expired.");
+        },
+        getSnapshot: () => ({
+          state: "auth_expired",
+          userId: null,
+          email: null,
+          name: null,
+          machines: [],
+          relayBaseUrls: [],
+          message: "Your ADE account session expired. Sign in again.",
+        }),
+      },
+      syncClient: client,
+      expectedOwnerUserId: expectedOwnerUserId!,
+    });
+
+    expect(result.state).toBe("revoked");
+    expect(client.getStatus().state).toBe("disconnected");
+    expect((await client.listEnvironments()).map((environment) => environment.envId)).toEqual([
+      "local-relay-env",
+    ]);
+    client.dispose();
+  });
+
+  it("keeps a local pairing connected through Relay during a transient directory outage", async () => {
+    const storage = new MemoryStorage();
+    const localEnvironment = await makeEnvironment(storage, {
+      envId: "local-relay-env",
+      accountOwnerUserId: null,
+    });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    await client.connect(localEnvironment.envId, signedInRelayAccess);
+    const expectedOwnerUserId = accountLeaseOwnerForActiveConnection({
+      environment: localEnvironment,
+      endpoint: client.getStatus().endpoint,
+      relayAccess: signedInRelayAccess,
+    });
+
+    const result = await reconcileActiveAccountLease({
+      accountClient: {
+        getAccessToken: async () => {
+          throw new Error("temporary network failure");
+        },
+        getSnapshot: () => ({
+          state: "directory_unavailable",
+          userId: "account-user-1",
+          email: "user@example.test",
+          name: null,
+          machines: [],
+          relayBaseUrls: [],
+          message: "Machines are temporarily unavailable.",
+        }),
+      },
+      syncClient: client,
+      expectedOwnerUserId: expectedOwnerUserId!,
+    });
+
+    expect(result.state).toBe("transient");
+    expect(client.getStatus().state).toBe("connected");
+    expect(await client.listEnvironments()).toHaveLength(1);
+    client.dispose();
+  });
+
+  it("does not attach an account lease to an explicit direct WSS connection", async () => {
+    const storage = new MemoryStorage();
+    const directEndpoint = "wss://studio.example.test:8787";
+    const localEnvironment = await makeEnvironment(storage, {
+      accountOwnerUserId: null,
+      relayUrl: null,
+      machineKeyUrl: null,
+      lastGoodEndpoint: directEndpoint,
+      explicitWssEndpoints: [directEndpoint],
+    });
+
+    expect(accountLeaseOwnerForActiveConnection({
+      environment: localEnvironment,
+      endpoint: directEndpoint,
+      relayAccess: signedInRelayAccess,
+    })).toBeNull();
   });
 
   it("pairs, sends a paired DPoP hello, persists the environment, and connects", async () => {
     const storage = new MemoryStorage();
+    await makeEnvironment(storage, { accountOwnerUserId: "account-user-1" });
     const sequence: string[] = [];
     const script = createSocketFactory((socket, envelope) => {
       sequence.push(envelope.type);
       if (envelope.type === "pairing_request") {
-        expect(envelope.payload).toMatchObject({ code: "123456" });
+        expect(envelope.payload).toMatchObject({
+          code: "123456",
+          relayAccountToken: "relay-account-token",
+        });
         socket.serverSend({
           type: "pairing_result",
           requestId: envelope.requestId,
@@ -434,18 +740,25 @@ describe("browser sync connection and client", () => {
         });
       }
       if (envelope.type === "hello") {
-        const payload = envelope.payload as { auth: { kind: string; dpop?: unknown } };
+        const payload = envelope.payload as { auth: { kind: string; dpop?: unknown; relayAccountToken?: string } };
         expect(payload.auth.kind).toBe("paired");
         expect(payload.auth.dpop).toBeTruthy();
+        expect(payload.auth.relayAccountToken).toBe("relay-account-token");
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
       }
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
-    const environment = await client.pair({ payload: pairingPayload, pin: "123456", deviceName: "ADE Browser" });
+    const environment = await client.pair({
+      payload: pairingPayload,
+      pin: "123456",
+      deviceName: "ADE Browser",
+      relayAccess: signedInRelayAccess,
+    });
 
     expect(sequence).toEqual(["pairing_request", "hello"]);
     expect(environment.secret).toBe("paired-secret");
+    expect(environment.accountOwnerUserId).toBeNull();
     expect(environment.lastGoodEndpoint).toBe("wss://relay.example/connect/machine-key");
     expect(await new WebClientEnvStore(storage).getSelectedEnvId()).toBe(environment.envId);
     expect(client.getStatus().state).toBe("connected");
@@ -524,6 +837,8 @@ describe("browser sync connection and client", () => {
     const environment = await accountClient.pairWithAccountMachine({
       machine: accountMachine,
       accessToken: accountToken,
+      accountSessionLease: currentAccountSessionLease,
+      isAccountSessionLeaseCurrent: () => true,
       deviceName: "ADE Browser",
       relayBaseUrls: ["https://relay-one.example", "https://relay-two.example"],
     });
@@ -557,10 +872,133 @@ describe("browser sync connection and client", () => {
         kind: "paired",
         secret: "stored-paired-secret",
         dpop: expect.any(Object),
+        relayAccountToken: accountToken,
       },
     });
     expect(accountClient.getStatus().state).toBe("connected");
     accountClient.dispose();
+  });
+
+  it("does not reuse another account's saved browser credentials", async () => {
+    const storage = new MemoryStorage();
+    const foreign = await makeEnvironment(storage, {
+      envId: "foreign-env",
+      accountOwnerUserId: "account-a",
+      localDeviceId: "account-a-local-device",
+      pairedDeviceId: "account-a-paired-device",
+      secret: "account-a-secret",
+    });
+    let accountDeviceId: string | null = null;
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      const payload = envelope.payload as {
+        auth: { kind: string; deviceId: string };
+      };
+      accountDeviceId = payload.auth.deviceId;
+      socket.serverSend({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: {
+          ...helloOk(),
+          accountPairing: {
+            deviceId: payload.auth.deviceId,
+            secret: "account-b-secret",
+          },
+        },
+      });
+    });
+    const client = new AdeSyncClient({
+      storage,
+      socketFactory: script.factory,
+      document: null,
+    });
+
+    const paired = await client.pairWithAccountMachine({
+      machine: {
+        machineKey: "machine-key",
+        deviceId: hostPeer.deviceId,
+        name: hostPeer.deviceName,
+        platform: "macOS",
+        deviceType: "desktop",
+        reachableEndpoints: [{
+          kind: "relay",
+          url: "wss://relay.example/connect/machine-key",
+        }],
+        lastSeenAt: Date.now(),
+        online: true,
+      },
+      accessToken: "account-b-token",
+      accountSessionLease: { userId: "account-b", generation: 2 },
+      isAccountSessionLeaseCurrent: () => true,
+      deviceName: "ADE Browser",
+      relayBaseUrls: ["https://relay.example"],
+    });
+
+    expect(accountDeviceId).not.toBe(foreign.localDeviceId);
+    expect(paired.envId).not.toBe(foreign.envId);
+    expect(paired.secret).toBe("account-b-secret");
+    expect(paired.accountOwnerUserId).toBe("account-b");
+    expect(await client.listEnvironments()).toHaveLength(2);
+    client.dispose();
+  });
+
+  it.each([
+    { transition: "sign-out", nextLease: null },
+    { transition: "account switch", nextLease: { userId: "account-user-2", generation: 2 } },
+  ])("rejects a deferred account hello after $transition without saving trust", async ({ nextLease }) => {
+    const storage = new MemoryStorage();
+    let currentLease: { userId: string; generation: number } | null = {
+      userId: "account-user-1",
+      generation: 1,
+    };
+    let releaseHello: (() => void) | null = null;
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      const peer = (envelope.payload as { peer: SyncPeerMetadata }).peer;
+      releaseHello = () => socket.serverSend({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: {
+          ...helloOk(),
+          accountPairing: {
+            deviceId: peer.deviceId,
+            secret: "must-not-be-saved",
+          },
+        },
+      });
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const pairing = client.pairWithAccountMachine({
+      machine: {
+        machineKey: "machine-key",
+        deviceId: hostPeer.deviceId,
+        name: hostPeer.deviceName,
+        platform: "macOS",
+        deviceType: "desktop",
+        reachableEndpoints: [{
+          kind: "relay",
+          url: "wss://relay.example/connect/machine-key",
+        }],
+        lastSeenAt: Date.now(),
+        online: true,
+      },
+      accessToken: "account-token",
+      accountSessionLease: currentLease,
+      isAccountSessionLeaseCurrent: (lease) => currentLease?.userId === lease.userId
+        && currentLease.generation === lease.generation,
+      deviceName: "ADE Browser",
+      relayBaseUrls: ["https://relay.example"],
+    });
+
+    for (let attempt = 0; attempt < 20 && !releaseHello; attempt += 1) await flush();
+    expect(releaseHello).not.toBeNull();
+    currentLease = nextLease;
+    releaseHello!();
+
+    await expect(pairing).rejects.toMatchObject({ code: "account_session_changed" });
+    expect(await client.listEnvironments()).toEqual([]);
+    expect(client.getStatus().state).toBe("disconnected");
+    client.dispose();
   });
 
   it("rejects an ordinary paired hello from a different host identity", async () => {
@@ -586,7 +1024,7 @@ describe("browser sync connection and client", () => {
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
-    await expect(client.connect(environment.envId)).rejects.toThrow(/identity.*stored pairing/i);
+    await expect(client.connect(environment.envId, signedInRelayAccess)).rejects.toThrow(/identity.*stored pairing/i);
     expect(client.getStatus().state).not.toBe("connected");
     client.dispose();
   });
@@ -615,6 +1053,8 @@ describe("browser sync connection and client", () => {
         online: true,
       },
       accessToken: "account-token",
+      accountSessionLease: currentAccountSessionLease,
+      isAccountSessionLeaseCurrent: () => true,
       deviceName: "ADE Browser",
       relayBaseUrls: ["https://allowed-relay.example"],
     })).rejects.toMatchObject({ code: "secure_relay_unavailable" });
@@ -640,7 +1080,7 @@ describe("browser sync connection and client", () => {
       document: null,
     });
 
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
     const socket = script.sockets[0]!;
     socket.serverSend({
       type: "rpc_open",
@@ -675,7 +1115,7 @@ describe("browser sync connection and client", () => {
       }
     });
     const attributedClient = new AdeSyncClient({ storage: attributedStorage, socketFactory: attributedScript.factory, document: null });
-    await expect(attributedClient.connect(attributedEnv.envId)).rejects.toThrow("Revoked");
+    await expect(attributedClient.connect(attributedEnv.envId, signedInRelayAccess)).rejects.toThrow("Revoked");
     await flush();
     expect(await attributedClient.listEnvironments()).toHaveLength(0);
     attributedClient.dispose();
@@ -696,7 +1136,7 @@ describe("browser sync connection and client", () => {
       }
     });
     const ambiguousClient = new AdeSyncClient({ storage: ambiguousStorage, socketFactory: ambiguousScript.factory, document: null });
-    await expect(ambiguousClient.connect(ambiguousEnv.envId)).rejects.toThrow("Wrong machine");
+    await expect(ambiguousClient.connect(ambiguousEnv.envId, signedInRelayAccess)).rejects.toThrow("Wrong machine");
     expect(await ambiguousClient.listEnvironments()).toHaveLength(1);
     ambiguousClient.dispose();
   });
@@ -724,7 +1164,7 @@ describe("browser sync connection and client", () => {
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     client.subscribe((status) => states.push(status.state));
 
-    const initialConnect = client.connect(environment.envId).catch((error: unknown) => error);
+    const initialConnect = client.connect(environment.envId, signedInRelayAccess).catch((error: unknown) => error);
     await vi.advanceTimersByTimeAsync(0);
     await flushMicrotasks();
 
@@ -793,12 +1233,12 @@ describe("browser sync connection and client", () => {
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
     client.subscribeChat("chat-1", {}, {});
     client.subscribeTerminal("term-1", {}, {});
     await flush();
     script.sockets[0].close(1006, "network");
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
     await flush();
 
     const resent = script.sockets[1].sent;
@@ -837,7 +1277,7 @@ describe("browser sync connection and client", () => {
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
     client.subscribeChat("chat-1", {}, {});
     client.subscribeTerminal("term-1", {}, {});
     await flush();
@@ -879,7 +1319,7 @@ describe("browser sync connection and client", () => {
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
     const switchPromise = client.switchProject("project-2");
     await storage.waitForPausedPut();
     client.subscribeChat("old-chat", {}, {});
@@ -918,11 +1358,11 @@ describe("browser sync connection and client", () => {
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
     client.subscribeTerminal("term-1", {}, {});
     await flush();
     script.sockets[0].close(1006, "network");
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
     await flush();
 
     expect(script.sockets[1].sent.find((envelope) => envelope.type === "terminal_subscribe")?.payload).toMatchObject({
@@ -946,7 +1386,7 @@ describe("browser sync connection and client", () => {
       }
     });
     const cachedClient = new AdeSyncClient({ storage: cachedStorage, socketFactory: cachedScript.factory, document: null });
-    await cachedClient.connect(cachedEnvironment.envId);
+    await cachedClient.connect(cachedEnvironment.envId, signedInRelayAccess);
 
     await expect(cachedClient.getProjectCatalog()).resolves.toMatchObject({
       projects: [{ id: "project-1" }],
@@ -968,7 +1408,7 @@ describe("browser sync connection and client", () => {
       }
     });
     const uncachedClient = new AdeSyncClient({ storage: uncachedStorage, socketFactory: uncachedScript.factory, document: null });
-    await uncachedClient.connect(uncachedEnvironment.envId);
+    await uncachedClient.connect(uncachedEnvironment.envId, signedInRelayAccess);
 
     const first = uncachedClient.getProjectCatalog();
     const second = uncachedClient.getProjectCatalog();
@@ -1042,7 +1482,7 @@ describe("browser sync connection and client", () => {
       }
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
 
     await expect(client.sendCommand("chat.send", { mode: "normal" })).resolves.toEqual({ value: 1 });
     await expect(client.sendCommand("chat.send", { mode: "result-first" })).resolves.toEqual({ value: 2 });
@@ -1077,7 +1517,7 @@ describe("browser sync connection and client", () => {
       }
     });
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
-    await client.connect(environment.envId);
+    await client.connect(environment.envId, signedInRelayAccess);
 
     await expect(client.requestFile("readFile", { workspaceId: "w", path: "README.md" })).resolves.toEqual({ content: "hi" });
     await expect(client.requestTerminalHistory({ sessionId: "term-1", beforeOffset: 10 })).resolves.toMatchObject({

@@ -29,8 +29,17 @@ import { isTailnetHostname } from "../../../shared/tailnet";
 import { exportPublicKeyX963Base64, generateDpopKeyPair, signDpopProof } from "./dpop";
 import { deriveBrowserSyncEndpoints } from "./endpoints";
 import {
+  filterEnvironmentEndpoints,
+  filterPairingEndpoints,
+  requireDialableAuthorizedEndpoint,
+  SIGNED_OUT_RELAY_ACCESS,
+  WebRelayAuthRequiredError,
+  type WebRelayAccess,
+} from "./relayPolicy";
+import {
   platformFromNavigator,
   SyncConnection,
+  SyncConnectionError,
   type SyncConnectionStatus,
   type WebSocketFactory,
 } from "./connection";
@@ -52,6 +61,11 @@ export type AdeSyncClientStatus = SyncConnectionStatus & {
   activeProjectId: string | null;
   selectedEnvId: string | null;
 };
+
+export type WebAccountSessionLease = Readonly<{
+  userId: string;
+  generation: number;
+}>;
 
 export type SendCommandOptions = {
   projectId?: string | null;
@@ -131,6 +145,13 @@ function commandError(payload: SyncCommandResultPayload): AdeSyncError {
   return new AdeSyncError(payload.error?.message ?? "Remote command failed.", code, payload.error ?? payload);
 }
 
+function mapRelayAuthError(error: unknown): never {
+  if (error instanceof SyncConnectionError && error.code === "relay_account_required") {
+    throw new WebRelayAuthRequiredError(error.message);
+  }
+  throw error;
+}
+
 function timeout<T>(pending: PendingRequest<T>, requests: Map<string, PendingRequest<T>>, requestId: string): void {
   requests.delete(requestId);
   pending.reject(new AdeSyncError("Timed out waiting for ADE machine response.", "timeout"));
@@ -143,6 +164,7 @@ export class AdeSyncClient {
   private activeProjectId: string | null = null;
   private currentCatalog: SyncProjectCatalogPayload | null = null;
   private latestHello: SyncHelloOkPayload | null = null;
+  private relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS;
   private readonly pendingCommands = new Map<string, PendingCommand>();
   private readonly pendingFiles = new Map<string, PendingRequest<unknown>>();
   private readonly pendingTerminalHistory = new Map<string, PendingRequest<SyncTerminalHistoryResponsePayload>>();
@@ -202,6 +224,8 @@ export class AdeSyncClient {
     payload: SyncPairingQrPayload;
     pin: string;
     deviceName: string;
+    relayAccess?: WebRelayAccess;
+    directWssEndpoint?: string | null;
   }): Promise<WebClientEnvironmentRecord> {
     const existing = await this.envStore.findByHostDeviceId(args.payload.hostIdentity.deviceId);
     const dpopKeys = await generateDpopKeyPair();
@@ -217,22 +241,42 @@ export class AdeSyncClient {
       dbVersion: 0,
       capabilities: [],
     };
-    const endpoints = deriveBrowserSyncEndpoints({ payload: args.payload });
+    const derivedEndpoints = deriveBrowserSyncEndpoints({ payload: args.payload });
+    const directWssEndpoint = args.directWssEndpoint?.trim() ?? "";
+    const originalEndpoints = directWssEndpoint.startsWith("wss://")
+      ? [
+          { url: directWssEndpoint, kind: "explicitWss" as const, dialable: true },
+          ...derivedEndpoints,
+        ]
+      : derivedEndpoints;
+    const relayAccess = args.relayAccess ?? SIGNED_OUT_RELAY_ACCESS;
+    this.relayAccess = relayAccess;
+    const endpoints = filterPairingEndpoints(args.payload, originalEndpoints, relayAccess);
+    requireDialableAuthorizedEndpoint(originalEndpoints, endpoints);
     const paired = await this.connection.pairAndConnect({
       endpoints,
       peer,
       pin: args.pin,
       dpopPublicKey: dpopPublicKeyX963,
+      relayAccountTokenProvider: relayAccess.kind === "signed_in"
+        ? relayAccess.getAccessToken
+        : undefined,
       buildEnvironment: (result, endpoint) => {
         if (!result.secret) throw new AdeSyncError("Pairing succeeded without a secret.", "pairing_failed", result);
         return {
           envId: existing?.envId ?? uuid(),
           machineName: args.payload.hostIdentity.name,
           hostDeviceId: args.payload.hostIdentity.deviceId,
+          // Link/PIN pairing is always locally owned, even when it replaces an
+          // account-adopted record or happens to travel through Relay.
+          accountOwnerUserId: null,
           relayUrl: args.payload.relayUrl ?? existing?.relayUrl ?? null,
           machineKeyUrl: existing?.machineKeyUrl ?? null,
           addressCandidates: args.payload.addressCandidates,
-          explicitWssEndpoints: existing?.explicitWssEndpoints ?? [],
+          explicitWssEndpoints: [...new Set([
+            ...(existing?.explicitWssEndpoints ?? []),
+            ...(directWssEndpoint ? [directWssEndpoint] : []),
+          ])],
           port: args.payload.port,
           pairedDeviceId: result.deviceId ?? localDeviceId,
           secret: result.secret,
@@ -248,7 +292,7 @@ export class AdeSyncClient {
           hostIdentity: args.payload.hostIdentity,
         };
       },
-    });
+    }).catch(mapRelayAuthError);
     paired.environment.activeProjectId = openProjectFromCatalog(paired.helloOk.projects) ?? paired.environment.activeProjectId ?? null;
     paired.environment.lastConnectedAt = nowIso();
     paired.environment.lastGoodEndpoint = paired.endpoint;
@@ -263,14 +307,32 @@ export class AdeSyncClient {
   async pairWithAccountMachine(args: {
     machine: AdeAccountMachine;
     accessToken: string;
+    accountSessionLease: WebAccountSessionLease;
+    isAccountSessionLeaseCurrent: (lease: WebAccountSessionLease) => boolean;
     deviceName: string;
     relayBaseUrls?: readonly string[];
+    getRelayAccountToken?: () => Promise<string>;
   }): Promise<WebClientEnvironmentRecord> {
     const accessToken = args.accessToken.trim();
+    const accountOwnerUserId = args.accountSessionLease.userId.trim();
+    this.relayAccess = {
+      kind: "signed_in",
+      userId: accountOwnerUserId,
+      hostDeviceIds: args.machine.deviceId ? [args.machine.deviceId] : [],
+      getAccessToken: args.getRelayAccountToken ?? (() => Promise.resolve(accessToken)),
+    };
     const deviceName = args.deviceName.trim();
     const expectedHostDeviceId = args.machine.deviceId?.trim() ?? "";
     if (!args.machine.online) throw new AdeSyncError("That account machine is offline.", "machine_offline");
     if (!accessToken) throw new AdeSyncError("ADE account sign-in is required.", "account_signed_out");
+    if (!accountOwnerUserId) throw new AdeSyncError("Sign in again to connect this machine.", "account_signed_out");
+    if (!args.isAccountSessionLeaseCurrent(args.accountSessionLease)) {
+      this.disconnect();
+      throw new AdeSyncError(
+        "Your ADE account changed while connecting. Sign in again.",
+        "account_session_changed",
+      );
+    }
     if (!expectedHostDeviceId) throw new AdeSyncError("That machine is missing a stable device id.", "invalid_machine");
     if (!deviceName) throw new AdeSyncError("Browser device name is required.", "invalid_device_name");
 
@@ -287,7 +349,12 @@ export class AdeSyncClient {
         "secure_relay_unavailable",
       );
     }
-    const existing = await this.envStore.findByHostDeviceId(expectedHostDeviceId);
+    const savedCandidate = await this.envStore.findByHostDeviceId(expectedHostDeviceId);
+    const existing = savedCandidate?.accountOwnerUserId == null
+      || savedCandidate.accountOwnerUserId === accountOwnerUserId
+      ? savedCandidate
+      : null;
+    const selectedEnvIdBeforePairing = this.selectedEnvId;
     const dpopKeys = existing?.dpopKeys ?? await generateDpopKeyPair();
     const dpopPublicKeyX963 = existing?.dpopPublicKeyX963
       ?? await exportPublicKeyX963Base64(dpopKeys.publicKey);
@@ -331,6 +398,7 @@ export class AdeSyncClient {
       })),
       peer,
       accountToken: accessToken,
+      relayAccountTokenProvider: args.getRelayAccountToken,
       createDpop: async () => await signDpopProof({
         privateKey: dpopKeys.privateKey,
         publicKeyX963Base64: dpopPublicKeyX963,
@@ -351,6 +419,9 @@ export class AdeSyncClient {
           envId: existing?.envId ?? uuid(),
           machineName: args.machine.name ?? helloOk.brain.deviceName,
           hostDeviceId: expectedHostDeviceId,
+          accountOwnerUserId: existing?.accountOwnerUserId == null && existing
+            ? null
+            : accountOwnerUserId,
           relayUrl: helloOk.cloudRelayWssUrl ?? endpoint,
           machineKeyUrl: endpoint,
           addressCandidates,
@@ -377,38 +448,115 @@ export class AdeSyncClient {
         };
       },
     });
+    const accountSessionChangedError = () => new AdeSyncError(
+      "Your ADE account changed while connecting. Sign in again.",
+      "account_session_changed",
+    );
+    const accountSessionIsCurrent = () => args.isAccountSessionLeaseCurrent(
+      args.accountSessionLease,
+    );
+    const rollbackSavedEnvironment = async () => {
+      if (existing?.accountOwnerUserId == null && existing) {
+        await this.envStore.saveEnvironment(existing);
+        await this.envStore.setSelectedEnvId(
+          selectedEnvIdBeforePairing === existing.envId ? existing.envId : null,
+        );
+        return;
+      }
+      await this.envStore.removeEnvironment(paired.environment.envId);
+    };
+    if (!accountSessionIsCurrent()) {
+      this.disconnect();
+      throw accountSessionChangedError();
+    }
     paired.environment.activeProjectId = openProjectFromCatalog(paired.helloOk.projects)
       ?? paired.environment.activeProjectId
       ?? null;
+    if (!accountSessionIsCurrent()) {
+      this.disconnect();
+      throw accountSessionChangedError();
+    }
     await this.envStore.saveEnvironment(paired.environment);
+    if (!accountSessionIsCurrent()) {
+      this.disconnect();
+      await rollbackSavedEnvironment();
+      throw accountSessionChangedError();
+    }
     await this.envStore.setSelectedEnvId(paired.environment.envId);
+    if (!accountSessionIsCurrent()) {
+      this.disconnect();
+      await rollbackSavedEnvironment();
+      throw accountSessionChangedError();
+    }
     this.selectedEnvId = paired.environment.envId;
     this.activeProjectId = paired.environment.activeProjectId ?? null;
     this.emitStatus();
     return paired.environment;
   }
 
-  async connect(envId: string): Promise<void> {
+  async removeAccountOwnedEnvironments(ownerUserId: string): Promise<string[]> {
+    const removedIds = await this.envStore.removeAccountOwnedEnvironments(ownerUserId);
+    return await this.finishAccountEnvironmentRemoval(removedIds);
+  }
+
+  async pruneAccountOwnedEnvironments(
+    currentOwnerUserId: string | null,
+  ): Promise<string[]> {
+    const removedIds = await this.envStore.pruneAccountOwnedEnvironments(
+      currentOwnerUserId,
+    );
+    return await this.finishAccountEnvironmentRemoval(removedIds);
+  }
+
+  private async finishAccountEnvironmentRemoval(
+    removedIds: string[],
+  ): Promise<string[]> {
+    if (!this.selectedEnvId || !removedIds.includes(this.selectedEnvId)) {
+      return removedIds;
+    }
+    this.disconnect();
+    this.selectedEnvId = null;
+    this.activeProjectId = null;
+    await this.envStore.setSelectedEnvId(null);
+    this.emitStatus();
+    return removedIds;
+  }
+
+  async connect(
+    envId: string,
+    relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS,
+  ): Promise<void> {
     const environment = await this.envStore.getEnvironment(envId);
     if (!environment) throw new AdeSyncError(`Unknown ADE web-client environment: ${envId}`, "unknown_environment");
+    const originalEndpoints = deriveBrowserSyncEndpoints({ environment });
+    const endpoints = filterEnvironmentEndpoints(environment, originalEndpoints, relayAccess);
+    requireDialableAuthorizedEndpoint(originalEndpoints, endpoints);
+    this.relayAccess = relayAccess;
     this.selectedEnvId = envId;
     this.activeProjectId = environment.activeProjectId ?? null;
     this.currentCatalog = null;
     await this.envStore.setSelectedEnvId(envId);
-    const endpoints = deriveBrowserSyncEndpoints({ environment });
-    await this.connection.connect(environment, endpoints);
+    await this.connection.connect(
+      environment,
+      endpoints,
+      relayAccess.kind === "signed_in" ? relayAccess.getAccessToken : undefined,
+    ).catch(mapRelayAuthError);
   }
 
   disconnect(): void {
     this.connection.disconnect({ reconnect: false });
+    this.relayAccess = SIGNED_OUT_RELAY_ACCESS;
     this.currentCatalog = null;
     this.rejectAllPending(new AdeSyncError("Disconnected from ADE machine.", "disconnected"));
     this.emitStatus();
   }
 
-  async switchEnvironment(envId: string): Promise<void> {
+  async switchEnvironment(
+    envId: string,
+    relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS,
+  ): Promise<void> {
     this.disconnect();
-    await this.connect(envId);
+    await this.connect(envId, relayAccess);
   }
 
   async listEnvironments(): Promise<WebClientEnvironmentRecord[]> {
@@ -645,7 +793,7 @@ export class AdeSyncClient {
         }));
         if (envId) {
           await new Promise((resolve) => setTimeout(resolve, 100));
-          await this.connect(envId);
+          await this.connect(envId, this.relayAccess);
         }
       } finally {
         this.streamSubscriptionsPaused = false;

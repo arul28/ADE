@@ -199,6 +199,7 @@ sync.getPin   sync.setPin   sync.clearPin
 sync.setActiveLanePresence
 sync.getCloudRelayStatus  sync.setCloudRelayEnabled
 sync.getRequireDpop       sync.setRequireDpop
+sync.authorizeSshPairing
 ```
 
 `account.call` owns machine-scoped account status, login, token, and machine
@@ -243,6 +244,10 @@ account directory; signed-out users get a local-first message and existing
 local, PIN, explicit-address, and saved SSH paths remain available. Machine keys
 and device IDs are stable selectors. A display name is accepted only when it is
 unambiguous; otherwise the command prints the matching stable machine keys.
+Targets and paired credentials created through `ade machines connect` belong to
+that account and are removed on sign-out or account switch. Direct PIN, SSH, and
+explicit-address pairings remain local and are not converted into account-owned
+records when the user later signs in.
 
 ## `ade code`
 
@@ -267,8 +272,11 @@ ade --project-root /repo code      # bind to a specific project root
 `ade code remote` reads the same saved remote-machine registry as desktop ADE,
 then uses the target's declared transport. Paired targets connect through the
 DPoP-bound sync runtime bridge; SSH targets start `ade rpc --stdio` over a
-validated SSH route. Account-created targets are paired-only and fail closed
-instead of falling back to SSH or a plaintext address. Legacy account machines
+validated SSH route. Relay routes are available only while both machines are
+signed into the same ADE account; direct LAN and tailnet routes remain usable
+signed out. Account-created targets are paired-only, are removed when their
+account signs out or switches, and fail closed instead of falling back to SSH
+or a plaintext address. Legacy account machines
 that desktop ADE saved as uncredentialed SSH targets are adopted into the same
 paired store before launch; if the account directory cannot verify that legacy
 shape, ADE fails closed instead of attempting SSH. Explicit SSH targets keep
@@ -276,6 +284,13 @@ their saved host alias so OpenSSH can apply its `Host`-scoped user, identity,
 agent, and proxy settings
 while ADE changes only the concrete route. Route/runtime probing shares one
 bounded, cancellable connection deadline and reports the attempted failures.
+After a true SSH connection initializes, desktop ADE runs the internal
+`ade sync pair-device --json-stdin` command on that exact selected channel home
+to exchange the controller's DPoP identity for a normal paired-machine secret.
+The JSON request is bounded and never appears in argv. A packaged Beta runtime
+that uploads successfully but cannot initialize does not end the attempt: ADE
+probes Stable and the other channel homes, retains the first compatible home,
+and uses that same home for `pair-device` and all follow-up commands.
 The launcher bridges the selected transport back into the normal TUI with
 `--remote`, `--remote-label`, `--require-socket`, remote project roots, and an
 optional `--session` hint. Use `--list-targets`, `--list-projects`, and
@@ -401,7 +416,7 @@ ade --socket browser authorize --tab tab-id --text                # native human
 ade --socket update status --text
 ade --socket update check --text
 ade --socket update install --text
-ade sync relay status --text                       # cloud relay: wss URL phones dial + on/off state (on by default)
+ade sync relay status --text                       # internet route for devices signed into the same ADE account
 ade sync relay enable                              # re-enable after a disable (relay is on by default; headless brains have no Settings UI)
 ade sync relay disable                             # kill-switch: never route sync through the relay
 ade sync security status --text                    # machine sync security posture (require-DPoP)

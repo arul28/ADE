@@ -1,9 +1,18 @@
 # Web Client
 
 The web client is an owner-only browser controller for an ADE machine runtime.
-It is a hosted static SPA, but it does not introduce an ADE cloud data path:
-after pairing, the browser talks directly to the machine's sync WebSocket
-protocol, using the same sync host that iOS uses.
+It is a hosted static SPA. The normal hosted path uses ADE Relay to carry the
+machine's sync WebSocket protocol; localhost and operator-managed `wss://`
+endpoints remain available as an advanced direct path.
+
+Hosted Relay connections require the browser and Mac to be signed in to the
+same ADE account. The browser sends a fresh short-lived account proof with each
+paired Relay hello, and never persists that proof. Signing out immediately
+stops the Relay connection. Environments created from the account machine
+directory are removed on sign-out or account switch. Link/PIN and manual direct
+pairings remain locally owned and stay in IndexedDB, but cannot use Relay while
+signed out; after signing in, they may use Relay only when the account directory
+verifies that the saved host belongs to the current account.
 
 Production hosting is Cloudflare Pages. The Pages URL is
 `https://ade-web-client.pages.dev`; the canonical product URL in source is
@@ -35,6 +44,12 @@ Browser sync client:
   refresh tokens remain in module memory, the callback is scrubbed from the
   address bar before directory loading, and account requests use exact trusted
   origins with omitted browser credentials and referrers.
+- `apps/desktop/src/renderer/webclient/account/leaseMonitor.ts` - live account
+  lifetime enforcement for account-owned environments and active Relay
+  sockets. A 30-second check refreshes the in-memory token; confirmed expiry,
+  sign-out, or owner change disconnects and prunes account-owned trust, while a
+  transient token/directory failure preserves it for retry. A direct-owned
+  environment using Relay is disconnected but not deleted.
 - `apps/desktop/src/renderer/webclient/sync/client.ts` - high-level browser
   sync client. Pairs with PIN or adopts a machine through the verified account
   relay, stores only the resulting paired credentials, sends remote commands,
@@ -44,12 +59,18 @@ Browser sync client:
   lifecycle, pairing request, paired hello, DPoP proof on reconnect,
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
   attribution.
+- `apps/desktop/src/renderer/webclient/sync/relayPolicy.ts` - typed hosted Relay
+  authorization policy. It keeps local pairing provenance separate from
+  account ownership, filters Relay routes while signed out, and surfaces the
+  sign-in-required state before a socket is opened.
 - `apps/desktop/src/renderer/webclient/sync/endpoints.ts` - derives the
   browser-safe endpoint list. Relay and explicit `wss://` are dialable from the
   hosted page; plain `ws://` is dialable only from local/http pages.
 - `apps/desktop/src/renderer/webclient/sync/envStore.ts` - IndexedDB storage
   for paired machine environments, per-device secret, host/candidate metadata,
-  and the WebCrypto `CryptoKeyPair`.
+  and the WebCrypto `CryptoKeyPair`. A versioned one-time trust migration
+  clears legacy environments and selection while preserving unrelated browser
+  and account state; environments paired after the marker persist normally.
 - `apps/desktop/src/renderer/webclient/sync/dpop.ts` - WebCrypto P-256 ECDSA
   DPoP key generation and proof signing. The private key is non-extractable by
   default.
@@ -94,19 +115,21 @@ Browser shell and routes:
   `window.ade` placeholder before shared renderer modules import, then mounts
   `WebClientRoot`.
 - `apps/desktop/src/renderer/webclient/shell/WebClientRoot.tsx` - boot
-  sequence, saved-machine reconnect, pair flow, project picker, adapter load,
-  pending `/open` target stash, project binding, and projectless `/chats`
-  routing before a project is selected.
+  sequence, account privacy pruning, machine-first launch picker, pair flow,
+  30-second active-account lease monitor, project picker, adapter load, pending
+  `/open` target stash, project binding, and projectless `/chats` routing before
+  a project is selected. Saved machines are shown first instead of reconnecting
+  automatically on page load.
 - `apps/desktop/src/renderer/webclient/shell/PairFlow.tsx` - pairing-link
-  parser, PIN entry, device name, manual `wss://` endpoint override, and
-  hosted-page reachability errors.
+  parser, PIN entry, and hosted-page reachability errors. Same-account Relay is
+  the normal path; localhost and manual `wss://` are secondary advanced paths.
 - `apps/desktop/src/renderer/webclient/shell/WebShell.tsx` - machine
   switcher, project switcher, forget machine, reconnect hint, and "Open in
   desktop" button.
 - `apps/desktop/src/renderer/webclient/shell/MachinePicker.tsx`,
-  `ProjectPicker.tsx`, `PinInput.tsx`, `Welcome.tsx`, and `ScreenShell.tsx` -
+  `ProjectPicker.tsx`, `PinInput.tsx`, and `ScreenShell.tsx` -
   the pair/switch UI pieces the boot sequence composes (saved-machine list,
-  project list, 6-digit PIN entry, first-run welcome, and the shared screen
+  account machines, project list, 6-digit PIN entry, and the shared screen
   frame); `shellTokens.ts` holds the standalone-shell design tokens.
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
   layer over `apps/desktop/src/shared/deeplinks.ts`.
@@ -121,13 +144,11 @@ Reused desktop renderer (web-mode adaptation):
   `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
   updater, the onboarding tour, and tabs with no sync-protocol backing instead
   of rendering broken affordances.
-- `apps/desktop/src/renderer/components/app/TopBar.tsx` - desktop Mobile and
-  Web connection chips. The Web chip reports connected browser peers, opens
-  the web-only pairing sheet, and is omitted from the hosted web-client shell.
-  Remote, Mobile, and Web sheets are mutually exclusive.
-- `apps/desktop/src/renderer/components/app/HeaderSheet.tsx` - shared portaled
-  sheet scaffold and dialog focus-trap helpers used by the Mobile and Web
-  top-bar sheets.
+- `apps/desktop/src/renderer/components/app/TopBar.tsx` and
+  `ConnectionsPanel.tsx` - the single desktop Connections control and its
+  Machines, Mobile, and Web client tabs. The Web client tab reports connected
+  browser peers and exposes pairing; the entire native control is omitted from
+  the hosted web-client shell.
 - `apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx`
   - reused route/project lifecycle capture plus the hosted-web consent banner.
   It sends only normalized inputs through `window.ade.analytics`; the browser
@@ -149,8 +170,9 @@ Machine runtime and sync host:
   `syncHostService.ts` - bind untrusted browser capture requests to the host's
   `web` surface/project and keep `analytics.setClientEnabled` peer-scoped. A
   browser choice never changes the machine-wide desktop/runtime preference.
-- `apps/ade-cli/src/services/sync/syncPairingStore.ts` - PIN pairing result
-  store: per-device secret plus optional DPoP public key.
+- `apps/ade-cli/src/services/sync/syncPairingStore.ts` - pairing result store:
+  per-device secret, optional DPoP public key, and explicit local/account
+  provenance used for owner-scoped revocation.
 - `apps/ade-cli/src/services/sync/syncDpop.ts` - host-side P-256 proof
   validation and replay guard.
 - `apps/ade-cli/src/services/sync/syncCloudRelayStore.ts` - default-on cloud
@@ -168,11 +190,11 @@ Machine runtime and sync host:
 Pairing, links, and entry points:
 
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` -
-  desktop Settings > Sync device management plus the focused top-bar sheet
-  bodies. Its `variant?: "all" | "phone" | "web"` prop keeps Settings complete
-  while the Mobile and Web sheets show only their relevant controls. The web
-  variant can generate a new six-digit PIN when the configured PIN is hashed
-  at rest and no longer displayable, and provides copy feedback plus an
+  the focused **Connections > Mobile** and **Connections > Web client** tab
+  bodies. Its `variant?: "all" | "phone" | "web"` prop keeps the shared
+  implementation reusable while those tabs show only their relevant controls.
+  The web variant can generate a new six-digit PIN when the configured PIN is
+  hashed at rest and no longer displayable, and provides copy feedback plus an
   enlarged pairing-QR dialog.
 - `apps/desktop/src/shared/pairingQr.ts` - smart pairing URL
   `https://ade-app.dev/pair#<base64url(JSON)>`; the fragment carries host
@@ -304,7 +326,8 @@ agent/chat mutations.
 
 ## Pairing and auth flow
 
-1. The operator opens ADE desktop Settings > Sync and uses the Web client card.
+1. The operator opens the top-bar **Connections** panel, chooses **Web client**,
+   and uses the pairing card.
    The QR/link is built with `buildWebClientPairUrl(buildPairingQrPayload(...))`.
 2. The pairing URL is `https://app.ade-app.dev/pair#<payload>` for web, with
    the same payload shape as `https://ade-app.dev/pair#<payload>` for mobile.
@@ -326,10 +349,16 @@ agent/chat mutations.
 7. Every reconnect sends a paired `hello` with the secret plus a signed DPoP
    proof. `syncHostService.ts` validates the stored secret, public key, nonce,
    and timestamp before the peer is authenticated.
-8. Revocation is machine-owned. In Settings > Sync > Web clients, `Revoke`
+8. Revocation is machine-owned. In **Connections > Web client**, `Revoke`
    calls the same device-forget path as phones. Connected browser sockets are
    closed; future paired hellos fail. The browser deletes its saved environment
    only when the auth failure is attributed to the same host device id.
+
+The first web-client load after this release performs a versioned trust reset:
+all older saved machine environments and the selected-environment pointer are
+removed once, while browser account state and unrelated storage are preserved.
+Pairings created after the marker is written persist according to the local vs.
+account ownership rules above.
 
 ## Transport matrix
 
@@ -379,10 +408,28 @@ exact trusted account-directory origin, and a clean directory-advertised
 fragment, log, analytics payload, IndexedDB, local storage, or session storage.
 After a new account adoption, the browser persists the returned paired secret
 and pinned DPoP key and reconnects through the ordinary paired flow; LAN,
-tailnet, and direct `ws://` routes are eligible only at that point. Existing
-devices keep their pairing record and account reauthentication never rotates
-their paired secret. If no verified WSS relay exists, account connection fails
-closed and the explicit PIN flow remains available.
+tailnet, and direct `ws://` routes are eligible only at that point. A verified
+same-owner account hello with the already-pinned DPoP key may rotate and return
+a fresh paired secret, making a lost credential-delivery response retryable
+without allowing a different account or key to take over the record. If no
+verified WSS relay exists, account connection fails closed and the explicit PIN
+flow remains available.
+
+Every account-adopted IndexedDB environment records the Clerk user id that
+created it. Sign-out removes that user's environments, paired secrets, and
+non-extractable DPoP keys and disconnects an active owned environment. PIN/link
+pairings have no account owner and remain available. If an already direct-paired
+machine also appears in the account directory, selecting it keeps the existing
+direct provenance instead of making it disappear on sign-out.
+
+Account pairing captures the exact browser session generation before network
+work and checks it again before persistence, so a late response after sign-out
+or account switch cannot recreate trust. While an account-owned environment or
+a direct-owned environment's verified Relay route is active, the browser
+refreshes that account lease every 30 seconds. Confirmed expiry/revocation or an
+owner change closes the connection immediately; transient refresh and directory
+outages do not delete saved trust. Direct-owned environments remain available
+for their non-Relay routes.
 
 ## Data strategy: no local DB
 

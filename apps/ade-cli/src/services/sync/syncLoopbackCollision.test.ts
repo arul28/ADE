@@ -320,6 +320,9 @@ describe("sync loopback collision recovery", () => {
         sharedSyncListener: listener,
         cloudRelayStore,
         syncTunnelClientService: { getStatus: () => tunnelStatus },
+        accountAuthService: {
+          getStatus: () => ({ signedIn: true, userId: "relay-owner" }),
+        } as any,
       });
       const preferredPort = await findFreeLegacyPort();
       service.getDeviceRegistryService().touchLocalDevice({ lastPort: preferredPort });

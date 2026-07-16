@@ -6,6 +6,7 @@ import { RemoteTargetRegistry, normalizeRemoteTargetRoutes } from "../../../desk
 import { DesktopPairedMachineStore } from "../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
 import {
   PairedRuntimeCompatibilityError,
+  PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import { buildPairedEndpointCandidates } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
@@ -16,12 +17,17 @@ import {
   getSharedAccountAuthService,
   getSharedAccountDirectoryBaseUrl,
 } from "../services/account/sharedAccountAuthService";
+import {
+  getSignedInAccountAccessToken,
+  type AccountAuthService,
+} from "../services/account/accountAuthService";
 import type {
   RemoteRuntimeProjectRecord,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
 } from "../../../desktop/src/shared/types/remoteRuntime";
 import type { AdeAccountMachine } from "../../../desktop/src/shared/types/account";
+import type { DesktopPairedMachineCredentials } from "../../../desktop/src/shared/types/pairedRuntime";
 import { accountMachineEndpointHost } from "../../../desktop/src/shared/accountDirectory";
 import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { ChatTerminalSession } from "../../../desktop/src/shared/types/sessions";
@@ -95,6 +101,13 @@ type AccountMachineResolver = Pick<
   AccountMachineDirectoryService,
   "listMachines" | "pairListedMachine"
 >;
+
+type AccountRelayProof = {
+  userId: string;
+  token: string;
+};
+
+type AccountRelayProofResolver = () => Promise<AccountRelayProof | null>;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -207,7 +220,11 @@ export function parseRemoteAdeCodeArgs(argv: string[]): RemoteCliOptions {
 function printRemoteHelp(): void {
   process.stdout.write(`ade code remote
 
-Launch ADE Code against a saved desktop remote machine.
+Connect ADE Code to a Mac already saved in ADE Connections.
+
+Local network and Tailscale connections work without an ADE account. ADE Relay
+requires both Macs to be signed in to the same account. Advanced SSH is used
+only when you explicitly save an SSH connection.
 
 Usage:
   ade code remote [project|session]
@@ -724,9 +741,65 @@ export async function openRemoteRpcSession(
   );
 }
 
+export async function getCurrentAccountRelayProof(
+  account: Pick<AccountAuthService, "getStatus" | "getAccessToken"> = getSharedAccountAuthService(),
+): Promise<AccountRelayProof | null> {
+  const token = await getSignedInAccountAccessToken(account);
+  if (!token) return null;
+  const status = account.getStatus();
+  const userId = status.userId?.trim() ?? "";
+  if (!userId || (!status.signedIn && status.source !== "env-token")) return null;
+  return { userId, token };
+}
+
+export async function pairedRouteAccountProof(args: {
+  kind: "lan" | "tailnet" | "relay";
+  credentials: Pick<
+    DesktopPairedMachineCredentials,
+    "accountOwnerUserId"
+  >;
+  getAccountRelayProof: AccountRelayProofResolver;
+}): Promise<AccountRelayProof | null> {
+  if (args.kind !== "relay") return null;
+  let proof: AccountRelayProof | null;
+  try {
+    proof = await args.getAccountRelayProof();
+  } catch (error) {
+    throw new PairedRuntimeRelayAuthRequiredError(
+      "Sign in to ADE to connect through Relay. Local network and Tailscale connections still work without an account.",
+      error,
+    );
+  }
+  if (!proof?.userId.trim() || !proof.token.trim()) {
+    throw new PairedRuntimeRelayAuthRequiredError(
+      "Sign in to ADE to connect through Relay. Local network and Tailscale connections still work without an account.",
+    );
+  }
+  const expectedOwnerUserId = args.credentials.accountOwnerUserId?.trim() ?? "";
+  if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
+    throw new PairedRuntimeRelayAuthRequiredError(
+      "Sign in with the same ADE account as this Mac to connect through Relay. Local network and Tailscale connections still work without an account.",
+    );
+  }
+  return { userId: proof.userId.trim(), token: proof.token.trim() };
+}
+
+export async function assertRelayAccountUnchanged(
+  initialProof: AccountRelayProof | null,
+  getAccountRelayProof: AccountRelayProofResolver,
+): Promise<void> {
+  if (!initialProof) return;
+  const currentProof = await getAccountRelayProof().catch(() => null);
+  if (currentProof?.userId.trim() === initialProof.userId) return;
+  throw new PairedRuntimeRelayAuthRequiredError(
+    "Your ADE account changed before the Relay connection finished. Sign in with the same account as this Mac and try again.",
+  );
+}
+
 async function openPairedRemoteSession(
   target: RemoteRuntimeTarget,
   budget = createRemoteLaunchBudget(),
+  getAccountRelayProof: AccountRelayProofResolver = getCurrentAccountRelayProof,
 ): Promise<OpenedRemoteSession> {
   const registry = new RemoteTargetRegistry();
   const pairedStore = new DesktopPairedMachineStore();
@@ -744,7 +817,22 @@ async function openPairedRemoteSession(
     endpointStates: credentials.endpointStates,
   });
   const failures: string[] = [];
+  let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   for (const candidate of candidates) {
+    let relayProof: AccountRelayProof | null;
+    try {
+      relayProof = await pairedRouteAccountProof({
+        kind: candidate.kind,
+        credentials,
+        getAccountRelayProof,
+      });
+    } catch (error) {
+      if (error instanceof PairedRuntimeRelayAuthRequiredError) {
+        relayAuthError = error;
+        continue;
+      }
+      throw error;
+    }
     let transport: SyncRuntimeTransport;
     try {
       transport = await withBoundedAttempt(budget, 10_000, async (attempt) =>
@@ -755,9 +843,20 @@ async function openPairedRemoteSession(
           connectTimeoutMs: attempt.timeoutMs,
           authTimeoutMs: attempt.timeoutMs,
           signal: attempt.signal,
+          relayAccountToken: relayProof?.token ?? null,
         })
       );
+      try {
+        await assertRelayAccountUnchanged(relayProof, getAccountRelayProof);
+      } catch (error) {
+        transport.close();
+        throw error;
+      }
     } catch (error) {
+      if (error instanceof PairedRuntimeRelayAuthRequiredError) {
+        relayAuthError = error;
+        continue;
+      }
       failures.push(`${candidate.endpoint}: ${errorMessage(error)}`);
       continue;
     }
@@ -810,6 +909,7 @@ async function openPairedRemoteSession(
       );
     }
   }
+  if (relayAuthError) throw relayAuthError;
   throw new PairedRuntimeTransportUnavailableError(
     `Could not open the paired ADE runtime. ${failures.slice(0, 4).join(" | ")}`,
   );
@@ -818,6 +918,7 @@ async function openPairedRemoteSession(
 async function openPairedTransport(
   target: RemoteRuntimeTarget,
   budget = createRemoteLaunchBudget(),
+  getAccountRelayProof: AccountRelayProofResolver = getCurrentAccountRelayProof,
 ): Promise<SyncRuntimeTransport> {
   const pairedStore = new DesktopPairedMachineStore();
   const credentials = target.pairedMachine
@@ -830,9 +931,15 @@ async function openPairedTransport(
     endpointStates: credentials.endpointStates,
   });
   const failures: string[] = [];
+  let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   for (const candidate of candidates) {
     try {
-      return await withBoundedAttempt(budget, 10_000, async (attempt) =>
+      const relayProof = await pairedRouteAccountProof({
+        kind: candidate.kind,
+        credentials,
+        getAccountRelayProof,
+      });
+      const transport = await withBoundedAttempt(budget, 10_000, async (attempt) =>
         await openSyncRuntimeTransport({
           credentials,
           endpoint: candidate.endpoint,
@@ -840,12 +947,25 @@ async function openPairedTransport(
           connectTimeoutMs: attempt.timeoutMs,
           authTimeoutMs: attempt.timeoutMs,
           signal: attempt.signal,
+          relayAccountToken: relayProof?.token ?? null,
         })
       );
+      try {
+        await assertRelayAccountUnchanged(relayProof, getAccountRelayProof);
+      } catch (error) {
+        transport.close();
+        throw error;
+      }
+      return transport;
     } catch (error) {
+      if (error instanceof PairedRuntimeRelayAuthRequiredError) {
+        relayAuthError = error;
+        continue;
+      }
       failures.push(errorMessage(error));
     }
   }
+  if (relayAuthError) throw relayAuthError;
   throw new Error(`Could not open the paired runtime connection. ${failures.slice(0, 3).join("; ")}`);
 }
 
@@ -1103,7 +1223,10 @@ export async function listRemoteSessions(client: RemoteRpcClientLike, projectId:
 
 async function selectTarget(targets: RemoteRuntimeTarget[], query: string | null): Promise<RemoteRuntimeTarget> {
   if (!targets.length) {
-    throw new Error("No saved remote machines found. Add a remote connection in the ADE desktop app first.");
+    throw new Error(
+      "No saved Macs yet. In ADE desktop, open Connections and choose Add machine. " +
+        "You can sign in to find your Macs, pair directly, scan your network, or use advanced SSH setup.",
+    );
   }
   if (query) {
     return findByQuery(
@@ -1115,10 +1238,16 @@ async function selectTarget(targets: RemoteRuntimeTarget[], query: string | null
   }
   if (targets.length === 1 && !canPrompt()) return targets[0]!;
   return await promptChoice(
-    "Remote machines",
+    "Choose a Mac",
     targets,
-    (target) => `${target.name} (${target.sshUser ? `${target.sshUser}@` : ""}${target.hostname}${target.port ? `:${target.port}` : ""})`,
+    remoteTargetChoiceLabel,
   );
+}
+
+export function remoteTargetChoiceLabel(target: RemoteRuntimeTarget): string {
+  if (target.transport === "paired") return `${target.name} (saved connection)`;
+  const destination = `${target.sshUser ? `${target.sshUser}@` : ""}${target.hostname}${target.port ? `:${target.port}` : ""}`;
+  return `${target.name} (advanced SSH: ${destination})`;
 }
 
 async function selectScope(options: RemoteCliOptions): Promise<RemoteLaunchScope> {
@@ -1359,6 +1488,14 @@ export function takeAdeCodeRemoteArgs(rest: string[]): string[] | null {
   return null;
 }
 
+export function hasExplicitSshFallback(target: RemoteRuntimeTarget): boolean {
+  return Boolean(
+    target.sshUser?.trim()
+      || target.sshKeyPath?.trim()
+      || target.routes?.some((route) => route.source === "manual"),
+  );
+}
+
 export async function runAdeCodeRemote(
   argv: string[],
   runAdeCodeCli: RunAdeCodeCli,
@@ -1391,6 +1528,11 @@ export async function runAdeCodeRemote(
     process.off("SIGTERM", onSigterm);
   };
   const budget = createRemoteLaunchBudget(REMOTE_CONNECT_TOTAL_TIMEOUT_MS, controller.signal);
+  const accountAuth = getSharedAccountAuthService({
+    projectRoots: () => launchOptions.accountProjectRoots ?? [],
+  });
+  const getAccountRelayProof = async (): Promise<AccountRelayProof | null> =>
+    await getCurrentAccountRelayProof(accountAuth);
   let target: RemoteRuntimeTarget;
   let remote: OpenedRemoteSession;
   try {
@@ -1406,15 +1548,16 @@ export async function runAdeCodeRemote(
     );
     if (target.transport === "paired") {
       try {
-        remote = await openPairedRemoteSession(target, budget);
+        remote = await openPairedRemoteSession(target, budget, getAccountRelayProof);
       } catch (pairedError) {
-        // Preserve the explicit SSH fallback for paired targets that also have
-        // vetted SSH routes. Account relay-only targets fail clearly here.
+        // A paired LAN/Tailscale address is not evidence that SSH was set up.
+        // Fall back only when the user explicitly saved advanced SSH details.
         if (
-          !target.routes?.length
+          !hasExplicitSshFallback(target)
           || !(
             pairedError instanceof PairedRuntimeTransportUnavailableError
             || pairedError instanceof PairedRuntimeCompatibilityError
+            || pairedError instanceof PairedRuntimeRelayAuthRequiredError
           )
         ) {
           throw pairedError;
@@ -1451,7 +1594,11 @@ export async function runAdeCodeRemote(
     bridge = remote.mode === "paired"
       ? await startSyncRemoteBridge({
           target,
-          openTransport: (currentTarget) => openPairedTransport(currentTarget, createRemoteLaunchBudget()),
+          openTransport: (currentTarget) => openPairedTransport(
+            currentTarget,
+            createRemoteLaunchBudget(),
+            getAccountRelayProof,
+          ),
         })
       : await startRemoteBridge({
           target,

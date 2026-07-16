@@ -11,7 +11,7 @@ import type {
   RemoteRuntimeTrustSshHostKeyResult,
 } from "../../../shared/types/remoteRuntime";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
-import type { RuntimeRpcTransport } from "./runtimeRpcClient";
+import type { RuntimeRpcTransport, RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 import { routeKey } from "./routeUtils";
 
 export type SshExecResult = {
@@ -20,13 +20,24 @@ export type SshExecResult = {
   code: number | null;
 };
 
+export async function execSshWithInput(
+  client: Client,
+  command: string,
+  input: string,
+  options: ExecSshOptions = {},
+): Promise<SshExecResult> {
+  return await execSsh(client, command, { ...options, stdin: input });
+}
+
 const MAX_SSH_EXEC_OUTPUT_BYTES = 8 * 1024 * 1024;
+const MAX_SSH_RUNTIME_STDERR_BYTES = 16 * 1024;
 const DEFAULT_SSH_EXEC_TIMEOUT_MS = 30_000;
 const MIN_SSH_EXEC_TIMEOUT_MS = 50;
 
 type ExecSshOptions = {
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  stdin?: string;
 };
 
 type OpenSshHostConfig = {
@@ -1021,6 +1032,9 @@ export async function connectSsh(target: RemoteRuntimeTarget): Promise<Client> {
 }
 
 export function execSsh(client: Client, command: string, options: ExecSshOptions = {}): Promise<SshExecResult> {
+  if (options.stdin != null && Buffer.byteLength(options.stdin, "utf8") > 64 * 1024) {
+    return Promise.reject(new Error("SSH command input exceeded 65536 bytes."));
+  }
   return new Promise((resolve, reject) => {
     client.exec(command, (error, stream) => {
       if (error) {
@@ -1090,6 +1104,13 @@ export function execSsh(client: Client, command: string, options: ExecSshOptions
         settle(() => resolve({ stdout, stderr, code }));
       });
       stream.on("error", (streamError: Error) => fail(streamError));
+      if (options.stdin != null) {
+        try {
+          stream.end(options.stdin.endsWith("\n") ? options.stdin : `${options.stdin}\n`);
+        } catch (inputError) {
+          fail(inputError instanceof Error ? inputError : new Error(String(inputError)));
+        }
+      }
     });
   });
 }
@@ -1103,7 +1124,10 @@ export function openSshRuntimeTransport(client: Client, command = "~/.ade/bin/ad
       }
       let closed = false;
       let streamError: Error | null = null;
-      const closeCallbacks = new Set<() => void>();
+      let closeInfo: RuntimeRpcTransportCloseInfo | undefined;
+      let stderr = "";
+      let stderrTruncated = false;
+      const closeCallbacks = new Set<(info?: RuntimeRpcTransportCloseInfo) => void>();
       const errorCallbacks = new Set<(error: Error) => void>();
 
       stream.once("error", (streamErrorValue: Error) => {
@@ -1113,10 +1137,35 @@ export function openSshRuntimeTransport(client: Client, command = "~/.ade/bin/ad
         }
         errorCallbacks.clear();
       });
+      stream.stderr.on("data", (chunk: Buffer) => {
+        if (stderrTruncated) return;
+        const next = stderr + chunk.toString("utf8");
+        if (Buffer.byteLength(next, "utf8") <= MAX_SSH_RUNTIME_STDERR_BYTES) {
+          stderr = next;
+          return;
+        }
+        stderr = Buffer.from(next, "utf8").subarray(0, MAX_SSH_RUNTIME_STDERR_BYTES).toString("utf8");
+        stderrTruncated = true;
+      });
+      stream.once("exit", (
+        exitCode: number | null,
+        signal: string | null,
+      ) => {
+        closeInfo = {
+          exitCode,
+          signal: signal || null,
+        };
+      });
       stream.once("close", () => {
         closed = true;
+        closeInfo = {
+          ...closeInfo,
+          stderr: stderr.trim()
+            ? `${stderr.trim()}${stderrTruncated ? "\n[stderr truncated]" : ""}`
+            : null,
+        };
         for (const callback of closeCallbacks) {
-          callback();
+          callback(closeInfo);
         }
         closeCallbacks.clear();
         errorCallbacks.clear();
@@ -1136,7 +1185,7 @@ export function openSshRuntimeTransport(client: Client, command = "~/.ade/bin/ad
         },
         onClose(callback) {
           if (closed) {
-            queueMicrotask(callback);
+            queueMicrotask(() => callback(closeInfo));
             return;
           }
           closeCallbacks.add(callback);

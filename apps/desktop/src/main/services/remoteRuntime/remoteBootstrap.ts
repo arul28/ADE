@@ -13,10 +13,13 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetRoute,
 } from "../../../shared/types/remoteRuntime";
+import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
-import { connectSshWithRoute, execSsh, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
+import { connectSshWithRoute, execSsh, execSshWithInput, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
+import { syncEndpointForHost } from "./pairedRuntimeRoutes";
+import { DesktopPairedMachineStore, generateDesktopDpopKeyPair } from "./syncPairedMachineStore";
 import {
   normalizeRemoteTargetRoutes,
   type RemoteTargetRegistry,
@@ -1372,10 +1375,132 @@ function runtimeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+type RemoteRuntimeFailurePhase =
+  | "rpc_launch"
+  | "rpc_initialize"
+  | "capability_negotiation";
+
+function runtimeAttemptDetail(args: {
+  layout: RemoteRuntimeLayout;
+  phase: RemoteRuntimeFailurePhase;
+  error: unknown;
+}): string {
+  return `${args.layout.homeDirName} [${args.phase}]: ${runtimeErrorMessage(args.error)}`;
+}
+
 function remoteRuntimeRpcCommand(layout: RemoteRuntimeLayout, runtimeEnvPrefix: string, binaryExpr: string): string {
   // Use the channel's explicit socket so a freshly uploaded helper CLI does not
   // treat the desktop-owned brain as a build-hash mismatch and recycle it.
   return `${runtimeEnvPrefix}${binaryExpr} --socket ${layout.socketExpr} rpc --stdio`;
+}
+
+function platformDeviceName(): string {
+  const hostname = os.hostname().trim();
+  return hostname ? `ADE Desktop on ${hostname}` : "ADE Desktop";
+}
+
+function isSshPairingHostIdentity(value: unknown): value is DesktopPairedMachineCredentials["hostIdentity"] {
+  if (!isRecord(value)) return false;
+  return typeof value.deviceId === "string" && Boolean(value.deviceId.trim())
+    && typeof value.siteId === "string" && Boolean(value.siteId.trim())
+    && typeof value.name === "string" && Boolean(value.name.trim())
+    && ["macOS", "linux", "windows", "iOS", "unknown"].includes(String(value.platform))
+    && ["desktop", "phone", "vps", "browser", "unknown"].includes(String(value.deviceType));
+}
+
+async function upgradeSshTargetToPairedCredentials(args: {
+  ssh: Client;
+  layout: RemoteRuntimeLayout;
+  runtimeEnvPrefix: string;
+  binaryExpr: string;
+  appVersion: string;
+  connectedRoute: RemoteRuntimeTargetRoute;
+  store: DesktopPairedMachineStore;
+}): Promise<DesktopPairedMachineCredentials> {
+  const keys = generateDesktopDpopKeyPair();
+  const deviceId = crypto.randomUUID();
+  const siteId = crypto.randomUUID();
+  const deviceName = platformDeviceName();
+  const request = {
+    version: 1,
+    device: {
+      id: deviceId,
+      siteId,
+      name: deviceName,
+      platform: process.platform === "darwin"
+        ? "macOS"
+        : process.platform === "win32"
+          ? "windows"
+          : process.platform === "linux"
+            ? "linux"
+            : "unknown",
+      type: "desktop",
+      dpopPublicKey: keys.publicKey,
+      capabilities: ["rpcChannel", "portForward"],
+      appVersion: args.appVersion,
+    },
+  };
+  const command = `${args.runtimeEnvPrefix}${args.binaryExpr} --socket ${args.layout.socketExpr} --json sync pair-device --json-stdin`;
+  const result = await execSshWithInput(
+    args.ssh,
+    command,
+    JSON.stringify(request),
+    { timeoutMs: 30_000 },
+  );
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || "SSH pairing command failed.");
+  }
+  let response: unknown;
+  try {
+    response = JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error("SSH pairing command returned invalid JSON.", { cause: error });
+  }
+  if (!isRecord(response) || response.version !== 1 || !isSshPairingHostIdentity(response.machine)) {
+    throw new Error("SSH pairing command returned an invalid machine identity.");
+  }
+  const pairing = isRecord(response.pairing) ? response.pairing : {};
+  const sync = isRecord(response.sync) ? response.sync : {};
+  const pairedDeviceId = typeof pairing.pairedDeviceId === "string" ? pairing.pairedDeviceId.trim() : "";
+  const secret = typeof pairing.secret === "string" ? pairing.secret.trim() : "";
+  const port = typeof sync.port === "number" && Number.isInteger(sync.port) && sync.port > 0 && sync.port <= 65_535
+    ? sync.port
+    : null;
+  if (pairedDeviceId !== deviceId || !secret || port == null) {
+    throw new Error("SSH pairing command returned invalid device credentials or sync port.");
+  }
+  const endpointHosts = new Set<string>([args.connectedRoute.hostname]);
+  if (Array.isArray(sync.addressCandidates)) {
+    for (const candidate of sync.addressCandidates) {
+      if (!isRecord(candidate) || typeof candidate.host !== "string" || !candidate.host.trim()) continue;
+      endpointHosts.add(candidate.host.trim());
+    }
+  }
+  const endpoints = [...endpointHosts].flatMap((host) => {
+    try {
+      return [syncEndpointForHost(host, port)];
+    } catch {
+      return [];
+    }
+  });
+  if (endpoints.length === 0) throw new Error("SSH pairing command returned no usable sync endpoint.");
+  const createdAt = new Date().toISOString();
+  return args.store.save({
+    version: 1,
+    hostIdentity: response.machine,
+    machineKey: null,
+    deviceId,
+    siteId,
+    deviceName,
+    secret,
+    dpopPrivateKey: keys.privateKey,
+    dpopPublicKey: keys.publicKey,
+    endpoints,
+    relayUrl: null,
+    endpointStates: endpoints.map((endpoint) => ({ endpoint, lastSucceededAt: null })),
+    createdAt,
+    updatedAt: createdAt,
+  });
 }
 
 async function openValidatedRuntimeClient(args: {
@@ -1385,23 +1510,58 @@ async function openValidatedRuntimeClient(args: {
   expectedVersion: string | null;
   expectedLayout?: RemoteRuntimeLayout;
 }): Promise<{ client: RuntimeRpcClient; initializeInfo: RemoteRuntimeInitializeInfo }> {
-  const transport = await openSshRuntimeTransport(args.ssh, args.command);
+  let transport: Awaited<ReturnType<typeof openSshRuntimeTransport>>;
+  try {
+    transport = await openSshRuntimeTransport(args.ssh, args.command);
+  } catch (error) {
+    throw new Error(`RPC launch failed: ${runtimeErrorMessage(error)}`, { cause: error });
+  }
   const client = new RuntimeRpcClient(transport);
   try {
-    const initializeResult = await client.initialize(
-      "ade-desktop-remote",
-      args.appVersion,
-    );
-    const initializeInfo = validateRemoteRuntimeInitializeResult({
-      result: initializeResult,
-      expectedVersion: args.expectedVersion,
-      expectedLayout: args.expectedLayout,
-    });
+    let initializeResult: unknown;
+    try {
+      initializeResult = await client.initialize(
+        "ade-desktop-remote",
+        args.appVersion,
+      );
+    } catch (error) {
+      throw new Error(`RPC initialization failed: ${runtimeErrorMessage(error)}`, { cause: error });
+    }
+    let initializeInfo: RemoteRuntimeInitializeInfo;
+    try {
+      initializeInfo = validateRemoteRuntimeInitializeResult({
+        result: initializeResult,
+        expectedVersion: args.expectedVersion,
+        expectedLayout: args.expectedLayout,
+      });
+    } catch (error) {
+      throw new Error(`Capability negotiation failed: ${runtimeErrorMessage(error)}`, { cause: error });
+    }
     return { client, initializeInfo };
   } catch (error) {
     client.close();
     throw error;
   }
+}
+
+function runtimeFailurePhase(error: unknown): RemoteRuntimeFailurePhase {
+  const message = runtimeErrorMessage(error);
+  if (/^RPC launch failed:/i.test(message)) return "rpc_launch";
+  if (/^Capability negotiation failed:/i.test(message)) return "capability_negotiation";
+  return "rpc_initialize";
+}
+
+async function cleanupStaleRemoteUploadArtifacts(
+  client: Client,
+  layout: RemoteRuntimeLayout,
+): Promise<void> {
+  // Exact temp paths are removed by every upload catch path. This bounded
+  // sweep handles artifacts left behind when the SSH session itself dies
+  // before cleanup can execute, without racing another in-flight upload.
+  await execSsh(client, [
+    `find ${layout.binDirExpr} ${layout.runtimeDirExpr} -type f -name '*.upload-*.tmp' -mmin +10 -delete 2>/dev/null || true`,
+    `find ${layout.homeDirExpr} -maxdepth 1 -type d -name 'agent-skills.upload-*.tmp' -mmin +10 -exec rm -rf {} + 2>/dev/null || true`,
+  ].join("; ")).catch(() => undefined);
 }
 
 function coerceProjectIcon(value: unknown): ProjectIcon | null {
@@ -1470,6 +1630,7 @@ export async function bootstrapRemoteRuntime(args: {
   registry: RemoteTargetRegistry;
   resourcesPath: string;
   appVersion: string;
+  pairedStore?: DesktopPairedMachineStore;
 }): Promise<{ client: RuntimeRpcClient; result: RemoteRuntimeConnectResult; ssh: Client }> {
   const {
     client: ssh,
@@ -1566,6 +1727,9 @@ export async function bootstrapRemoteRuntime(args: {
       nativeDepsBundle &&
       (shouldUploadRuntime || !supportStatus.nativeDepsReady),
     );
+    if (shouldUploadRuntime || shouldUploadNativeDeps) {
+      await cleanupStaleRemoteUploadArtifacts(ssh, layout);
+    }
     if (shouldUploadRuntime || shouldUploadNativeDeps) {
       installDiskSpace = await preflightRemoteInstallDiskSpace({
         client: ssh,
@@ -1693,10 +1857,11 @@ export async function bootstrapRemoteRuntime(args: {
         expectedLayout: layout,
       });
     } catch (error) {
-      if (localBinary || runtimeUploaded) {
-        throw error;
-      }
-      const attempted = [{ layout: layout.homeDirName, error: runtimeErrorMessage(error) }];
+      const attempted = [{
+        layout: layout.homeDirName,
+        phase: runtimeFailurePhase(error),
+        error,
+      }];
       for (const candidateLayout of resolveRemoteRuntimeLayoutCandidates().filter((candidate) => candidate.homeDirName !== layout.homeDirName)) {
         const candidateVersionCheck = await execSsh(
           ssh,
@@ -1724,23 +1889,36 @@ export async function bootstrapRemoteRuntime(args: {
             expectedVersion: null,
             expectedLayout: candidateLayout,
           });
-          runtimeLayoutFallbackReason = `Using remote runtime home ${candidateLayout.homeDirName} because ${layout.homeDirName} could not start a compatible ADE RPC service: ${runtimeErrorMessage(error)}`;
+          runtimeLayoutFallbackReason = "This machine is using another installed ADE version. Some features may behave differently.";
           layout = candidateLayout;
+          runtimeEnvPrefix = candidateRuntimeEnvPrefix;
           runtimeVersion = candidateRuntimeVersion;
           break;
         } catch (candidateError) {
-          attempted.push({ layout: candidateLayout.homeDirName, error: runtimeErrorMessage(candidateError) });
+          attempted.push({
+            layout: candidateLayout.homeDirName,
+            phase: runtimeFailurePhase(candidateError),
+            error: candidateError,
+          });
         }
       }
       if (!openedRuntime) {
-        throw new Error(
-          "Remote ADE service could not start a compatible RPC runtime. " +
-            `Tried ${attempted.map((attempt) => `${attempt.layout}: ${attempt.error}`).join("; ")}.`,
-        );
+        const detail = attempted.map((attempt) => runtimeAttemptDetail({
+          layout: resolveRemoteRuntimeLayoutCandidates().find(
+            (candidate) => candidate.homeDirName === attempt.layout,
+          ) ?? layout,
+          phase: attempt.phase,
+          error: attempt.error,
+        })).join("\n");
+        throw new RemoteRuntimeConnectError({
+          kind: "generic",
+          message: "ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.",
+          detail,
+        }, error);
       }
     }
     if (!openedRuntime) {
-      throw new Error("Remote ADE service could not start a compatible RPC runtime.");
+      throw new Error("ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.");
     }
     const { client, initializeInfo } = openedRuntime;
     const projects = coerceProjects(await client.call("projects.list", {}));
@@ -1753,6 +1931,27 @@ export async function bootstrapRemoteRuntime(args: {
         `Using remote runtime home ${layout.homeDirName} instead of ${preferredLayout.homeDirName}.`,
       );
     }
+    let pairedCredentials: DesktopPairedMachineCredentials | null = null;
+    if (args.pairedStore && args.target.transport !== "paired") {
+      try {
+        pairedCredentials = await upgradeSshTargetToPairedCredentials({
+          ssh,
+          layout,
+          runtimeEnvPrefix,
+          binaryExpr: layout.binaryExpr,
+          appVersion: args.appVersion,
+          connectedRoute,
+          store: args.pairedStore,
+        });
+      } catch (error) {
+        console.warn("remote_runtime.ssh_pairing_upgrade_failed", {
+          detail: runtimeErrorMessage(error),
+        });
+        compatibilityWarnings.push(
+          "Connected, but ADE couldn't save the faster reconnect method. You can keep using this machine now and reconnect later to try again.",
+        );
+      }
+    }
     const updated = args.registry.update(args.target.id, {
       lastSeenArch: arch.label,
       runtimeBinaryVersion: initializeInfo.version ?? runtimeVersion,
@@ -1762,6 +1961,15 @@ export async function bootstrapRemoteRuntime(args: {
         route: connectedRoute,
         nowMs: connectedAt,
       }),
+      ...(pairedCredentials
+        ? {
+            transport: "paired" as const,
+            pairedMachine: {
+              hostIdentity: pairedCredentials.hostIdentity.deviceId,
+              machineKey: pairedCredentials.machineKey ?? null,
+            },
+          }
+        : {}),
     });
     return {
       client,

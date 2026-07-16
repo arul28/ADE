@@ -10,6 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AdeAccountMachine } from "../../../shared/types";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
+import { AccountMachineRow } from "./AccountMachineRow";
 import { RemoteTargetList } from "./RemoteTargetList";
 
 const remoteRuntimeMock = {
@@ -66,6 +67,11 @@ function installAdeMock(): void {
   });
 }
 
+function openAddMode(label: "Find nearby Macs" | "Paste a pairing link"): void {
+  fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
+  fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label}`) }));
+}
+
 describe("RemoteTargetList", () => {
   afterEach(() => {
     cleanup();
@@ -97,7 +103,7 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByRole("button", { name: "Copied" })).toBeNull();
   });
 
-  it("lists a discovered ADE machine under Available and connects via its route", async () => {
+  it("pairs a discovered ADE machine with its 6-digit code instead of creating an SSH target", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
       machines: [
@@ -121,71 +127,69 @@ describe("RemoteTargetList", () => {
       ],
       diagnostics: [],
     });
-    installAdeMock();
-
-    render(<RemoteTargetList />);
-
-    await waitFor(() => expect(screen.getByText("Studio")).toBeTruthy());
-    expect(screen.getByText("AVAILABLE")).toBeTruthy();
-    expect(screen.getByText("studio.tailnet.ts.net:8787")).toBeTruthy();
-    // ADE machines advertise their project count concisely.
-    expect(screen.getByText("ADE · 2 projects")).toBeTruthy();
-
-    const savedTarget = {
+    remoteRuntimeMock.parsePairingInput.mockResolvedValue({
+      hostIdentity: {
+        deviceId: "device-1",
+        siteId: "",
+        name: "Studio",
+        platform: "unknown",
+        deviceType: "desktop",
+      },
+      machineName: "Studio",
+      endpoints: [
+        "wss://192.168.1.42:8787",
+        "wss://studio.local:8787",
+        "wss://studio.tailnet.ts.net:8787",
+      ],
+      requiresPin: true,
+    });
+    const pairedTarget = {
       id: "target-1",
       name: "Studio",
-      hostname: "studio.tailnet.ts.net",
+      hostname: "192.168.1.42",
+      transport: "paired",
       sshUser: null,
       port: null,
       sshKeyPath: null,
-      routes: [
-        {
-          hostname: "studio.tailnet.ts.net",
-          port: null,
-          source: "tailscale",
-          lastSucceededAt: null,
-        },
-        {
-          hostname: "192.168.1.42",
-          port: null,
-          source: "bonjour",
-          lastSucceededAt: null,
-        },
-        {
-          hostname: "studio.local",
-          port: null,
-          source: "bonjour",
-          lastSucceededAt: null,
-        },
-      ],
+      routes: [],
       lastSeenArch: null,
       runtimeBinaryVersion: null,
       lastConnectedAt: null,
     };
-    remoteRuntimeMock.saveTarget.mockResolvedValue(savedTarget);
+    remoteRuntimeMock.pairWithMachine.mockResolvedValue({ targetId: "target-1" });
     remoteRuntimeMock.connect.mockResolvedValue({
-      target: savedTarget,
+      target: pairedTarget,
       arch: "darwin-arm64",
       version: "1.0.0",
       projects: [],
     });
+    installAdeMock();
 
+    render(<RemoteTargetList />);
+
+    openAddMode("Find nearby Macs");
+
+    await waitFor(() => expect(screen.getByText("Studio")).toBeTruthy());
+    expect(screen.getByText("Found nearby")).toBeTruthy();
+    expect(screen.getByText("Ready to connect")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Pair" }));
+    await screen.findByText(/Studio ready to pair/);
+
+    fireEvent.change(screen.getByLabelText("6-digit code"), {
+      target: { value: "654321" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
 
-    await waitFor(() =>
-      expect(remoteRuntimeMock.saveTarget).toHaveBeenCalledWith(
-        expect.objectContaining({
-          hostname: "studio.tailnet.ts.net",
-          routes: savedTarget.routes,
-        }),
-      ),
-    );
-    await waitFor(() =>
-      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
-    );
+    await waitFor(() => expect(remoteRuntimeMock.pairWithMachine).toHaveBeenCalledWith({
+      input: expect.stringMatching(/^https:\/\/ade-app\.dev\/pair#/),
+      pin: "654321",
+      deviceName: "This Mac",
+    }));
+    await waitFor(() => expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"));
+    expect(remoteRuntimeMock.saveTarget).not.toHaveBeenCalled();
   });
 
-  it("shows an SSH-only Tailscale peer with its OS in the Available section", async () => {
+  it("does not treat a raw Tailscale peer as an implicit SSH pairing", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
       machines: [
@@ -214,48 +218,11 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
-    await waitFor(() => expect(screen.getByText("Linux box")).toBeTruthy());
-    expect(screen.getByText("SSH only · linux")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Connect" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Test" })).toBeTruthy();
-  });
+    openAddMode("Find nearby Macs");
 
-  it("shows why an unsupported discovered machine cannot connect", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
-      machines: [
-        {
-          id: "tailscale:windows-pc",
-          serviceName: "Tailscale peer",
-          machineName: "Windows PC",
-          hostIdentity: "windows-pc",
-          hostName: "windows-pc",
-          port: 22,
-          addresses: ["100.64.0.12"],
-          primaryRoute: "100.64.0.12",
-          tailscaleAddress: "100.64.0.12",
-          runtimeKind: "tailscale-peer",
-          runtimeVersion: null,
-          os: "windows",
-          connectable: false,
-          unsupportedReason:
-            "Windows machines can't run the ADE remote runtime yet.",
-          projectIds: [],
-          projectCount: null,
-          lastSeenAt: 1234,
-        },
-      ],
-      diagnostics: [],
-    });
-    installAdeMock();
-
-    render(<RemoteTargetList />);
-
-    await waitFor(() => expect(screen.getByText("Windows PC")).toBeTruthy());
-    expect(
-      screen.getByText(/Windows machines can't run the ADE remote runtime yet/),
-    ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    await screen.findByText(/No Macs found/);
+    expect(screen.queryByText("Linux box")).toBeNull();
+    expect(screen.queryByText(/SSH/i)).toBeNull();
   });
 
   it("prefers the structured connection error message without rewriting it", async () => {
@@ -365,7 +332,6 @@ describe("RemoteTargetList", () => {
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
     expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByText(/ADE 1\.0\.0 on darwin-arm64/)).toBeTruthy();
     expect(screen.getByText(/RPC capabilities are compatible/i)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
     expect(screen.queryByText("/remote/ADE")).toBeNull();
@@ -843,7 +809,7 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
   });
 
-  it("splits saved and discovered machines into status sections with a route chip", async () => {
+  it("keeps the saved connected state without surfacing raw tailnet peers as setup choices", async () => {
     const connectedTarget = {
       id: "target-c",
       name: "Connected Mac",
@@ -907,13 +873,12 @@ describe("RemoteTargetList", () => {
       expect(screen.getAllByText("Connected Mac").length).toBeGreaterThan(0),
     );
     expect(screen.getByText("CONNECTED")).toBeTruthy();
-    expect(screen.getByText("UNAVAILABLE")).toBeTruthy();
-    // Live route chip on the connected row, sourced from status.route.
-    expect(screen.getByText("tailnet · 4 ms")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
-    // The unsupported peer greys out with a concrete reason and no Connect.
-    expect(screen.getByText("Windows — not supported yet")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+
+    openAddMode("Find nearby Macs");
+    expect(screen.getByText(/No Macs found/)).toBeTruthy();
+    expect(screen.queryByText("Windows PC")).toBeNull();
+    expect(screen.queryByText("Windows — not supported yet")).toBeNull();
   });
 
   it("reveals capped technical detail behind the error card expander", async () => {
@@ -1023,9 +988,9 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Add machine" })).toBeTruthy(),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
+    openAddMode("Paste a pairing link");
 
-    const input = screen.getByLabelText("Pairing code or link");
+    const input = screen.getByLabelText("Pairing link");
     fireEvent.change(input, { target: { value: "nope" } });
     await waitFor(() =>
       expect(
@@ -1040,12 +1005,7 @@ describe("RemoteTargetList", () => {
       expect(screen.getByText(/Studio ready to pair/)).toBeTruthy(),
     );
 
-    // Device name is prefilled from this Mac's pairing info.
-    expect(
-      (screen.getByLabelText("This device's name") as HTMLInputElement).value,
-    ).toBe("This Mac");
-
-    fireEvent.change(screen.getByLabelText("PIN"), {
+    fireEvent.change(screen.getByLabelText("6-digit code"), {
       target: { value: "654321" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Connect" }));
@@ -1087,7 +1047,7 @@ describe("RemoteTargetList", () => {
         ),
       ).toBeTruthy(),
     );
-    expect(screen.getByText("No saved or detected machines yet.")).toBeTruthy();
+    expect(screen.getByText("No Macs yet. Choose Add machine, or Share to connect this Mac from another device.")).toBeTruthy();
   });
 
   it("adopts a desktop account machine as paired-only instead of saving a broken SSH target", async () => {
@@ -1149,6 +1109,7 @@ describe("RemoteTargetList", () => {
       <RemoteTargetList
         accountMachines={accountMachines}
         accountMachinesState="ok"
+        accountSignedIn
       />,
     );
 
@@ -1164,5 +1125,48 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-account"),
     );
+  });
+
+  it("explains how to finish setup when an online account Mac has no ready route", () => {
+    const machine: AdeAccountMachine = {
+      machineKey: "studio",
+      deviceId: "studio-device",
+      name: "Studio",
+      platform: "darwin",
+      deviceType: "desktop",
+      reachableEndpoints: [],
+      lastSeenAt: Date.now(),
+      online: true,
+    };
+    const onToggleDetail = vi.fn();
+    const { rerender } = render(
+      <AccountMachineRow
+        row={{ kind: "account", id: "account:studio", machine, matchedTargetId: null }}
+        section="available"
+        busy={false}
+        connecting={false}
+        detailOpen={false}
+        onToggleDetail={onToggleDetail}
+        onConnect={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Connect" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "How to connect" }));
+    expect(onToggleDetail).toHaveBeenCalledWith("account:studio");
+
+    rerender(
+      <AccountMachineRow
+        row={{ kind: "account", id: "account:studio", machine, matchedTargetId: null }}
+        section="available"
+        busy={false}
+        connecting={false}
+        detailOpen
+        onToggleDetail={onToggleDetail}
+        onConnect={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Finish setup on the other Mac")).toBeTruthy();
+    expect(screen.getByText(/turn on Connect from anywhere/i)).toBeTruthy();
   });
 });

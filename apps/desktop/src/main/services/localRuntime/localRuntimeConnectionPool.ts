@@ -758,9 +758,9 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
-  async installServiceBestEffort(): Promise<void> {
+  async installServiceBestEffort(options: { forceRestart?: boolean } = {}): Promise<void> {
     if (this.serviceInstallPromise) return this.serviceInstallPromise;
-    const install = this.runServiceInstallBestEffort().finally(() => {
+    const install = this.runServiceInstallBestEffort(options).finally(() => {
       if (this.serviceInstallPromise === install) this.serviceInstallPromise = null;
     });
     this.serviceInstallPromise = install;
@@ -838,7 +838,7 @@ export class LocalRuntimeConnectionPool {
     });
   }
 
-  private async runServiceInstallBestEffort(): Promise<void> {
+  private async runServiceInstallBestEffort(options: { forceRestart?: boolean } = {}): Promise<void> {
     const cliPath = resolveCliScriptPath();
     const releaseBuildBlock = localReleaseBuildOutputRuntimeBlock(cliPath);
     if (releaseBuildBlock) {
@@ -890,7 +890,10 @@ export class LocalRuntimeConnectionPool {
     };
     await new Promise<void>((resolve) => {
       const child = spawn(process.execPath, [cliPath, "serve", "--install-service"], {
-        env: buildLocalRuntimeNodeEnv(this.appVersion),
+        env: {
+          ...buildLocalRuntimeNodeEnv(this.appVersion),
+          ...(options.forceRestart ? { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } : {}),
+        },
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
       });

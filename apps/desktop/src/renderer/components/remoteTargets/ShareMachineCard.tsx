@@ -48,7 +48,7 @@ function ShareQrBox({ value }: { value: string }) {
 /**
  * "Share this machine" surface: shows this Mac's pairing code, a copyable link,
  * a scannable QR, and a plain reachability line. When no PIN is set, other
- * machines cannot pair, so it points the user at Settings → Sync instead of
+ * machines cannot pair, so it points the user at Connections → Mobile instead of
  * showing a code that will not work.
  */
 export function ShareMachineCard() {
@@ -169,16 +169,16 @@ export function ShareMachineCard() {
                 </div>
               </div>
               <div style={labelStyle}>
-                {info.machineName} · reachable over LAN
-                {info.relayAvailable ? " · relay" : ""}
+                {info.machineName} · Ready on the same Wi-Fi
+                {info.relayAvailable ? " · Connect from anywhere when both Macs use the same ADE account" : ""}
               </div>
             </div>
           </div>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
             <div style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 12.5, lineHeight: 1.5 }}>
-              No pairing code is set, so other machines can't pair with this Mac
-              yet. Set a pairing PIN in Settings → Sync to share it.
+              Other devices need a pairing code before they can connect to this Mac.
+              Open Connections, choose Mobile, then set a 6-digit code.
             </div>
           </div>
         )

@@ -3366,6 +3366,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         writeBrowserMockWelcomeVideoState(next);
         return next;
       },
+      getLaunchGateState: resolved({ resolved: true }),
+      resolveLaunchGate: resolved({ resolved: true as const }),
       setWindowProjectTabs: resolved({ openProjectTabs: [MOCK_PROJECT] }),
       newWindow: resolved({ windowId: 2 }),
       openProjectInNewWindow: resolvedArg({
@@ -3556,6 +3558,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         lastSeenArch: null,
         runtimeBinaryVersion: null,
         lastConnectedAt: null,
+      }),
+      setAutoConnect: resolvedArg({
+        id: "mock-remote",
+        name: "Mock remote",
+        hostname: "mock.local",
+        sshUser: "ade",
+        port: 22,
+        sshKeyPath: null,
+        lastSeenArch: null,
+        runtimeBinaryVersion: null,
+        lastConnectedAt: null,
+        autoConnect: true,
       }),
       removeTarget: resolvedArg({ removed: true }),
       connect: resolvedArg({

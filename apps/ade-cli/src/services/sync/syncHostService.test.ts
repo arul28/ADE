@@ -603,6 +603,89 @@ describe("buildChangesetBatchPayload", () => {
 });
 
 describe("brain project actions fallback handler", () => {
+  it("closes a fallback Relay peer when its account proof expires", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    const pairing = createSpoofedDesktopPairing(secretsDir);
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => ({ projects: [] })),
+        prepareProjectConnection: vi.fn(),
+      },
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterialProvider: () => null,
+      }),
+      pairingSecretsPath: pairing.pairingSecretsPath,
+      pinPath: pairing.pinPath,
+      localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn: true,
+          userId: "account-a",
+          email: null,
+          name: null,
+          expiresAt: null,
+        }),
+        getAccessToken: async () => "host-account-token",
+      },
+      getAccountAttestationConfig: () => ({
+        issuer: "https://issuer.example",
+        jwksUrl: "https://issuer.example/jwks",
+        oauthClientId: "client-id",
+      }),
+      verifyAccountAttestation: async () => ({
+        userId: "account-a",
+        expiresAtMs: Date.now() + 100,
+      }) as never,
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "relay-bridge",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+        client!.once("close", (code, reason) => resolve({
+          code,
+          reason: reason.toString("utf8"),
+        }));
+      });
+      sendSpoofedPairedHello(
+        client,
+        pairing.helloPeer,
+        pairing.secret,
+        "client-account-token",
+      );
+      await waitForEnvelope(envelopes, "hello_ok", "spoofed-hello");
+      await expect(closed).resolves.toEqual({
+        code: 4003,
+        reason: "ADE Relay account proof expired",
+      });
+    } finally {
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
   it("serves personal commands and chat streams with zero projects", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
@@ -1044,13 +1127,19 @@ function sendSpoofedPairedHello(
   client: WebSocket,
   peer: SyncPeerMetadata,
   secret: string,
+  relayAccountToken?: string,
 ): void {
   client.send(encodeSyncEnvelope({
     type: "hello",
     requestId: "spoofed-hello",
     payload: {
       peer,
-      auth: { kind: "paired", deviceId: peer.deviceId, secret },
+      auth: {
+        kind: "paired",
+        deviceId: peer.deviceId,
+        secret,
+        relayAccountToken,
+      },
     },
   }));
 }
@@ -1222,7 +1311,10 @@ describe("sync host account authentication", () => {
     });
   });
 
-  async function mintAccountToken(sub = ownerUserId): Promise<string> {
+  async function mintAccountToken(
+    sub = ownerUserId,
+    expiresInSeconds = 600,
+  ): Promise<string> {
     const now = Math.floor(Date.now() / 1000);
     return new SignJWT({})
       .setProtectedHeader({ alg: "RS256", kid: "sync-host-test-key" })
@@ -1230,7 +1322,7 @@ describe("sync host account authentication", () => {
       .setSubject(sub)
       .setAudience(oauthClientId)
       .setIssuedAt(now)
-      .setExpirationTime(now + 600)
+      .setExpirationTime(now + expiresInSeconds)
       .sign(signingKey);
   }
 
@@ -1307,6 +1399,10 @@ describe("sync host account authentication", () => {
           name: null,
           expiresAt: null,
         }),
+        getAccessToken: async () => {
+          if (!signedIn) throw new Error("Signed out");
+          return "host-account-lease";
+        },
       },
       getAccountAttestationConfig: () => ({
         issuer,
@@ -1355,6 +1451,7 @@ describe("sync host account authentication", () => {
     peer: SyncPeerMetadata;
     secret: string;
     dpop: ReturnType<typeof signPairedDpop>;
+    relayAccountToken?: string | null;
   }): void {
     args.ws.send(encodeSyncEnvelope({
       type: "hello",
@@ -1365,10 +1462,154 @@ describe("sync host account authentication", () => {
           deviceId: args.peer.deviceId,
           secret: args.secret,
           dpop: args.dpop,
+          relayAccountToken: args.relayAccountToken ?? null,
         },
       },
     }));
   }
+
+  it("keeps direct desktop PIN capability separate from Relay and phone pairing", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    pinStore.setPin("428193");
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const bootstrapTokenPath = path.join(secretsDir, "sync-bootstrap-token");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      bootstrapTokenPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    const pair = async (args: {
+      deviceId: string;
+      relay: boolean;
+      relayAccountToken?: string | null;
+      deviceType?: "desktop" | "phone";
+    }) => {
+      const client = await openAccountClient(
+        await host.waitUntilListening(),
+        args.relay ? listener.getRelayBridgeProof() : null,
+      );
+      clients.push(client);
+      client.ws.send(encodeSyncEnvelope({
+        type: "pairing_request",
+        requestId: `pair-${args.deviceId}`,
+        payload: {
+          code: "428193",
+          peer: {
+            deviceId: args.deviceId,
+            deviceName: args.deviceId,
+            platform: args.deviceType === "phone" ? "iOS" : "macOS",
+            deviceType: args.deviceType ?? "desktop",
+            siteId: `${args.deviceId}-site`,
+            dbVersion: 0,
+          },
+          relayAccountToken: args.relayAccountToken ?? null,
+        },
+      }));
+      return await waitForValue(
+        () => client.envelopes.find((envelope) => envelope.type === "pairing_result"),
+        `pairing result ${args.deviceId}`,
+      );
+    };
+
+    try {
+      const missing = await pair({ deviceId: "relay-missing-account", relay: true });
+      expect(missing.payload).toMatchObject({
+        ok: false,
+        error: { code: "relay_account_required" },
+      });
+      expect(pairingStore.getPairingRecord("relay-missing-account")).toBeNull();
+
+      const wrongUser = await pair({
+        deviceId: "relay-other-account",
+        relay: true,
+        relayAccountToken: await mintAccountToken("user_someone_else"),
+      });
+      expect(wrongUser.payload).toMatchObject({
+        ok: false,
+        error: { code: "relay_account_required" },
+      });
+      expect(pairingStore.getPairingRecord("relay-other-account")).toBeNull();
+
+      const direct = await pair({ deviceId: "direct-no-account", relay: false });
+      expect(direct.payload).toMatchObject({ ok: true });
+      expect(pairingStore.getPairingRecord("direct-no-account")).toMatchObject({
+        peerDeviceType: "desktop",
+        runtimeHostGranted: true,
+      });
+
+      const directPhone = await pair({
+        deviceId: "direct-phone",
+        relay: false,
+        deviceType: "phone",
+      });
+      expect(directPhone.payload).toMatchObject({ ok: true });
+      expect(pairingStore.getPairingRecord("direct-phone")).toMatchObject({
+        peerDeviceType: "phone",
+        runtimeHostGranted: false,
+      });
+
+      const sameAccount = await pair({
+        deviceId: "relay-same-account",
+        relay: true,
+        relayAccountToken: await mintAccountToken(),
+      });
+      expect(sameAccount.payload).toMatchObject({ ok: true });
+      expect(pairingStore.getPairingRecord("relay-same-account")).toMatchObject({
+        peerDeviceType: "desktop",
+        runtimeHostGranted: false,
+      });
+
+      const bootstrapClient = await openAccountClient(
+        await host.waitUntilListening(),
+        listener.getRelayBridgeProof(),
+      );
+      clients.push(bootstrapClient);
+      bootstrapClient.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "legacy-bootstrap-over-relay",
+        payload: {
+          peer: {
+            deviceId: "legacy-relay-peer",
+            deviceName: "Legacy Relay peer",
+            platform: "iOS",
+            deviceType: "phone",
+            siteId: "legacy-relay-site",
+            dbVersion: 0,
+          },
+          auth: {
+            kind: "bootstrap",
+            token: fs.readFileSync(bootstrapTokenPath, "utf8").trim(),
+          },
+        },
+      }));
+      const bootstrapRejected = await waitForValue(
+        () => bootstrapClient.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "legacy Relay bootstrap rejection",
+      );
+      expect(bootstrapRejected.payload).toMatchObject({
+        code: "relay_account_required",
+      });
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
 
   it("adopts through an authenticated relay handoff and returns credentials for ordinary paired DPoP", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
@@ -1546,7 +1787,180 @@ describe("sync host account authentication", () => {
     }
   });
 
-  it("rejects direct account auth, preserves the existing secret on relay re-auth, and accepts direct paired DPoP", async () => {
+  it.each([
+    { name: "sign-out", nextUserId: null, nextLease: null },
+    { name: "account switch", nextUserId: "user_sync_other", nextLease: "host-lease-b" },
+  ])("does not resurrect account trust when $name wins deferred attestation", async ({
+    nextUserId,
+    nextLease,
+  }) => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    let currentUserId: string | null = ownerUserId;
+    let currentLease: string | null = "host-lease-a";
+    let finishVerification: ((value: typeof attestation) => void) | null = null;
+    let markVerificationStarted: (() => void) | null = null;
+    const verificationStarted = new Promise<void>((resolve) => {
+      markVerificationStarted = resolve;
+    });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const host = createSyncHostService({
+      ...baseArgs,
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn: currentUserId != null,
+          userId: currentUserId,
+          email: null,
+          name: null,
+          expiresAt: null,
+        }),
+        getAccessToken: async () => {
+          if (!currentLease) throw new Error("Signed out");
+          return currentLease;
+        },
+      },
+      getAccountAttestationConfig: () => ({ issuer, jwksUrl, oauthClientId }),
+      verifyAccountAttestation: async () => {
+        markVerificationStarted?.();
+        return await new Promise((resolve) => {
+          finishVerification = resolve;
+        });
+      },
+      pinStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const client = await openAccountClient(
+      await host.waitUntilListening(),
+      listener.getRelayBridgeProof(),
+    );
+    const peer = {
+      deviceId: `deferred-account-${nextUserId ?? "signed-out"}`,
+      deviceName: "Deferred account client",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "deferred-account-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const key = makeDpopKeyPair();
+    try {
+      sendAccountHello({
+        ws: client.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: key.privateKey,
+          publicKeyX963: key.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      await verificationStarted;
+      currentUserId = nextUserId;
+      currentLease = nextLease;
+      finishVerification!(attestation);
+
+      await waitForValue(
+        () => client.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "deferred account hello rejection",
+      );
+      expect(pairingStore.getPairingRecord(peer.deviceId)).toBeNull();
+    } finally {
+      client.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
+  it("closes an authenticated Relay peer when its account proof expires", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const client = await openAccountClient(
+      await host.waitUntilListening(),
+      listener.getRelayBridgeProof(),
+    );
+    const peer = {
+      deviceId: "expiring-relay-account-peer",
+      deviceName: "Expiring Relay peer",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "expiring-relay-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const accountToken = await mintAccountToken(ownerUserId, 2);
+    const key = makeDpopKeyPair();
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+      client.ws.once("close", (code, reason) => resolve({
+        code,
+        reason: reason.toString("utf8"),
+      }));
+    });
+    try {
+      sendAccountHello({
+        ws: client.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: key.privateKey,
+          publicKeyX963: key.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      await waitForValue(
+        () => client.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "expiring Relay account hello_ok",
+      );
+      await expect(Promise.race([
+        closed,
+        new Promise<never>((_resolve, reject) => {
+          setTimeout(() => reject(new Error("Relay proof expiry did not close the peer")), 4_000);
+        }),
+      ])).resolves.toEqual({
+        code: 4003,
+        reason: "ADE Relay account proof expired",
+      });
+    } finally {
+      client.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  }, 8_000);
+
+  it("reissues an account-owned credential after a dropped hello and accepts the replacement directly", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
     const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
@@ -1645,8 +2059,17 @@ describe("sync host account authentication", () => {
         "relay stored-key account hello_ok",
       );
       expect(pairingStore.getPairingRecord(peer.deviceId)?.dpopPublicKey).toBe(legitimateKey.publicKeyX963);
-      expect((accountHello.payload as { accountPairing?: unknown }).accountPairing).toBeUndefined();
-      expect(pairingStore.authenticate(peer.deviceId, pairing.secret)).toBe(true);
+      const replacement = (accountHello.payload as {
+        accountPairing?: { deviceId: string; secret: string };
+      }).accountPairing;
+      expect(replacement).toMatchObject({
+        deviceId: peer.deviceId,
+        secret: expect.stringMatching(/^[0-9a-f]{48}$/),
+      });
+      expect(replacement?.secret).not.toBe(pairing.secret);
+      expect(pairingStore.authenticate(peer.deviceId, pairing.secret)).toBe(false);
+      expect(pairingStore.authenticate(peer.deviceId, replacement!.secret)).toBe(true);
+      const activeSecret = replacement!.secret;
 
       const directPairedClient = await openAccountClient(port);
       clients.push(directPairedClient);
@@ -1657,12 +2080,12 @@ describe("sync host account authentication", () => {
           auth: {
             kind: "paired",
             deviceId: peer.deviceId,
-            secret: pairing.secret,
+            secret: activeSecret,
             dpop: signPairedDpop({
               privateKey: legitimateKey.privateKey,
               publicKeyX963: legitimateKey.publicKeyX963,
               deviceId: peer.deviceId,
-              secret: pairing.secret,
+              secret: activeSecret,
             }),
           },
         },
@@ -1671,6 +2094,186 @@ describe("sync host account authentication", () => {
         () => directPairedClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
         "direct account-minted paired hello_ok after relay re-auth",
       );
+
+      const relayWithoutAccount = await openAccountClient(port, listener.getRelayBridgeProof());
+      clients.push(relayWithoutAccount);
+      sendPairedHello({
+        ws: relayWithoutAccount.ws,
+        peer,
+        secret: activeSecret,
+        dpop: signPairedDpop({
+          privateKey: legitimateKey.privateKey,
+          publicKeyX963: legitimateKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret: activeSecret,
+        }),
+      });
+      const missingRelayProof = await waitForValue(
+        () => relayWithoutAccount.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "paired relay missing account proof",
+      );
+      expect(missingRelayProof.payload).toMatchObject({
+        code: "relay_account_required",
+      });
+
+      const relayWrongAccount = await openAccountClient(port, listener.getRelayBridgeProof());
+      clients.push(relayWrongAccount);
+      sendPairedHello({
+        ws: relayWrongAccount.ws,
+        peer,
+        secret: activeSecret,
+        relayAccountToken: await mintAccountToken("different-user"),
+        dpop: signPairedDpop({
+          privateKey: legitimateKey.privateKey,
+          publicKeyX963: legitimateKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret: activeSecret,
+        }),
+      });
+      const wrongRelayProof = await waitForValue(
+        () => relayWrongAccount.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "paired relay wrong account proof",
+      );
+      expect(wrongRelayProof.payload).toMatchObject({
+        code: "relay_account_required",
+      });
+
+      const relayPairedClient = await openAccountClient(port, listener.getRelayBridgeProof());
+      clients.push(relayPairedClient);
+      sendPairedHello({
+        ws: relayPairedClient.ws,
+        peer,
+        secret: activeSecret,
+        relayAccountToken: accountToken,
+        dpop: signPairedDpop({
+          privateKey: legitimateKey.privateKey,
+          publicKeyX963: legitimateKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret: activeSecret,
+        }),
+      });
+      await waitForValue(
+        () => relayPairedClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "paired relay same-account hello_ok",
+      );
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
+  it("revokes account-owned trust and closes Relay plus account peers when the host lease expires", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    const accountKey = makeDpopKeyPair();
+    const manualKey = makeDpopKeyPair();
+    const accountPeer = {
+      deviceId: "lease-account-peer",
+      deviceName: "Lease account peer",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "lease-account-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const manualPeer = {
+      ...accountPeer,
+      deviceId: "lease-manual-relay-peer",
+      deviceName: "Lease manual Relay peer",
+      siteId: "lease-manual-site",
+    } satisfies SyncPeerMetadata;
+    const accountPairing = pairingStore.pairPeerViaAccount(accountPeer, attestation, {
+      dpopPublicKey: accountKey.publicKeyX963,
+    });
+    const manualPairing = pairingStore.pairPeerViaLocalTrust(manualPeer, {
+      dpopPublicKey: manualKey.publicKeyX963,
+    });
+    let leaseValid = true;
+    const baseArgs = createHostArgs(projectRoot, []);
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const host = createSyncHostService({
+      ...baseArgs,
+      accountAuthService: {
+        getStatus: () => ({
+          signedIn: true,
+          userId: ownerUserId,
+          email: null,
+          name: null,
+          expiresAt: null,
+        }),
+        getAccessToken: async () => {
+          if (!leaseValid) throw new Error("refresh failed");
+          return "valid-host-lease";
+        },
+      },
+      getAccountAttestationConfig: () => ({ issuer, jwksUrl, oauthClientId }),
+      accountLeasePollMs: 250,
+      pinStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    try {
+      const port = await host.waitUntilListening();
+      const accountClient = await openAccountClient(port);
+      clients.push(accountClient);
+      sendPairedHello({
+        ws: accountClient.ws,
+        peer: accountPeer,
+        secret: accountPairing.secret,
+        dpop: signPairedDpop({
+          privateKey: accountKey.privateKey,
+          publicKeyX963: accountKey.publicKeyX963,
+          deviceId: accountPeer.deviceId,
+          secret: accountPairing.secret,
+        }),
+      });
+      await waitForValue(
+        () => accountClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "account-owned direct hello_ok",
+      );
+
+      const relayClient = await openAccountClient(port, listener.getRelayBridgeProof());
+      clients.push(relayClient);
+      sendPairedHello({
+        ws: relayClient.ws,
+        peer: manualPeer,
+        secret: manualPairing.secret,
+        relayAccountToken: accountToken,
+        dpop: signPairedDpop({
+          privateKey: manualKey.privateKey,
+          publicKeyX963: manualKey.publicKeyX963,
+          deviceId: manualPeer.deviceId,
+          secret: manualPairing.secret,
+        }),
+      });
+      await waitForValue(
+        () => relayClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "manual Relay hello_ok",
+      );
+      const accountClosed = new Promise<number>((resolve) => accountClient.ws.once("close", resolve));
+      const relayClosed = new Promise<number>((resolve) => relayClient.ws.once("close", resolve));
+
+      leaseValid = false;
+      await expect(accountClosed).resolves.toBe(4003);
+      await expect(relayClosed).resolves.toBe(4003);
+      expect(pairingStore.getPairingRecord(accountPeer.deviceId)).toBeNull();
+      expect(pairingStore.getPairingRecord(manualPeer.deviceId)?.accountOwnerUserId).toBeNull();
     } finally {
       for (const client of clients) client.ws.close();
       await host.dispose();

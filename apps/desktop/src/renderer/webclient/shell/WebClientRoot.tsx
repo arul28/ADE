@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ProjectInfo } from "../../../shared/types";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
@@ -6,12 +6,18 @@ import type { DeeplinkTarget } from "../../../shared/deeplinks";
 import type {
   AdeSyncClient,
   AdeSyncClientStatus,
+  WebRelayAccess,
   WebClientEnvironmentRecord,
 } from "../sync";
+import { WebRelayAuthRequiredError } from "../sync";
 import {
   BrowserAccountClient,
   type BrowserAccountSnapshot,
 } from "../account/client";
+import {
+  accountLeaseOwnerForActiveConnection,
+  reconcileActiveAccountLease,
+} from "../account/leaseMonitor";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { ScreenShell } from "./ScreenShell";
 import { PairFlow } from "./PairFlow";
@@ -52,6 +58,7 @@ async function loadAppRoot(): Promise<React.ComponentType> {
 }
 
 const PENDING_TARGET_KEY = "ade-web:pending-target";
+const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
 const APP_ROUTE_ROOTS = [
   "/work", "/lanes", "/files", "/prs", "/review", "/history",
   "/automations", "/cto", "/settings", "/graph", "/project", "/chats",
@@ -96,9 +103,28 @@ type Phase =
   | { kind: "machine-picker" }
   | { kind: "pairing"; reloadOnSuccess: boolean }
   | { kind: "connecting"; name: string }
+  | { kind: "auth-required"; message: string }
   | { kind: "project-picker"; projects: SyncMobileProjectSummary[] }
   | { kind: "ready"; AppRoot: React.ComponentType }
   | { kind: "error"; message: string; canRetry: boolean };
+
+function relayAccessFromAccount(
+  account: BrowserAccountSnapshot,
+  getAccessToken: () => Promise<string>,
+): WebRelayAccess {
+  if (
+    (account.state === "signed_in" || account.state === "directory_unavailable")
+    && account.userId
+  ) {
+    return {
+      kind: "signed_in",
+      userId: account.userId,
+      hostDeviceIds: account.machines.flatMap((machine) => machine.deviceId ? [machine.deviceId] : []),
+      getAccessToken,
+    };
+  }
+  return { kind: "signed_out" };
+}
 
 export function WebClientRoot({
   client,
@@ -122,12 +148,29 @@ export function WebClientRoot({
   const phaseIsReadyRef = useRef(false);
   const connectingAccountMachineRef = useRef<string | null>(null);
   phaseIsReadyRef.current = phase.kind === "ready";
+  const relayAccess = useMemo(
+    () => relayAccessFromAccount(account, () => accountClient.getAccessToken()),
+    [account, accountClient],
+  );
 
   const refreshEnvironments = useCallback(async () => {
     const list = await client.listEnvironments();
     setEnvironments(list);
     return list;
   }, [client]);
+
+  const applyAccountPrivacy = useCallback(async (
+    snapshot: BrowserAccountSnapshot,
+  ): Promise<WebClientEnvironmentRecord[]> => {
+    const currentOwnerUserId = (
+      snapshot.state === "signed_in" || snapshot.state === "directory_unavailable"
+    )
+      ? snapshot.userId
+      : null;
+    await client.pruneAccountOwnedEnvironments(currentOwnerUserId);
+    setAccount(snapshot);
+    return await refreshEnvironments();
+  }, [client, refreshEnvironments]);
 
   const showPairing = useCallback((reloadOnSuccess: boolean) => {
     fatalRebootRef.current = false;
@@ -217,13 +260,17 @@ export function WebClientRoot({
   const connectTo = useCallback(async (environment: WebClientEnvironmentRecord) => {
     setPhase({ kind: "connecting", name: environment.machineName });
     try {
-      await client.connect(environment.envId);
+      await client.connect(environment.envId, relayAccess);
       await afterConnect();
     } catch (error) {
+      if (error instanceof WebRelayAuthRequiredError) {
+        setPhase({ kind: "auth-required", message: error.message });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       setPhase({ kind: "error", message, canRetry: true });
     }
-  }, [client, afterConnect]);
+  }, [client, relayAccess, afterConnect]);
 
   const connectToAccountMachine = useCallback(async (machine: AdeAccountMachine) => {
     if (connectingAccountMachineRef.current) return;
@@ -231,16 +278,24 @@ export function WebClientRoot({
     setConnectingAccountMachineKey(machine.machineKey);
     try {
       const accessToken = await accountClient.getAccessToken();
+      const accountSessionLease = accountClient.captureSessionLease();
+      if (!accountSessionLease) {
+        throw new Error("Sign in again to connect this machine.");
+      }
       await client.pairWithAccountMachine({
         machine,
         accessToken,
+        accountSessionLease,
+        isAccountSessionLeaseCurrent: (lease) => accountClient.isSessionLeaseCurrent(lease),
         deviceName: `ADE Web on ${window.location.hostname || "browser"}`,
         relayBaseUrls: accountClient.getRelayBaseUrls(),
+        getRelayAccountToken: () => accountClient.getAccessToken(),
       });
       await refreshEnvironments();
       await afterConnect();
     } catch (error) {
-      setAccount(accountClient.getSnapshot());
+      const snapshot = accountClient.getSnapshot();
+      await applyAccountPrivacy(snapshot);
       setPhase({
         kind: "error",
         message: error instanceof Error ? error.message : String(error),
@@ -250,7 +305,7 @@ export function WebClientRoot({
       connectingAccountMachineRef.current = null;
       setConnectingAccountMachineKey(null);
     }
-  }, [accountClient, afterConnect, client, refreshEnvironments]);
+  }, [accountClient, afterConnect, applyAccountPrivacy, client, refreshEnvironments]);
 
   // ---- Boot sequence ------------------------------------------------------
   useEffect(() => {
@@ -258,10 +313,6 @@ export function WebClientRoot({
     bootedRef.current = true;
     void (async () => {
       const path = window.location.pathname;
-      if (path === "/pair") {
-        setPhase({ kind: "pairing", reloadOnSuccess: false });
-        return;
-      }
       if (path === "/open") {
         stashedTargetRef.current = parseOpenTarget(window.location.search);
         stashTarget(stashedTargetRef.current);
@@ -274,26 +325,17 @@ export function WebClientRoot({
       if (path === "/account/callback") {
         setAccount((current) => ({ ...current, state: "loading", message: null }));
       }
-      const [list, accountSnapshot] = await Promise.all([
-        refreshEnvironments(),
-        accountClient.bootstrap(),
-      ]);
-      setAccount(accountSnapshot);
-      if (
-        list.length === 0
-        || list.length > 1
-        || accountSnapshot.state === "signed_in"
-        || accountSnapshot.state === "directory_unavailable"
-        || accountSnapshot.state === "auth_expired"
-      ) {
-        setPhase({ kind: "machine-picker" });
+      const accountSnapshot = await accountClient.bootstrap();
+      await applyAccountPrivacy(accountSnapshot);
+      if (path === "/pair") {
+        setPhase({ kind: "pairing", reloadOnSuccess: false });
         return;
       }
-      await connectTo(list[0]);
+      setPhase({ kind: "machine-picker" });
     })().catch((error) => {
       setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
     });
-  }, [accountClient, connectTo, refreshEnvironments]);
+  }, [accountClient, applyAccountPrivacy]);
 
   // ---- Live status subscription ------------------------------------------
   useEffect(() => {
@@ -320,13 +362,66 @@ export function WebClientRoot({
     return client.onProjectCatalog((payload) => setCatalog(payload.projects));
   }, [client]);
 
+  // Account-owned trust and account-authorized Relay sockets stay usable only
+  // while the same browser account remains valid. A local pairing keeps its
+  // saved trust after Relay logout so it can reconnect directly later.
+  useEffect(() => {
+    if (
+      status.state !== "connecting"
+      && status.state !== "connected"
+      && status.state !== "reconnecting"
+    ) {
+      return;
+    }
+    const activeEnvironment = environments.find(
+      (environment) => environment.envId === status.selectedEnvId,
+    );
+    if (!activeEnvironment) return;
+    const expectedOwnerUserId = accountLeaseOwnerForActiveConnection({
+      environment: activeEnvironment,
+      endpoint: status.endpoint,
+      relayAccess,
+    });
+    if (!expectedOwnerUserId) return;
+
+    let disposed = false;
+    let checkInFlight = false;
+    const checkLease = async () => {
+      if (disposed || checkInFlight) return;
+      checkInFlight = true;
+      try {
+        const result = await reconcileActiveAccountLease({
+          accountClient,
+          syncClient: client,
+          expectedOwnerUserId,
+        });
+        if (result.state !== "revoked") return;
+        setAccount(result.snapshot);
+        await refreshEnvironments();
+        showMachinePicker();
+      } catch {
+        // Storage cleanup can be retried on the next lease check. A transient
+        // account refresh is already represented as a non-throwing result.
+      } finally {
+        checkInFlight = false;
+      }
+    };
+
+    void checkLease();
+    const interval = window.setInterval(() => void checkLease(), ACCOUNT_LEASE_CHECK_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [accountClient, client, environments, refreshEnvironments, relayAccess, showMachinePicker, status.endpoint, status.selectedEnvId, status.state]);
+
   // ---- Chrome callbacks ---------------------------------------------------
   const onSwitchEnv = useCallback((environment: WebClientEnvironmentRecord) => {
     // Machine switches touch the whole graph (new catalog, new adapter binding);
     // persist the selection and cold-reboot for a clean connect.
-    void client.switchEnvironment(environment.envId).catch(() => {});
+    void client.switchEnvironment(environment.envId, relayAccess).catch(() => {});
     window.location.assign("/");
-  }, [client]);
+  }, [client, relayAccess]);
 
   const onForgetEnv = useCallback((environment: WebClientEnvironmentRecord) => {
     const wasActive = environment.envId === client.getStatus().selectedEnvId;
@@ -361,16 +456,20 @@ export function WebClientRoot({
   }, [accountClient]);
 
   const onAccountSignOut = useCallback(() => {
-    setAccount(accountClient.signOut());
-    showMachinePicker();
-  }, [accountClient, showMachinePicker]);
+    const snapshot = accountClient.signOut();
+    void (async () => {
+      client.disconnect();
+      await applyAccountPrivacy(snapshot);
+      showMachinePicker();
+    })();
+  }, [accountClient, applyAccountPrivacy, client, showMachinePicker]);
 
   const onRetryDirectory = useCallback(() => {
     setAccount((current) => ({ ...current, state: "loading", message: null }));
-    void accountClient.loadMachines().then(setAccount).catch(() => {
-      setAccount(accountClient.getSnapshot());
+    void accountClient.loadMachines().then(applyAccountPrivacy).catch(() => {
+      void applyAccountPrivacy(accountClient.getSnapshot());
     });
-  }, [accountClient]);
+  }, [accountClient, applyAccountPrivacy]);
 
   // ---- Render -------------------------------------------------------------
   switch (phase.kind) {
@@ -383,6 +482,7 @@ export function WebClientRoot({
         <MachinePicker
           environments={environments}
           account={account}
+          relayAccess={relayAccess}
           connectingMachineKey={connectingAccountMachineKey}
           onSelect={(environment) => void connectTo(environment)}
           onSelectAccountMachine={(machine) => void connectToAccountMachine(machine)}
@@ -397,6 +497,8 @@ export function WebClientRoot({
         <PairFlow
           client={client}
           hash={window.location.hash}
+          relayAccess={relayAccess}
+          onSignIn={onAccountSignIn}
           onBack={() => setPhase({ kind: "machine-picker" })}
           onPaired={() => {
             fatalRebootRef.current = false;
@@ -414,6 +516,27 @@ export function WebClientRoot({
             });
           }}
         />
+      );
+    case "auth-required":
+      return (
+        <ScreenShell title="Sign in to connect" subtitle={phase.message}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {account.state !== "unconfigured" ? (
+              <button type="button" style={primaryButton({ height: 36 })} onClick={onAccountSignIn}>
+                {account.state === "signed_in" || account.state === "directory_unavailable" || account.state === "auth_expired"
+                  ? "Sign in again"
+                  : "Sign in"}
+              </button>
+            ) : null}
+            <button
+              type="button"
+              style={primaryButton({ height: 36, background: "transparent", color: COLORS.textSecondary, border: `1px solid ${COLORS.border}` })}
+              onClick={showMachinePicker}
+            >
+              Choose another Mac
+            </button>
+          </div>
+        </ScreenShell>
       );
     case "project-picker":
       return (
@@ -488,7 +611,7 @@ function Connecting({ name }: { name: string | null }) {
   return (
     <ScreenShell
       title={name ? `Connecting to ${name}` : "Starting ADE"}
-      subtitle="Establishing a secure connection to your machine…"
+      subtitle="Connecting to your machine…"
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
         <span

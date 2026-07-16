@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
   accountMachinePairedSyncEndpoints,
@@ -16,6 +16,57 @@ import {
   selectAccountMachine,
 } from "../../../shared/accountDirectory";
 import { parseTrustedDirectoryBaseUrl } from "./accountBridge";
+
+const accountStatus = vi.hoisted(() => ({
+  signedIn: false,
+  userId: null as string | null,
+  email: null,
+  name: null,
+  expiresAt: null,
+  source: null,
+}));
+const pollLogin = vi.hoisted(() => vi.fn());
+const signOut = vi.hoisted(() => vi.fn());
+
+vi.mock(
+  "../../../../../ade-cli/src/services/account/sharedAccountAuthService",
+  () => ({
+    getSharedAccountAuthService: () => ({
+      getStatus: () => ({ ...accountStatus }),
+      startLogin: vi.fn(),
+      pollLogin,
+      cancelLogin: vi.fn(),
+      signOut,
+    }),
+    registerAccountConfigProjectRoot: vi.fn(),
+  }),
+);
+
+vi.mock(
+  "../../../../../ade-cli/src/services/account/accountMachineDirectoryService",
+  () => ({
+    AccountMachineDirectoryService: class {
+      async listMachines() {
+        return { state: "ok", machines: [], message: null };
+      }
+
+      async pairMachine() {
+        throw new Error("not used");
+      }
+    },
+  }),
+);
+
+vi.mock(
+  "../../../../../ade-cli/src/services/projects/machineLayout",
+  () => ({
+    resolveMachineAdeLayout: () => ({ secretsDir: "/tmp/ade-account-lifecycle" }),
+  }),
+);
+
+vi.mock("../secrets/projectSecretService", () => ({
+  createProjectSecretService: () => ({ get: () => ({ value: "" }) }),
+}));
 
 function machine(overrides: Partial<AdeAccountMachine> = {}): AdeAccountMachine {
   return {
@@ -252,5 +303,44 @@ describe("shared account directory trust boundary", () => {
       state: "unavailable",
       message: "Machine directory timed out.",
     });
+  });
+});
+
+describe("desktop account machine lifecycle", () => {
+  beforeEach(() => {
+    accountStatus.signedIn = false;
+    accountStatus.userId = null;
+    pollLogin.mockReset();
+    signOut.mockReset().mockReturnValue({ ...accountStatus });
+  });
+
+  it("keeps status pure and reconciles only authoritative auth transitions", async () => {
+    const reconcileAccountOwnership = vi.fn(() => ({
+      removedTargetIds: [],
+      removedCredentialHostIds: [],
+    }));
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({
+      getProjectRoot: () => null,
+      reconcileAccountOwnership,
+    });
+
+    expect(bridge.status().signedIn).toBe(false);
+    expect(reconcileAccountOwnership).not.toHaveBeenCalled();
+
+    pollLogin.mockResolvedValue({
+      status: "signed_in",
+      message: null,
+      authStatus: {
+        ...accountStatus,
+        signedIn: true,
+        userId: "account-a",
+      },
+    });
+    await bridge.pollLogin("login-1");
+    expect(reconcileAccountOwnership).toHaveBeenLastCalledWith("account-a");
+
+    bridge.signOut();
+    expect(reconcileAccountOwnership).toHaveBeenLastCalledWith(null);
   });
 });

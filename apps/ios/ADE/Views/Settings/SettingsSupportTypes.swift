@@ -4,6 +4,8 @@ enum SettingsPairSheetRoute: Identifiable {
   case discover
   case manual
   case scan
+  case link
+  case ssh
   case webClient
 
   var id: String {
@@ -11,6 +13,8 @@ enum SettingsPairSheetRoute: Identifiable {
     case .discover: return "discover"
     case .manual: return "manual"
     case .scan: return "scan"
+    case .link: return "link"
+    case .ssh: return "ssh"
     case .webClient: return "webClient"
     }
   }

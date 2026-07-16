@@ -97,8 +97,23 @@ describe("RemoteTargetRegistry", () => {
     const restored = new RemoteTargetRegistry().get(target.id);
     expect(restored).toMatchObject({
       lastConnectedAt: 1_700_000_000,
+      autoConnect: false,
       manuallyDisconnectedAt: 1_700_000_100,
     });
+  });
+
+  it("migrates legacy successful targets to auto-connect and leaves new targets off", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-targets-"));
+    process.env.ADE_HOME = adeHome;
+    const registry = new RemoteTargetRegistry();
+    const target = registry.save({ hostname: "legacy.example.test" });
+    expect(target.autoConnect).toBe(false);
+
+    registry.update(target.id, {
+      lastConnectedAt: 1_700_000_000,
+      autoConnect: undefined,
+    });
+    expect(new RemoteTargetRegistry().get(target.id)?.autoConnect).toBe(true);
   });
 
   it("round-trips paired targets with SSH fallback credentials preserved", () => {
@@ -156,5 +171,68 @@ describe("RemoteTargetRegistry", () => {
 
     expect(target.routes).toEqual([]);
     expect(new RemoteTargetRegistry().get(target.id)?.routes).toEqual([]);
+  });
+
+  it("removes only targets created by the account that signed out", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-account-targets-"));
+    process.env.ADE_HOME = adeHome;
+    const registry = new RemoteTargetRegistry();
+    const manual = registry.save({
+      hostname: "manual.example.test",
+      sshUser: "admin",
+    });
+    const owned = registry.save({
+      hostname: "account-a.example.test",
+      accountOwnerUserId: "account-a",
+    });
+    const other = registry.save({
+      hostname: "account-b.example.test",
+      accountOwnerUserId: "account-b",
+    });
+
+    expect(registry.removeAccountOwned("account-a")).toEqual([owned]);
+    expect(registry.list().map((target) => target.id)).toEqual([
+      other.id,
+      manual.id,
+    ]);
+    expect(registry.pruneAccountOwned("account-b")).toEqual([]);
+    expect(registry.pruneAccountOwned(null)).toEqual([other]);
+    expect(registry.list()).toEqual([manual]);
+  });
+
+  it("does not turn an existing user-paired target into account-owned data", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-manual-target-"));
+    process.env.ADE_HOME = adeHome;
+    const registry = new RemoteTargetRegistry();
+    const manual = registry.save({ hostname: "studio.example.test" });
+
+    const revisitedThroughAccount = registry.save({
+      hostname: "studio.example.test",
+      accountOwnerUserId: "account-a",
+    });
+
+    expect(revisitedThroughAccount.id).toBe(manual.id);
+    expect(revisitedThroughAccount.accountOwnerUserId).toBeNull();
+    expect(registry.removeAccountOwned("account-a")).toEqual([]);
+  });
+
+  it("lets an explicit manual pairing declassify an account-owned target", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-manual-repair-target-"));
+    process.env.ADE_HOME = adeHome;
+    const registry = new RemoteTargetRegistry();
+    const accountTarget = registry.save({
+      hostname: "studio.example.test",
+      accountOwnerUserId: "account-a",
+    });
+
+    const manuallyRepaired = registry.save({
+      hostname: "studio.example.test",
+      accountOwnerUserId: null,
+    });
+
+    expect(manuallyRepaired.id).toBe(accountTarget.id);
+    expect(manuallyRepaired.accountOwnerUserId).toBeNull();
+    expect(registry.removeAccountOwned("account-a")).toEqual([]);
+    expect(registry.get(accountTarget.id)).toEqual(manuallyRepaired);
   });
 });

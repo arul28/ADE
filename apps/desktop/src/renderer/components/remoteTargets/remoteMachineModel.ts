@@ -2,7 +2,6 @@ import { extractError } from "../../lib/format";
 import type {
   AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
-  RemoteRuntimeConnectionRoute,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeTarget,
@@ -15,6 +14,14 @@ import {
   accountMachineConnectionState,
   accountMachineEndpointHost,
 } from "../../../shared/accountDirectory";
+import {
+  buildPairingQrPayload,
+  encodePairingQrUrl,
+} from "../../../shared/pairingQr";
+import type {
+  SyncAddressCandidate,
+  SyncPeerPlatform,
+} from "../../../shared/types/sync";
 
 // ---------------------------------------------------------------------------
 // Route identity + discovered-machine helpers (framework-free, unit-tested via
@@ -92,6 +99,63 @@ export function discoveredRoute(
   );
 }
 
+function discoveredPlatform(machine: RemoteRuntimeDiscoveredMachine): SyncPeerPlatform {
+  const value = machine.os?.trim().toLowerCase() ?? "";
+  if (value.includes("darwin") || value.includes("mac")) return "macOS";
+  if (value.includes("linux")) return "linux";
+  if (value.includes("windows")) return "windows";
+  return "unknown";
+}
+
+/**
+ * Builds the same PIN-gated direct pairing payload a copied link carries, but
+ * from an ADE runtime found on LAN/Tailscale. Raw tailnet peers are deliberately
+ * excluded: merely appearing in a tailnet is not consent to an SSH setup.
+ */
+export function discoveredPairingInput(
+  machine: RemoteRuntimeDiscoveredMachine,
+): string | null {
+  const deviceId = machine.hostIdentity?.trim();
+  if (!deviceId || isSshOnlyDiscovered(machine) || machine.connectable === false) {
+    return null;
+  }
+
+  const candidates: SyncAddressCandidate[] = [];
+  const seen = new Set<string>();
+  const addCandidate = (value: string | null | undefined) => {
+    const host = value?.trim().replace(/\.$/, "");
+    if (!host || seen.has(host.toLowerCase())) return;
+    if (/^(?:localhost|127(?:\.|$)|::1$)/i.test(host)) return;
+    seen.add(host.toLowerCase());
+    candidates.push({
+      host,
+      kind: host === machine.tailscaleAddress || isTailnetHostname(host)
+        ? "tailscale"
+        : "lan",
+    });
+  };
+
+  addCandidate(machine.primaryRoute);
+  addCandidate(machine.hostName);
+  for (const address of machine.addresses) addCandidate(address);
+  addCandidate(machine.tailscaleAddress);
+  if (candidates.length === 0) return null;
+
+  return encodePairingQrUrl(buildPairingQrPayload({
+    connectInfo: {
+      hostIdentity: {
+        deviceId,
+        siteId: "",
+        name: machine.machineName,
+        platform: discoveredPlatform(machine),
+        deviceType: "desktop",
+      },
+      port: machine.port,
+      addressCandidates: candidates,
+    },
+  }));
+}
+
 export function discoveredTargetInput(
   machine: RemoteRuntimeDiscoveredMachine,
 ): RemoteRuntimeTargetInput | null {
@@ -155,30 +219,6 @@ export function formatLastSeen(value: number | null): string {
   return `Last connected ${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
-export function targetConnectionLabel(target: RemoteRuntimeTarget): string {
-  const userPrefix = target.sshUser ? `${target.sshUser}@` : "";
-  const portSuffix = target.port ? `:${target.port}` : "";
-  let defaultHint = "";
-  if (!target.sshUser && !target.port) {
-    defaultHint = " (SSH defaults)";
-  } else if (!target.sshUser) {
-    defaultHint = " (default SSH user)";
-  } else if (!target.port) {
-    defaultHint = " (default port)";
-  }
-  const targetHostKey = target.hostname.toLowerCase().replace(/\.$/, "");
-  const fallbackRoutes = (target.routes ?? []).filter(
-    (route) =>
-      route.hostname.toLowerCase().replace(/\.$/, "") !== targetHostKey ||
-      route.port !== target.port,
-  ).length;
-  const fallbackHint =
-    fallbackRoutes > 0
-      ? ` + ${fallbackRoutes} route${fallbackRoutes === 1 ? "" : "s"}`
-      : "";
-  return `${userPrefix}${target.hostname}${portSuffix}${defaultHint}${fallbackHint}`;
-}
-
 export function connectionStateLabel(
   connection: RemoteRuntimeConnectionStatus | null,
   connectedFallback: boolean,
@@ -195,39 +235,6 @@ export function isSshOnlyDiscovered(
   machine: RemoteRuntimeDiscoveredMachine,
 ): boolean {
   return (machine.runtimeKind ?? "").startsWith("tailscale-peer");
-}
-
-/**
- * The one-line "what is this" for a discovered machine: ADE services show their
- * project count, raw SSH peers state they are SSH-only and (when known) which
- * OS. Concrete and stateful — not a generic "detected device" blurb.
- */
-export function discoveredMachineSummary(
-  machine: RemoteRuntimeDiscoveredMachine,
-): string {
-  if (isSshOnlyDiscovered(machine)) {
-    const os = machine.os?.trim();
-    return os ? `SSH only · ${os}` : "SSH only";
-  }
-  const count = machine.projectCount ?? machine.projectIds.length;
-  if (count <= 0) return "ADE · no projects";
-  return `ADE · ${count} project${count === 1 ? "" : "s"}`;
-}
-
-/**
- * A subtle route chip for a connected row, e.g. `tailnet · 4 ms`, `lan · 2 ms`,
- * `relay · 90 ms`, or `ssh · studio.local` when the transport reports no
- * round-trip latency.
- */
-export function formatRouteChip(
-  route: RemoteRuntimeConnectionRoute | undefined,
-): string | null {
-  if (!route) return null;
-  const detail =
-    typeof route.latencyMs === "number" && Number.isFinite(route.latencyMs)
-      ? `${Math.round(route.latencyMs)} ms`
-      : route.endpoint?.trim() || null;
-  return detail ? `${route.kind} · ${detail}` : route.kind;
 }
 
 export function formatRemoteTargetError(error: unknown): string {
@@ -391,6 +398,14 @@ export function accountMachineMatchesTarget(
   machine: AdeAccountMachine,
   target: RemoteRuntimeTarget,
 ): boolean {
+  const pairedHostIdentity = target.pairedMachine?.hostIdentity?.trim();
+  const pairedMachineKey = target.pairedMachine?.machineKey?.trim();
+  if (
+    (pairedHostIdentity && machine.deviceId?.trim() === pairedHostIdentity)
+    || (pairedMachineKey && machine.machineKey.trim() === pairedMachineKey)
+  ) {
+    return true;
+  }
   const machineIds = accountMachineRouteIdentities(machine);
   if (machineIds.size === 0) return false;
   return intersects(machineIds, targetRouteIdentities(target));
@@ -401,6 +416,12 @@ export function accountMachineMatchesDiscovered(
   machine: AdeAccountMachine,
   discovered: RemoteRuntimeDiscoveredMachine,
 ): boolean {
+  if (
+    machine.deviceId?.trim()
+    && discovered.hostIdentity?.trim() === machine.deviceId.trim()
+  ) {
+    return true;
+  }
   const machineIds = accountMachineRouteIdentities(machine);
   if (machineIds.size === 0) return false;
   return intersects(machineIds, discoveredMachineRouteIdentities(discovered));
@@ -420,6 +441,8 @@ export function assignMachineSections(args: {
   discoveredMachines: RemoteRuntimeDiscoveredMachine[];
   /** Machines from the account directory, merged with saved/discovered. */
   accountMachines?: AdeAccountMachine[];
+  /** Keep discovery useful for saved/account dedupe without rendering raw peers. */
+  includeDiscoveredRows?: boolean;
 }): MachineSections {
   const {
     targets,
@@ -427,6 +450,7 @@ export function assignMachineSections(args: {
     connectedFallbackId,
     discoveredMachines,
     accountMachines = [],
+    includeDiscoveredRows = true,
   } = args;
   const sections: MachineSections = {
     connected: [],
@@ -486,6 +510,7 @@ export function assignMachineSections(args: {
     if (targets.some((target) => machineMatchesSavedTarget(machine, target))) {
       continue;
     }
+    if (!includeDiscoveredRows) continue;
     if (machine.connectable === false) {
       sections.unavailable.push({
         kind: "discovered",
@@ -521,6 +546,7 @@ export function assignMachineSections(args: {
       continue;
     }
     if (
+      includeDiscoveredRows &&
       discoveredMachines.some((discovered) =>
         accountMachineMatchesDiscovered(machine, discovered),
       )

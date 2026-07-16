@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   AdeAccountMachine,
   RemoteRuntimeConnectionStatus,
+  RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeTarget,
 } from "../../../shared/types";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../shared/accountDirectory";
@@ -49,6 +50,71 @@ function savedTarget(overrides: Partial<RemoteRuntimeTarget> = {}): RemoteRuntim
 const NO_STATUS = new Map<string, RemoteRuntimeConnectionStatus>();
 
 describe("assignMachineSections — account machines", () => {
+  it("uses discovery for dedupe without leaking unsaved peers into the saved list", () => {
+    const discovered = {
+      id: "nearby-studio",
+      serviceName: "Studio",
+      machineName: "Studio",
+      hostIdentity: "studio-device",
+      hostName: "studio.local",
+      port: 22,
+      addresses: ["10.0.0.9"],
+      primaryRoute: "studio.local",
+      tailscaleAddress: null,
+      runtimeKind: "ade",
+      runtimeVersion: "1.2.3",
+      connectable: true,
+      projectIds: [],
+      projectCount: 0,
+      lastSeenAt: Date.now(),
+    } satisfies RemoteRuntimeDiscoveredMachine;
+
+    const sections = assignMachineSections({
+      targets: [],
+      statusById: NO_STATUS,
+      connectedFallbackId: null,
+      discoveredMachines: [discovered],
+      includeDiscoveredRows: false,
+    });
+
+    expect(sections.available).toEqual([]);
+    expect(sections.unavailable).toEqual([]);
+  });
+
+  it("keeps the account row when matching nearby rows are intentionally hidden", () => {
+    const discovered = {
+      id: "nearby-studio",
+      serviceName: "Studio",
+      machineName: "Studio",
+      hostIdentity: "studio-device",
+      hostName: "studio.local",
+      port: 22,
+      addresses: ["10.0.0.9"],
+      primaryRoute: "studio.local",
+      tailscaleAddress: null,
+      runtimeKind: "ade",
+      runtimeVersion: "1.2.3",
+      connectable: true,
+      projectIds: [],
+      projectCount: 0,
+      lastSeenAt: Date.now(),
+    } satisfies RemoteRuntimeDiscoveredMachine;
+
+    const sections = assignMachineSections({
+      targets: [],
+      statusById: NO_STATUS,
+      connectedFallbackId: null,
+      discoveredMachines: [discovered],
+      accountMachines: [accountMachine({
+        machineKey: "mk_studio",
+        deviceId: "studio-device",
+      })],
+      includeDiscoveredRows: false,
+    });
+
+    expect(sections.available.map((row) => row.id)).toEqual(["account:mk_studio"]);
+  });
+
   it("buckets an online account machine into AVAILABLE and offline into UNAVAILABLE", () => {
     const sections = assignMachineSections({
       targets: [],
@@ -71,7 +137,7 @@ describe("assignMachineSections — account machines", () => {
     expect(sections.available[0]).toMatchObject({ kind: "account" });
   });
 
-  it("keeps an online relay-only account machine AVAILABLE for paired transport", () => {
+  it("keeps an online account machine with an internet route AVAILABLE for paired transport", () => {
     const sections = assignMachineSections({
       targets: [],
       statusById: NO_STATUS,
@@ -127,6 +193,33 @@ describe("assignMachineSections — account machines", () => {
     ].filter((row) => row.kind === "account");
     expect(accountRows).toHaveLength(0);
     expect(sections.available.some((row) => row.kind === "saved")).toBe(true);
+  });
+
+  it("dedupes a locally paired machine by stable device id after later sign-in", () => {
+    const sections = assignMachineSections({
+      targets: [savedTarget({
+        hostname: "studio.local",
+        transport: "paired",
+        pairedMachine: {
+          hostIdentity: "dev_same_machine",
+          machineKey: null,
+        },
+      })],
+      statusById: NO_STATUS,
+      connectedFallbackId: null,
+      discoveredMachines: [],
+      accountMachines: [accountMachine({
+        machineKey: "mk_account",
+        deviceId: "dev_same_machine",
+        reachableEndpoints: [],
+      })],
+    });
+
+    expect([
+      ...sections.connected,
+      ...sections.available,
+      ...sections.unavailable,
+    ].filter((row) => row.kind === "account")).toHaveLength(0);
   });
 
   it("dedupes a URL-valued account endpoint against a saved target by host identity", () => {

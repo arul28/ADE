@@ -35,6 +35,7 @@ vi.mock("./sshTransport", () => ({
 import { RemoteConnectionPool } from "./remoteConnectionPool";
 import {
   PairedRuntimeCompatibilityError,
+  PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
 
@@ -83,7 +84,7 @@ const pairedTarget: RemoteRuntimeTarget = {
   routes: [{
     hostname: "studio.local",
     port: 22,
-    source: "bonjour",
+    source: "manual",
     lastSucceededAt: null,
   }],
 };
@@ -276,6 +277,74 @@ describe("RemoteConnectionPool", () => {
     await pool.disconnect(pairedTarget.id);
     expect(ensureForward).toHaveBeenCalledWith("127.0.0.1", 4173);
     expect(dispose).toHaveBeenCalledWith(false);
+  });
+
+  it("closes a manual Relay connection on sign-out and keeps direct reconnect eligible", async () => {
+    const relayClient = createClient();
+    const relayDispose = vi.fn();
+    const directClient = createClient();
+    const directDispose = vi.fn();
+    bootstrapPairedRuntimeMock
+      .mockResolvedValueOnce({
+        client: relayClient,
+        transport: { connection: { endpoint: "wss://relay.example/connect/machine-1" } },
+        portForwardClient: { ensureForward: vi.fn(), dispose: relayDispose },
+        relayAccountOwnerUserId: "account-a",
+        result: {
+          ...connectResult("1.0.0"),
+          target: pairedTarget,
+          route: {
+            kind: "relay",
+            endpoint: "wss://relay.example/connect/machine-1",
+            latencyMs: 2,
+          },
+        },
+      })
+      .mockResolvedValueOnce({
+        client: directClient,
+        transport: { connection: { endpoint: "ws://studio.local:8787/" } },
+        portForwardClient: { ensureForward: vi.fn(), dispose: directDispose },
+        relayAccountOwnerUserId: null,
+        result: {
+          ...connectResult("1.0.0"),
+          target: pairedTarget,
+          route: {
+            kind: "lan",
+            endpoint: "ws://studio.local:8787/",
+            latencyMs: 2,
+          },
+        },
+      });
+
+    let accountOwnerUserId: string | null = "account-a";
+    const pool = new RemoteConnectionPool(
+      {} as RemoteTargetRegistry,
+      "1.0.0",
+      undefined,
+      {
+        getAccountRelayProof: async () => accountOwnerUserId
+          ? { userId: accountOwnerUserId, token: "account-token" }
+          : null,
+      },
+    );
+    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+      route: { kind: "relay" },
+    });
+    expect(pool.reconcileAccountRelayOwner("account-a")).toEqual([]);
+    expect(relayClient.close).not.toHaveBeenCalled();
+
+    accountOwnerUserId = null;
+    expect(pool.reconcileAccountRelayOwner(null)).toEqual([pairedTarget.id]);
+    await vi.waitFor(() => {
+      expect(relayClient.close).toHaveBeenCalledTimes(1);
+      expect(relayDispose).toHaveBeenCalledWith(false);
+    });
+
+    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+      route: { kind: "lan" },
+    });
+    expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(directClient.close).not.toHaveBeenCalled();
   });
 
   it("closes a paired RPC transport exactly once when client failure evicts it", async () => {
@@ -481,6 +550,73 @@ describe("RemoteConnectionPool", () => {
 
     expect(getSshHostKeyTrustForTargetMock).not.toHaveBeenCalled();
     expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not infer SSH fallback from discovery routes", async () => {
+    const discoveredTarget: RemoteRuntimeTarget = {
+      ...pairedTarget,
+      id: "discovered-paired-target",
+      routes: [{
+        hostname: "studio.local",
+        port: 22,
+        source: "bonjour",
+        lastSucceededAt: null,
+      }],
+    };
+    const pairedError = new PairedRuntimeTransportUnavailableError(
+      "Paired routes are offline.",
+    );
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(pairedError);
+
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    await expect(pool.connect(discoveredTarget)).rejects.toBe(pairedError);
+
+    expect(getSshHostKeyTrustForTargetMock).not.toHaveBeenCalled();
+    expect(bootstrapRemoteRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not back off a relay sign-in requirement", async () => {
+    const noSshTarget: RemoteRuntimeTarget = {
+      ...pairedTarget,
+      id: "relay-auth-no-ssh-target",
+      routes: [{
+        hostname: "studio.local",
+        port: 22,
+        source: "bonjour",
+        lastSucceededAt: null,
+      }],
+    };
+    bootstrapPairedRuntimeMock.mockRejectedValue(
+      new PairedRuntimeRelayAuthRequiredError(),
+    );
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(pool.connect(noSshTarget)).rejects.toBeInstanceOf(
+      PairedRuntimeRelayAuthRequiredError,
+    );
+    await expect(pool.connect(noSshTarget)).rejects.toBeInstanceOf(
+      PairedRuntimeRelayAuthRequiredError,
+    );
+
+    expect(bootstrapPairedRuntimeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses explicitly configured SSH when relay needs sign-in", async () => {
+    bootstrapPairedRuntimeMock.mockRejectedValueOnce(
+      new PairedRuntimeRelayAuthRequiredError(),
+    );
+    getSshHostKeyTrustForTargetMock.mockResolvedValueOnce({ state: "trusted" });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      ssh: createSsh(),
+      result: { ...connectResult("1.0.0"), target: pairedTarget },
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(pool.connect(pairedTarget)).resolves.toMatchObject({
+      target: { id: pairedTarget.id },
+    });
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
   });
 
   it("evicts cached entries after the RPC client disconnects", async () => {

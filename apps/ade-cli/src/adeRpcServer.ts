@@ -5225,6 +5225,9 @@ export function createAdeRpcRequestHandler(args: {
       if (method === "sync.clearRuntimeName") {
         return await syncService.clearRuntimeName();
       }
+      if (method === "sync.authorizeSshPairing") {
+        return await syncService.authorizeSshPairing(params);
+      }
       if (method === "sync.setActiveLanePresence") {
         const laneIds = Array.isArray(params.laneIds)
           ? params.laneIds.filter((laneId): laneId is string => typeof laneId === "string")

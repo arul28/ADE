@@ -39,6 +39,25 @@ desktops see live lanes, agent chats, work sessions, and processes.
 
 Main process:
 
+- `apps/desktop/src/main/main.ts`,
+  `apps/desktop/src/main/services/ipc/registerIpc.ts` — packaged-launch machine
+  trust migration plus the process-local launch-gate state exposed through
+  `ade.app.getLaunchGateState` / `ade.app.resolveLaunchGate`. Resolving the gate
+  applies to every window and renderer reload in that desktop process; the next
+  fresh signed-out launch asks again.
+- `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
+  one-release, packaged-build reset of saved machine connection grants. It
+  clears only remote targets, desktop paired-machine credentials, mobile/web
+  pairing records, and runtime-host grants, then forces the background service
+  to restart before committing the migration marker.
+- `apps/desktop/src/main/services/account/accountBridge.ts`,
+  `apps/ade-cli/src/services/account/accountAuthService.ts`, and
+  `accountMachineDirectoryService.ts` — machine-scoped Clerk session and
+  directory ownership. Account adoption captures the current owner before
+  network work and verifies it again before saving; logout/account switch
+  removes only that owner's remote targets and paired credentials. Direct
+  PIN/link/Nearby/address/SSH trust is explicitly local and is never adopted
+  merely because the user later signs in.
 - `apps/desktop/src/main/services/onboarding/onboardingService.ts` —
   status, stack detection, existing lane detection, suggested config
   application, plus passive glossary help state. The active renderer
@@ -108,14 +127,25 @@ Renderer — onboarding:
   suppressed on every `/chats` route (projectless or not) because its
   fixed bottom-right portal overlaps the chats composer at narrow
   widths.
+- `apps/desktop/src/renderer/components/onboarding/LaunchGate.tsx`
+  — process-launch gate. New installations show the welcome card before
+  account choice; returning signed-out launches show account choice directly.
+  Continuing without an account is supported, and renderer reloads or extra
+  windows in the same desktop process do not repeat the choice. Directly paired
+  machines stay saved across account sign-out; account-directory targets and
+  their paired credentials are owner-tagged and removed with that account.
+- `apps/desktop/src/renderer/components/account/AccountPage.tsx` — optional
+  account status/sign-in/out and account-machine directory. It routes pairing
+  work back to the beginner-facing Connections panel rather than owning a
+  second machine-connection flow.
 - `apps/desktop/src/renderer/components/onboarding/WelcomeVideoGate.tsx`
   — one-time app-level welcome card backed by global app state. It
-  uses sanitized bundled welcome assets, lazy-loads the intro video,
-  links to GitHub and the docs site, and includes an ADE Mobile
+  uses the website's canonical hero assets and the privacy-enhanced YouTube
+  player, links to GitHub and the docs site, and includes an ADE Mobile
   TestFlight QR/download/copy panel. The Help menu can replay it
   without resetting setup.
-- `apps/desktop/src/renderer/public/welcome/` — sanitized bundled
-  screenshots/poster/icon assets consumed by the welcome card.
+- `apps/desktop/src/renderer/public/welcome/` — website-synchronized bundled
+  hero screenshots and icon assets consumed by the welcome card.
 - `apps/desktop/src/renderer/components/onboarding/HelpMenu.tsx`
   — persistent help menu in the top bar: glossary, docs links, welcome
   video replay, and help preferences. Tour replay entries were removed
@@ -248,18 +278,18 @@ Renderer — settings:
   [Storage and recovery](../storage-and-recovery/README.md), which owns the
   disk-pressure monitor and `storageInsightsService` behind those IPCs.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
-  — multi-device sync management. The default `variant="all"` shows phone,
-  web-client, and desktop-peer controls in Settings; `"phone"` and `"web"`
-  variants provide focused content for the matching top-bar sheets. It
+  — shared multi-device sync management used by the focused
+  **Connections > Mobile** and **Connections > Web client** tabs. It
   surfaces the phone-pairing PIN (set / clear / reveal, or generate a new
   six-digit PIN when only the at-rest hash remains), the v3 smart pairing URL
   with LAN / Tailscale / loopback / relay candidates, the web-client link and
   QR, the bootstrap token for desktop peers, relay/discovery status, and the
   per-device panels used to forget paired phones or revoke web clients.
-- `apps/desktop/src/renderer/components/app/TopBar.tsx` and `HeaderSheet.tsx`
-  — Mobile and Web connection chips plus their mutually exclusive portaled
-  sheets. The Mobile sheet includes the TestFlight install action; the Web
-  sheet reports connected browser peers and exposes focused browser pairing.
+- `apps/desktop/src/renderer/components/app/TopBar.tsx` and
+  `ConnectionsPanel.tsx` — the single top-bar Connections control and its
+  Machines, Mobile, and Web client tabs. Mobile includes the TestFlight install
+  action; Web client reports connected browser peers and exposes focused
+  browser pairing.
 - `apps/desktop/src/renderer/components/usage/HeaderUsageControl.tsx`
   and `UsageQuotaPanel.tsx` — header usage popup. Live provider quotas
   for Claude and Codex (tracked providers) and the automation budget
@@ -442,7 +472,18 @@ Onboarding covers two layers.
 Driven by `LocalRuntimeConnectionPool` on desktop launch and surfaced in
 the General settings tab via `AdeCliSection`:
 
-1. Bring up the ADE runtime. The pool tries to attach to
+1. Reset pre-account machine trust once in the next packaged release. Before
+   attaching to the background runtime, ADE removes only
+   `remote-machines.json`, `desktop-paired-machines.json`,
+   `sync-paired-devices.json`, and its runtime-host grants sidecar from the
+   channel's machine secrets directory. Account sessions, machine/device
+   identity, the pairing PIN, bootstrap token, projects, and the user's SSH
+   files are preserved. A pending marker is written before the service is
+   forcibly restarted and becomes complete only after installation/restart is
+   confirmed; if ADE exits early, the next launch retries the restart without
+   erasing pairings created after the first attempt. Development launches do
+   not run this reset.
+2. Bring up the ADE runtime. The pool tries to attach to
    `~/.ade/sock/ade.sock`; if that fails it spawns
    `ade serve --socket <path>` from the bundled CLI and waits for the
    endpoint. Compatibility is checked at `initialize` time using both the
@@ -456,14 +497,14 @@ the General settings tab via `AdeCliSection`:
    terminates the stale runtime process when the handshake reported a
    pid, unlinks the stale endpoint, and then lets the normal spawn path
    start a compatible runtime.
-2. Register the runtime as a per-user login service so it survives
+3. Register the runtime as a per-user login service so it survives
    reboots. `installServiceBestEffort()` runs `ade serve --install-service`
    once per session; the implementation lives in
    `apps/ade-cli/src/serviceManager/` (launchd / systemd / schtasks).
    The result is exposed as `LocalRuntimeStatus.serviceInstall` and
    `serviceHealth` (`unsupported | not_installed | installed | running |
    error | unknown`).
-3. Install the `ade` command on `PATH`. The `AdeCliSection` "ADE
+4. Install the `ade` command on `PATH`. The `AdeCliSection` "ADE
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop
    (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
@@ -471,7 +512,7 @@ the General settings tab via `AdeCliSection`:
    in `GeneralSection` and the onboarding `DevToolsSection` shows the
    current install path, an Install / Repair button, and an "Add to
    PATH" hint when the install target is not on the user's `$PATH`.
-4. Register projects with the runtime. Opening a project on desktop
+5. Register projects with the runtime. Opening a project on desktop
    calls `LocalRuntimeConnectionPool.ensureProject(rootPath)`, which
    issues `projects.add { rootPath }` against the daemon. The project
    then appears in `projects.list` to every other client (`ade code`,

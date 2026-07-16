@@ -8,6 +8,7 @@ import type { Client } from "ssh2";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import type { DesktopPairedMachineStore } from "./syncPairedMachineStore";
 import {
   bootstrapRemoteRuntime,
   buildRemoteRuntimeEnvironmentPrefix,
@@ -23,6 +24,7 @@ import {
 
 const connectSshWithRouteMock = vi.hoisted(() => vi.fn());
 const execSshMock = vi.hoisted(() => vi.fn());
+const execSshWithInputMock = vi.hoisted(() => vi.fn());
 const openSshRuntimeTransportMock = vi.hoisted(() => vi.fn());
 const spawnMock = vi.hoisted(() => vi.fn());
 const initializeMock = vi.hoisted(() => vi.fn());
@@ -41,6 +43,7 @@ vi.mock("node:child_process", () => ({
 vi.mock("./sshTransport", () => ({
   connectSshWithRoute: connectSshWithRouteMock,
   execSsh: execSshMock,
+  execSshWithInput: execSshWithInputMock,
   openSshRuntimeTransport: openSshRuntimeTransportMock,
 }));
 
@@ -564,6 +567,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     delete process.env.ADE_PACKAGE_CHANNEL;
     connectSshWithRouteMock.mockReset();
     execSshMock.mockReset();
+    execSshWithInputMock.mockReset();
     openSshRuntimeTransportMock.mockReset();
     spawnMock.mockReset();
     initializeMock.mockReset();
@@ -1646,9 +1650,67 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(connected.result).toMatchObject({
       version: "1.9.0-alpha.4",
       compatibilityWarnings: [
-        expect.stringContaining(".ade-beta could not start a compatible ADE RPC service"),
+        "This machine is using another installed ADE version. Some features may behave differently.",
       ],
     });
+  });
+
+  it("falls back to Stable when the packaged Beta helper closes", async () => {
+    process.env.ADE_PACKAGE_CHANNEL = "beta";
+    const resources = createTempResources();
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshWithRouteMock.mockResolvedValue({ client: fakeSsh.ssh, route: uploadRoute });
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: APP_VERSION,
+          executableVersion: `ade ${APP_VERSION}`,
+          sha256: resources.binarySha256,
+        });
+      }
+      if (command.includes("wc -c < $HOME/.ade-beta/bin/ade") && command.includes("echo ok")) return ok("ok\n");
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 1.2.27\n");
+      if (command === "test -d $HOME/.ade/runtime/linux-x64/node_modules && echo ok || true") return ok("ok\n");
+      return defaultRemoteBootstrapCommand(command);
+    });
+    initializeMock
+      .mockRejectedValueOnce(new Error("Remote ADE service connection closed (exit code 1, stderr: beta brain unavailable)."))
+      .mockResolvedValueOnce({
+        runtimeInfo: { version: "1.2.27", multiProject: true },
+        capabilities: {
+          projects: true,
+          machineProjects: {
+            browseDirectories: true,
+            getDetail: true,
+            getWorkSummary: true,
+            getDefaultParentDir: true,
+            create: true,
+            clone: true,
+            listMyGitHubRepos: true,
+          },
+        },
+      });
+
+    const connected = await bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    });
+
+    expect(openSshRuntimeTransportMock).toHaveBeenCalledTimes(2);
+    expect(openSshRuntimeTransportMock).toHaveBeenNthCalledWith(
+      2,
+      fakeSsh.ssh,
+      expect.stringContaining("ade --socket $HOME/.ade/sock/ade.sock rpc --stdio"),
+    );
+    expect(connected.result.version).toBe("1.2.27");
+    expect(connected.result.compatibilityWarnings).toEqual(expect.arrayContaining([
+      "This machine is using another installed ADE version. Some features may behave differently.",
+    ]));
   });
 
   it("suppresses service installation when compatible RPC falls back to the shared runtime home", async () => {
@@ -1709,6 +1771,106 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     );
   });
 
+  it("falls back from Beta to Stable, upgrades SSH trust through stdin, and saves paired credentials", async () => {
+    process.env.ADE_PACKAGE_CHANNEL = "beta";
+    const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-empty-"));
+    cleanupResources = () => fs.rmSync(resourcesPath, { recursive: true, force: true });
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    const pairedStore = {
+      save: vi.fn((credentials) => credentials),
+    } as unknown as DesktopPairedMachineStore;
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      if (command === "uname -sm") return ok("Darwin arm64\n");
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) {
+        return remoteRuntimeIdentityOk({ executableVersion: "ade 1.0.0-beta.1" });
+      }
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") {
+        return ok("ade 1.2.27\n");
+      }
+      if (command === "test -d $HOME/.ade/runtime/darwin-arm64/node_modules && echo ok || true") return ok("ok\n");
+      return defaultRemoteBootstrapCommand(command);
+    });
+    initializeMock
+      .mockRejectedValueOnce(new Error("Remote ADE service connection closed (exit code 1, stderr: beta socket missing)."))
+      .mockResolvedValueOnce({
+        runtimeInfo: { version: "1.2.27", packageChannel: null, multiProject: true },
+        capabilities: {
+          projects: true,
+          machineProjects: {
+            browseDirectories: true,
+            getDetail: true,
+            getWorkSummary: true,
+            getDefaultParentDir: true,
+            handoffStoragePreflight: true,
+            create: true,
+            clone: true,
+            listMyGitHubRepos: true,
+          },
+        },
+      });
+    execSshWithInputMock.mockImplementation(async (_client, command: string, input: string) => {
+      const request = JSON.parse(input) as { device: { id: string; siteId: string } };
+      expect(command).toContain("$HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock --json sync pair-device --json-stdin");
+      expect(command).not.toContain(".ade-beta");
+      expect(command).not.toContain("secret");
+      expect(request.device).toMatchObject({
+        type: "desktop",
+        dpopPublicKey: expect.any(String),
+      });
+      return ok(JSON.stringify({
+        version: 1,
+        machine: {
+          deviceId: "mac-studio-device",
+          siteId: "mac-studio-site",
+          name: "Arul's Mac Studio",
+          platform: "macOS",
+          deviceType: "desktop",
+        },
+        pairing: {
+          pairedDeviceId: request.device.id,
+          secret: "paired-secret",
+        },
+        sync: {
+          port: 8787,
+          addressCandidates: [{ host: "100.75.20.63", kind: "tailscale" }],
+        },
+        runtime: { name: "Arul's Mac Studio", version: "1.2.27", channel: "stable" },
+      }));
+    });
+
+    const connected = await bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath,
+      appVersion: APP_VERSION,
+      pairedStore,
+    });
+
+    expect(execSshWithInputMock).toHaveBeenCalledTimes(1);
+    expect((pairedStore.save as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith(expect.objectContaining({
+      hostIdentity: expect.objectContaining({ deviceId: "mac-studio-device" }),
+      secret: "paired-secret",
+      dpopPrivateKey: expect.any(String),
+      endpoints: expect.arrayContaining(["ws://100.75.20.63:8787/"]),
+    }));
+    expect(registry.update).toHaveBeenLastCalledWith(uploadTarget.id, expect.objectContaining({
+      transport: "paired",
+      pairedMachine: { hostIdentity: "mac-studio-device", machineKey: null },
+    }));
+    expect(connected.result.target).toMatchObject({
+      transport: "paired",
+      pairedMachine: { hostIdentity: "mac-studio-device" },
+    });
+    expect(connected.result.compatibilityWarnings).toEqual(expect.arrayContaining([
+      "This machine is using another installed ADE version. Some features may behave differently.",
+    ]));
+  });
+
   it("connects to a same-version runtime with missing optional project capabilities", async () => {
     const resources = createTempResources();
     cleanupResources = resources.cleanup;
@@ -1765,6 +1927,38 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(openSshRuntimeTransportMock).toHaveBeenCalledTimes(1);
     expect(commands.some((command) => command.includes("runtime stop --text"))).toBe(false);
+  });
+
+  it("returns structured phase details when every installed runtime is capability-incompatible", async () => {
+    const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-empty-"));
+    cleanupResources = () => fs.rmSync(resourcesPath, { recursive: true, force: true });
+    const fakeSsh = createFakeSsh();
+    connectSshWithRouteMock.mockResolvedValue({ client: fakeSsh.ssh, route: uploadRoute });
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (isRemoteRuntimeIdentityCommand(command)) {
+        return remoteRuntimeIdentityOk({ executableVersion: "ade 1.2.27" });
+      }
+      if (command.startsWith("test -x $HOME/.ade-beta/") || command.startsWith("test -x $HOME/.ade-alpha/")) return ok("");
+      return defaultRemoteBootstrapCommand(command);
+    });
+    initializeMock.mockResolvedValue({
+      runtimeInfo: { version: "1.2.27", multiProject: false },
+      capabilities: { projects: false },
+    });
+
+    await expect(bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry: createRegistry(),
+      resourcesPath,
+      appVersion: APP_VERSION,
+    })).rejects.toMatchObject({
+      info: {
+        kind: "generic",
+        message: "ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.",
+        detail: expect.stringMatching(/\.ade \[capability_negotiation\].*multi-project/is),
+      },
+    });
   });
 });
 

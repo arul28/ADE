@@ -128,6 +128,10 @@ function normalizePairedMachineReference(
   return { hostIdentity, machineKey };
 }
 
+function normalizeAccountOwnerUserId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function stableTargetId(input: RemoteRuntimeTargetInput): string {
   const pairedMachine = normalizePairedMachineReference(input.pairedMachine);
   if (input.transport === "paired" && pairedMachine) {
@@ -165,6 +169,7 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
     hostname,
     transport,
     pairedMachine: transport === "paired" ? pairedMachine : null,
+    accountOwnerUserId: normalizeAccountOwnerUserId(record.accountOwnerUserId),
     sshUser,
     port: normalizePort(typeof record.port === "number" ? record.port : null),
     sshKeyPath: typeof record.sshKeyPath === "string" && record.sshKeyPath.trim() ? record.sshKeyPath.trim() : null,
@@ -179,6 +184,10 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
     lastSeenArch: typeof record.lastSeenArch === "string" && record.lastSeenArch.trim() ? record.lastSeenArch.trim() : null,
     runtimeBinaryVersion: typeof record.runtimeBinaryVersion === "string" && record.runtimeBinaryVersion.trim() ? record.runtimeBinaryVersion.trim() : null,
     lastConnectedAt: typeof record.lastConnectedAt === "number" && Number.isFinite(record.lastConnectedAt) ? record.lastConnectedAt : null,
+    autoConnect: typeof record.autoConnect === "boolean"
+      ? record.autoConnect
+      : typeof record.lastConnectedAt === "number" && Number.isFinite(record.lastConnectedAt)
+        && !(typeof record.manuallyDisconnectedAt === "number" && Number.isFinite(record.manuallyDisconnectedAt)),
     manuallyDisconnectedAt: typeof record.manuallyDisconnectedAt === "number" && Number.isFinite(record.manuallyDisconnectedAt) ? record.manuallyDisconnectedAt : null,
   };
 }
@@ -206,12 +215,27 @@ export class RemoteTargetRegistry {
     const file = this.read();
     const id = stableTargetId(input);
     const existing = file.targets.find((target) => target.id === id) ?? null;
+    const requestedAccountOwnerUserId = normalizeAccountOwnerUserId(
+      input.accountOwnerUserId,
+    );
+    const hasRequestedAccountOwnerUserId = Object.prototype.hasOwnProperty.call(
+      input,
+      "accountOwnerUserId",
+    );
+    const accountOwnerUserId = !hasRequestedAccountOwnerUserId
+      ? existing?.accountOwnerUserId ?? null
+      : requestedAccountOwnerUserId == null
+        ? null
+        : existing && existing.accountOwnerUserId == null
+          ? null
+          : requestedAccountOwnerUserId;
     const next: RemoteRuntimeTarget = {
       id,
       name: defaultName(input),
       hostname,
       transport,
       pairedMachine: transport === "paired" ? pairedMachine : null,
+      accountOwnerUserId,
       sshUser,
       port: normalizePort(input.port),
       sshKeyPath: input.sshKeyPath?.trim() || null,
@@ -226,6 +250,7 @@ export class RemoteTargetRegistry {
       lastSeenArch: existing?.lastSeenArch ?? null,
       runtimeBinaryVersion: existing?.runtimeBinaryVersion ?? null,
       lastConnectedAt: existing?.lastConnectedAt ?? null,
+      autoConnect: existing?.autoConnect ?? false,
       manuallyDisconnectedAt: existing?.manuallyDisconnectedAt ?? null,
     };
     file.targets = [next, ...file.targets.filter((target) => target.id !== id)];
@@ -249,6 +274,40 @@ export class RemoteTargetRegistry {
     if (nextTargets.length === file.targets.length) return false;
     this.write({ version: 1, targets: nextTargets });
     return true;
+  }
+
+  removeAccountOwned(ownerUserIdValue: string): RemoteRuntimeTarget[] {
+    const ownerUserId = ownerUserIdValue.trim();
+    if (!ownerUserId) return [];
+    const file = this.read();
+    const removed = file.targets.filter(
+      (target) => target.accountOwnerUserId === ownerUserId,
+    );
+    if (removed.length === 0) return [];
+    this.write({
+      version: 1,
+      targets: file.targets.filter(
+        (target) => target.accountOwnerUserId !== ownerUserId,
+      ),
+    });
+    return removed;
+  }
+
+  pruneAccountOwned(currentOwnerUserIdValue: string | null): RemoteRuntimeTarget[] {
+    const currentOwnerUserId = currentOwnerUserIdValue?.trim() || null;
+    const file = this.read();
+    const removed = file.targets.filter((target) =>
+      target.accountOwnerUserId != null
+      && target.accountOwnerUserId !== currentOwnerUserId
+    );
+    if (removed.length === 0) return [];
+    this.write({
+      version: 1,
+      targets: file.targets.filter((target) => !removed.some(
+        (removedTarget) => removedTarget.id === target.id,
+      )),
+    });
+    return removed;
   }
 
   private read(): RegistryFile {

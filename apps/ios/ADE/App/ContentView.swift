@@ -45,8 +45,10 @@ private enum RootTab: Hashable, CaseIterable, Identifiable {
 
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var accountService: AccountService
   @State private var selectedTab: RootTab = .work
   @State private var analyticsConsentPresented = false
+  @State private var mobileLaunchAccess = MobileLaunchAccessPolicy()
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -59,7 +61,20 @@ struct ContentView: View {
     // mounted: if the hub stays alive under the project tabs it continues
     // rebuilding roster cards while the user scrolls Work chat detail.
     Group {
-      if syncService.shouldShowProjectHome {
+      if !hasMobileAccess {
+        MobileAccessGateView(
+          accountConfigured: accountService.isConfigured,
+          accountLoading: accountService.phase == .loading,
+          accountSignedIn: accountService.isSignedIn,
+          hasPairedHost: syncService.hasPairedHost,
+          onContinue: {
+            mobileLaunchAccess.grantAccess()
+            if syncService.hasPairedHost, syncService.connectionState.isHostUnreachable {
+              Task { await syncService.reconnectIfPossible(userInitiated: true) }
+            }
+          }
+        )
+      } else if syncService.shouldShowProjectHome {
         HubScreen()
       } else {
         rootTabs
@@ -79,8 +94,17 @@ struct ContentView: View {
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)
       .onAppear {
+        mobileLaunchAccess.observeInitialAccountPhase(accountService.phase)
+        captureCurrentRootScreen()
+        analyticsConsentPresented = hasMobileAccess && ProductAnalytics.shared.shouldRequestConsent
+      }
+      .onChange(of: hasMobileAccess) { _, hasAccess in
+        guard hasAccess else { return }
         captureCurrentRootScreen()
         analyticsConsentPresented = ProductAnalytics.shared.shouldRequestConsent
+      }
+      .onChange(of: accountService.phase) { _, phase in
+        mobileLaunchAccess.observeInitialAccountPhase(phase)
       }
       .onChange(of: selectedTab) { _, _ in
         captureCurrentRootScreen()
@@ -169,7 +193,12 @@ struct ContentView: View {
       }
   }
 
+  private var hasMobileAccess: Bool {
+    mobileLaunchAccess.hasAccess
+  }
+
   private func captureCurrentRootScreen() {
+    guard hasMobileAccess else { return }
     ProductAnalytics.shared.captureScreen(
       syncService.shouldShowProjectHome ? .hub : selectedTab.analyticsScreen
     )

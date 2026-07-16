@@ -1589,6 +1589,10 @@ export function registerIpc({
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
 }) {
+  // Process-scoped by design: renderer reloads and additional windows in the
+  // same app launch do not repeat the account choice, while a full ADE relaunch
+  // creates a fresh IPC registration and shows it again when signed out.
+  let launchGateResolved = false;
   const watcherCleanupBoundSenders = new Set<number>();
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
@@ -3230,6 +3234,15 @@ export function registerIpc({
     },
   );
 
+  ipcMain.handle(IPC.appGetLaunchGateState, async () => ({
+    resolved: launchGateResolved,
+  }));
+
+  ipcMain.handle(IPC.appResolveLaunchGate, async () => {
+    launchGateResolved = true;
+    return { resolved: true as const };
+  });
+
   ipcMain.handle(IPC.appSetWindowProjectTabs, async (event, arg: { rootPaths?: string[] } = {}) => {
     const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
     const rootPaths = Array.isArray(arg?.rootPaths)
@@ -4056,7 +4069,7 @@ export function registerIpc({
     },
   );
 
-  registerRuntimeBridge({
+  const runtimeBridge = registerRuntimeBridge({
     appVersion: app.getVersion(),
     bindRemoteProject,
     getGitHubTokenForRemoteClone: () => {
@@ -8557,6 +8570,7 @@ export function registerIpc({
   // renderer — getToken is deliberately never wired here.
   const accountBridge = createAccountBridge({
     getProjectRoot: () => getCtx().project.rootPath ?? null,
+    reconcileAccountOwnership: runtimeBridge.reconcileAccountOwnership,
     logger: {
       info: (message, meta) => getCtx().logger.info(message, meta),
       warn: (message, meta) => getCtx().logger.warn(message, meta),

@@ -12,6 +12,8 @@ export const IPC = {
   appGetWindowSession: "ade.app.getWindowSession",
   appGetWelcomeVideoState: "ade.app.getWelcomeVideoState",
   appMarkWelcomeVideoSeen: "ade.app.markWelcomeVideoSeen",
+  appGetLaunchGateState: "ade.app.getLaunchGateState",
+  appResolveLaunchGate: "ade.app.resolveLaunchGate",
   appSetWindowProjectTabs: "ade.app.setWindowProjectTabs",
   appNewWindow: "ade.app.newWindow",
   appOpenProjectInNewWindow: "ade.app.openProjectInNewWindow",
@@ -70,6 +72,7 @@ export const IPC = {
   remoteRuntimeConnectionSnapshotChanged:
     "ade.remoteRuntime.connectionSnapshotChanged",
   remoteRuntimeSaveTarget: "ade.remoteRuntime.saveTarget",
+  remoteRuntimeSetAutoConnect: "ade.remoteRuntime.setAutoConnect",
   remoteRuntimeRemoveTarget: "ade.remoteRuntime.removeTarget",
   remoteRuntimeGetSshHostKeyTrust:
     "ade.remoteRuntime.getSshHostKeyTrust",

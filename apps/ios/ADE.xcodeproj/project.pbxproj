@@ -245,6 +245,20 @@
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
+		C5B000000000000000000001 /* MobileTrustResetPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000001 /* MobileTrustResetPolicy.swift */; };
+		C5B000000000000000000002 /* SSHBootstrapModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000002 /* SSHBootstrapModels.swift */; };
+		C5B000000000000000000003 /* SSHPrivateKeyParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000003 /* SSHPrivateKeyParser.swift */; };
+		C5B000000000000000000004 /* SSHGeneratedKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000004 /* SSHGeneratedKey.swift */; };
+		C5B000000000000000000005 /* SSHHostKeyPinStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000005 /* SSHHostKeyPinStore.swift */; };
+		C5B000000000000000000006 /* SSHCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000006 /* SSHCredentialStore.swift */; };
+		C5B000000000000000000007 /* SSHHostFingerprintValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000007 /* SSHHostFingerprintValidator.swift */; };
+		C5B000000000000000000008 /* SSHBootstrapService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000008 /* SSHBootstrapService.swift */; };
+		C5B000000000000000000009 /* MobileAccessGateView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A000000000000000000009 /* MobileAccessGateView.swift */; };
+		C5B00000000000000000000A /* MobileAccessGateSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000A /* MobileAccessGateSheet.swift */; };
+		C5B00000000000000000000B /* SSHPairingViewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000B /* SSHPairingViewState.swift */; };
+		C5B00000000000000000000C /* SSHPairingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000C /* SSHPairingViewModel.swift */; };
+		C5B00000000000000000000D /* SSHPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000D /* SSHPairingView.swift */; };
+		C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000E /* SSHBootstrapTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -507,6 +521,20 @@
 		CCAB2414C359E971B780BF99 /* PreviewHost.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PreviewHost.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesCodeSupport.swift; path = ADE/Views/Components/FilesCodeSupport.swift; sourceTree = "<group>"; };
 		E3A5721EB84321D201716BC3 /* ADETests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ADETests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C5A000000000000000000001 /* MobileTrustResetPolicy.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileTrustResetPolicy.swift; path = ADE/Services/MobileTrustResetPolicy.swift; sourceTree = "<group>"; };
+		C5A000000000000000000002 /* SSHBootstrapModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHBootstrapModels.swift; path = ADE/Services/SSHBootstrapModels.swift; sourceTree = "<group>"; };
+		C5A000000000000000000003 /* SSHPrivateKeyParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHPrivateKeyParser.swift; path = ADE/Services/SSHPrivateKeyParser.swift; sourceTree = "<group>"; };
+		C5A000000000000000000004 /* SSHGeneratedKey.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHGeneratedKey.swift; path = ADE/Services/SSHGeneratedKey.swift; sourceTree = "<group>"; };
+		C5A000000000000000000005 /* SSHHostKeyPinStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHHostKeyPinStore.swift; path = ADE/Services/SSHHostKeyPinStore.swift; sourceTree = "<group>"; };
+		C5A000000000000000000006 /* SSHCredentialStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHCredentialStore.swift; path = ADE/Services/SSHCredentialStore.swift; sourceTree = "<group>"; };
+		C5A000000000000000000007 /* SSHHostFingerprintValidator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHHostFingerprintValidator.swift; path = ADE/Services/SSHHostFingerprintValidator.swift; sourceTree = "<group>"; };
+		C5A000000000000000000008 /* SSHBootstrapService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHBootstrapService.swift; path = ADE/Services/SSHBootstrapService.swift; sourceTree = "<group>"; };
+		C5A000000000000000000009 /* MobileAccessGateView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileAccessGateView.swift; path = ADE/Views/Account/MobileAccessGateView.swift; sourceTree = "<group>"; };
+		C5A00000000000000000000A /* MobileAccessGateSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MobileAccessGateSheet.swift; path = ADE/Views/Account/MobileAccessGateSheet.swift; sourceTree = "<group>"; };
+		C5A00000000000000000000B /* SSHPairingViewState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHPairingViewState.swift; path = ADE/Views/Settings/SSHPairingViewState.swift; sourceTree = "<group>"; };
+		C5A00000000000000000000C /* SSHPairingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHPairingViewModel.swift; path = ADE/Views/Settings/SSHPairingViewModel.swift; sourceTree = "<group>"; };
+		C5A00000000000000000000D /* SSHPairingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHPairingView.swift; path = ADE/Views/Settings/SSHPairingView.swift; sourceTree = "<group>"; };
+		C5A00000000000000000000E /* SSHBootstrapTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHBootstrapTests.swift; path = ADETests/SSHBootstrapTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -799,6 +827,8 @@
 			children = (
 				AD0000000000000000000A03 /* AccountSignInView.swift */,
 				AD0000000000000000000A04 /* AccountConnectionsSection.swift */,
+				C5A000000000000000000009 /* MobileAccessGateView.swift */,
+				C5A00000000000000000000A /* MobileAccessGateSheet.swift */,
 			);
 			name = Account;
 			sourceTree = "<group>";
@@ -818,6 +848,9 @@
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
 				F20000000000000000000007 /* SettingsWebClientPairSheet.swift */,
+				C5A00000000000000000000B /* SSHPairingViewState.swift */,
+				C5A00000000000000000000C /* SSHPairingViewModel.swift */,
+				C5A00000000000000000000D /* SSHPairingView.swift */,
 			);
 			name = Settings;
 			sourceTree = "<group>";
@@ -839,6 +872,14 @@
 				AD0000000000000000000A01 /* AccountService.swift */,
 				AD0000000000000000000A05 /* AccountEmailAuthFlow.swift */,
 				AD0000000000000000000A02 /* AccountDirectory.swift */,
+				C5A000000000000000000001 /* MobileTrustResetPolicy.swift */,
+				C5A000000000000000000002 /* SSHBootstrapModels.swift */,
+				C5A000000000000000000003 /* SSHPrivateKeyParser.swift */,
+				C5A000000000000000000004 /* SSHGeneratedKey.swift */,
+				C5A000000000000000000005 /* SSHHostKeyPinStore.swift */,
+				C5A000000000000000000006 /* SSHCredentialStore.swift */,
+				C5A000000000000000000007 /* SSHHostFingerprintValidator.swift */,
+				C5A000000000000000000008 /* SSHBootstrapService.swift */,
 				B34C6C526E3BBB1E720C8D7C /* Dictation */,
 			);
 			name = Services;
@@ -997,6 +1038,7 @@
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
 				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
+				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -1043,6 +1085,7 @@
 			packageProductDependencies = (
 				DD10000000000000000000B1 /* SwiftTerm */,
 				DD10000000000000000000C2 /* ClerkKit */,
+				C5C000000000000000000002 /* Citadel */,
 			);
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
@@ -1174,6 +1217,7 @@
 			packageReferences = (
 				DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				DD10000000000000000000C1 /* XCRemoteSwiftPackageReference "clerk-ios" */,
+				C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */,
 			);
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
@@ -1290,6 +1334,19 @@
 				26C8992F8D661707E9360503 /* Database.swift in Sources */,
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
+				C5B000000000000000000001 /* MobileTrustResetPolicy.swift in Sources */,
+				C5B000000000000000000002 /* SSHBootstrapModels.swift in Sources */,
+				C5B000000000000000000003 /* SSHPrivateKeyParser.swift in Sources */,
+				C5B000000000000000000004 /* SSHGeneratedKey.swift in Sources */,
+				C5B000000000000000000005 /* SSHHostKeyPinStore.swift in Sources */,
+				C5B000000000000000000006 /* SSHCredentialStore.swift in Sources */,
+				C5B000000000000000000007 /* SSHHostFingerprintValidator.swift in Sources */,
+				C5B000000000000000000008 /* SSHBootstrapService.swift in Sources */,
+				C5B000000000000000000009 /* MobileAccessGateView.swift in Sources */,
+				C5B00000000000000000000A /* MobileAccessGateSheet.swift in Sources */,
+				C5B00000000000000000000B /* SSHPairingViewState.swift in Sources */,
+				C5B00000000000000000000C /* SSHPairingViewModel.swift in Sources */,
+				C5B00000000000000000000D /* SSHPairingView.swift in Sources */,
 				B70000000000000000000002 /* SyncRecoveryPolicy.swift in Sources */,
 				A11700000000000000000002 /* MobileUsageQuotaStore.swift in Sources */,
 				6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */,
@@ -1472,6 +1529,7 @@
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
 				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
+				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1925,6 +1983,14 @@
 				minimumVersion = 1.3.2;
 			};
 		};
+		C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/orlandos-nl/Citadel";
+			requirement = {
+				kind = exactVersion;
+				version = 0.12.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1937,6 +2003,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = DD10000000000000000000C1 /* XCRemoteSwiftPackageReference "clerk-ios" */;
 			productName = ClerkKit;
+		};
+		C5C000000000000000000002 /* Citadel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */;
+			productName = Citadel;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

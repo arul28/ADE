@@ -3,7 +3,10 @@ import type { AdeAccountMachine } from "../../../../desktop/src/shared/types/acc
 import type { RemoteRuntimeTarget } from "../../../../desktop/src/shared/types/remoteRuntime";
 import type { DesktopPairedMachineCredentials } from "../../../../desktop/src/shared/types/pairedRuntime";
 import { DEFAULT_ADE_ACCOUNT_DIRECTORY_URL } from "../../../../desktop/src/shared/accountDirectory";
-import { AccountMachineDirectoryService } from "./accountMachineDirectoryService";
+import {
+  AccountMachineDirectoryService,
+  reconcileAccountOwnedMachineTrust,
+} from "./accountMachineDirectoryService";
 import {
   ACCOUNT_MACHINE_HEARTBEAT_MS,
   type AccountMachineRegistrationSnapshot,
@@ -90,6 +93,40 @@ afterEach(() => {
 });
 
 describe("AccountMachineDirectoryService", () => {
+  it("removes account-owned client trust together and preserves direct pairings", () => {
+    const removedCredential = {
+      hostIdentity: { deviceId: "account-host" },
+      machineKey: "account-key",
+    } as DesktopPairedMachineCredentials;
+    const directTarget = {
+      id: "direct-target",
+      pairedMachine: { hostIdentity: "direct-host", machineKey: null },
+    } as RemoteRuntimeTarget;
+    const orphanedHistoricalTarget = {
+      id: "orphaned-target",
+      pairedMachine: { hostIdentity: "account-host", machineKey: "account-key" },
+    } as RemoteRuntimeTarget;
+    const remove = vi.fn((id: string) => id === orphanedHistoricalTarget.id);
+    const result = reconcileAccountOwnedMachineTrust(null, {
+      pairedStore: {
+        pruneAccountOwned: vi.fn(() => [removedCredential]),
+      },
+      targetRegistry: {
+        pruneAccountOwned: vi.fn(() => [{ id: "owned-target" } as RemoteRuntimeTarget]),
+        list: vi.fn(() => [directTarget, orphanedHistoricalTarget]),
+        remove,
+      },
+    });
+
+    expect(result).toEqual({
+      removedTargetIds: ["owned-target", "orphaned-target"],
+      removedCredentialHostIds: ["account-host"],
+    });
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith("orphaned-target");
+    expect(remove).not.toHaveBeenCalledWith("direct-target");
+  });
+
   it("keeps signed-out use local-first and does not call the directory", async () => {
     const fetchImpl = directoryFetch([]);
     const service = new AccountMachineDirectoryService({
@@ -240,13 +277,104 @@ describe("AccountMachineDirectoryService", () => {
       expect.objectContaining({ machineKey: "mk-studio" }),
       "account-token",
       "ADE Code test",
-      { appVersion: "1.2.3", relayBaseUrls: ["https://relay.example"] },
+      {
+        appVersion: "1.2.3",
+        relayBaseUrls: ["https://relay.example"],
+        accountOwnerUserId: "user",
+        authorizeAccountCommit: expect.any(Function),
+      },
     );
     expect(save).toHaveBeenCalledWith(expect.objectContaining({
       transport: "paired",
       pairedMachine: { hostIdentity: "device-studio", machineKey: "mk-studio" },
       routes: [],
     }));
+  });
+
+  it.each([
+    { name: "sign-out", nextUserId: null, nextToken: null },
+    { name: "account switch", nextUserId: "user-b", nextToken: "token-b" },
+  ])("does not save a machine when $name wins a deferred account hello", async ({
+    nextUserId,
+    nextToken,
+  }) => {
+    let userId: string | null = "user-a";
+    let token: string | null = "token-a";
+    let finishPairing: ((value: DesktopPairedMachineCredentials) => void) | null = null;
+    let markPairingStarted: (() => void) | null = null;
+    const pairingStarted = new Promise<void>((resolve) => {
+      markPairingStarted = resolve;
+    });
+    let stored: DesktopPairedMachineCredentials | null = null;
+    const pairWithAccountMachine = vi.fn(async () => {
+      markPairingStarted?.();
+      const credentials = await new Promise<DesktopPairedMachineCredentials>((resolve) => {
+        finishPairing = resolve;
+      });
+      // Model a pairer that committed immediately before its promise resolved.
+      stored = credentials;
+      return credentials;
+    });
+    const saveTarget = vi.fn();
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({
+        signedIn: userId != null,
+        userId,
+        email: null,
+        name: null,
+        expiresAt: null,
+      }),
+      getAccessToken: async () => {
+        if (!token) throw new Error("Signed out");
+        return token;
+      },
+    }, {
+      pairedStore: {
+        pairWithAccountMachine,
+        get: () => stored,
+        save: (credentials) => {
+          stored = credentials;
+          return credentials;
+        },
+        remove: () => {
+          stored = null;
+          return true;
+        },
+      },
+      targetRegistry: { save: saveTarget },
+    });
+
+    const pairing = service.pairListedMachine(machine());
+    await pairingStarted;
+    userId = nextUserId;
+    token = nextToken;
+    finishPairing!({
+      version: 1,
+      hostIdentity: {
+        deviceId: "device-studio",
+        siteId: "host-site",
+        name: "Studio",
+        platform: "macOS",
+        deviceType: "desktop",
+      },
+      machineKey: "mk-studio",
+      accountOwnerUserId: "user-a",
+      deviceId: "client-a",
+      siteId: "client-site-a",
+      deviceName: "ADE Code",
+      secret: "paired-secret",
+      dpopPrivateKey: "private-key",
+      dpopPublicKey: "public-key",
+      endpoints: ["wss://relay.example/connect/mk-studio"],
+      relayUrl: "wss://relay.example/connect/mk-studio",
+      endpointStates: [],
+      createdAt: "2026-07-15T00:00:00.000Z",
+      updatedAt: "2026-07-15T00:00:00.000Z",
+    });
+
+    await expect(pairing).rejects.toThrow(/account changed/i);
+    expect(stored).toBeNull();
+    expect(saveTarget).not.toHaveBeenCalled();
   });
 });
 

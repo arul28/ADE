@@ -700,6 +700,8 @@ declare global {
         markWelcomeVideoSeen: (
           reason: "completed" | "dismissed",
         ) => Promise<AppWelcomeVideoState>;
+        getLaunchGateState: () => Promise<{ resolved: boolean }>;
+        resolveLaunchGate: () => Promise<{ resolved: true }>;
         setWindowProjectTabs: (
           rootPaths: string[],
         ) => Promise<{ openProjectTabs: ProjectInfo[] }>;
@@ -822,6 +824,10 @@ declare global {
         runDoctor: (id: string) => Promise<RemoteRuntimeDoctorResult>;
         saveTarget: (
           input: RemoteRuntimeTargetInput,
+        ) => Promise<RemoteRuntimeTarget>;
+        setAutoConnect: (
+          id: string,
+          enabled: boolean,
         ) => Promise<RemoteRuntimeTarget>;
         removeTarget: (id: string) => Promise<{ removed: boolean }>;
         getSshHostKeyTrust: (

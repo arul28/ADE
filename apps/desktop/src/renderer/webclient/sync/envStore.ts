@@ -16,6 +16,8 @@ export type WebClientEnvironmentRecord = {
   envId: string;
   machineName: string;
   hostDeviceId: string;
+  /** Account that created this browser pairing. Missing/null means user-paired. */
+  accountOwnerUserId?: string | null;
   machineKeyUrl?: string | null;
   relayUrl?: string | null;
   addressCandidates: SyncAddressCandidate[];
@@ -38,6 +40,8 @@ export type WebClientEnvironmentRecord = {
 const DB_NAME = "ade-web-client";
 const DB_VERSION = 1;
 const SELECTED_ENV_ID_KEY = "selectedEnvId";
+export const WEB_TRUST_RESET_VERSION = 1;
+const TRUST_RESET_VERSION_KEY = "machineTrustResetVersion";
 
 function openRequest<T>(request: IDBRequest<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -129,9 +133,31 @@ export class MemoryStorage implements WebClientStorage {
 }
 
 export class WebClientEnvStore {
+  private trustResetPromise: Promise<void> | null = null;
+
   constructor(private readonly storage: WebClientStorage = new IndexedDbStorage()) {}
 
+  private async ensureTrustReset(): Promise<void> {
+    if (!this.trustResetPromise) {
+      this.trustResetPromise = (async () => {
+        const completedVersion = await this.storage.get<number>("meta", TRUST_RESET_VERSION_KEY);
+        if (completedVersion === WEB_TRUST_RESET_VERSION) return;
+        const environments = await this.storage.list<WebClientEnvironmentRecord>("environments");
+        for (const environment of environments) {
+          await this.storage.delete("environments", environment.envId);
+        }
+        await this.storage.delete("meta", SELECTED_ENV_ID_KEY);
+        await this.storage.put("meta", TRUST_RESET_VERSION_KEY, WEB_TRUST_RESET_VERSION);
+      })().catch((error) => {
+        this.trustResetPromise = null;
+        throw error;
+      });
+    }
+    await this.trustResetPromise;
+  }
+
   async listEnvironments(): Promise<WebClientEnvironmentRecord[]> {
+    await this.ensureTrustReset();
     const records = await this.storage.list<WebClientEnvironmentRecord>("environments");
     return records.sort((left, right) => {
       const leftTime = Date.parse(left.lastConnectedAt ?? left.createdAt);
@@ -141,29 +167,64 @@ export class WebClientEnvStore {
   }
 
   async getEnvironment(envId: string): Promise<WebClientEnvironmentRecord | null> {
+    await this.ensureTrustReset();
     return await this.storage.get<WebClientEnvironmentRecord>("environments", envId);
   }
 
   async findByHostDeviceId(hostDeviceId: string): Promise<WebClientEnvironmentRecord | null> {
+    await this.ensureTrustReset();
     const environments = await this.listEnvironments();
     return environments.find((environment) => environment.hostDeviceId === hostDeviceId) ?? null;
   }
 
   async saveEnvironment(environment: WebClientEnvironmentRecord): Promise<void> {
+    await this.ensureTrustReset();
     await this.storage.put("environments", environment.envId, environment);
   }
 
   async removeEnvironment(envId: string): Promise<void> {
+    await this.ensureTrustReset();
     await this.storage.delete("environments", envId);
     const selected = await this.getSelectedEnvId();
     if (selected === envId) await this.setSelectedEnvId(null);
   }
 
+  async removeAccountOwnedEnvironments(ownerUserIdValue: string): Promise<string[]> {
+    const ownerUserId = ownerUserIdValue.trim();
+    if (!ownerUserId) return [];
+    return await this.pruneAccountOwnedEnvironments(ownerUserId, { removeCurrent: true });
+  }
+
+  async pruneAccountOwnedEnvironments(
+    currentOwnerUserIdValue: string | null,
+    options: { removeCurrent?: boolean } = {},
+  ): Promise<string[]> {
+    await this.ensureTrustReset();
+    const currentOwnerUserId = currentOwnerUserIdValue?.trim() || null;
+    const environments = await this.storage.list<WebClientEnvironmentRecord>("environments");
+    const removedIds = environments
+      .filter((environment) => environment.accountOwnerUserId != null)
+      .filter((environment) => options.removeCurrent
+        ? environment.accountOwnerUserId === currentOwnerUserId
+        : environment.accountOwnerUserId !== currentOwnerUserId)
+      .map((environment) => environment.envId);
+    for (const envId of removedIds) {
+      await this.storage.delete("environments", envId);
+    }
+    const selected = await this.storage.get<string>("meta", SELECTED_ENV_ID_KEY);
+    if (selected && removedIds.includes(selected)) {
+      await this.storage.delete("meta", SELECTED_ENV_ID_KEY);
+    }
+    return removedIds;
+  }
+
   async getSelectedEnvId(): Promise<string | null> {
+    await this.ensureTrustReset();
     return await this.storage.get<string>("meta", SELECTED_ENV_ID_KEY);
   }
 
   async setSelectedEnvId(envId: string | null): Promise<void> {
+    await this.ensureTrustReset();
     if (envId) {
       await this.storage.put("meta", SELECTED_ENV_ID_KEY, envId);
       return;

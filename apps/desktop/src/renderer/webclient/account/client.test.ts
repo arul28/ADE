@@ -154,7 +154,7 @@ describe("BrowserAccountClient", () => {
       releaseRefresh = resolve;
     });
     const initialToken = accessToken("initial");
-    const refreshedToken = accessToken("refreshed");
+    const refreshedToken = accessToken("initial");
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
       if (url === "https://directory.example/account/machines") {
@@ -191,6 +191,8 @@ describe("BrowserAccountClient", () => {
       now: () => now,
     });
     await completeSignIn(client, location, assigned);
+    const initialLease = client.captureSessionLease();
+    expect(initialLease).not.toBeNull();
     now = 3_500_000;
 
     const first = client.getAccessToken();
@@ -203,6 +205,7 @@ describe("BrowserAccountClient", () => {
     }), { status: 200 }));
     await expect(Promise.all([first, second])).resolves.toEqual([refreshedToken, refreshedToken]);
     expect(refreshAttempts).toBe(1);
+    expect(client.isSessionLeaseCurrent(initialLease!)).toBe(false);
 
     now += 1_000;
     await expect(client.getAccessToken()).rejects.toThrow("temporary network failure");

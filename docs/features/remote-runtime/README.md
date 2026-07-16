@@ -8,8 +8,9 @@ spawns no project services of its own for a remote binding.
 The recommended transport is **paired**: pair the two ADE desktops with a PIN
 and device-bound DPoP credentials, then carry the full runtime JSON-RPC over
 the machine sync WebSocket. ADE tries direct LAN routes, then tailnet routes,
-then the configured cloud relay. **SSH** remains the Advanced path and a
-fallback for paired targets that retain usable SSH routes and credentials. It
+then the configured cloud relay when both machines are signed in to the same
+ADE account. **SSH** remains the Advanced path and a fallback only for paired
+targets that came from an explicitly configured SSH route. It
 runs the same JSON-RPC over an SSH `exec` channel using `ade rpc --stdio` and
 can upload or start the remote runtime when needed. The relay is not an
 end-to-end encrypted tunnel; see the trust boundary in
@@ -64,6 +65,11 @@ end-to-end encrypted tunnel; see the trust boundary in
 - `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` —
   brain-independent project diagnosis and ordered repair for storage,
   database, migration, endpoint, and chat continuity failures.
+- `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
+  one-time packaged-release reset of the old machine-connection trust files.
+  It preserves account auth, machine identity, pairing PINs, projects, and SSH
+  configuration, and completes only after the background service restart is
+  confirmed.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts`
   (`codedRecoveryError`) — refuses to start an app-owned brain on a primary
   service socket and carries the recorded `AdeRecoveryErrorCode` to IPC and the
@@ -92,7 +98,11 @@ end-to-end encrypted tunnel; see the trust boundary in
   live subscription, resets cursors on `eventEpoch` changes, notifies project
   refresh paths on `gap: true`, and backs off when idle; lane preview URLs
   returned by a remote runtime are localized through a local TCP forward before
-  the renderer opens them.
+  the renderer opens them. For a packaged local window temporarily attached to
+  an isolated runtime with sync disabled, only the exact machine-level
+  `Sync service is not available` / `Register a project first` failures retry
+  through main-process sync IPC; remote-bound failures never fall back to the
+  local machine.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
   and sync methods, machine-scoped personal-chat methods, plus project-scoped
   action dispatch. `projects.getHandoffStoragePreflight` validates a proposed
@@ -133,6 +143,25 @@ handoff that publishes the exact source commit, prepares or clones the
 destination project, creates or reuses the destination lane, and starts a new
 chat from a bounded portable capsule.
 
+Direct remote targets are account-independent. QR/link, Nearby, address/PIN,
+and SSH-created trust lives on this desktop and continues to connect after
+sign-out. Account-directory adoption is deliberately account-owned instead:
+the target and paired DPoP credentials are tagged with the Clerk user id and
+removed when that user signs out or switches accounts, so a shared ADE install
+cannot expose another person's machines. Signing in never converts an existing
+direct pairing into account-owned trust.
+Changing an SSH host key always requires explicit trust again. Changing the
+remote host's stable pairing identity, or losing its stored pairing grant,
+invalidates the saved paired credential and requires re-pairing; ADE does not
+silently attach old credentials to a different host identity.
+
+The next packaged release intentionally starts this trust model from a clean
+slate once per channel. It removes previously saved desktop remote targets and
+paired-device grants, restarts that channel's background runtime, and then lets
+users pair or adopt machines again. It does not sign the user out, change the
+machine identity/PIN, remove projects, or touch SSH configuration. Source/dev
+launches do not perform the reset.
+
 When opening a remote project, ADE checks local projects with the same git origin. If a matching local copy has uncommitted changes, ADE shows a confirmation dialog (`RemoteProjectOpenDialog`) before switching so the user can push, stash, or keep the divergent local work intentionally.
 
 Local project opens use typed recovery rather than raw error text. If the
@@ -154,17 +183,28 @@ run a local repair against data owned by the remote machine. See
 2. Use **Pair** for the normal flow. Paste or scan the machine's pairing link or
    code, enter its six-digit PIN, and let ADE save the machine identity, DPoP
    key, and advertised direct/relay endpoints. A discovered machine with an
-   existing pairing is upgraded to a paired target automatically.
+   existing pairing is upgraded to a paired target automatically. LAN and
+   tailnet PIN pairing work without an account. Relay PIN pairing requires both
+   machines to be signed into the same ADE account; the account proof is
+   short-lived and is not saved with the pairing.
 3. Connect. ADE dials paired routes in LAN → tailnet → relay order, preferring a
    recently successful endpoint within each class. After authenticated
    `hello_ok`, it requires `features.rpcChannel === true`, opens the runtime
    JSON-RPC channel, and uses the paired port-forward channel for remote preview
    URLs. The connected status reports the winning route and latency. A relay
-   route is a trusted-operator plaintext-readable path, not a confidential
-   channel.
+   route is tried only while this ADE client is signed in. The client attaches
+   a short-lived account proof to that relay hello, and the host accepts it only
+   when the proof belongs to the Clerk user currently signed in on the host.
+   A missing or different account reports **Sign in to ADE** without spending
+   the automatic-reconnect failure budget. Relay remains a trusted-operator
+   plaintext-readable path, not a confidential channel. A signed-out host does
+   not advertise or hold a Relay tunnel; it resumes automatically after
+   sign-in. Legacy shared bootstrap tokens are rejected over Relay even when
+   they remain valid for an eligible direct reconnect.
 4. If paired dialing fails, or the remote runtime does not support the paired
    RPC channel, ADE silently falls back to SSH only when that paired target has
-   usable SSH routes and credentials. SSH host-key trust is requested only
+   a route originally configured through Advanced SSH. Nearby/discovery routes
+   are never reinterpreted as SSH fallback. SSH host-key trust is requested only
    after fallback is actually needed; it is never pre-trusted or prompted
    before the paired attempt.
 5. Use **SSH** under Advanced to configure or connect directly: enter a display
@@ -181,7 +221,13 @@ run a local repair against data owned by the remote machine. See
    back to bounded SSH chunk uploads / OpenSSH. Without a bundled binary, ADE
    probes alternate channel homes for a compatible installed runtime and
    reports the selected fallback as a compatibility warning.
-7. Pick an existing remote project or register a new remote path; the desktop
+7. Once SSH RPC succeeds, ADE asks that exact runtime to authorize this desktop
+   as a paired DPoP device using a bounded JSON request on stdin. The resulting
+   secret, private key, host identity, and endpoints are stored locally, and
+   the target is upgraded to paired-first while retaining the verified SSH
+   route as recovery. Older compatible runtimes that do not implement this
+   upgrade remain usable over SSH.
+8. Pick an existing remote project or register a new remote path; the desktop
    calls `projects.add { rootPath }` against the remote runtime to bind it.
    If the same window starts multiple remote opens concurrently, both preload
    and the main IPC bridge keep only the latest open as the durable binding.
@@ -206,9 +252,15 @@ WebSocket/auth wait is capped by the remaining budget and observes cancellation;
 authentication failure stops redundant channel-home probes for that route, and
 the final error aggregates the routes/runtimes that were actually attempted.
 
-After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. When the app relaunches with no startup project path, the first window restores the last remote binding and reconnects to the same target / project automatically. A user-triggered disconnect records manual intent on the target and suppresses restore/autoconnect until the user presses Connect again; repeated implicit reconnect failures also pause automatic reconnects and surface a "Press Connect to try again" message.
+After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. After 10 implicit failures ADE pauses retries until the user presses Connect, which resets the retry budget without bypassing SSH or pairing authentication.
 
 Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
+
+A packaged Beta upload that cannot initialize is not terminal by itself. ADE
+still probes the isolated Stable and other channel homes and accepts the first
+runtime whose initialization and machine-project capabilities are compatible;
+the selected home is then used consistently for follow-up commands such as the
+SSH-to-paired upgrade.
 
 ## Compatibility warnings
 
@@ -282,9 +334,12 @@ Local project bindings use the local ADE runtime for the same surfaces — agent
 
 ## Mobile reachability
 
-iOS does not SSH into a machine. The phone pairs with an ADE machine and connects to that runtime's sync WebSocket advertised on the LAN or over a Tailscale tailnet. Install Tailscale on the phone and the ADE machine when they are not on the same local network.
+iOS uses SSH only as an optional one-time pairing bootstrap. Routine mobile
+traffic always uses the paired sync WebSocket advertised on the LAN, through a
+Tailscale tailnet, or through the relay. Install Tailscale on the phone and the
+ADE machine for a direct route when they are not on the same local network.
 
-On desktop, the top-bar Mobile control is a runtime control, not a project control. It remains visible while a window is bound to a remote project: `window.ade.sync.*` routes to the active runtime binding, so a local/no-project window manages the local machine brain while a remote-bound window manages the remote machine's sync service. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
+On desktop, **Connections > Mobile** is a runtime control, not a project control. It remains available while a window is bound to a remote project: `window.ade.sync.*` routes to the active runtime binding, so a local/no-project window manages the local machine brain while a remote-bound window manages the remote machine's sync service. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 ## Troubleshooting
 
@@ -295,7 +350,7 @@ On desktop, the top-bar Mobile control is a runtime control, not a project contr
 - `ADE service is not installed ... no bundled ADE service is available` — install or build `ade` on the remote, or use a release build that includes runtime resources for the remote architecture.
 - `Uploaded ADE service version mismatch: expected X, got Y` — the uploaded binary did not report the expected runtime version. Rebuild the static runtime artifacts for the current desktop version.
 - `Remote ADE service does not support multi-project mode` — the remote is running an older ADE before multi-project RPC. Re-bootstrap from a current desktop build.
-- `Remote ADE service could not start a compatible RPC runtime. Tried ...` — every alternate ADE home (`.ade`, `.ade-alpha`, `.ade-beta`) failed to start. The error lists each home and the underlying reason. Install or rebuild `ade` on the remote machine for the desktop's target architecture.
+- `ADE couldn't connect to this machine. Check that ADE is open there, then press Try again.` — ADE could not initialize any compatible installed service. Expand technical details to see each channel home and the launch, initialization, or capability-negotiation failure.
 - `Remote ADE service <version> does not support <capability>.` — the remote runtime connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update ADE on that machine.
 - `Remote ADE service method <method> failed (code N): <message> Details: ...` — the runtime RPC client now surfaces the JSON-RPC error `code`, `message`, and `data` together so a remote handler failure (e.g. a missing project capability or a service action error) is no longer reported as a generic `Remote ADE service request failed.` string.
 - `Remote ADE service timed out waiting for method ...` — only that request expired. The shared runtime connection and event subscriptions remain live; retry explicitly if the operation is still needed, because ADE does not replay timed-out mutations automatically.

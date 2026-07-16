@@ -70,7 +70,7 @@ function AccountHeader({ githubStatus, onNavigate }: { githubStatus?: GitHubStat
     : "Sign in to ADE";
   const subtitle = status.signedIn
     ? status.email ?? "Manage your account"
-    : "Bring your machines together under one identity";
+    : "The easiest way to find your other Macs";
 
   return (
     <button
@@ -144,6 +144,7 @@ export function ConnectionsPanel({
   onRemoveRequested,
 }: ConnectionsPanelProps) {
   const navigate = useNavigate();
+  const { status: accountStatus } = useAccountStatus();
   const [tab, setTab] = useState<ConnectionsPanelTab>(initialTab);
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
@@ -220,7 +221,8 @@ export function ConnectionsPanel({
             onRemoveRequested={onRemoveRequested}
             accountMachines={accountMachines?.machines}
             accountMachinesState={accountMachines?.state}
-            accountMachinesMessage={accountMachines?.message}
+            accountSignedIn={accountStatus.signedIn}
+            onAccountRequested={goToAccount}
           />
         ) : null}
         {tab === "mobile" ? <SyncDevicesSection variant="phone" /> : null}

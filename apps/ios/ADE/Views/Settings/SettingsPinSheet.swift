@@ -33,7 +33,7 @@ struct SettingsPinSheet: View {
           Text("Enter pairing PIN")
             .font(.title2.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Paired with \(preset.hostDisplayName)")
+          Text("Connecting to \(preset.hostDisplayName)")
             .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
@@ -51,7 +51,7 @@ struct SettingsPinSheet: View {
         .accessibilityLabel("Pairing PIN")
         .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
-          Text("Find this PIN in ADE's Sync settings on \(preset.hostDisplayName).")
+          Text("On \(preset.hostDisplayName), open Connections in ADE, choose Mobile, and find the six-digit pairing code.")
             .font(.footnote)
             .foregroundStyle(ADEColor.textSecondary)
 
@@ -252,7 +252,7 @@ struct SettingsPinSetupSheet: View {
             Text("Set a PIN to connect")
               .font(.title2.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
-            Text("\(route.machineDisplayName) doesn't have a pairing PIN yet. Set one on that machine, then come back here to pair — it keeps your machine private.")
+            Text("Set a pairing PIN in ADE on \(route.machineDisplayName), then return here.")
               .font(.subheadline)
               .foregroundStyle(ADEColor.textSecondary)
               .fixedSize(horizontal: false, vertical: true)
@@ -297,7 +297,7 @@ struct SettingsPinSetupSheet: View {
           stepCard(
             number: 2,
             title: "Or use the ADE app",
-            detail: "Open ADE on \(route.machineDisplayName), then go to Settings → Sync and set a pairing PIN."
+            detail: "Open ADE on \(route.machineDisplayName), open Connections, choose Mobile, then create a six-digit pairing code."
           ) { EmptyView() }
 
           Spacer(minLength: 8)
