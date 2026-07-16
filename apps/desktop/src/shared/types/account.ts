@@ -7,8 +7,8 @@ export type AdeAccountProvider = "github" | "google" | "apple" | "email";
 
 /**
  * Token-free account status surfaced to the renderer. Mirrors the daemon
- * `account.status` shape; `provider`/`imageUrl` are optional because the merged
- * status may not carry them yet — the UI degrades to a GitHub-creds image and a
+ * `account.status` shape; `provider`/`imageUrl` are optional because an issuer
+ * may omit those claims — the UI degrades to a GitHub-creds image and a
  * monogram when they are absent.
  */
 export type AdeAccountStatus = {
@@ -70,6 +70,18 @@ export type AdeAccountMachinesResult = {
   machines: AdeAccountMachine[];
   /** Human-readable detail for non-success states that need explanation. */
   message: string | null;
+};
+
+/** Stable identities used to recognize this Mac in the account directory. */
+export type AdeAccountLocalMachineIdentity = {
+  machineKey: string;
+  deviceId: string;
+};
+
+/** Successful removal of a machine from the signed-in account directory. */
+export type AdeAccountMachineRemovalResult = {
+  ok: true;
+  machineKey: string;
 };
 
 /** Token-free result of adopting an account-directory machine for paired use. */

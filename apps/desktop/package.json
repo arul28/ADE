@@ -337,6 +337,10 @@
       "extendInfo": {
         "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use.",
         "NSMicrophoneUsageDescription": "ADE uses your microphone to dictate chat prompts with on-device voice-to-text.",
+        "NSLocalNetworkUsageDescription": "ADE finds and connects to your other Macs and devices running ADE on your local network.",
+        "NSBonjourServices": [
+          "_ade-sync._tcp"
+        ],
         "CFBundleDocumentTypes": [
           {
             "CFBundleTypeName": "ADE files and folders",

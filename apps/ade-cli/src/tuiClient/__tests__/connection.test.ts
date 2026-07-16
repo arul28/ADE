@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { connectToAde } from "../connection";
+import { connectToAde, INTERACTIVE_PROJECT_REGISTRATION } from "../connection";
 import { JsonRpcClient } from "../jsonRpcClient";
 import { startTuiHeartbeat, type TuiHeartbeat } from "../heartbeat";
 import { ProcessJsonRpcClient } from "../remoteBridge";
@@ -392,7 +392,70 @@ describe("connectToAde embedded mode", () => {
       "projects.add",
       "ade/actions/list",
     ]);
+    expect(requests.find((request) => request.method === "projects.add")?.params)
+      .toEqual({
+        rootPath: project.projectRoot,
+        catalogVisibility: "system",
+        registrationSource: "runtime-auto",
+      });
     expect(requests.at(-1)?.params).toMatchObject({ projectId: "project-daemon" });
+  });
+
+  it("promotes the project to a recent catalog row for an interactive launch", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-"));
+    const socketPath = path.join(tmpDir, "ade.sock");
+    const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string; params?: Record<string, unknown> };
+          requests.push({ method: request.method, params: request.params });
+          const result = (() => {
+            if (request.method === "ade/initialize") {
+              return {
+                runtimeInfo: { multiProject: true, defaultRole: "cto" },
+                capabilities: { projects: true },
+              };
+            }
+            if (request.method === "projects.add") {
+              return { projectId: "project-daemon", rootPath: project.projectRoot };
+            }
+            if (request.method === "ade/actions/list") {
+              return { projectId: request.params?.projectId ?? null };
+            }
+            return null;
+          })();
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    const connection = await connectToAde({
+      project,
+      socketPath,
+      projectRegistration: INTERACTIVE_PROJECT_REGISTRATION,
+    });
+    try {
+      await connection.request("ade/actions/list", {});
+    } finally {
+      await connection.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    expect(requests.find((request) => request.method === "projects.add")?.params)
+      .toEqual({
+        rootPath: project.projectRoot,
+        catalogVisibility: "recent",
+        registrationSource: "cli-explicit",
+      });
   });
 
   it("adapts multi-project runtime chat events into the TUI chat stream", async () => {

@@ -8,6 +8,7 @@ import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_JWKS_URL,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+  DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
   DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
   DEVELOPMENT_ADE_CLERK_ISSUER,
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
@@ -17,6 +18,8 @@ import {
   getSharedAccountAuthService,
   getSharedAccountDirectoryBaseUrl,
   registerAccountConfigProjectRoot,
+  resolveAccountOAuthConfig,
+  resolveOfficialAccountDirectoryBaseUrl,
 } from "./sharedAccountAuthService";
 
 const tempPaths: string[] = [];
@@ -45,6 +48,38 @@ afterEach(() => {
 });
 
 describe("getSharedAccountAuthService resolves CLERK OAuth config as an atomic pair", () => {
+  it("exposes the project-aware issuer resolver shared by desktop and publisher", () => {
+    const developmentRoot = makeProjectRoot({
+      CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+      CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+
+    expect(resolveAccountOAuthConfig({
+      env: {} as NodeJS.ProcessEnv,
+      projectRoots: [developmentRoot],
+    })).toEqual({
+      issuer: DEVELOPMENT_ADE_CLERK_ISSUER,
+      clientId: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+  });
+
+  it("keeps an unconfigured active project on production despite an inactive development project", () => {
+    const activeRoot = makeProjectRoot({});
+    const inactiveDevelopmentRoot = makeProjectRoot({
+      CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+      CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+
+    expect(resolveOfficialAccountDirectoryBaseUrl({
+      env: {} as NodeJS.ProcessEnv,
+      projectRoots: [activeRoot],
+    })).toBe(DEFAULT_ADE_ACCOUNT_DIRECTORY_URL);
+    expect(resolveOfficialAccountDirectoryBaseUrl({
+      env: {} as NodeJS.ProcessEnv,
+      projectRoots: [inactiveDevelopmentRoot],
+    })).toBe(DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL);
+  });
+
   it("uses ADE production when no project or environment override exists", async () => {
     const service = getSharedAccountAuthService({
       secretsDir: uniqueSecretsDir(),

@@ -1,5 +1,5 @@
 import React from "react";
-import { GridFour, WarningCircle, Question, Clock } from "@phosphor-icons/react";
+import { CircleNotch, GridFour, WarningCircle, Question, Clock } from "@phosphor-icons/react";
 import type { AgentChatSpawnKind, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import {
@@ -259,6 +259,7 @@ export const SessionCard = React.memo(function SessionCard({
   compact = false,
   gridBadge = null,
   liveChildrenCount = 0,
+  disabledReason = null,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
@@ -271,6 +272,8 @@ export const SessionCard = React.memo(function SessionCard({
   gridBadge?: "active" | "inactive" | null;
   /** Count of this session's still-running spawned children (drives the `▸N` badge). */
   liveChildrenCount?: number;
+  /** When present, blocks interaction while the owning lane is being removed. */
+  disabledReason?: string | null;
 }) {
   const dot = sessionStatusDot(session);
   // Blocked on a chat question/plan only the user can answer (distinct from a
@@ -346,9 +349,9 @@ export const SessionCard = React.memo(function SessionCard({
 
   return (
     <div
-      className="group relative"
-      onContextMenu={onContextMenu}
-      draggable
+      className={cn("group relative", disabledReason && "opacity-60")}
+      onContextMenu={disabledReason ? undefined : onContextMenu}
+      draggable={!disabledReason}
       onDragStart={(event) => {
         // Source for the Cursor-style work grid: drop onto a session / the work
         // area to add this chat or CLI session to a grid.
@@ -358,6 +361,7 @@ export const SessionCard = React.memo(function SessionCard({
     >
       <button
         type="button"
+        disabled={Boolean(disabledReason)}
         className={cn(
           "relative w-full overflow-hidden text-left transition-all duration-100 rounded-lg",
           useLaneGlow
@@ -376,7 +380,11 @@ export const SessionCard = React.memo(function SessionCard({
               }
             : {}),
         }}
-        {...(orchestrationLabel ? { "aria-label": `${orchestrationLabel}: ${primaryText}` } : {})}
+        {...(disabledReason
+          ? { "aria-label": `${primaryText}: ${disabledReason}` }
+          : orchestrationLabel
+            ? { "aria-label": `${orchestrationLabel}: ${primaryText}` }
+            : {})}
         onClick={(event) => onSelect(session.id, event)}
       >
         <div className={cn("flex items-stretch", compact ? "gap-2 px-2 py-1" : "gap-2.5 px-2.5 py-2")}>
@@ -582,6 +590,12 @@ export const SessionCard = React.memo(function SessionCard({
             ) : null}
           </div>
         </div>
+        {disabledReason ? (
+          <span className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5 rounded-lg bg-bg/70 text-[10px] font-semibold uppercase tracking-wide text-muted-fg backdrop-blur-[1px]">
+            <CircleNotch size={12} className="animate-spin" />
+            {disabledReason}
+          </span>
+        ) : null}
       </button>
     </div>
   );

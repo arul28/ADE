@@ -465,6 +465,69 @@ describe("runLaneDeleteBatchWithConcurrency", () => {
 });
 
 describe("selectLaneTabPrTag", () => {
+  it("agrees with canonical branch-first lane PR resolution across mapped, projected, and empty states", () => {
+    const mappedOpen = makePr({ id: "mapped-open", state: "open" });
+    const mappedMerged = makePr({ id: "mapped-merged", state: "merged" });
+    const projectedOnly = makePr({
+      id: "gh:arul28/ADE#224",
+      unmapped: true,
+      state: "open",
+    });
+    const cases: Array<{
+      name: string;
+      canonicalGetForLane: PrSummary | null;
+      mapped: PrSummary[];
+      projected: GitHubPrListItem[];
+    }> = [
+      {
+        name: "mapped open",
+        canonicalGetForLane: mappedOpen,
+        mapped: [mappedOpen],
+        projected: [makeGitHubPr({ linkedPrId: mappedOpen.id, linkedLaneId: "lane-1" })],
+      },
+      {
+        name: "mapped merged with stale open projection",
+        canonicalGetForLane: mappedMerged,
+        mapped: [mappedMerged],
+        projected: [makeGitHubPr({
+          state: "open",
+          linkedPrId: mappedMerged.id,
+          linkedLaneId: "lane-1",
+        })],
+      },
+      {
+        name: "unmapped projection only",
+        canonicalGetForLane: projectedOnly,
+        mapped: [],
+        projected: [makeGitHubPr({ linkedPrId: null, linkedLaneId: null })],
+      },
+      {
+        name: "no PR",
+        canonicalGetForLane: null,
+        mapped: [],
+        projected: [],
+      },
+    ];
+
+    for (const testCase of cases) {
+      const sidebarTag = selectLaneTabPrTag(makeLane(), testCase.mapped, testCase.projected);
+      expect({
+        name: testCase.name,
+        resolved: sidebarTag
+          ? { githubPrNumber: sidebarTag.githubPrNumber, state: sidebarTag.state }
+          : null,
+      }).toEqual({
+        name: testCase.name,
+        resolved: testCase.canonicalGetForLane
+          ? {
+              githubPrNumber: testCase.canonicalGetForLane.githubPrNumber,
+              state: testCase.canonicalGetForLane.state,
+            }
+          : null,
+      });
+    }
+  });
+
   it("falls back to repo GitHub PRs by lane branch when no ADE PR row is mapped", () => {
     const githubPr = makeGitHubPr({
       state: "merged",

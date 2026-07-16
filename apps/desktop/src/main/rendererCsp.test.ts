@@ -76,6 +76,26 @@ describe("buildRendererCspPolicy", () => {
     expect(imgTokens).toContain("https://cursor.com/assets/images/");
     expect(imgTokens).not.toContain("https://cursor.com");
   });
+
+  it("allows Clerk-hosted account avatars", () => {
+    const policy = buildRendererCspPolicy(false);
+    const imgSrc = policy.split("; ").find((directive) => directive.startsWith("img-src "));
+    const imgTokens = imgSrc?.split(/\s+/).slice(1) ?? [];
+
+    expect(imgTokens).toContain("https://img.clerk.com");
+    expect(imgTokens).toContain("https://images.clerk.dev");
+  });
+
+  it("allows Clerk avatar uploads only under the images.clerk.dev GCS path prefix", () => {
+    const policy = buildRendererCspPolicy(false);
+    const imgSrc = policy.split("; ").find((directive) => directive.startsWith("img-src "));
+    const imgTokens = imgSrc?.split(/\s+/).slice(1) ?? [];
+
+    expect(imgTokens).toContain("https://storage.googleapis.com/images.clerk.dev/");
+    // Never the bare Google Cloud Storage host.
+    expect(imgTokens).not.toContain("https://storage.googleapis.com");
+    expect(imgTokens).not.toContain("https://storage.googleapis.com/");
+  });
 });
 
 describe("shouldApplyRendererCsp", () => {

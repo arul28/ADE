@@ -48,7 +48,7 @@ export function registerAccountConfigProjectRoot(
     return;
   }
   // `ade login` passes its invoking project root here so that project's CLERK_*
-  // secrets win OAuth config resolution. resolveOAuthConfig walks the set in
+  // secrets win OAuth config resolution. resolveAccountOAuthConfig walks the set in
   // insertion order, so re-seat this root at the FRONT — otherwise a project
   // registered earlier (e.g. via registerAccountProjects) would shadow it in a
   // multi-project brain.
@@ -68,7 +68,7 @@ function readProjectSecret(projectRoot: string, name: string): string | null {
   }
 }
 
-function resolveOAuthConfig(args: {
+export function resolveAccountOAuthConfig(args: {
   env: NodeJS.ProcessEnv;
   projectRoots: Iterable<string>;
 }): AccountOAuthConfig {
@@ -96,6 +96,13 @@ function resolveOAuthConfig(args: {
   };
 }
 
+export function resolveOfficialAccountDirectoryBaseUrl(args: {
+  env: NodeJS.ProcessEnv;
+  projectRoots: Iterable<string>;
+}): string {
+  return officialAccountDirectoryUrlForIssuer(resolveAccountOAuthConfig(args).issuer);
+}
+
 function resolveDeviceBridgeUrl(args: {
   env: NodeJS.ProcessEnv;
   projectRoots: Iterable<string>;
@@ -106,7 +113,7 @@ function resolveDeviceBridgeUrl(args: {
   }
   const machineOverride = args.env.ADE_ACCOUNT_DIRECTORY_URL?.trim();
   if (machineOverride) return machineOverride;
-  return officialAccountDirectoryUrlForIssuer(resolveOAuthConfig(args).issuer);
+  return resolveOfficialAccountDirectoryBaseUrl(args);
 }
 
 function resolveAttestationConfig(args: {
@@ -190,7 +197,7 @@ export function getSharedAccountAuthService(args: {
 
   const service = createAccountAuthService({
     credentialStore: new EncryptedFileCredentialStore({ secretsDir }),
-    getOAuthConfig: () => resolveOAuthConfig({
+    getOAuthConfig: () => resolveAccountOAuthConfig({
       env: args.env ?? process.env,
       projectRoots: rootsFor(secretsDir),
     }),

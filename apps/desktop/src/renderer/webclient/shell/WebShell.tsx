@@ -191,7 +191,6 @@ export function WebShell({
   connectingAccountMachineKey,
   onSwitchEnv,
   onSwitchAccountMachine,
-  onPairNew,
   onAccountSignIn,
   onAccountSignOut,
   onRetryAccountDirectory,
@@ -209,7 +208,6 @@ export function WebShell({
   connectingAccountMachineKey: string | null;
   onSwitchEnv: (environment: WebClientEnvironmentRecord) => void;
   onSwitchAccountMachine: (machine: AdeAccountMachine) => void;
-  onPairNew: () => void;
   onAccountSignIn: () => void;
   onAccountSignOut: () => void;
   onRetryAccountDirectory: () => void;
@@ -359,10 +357,6 @@ export function WebShell({
                 onSignOut={onAccountSignOut}
                 onRetry={onRetryAccountDirectory}
               />
-              <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
-              <button type="button" style={menuItemStyle} onClick={() => { setMachineMenu(false); onPairNew(); }}>
-                Pair new machine…
-              </button>
             </div>
           ) : null}
         </div>

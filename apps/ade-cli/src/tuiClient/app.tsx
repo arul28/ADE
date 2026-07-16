@@ -110,7 +110,7 @@ import { deriveChatInfoSnapshot } from "./chatInfo";
 import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import { buildHelpIndex, buildHelpRows, flattenHelpRows, pushRecent } from "./helpIndex";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
-import { connectToAde } from "./connection";
+import { connectToAde, INTERACTIVE_PROJECT_REGISTRATION } from "./connection";
 import { captureTuiProductAnalytics, deriveTuiAnalyticsScreen } from "./productAnalytics";
 import { Drawer, type DrawerPrSummary } from "./components/Drawer";
 import {
@@ -7382,7 +7382,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setError(null);
     void (async () => {
       try {
-        const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote: remoteLaunch });
+        const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote: remoteLaunch, projectRegistration: INTERACTIVE_PROJECT_REGISTRATION });
         if (cancelled) {
           await conn.close();
           return;
@@ -8033,6 +8033,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             socketPath,
             preferServiceRepair,
             remote: remoteLaunch,
+            projectRegistration: INTERACTIVE_PROJECT_REGISTRATION,
           });
           if (attached.mode !== "attached") {
             await attached.close().catch(() => {});
@@ -10281,7 +10282,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable; launched ADE.", "info");
         for (let attempt = 0; attempt < 8; attempt += 1) {
           await delay(750);
-          const attached = await connectToAde({ project, forceEmbedded: false, socketPath, preferServiceRepair, remote: remoteLaunch }).catch(() => null);
+          const attached = await connectToAde({ project, forceEmbedded: false, socketPath, preferServiceRepair, remote: remoteLaunch, projectRegistration: INTERACTIVE_PROJECT_REGISTRATION }).catch(() => null);
           if (!attached || attached.mode !== "attached") {
             await attached?.close().catch(() => {});
             continue;

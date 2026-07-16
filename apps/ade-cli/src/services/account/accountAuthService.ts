@@ -9,6 +9,7 @@ const LOGIN_SESSION_TTL_MS = 5 * 60_000;
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
 const DEVICE_BRIDGE_REQUEST_TIMEOUT_MS = 15_000;
+const USERINFO_REQUEST_TIMEOUT_MS = 5_000;
 const ACCOUNT_TOKEN_ENV_KEY = "ADE_ACCOUNT_TOKEN";
 const PROVISIONED_ACCOUNT_TOKEN_PREFIX = "ade_account_v1.";
 const SUCCESS_HTML = `<!doctype html>
@@ -54,12 +55,16 @@ export type AccountSessionRecord = {
   userId: string | null;
   email: string | null;
   name: string | null;
+  provider?: AccountIdentityProvider | null;
+  imageUrl?: string | null;
   authSource?: Exclude<AccountAuthSource, "env-token" | null>;
   suppressEnvCredential?: true;
   oauthConfig?: AccountOAuthConfig;
 };
 
 export type AccountAuthSource = "loopback" | "device" | "env-token" | null;
+
+export type AccountIdentityProvider = "github" | "google" | "apple" | "email";
 
 export type AccountAuthStatus = {
   signedIn: boolean;
@@ -68,7 +73,11 @@ export type AccountAuthStatus = {
   name: string | null;
   expiresAt: string | null;
   source?: AccountAuthSource;
+  provider?: AccountIdentityProvider | null;
+  imageUrl?: string | null;
 };
+
+export type AccountSessionReadState = "available" | "missing" | "unreadable";
 
 export type AccountLoginStartResult = {
   sessionId: string;
@@ -139,16 +148,31 @@ type TokenResponse = {
   expiresInSec: number;
 };
 
+class AccountTokenRequestError extends Error {
+  constructor(
+    message: string,
+    readonly oauthErrorCode: string | null,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "AccountTokenRequestError";
+  }
+}
+
 export type AccountAuthService = {
   startLogin(): Promise<AccountLoginStartResult>;
   pollLogin(sessionId: string): Promise<AccountLoginPollResult>;
   startDeviceLogin(options?: { ignoreEnvCredential?: boolean }): Promise<AccountDeviceLoginStartResult>;
   pollDeviceLogin(sessionId: string): Promise<AccountDeviceLoginPollResult>;
   getStatus(): AccountAuthStatus;
+  /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
+  getSessionReadState(): AccountSessionReadState;
   getAccessToken(): Promise<string>;
   createToken(): Promise<AccountTokenCreateResult>;
   cancelLogin(sessionId: string): void;
   signOut(): AccountAuthStatus;
+  /** Notification emitted after a local or externally persisted sign-in. */
+  onSignedIn(listener: () => void): () => void;
   dispose(): void;
 };
 
@@ -214,6 +238,19 @@ function readAuthSource(value: unknown): AccountSessionRecord["authSource"] {
   return value === "device" ? "device" : value === "loopback" ? "loopback" : undefined;
 }
 
+function readIdentityProvider(value: unknown): AccountIdentityProvider | null {
+  const normalized = readNonEmptyString(value)?.toLowerCase().replace(/^oauth_/, "");
+  if (
+    normalized === "github"
+    || normalized === "google"
+    || normalized === "apple"
+    || normalized === "email"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   try {
     const parts = token.split(".");
@@ -228,7 +265,8 @@ function accessTokenExpiresAt(token: string): string | null {
   const payload = decodeJwtPayload(token);
   const exp = payload?.exp;
   if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= 0) return null;
-  return new Date(Math.trunc(exp * 1000)).toISOString();
+  const expiresAt = new Date(Math.trunc(exp * 1000));
+  return Number.isFinite(expiresAt.getTime()) ? expiresAt.toISOString() : null;
 }
 
 function classifyEnvCredential(token: string): "access_token" | "refresh_token" {
@@ -410,10 +448,14 @@ function decodeAccountClaims(accessToken: string): {
   userId: string | null;
   email: string | null;
   name: string | null;
+  provider: AccountIdentityProvider | null;
+  imageUrl: string | null;
 } {
   try {
     const claims = decodeJwtPayload(accessToken);
-    if (!claims) return { userId: null, email: null, name: null };
+    if (!claims) {
+      return { userId: null, email: null, name: null, provider: null, imageUrl: null };
+    }
     const givenName = readNonEmptyString(claims.given_name ?? claims.first_name);
     const familyName = readNonEmptyString(claims.family_name ?? claims.last_name);
     const derivedName = [givenName, familyName].filter(Boolean).join(" ") || null;
@@ -421,9 +463,13 @@ function decodeAccountClaims(accessToken: string): {
       userId: readNonEmptyString(claims.sub),
       email: readNonEmptyString(claims.email ?? claims.primary_email ?? claims.email_address),
       name: readNonEmptyString(claims.name) ?? derivedName,
+      provider: readIdentityProvider(
+        claims.provider ?? claims.identity_provider ?? claims.idp,
+      ),
+      imageUrl: readNonEmptyString(claims.picture ?? claims.image_url ?? claims.avatar_url),
     };
   } catch {
-    return { userId: null, email: null, name: null };
+    return { userId: null, email: null, name: null, provider: null, imageUrl: null };
   }
 }
 
@@ -450,6 +496,8 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
       userId: readNonEmptyString(parsed.userId),
       email: readNonEmptyString(parsed.email),
       name: readNonEmptyString(parsed.name),
+      provider: readIdentityProvider(parsed.provider),
+      imageUrl: readNonEmptyString(parsed.imageUrl),
       authSource: readAuthSource(parsed.authSource),
       ...(parsed.suppressEnvCredential === true ? { suppressEnvCredential: true } : {}),
       ...(oauthConfig ? { oauthConfig } : {}),
@@ -474,10 +522,11 @@ async function postTokenForm(args: {
   });
   const payload = asRecord(await response.json().catch(() => ({})));
   if (!response.ok) {
+    const oauthErrorCode = readNonEmptyString(payload.error);
     const message = readNonEmptyString(payload.error_description)
-      ?? readNonEmptyString(payload.error)
+      ?? oauthErrorCode
       ?? `ADE account token request failed (${response.status}).`;
-    throw new Error(message);
+    throw new AccountTokenRequestError(message, oauthErrorCode, response.status);
   }
   const accessToken = readNonEmptyString(payload.access_token);
   const expiresInSec = readPositiveNumber(payload.expires_in);
@@ -493,13 +542,18 @@ async function postTokenForm(args: {
 }
 
 function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
+  const expiresAt = record
+    ? accessTokenExpiresAt(record.accessToken) ?? record.expiresAt
+    : null;
   return {
     signedIn: Boolean(record?.accessToken),
     userId: record?.userId ?? null,
     email: record?.email ?? null,
     name: record?.name ?? null,
-    expiresAt: record?.expiresAt ?? null,
+    expiresAt,
     source: record ? record.authSource ?? "loopback" : null,
+    ...(record?.provider ? { provider: record.provider } : {}),
+    ...(record?.imageUrl ? { imageUrl: record.imageUrl } : {}),
   };
 }
 
@@ -569,6 +623,7 @@ export function createAccountAuthService(args: {
   getDeviceBridgeUrl?: () => string | Promise<string>;
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
   deviceBridgeRequestTimeoutMs?: number;
+  userinfoRequestTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
@@ -587,16 +642,25 @@ export function createAccountAuthService(args: {
     && requestedDeviceBridgeTimeoutMs > 0
     ? Math.trunc(requestedDeviceBridgeTimeoutMs)
     : DEVICE_BRIDGE_REQUEST_TIMEOUT_MS;
+  const requestedUserinfoTimeoutMs = args.userinfoRequestTimeoutMs;
+  const userinfoRequestTimeoutMs = typeof requestedUserinfoTimeoutMs === "number"
+    && Number.isFinite(requestedUserinfoTimeoutMs)
+    && requestedUserinfoTimeoutMs > 0
+    ? Math.trunc(requestedUserinfoTimeoutMs)
+    : USERINFO_REQUEST_TIMEOUT_MS;
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
-  let refreshInFlight: Promise<AccountSessionRecord> | null = null;
+  let refreshInFlight: Promise<AccountSessionRecord | null> | null = null;
   let envRefreshInFlight: Promise<string> | null = null;
   let envSession: AccountSessionRecord | null = null;
   let envSessionCredential: string | null = null;
   let envRefreshToken: string | null = null;
   let envCredentialEpoch = 0;
   let authEpoch = 0;
+  let sessionReadState: AccountSessionReadState = "missing";
+  let lastObservedSignedIn: boolean | null = null;
+  const signedInListeners = new Set<() => void>();
 
   const readEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
 
@@ -621,7 +685,7 @@ export function createAccountAuthService(args: {
     const expiresAt = accessToken ? accessTokenExpiresAt(accessToken) : null;
     const claims = expiresAt && accessToken
       ? decodeAccountClaims(accessToken)
-      : { userId: null, email: null, name: null };
+      : { userId: null, email: null, name: null, provider: null, imageUrl: null };
     const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     return {
       signedIn: isAccessToken && Number.isFinite(expiresAtMs) && expiresAtMs > now(),
@@ -630,17 +694,39 @@ export function createAccountAuthService(args: {
       name: claims.name,
       expiresAt,
       source: "env-token",
+      ...(claims.provider ? { provider: claims.provider } : {}),
+      ...(claims.imageUrl ? { imageUrl: claims.imageUrl } : {}),
     };
   };
 
   const readSession = (): AccountSessionRecord | null => {
     try {
-      return parseStoredSession(args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY));
+      const stored = args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+      const session = parseStoredSession(stored);
+      sessionReadState = stored == null
+        ? args.credentialStore.getLastReadState?.() === "unreadable"
+          ? "unreadable"
+          : "missing"
+        : session
+          ? "available"
+          : "unreadable";
+      return session;
     } catch (error) {
+      sessionReadState = "unreadable";
       logger.warn("account.session_read_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
       return null;
+    }
+  };
+
+  const notifySignedIn = (): void => {
+    for (const listener of signedInListeners) {
+      try {
+        listener();
+      } catch {
+        // Account persistence has already succeeded. Observers are best-effort.
+      }
     }
   };
 
@@ -650,6 +736,33 @@ export function createAccountAuthService(args: {
     } else {
       args.credentialStore.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
     }
+    lastObservedSignedIn = record != null;
+  };
+
+  const persistRefreshedSessionIfCurrent = (
+    refreshed: AccountSessionRecord,
+    refreshSource: AccountSessionRecord,
+  ): boolean => {
+    const matchesRefreshSource = (candidate: AccountSessionRecord | null): boolean =>
+      candidate?.refreshToken === refreshSource.refreshToken
+      && candidate?.obtainedAt === refreshSource.obtainedAt;
+    const updateSync = args.credentialStore.updateSync;
+    if (!updateSync) {
+      if (!matchesRefreshSource(readSession())) return false;
+      persistSession(refreshed);
+      return true;
+    }
+
+    let persisted = false;
+    updateSync.call(args.credentialStore, (values) => {
+      const latest = parseStoredSession(values[ACCOUNT_SESSION_CREDENTIAL_KEY]);
+      if (!matchesRefreshSource(latest)) return false;
+      values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(refreshed);
+      persisted = true;
+      return true;
+    });
+    if (persisted) lastObservedSignedIn = true;
+    return persisted;
   };
 
   const finishPendingSession = (
@@ -678,23 +791,77 @@ export function createAccountAuthService(args: {
     }
   };
 
-  const buildSessionRecord = (
+  const fetchUserinfoProfile = async (
+    token: TokenResponse,
+    oauthConfig: AccountOAuthConfig | null,
+  ): Promise<ReturnType<typeof decodeAccountClaims> | null> => {
+    if (!oauthConfig) return null;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), userinfoRequestTimeoutMs);
+    timer.unref?.();
+    try {
+      const response = await fetchImpl(`${oauthConfig.issuer}/oauth/userinfo`, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${token.accessToken}`,
+        },
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+      });
+      if (!response.ok) return null;
+      const profile = asRecord(await response.json().catch(() => ({})));
+      const givenName = readNonEmptyString(profile.given_name ?? profile.first_name);
+      const familyName = readNonEmptyString(profile.family_name ?? profile.last_name);
+      const derivedName = [givenName, familyName].filter(Boolean).join(" ") || null;
+      return {
+        userId: readNonEmptyString(profile.sub),
+        email: readNonEmptyString(
+          profile.email ?? profile.primary_email ?? profile.email_address,
+        ),
+        name: readNonEmptyString(profile.name) ?? derivedName,
+        provider: readIdentityProvider(
+          profile.provider ?? profile.identity_provider ?? profile.idp,
+        ),
+        imageUrl: readNonEmptyString(
+          profile.picture ?? profile.image_url ?? profile.avatar_url,
+        ),
+      };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  const buildSessionRecord = async (
     token: TokenResponse,
     previous?: AccountSessionRecord | null,
     authSource: AccountSessionRecord["authSource"] = previous?.authSource ?? "loopback",
     oauthConfig: AccountOAuthConfig | null = previous?.oauthConfig ?? null,
-  ): AccountSessionRecord => {
+  ): Promise<AccountSessionRecord> => {
     const obtainedAtMs = now();
     const claims = decodeAccountClaims(token.accessToken);
+    const claimedExpiresAt = accessTokenExpiresAt(token.accessToken);
+    const userinfo = await fetchUserinfoProfile(token, oauthConfig);
     return {
       accessToken: token.accessToken,
       refreshToken: token.refreshToken ?? previous?.refreshToken ?? null,
       tokenType: token.tokenType,
-      expiresAt: new Date(obtainedAtMs + Math.trunc(token.expiresInSec * 1000)).toISOString(),
+      // The access-token claim is authoritative when it is present. OAuth
+      // expires_in can describe a broader session lifetime than the JWT that
+      // is actually sent to the directory.
+      expiresAt: claimedExpiresAt
+        ?? new Date(obtainedAtMs + Math.trunc(token.expiresInSec * 1000)).toISOString(),
       obtainedAt: new Date(obtainedAtMs).toISOString(),
-      userId: claims.userId ?? previous?.userId ?? null,
-      email: claims.email ?? previous?.email ?? null,
-      name: claims.name ?? previous?.name ?? null,
+      userId: claims.userId ?? userinfo?.userId ?? previous?.userId ?? null,
+      email: claims.email ?? userinfo?.email ?? previous?.email ?? null,
+      name: claims.name ?? userinfo?.name ?? previous?.name ?? null,
+      provider: claims.provider ?? userinfo?.provider ?? previous?.provider ?? null,
+      imageUrl: userinfo?.imageUrl ?? claims.imageUrl ?? previous?.imageUrl ?? null,
       authSource,
       ...(previous?.suppressEnvCredential ? { suppressEnvCredential: true } : {}),
       ...(oauthConfig ? { oauthConfig } : {}),
@@ -717,7 +884,7 @@ export function createAccountAuthService(args: {
         redirect_uri: session.redirectUri,
       },
     });
-    return buildSessionRecord(token, null, "loopback", config);
+    return await buildSessionRecord(token, null, "loopback", config);
   };
 
   const handleLoopbackRequest = async (
@@ -767,6 +934,7 @@ export function createAccountAuthService(args: {
       }
       persistSession(record);
       authEpoch += 1;
+      notifySignedIn();
       finishPendingSession(session, "signed_in", null);
       logger.info("account.login_completed");
       respondHtml(response, 200, SUCCESS_HTML);
@@ -1125,7 +1293,7 @@ export function createAccountAuthService(args: {
         authStatus: toStatus(readSession()),
       };
     }
-    const baseRecord = buildSessionRecord({
+    const baseRecord = await buildSessionRecord({
       accessToken,
       refreshToken: readNonEmptyString(payload.refresh_token),
       tokenType: readNonEmptyString(payload.token_type) ?? "Bearer",
@@ -1136,6 +1304,7 @@ export function createAccountAuthService(args: {
       : baseRecord;
     persistSession(record);
     authEpoch += 1;
+    notifySignedIn();
     pendingDeviceSessions.delete(normalizedSessionId);
     logger.info("account.device_login_completed");
     return {
@@ -1271,7 +1440,7 @@ export function createAccountAuthService(args: {
             return getAccessToken();
           }
           envRefreshToken = token.refreshToken ?? refreshTokenAtRefresh;
-          const refreshed = buildSessionRecord(token, envSession, "loopback");
+          const refreshed = await buildSessionRecord(token, envSession, "loopback", config);
           envSession = refreshed;
           return refreshed.accessToken;
         })();
@@ -1288,7 +1457,8 @@ export function createAccountAuthService(args: {
     if (!record?.accessToken) {
       throw new Error("ADE is not signed in. Run `ade login` to sign in.");
     }
-    const expiresAtMs = Date.parse(record.expiresAt);
+    const claimedExpiresAt = accessTokenExpiresAt(record.accessToken);
+    const expiresAtMs = Date.parse(claimedExpiresAt ?? record.expiresAt);
     if (Number.isFinite(expiresAtMs) && expiresAtMs > now() + ACCESS_TOKEN_REFRESH_SKEW_MS) {
       return record.accessToken;
     }
@@ -1299,28 +1469,60 @@ export function createAccountAuthService(args: {
     const epochAtJoin = authEpoch;
     if (!refreshInFlight) {
       refreshInFlight = (async () => {
-        const config = record.oauthConfig
-          ? normalizeOAuthConfig(record.oauthConfig)
-          : normalizeOAuthConfig(await args.getOAuthConfig());
-        const token = await postTokenForm({
-          fetchImpl,
-          tokenUrl: `${config.issuer}/oauth/token`,
-          body: {
-            grant_type: "refresh_token",
-            refresh_token: record.refreshToken!,
-            client_id: config.clientId,
-          },
-        });
-        const refreshed = buildSessionRecord(token, record);
-        if (authEpoch === epochAtJoin) persistSession(refreshed);
-        return refreshed;
+        let refreshRecord = record;
+        let token: TokenResponse | null = null;
+        let config: AccountOAuthConfig | null = null;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          config = refreshRecord.oauthConfig
+            ? normalizeOAuthConfig(refreshRecord.oauthConfig)
+            : normalizeOAuthConfig(await args.getOAuthConfig());
+          try {
+            token = await postTokenForm({
+              fetchImpl,
+              tokenUrl: `${config.issuer}/oauth/token`,
+              body: {
+                grant_type: "refresh_token",
+                refresh_token: refreshRecord.refreshToken!,
+                client_id: config.clientId,
+              },
+            });
+            break;
+          } catch (error) {
+            if (
+              attempt > 0
+              || !(error instanceof AccountTokenRequestError)
+              || error.oauthErrorCode !== "invalid_grant"
+            ) {
+              throw error;
+            }
+            // The desktop and brain share this credential. If the peer won a
+            // rotating refresh-token exchange, retry once with the newer
+            // persisted token instead of treating the session as expired.
+            const latest = readSession();
+            if (
+              !latest?.refreshToken
+              || latest.refreshToken === refreshRecord.refreshToken
+            ) {
+              throw error;
+            }
+            refreshRecord = latest;
+          }
+        }
+        if (!token || !config) {
+          throw new Error("ADE account session expired. Run `ade login` again.");
+        }
+        const refreshed = await buildSessionRecord(token, refreshRecord, undefined, config);
+        if (authEpoch !== epochAtJoin) return null;
+        return persistRefreshedSessionIfCurrent(refreshed, refreshRecord)
+          ? refreshed
+          : null;
       })().finally(() => {
         refreshInFlight = null;
       });
     }
 
     const refreshed = await refreshInFlight;
-    if (authEpoch !== epochAtJoin) {
+    if (authEpoch !== epochAtJoin || !refreshed) {
       return getAccessToken();
     }
     return refreshed.accessToken;
@@ -1378,6 +1580,19 @@ export function createAccountAuthService(args: {
     return getStatus();
   };
 
+  let credentialChangeTimer: ReturnType<typeof setTimeout> | null = null;
+  lastObservedSignedIn = getStatus().signedIn;
+  const unsubscribeCredentialChanges = args.credentialStore.onDidChange?.(() => {
+    if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
+    credentialChangeTimer = setTimeout(() => {
+      credentialChangeTimer = null;
+      const signedIn = getStatus().signedIn;
+      if (signedIn && lastObservedSignedIn === false) notifySignedIn();
+      lastObservedSignedIn = signedIn;
+    }, 25);
+    credentialChangeTimer.unref?.();
+  }) ?? (() => {});
+
   const dispose = (): void => {
     for (const session of pendingSessions.values()) {
       clearTimeout(session.expiryTimer);
@@ -1385,6 +1600,10 @@ export function createAccountAuthService(args: {
     }
     pendingSessions.clear();
     pendingDeviceSessions.clear();
+    if (credentialChangeTimer) clearTimeout(credentialChangeTimer);
+    credentialChangeTimer = null;
+    unsubscribeCredentialChanges();
+    signedInListeners.clear();
   };
 
   return {
@@ -1393,10 +1612,15 @@ export function createAccountAuthService(args: {
     startDeviceLogin,
     pollDeviceLogin,
     getStatus,
+    getSessionReadState: () => sessionReadState,
     getAccessToken,
     createToken,
     cancelLogin,
     signOut,
+    onSignedIn: (listener: () => void) => {
+      signedInListeners.add(listener);
+      return () => signedInListeners.delete(listener);
+    },
     dispose,
   };
 }

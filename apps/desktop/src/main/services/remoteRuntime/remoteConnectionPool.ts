@@ -763,7 +763,10 @@ export class RemoteConnectionPool {
     entry: PoolEntry,
     rootPath: string,
   ): Promise<RemoteRuntimeProjectRecord> {
-    const project = await ensureRemoteProject(entry.client, rootPath);
+    const project = await ensureRemoteProject(entry.client, rootPath, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
     entry.result.projects = [
       project,
       ...entry.result.projects.filter(

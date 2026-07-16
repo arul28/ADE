@@ -42,6 +42,10 @@ struct HubScreen: View {
   @State private var activeRosterProjectId: String?
   @State private var hubProjectPresentations: [HubProjectPresentation] = []
   @State private var personalChatsPresented = false
+  // Brief success checkmark shown after a quick-connect from the no-machine
+  // home (haptic fires at the same moment).
+  @State private var showConnectBeat = false
+  @State private var connectBeatTask: Task<Void, Never>?
 
   private var isNoMachineBlankState: Bool {
     syncService.connectionState == .disconnected || syncService.connectionState == .error
@@ -62,10 +66,13 @@ struct HubScreen: View {
         if openChatTarget != nil {
           HubCoverParkingSurface()
         } else if isNoMachineBlankState {
-          HubNoMachineState()
+          HubNoMachineState(onConnectSuccess: triggerConnectBeat)
         } else {
           connectedHub
         }
+      }
+      .overlay {
+        if showConnectBeat { ConnectSuccessBeat() }
       }
       .navigationDestination(isPresented: $personalChatsPresented) {
         PersonalChatsScreen()
@@ -106,6 +113,16 @@ struct HubScreen: View {
     createdToast = nil
   }
 
+  private func triggerConnectBeat() {
+    connectBeatTask?.cancel()
+    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { showConnectBeat = true }
+    connectBeatTask = Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 750_000_000)
+      guard !Task.isCancelled else { return }
+      withAnimation(.easeOut(duration: 0.2)) { showConnectBeat = false }
+    }
+  }
+
   private func collapseComposer() {
     withAnimation(hubComposerSpring) { composerExpanded = false }
   }
@@ -121,21 +138,27 @@ struct HubScreen: View {
     openChatTarget = HubChatTarget(project: project, lane: nil, chat: chat)
   }
 
+  private var chatsAttentionCount: Int {
+    syncService.personalChatSessions.filter {
+      $0.archivedAt == nil && ($0.awaitingInput == true || $0.status == "awaiting-input")
+    }.count
+  }
+
   private var connectedHub: some View {
     VStack(spacing: 0) {
-      HubTopBar(onAdd: { addProjectSheetPresented = true })
+      HubTopBar(
+        onAdd: { addProjectSheetPresented = true },
+        chatsAvailable: syncService.supportsPersonalChats,
+        chatsAttentionCount: chatsAttentionCount,
+        onOpenChats: { personalChatsPresented = true }
+      )
       ScrollView {
         LazyVStack(spacing: 12) {
-          HubPersonalChatsCard(
-            count: syncService.personalChatSessions.filter { $0.archivedAt == nil }.count,
-            attentionCount: syncService.personalChatSessions.filter {
-              $0.archivedAt == nil && ($0.awaitingInput == true || $0.status == "awaiting-input")
-            }.count,
-            isAvailable: syncService.supportsPersonalChats,
-            onOpen: { personalChatsPresented = true }
-          )
-
-          if !canShowProjects {
+          // Keep the project catalog mounted while a switch is in flight: only
+          // fall back to the connecting card when there's nothing to show yet.
+          // The switching row carries its own spinner and the others disable,
+          // so the list never blanks to a full-screen connecting swap (M12).
+          if !canShowProjects && hubProjectPresentations.isEmpty {
             HubConnectingCard()
           } else if syncService.projects.isEmpty {
             HubEmptyProjectsCard()
@@ -175,6 +198,11 @@ struct HubScreen: View {
                 moveProject(draggedId, onto: project.id)
                 return true
               }
+              // While one project is switching in, the tapped row shows its own
+              // spinner and every other row is disabled + dimmed so the catalog
+              // stays visible but non-interactive (M12).
+              .disabled(syncService.isProjectSwitching && !presentation.isSwitching)
+              .opacity(syncService.isProjectSwitching && !presentation.isSwitching ? 0.55 : 1)
             }
           }
         }

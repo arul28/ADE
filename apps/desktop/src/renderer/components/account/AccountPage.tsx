@@ -1,22 +1,25 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
   CircleNotch,
   DesktopTower,
-  DeviceMobile,
+  DotsThreeVertical,
   GithubLogo,
   Laptop,
   Question,
   SignOut,
-  Sparkle,
-  Users,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
 import type { CSSProperties } from "react";
-import type { GitHubStatus } from "../../../shared/types";
+import type {
+  AdeAccountLocalMachineIdentity,
+  AdeAccountMachineRemovalResult,
+  GitHubStatus,
+} from "../../../shared/types";
 import {
   COLORS,
   RADII,
@@ -39,11 +42,29 @@ import {
   type AdeAccountStatus,
 } from "../../lib/account";
 import { useAccountLogin } from "../../lib/accountLogin";
+import {
+  formatMachineEndpoint,
+  relativeLastSeenPhrase,
+} from "../remoteTargets/remoteMachineModel";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { openExternalUrl } from "../../lib/openExternal";
 import { docs } from "../../onboarding/docsLinks";
+import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 
 const REPO_BRIDGE_DISMISS_KEY = "ade.account.repoBridgeDismissed.v1";
+const MACHINES_REFRESH_MS = 30_000;
+const ACCOUNT_MENU_WIDTH = 200;
+
+type AccountBridge = {
+  listMachines: () => Promise<AdeAccountMachinesResult>;
+  getLocalMachineIdentity: () => Promise<AdeAccountLocalMachineIdentity>;
+  removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
+  signOut: () => Promise<AdeAccountStatus>;
+};
+
+function accountBridge(): Partial<AccountBridge> | undefined {
+  return (window.ade as typeof window.ade & { account?: Partial<AccountBridge> }).account;
+}
 
 function accountReturnRoute(state: unknown): string {
   if (!state || typeof state !== "object" || !("returnTo" in state)) return "/work";
@@ -57,10 +78,6 @@ function accountReturnRoute(state: unknown): string {
     return "/work";
   }
   return returnTo;
-}
-
-function firstName(name: string | null): string {
-  return name?.trim().split(/\s+/)[0] ?? "there";
 }
 
 function readDismissed(key: string): boolean {
@@ -79,24 +96,17 @@ function writeDismissed(key: string): void {
   }
 }
 
-function relativeLastSeen(lastSeenAt: number | null): string {
-  if (!lastSeenAt) return "Never seen";
-  const deltaMs = Date.now() - lastSeenAt;
-  if (deltaMs < 60_000) return "Active just now";
-  const minutes = Math.floor(deltaMs / 60_000);
-  if (minutes < 60) return `Seen ${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Seen ${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `Seen ${days}d ago`;
-}
-
 function machineRouteHint(machine: AdeAccountMachine): string | null {
   const endpoint = machine.reachableEndpoints[0];
   if (!endpoint) return null;
-  if (endpoint.kind === "relay") return "relay";
-  const host = endpoint.host ?? endpoint.url ?? "";
-  return host ? `${endpoint.kind} · ${host}` : endpoint.kind;
+  // Beginners never need the relay URL; the word is enough.
+  if (endpoint.kind === "relay") return "Relay";
+  return formatMachineEndpoint(endpoint);
+}
+
+function lastSeenLabel(lastSeenAt: number | null): string {
+  const phrase = relativeLastSeenPhrase(lastSeenAt);
+  return phrase ? `Last seen ${phrase}` : "Never seen";
 }
 
 const sectionLabelStyle: CSSProperties = {
@@ -107,6 +117,110 @@ const sectionLabelStyle: CSSProperties = {
   textTransform: "uppercase",
   color: COLORS.textMuted,
 };
+
+// ---------------------------------------------------------------------------
+// Confirmation sheet — a calm modal consistent with the settings surface.
+// ---------------------------------------------------------------------------
+
+function ConfirmSheet({
+  title,
+  body,
+  confirmLabel,
+  danger,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  danger?: boolean;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", handler, true);
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [onCancel]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      onClick={(event) => {
+        if (event.target === event.currentTarget && !busy) onCancel();
+      }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24,
+        background: "color-mix(in srgb, #000 55%, transparent)",
+        backdropFilter: "blur(2px)",
+        WebkitBackdropFilter: "blur(2px)",
+      }}
+    >
+      <div
+        style={cardStyle({
+          width: 400,
+          maxWidth: "100%",
+          padding: 0,
+          overflow: "hidden",
+          background: COLORS.cardBgSolid,
+          backdropFilter: "none",
+          WebkitBackdropFilter: "none",
+          boxShadow: "0 24px 64px -30px rgba(0,0,0,0.82)",
+        })}
+      >
+        <div style={{ padding: "18px 20px 4px" }}>
+          <div style={{ fontFamily: SANS_FONT, fontSize: 15, fontWeight: 700, color: COLORS.textPrimary }}>
+            {title}
+          </div>
+          <div style={{ marginTop: 8, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55, color: COLORS.textSecondary }}>
+            {body}
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, padding: "16px 20px 18px" }}>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onCancel}
+            style={outlineButton({ height: 34, fontSize: 12.5, padding: "0 14px", opacity: busy ? 0.6 : 1 })}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            autoFocus
+            onClick={onConfirm}
+            style={(danger ? dangerButton : primaryButton)({
+              height: 34,
+              fontSize: 12.5,
+              padding: "0 16px",
+              opacity: busy ? 0.6 : 1,
+              cursor: busy ? "not-allowed" : "pointer",
+            })}
+          >
+            {busy ? <CircleNotch size={14} weight="bold" className="animate-spin" /> : null}
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Signed-out: the rich sign-in card.
@@ -179,17 +293,15 @@ export function SignInCard({
             type="button"
             disabled={busy || !configured}
             onClick={() => void beginLogin()}
-            style={{
-              ...primaryButton({
-                width: "100%",
-                height: 44,
-                fontSize: 14,
-                gap: 8,
-                opacity: busy || !configured ? 0.55 : 1,
-                cursor: busy || !configured ? "not-allowed" : "pointer",
-                WebkitAppRegion: "no-drag",
-              }),
-            }}
+            style={primaryButton({
+              width: "100%",
+              height: 44,
+              fontSize: 14,
+              gap: 8,
+              opacity: busy || !configured ? 0.55 : 1,
+              cursor: busy || !configured ? "not-allowed" : "pointer",
+              WebkitAppRegion: "no-drag",
+            } as CSSProperties)}
           >
             {busy ? <CircleNotch size={16} weight="bold" className="animate-spin" /> : <ArrowRight size={17} weight="bold" />}
             Sign in or create account
@@ -225,7 +337,7 @@ export function SignInCard({
                 color: COLORS.textMuted,
                 cursor: "pointer",
                 WebkitAppRegion: "no-drag",
-              }}
+              } as CSSProperties}
             >
               <Question size={13} weight="bold" />
             </button>
@@ -253,7 +365,7 @@ export function SignInCard({
             <button
               type="button"
               onClick={cancel}
-              style={{ ...outlineButton({ height: 26, fontSize: 11, padding: "0 10px" }) }}
+              style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px" })}
             >
               Cancel
             </button>
@@ -271,23 +383,26 @@ export function SignInCard({
 }
 
 // ---------------------------------------------------------------------------
-// Signed-in: machines-at-a-glance.
+// Signed-in: Your Macs — the account directory, this Mac pinned first.
 // ---------------------------------------------------------------------------
 
-function MachinesGlance() {
+function YourMacsCard() {
   const [result, setResult] = useState<AdeAccountMachinesResult | null>(null);
   const [loading, setLoading] = useState(true);
+  const [localIdentity, setLocalIdentity] = useState<AdeAccountLocalMachineIdentity | null>(null);
+  const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
+  const [pendingRemoval, setPendingRemoval] = useState<AdeAccountMachine | null>(null);
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const api = (window.ade as typeof window.ade & {
-      account?: { listMachines: () => Promise<AdeAccountMachinesResult> };
-    }).account;
+    const api = accountBridge();
     if (!api?.listMachines) {
       setResult({ state: "unavailable", machines: [], message: null });
       setLoading(false);
       return;
     }
-    setLoading(true);
     try {
       setResult(await api.listMachines());
     } catch {
@@ -297,26 +412,111 @@ function MachinesGlance() {
     }
   }, []);
 
+  // Identify this Mac once so it can be pinned and shielded from removal.
+  useEffect(() => {
+    let cancelled = false;
+    const api = accountBridge();
+    void api
+      ?.getLocalMachineIdentity?.()
+      .then((identity) => {
+        if (!cancelled) setLocalIdentity(identity);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Load now, then keep fresh while visible and on window focus.
   useEffect(() => {
     void load();
+    const interval = window.setInterval(() => void load(), MACHINES_REFRESH_MS);
+    const onFocus = () => void load();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
   }, [load]);
 
-  const machines = result?.machines ?? [];
+  const isThisMac = useCallback(
+    (machine: AdeAccountMachine): boolean => {
+      if (!localIdentity) return false;
+      if (machine.machineKey === localIdentity.machineKey) return true;
+      return Boolean(machine.deviceId) && machine.deviceId === localIdentity.deviceId;
+    },
+    [localIdentity],
+  );
+
+  const machines = useMemo(() => {
+    const list = [...(result?.machines ?? [])];
+    // Pin this Mac first; keep directory order otherwise.
+    return list.sort((a, b) => (isThisMac(b) ? 1 : 0) - (isThisMac(a) ? 1 : 0));
+  }, [result?.machines, isThisMac]);
+
   const onlineCount = machines.filter((m) => m.online).length;
 
+  // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
+  // stack behind, the cards that follow this one (mirrors the TabNav pattern).
+  const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(menuAnchor, openMenuKey);
+  const menuItemRef = useRef<HTMLButtonElement | null>(null);
+  const menuTriggerRef = useRef<HTMLElement | null>(null);
+  const openMenuMachine = useMemo(
+    () => machines.find((m) => m.machineKey === openMenuKey) ?? null,
+    [machines, openMenuKey],
+  );
+  const closeMenu = useCallback(() => {
+    const trigger = menuTriggerRef.current;
+    setOpenMenuKey(null);
+    setMenuAnchor(null);
+    menuTriggerRef.current = null;
+    if (trigger?.isConnected) trigger.focus();
+  }, []);
+  const openMenu = useCallback((machineKey: string, anchorEl: HTMLElement) => {
+    const rect = anchorEl.getBoundingClientRect();
+    menuTriggerRef.current = anchorEl;
+    setMenuAnchor({ x: rect.right - ACCOUNT_MENU_WIDTH, y: rect.bottom + 4 });
+    setOpenMenuKey(machineKey);
+  }, []);
+
+  useEffect(() => {
+    if (openMenuKey) menuItemRef.current?.focus();
+  }, [openMenuKey]);
+
   let summary: string;
-  if (loading) summary = "Checking your machines…";
+  if (loading && !result) summary = "Checking your Macs…";
   else if (result?.state === "ok") {
-    summary = machines.length === 0
-      ? "No machines registered yet"
-      : `${onlineCount} online · ${machines.length} registered`;
+    summary =
+      machines.length === 0
+        ? "No Macs connected yet"
+        : `${onlineCount} online · ${machines.length} connected`;
   } else if (result?.state === "not_configured") {
-    summary = "Machine directory isn't set up yet";
+    summary = "The account directory isn't set up yet";
   } else if (result?.state === "signed_out") {
-    summary = "Sign in to see your machines";
+    summary = "Sign in to see your Macs";
   } else {
-    summary = "Can't reach the machine directory";
+    summary = "Can't reach the account directory";
   }
+
+  const confirmRemoval = useCallback(async () => {
+    const target = pendingRemoval;
+    const api = accountBridge();
+    if (!target || !api?.removeMachine) {
+      setPendingRemoval(null);
+      return;
+    }
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      await api.removeMachine(target.machineKey);
+      setPendingRemoval(null);
+      await load();
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : "Couldn't remove that Mac from your account.");
+    } finally {
+      setRemoving(false);
+    }
+  }, [pendingRemoval, load]);
 
   return (
     <div style={cardStyle({ padding: 0, overflow: "hidden" })}>
@@ -339,7 +539,7 @@ function MachinesGlance() {
           </span>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-              Your machines
+              Your Macs
             </div>
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{summary}</div>
           </div>
@@ -349,44 +549,118 @@ function MachinesGlance() {
           onClick={() => openConnectionsPanel("machines")}
           style={outlineButton({ height: 30, fontSize: 12, padding: "0 12px" })}
         >
-          Manage
+          Manage connections
           <ArrowRight size={13} weight="bold" />
         </button>
       </div>
 
       {result?.state === "ok" && machines.length > 0 ? (
         <div style={{ borderTop: `1px solid ${COLORS.borderMuted}` }}>
-          {machines.slice(0, 4).map((machine) => (
-            <div
-              key={machine.machineKey}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "10px 18px",
-                borderTop: `1px solid ${COLORS.borderMuted}`,
-              }}
-            >
-              <span
-                aria-hidden
+          {machines.map((machine) => {
+            const thisMac = isThisMac(machine);
+            const menuOpen = openMenuKey === machine.machineKey;
+            const rightText = thisMac
+              ? null
+              : machine.online
+                ? machineRouteHint(machine) ?? "Online"
+                : lastSeenLabel(machine.lastSeenAt);
+            return (
+              <div
+                key={machine.machineKey}
                 style={{
-                  width: 7,
-                  height: 7,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  background: machine.online ? COLORS.success : COLORS.textDim,
-                  boxShadow: machine.online ? `0 0 0 3px color-mix(in srgb, ${COLORS.success} 20%, transparent)` : undefined,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  padding: "11px 18px",
+                  borderTop: `1px solid ${COLORS.borderMuted}`,
                 }}
-              />
-              <Laptop size={15} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-              <span style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary, minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {machine.name ?? "Unnamed machine"}
-              </span>
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: machine.online ? COLORS.success : COLORS.textMuted, flexShrink: 0 }}>
-                {machine.online ? machineRouteHint(machine) ?? "online" : relativeLastSeen(machine.lastSeenAt)}
-              </span>
-            </div>
-          ))}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    flexShrink: 0,
+                    background: machine.online ? COLORS.success : COLORS.textDim,
+                    boxShadow: machine.online
+                      ? `0 0 0 3px color-mix(in srgb, ${COLORS.success} 20%, transparent)`
+                      : undefined,
+                  }}
+                />
+                <Laptop size={15} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
+                <span
+                  style={{
+                    fontFamily: SANS_FONT,
+                    fontSize: 13,
+                    color: COLORS.textPrimary,
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {machine.name ?? "Unnamed Mac"}
+                </span>
+                {thisMac ? (
+                  <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                    This Mac
+                  </span>
+                ) : null}
+                <span style={{ flex: 1 }} />
+                {rightText ? (
+                  <span
+                    style={{
+                      fontFamily: SANS_FONT,
+                      fontSize: 11,
+                      color: machine.online ? COLORS.success : COLORS.textMuted,
+                      flexShrink: 0,
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {rightText}
+                  </span>
+                ) : null}
+                {thisMac ? (
+                  <span style={{ width: 26, flexShrink: 0 }} />
+                ) : (
+                  <button
+                    type="button"
+                    aria-label={`Options for ${machine.name ?? "this Mac"}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    onClick={(event) =>
+                      menuOpen ? closeMenu() : openMenu(machine.machineKey, event.currentTarget)
+                    }
+                    style={{
+                      ...outlineButton({ height: 26, width: 26, padding: 0 }),
+                      flexShrink: 0,
+                      border: "none",
+                      background: menuOpen ? COLORS.hoverBg : "transparent",
+                      color: COLORS.textMuted,
+                    }}
+                  >
+                    <DotsThreeVertical size={16} weight="bold" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {removeError ? (
+        <div
+          style={{
+            borderTop: `1px solid ${COLORS.borderMuted}`,
+            padding: "10px 18px",
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            color: COLORS.danger,
+            lineHeight: 1.5,
+          }}
+        >
+          {removeError}
         </div>
       ) : null}
 
@@ -403,61 +677,155 @@ function MachinesGlance() {
         >
           <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
             {result.state === "not_configured"
-              ? "Local machines still connect from Connections — the shared directory just isn't live yet."
-              : "Local machines still connect from Connections while the directory reconnects."}
+              ? "Your Macs still connect from Connections — the shared directory just isn't live yet."
+              : "Your Macs still connect from Connections while the directory reconnects."}
           </span>
           {result.state === "unavailable" ? (
-            <button type="button" onClick={() => void load()} style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}>
+            <button
+              type="button"
+              onClick={() => void load()}
+              style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
+            >
               Retry
             </button>
           ) : null}
         </div>
+      ) : null}
+
+      {openMenuKey && openMenuMachine && menuAnchor
+        ? createPortal(
+            <>
+              <div
+                onClick={closeMenu}
+                style={{ position: "fixed", inset: 0, zIndex: 9998 }}
+              />
+              <div
+                ref={menuRef}
+                role="menu"
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeMenu();
+                }}
+                style={{
+                  position: "fixed",
+                  left: menuPosition?.left ?? menuAnchor.x,
+                  top: menuPosition?.top ?? menuAnchor.y,
+                  visibility: menuPosition ? "visible" : "hidden",
+                  zIndex: 9999,
+                  width: ACCOUNT_MENU_WIDTH,
+                  padding: 4,
+                  borderRadius: RADII.md,
+                  background: COLORS.cardBgSolid,
+                  border: `1px solid ${COLORS.outlineBorder}`,
+                  boxShadow: "0 18px 44px -24px rgba(0,0,0,0.8)",
+                }}
+              >
+                <button
+                  ref={menuItemRef}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    const machine = openMenuMachine;
+                    closeMenu();
+                    setRemoveError(null);
+                    setPendingRemoval(machine);
+                  }}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    width: "100%",
+                    padding: "8px 10px",
+                    borderRadius: RADII.sm,
+                    border: "none",
+                    background: "transparent",
+                    color: COLORS.danger,
+                    fontFamily: SANS_FONT,
+                    fontSize: 12.5,
+                    textAlign: "left",
+                    cursor: "pointer",
+                  }}
+                >
+                  Remove from account…
+                </button>
+              </div>
+            </>,
+            document.body,
+          )
+        : null}
+
+      {pendingRemoval ? (
+        <ConfirmSheet
+          title="Remove this Mac from your account?"
+          body={`${pendingRemoval.name ?? "This Mac"} will no longer connect through your account. You can add it back by signing in to ADE on that Mac.`}
+          confirmLabel="Remove"
+          danger
+          busy={removing}
+          onConfirm={() => void confirmRemoval()}
+          onCancel={() => {
+            if (!removing) setPendingRemoval(null);
+          }}
+        />
       ) : null}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Signed-in: sessions (current session + clearly-marked cross-device seam).
+// Signed-in: sign-out card (honest single-Mac scope, behind a confirmation).
 // ---------------------------------------------------------------------------
 
-function SessionsCard({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: boolean }) {
+function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: boolean }) {
+  const [confirming, setConfirming] = useState(false);
+
   return (
     <div style={cardStyle({ padding: 0, overflow: "hidden" })}>
-      <div style={{ padding: "16px 18px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={sectionLabelStyle}>Sessions</div>
-      </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 18px 14px" }}>
-        <Laptop size={16} weight="regular" color={COLORS.textSecondary} style={{ flexShrink: 0 }} />
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>This machine</div>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>Signed in here</div>
-        </div>
-        <span style={inlineBadge(COLORS.success, { fontSize: 10 })}>Current</span>
+      <div style={{ padding: "16px 18px 12px" }}>
+        <div style={sectionLabelStyle}>Session</div>
       </div>
       <div
         style={{
-          borderTop: `1px solid ${COLORS.borderMuted}`,
-          padding: "12px 18px",
           display: "flex",
           alignItems: "center",
-          justifyContent: "space-between",
           gap: 12,
+          padding: "0 18px 16px",
         }}
       >
-        <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, lineHeight: 1.5, maxWidth: 320 }}>
-          Signing out everywhere arrives with cross-device sessions. For now, this signs out on this machine.
-        </span>
+        <Laptop size={16} weight="regular" color={COLORS.textSecondary} style={{ flexShrink: 0 }} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>Signed in on this Mac</div>
+        </div>
         <button
           type="button"
           disabled={signingOut}
-          onClick={onSignOut}
-          style={dangerButton({ height: 32, fontSize: 12, opacity: signingOut ? 0.6 : 1, cursor: signingOut ? "not-allowed" : "pointer" })}
+          onClick={() => setConfirming(true)}
+          style={dangerButton({
+            height: 32,
+            fontSize: 12,
+            opacity: signingOut ? 0.6 : 1,
+            cursor: signingOut ? "not-allowed" : "pointer",
+          })}
         >
           {signingOut ? <CircleNotch size={14} weight="bold" className="animate-spin" /> : <SignOut size={14} weight="bold" />}
           Sign out
         </button>
       </div>
+
+      {confirming ? (
+        <ConfirmSheet
+          title="Sign out of ADE?"
+          body="Signing out removes this Mac's access to your account and its account-connected machines. Devices paired directly with a code stay connected."
+          confirmLabel="Sign out"
+          danger
+          busy={signingOut}
+          onConfirm={() => {
+            setConfirming(false);
+            onSignOut();
+          }}
+          onCancel={() => setConfirming(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -473,8 +841,9 @@ export function AccountPage() {
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
-  const [justSignedIn, setJustSignedIn] = useState(false);
+  const [avatarBroken, setAvatarBroken] = useState(false);
   const [repoBridgeDismissed, setRepoBridgeDismissed] = useState(() => readDismissed(REPO_BRIDGE_DISMISS_KEY));
+  const backRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -496,26 +865,25 @@ export function AccountPage() {
   const ringTint = providerTint(status, githubConnected);
   const providerCaption = accountProviderCaption(status);
 
+  // A new avatar URL deserves a fresh load attempt after a prior one failed.
+  useEffect(() => {
+    setAvatarBroken(false);
+  }, [avatarImage]);
+
   const handleSignedIn = useCallback(() => {
-    setJustSignedIn(true);
     void refresh();
   }, [refresh]);
 
   const handleSignOut = useCallback(async () => {
-    const api = (window.ade as typeof window.ade & {
-      account?: { signOut: () => Promise<AdeAccountStatus> };
-    }).account;
+    const api = accountBridge();
     if (!api?.signOut) return;
     setSigningOut(true);
     setSignOutError(null);
     try {
       const next = await api.signOut();
       publishAccountStatus(next);
-      setJustSignedIn(false);
     } catch (err) {
-      setSignOutError(
-        err instanceof Error ? err.message : "Couldn't sign out of your ADE account.",
-      );
+      setSignOutError(err instanceof Error ? err.message : "Couldn't sign out of your ADE account.");
     } finally {
       setSigningOut(false);
     }
@@ -535,13 +903,31 @@ export function AccountPage() {
     [status.signedIn, githubConnected, repoBridgeDismissed],
   );
 
+  const backButton = (
+    <button
+      ref={backRef}
+      type="button"
+      onClick={goBack}
+      style={outlineButton({
+        alignSelf: "flex-start",
+        height: 30,
+        padding: "0 9px",
+        background: "transparent",
+        border: "none",
+      })}
+    >
+      <ArrowLeft size={14} weight="bold" />
+      Back
+    </button>
+  );
+
   return (
     <div style={{ height: "100%", width: "100%", overflowY: "auto", background: COLORS.pageBg }}>
       <div
         style={{
-          maxWidth: 640,
+          maxWidth: 920,
           margin: "0 auto",
-          padding: "40px 24px 64px",
+          padding: "36px clamp(20px, 5vw, 40px) 64px",
           display: "flex",
           flexDirection: "column",
           gap: 16,
@@ -550,71 +936,33 @@ export function AccountPage() {
       >
         {!status.signedIn ? (
           <>
-            <button
-              type="button"
-              onClick={goBack}
-              style={{
-                ...outlineButton({
-                  alignSelf: "flex-start",
-                  height: 30,
-                  padding: "0 9px",
-                  background: "transparent",
-                  border: "none",
-                }),
-              }}
-            >
-              <ArrowLeft size={14} weight="bold" />
-              Back
-            </button>
+            {backButton}
             <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: 16 }}>
               <SignInCard configured={status.configured !== false} onSignedIn={handleSignedIn} />
             </div>
           </>
         ) : (
           <>
-            {justSignedIn ? (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  padding: "12px 16px",
-                  borderRadius: RADII.lg,
-                  background: `color-mix(in srgb, ${COLORS.accent} 12%, transparent)`,
-                  border: `1px solid ${COLORS.accentBorder}`,
-                }}
-              >
-                <Sparkle size={18} weight="fill" color={COLORS.accent} style={{ flexShrink: 0 }} />
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-                    You're in, {firstName(status.name)}.
-                  </div>
-                  <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>
-                    Here are your machines — connect one to pick up where you left off.
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setJustSignedIn(false)}
-                  aria-label="Dismiss"
-                  style={{ ...outlineButton({ height: 26, width: 26, padding: 0 }), border: "none", background: "transparent" }}
-                >
-                  <X size={13} weight="bold" />
-                </button>
-              </div>
-            ) : null}
+            {backButton}
 
             {/* Identity header */}
-            <div style={cardStyle({ display: "flex", alignItems: "center", gap: 14 })}>
+            <div style={cardStyle({ display: "flex", alignItems: "center", gap: 16 })}>
               <span style={{ flexShrink: 0 }}>
-                {avatarImage ? (
+                {avatarImage && !avatarBroken ? (
                   <img
                     src={avatarImage}
                     alt=""
-                    width={48}
-                    height={48}
+                    width={52}
+                    height={52}
                     draggable={false}
-                    style={{ width: 48, height: 48, borderRadius: "50%", objectFit: "cover", boxShadow: `0 0 0 2px color-mix(in srgb, ${ringTint} 55%, transparent)` }}
+                    onError={() => setAvatarBroken(true)}
+                    style={{
+                      width: 52,
+                      height: 52,
+                      borderRadius: "50%",
+                      objectFit: "cover",
+                      boxShadow: `0 0 0 2px color-mix(in srgb, ${ringTint} 55%, transparent)`,
+                    }}
                   />
                 ) : (
                   <span
@@ -622,11 +970,11 @@ export function AccountPage() {
                       display: "inline-flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      width: 48,
-                      height: 48,
+                      width: 52,
+                      height: 52,
                       borderRadius: "50%",
                       fontFamily: SANS_FONT,
-                      fontSize: 17,
+                      fontSize: 18,
                       fontWeight: 700,
                       color: COLORS.textPrimary,
                       background: `color-mix(in srgb, ${ringTint} 20%, transparent)`,
@@ -638,16 +986,38 @@ export function AccountPage() {
                 )}
               </span>
               <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {status.name ?? status.email ?? "Your ADE account"}
-                </div>
-                {status.email ? (
-                  <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {status.email}
+                {status.name ? (
+                  <div
+                    style={{
+                      fontFamily: SANS_FONT,
+                      fontSize: 15,
+                      fontWeight: 700,
+                      color: COLORS.textPrimary,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {status.name}
                   </div>
                 ) : null}
+                <div
+                  style={{
+                    fontFamily: SANS_FONT,
+                    fontSize: status.name ? 14 : 16,
+                    fontWeight: status.name ? 500 : 700,
+                    color: status.name ? COLORS.textSecondary : COLORS.textPrimary,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {status.email ?? "Your ADE account"}
+                </div>
                 {providerCaption ? (
-                  <div style={{ marginTop: 4, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{providerCaption}</div>
+                  <div style={{ marginTop: 4, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                    {providerCaption}
+                  </div>
                 ) : null}
               </div>
             </div>
@@ -706,29 +1076,9 @@ export function AccountPage() {
               </div>
             ) : null}
 
-            <MachinesGlance />
+            <YourMacsCard />
 
-            {/* Quick links to the other Connections surfaces */}
-            <div style={{ display: "flex", gap: 10 }}>
-              <button
-                type="button"
-                onClick={() => openConnectionsPanel("mobile")}
-                style={{ ...outlineButton({ height: 38, fontSize: 12, flex: 1, justifyContent: "flex-start", padding: "0 14px", gap: 8 }) }}
-              >
-                <DeviceMobile size={15} weight="regular" />
-                Mobile
-              </button>
-              <button
-                type="button"
-                onClick={() => openConnectionsPanel("web")}
-                style={{ ...outlineButton({ height: 38, fontSize: 12, flex: 1, justifyContent: "flex-start", padding: "0 14px", gap: 8 }) }}
-              >
-                <Users size={15} weight="regular" />
-                Web clients
-              </button>
-            </div>
-
-            <SessionsCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
+            <SignOutCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
             {signOutError ? (
               <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, lineHeight: 1.5 }}>
                 {signOutError}

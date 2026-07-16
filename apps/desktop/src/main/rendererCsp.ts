@@ -56,9 +56,12 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // The `*.githubusercontent.com` wildcard already covers the subdomain family;
   // we list the common ones explicitly for clarity/self-documentation. Review
   // comments also embed known bot/badge assets from CodeRabbit, Dependabot,
-  // and Cursor.
-  // We keep the allowlist scoped (no blanket `https:` or GCS host).
-  const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://storage.googleapis.com/coderabbit_public_assets/ https://dependabot-badges.githubapp.com/badges/ https://cursor.com/assets/images/ https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev`;
+  // and Cursor. Account avatars come from Clerk (`img.clerk.com`,
+  // `images.clerk.dev`, and Clerk-hosted uploads under the
+  // `images.clerk.dev/` prefix on Google Cloud Storage).
+  // We keep the allowlist scoped: no blanket `https:`, and Google Cloud Storage
+  // is only ever allowed under specific path prefixes, never the bare host.
+  const cspImageSources = `${cspSources}${cspLocalSources} https://avatars.githubusercontent.com https://*.githubusercontent.com https://user-images.githubusercontent.com https://private-user-images.githubusercontent.com https://media.githubusercontent.com https://camo.githubusercontent.com https://objects.githubusercontent.com https://github.githubassets.com https://opengraph.githubassets.com https://github.com https://vercel.com https://*.vercel.com https://img.shields.io https://*.s3.amazonaws.com https://storage.googleapis.com/coderabbit_public_assets/ https://storage.googleapis.com/images.clerk.dev/ https://img.clerk.com https://images.clerk.dev https://dependabot-badges.githubapp.com/badges/ https://cursor.com/assets/images/ https://www.gravatar.com https://secure.gravatar.com https://ade-app.dev`;
   const cspFrameSources = `${cspSources}${cspLocalSources} about: https://www.youtube-nocookie.com https://www.youtube.com`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
   return [

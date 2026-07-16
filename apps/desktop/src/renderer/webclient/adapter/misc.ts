@@ -173,8 +173,17 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     setActiveLanePresence: async (args: unknown) => {
       await call("lanes.presence.announce", args, undefined, false);
     },
-    getCloudRelayStatus: async () => ({ enabled: false, available: false, error: null }),
-    setCloudRelayEnabled: async () => ({ enabled: false, available: false, error: "unsupported" }),
+    getCloudRelayStatus: async () => ({
+      relayWssUrl: "",
+      machineKey: "",
+      relayUrl: "",
+      connected: false,
+      activeTunnels: 0,
+      relayBridgeValidated: false,
+      lastFailureAt: null,
+      lastSuccessAt: null,
+      lastError: "unsupported",
+    }),
     onEvent: (listener: (event: unknown) => void) => events.on("syncStatus", listener as never),
   };
 

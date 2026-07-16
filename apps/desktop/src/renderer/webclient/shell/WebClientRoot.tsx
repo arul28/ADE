@@ -20,7 +20,6 @@ import {
 } from "../account/leaseMonitor";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { ScreenShell } from "./ScreenShell";
-import { PairFlow } from "./PairFlow";
 import { ProjectPicker } from "./ProjectPicker";
 import { WebShell } from "./WebShell";
 import { MachinePicker } from "./MachinePicker";
@@ -101,7 +100,6 @@ function readStashedTarget(): DeeplinkTarget | null {
 type Phase =
   | { kind: "loading" }
   | { kind: "machine-picker" }
-  | { kind: "pairing"; reloadOnSuccess: boolean }
   | { kind: "connecting"; name: string }
   | { kind: "auth-required"; message: string }
   | { kind: "project-picker"; projects: SyncMobileProjectSummary[] }
@@ -171,11 +169,6 @@ export function WebClientRoot({
     setAccount(snapshot);
     return await refreshEnvironments();
   }, [client, refreshEnvironments]);
-
-  const showPairing = useCallback((reloadOnSuccess: boolean) => {
-    fatalRebootRef.current = false;
-    setPhase({ kind: "pairing", reloadOnSuccess });
-  }, []);
 
   const showMachinePicker = useCallback(() => {
     fatalRebootRef.current = false;
@@ -312,6 +305,11 @@ export function WebClientRoot({
     if (bootedRef.current) return;
     bootedRef.current = true;
     void (async () => {
+      // Older native clients may still open the retired web pairing URL. Treat
+      // it as the normal sign-in entry and scrub the obsolete payload.
+      if (window.location.pathname === "/pair") {
+        window.history.replaceState(null, "", "/");
+      }
       const path = window.location.pathname;
       if (path === "/open") {
         stashedTargetRef.current = parseOpenTarget(window.location.search);
@@ -327,10 +325,6 @@ export function WebClientRoot({
       }
       const accountSnapshot = await accountClient.bootstrap();
       await applyAccountPrivacy(accountSnapshot);
-      if (path === "/pair") {
-        setPhase({ kind: "pairing", reloadOnSuccess: false });
-        return;
-      }
       setPhase({ kind: "machine-picker" });
     })().catch((error) => {
       setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
@@ -443,8 +437,6 @@ export function WebClientRoot({
     })();
   }, [client]);
 
-  const onPairNew = useCallback(() => showPairing(true), [showPairing]);
-
   const onAccountSignIn = useCallback(() => {
     void accountClient.startSignIn().catch((error) => {
       setPhase({
@@ -486,35 +478,9 @@ export function WebClientRoot({
           connectingMachineKey={connectingAccountMachineKey}
           onSelect={(environment) => void connectTo(environment)}
           onSelectAccountMachine={(machine) => void connectToAccountMachine(machine)}
-          onPair={() => showPairing(false)}
           onSignIn={onAccountSignIn}
           onSignOut={onAccountSignOut}
           onRetryDirectory={onRetryDirectory}
-        />
-      );
-    case "pairing":
-      return (
-        <PairFlow
-          client={client}
-          hash={window.location.hash}
-          relayAccess={relayAccess}
-          onSignIn={onAccountSignIn}
-          onBack={() => setPhase({ kind: "machine-picker" })}
-          onPaired={() => {
-            fatalRebootRef.current = false;
-            // Consumed the pairing payload — clear it from the address bar.
-            window.history.replaceState(null, "", "/");
-            if (phase.reloadOnSuccess) {
-              window.location.assign("/");
-              return;
-            }
-            void (async () => {
-              await refreshEnvironments();
-              await afterConnect();
-            })().catch((error) => {
-              setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
-            });
-          }}
         />
       );
     case "auth-required":
@@ -589,7 +555,6 @@ export function WebClientRoot({
           connectingAccountMachineKey={connectingAccountMachineKey}
           onSwitchEnv={onSwitchEnv}
           onSwitchAccountMachine={(machine) => void connectToAccountMachine(machine)}
-          onPairNew={onPairNew}
           onAccountSignIn={onAccountSignIn}
           onAccountSignOut={onAccountSignOut}
           onRetryAccountDirectory={onRetryDirectory}

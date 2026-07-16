@@ -3,15 +3,17 @@
 This is the cheap hosted ingress for ADE GitHub and Linear events. Providers
 deliver webhooks to a Cloudflare Worker, the Worker verifies the provider HMAC
 signature, writes the event into D1, and ADE polls the newest events with a
-monotonic cursor.
+monotonic cursor. A repo-scoped hibernating Durable Object also sends connected
+ADE daemons a debounced WebSocket wake-up; the frame is never the durable event
+transport.
 
 No user repository needs ADE-specific code. The repo-side step is installing the
 ADE GitHub App on the repositories the user wants ADE to track.
 
 ## Why this shape
 
-- One Worker and one D1 database; no always-on server, queues, cron, Durable
-  Objects, or per-user compute.
+- One Worker, one D1 database, and one hibernating Durable Object per active
+  repository; no always-on server, queues, cron, or per-user process.
 - GitHub webhook writes are idempotent by delivery id.
 - ADE polls with `after=<last-cursor>`, where new cursors are monotonic
   `seq:<n>` values. Legacy delivery-id cursors still work during migration.
@@ -33,10 +35,9 @@ Cloudflare pricing changes, so check the official pages before launch:
 - D1: https://developers.cloudflare.com/d1/platform/pricing/
 - D1 limits: https://developers.cloudflare.com/d1/platform/limits/
 
-As of 2026-06-30, this design should stay inside Cloudflare's free tier for a
-single ADE install and should remain very small on the paid tier for a 100-user
-pilot, because each GitHub delivery is one Worker request plus a small D1 write
-and each ADE poll is one Worker request plus a bounded D1 read.
+The relay bounds D1 work with paged reads, seven-day default retention, and
+payload slimming for check-family events. WebSocket fanout uses hibernation and
+coalesces repository bursts to at most one delivery frame per second.
 
 ## Local development
 
@@ -56,7 +57,9 @@ cannot publish a public `workers.dev` URL until that account-level onboarding is
 done.
 
 Create the D1 database, paste the returned database id into `wrangler.jsonc`,
-then apply migrations:
+then apply D1 migrations. The repo-events Durable Object binding and its SQLite
+class migration live in `wrangler.jsonc` and are applied by the coordinator's
+normal Worker deployment:
 
 ```sh
 cd apps/webhook-relay
@@ -139,6 +142,7 @@ uses the hosted relay by default. The hosted auth path is:
 
 - `GET https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/:owner/:repo/status`
 - `GET https://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/:owner/:repo/events`
+- `WebSocket wss://ade-github-webhook-relay.arulsharma1028.workers.dev/github/repos/:owner/:repo/subscribe`
 
 The relay forwards the token to GitHub's REST API only for authorization checks
 and does not store, log, or echo it. It rejects callers unless GitHub reports
@@ -147,6 +151,46 @@ webhook history is not readable by arbitrary GitHub accounts. Keep the ADE
 GitHub App's repository permissions read-only so the token the hosted relay sees
 cannot write repository data; it is app-limited and user-scoped, and ADE
 refreshes it locally when GitHub marks it near expiry.
+
+## Repo event push and gap-free cursor draining
+
+The WebSocket is a wake-up channel only. Connect to
+`wss://<relay>/github/repos/:owner/:repo/subscribe` with `Upgrade: websocket`
+and the same credentials accepted by the repo events route: either the ADE
+GitHub App user token in `Authorization: Bearer ...`, or the additive Clerk
+account token in `x-ade-account-token` for an account already associated with
+the repository.
+
+The Durable Object sends one text frame after a roughly one-second debounce,
+regardless of how many webhook deliveries arrived for the repo in that window:
+
+```json
+{"t":"github_delivery","repo":"owner/repo"}
+```
+
+It never sends event payloads or cursors. On connection and after every wake-up,
+drain D1 with:
+
+```text
+GET /github/repos/:owner/:repo/events?after=seq:<n>&order=asc&limit=100
+```
+
+Process `events` in the returned order (do not reverse them), persist
+`nextCursor` only after the page is processed, and immediately request the next
+page while `hasMore` is true. Stop when `hasMore` is false (or an empty page is
+returned). `order=asc` is required for the gap-free protocol: it pages forward
+from the cursor, so a burst larger than the limit cannot make the client jump
+over unseen rows. The default response remains descending and omits `hasMore`
+for compatibility with deployed clients.
+
+Open the socket before the initial drain, keep a 30-second safety poll, and
+treat every frame as permission to coalesce another drain locally. Reconnect
+with exponential backoff plus jitter (for example 1 second up to 30 seconds),
+resetting the backoff after a stable connection. The server closes each socket
+after about four hours with code `4401` so credentials are revalidated; reconnect
+normally. Native WebSocket protocol pings are handled without waking the
+Durable Object. Clients that need application-level heartbeats can send the
+text frame `ping` and receive `pong` through the same edge auto-response.
 
 If the App is installed for all repositories, every GitHub project opened in ADE
 can use the relay automatically. If the App is installed for selected
@@ -207,7 +251,7 @@ https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/webhook
 ```
 
 Incoming deliveries are deduplicated by `Linear-Delivery`, retained according
-to `EVENT_RETENTION_DAYS` (30 days by default), and rejected when the raw-body
+to `EVENT_RETENTION_DAYS` (7 days by default), and rejected when the raw-body
 HMAC is invalid or `webhookTimestamp` is more than 60 seconds from the Worker
 clock. An unknown organization receives a successful acknowledgement without
 storage so Linear does not disable the webhook while setup is still converging.

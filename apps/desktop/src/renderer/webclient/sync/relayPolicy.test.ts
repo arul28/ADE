@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { SyncPairingQrPayload } from "../../../shared/types/sync";
 import type { BrowserDialCandidate } from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
 import {
   canUseRelayForEnvironment,
-  canUseRelayForPairing,
   filterEnvironmentEndpoints,
 } from "./relayPolicy";
 
@@ -28,10 +26,6 @@ const environment = {
   hostDeviceId: "host-1",
   accountOwnerUserId: null,
 } as WebClientEnvironmentRecord;
-
-const payload = {
-  hostIdentity: { deviceId: "host-1" },
-} as SyncPairingQrPayload;
 
 describe("hosted web Relay policy", () => {
   it("blocks Relay signed out without hiding a local direct route", () => {
@@ -63,20 +57,5 @@ describe("hosted web Relay policy", () => {
       hostDeviceIds: [],
       getAccessToken: async () => "token",
     })).toBe(true);
-  });
-
-  it("requires the pairing link host to be present on the signed-in account", () => {
-    expect(canUseRelayForPairing(payload, {
-      kind: "signed_in",
-      userId: "user-1",
-      hostDeviceIds: ["host-1"],
-      getAccessToken: async () => "token",
-    })).toBe(true);
-    expect(canUseRelayForPairing(payload, {
-      kind: "signed_in",
-      userId: "user-1",
-      hostDeviceIds: ["other-host"],
-      getAccessToken: async () => "token",
-    })).toBe(false);
   });
 });

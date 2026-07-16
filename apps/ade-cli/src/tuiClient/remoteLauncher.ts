@@ -1005,8 +1005,15 @@ async function listProjects(client: RemoteRpcClientLike): Promise<RemoteRuntimeP
 }
 
 async function ensureProject(client: RemoteRpcClientLike, query: string): Promise<RemoteRuntimeProjectRecord> {
+  // The user explicitly selected this project for a remote session, so it is
+  // a real workspace on that machine — same semantic as an interactive local
+  // `ade code` attach (add() never demotes an existing recent row).
   const raw = await withTimeout(
-    client.request("projects.add", { rootPath: query }),
+    client.request("projects.add", {
+      rootPath: query,
+      catalogVisibility: "recent",
+      registrationSource: "cli-explicit",
+    }),
     REMOTE_RPC_TIMEOUT_MS,
     `Timed out registering remote project ${query}.`,
   );
@@ -1413,9 +1420,11 @@ export async function resolveRemoteTargetForLaunch(
   });
   if (listed.state !== "ok") {
     if (isUnverifiedLegacyAccountCandidate(target)) {
+      const directoryReason = listed.message?.trim();
       throw new PairedRuntimeTransportUnavailableError(
         `Could not verify whether ${target.name} is an account-created paired-only target because ` +
           `the account machine directory is ${listed.state.replaceAll("_", " ")}. ` +
+          (directoryReason ? `${directoryReason} ` : "") +
           "ADE will not silently downgrade this uncredentialed discovered target to SSH. " +
           "Sign in again or save an explicit SSH user/key for a true SSH target.",
       );

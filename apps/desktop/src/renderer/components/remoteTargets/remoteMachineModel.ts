@@ -219,6 +219,29 @@ export function formatLastSeen(value: number | null): string {
   return `Last connected ${date.toLocaleDateString()} ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+/**
+ * Relative last-seen bucket ("just now", "5m ago", "3h ago", "2d ago"), or
+ * null when the machine has never been seen. Callers own the surrounding
+ * framing ("Last seen …", "Seen …") so each surface keeps its voice.
+ */
+export function relativeLastSeenPhrase(lastSeenAt: number | null): string | null {
+  if (!lastSeenAt) return null;
+  const minutes = Math.floor((Date.now() - lastSeenAt) / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+/** "kind · host" label for an account machine's advertised endpoint. */
+export function formatMachineEndpoint(
+  endpoint: AdeAccountMachine["reachableEndpoints"][number],
+): string {
+  const detail = endpoint.host ?? endpoint.url ?? "";
+  return detail ? `${endpoint.kind} · ${detail}` : endpoint.kind;
+}
+
 export function connectionStateLabel(
   connection: RemoteRuntimeConnectionStatus | null,
   connectedFallback: boolean,

@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applySyncWebPairingFlags,
+  automaticProjectRegistrationParams,
   buildAdeCodeArgs,
   buildCliPlan,
   checkLinearReadiness,
@@ -15,6 +16,7 @@ import {
   formatOutput,
   graphWaitState,
   inferFormatter,
+  includeHostProjectInCatalog,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
@@ -133,6 +135,32 @@ function writeSyncHostSingletonLock(args: {
 }
 
 describe("ADE CLI", () => {
+  it("includes the system host in the mobile catalog without exposing other system projects", () => {
+    const projects = [
+      { projectId: "project_recent", catalogVisibility: "recent" as const },
+      { projectId: "project_system_host", catalogVisibility: "system" as const },
+      { projectId: "project_system_other", catalogVisibility: "system" as const },
+    ];
+    const recentProjects = projects.filter(
+      (project) => project.catalogVisibility === "recent",
+    );
+    const hostProject = projects.find(
+      (project) => project.projectId === "project_system_host",
+    )!;
+
+    expect(
+      includeHostProjectInCatalog(recentProjects, hostProject).map(
+        (project) => project.projectId,
+      ),
+    ).toEqual(["project_recent", "project_system_host"]);
+    expect(
+      includeHostProjectInCatalog(
+        [...recentProjects, hostProject],
+        hostProject,
+      ).map((project) => project.projectId),
+    ).toEqual(["project_recent", "project_system_host"]);
+  });
+
   it("builds projectless account commands and reports the signed-out local-first message", () => {
     const statusPlan = expectExecutePlan(buildCliPlan(["auth", "status"]));
     expect(statusPlan).toMatchObject({
@@ -329,6 +357,15 @@ describe("ADE CLI", () => {
     expect(tokenOutput.match(/refresh-token-once/g)).toHaveLength(1);
     expect(tokenOutput).toContain("ADE_ACCOUNT_TOKEN");
     expect(tokenOutput).toContain("secret manager");
+
+    const rejectedMachineDirectory = formatOutput({
+      state: "auth_expired",
+      machines: [],
+      message: "The machine directory rejected your ADE account session. Sign in again. Reason: invalid issuer",
+    }, { text: true } as any, "account-machines");
+    expect(rejectedMachineDirectory).toContain("Reason: invalid issuer");
+    expect(rejectedMachineDirectory).toContain("Local and explicit remote paths still work.");
+    expect(rejectedMachineDirectory).not.toContain("ADE account session expired —");
   });
 
   it("parses global options without stealing command flags", () => {
@@ -821,7 +858,11 @@ describe("ADE CLI", () => {
         {
           key: "result",
           method: "projects.add",
-          params: { rootPath: "/tmp/project" },
+          params: {
+            rootPath: "/tmp/project",
+            catalogVisibility: "recent",
+            registrationSource: "cli-explicit",
+          },
         },
       ],
     });
@@ -873,6 +914,11 @@ describe("ADE CLI", () => {
     expect(lanes.kind).toBe("execute");
     if (lanes.kind !== "execute") return;
     expect(shouldAutoRegisterProjectForPlan(lanes)).toBe(true);
+    expect(automaticProjectRegistrationParams("/tmp/project")).toEqual({
+      rootPath: "/tmp/project",
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    });
   });
 
   it("builds sync status and pairing PIN commands", () => {
@@ -883,6 +929,7 @@ describe("ADE CLI", () => {
     ]);
     expect(status.kind).toBe("execute");
     if (status.kind !== "execute") return;
+    expect(status.formatter).toBe("sync-status");
     expect(status.steps).toEqual([
       {
         key: "result",
@@ -1013,6 +1060,59 @@ describe("ADE CLI", () => {
     } finally {
       unexpectedArgReadSpy.mockRestore();
     }
+  });
+
+  it("formats account-directory publisher health in sync status text", () => {
+    const plan = expectExecutePlan(buildCliPlan(["sync", "status"]));
+    const output = formatOutput({
+      mode: "brain",
+      role: "brain",
+      runtimeRole: "host",
+      runtimeName: "Studio",
+      connectedPeers: [],
+      routeHealth: {
+        listener: {
+          listenerBound: true,
+          loopbackAdeValidated: true,
+          port: 8787,
+          reason: null,
+        },
+        tailscale: { enabled: false, tailscaleReachable: false, reason: null },
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, reason: "Relay bridge is not validated." },
+        accountDirectory: {
+          state: "http_error",
+          skipReason: "The account directory returned HTTP 401: invalid issuer",
+          directoryOrigin: "https://directory.example",
+          lastAttemptAt: Date.parse("2026-07-16T12:00:00.000Z"),
+          lastSuccessAt: null,
+          lastHttpStatus: 401,
+          lastHttpReason: "invalid issuer",
+          reachableEndpointCount: 2,
+        },
+      },
+      transferReadiness: {
+        ready: false,
+        blockers: [{
+          kind: "terminal_session",
+          id: "terminal-1",
+          label: "Shell",
+          detail: "Stop the active shell before transferring the host.",
+        }],
+        survivableState: ["Paused chats"],
+      },
+      survivableStateText: "Paused chats remain available.",
+      blockingStateText: "Live processes must stop first.",
+    }, { text: true } as any, inferFormatter(plan));
+
+    expect(output).toContain("ADE sync status");
+    expect(output).toContain("account directory");
+    expect(output).toContain("http_error · 2 reachable endpoints · HTTP 401");
+    expect(output).toContain("The account directory returned HTTP 401: invalid issuer");
+    expect(output).toContain("https://directory.example");
+    expect(output).toContain("blocked by 1 active item");
+    expect(output).toContain("Shell: Stop the active shell before transferring the host.");
+    expect(output).toContain("Paused chats remain available.");
+    expect(output).toContain("Live processes must stop first.");
   });
 
   it("formats sync web pairing info from sync status", () => {
@@ -1233,29 +1333,10 @@ describe("ADE CLI", () => {
       .toBe("No machine addresses are published yet — is the sync host running? (ade sync status)\n");
   });
 
-  it("builds sync cloud relay and security commands", () => {
-    expect(expectExecutePlan(buildCliPlan(["sync", "relay"])).steps).toEqual([
-      { key: "result", method: "sync.getCloudRelayStatus" },
-    ]);
-    expect(
-      expectExecutePlan(buildCliPlan(["sync", "relay", "enable"])).steps,
-    ).toEqual([
-      {
-        key: "result",
-        method: "sync.setCloudRelayEnabled",
-        params: { enabled: true },
-      },
-    ]);
-    expect(
-      expectExecutePlan(buildCliPlan(["sync", "relay", "disable"])).steps,
-    ).toEqual([
-      {
-        key: "result",
-        method: "sync.setCloudRelayEnabled",
-        params: { enabled: false },
-      },
-    ]);
-
+  it("removes the sync relay command and keeps security commands", () => {
+    expect(() => buildCliPlan(["sync", "relay"])).toThrow(
+      "Unsupported sync command: relay",
+    );
     expect(expectExecutePlan(buildCliPlan(["sync", "security"])).steps).toEqual([
       { key: "result", method: "sync.getRequireDpop" },
     ]);
@@ -4248,6 +4329,28 @@ describe("ADE CLI", () => {
 
     for (const mode of ["headless", "desktop-socket"] as const) {
       const chatConnection = { ...connection, mode };
+      const accountMachines = summarizeExecution({
+        plan: expectExecutePlan(buildCliPlan(["machines", "list"])),
+        connection: chatConnection,
+        values: {
+          result: {
+            domain: "account",
+            action: "listMachines",
+            result: {
+              state: "auth_expired",
+              machines: [],
+              message: "The machine directory rejected your ADE account session. Sign in again. Reason: invalid audience",
+            },
+            statusHints: {},
+          },
+        },
+      } as any);
+      expect(accountMachines).toEqual({
+        state: "auth_expired",
+        machines: [],
+        message: "The machine directory rejected your ADE account session. Sign in again. Reason: invalid audience",
+      });
+
       const chatCreateWithKickoff = summarizeExecution({
         plan: { kind: "execute", label: "chat create", steps: [] },
         connection: chatConnection,

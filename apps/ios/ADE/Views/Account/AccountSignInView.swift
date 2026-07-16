@@ -87,17 +87,16 @@ struct AccountSignInView: View {
 
   private var header: some View {
     VStack(spacing: 14) {
-      ZStack {
-        Circle()
-          .fill(ADEColor.accent.opacity(0.18))
-          .frame(width: 74, height: 74)
-          .glassEffect()
-        Image("BrandMark")
-          .resizable()
-          .aspectRatio(contentMode: .fit)
-          .frame(width: 40, height: 40)
-      }
-      .shadow(color: ADEColor.accent.opacity(0.25), radius: 12, y: 4)
+      // The real ADE wordmark, rendered directly (no circled monogram).
+      Image("BrandMark")
+        .resizable()
+        .renderingMode(.original)
+        .interpolation(.high)
+        .aspectRatio(contentMode: .fit)
+        .frame(maxWidth: 168)
+        .frame(height: 52)
+        .shadow(color: ADEColor.purpleAccent.opacity(0.35), radius: 14, y: 4)
+        .accessibilityLabel("ADE")
 
       VStack(spacing: 5) {
         Text(headerTitle)

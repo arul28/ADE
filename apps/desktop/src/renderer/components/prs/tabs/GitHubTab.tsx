@@ -16,9 +16,10 @@ import type {
   PrSummary,
   PrWithConflicts,
 } from "../../../../shared/types";
+import { syntheticGithubPrId } from "../../../../shared/types/prs";
 import { EmptyState } from "../../ui/EmptyState";
 import { ResizeGutter } from "../../ui/ResizeGutter";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
 import { PrDetailPane, type UnmappedAffordance } from "../detail/PrDetailPane";
@@ -305,6 +306,64 @@ function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
   return item.state === filter;
 }
 
+/** The filter bucket a PR row belongs in based on its (reconciled) state. */
+function bucketForState(state: GitHubPrListItem["state"]): GitHubFilter {
+  return state === "merged" ? "merged" : state === "closed" ? "closed" : "open";
+}
+
+/** Stable repo/owner/number coordinate key, shared by the terminal-row overlay. */
+function githubCoordKey(item: { repoOwner: string; repoName: string; githubPrNumber: number }): string {
+  return `${item.repoOwner}/${item.repoName}#${Number(item.githubPrNumber)}`;
+}
+
+/**
+ * Build a terminal-bucket overlay row for a linked PR that has dropped out of an
+ * open-only GitHub snapshot. Reuses the last-seen row (its lane info, labels, and
+ * — crucially — its `id`, so the current selection stays attached) and stamps the
+ * authoritative terminal state from the linked ADE PR.
+ */
+function buildOverlayRowFromLastSeen(lastSeen: GitHubPrListItem, linkedPr: PrSummary): GitHubPrListItem {
+  return {
+    ...lastSeen,
+    state: linkedPr.state,
+    isDraft: false,
+    title: linkedPr.title || lastSeen.title,
+    updatedAt: linkedPr.updatedAt || lastSeen.updatedAt,
+    linkedPrId: linkedPr.id,
+  };
+}
+
+/**
+ * Terminal-bucket overlay rows: linked ADE PRs that have gone merged/closed but
+ * have dropped out of the open-only GitHub snapshot. We keep their last-seen row
+ * visible under the terminal bucket until a full-history fetch reintroduces the
+ * authoritative row (at which point it is `present` and produces no overlay).
+ * Reopened PRs (linked state back to open) are non-terminal, so they produce no
+ * overlay and naturally drop. Rows never previously displayed are skipped — we
+ * have no lane/label info to synthesize from.
+ */
+function computeTerminalOverlayItems(
+  reconciledItems: GitHubPrListItem[],
+  prsById: Map<string, PrSummary>,
+  lastSeenByCoord: Map<string, GitHubPrListItem>,
+): GitHubPrListItem[] {
+  if (prsById.size === 0) return [];
+  const presentCoords = new Set(reconciledItems.map((item) => githubCoordKey(item)));
+  const overlays: GitHubPrListItem[] = [];
+  const usedLinkedIds = new Set<string>();
+  for (const pr of prsById.values()) {
+    if (!isTerminalPrState(pr.state)) continue;
+    if (usedLinkedIds.has(pr.id)) continue;
+    const key = githubCoordKey(pr);
+    if (presentCoords.has(key)) continue;
+    const lastSeen = lastSeenByCoord.get(key);
+    if (!lastSeen) continue;
+    usedLinkedIds.add(pr.id);
+    overlays.push(buildOverlayRowFromLastSeen(lastSeen, pr));
+  }
+  return overlays;
+}
+
 function mergeGitHubListItems(snapshot: GitHubPrSnapshot): GitHubPrListItem[] {
   const combined = [...snapshot.repoPullRequests, ...snapshot.externalPullRequests];
   const seen = new Set<string>();
@@ -476,12 +535,11 @@ function sameGitHubPr(left: GitHubPrListItem, right: GitHubPrListItem): boolean 
 
 /**
  * Stable synthetic PR id for an unmapped GitHub PR (no ADE lane / DB row).
- * Mirrors the backend's `syntheticGithubPrId` so the same coordinate-based
- * fetches that the pane issues resolve consistently. Must be deterministic
- * across renders — it keys both per-id effects in the pane and the React `key`.
+ * Must be deterministic across renders — it keys both per-id effects in the
+ * pane and the React `key`.
  */
 function syntheticUnmappedPrId(item: GitHubPrListItem): string {
-  return `gh:${item.repoOwner}/${item.repoName}#${item.githubPrNumber}`;
+  return syntheticGithubPrId(item);
 }
 
 /**
@@ -724,7 +782,8 @@ export function GitHubTab({
   );
   const createLanePreflightRequestIdRef = React.useRef(0);
   const createLanePreflightRequestRef = React.useRef<{ id: number; itemKey: string } | null>(null);
-  const lastHandledSelectedPrIdRef = React.useRef<string | null | undefined>(undefined);
+  const lastHandledSelectedRef = React.useRef<{ prId: string | null; bucket: GitHubFilter | null } | undefined>(undefined);
+  const lastSeenRowByCoordRef = React.useRef<Map<string, GitHubPrListItem>>(new Map());
   const pendingSelectedItemIdRef = React.useRef<string | null>(null);
   const pendingRestoredSelectedItemIdRef = React.useRef<string | null>(null);
   const snapshotRef = React.useRef<GitHubPrSnapshot | null>(null);
@@ -972,11 +1031,33 @@ export function GitHubTab({
     () => (snapshot ? mergeGitHubListItems(snapshot) : []),
     [snapshot],
   );
-  const displayedItems = React.useMemo(
+  const reconciledItems = React.useMemo(
     () => allItems.map((item) =>
       reconcileLinkedPrState(item, item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null)
     ),
     [allItems, prsByIdMap],
+  );
+
+  // Remember every row we have actually shown so the terminal-row overlay can
+  // resurrect one that later drops out of an open-only snapshot. The map only
+  // grows within a session (PR counts are small), and is read during render by
+  // the overlay memo below — recorded after commit so the overlay memo still
+  // sees the prior row on the render where a PR first disappears.
+  React.useEffect(() => {
+    const map = lastSeenRowByCoordRef.current;
+    for (const item of allItems) {
+      map.set(githubCoordKey(item), item);
+    }
+  }, [allItems]);
+
+  const overlayItems = React.useMemo(
+    () => computeTerminalOverlayItems(reconciledItems, prsByIdMap, lastSeenRowByCoordRef.current),
+    [reconciledItems, prsByIdMap],
+  );
+
+  const displayedItems = React.useMemo(
+    () => (overlayItems.length === 0 ? reconciledItems : [...reconciledItems, ...overlayItems]),
+    [reconciledItems, overlayItems],
   );
 
   const filteredItems = React.useMemo(
@@ -1013,24 +1094,35 @@ export function GitHubTab({
 
   React.useEffect(() => {
     if (!snapshot) return;
-    if (selectedPrId === lastHandledSelectedPrIdRef.current) return;
-    lastHandledSelectedPrIdRef.current = selectedPrId;
 
-    if (!selectedPrId) {
-      pendingSelectedItemIdRef.current = null;
-      return;
-    }
+    // Track the selected PR together with its current effective bucket, so a
+    // state transition (open -> merged) is followed even though `selectedPrId`
+    // is unchanged. A manual filter change leaves the selected PR's bucket
+    // untouched, so it never re-triggers the follow below.
+    const linkedItem = selectedPrId
+      ? displayedItems.find((item) => item.linkedPrId === selectedPrId) ?? null
+      : null;
+    const currentBucket = linkedItem ? bucketForState(linkedItem.state) : null;
+    const nextPrId = selectedPrId ?? null;
 
-    const linkedItem = displayedItems.find((item) => item.linkedPrId === selectedPrId);
-    if (!linkedItem) {
+    const last = lastHandledSelectedRef.current;
+    if (last && last.prId === nextPrId && last.bucket === currentBucket) return;
+    const isNewSelection = !last || last.prId !== nextPrId;
+    const bucketChanged = !isNewSelection && last!.bucket !== currentBucket;
+    lastHandledSelectedRef.current = { prId: nextPrId, bucket: currentBucket };
+
+    if (!selectedPrId || !linkedItem) {
       pendingSelectedItemIdRef.current = null;
       return;
     }
 
     pendingSelectedItemIdRef.current = linkedItem.id;
-    const linkedFilter = linkedItem.state === "merged" ? "merged" : linkedItem.state === "closed" ? "closed" : "open";
+    const linkedFilter = bucketForState(linkedItem.state);
     setSelectedItemIdsByFilter((prev) => ({ ...prev, [linkedFilter]: linkedItem.id }));
-    if (!matchesFilter(linkedItem, filter)) {
+    // Follow the selection into its bucket on a fresh selection, or when the
+    // already-selected PR transitions to a new bucket (so a merge/close doesn't
+    // strand the user on a now-empty list). Never on a manual filter switch.
+    if ((isNewSelection || bucketChanged) && !matchesFilter(linkedItem, filter)) {
       setFilter(linkedFilter);
     }
     setSelectedItemId(linkedItem.id);
@@ -1059,20 +1151,33 @@ export function GitHubTab({
     }
   }, [snapshot, filter, filteredItems, selectedItemId, onSelectPr]);
 
-  const selectedItem = React.useMemo(
-    () => {
-      const item = displayedItems.find((candidate) => candidate.id === selectedItemId) ?? null;
-      return item && matchesFilter(item, filter) ? item : null;
-    },
-    [displayedItems, filter, selectedItemId],
-  );
+  // The row backing the detail pane. Unlike the list highlight, it survives a
+  // state transition that moves the row out of the active filter's bucket, so
+  // the pane never blanks mid-transition. Cleared only when nothing is selected
+  // (`selectedItemId` null) — which is what a manual filter switch to an empty
+  // bucket produces. Falls back to the linked coordinate from PrsContext when
+  // the row itself has momentarily dropped from the list.
+  const selectedItem = React.useMemo((): GitHubPrListItem | null => {
+    if (!selectedItemId) return null;
+    const byId = displayedItems.find((candidate) => candidate.id === selectedItemId) ?? null;
+    if (byId) return byId;
+    if (selectedPrId) return displayedItems.find((candidate) => candidate.linkedPrId === selectedPrId) ?? null;
+    return null;
+  }, [displayedItems, selectedItemId, selectedPrId]);
+
+  // Whether the selected PR still belongs in the active filter. When false the
+  // detail pane shows a slim "now Merged/Closed" banner instead of blanking.
+  const selectedBucketMismatch = Boolean(selectedItem && !matchesFilter(selectedItem, filter));
 
   React.useEffect(() => {
     const pending = pendingRestoredSelectedItemIdRef.current;
     if (!pending || !selectedItem || selectedItem.id !== pending) return;
+    // Restore selection only once the item is actually in the active filter's
+    // list — matching the original filter-scoped restore semantics.
+    if (!matchesFilter(selectedItem, filter)) return;
     pendingRestoredSelectedItemIdRef.current = null;
     onSelectPr(selectedItem.linkedPrId ?? null);
-  }, [onSelectPr, selectedItem]);
+  }, [filter, onSelectPr, selectedItem]);
   const missingLinkedPrId = selectedItem?.linkedPrId && !prsByIdMap.has(selectedItem.linkedPrId)
     ? selectedItem.linkedPrId
     : null;
@@ -1684,6 +1789,16 @@ export function GitHubTab({
             style={{ overflow: "hidden" }}
           >
             {selectedItem && selectedDisplayPr ? (
+              <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+                {selectedBucketMismatch ? (
+                  <div style={{ padding: "10px 12px 0", flexShrink: 0 }}>
+                    <PrBucketTransitionBanner
+                      state={selectedItem.state}
+                      onShow={() => handleFilterChange(bucketForState(selectedItem.state))}
+                    />
+                  </div>
+                ) : null}
+                <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
               <PrDetailPane
                 key={selectedDisplayPr.id}
                 pr={selectedDisplayPr}
@@ -1716,6 +1831,8 @@ export function GitHubTab({
                 githubCoords={selectedItem.linkedPrId ? null : selectedGithubCoords}
                 unmappedAffordance={selectedItem.linkedPrId ? null : unmappedAffordance}
               />
+                </div>
+              </div>
             ) : (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
                 <EmptyState
@@ -1740,6 +1857,54 @@ export function GitHubTab({
           onConfirm={handleConfirmCreateLaneFromPrBranch}
         />
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * Slim banner shown at the top of the detail pane when the selected PR's state
+ * has moved out of the active filter's bucket (transiently, or after a manual
+ * filter change). Matches the neighboring lane/rebase banner idiom — no new
+ * colors or gradients.
+ */
+function PrBucketTransitionBanner({
+  state,
+  onShow,
+}: {
+  state: GitHubPrListItem["state"];
+  onShow: () => void;
+}) {
+  const isMerged = state === "merged";
+  const label = isMerged ? "Merged" : "Closed";
+  const accent = isMerged ? COLORS.success : COLORS.danger;
+  return (
+    <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `color-mix(in srgb, ${accent} 30%, transparent)` }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 10,
+        padding: "8px 12px",
+        background: `color-mix(in srgb, ${accent} 7%, transparent)`,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          {isMerged ? (
+            <GitMerge size={14} weight="bold" style={{ color: accent, flexShrink: 0 }} />
+          ) : (
+            <XCircle size={14} weight="fill" style={{ color: accent, flexShrink: 0 }} />
+          )}
+          <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
+            This PR is now {label}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={onShow}
+          style={{ ...outlineButton({ height: 24, padding: "0 10px", fontSize: 11 }), color: COLORS.textMuted, flexShrink: 0 }}
+        >
+          Show in {label}
+        </button>
+      </div>
     </div>
   );
 }

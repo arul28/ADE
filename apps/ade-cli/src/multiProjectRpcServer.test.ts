@@ -8,6 +8,7 @@ import { createMultiProjectRpcRequestHandler } from "./multiProjectRpcServer";
 import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
+import type { SyncRoleSnapshot } from "../../desktop/src/shared/types";
 
 function createRegistry() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-rpc-"));
@@ -73,6 +74,7 @@ function makeAccountAuthServiceMock() {
       name: null,
       expiresAt: null,
     })),
+    getSessionReadState: vi.fn(() => "missing" as const),
     getAccessToken: vi.fn(async () => "test-access-token"),
     createToken: vi.fn(async () => ({
       token: "test-refresh-token",
@@ -87,6 +89,7 @@ function makeAccountAuthServiceMock() {
       name: null,
       expiresAt: null,
     })),
+    onSignedIn: vi.fn(() => () => {}),
     dispose: vi.fn(),
   };
 }
@@ -201,10 +204,12 @@ describe("multi-project RPC server", () => {
         name: null,
         expiresAt: null,
       })),
+      getSessionReadState: vi.fn(() => "missing" as const),
       getAccessToken: vi.fn(),
       createToken: vi.fn(),
       cancelLogin: vi.fn(),
       signOut: vi.fn(),
+      onSignedIn: vi.fn(() => () => {}),
       dispose: vi.fn(),
     };
     const handler = createMultiProjectRpcRequestHandler({
@@ -557,12 +562,18 @@ describe("multi-project RPC server", () => {
       jsonrpc: "2.0",
       id: 2,
       method: "projects.add",
-      params: { rootPath: projectRoot },
+      params: {
+        rootPath: projectRoot,
+        catalogVisibility: "system",
+        registrationSource: "test",
+      },
     });
     expect(added).toMatchObject({
       rootPath: expectedProjectRoot,
       displayName: "project",
       gitOriginUrl: null,
+      catalogVisibility: "system",
+      registrationSource: "test",
     });
 
     const listed = await handler({
@@ -1032,6 +1043,72 @@ describe("multi-project RPC server", () => {
     expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
 
+    handler.dispose();
+  });
+
+  it("returns machine publisher health when no project sync scope exists", async () => {
+    const { registry } = createRegistry();
+    const scopeRegistry = {
+      get: vi.fn(),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(async () => null),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const accountDirectoryHealth = {
+      state: "http_error" as const,
+      skipReason: "The account directory returned HTTP 401: invalid audience",
+      directoryOrigin: "https://directory.example",
+      lastAttemptAt: 123,
+      lastSuccessAt: null,
+      lastHttpStatus: 401,
+      lastHttpReason: "invalid audience",
+      reachableEndpointCount: 2,
+    };
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+      getAccountDirectoryHealth: () => accountDirectoryHealth,
+    });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+    const status = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "sync.getStatus",
+      params: {},
+    }) as SyncRoleSnapshot;
+
+    expect(status.routeHealth.accountDirectory).toEqual(accountDirectoryHealth);
+    expect(status).toMatchObject({
+      mode: "standalone",
+      role: "brain",
+      runtimeMode: "standalone",
+      runtimeRole: "host",
+      currentBrain: status.localDevice,
+      currentRuntime: status.localDevice,
+      clusterState: null,
+      bootstrapToken: null,
+      pairingPin: null,
+      pairingPinConfigured: false,
+      runtimeName: null,
+      pairingConnectInfo: null,
+      connectedPeers: [],
+      client: {
+        state: "disconnected",
+        host: null,
+        port: null,
+      },
+    });
+    expect(status.localDevice.name).not.toBe("");
+    expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
     handler.dispose();
   });
 

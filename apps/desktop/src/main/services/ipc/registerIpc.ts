@@ -40,6 +40,7 @@ import {
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import type { createProjectSecretService } from "../secrets/projectSecretService";
+import { PROJECT_SECRET_ENV_MAX_BYTES } from "../secrets/projectSecretEnv";
 import { runGit } from "../git/git";
 import type {
   AdeCleanupResult,
@@ -50,7 +51,12 @@ import type {
   IosSimulatorToolStatus,
   IosSimulatorWindowState,
   ProjectSecretDeleteArgs,
+  ProjectSecretEnvFile,
   ProjectSecretGetArgs,
+  ProjectSecretsExportResult,
+  ProjectSecretsImportArgs,
+  ProjectSecretsImportPreview,
+  ProjectSecretsImportResult,
   ProjectSecretsListResult,
   ProjectSecretSetArgs,
   ProjectSecretSummary,
@@ -190,6 +196,8 @@ import type {
   AdeAccountStatus,
   AdeAccountLoginStart,
   AdeAccountLoginPoll,
+  AdeAccountLocalMachineIdentity,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   CreateLaneFromPrBranchArgs,
@@ -1799,6 +1807,7 @@ export function registerIpc({
     [IPC.accountPollLogin]: new Set(["sessionId"]),
     [IPC.accountCancelLogin]: new Set(["sessionId"]),
     [IPC.accountPairMachine]: new Set(["machineKey"]),
+    [IPC.accountRemoveMachine]: new Set(["machineKey"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1942,6 +1951,19 @@ export function registerIpc({
         machineKey: "[redacted]",
         deviceId: "[redacted]",
         name: "[redacted]",
+      };
+    }
+    if (channel === IPC.accountGetLocalMachineIdentity) {
+      return {
+        ...record,
+        machineKey: "[redacted]",
+        deviceId: "[redacted]",
+      };
+    }
+    if (channel === IPC.accountRemoveMachine) {
+      return {
+        ...record,
+        machineKey: "[redacted]",
       };
     }
     return result;
@@ -4146,6 +4168,21 @@ export function registerIpc({
     }
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
+    if (removed && !removed.remote) {
+      const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+      if (catalogPool) {
+        try {
+          await catalogPool.setProjectCatalogVisibility(
+            removed.rootPath,
+            "system",
+            "desktop",
+          );
+        } catch {
+          // Best effort; the desktop recent remains forgotten even if the
+          // background service is temporarily unavailable.
+        }
+      }
+    }
     // Only local projects have foreground services / open windows to tear down.
     if (removed && !removed.remote) {
       try {
@@ -4385,6 +4422,43 @@ export function registerIpc({
     const ctx = getCtx();
     requireAppContextServices(ctx, ["projectSecretService"] as const);
     return ctx.projectSecretService.delete(arg);
+  });
+
+  ipcMain.handle(IPC.projectSecretsChooseEnvFile, async (event): Promise<ProjectSecretEnvFile | null> => {
+    const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+    const options: Electron.OpenDialogOptions = {
+      title: "Import ADE secrets from .env",
+      defaultPath: app.getPath("home"),
+      properties: ["openFile", "showHiddenFiles"],
+    };
+    const result = win ? await dialog.showOpenDialog(win, options) : await dialog.showOpenDialog(options);
+    const selectedPath = result.canceled ? null : result.filePaths[0];
+    if (!selectedPath) return null;
+    const stat = await fs.promises.stat(selectedPath);
+    if (!stat.isFile()) throw new Error("Select a .env file to import.");
+    if (stat.size > PROJECT_SECRET_ENV_MAX_BYTES) throw new Error("The selected .env file is larger than 1 MB.");
+    return {
+      fileName: path.basename(selectedPath),
+      content: await fs.promises.readFile(selectedPath, "utf8"),
+    };
+  });
+
+  ipcMain.handle(IPC.projectSecretsPreviewEnvImport, async (_event, arg: ProjectSecretEnvFile): Promise<ProjectSecretsImportPreview> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.previewEnvImport(arg);
+  });
+
+  ipcMain.handle(IPC.projectSecretsImportEnv, async (_event, arg: ProjectSecretsImportArgs): Promise<ProjectSecretsImportResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.importEnv(arg);
+  });
+
+  ipcMain.handle(IPC.projectSecretsExportEnv, async (): Promise<ProjectSecretsExportResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectSecretService"] as const);
+    return ctx.projectSecretService.exportEnv();
   });
 
   ipcMain.handle(IPC.aiCursorCloudListRepositories, async (): Promise<CursorCloudRepository[]> => {
@@ -4760,18 +4834,6 @@ export function registerIpc({
     );
     if (runtimeResult.handled) return runtimeResult.result;
     return (await requireSyncService()).getCloudRelayStatus();
-  });
-
-  ipcMain.handle(IPC.syncSetCloudRelayEnabled, async (event, enabled: boolean): Promise<SyncCloudRelayStatus> => {
-    const normalized = enabled === true;
-    const runtimeResult = await tryRuntimeSync<SyncCloudRelayStatus>(
-      event,
-      "sync.setCloudRelayEnabled",
-      { enabled: normalized },
-      (pool, rootPath) => pool.setSyncCloudRelayEnabledForRoot(rootPath, normalized),
-    );
-    if (runtimeResult.handled) return runtimeResult.result;
-    return await (await requireSyncService()).setCloudRelayEnabled(normalized);
   });
 
   ipcMain.handle(IPC.agentToolsDetect, async (): Promise<AgentTool[]> => {
@@ -8577,6 +8639,13 @@ export function registerIpc({
     return accountBridge.status();
   });
 
+  ipcMain.handle(
+    IPC.accountGetLocalMachineIdentity,
+    async (): Promise<AdeAccountLocalMachineIdentity> => {
+      return runtimeBridge.getLocalMachineIdentity();
+    },
+  );
+
   ipcMain.handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {
     return accountBridge.startLogin();
   });
@@ -8608,6 +8677,16 @@ export function registerIpc({
     IPC.accountPairMachine,
     async (_event, arg: { machineKey?: string }): Promise<AdeAccountMachinePairResult> => {
       return await accountBridge.pairMachine(arg?.machineKey ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountRemoveMachine,
+    async (
+      _event,
+      arg: { machineKey?: string },
+    ): Promise<AdeAccountMachineRemovalResult> => {
+      return await accountBridge.removeMachine(arg?.machineKey ?? "");
     },
   );
 

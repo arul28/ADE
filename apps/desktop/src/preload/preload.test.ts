@@ -77,6 +77,32 @@ describe("preload OAuth bridge", () => {
     expect(removeListener).toHaveBeenCalledWith(IPC.lanesOAuthEvent, listener);
   });
 
+  it("exposes local account identity and machine removal IPC", async () => {
+    const invoke = vi.fn(async () => undefined);
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.account.getLocalMachineIdentity();
+    await bridge.account.removeMachine("machine-a");
+
+    expect(invoke).toHaveBeenCalledWith(IPC.accountGetLocalMachineIdentity);
+    expect(invoke).toHaveBeenCalledWith(IPC.accountRemoveMachine, {
+      machineKey: "machine-a",
+    });
+  });
+
   it("exposes per-window project tab session IPC", async () => {
     const project = { rootPath: "/repo/a", displayName: "A", baseRef: "main" };
     const openProjectTabs = [
@@ -716,6 +742,65 @@ describe("preload OAuth bridge", () => {
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetImageDataUrl, expect.anything());
+  });
+
+  it("reads env files locally while importing and exporting secrets on the bound remote machine", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote Mac",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const envFile = { fileName: ".env", content: "API_KEY=local-file-value\n" };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.projectSecretsChooseEnvFile) return envFile;
+      if (channel === IPC.appGetWindowSession) return { windowId: 1, project: null, binding };
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as { request: { domain: string; action: string } }).request;
+        if (request.action === "previewEnvImport") {
+          return { domain: request.domain, action: request.action, result: { fileName: ".env", secrets: [{ name: "API_KEY", value: "local-file-value", exists: false }] }, statusHints: {} };
+        }
+        if (request.action === "importEnv") {
+          return { domain: request.domain, action: request.action, result: { imported: ["API_KEY"], replaced: [] }, statusHints: {} };
+        }
+        return { domain: request.domain, action: request.action, result: { filePath: "/Users/remote/Downloads/ade-secrets.env", secretCount: 1 }, statusHints: {} };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: { getZoomLevel: vi.fn(() => 0), setZoomLevel: vi.fn(), getZoomFactor: vi.fn(() => 1) },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.projectSecrets.chooseEnvFile()).resolves.toMatchObject({ fileName: ".env" });
+    await expect(bridge.projectSecrets.importEnv({ secrets: [{ name: "API_KEY", value: "local-file-value" }] }))
+      .resolves.toEqual({ imported: ["API_KEY"], replaced: [] });
+    await expect(bridge.projectSecrets.exportEnv()).resolves.toEqual({
+      filePath: "/Users/remote/Downloads/ade-secrets.env",
+      secretCount: 1,
+    });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "project_secret", action: "previewEnvImport", args: envFile },
+    });
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "project_secret", action: "exportEnv" },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.projectSecretsPreviewEnvImport, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.projectSecretsExportEnv);
   });
 
   it("allows local temp path actions while a remote project is bound", async () => {
