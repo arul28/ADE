@@ -169,6 +169,7 @@ struct SettingsPinSheet: View {
     HStack(spacing: 10) {
       Button {
         if isSubmitting {
+          isSubmitting = false
           syncService.disconnect(clearCredentials: false)
         }
         dismiss()

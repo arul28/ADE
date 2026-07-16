@@ -44,20 +44,23 @@ describe("EncryptedFileCredentialStore", () => {
     expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(true);
   });
 
-  it("notifies another service instance when the credential file changes", async () => {
-    const reader = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+  it("notifies another service instance when the credential file changes", () => {
+    const reader = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      credentialChangePollIntervalMs: null,
+    });
     const writer = new EncryptedFileCredentialStore({ secretsDir: tempDir });
-    let unsubscribe = () => {};
-    const changed = new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("Timed out waiting for credential change.")), 1_000);
-      unsubscribe = reader.onDidChange(() => {
-        clearTimeout(timeout);
-        resolve();
-      });
+    let changes = 0;
+    const unsubscribe = reader.onDidChange(() => {
+      changes += 1;
     });
 
     writer.setSync("account.session.v1", "session");
-    await changed;
+    reader.checkForChangesNow();
+
+    expect(changes).toBe(1);
+    reader.checkForChangesNow();
+    expect(changes).toBe(1);
     unsubscribe();
   });
 
@@ -73,16 +76,18 @@ describe("EncryptedFileCredentialStore", () => {
     expect(fs.statSync(path.join(secretsDir, "credentials.json.enc")).mode & 0o777).toBe(0o600);
   });
 
-  it("recovers from a replaced first-run machine key by treating the encrypted map as empty", () => {
+  it("fails closed and preserves ciphertext after the machine key is replaced", () => {
     const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
 
     store.setSync("agent.token", "secret");
+    const credentialPath = path.join(tempDir, "credentials.json.enc");
+    const ciphertext = fs.readFileSync(credentialPath, "utf8");
     fs.writeFileSync(path.join(tempDir, ".machine-key"), `${Buffer.alloc(32, 1).toString("base64")}\n`);
 
     expect(store.getSync("agent.token")).toBeNull();
     expect(store.getLastReadState()).toBe("unreadable");
-    store.setSync("agent.other", "next-secret");
-    expect(store.getSync("agent.other")).toBe("next-secret");
+    expect(() => store.setSync("agent.other", "next-secret")).toThrow();
+    expect(fs.readFileSync(credentialPath, "utf8")).toBe(ciphertext);
   });
 
   it("preserves concurrent writes from separate processes on first run", async () => {

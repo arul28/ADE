@@ -612,9 +612,11 @@ struct SettingsMachinesSection: View {
     for machine in account.machines {
       let key = (machine.deviceId ?? machine.machineKey).lowercased()
       guard seen.insert(key).inserted else { continue }
-      let current = isConnected
-        && currentIdentity != nil
-        && (machine.deviceId?.caseInsensitiveCompare(currentIdentity!) == .orderedSame)
+      let current = if let currentIdentity, let deviceId = machine.deviceId {
+        isConnected && deviceId.caseInsensitiveCompare(currentIdentity) == .orderedSame
+      } else {
+        false
+      }
       result.append(Entry(
         id: "account-\(machine.id)",
         name: machine.displayName,
@@ -628,13 +630,19 @@ struct SettingsMachinesSection: View {
     let live = syncService.discoveredHosts
     for host in syncService.savedReconnectHosts {
       let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let key = (identity?.isEmpty == false) ? identity!.lowercased() : "name:\(host.hostName.lowercased())"
+      let key = identity.flatMap { $0.isEmpty ? nil : $0.lowercased() }
+        ?? "name:\(host.hostName.lowercased())"
       guard seen.insert(key).inserted else { continue }
       let online = live.contains { sameSyncHost(host, $0) }
-      let current = isConnected && (
-        (currentIdentity != nil && identity != nil && currentIdentity!.caseInsensitiveCompare(identity!) == .orderedSame)
-          || (currentHostName?.caseInsensitiveCompare(host.hostName) == .orderedSame)
-      )
+      let identityMatches = if let currentIdentity, let identity {
+        currentIdentity.caseInsensitiveCompare(identity) == .orderedSame
+      } else {
+        false
+      }
+      let nameMatchesWithoutStableIdentity = currentIdentity == nil
+        && identity == nil
+        && currentHostName?.caseInsensitiveCompare(host.hostName) == .orderedSame
+      let current = isConnected && (identityMatches || nameMatchesWithoutStableIdentity)
       result.append(Entry(
         id: "saved-\(host.id)",
         name: host.hostName,

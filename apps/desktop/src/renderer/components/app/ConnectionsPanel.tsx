@@ -232,24 +232,30 @@ export function ConnectionsPanel({
 
   // Track remote-machine connections so the Machines tab can show a live dot.
   // The Phone/Web dots reuse the sync device list already fetched above.
+  const applyConnectionSnapshot = useCallback((snapshot: RemoteRuntimeConnectionSnapshot) => {
+    setConnectionSnapshot((current) =>
+      !current || snapshot.updatedAt >= current.updatedAt ? snapshot : current,
+    );
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const { getConnectionSnapshot, onConnectionSnapshotChanged } = window.ade.remoteRuntime;
     if (getConnectionSnapshot) {
       void getConnectionSnapshot()
         .then((snapshot) => {
-          if (!cancelled && snapshot) setConnectionSnapshot(snapshot);
+          if (!cancelled && snapshot) applyConnectionSnapshot(snapshot);
         })
         .catch(() => {});
     }
     const unsubscribe = onConnectionSnapshotChanged?.((snapshot) => {
-      if (!cancelled) setConnectionSnapshot(snapshot);
+      if (!cancelled) applyConnectionSnapshot(snapshot);
     });
     return () => {
       cancelled = true;
       unsubscribe?.();
     };
-  }, []);
+  }, [applyConnectionSnapshot]);
 
   const activeTabs = useMemo<Record<ConnectionsPanelTab, boolean>>(() => {
     const machines = (connectionSnapshot?.connectedCount ?? 0) > 0;
@@ -320,6 +326,7 @@ export function ConnectionsPanel({
             type="button"
             role="tab"
             aria-selected={tab === key}
+            aria-label={activeTabs[key] ? `${label}, active connection` : label}
             onClick={() => setTab(key)}
             style={tabStyle(tab === key)}
           >

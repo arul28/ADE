@@ -42,7 +42,7 @@ export function PairPage() {
           </Reveal>
           <Reveal delay={0.1}>
             <p className="mt-5 text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
-              This code pairs an iPhone with your Mac — install ADE to connect.
+              Install ADE, then scan the pairing code on your Mac again to connect.
             </p>
           </Reveal>
 

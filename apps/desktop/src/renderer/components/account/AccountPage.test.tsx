@@ -212,15 +212,21 @@ describe("AccountPage signed-in", () => {
     expect(screen.getByRole("button", { name: /Options for Studio/ })).toBeTruthy();
   });
 
-  it("renders the machine options menu in a body-level portal so it can't be clipped", async () => {
+  it("portals the machine menu and manages focus through Escape", async () => {
     renderPage();
     await screen.findByText("Studio");
 
-    fireEvent.click(screen.getByRole("button", { name: /Options for Studio/ }));
+    const trigger = screen.getByRole("button", { name: /Options for Studio/ });
+    fireEvent.click(trigger);
     const menu = screen.getByRole("menu");
     // Portaled directly under document.body, outside the scrolling account column.
     expect(menu.parentElement).toBe(document.body);
     expect(menu.style.position).toBe("fixed");
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("menuitem")));
+
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("removes another Mac only after confirmation", async () => {

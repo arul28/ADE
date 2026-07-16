@@ -117,6 +117,7 @@ describe("account machine publisher health", () => {
       lastAttemptAt: 100,
       lastSuccessAt: 125,
       lastHttpStatus: 204,
+      lastHttpReason: null,
       reachableEndpointCount: 1,
     });
   });
@@ -202,12 +203,17 @@ describe("account machine publisher health", () => {
     };
     const http = createAccountMachinePublisherService({
       ...baseOptions,
-      fetchImpl: vi.fn(async () => new Response(null, { status: 401 })),
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ error: "invalid audience" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      })),
     });
     await http.publishNow();
     expect(http.getPublisherHealth()).toMatchObject({
       state: "http_error",
+      skipReason: "The account directory returned HTTP 401: invalid audience",
       lastHttpStatus: 401,
+      lastHttpReason: "invalid audience",
       reachableEndpointCount: 1,
     });
 

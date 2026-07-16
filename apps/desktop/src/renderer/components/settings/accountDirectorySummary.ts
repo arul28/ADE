@@ -6,7 +6,9 @@ export function accountDirectorySummary(
 ): { label: string; healthy: boolean } {
   if (!accountSignedIn) {
     return {
-      label: "Not signed in — nearby devices can still connect with the pairing code",
+      label: status.pairingPinConfigured
+        ? "Not signed in — nearby devices can still connect with the pairing code"
+        : "Not signed in — set a pairing code so nearby devices can connect",
       healthy: false,
     };
   }

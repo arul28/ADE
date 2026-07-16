@@ -194,9 +194,15 @@ describe("AccountMachineDirectoryService", () => {
 
     const expired = new AccountMachineDirectoryService(account, {
       directoryBaseUrl: () => "https://directory.example",
-      fetchImpl: directoryFetch([], 401),
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ message: "invalid issuer" }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch,
     });
-    await expect(expired.listMachines()).resolves.toMatchObject({ state: "auth_expired" });
+    await expect(expired.listMachines()).resolves.toMatchObject({
+      state: "auth_expired",
+      message: expect.stringContaining("Reason: invalid issuer"),
+    });
   });
 
   it("pairs through the account relay and saves a paired target for ADE Code", async () => {

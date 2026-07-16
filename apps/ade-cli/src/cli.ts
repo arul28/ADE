@@ -15386,6 +15386,7 @@ async function runServe(
     accountMachinePublisher = createBrainAccountMachinePublisherService({
       secretsDir: layout.secretsDir,
       projectRoots: accountProjectRoots,
+      isSyncEnabled: () => syncEnabled,
       logger: headlessProjectLogger,
       getSnapshot: async () => {
         const activeScope = await scopeRegistry.resolveActiveSyncHost();
@@ -17521,7 +17522,9 @@ function formatAccountMachines(value: unknown): string {
     return "Not signed in — run `ade login`. Local, PIN, and explicit remote paths still work.";
   }
   if (state === "auth_expired") {
-    return "ADE account session expired — run `ade login` again. Local and explicit remote paths still work.";
+    const message = asString(result.message)
+      ?? "ADE account session expired — run `ade login` again.";
+    return `${message} Local and explicit remote paths still work.`;
   }
   if (state !== "ok") {
     return asString(result.message) ?? "The ADE account machine directory is unavailable.";

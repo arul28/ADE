@@ -486,23 +486,25 @@ describe("Clerk JWKS authentication", () => {
   });
 
   it.each([
-    ["wrong issuer", { issuer: "https://wrong-issuer.test" }],
-    ["expired", { expired: true }],
-    ["bad signature", { useBadKey: true }],
-    ["missing sub", { sub: null }],
-    ["unapproved audience", { audience: "different-client", azp: "different-client" }],
-  ] as const)("returns 401 for %s", async (_label, tokenArgs) => {
+    ["wrong issuer", { issuer: "https://wrong-issuer.test" }, "invalid issuer"],
+    ["expired", { expired: true }, "token expired"],
+    ["bad signature", { useBadKey: true }, "invalid token"],
+    ["missing sub", { sub: null }, "missing token subject"],
+    ["unapproved audience", { audience: "different-client", azp: "different-client" }, "invalid audience"],
+  ] as const)("returns a classified 401 for %s", async (_label, tokenArgs, expectedError) => {
     const env = makeEnv();
     const token = await mintToken(tokenArgs);
 
     const response = await handleRequest(request("GET", "/account/machines", token), env);
 
     expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: expectedError });
   });
 
   it("returns 401 when the bearer token is absent", async () => {
     const response = await handleRequest(request("GET", "/account/machines"), makeEnv());
     expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "missing bearer token" });
   });
 });
 

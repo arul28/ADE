@@ -94,9 +94,8 @@ struct SettingsPushDeliverySection: View {
             .tint(ADEColor.textSecondary)
         }
         .task {
-            await pushService.refreshStatus()
-            // Reflect the OS permission state the moment the section appears (M8).
             await pushService.refreshNotificationSettings()
+            await pushService.refreshStatus()
         }
     }
 
@@ -104,6 +103,7 @@ struct SettingsPushDeliverySection: View {
 
     @ViewBuilder
     private var enableNotificationsControl: some View {
+        let permissionStatus = pushService.permissionStatus
         if !snapshot.isPaired {
             // Nothing to register with until a Mac is paired: show the affordance
             // disabled with a reason rather than a button that can't succeed (M8).
@@ -114,12 +114,12 @@ struct SettingsPushDeliverySection: View {
                     .foregroundStyle(ADEColor.textMuted)
                     .padding(.horizontal, 4)
             }
-        } else if snapshot.needsPermissionPrompt {
+        } else if permissionStatus == .notDetermined || permissionStatus == .denied {
             enableNotificationsButton(
-                label: snapshot.permissionStatus == .denied ? "Turn on in iOS Settings" : "Enable notifications",
+                label: permissionStatus == .denied ? "Turn on in iOS Settings" : "Enable notifications",
                 enabled: true
             ) {
-                if snapshot.permissionStatus == .denied {
+                if permissionStatus == .denied {
                     if let url = URL(string: UIApplication.openSettingsURLString) {
                         UIApplication.shared.open(url)
                     }

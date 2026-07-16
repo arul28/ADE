@@ -99,6 +99,31 @@ describe("ProjectRegistry", () => {
     });
   });
 
+  it("rejects an unknown registry version without rewriting it", () => {
+    const homeDir = makeTempRoot("ade-project-registry-future-");
+    const registryDir = path.join(homeDir, ".ade-runtime");
+    const projectsPath = path.join(registryDir, "projects.json");
+    fs.mkdirSync(registryDir, { recursive: true });
+    const futureRegistry = `${JSON.stringify({
+      version: 3,
+      projects: [{ rootPath: "/future", futureMetadata: "preserve-me" }],
+    })}\n`;
+    fs.writeFileSync(projectsPath, futureRegistry, "utf8");
+    const registry = new ProjectRegistry({
+      adeDir: registryDir,
+      projectsPath,
+      secretsDir: path.join(registryDir, "secrets"),
+      sockDir: path.join(registryDir, "sock"),
+      socketPath: path.join(registryDir, "sock", "ade.sock"),
+      desktopBridgeSocketPath: path.join(registryDir, "sock", "desktop-bridge.sock"),
+      binDir: path.join(registryDir, "bin"),
+      runtimeDir: path.join(registryDir, "runtime"),
+    });
+
+    expect(() => registry.list()).toThrow("Unsupported project registry version: 3");
+    expect(fs.readFileSync(projectsPath, "utf8")).toBe(futureRegistry);
+  });
+
   it("does not resurrect a forgotten project during system registration", () => {
     const homeDir = makeTempRoot("ade-project-registry-forget-");
     const projectRoot = path.join(homeDir, "ADE");

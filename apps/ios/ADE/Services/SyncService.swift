@@ -4856,6 +4856,9 @@ final class SyncService: ObservableObject {
     tailscaleAddress: String? = nil,
     relayCandidates: [String] = []
   ) async {
+    lastPairingErrorCode = nil
+    lastPairingFailure = nil
+    relayAuthorizationRequirement = nil
     do {
       try ensureDatabaseReady()
     } catch {
@@ -4866,9 +4869,6 @@ final class SyncService: ObservableObject {
       ProductAnalytics.shared.captureError(.pairing)
       return
     }
-    lastPairingErrorCode = nil
-    lastPairingFailure = nil
-    relayAuthorizationRequirement = nil
     let connectAttemptGeneration: UInt64
     do {
       refreshPhoneTailnetInterfaceState()

@@ -80,6 +80,7 @@ function makeStatus(overrides: Partial<SyncRoleSnapshot> = {}): SyncRoleSnapshot
         lastAttemptAt: 1_752_600_000_000,
         lastSuccessAt: 1_752_600_000_000,
         lastHttpStatus: 200,
+        lastHttpReason: null,
         reachableEndpointCount: 1,
       },
     },

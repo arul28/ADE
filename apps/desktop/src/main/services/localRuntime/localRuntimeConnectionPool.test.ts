@@ -2420,8 +2420,9 @@ describe("local runtime connection pool", () => {
       registrationSource: "desktop",
     });
     await pool.setProjectCatalogVisibility(rootPath, "system", "desktop");
+    await pool.ensureProject(rootPath);
 
-    expect(call).toHaveBeenCalledTimes(2);
+    expect(call).toHaveBeenCalledTimes(3);
     expect(call).toHaveBeenNthCalledWith(
       1,
       "projects.add",
@@ -2436,6 +2437,12 @@ describe("local runtime connection pool", () => {
         catalogVisibility: "system",
         registrationSource: "desktop",
       },
+      { timeoutMs: expect.any(Number) },
+    );
+    expect(call).toHaveBeenNthCalledWith(
+      3,
+      "projects.add",
+      { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
       { timeoutMs: expect.any(Number) },
     );
     expect(call).not.toHaveBeenCalledWith("sync.switchHost", expect.anything());

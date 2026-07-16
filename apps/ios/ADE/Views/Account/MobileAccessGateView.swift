@@ -13,73 +13,95 @@ struct MobileAccessGateView: View {
 
   var body: some View {
     NavigationStack {
-      VStack(spacing: 0) {
-        Spacer(minLength: 44)
+      GeometryReader { geometry in
+        ScrollView {
+          VStack(spacing: 0) {
+            Spacer(minLength: 44)
 
-        // Hero: the real ADE wordmark, big and centered, over a single line of
-        // device-neutral copy. No explanatory paragraphs (M1).
-        Image("BrandMark")
-          .resizable()
-          .renderingMode(.original)
-          .interpolation(.high)
-          .aspectRatio(contentMode: .fit)
-          .frame(maxWidth: 260)
-          .frame(height: 132)
-          .frame(maxWidth: .infinity)
-          .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
-          .accessibilityLabel("ADE")
-          .padding(.bottom, 24)
-
-        Text("Your agents, anywhere.")
-          .font(.system(.title3, design: .rounded).weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.center)
-
-        Spacer()
-
-        VStack(spacing: 14) {
-          Button {
-            accountConnectionError = nil
-            presentedSheet = .signIn
-          } label: {
-            Text(accountSignedIn ? "View your Macs" : "Sign in")
-              .font(.headline)
+            // Hero: the real ADE wordmark, big and centered, over a single line of
+            // device-neutral copy. No explanatory paragraphs (M1).
+            Image("BrandMark")
+              .resizable()
+              .renderingMode(.original)
+              .interpolation(.high)
+              .aspectRatio(contentMode: .fit)
+              .frame(maxWidth: 260)
+              .frame(height: 132)
               .frame(maxWidth: .infinity)
-              .padding(.vertical, 15)
-          }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
-          .disabled(!accountConfigured || accountLoading)
+              .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
+              .accessibilityLabel("ADE")
+              .padding(.bottom, 24)
 
-          Button {
-            if hasPairedHost {
-              onContinue()
-            } else {
-              presentedSheet = .pairMachine
-            }
-          } label: {
-            Text("Continue without an account")
-              .font(.subheadline.weight(.semibold))
+            Text("Your agents, anywhere.")
+              .font(.system(.title3, design: .rounded).weight(.semibold))
               .foregroundStyle(ADEColor.textSecondary)
-              .frame(minHeight: 44)
-              .frame(maxWidth: .infinity)
-              .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-
-          if let accountConnectionError {
-            Text(accountConnectionError)
-              .font(.footnote)
-              .foregroundStyle(ADEColor.danger)
               .multilineTextAlignment(.center)
+
+            Spacer()
+
+            VStack(spacing: 14) {
+              Button {
+                accountConnectionError = nil
+                presentedSheet = .signIn
+              } label: {
+                Group {
+                  if accountLoading {
+                    HStack(spacing: 8) {
+                      ProgressView()
+                        .controlSize(.small)
+                      Text("Checking account…")
+                    }
+                  } else {
+                    Text(accountSignedIn ? "View your Macs" : "Sign in")
+                  }
+                }
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+              }
+              .buttonStyle(.glassProminent)
+              .tint(ADEColor.accent)
+              .disabled(!accountConfigured || accountLoading)
+
+              if !accountConfigured && !accountLoading {
+                Text("Account sign-in is not configured on this device.")
+                  .font(.footnote)
+                  .foregroundStyle(ADEColor.textMuted)
+                  .multilineTextAlignment(.center)
+              }
+
+              Button {
+                if hasPairedHost {
+                  onContinue()
+                } else {
+                  presentedSheet = .pairMachine
+                }
+              } label: {
+                Text("Continue without an account")
+                  .font(.subheadline.weight(.semibold))
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .frame(minHeight: 44)
+                  .frame(maxWidth: .infinity)
+                  .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+
+              if let accountConnectionError {
+                Text(accountConnectionError)
+                  .font(.footnote)
+                  .foregroundStyle(ADEColor.danger)
+                  .multilineTextAlignment(.center)
+              }
+            }
+            .frame(maxWidth: 420)
+            .padding(.horizontal, 28)
+            .padding(.bottom, 40)
           }
+          .frame(maxWidth: .infinity, minHeight: geometry.size.height)
         }
-        .frame(maxWidth: 420)
-        .padding(.horizontal, 28)
-        .padding(.bottom, 40)
+        .scrollIndicators(.hidden)
+        .background(AccountAuroraBackground().ignoresSafeArea())
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .background(AccountAuroraBackground().ignoresSafeArea())
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
     }

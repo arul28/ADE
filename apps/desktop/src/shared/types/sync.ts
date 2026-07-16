@@ -242,6 +242,7 @@ export type SyncAccountDirectoryHealth = {
   lastAttemptAt: number | null;
   lastSuccessAt: number | null;
   lastHttpStatus: number | null;
+  lastHttpReason: string | null;
   reachableEndpointCount: number;
 };
 
@@ -257,6 +258,7 @@ export function createSyncAccountDirectoryHealth(
     lastAttemptAt: null,
     lastSuccessAt: null,
     lastHttpStatus: null,
+    lastHttpReason: null,
     reachableEndpointCount: 0,
     ...overrides,
   };

@@ -217,14 +217,21 @@ Runtime support files outside `services/sync/`:
   token so a brain started before sign-in still recovers. The last typed
   publisher outcome is exposed as `routeHealth.accountDirectory` in
   `sync.getStatus`, `ade sync status`, and the desktop This Mac card, including
-  the selected directory origin, HTTP status, timestamps, and reachable-route
-  count. The publisher and desktop account bridge derive the official directory
-  from the same project-aware Clerk issuer resolver, while the machine-owned
-  `ADE_ACCOUNT_DIRECTORY_URL` override remains fail-closed behind the
-  trusted-origin parser.
+  the selected directory origin, HTTP status, bounded classified HTTP reason,
+  timestamps, and reachable-route count. A non-success response contributes
+  `lastHttpReason` and the same reason in `skipReason`; the parser consumes at
+  most 512 bytes, accepts the Worker's fixed JSON `error` / `message` field (or
+  short plain text), strips control/extra whitespace, and never logs or embeds
+  the account bearer. The publisher and desktop account bridge derive the
+  official directory from the same project-aware Clerk issuer resolver, while
+  the machine-owned `ADE_ACCOUNT_DIRECTORY_URL` override remains fail-closed
+  behind the trusted-origin parser.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
-  origin, response decoding, route allowlisting, machine selection, and paired
-  endpoint validation shared by desktop, the brain, ADE Code, and hosted web.
+  origin, bounded success/error response decoding, route allowlisting, machine
+  selection, and paired endpoint validation shared by desktop, the brain, ADE
+  Code, and hosted web. A 401/403 becomes `auth_expired` with the Worker's short
+  fixed reason preserved for CLI and desktop diagnostics; oversized or
+  unrecognized bodies fall back to the generic session-expired message.
 
 - `apps/ade-cli/src/eventBuffer.ts` — bounded runtime-event replay buffer
   used by multi-project RPC and desktop/TUI event streams. Retains up to

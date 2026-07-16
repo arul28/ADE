@@ -6,6 +6,7 @@ import {
   type SyncRouteHealth,
 } from "../../../../desktop/src/shared/types";
 import {
+  readAccountDirectoryHttpReason,
   resolveTrustedAccountDirectoryBaseUrl,
 } from "../../../../desktop/src/shared/accountDirectory";
 import {
@@ -197,6 +198,7 @@ export function createAccountMachinePublisherService(options: {
       skipReason: string | null;
       directoryOrigin: string | null;
       lastHttpStatus?: number | null;
+      lastHttpReason?: string | null;
       reachableEndpointCount?: number;
       succeededAt?: number;
     },
@@ -208,6 +210,7 @@ export function createAccountMachinePublisherService(options: {
       lastAttemptAt: args.attemptAt,
       lastSuccessAt: args.succeededAt ?? health.lastSuccessAt,
       lastHttpStatus: args.lastHttpStatus ?? null,
+      lastHttpReason: args.lastHttpReason ?? null,
       reachableEndpointCount: args.reachableEndpointCount ?? 0,
     };
   };
@@ -382,18 +385,22 @@ export function createAccountMachinePublisherService(options: {
           signal: controller.signal,
         },
       );
-      await response.body?.cancel().catch(() => {});
       if (!response.ok) {
+        const httpReason = await readAccountDirectoryHttpReason(response).catch(() => null);
         recordOutcome("http_error", {
           attemptAt,
-          skipReason: `The account directory returned HTTP ${response.status}.`,
+          skipReason: httpReason
+            ? `The account directory returned HTTP ${response.status}: ${httpReason}`
+            : `The account directory returned HTTP ${response.status}.`,
           directoryOrigin,
           lastHttpStatus: response.status,
+          lastHttpReason: httpReason,
           reachableEndpointCount,
         });
         warnOnce("http_error", { status: response.status });
         return;
       }
+      await response.body?.cancel().catch(() => {});
       lastWarning = null;
       recordOutcome("published", {
         attemptAt,
@@ -508,6 +515,7 @@ export type AccountMachinePublisherService = ReturnType<
 export function createBrainAccountMachinePublisherService(options: {
   secretsDir: string;
   projectRoots: () => Iterable<string>;
+  isSyncEnabled: () => boolean;
   getSnapshot: () => Promise<SyncRoleSnapshot | null>;
   getMachineKey: () => string;
   directoryBaseUrl?: () => string | null | undefined;
@@ -528,6 +536,7 @@ export function createBrainAccountMachinePublisherService(options: {
         sessionReadState: accountAuthService.getSessionReadState(),
       };
     },
+    isSyncEnabled: options.isSyncEnabled,
     getSnapshot: options.getSnapshot,
     getMachineKey: options.getMachineKey,
     directoryBaseUrl: () => {

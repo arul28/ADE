@@ -222,7 +222,8 @@ func syncCoalescedLiveDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) -> [Discove
 }
 
 /// Whether two discovered hosts refer to the same machine, matching first on a
-/// stable host identity, then on any shared address, then on host name. Shared
+/// stable host identity, then on any shared address. Display names are not
+/// identities because multiple Macs can advertise the same default name. Shared
 /// by the settings MACHINES list and the hub quick-connect home to decide when a
 /// saved/paired host is currently reachable on the local network.
 func sameSyncHost(_ lhs: DiscoveredSyncHost, _ rhs: DiscoveredSyncHost) -> Bool {
@@ -231,7 +232,7 @@ func sameSyncHost(_ lhs: DiscoveredSyncHost, _ rhs: DiscoveredSyncHost) -> Bool 
     return lid.caseInsensitiveCompare(rid) == .orderedSame
   }
   if !Set(lhs.addresses).isDisjoint(with: Set(rhs.addresses)) { return true }
-  return lhs.hostName.caseInsensitiveCompare(rhs.hostName) == .orderedSame
+  return false
 }
 
 /// Friendly, transport-free detail line for a machine row. Shows human facts —

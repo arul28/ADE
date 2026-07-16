@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CaretLeft,
   CaretRight,
@@ -107,6 +107,7 @@ export function RemoteTargetList({
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const latestConnectionSnapshotUpdatedAtRef = useRef(0);
   const [discoveredMachines, setDiscoveredMachines] = useState<
     RemoteRuntimeDiscoveredMachine[]
   >([]);
@@ -185,7 +186,16 @@ export function RemoteTargetList({
       const next = snapshot
         ? snapshot.connections.map((entry) => entry.target)
         : await window.ade.remoteRuntime.listTargets();
-      if (snapshot) setConnectionSnapshot(snapshot);
+      if (
+        snapshot &&
+        snapshot.updatedAt < latestConnectionSnapshotUpdatedAtRef.current
+      ) {
+        return;
+      }
+      if (snapshot) {
+        latestConnectionSnapshotUpdatedAtRef.current = snapshot.updatedAt;
+        setConnectionSnapshot(snapshot);
+      }
       setTargets(next);
       setSelectedId((current) => current ?? next[0]?.id ?? null);
       setError(null);
@@ -208,6 +218,10 @@ export function RemoteTargetList({
     if (!window.ade.remoteRuntime.onConnectionSnapshotChanged) return;
     const unsubscribe = window.ade.remoteRuntime.onConnectionSnapshotChanged(
       (snapshot) => {
+        if (snapshot.updatedAt < latestConnectionSnapshotUpdatedAtRef.current) {
+          return;
+        }
+        latestConnectionSnapshotUpdatedAtRef.current = snapshot.updatedAt;
         setConnectionSnapshot(snapshot);
         setTargets(snapshot.connections.map((entry) => entry.target));
         setSelectedId(

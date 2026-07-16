@@ -354,6 +354,15 @@ describe("ADE CLI", () => {
     expect(tokenOutput.match(/refresh-token-once/g)).toHaveLength(1);
     expect(tokenOutput).toContain("ADE_ACCOUNT_TOKEN");
     expect(tokenOutput).toContain("secret manager");
+
+    const rejectedMachineDirectory = formatOutput({
+      state: "auth_expired",
+      machines: [],
+      message: "The machine directory rejected your ADE account session. Sign in again. Reason: invalid issuer",
+    }, { text: true } as any, "account-machines");
+    expect(rejectedMachineDirectory).toContain("Reason: invalid issuer");
+    expect(rejectedMachineDirectory).toContain("Local and explicit remote paths still work.");
+    expect(rejectedMachineDirectory).not.toContain("ADE account session expired —");
   });
 
   it("parses global options without stealing command flags", () => {
@@ -1024,11 +1033,12 @@ describe("ADE CLI", () => {
         relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, reason: "Relay bridge is not validated." },
         accountDirectory: {
           state: "http_error",
-          skipReason: "The account directory returned HTTP 401.",
+          skipReason: "The account directory returned HTTP 401: invalid issuer",
           directoryOrigin: "https://directory.example",
           lastAttemptAt: Date.parse("2026-07-16T12:00:00.000Z"),
           lastSuccessAt: null,
           lastHttpStatus: 401,
+          lastHttpReason: "invalid issuer",
           reachableEndpointCount: 2,
         },
       },
@@ -1049,7 +1059,7 @@ describe("ADE CLI", () => {
     expect(output).toContain("ADE sync status");
     expect(output).toContain("account directory");
     expect(output).toContain("http_error · 2 reachable endpoints · HTTP 401");
-    expect(output).toContain("The account directory returned HTTP 401.");
+    expect(output).toContain("The account directory returned HTTP 401: invalid issuer");
     expect(output).toContain("https://directory.example");
     expect(output).toContain("blocked by 1 active item");
     expect(output).toContain("Shell: Stop the active shell before transferring the host.");
@@ -4271,6 +4281,28 @@ describe("ADE CLI", () => {
 
     for (const mode of ["headless", "desktop-socket"] as const) {
       const chatConnection = { ...connection, mode };
+      const accountMachines = summarizeExecution({
+        plan: expectExecutePlan(buildCliPlan(["machines", "list"])),
+        connection: chatConnection,
+        values: {
+          result: {
+            domain: "account",
+            action: "listMachines",
+            result: {
+              state: "auth_expired",
+              machines: [],
+              message: "The machine directory rejected your ADE account session. Sign in again. Reason: invalid audience",
+            },
+            statusHints: {},
+          },
+        },
+      } as any);
+      expect(accountMachines).toEqual({
+        state: "auth_expired",
+        machines: [],
+        message: "The machine directory rejected your ADE account session. Sign in again. Reason: invalid audience",
+      });
+
       const chatCreateWithKickoff = summarizeExecution({
         plan: { kind: "execute", label: "chat create", steps: [] },
         connection: chatConnection,

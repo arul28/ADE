@@ -798,80 +798,85 @@ struct HubNoMachineState: View {
   var onConnectSuccess: () -> Void = {}
 
   var body: some View {
-    VStack(spacing: 0) {
-      Image("BrandMark")
-        .resizable()
-        .renderingMode(.original)
-        .interpolation(.high)
-        .aspectRatio(contentMode: .fit)
-        .frame(maxWidth: 280)
-        .frame(height: 142)
-        .frame(maxWidth: .infinity)
-        .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
-        .padding(.top, 88)
-        .accessibilityLabel("ADE")
+    GeometryReader { geometry in
+      ScrollView {
+        VStack(spacing: 0) {
+          Image("BrandMark")
+            .resizable()
+            .renderingMode(.original)
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(maxWidth: 280)
+            .frame(height: 142)
+            .frame(maxWidth: .infinity)
+            .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
+            .padding(.top, 88)
+            .accessibilityLabel("ADE")
 
-      HStack(spacing: 8) {
-        Circle().fill(statusDotColor).frame(width: 8, height: 8)
-        Image(systemName: "desktopcomputer")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        Text(statusText)
-          .font(.system(.footnote, design: .rounded).weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 10)
-      .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
-      .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
-      .padding(.top, 30)
-
-      if syncService.tailscaleOffHintVisible {
-        ADETailscaleOffHintCard()
-          .padding(.top, 22)
-      }
-
-      // Between the no-machine badge and the Connect button: one-tap cards for
-      // machines that are online right now — on your account or previously
-      // paired — so a phone can jump back in without opening Settings (M4).
-      HubQuickConnectSection(onConnectSuccess: onConnectSuccess)
-        .padding(.top, 22)
-
-      Spacer(minLength: 40)
-
-      VStack(spacing: 12) {
-        if hasSavedMachine {
-          Button {
-            Task { await syncService.reconnectIfPossible(userInitiated: true) }
-          } label: {
-            primaryButtonLabel(symbol: "arrow.clockwise", title: "Reconnect")
-          }
-          .buttonStyle(.plain)
-
-          Button {
-            syncService.settingsPresented = true
-          } label: {
-            Text("Connection settings")
-              .font(.system(.footnote, design: .rounded).weight(.semibold))
+          HStack(spacing: 8) {
+            Circle().fill(statusDotColor).frame(width: 8, height: 8)
+            Image(systemName: "desktopcomputer")
+              .font(.system(size: 13, weight: .semibold))
               .foregroundStyle(ADEColor.textSecondary)
-              .frame(minHeight: 44)
-              .contentShape(Rectangle())
+            Text(statusText)
+              .font(.system(.footnote, design: .rounded).weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
           }
-          .buttonStyle(.plain)
-        } else {
-          Button {
-            syncService.settingsPresented = true
-          } label: {
-            primaryButtonLabel(symbol: "link", title: "Connect Machine")
+          .padding(.horizontal, 14)
+          .padding(.vertical, 10)
+          .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
+          .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
+          .padding(.top, 30)
+
+          if syncService.tailscaleOffHintVisible {
+            ADETailscaleOffHintCard()
+              .padding(.top, 22)
           }
-          .buttonStyle(.plain)
+
+          // Between the no-machine badge and the Connect button: one-tap cards for
+          // machines that are online right now — on your account or previously
+          // paired — so a phone can jump back in without opening Settings (M4).
+          HubQuickConnectSection(onConnectSuccess: onConnectSuccess)
+            .padding(.top, 22)
+
+          Spacer(minLength: 40)
+
+          VStack(spacing: 12) {
+            if hasSavedMachine {
+              Button {
+                Task { await syncService.reconnectIfPossible(userInitiated: true) }
+              } label: {
+                primaryButtonLabel(symbol: "arrow.clockwise", title: "Reconnect")
+              }
+              .buttonStyle(.plain)
+
+              Button {
+                syncService.settingsPresented = true
+              } label: {
+                Text("Connection settings")
+                  .font(.system(.footnote, design: .rounded).weight(.semibold))
+                  .foregroundStyle(ADEColor.textSecondary)
+                  .frame(minHeight: 44)
+                  .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+            } else {
+              Button {
+                syncService.settingsPresented = true
+              } label: {
+                primaryButtonLabel(symbol: "link", title: "Connect Machine")
+              }
+              .buttonStyle(.plain)
+            }
+          }
+          .padding(.bottom, 56)
         }
+        .frame(maxWidth: 520)
+        .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .top)
+        .padding(.horizontal, 22)
       }
-      .padding(.bottom, 56)
+      .scrollIndicators(.hidden)
     }
-    .frame(maxWidth: 520)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-    .padding(.horizontal, 22)
   }
 
   /// A machine is "saved" when a pairing credential still exists for it —

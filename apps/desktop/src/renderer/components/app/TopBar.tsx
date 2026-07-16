@@ -873,6 +873,14 @@ export function TopBar({
   } = useConfirmDialog();
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const applyRemoteSnapshot = useCallback(
+    (snapshot: RemoteRuntimeConnectionSnapshot) => {
+      setRemoteSnapshot((current) =>
+        current && current.updatedAt > snapshot.updatedAt ? current : snapshot,
+      );
+    },
+    [],
+  );
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
@@ -1113,20 +1121,18 @@ export function TopBar({
     void remoteRuntime
       .getConnectionSnapshot()
       .then((snapshot) => {
-        if (!cancelled) setRemoteSnapshot(snapshot);
+        if (!cancelled) applyRemoteSnapshot(snapshot);
       })
-      .catch(() => {
-        if (!cancelled) setRemoteSnapshot(null);
-      });
+      .catch(() => {});
     const unsubscribe =
       remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
-        if (!cancelled) setRemoteSnapshot(snapshot);
+        if (!cancelled) applyRemoteSnapshot(snapshot);
       }) ?? (() => {});
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [applyRemoteSnapshot]);
 
   useEffect(() => {
     if (!chromePanelOccludesNativeBrowser || typeof window === "undefined") return undefined;

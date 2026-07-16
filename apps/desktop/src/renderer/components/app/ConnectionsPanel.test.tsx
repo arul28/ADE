@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import type {
@@ -110,6 +110,32 @@ describe("ConnectionsPanel tab dots", () => {
     });
     expect(within(screen.getByRole("tab", { name: /Phone/ })).getByTitle("Active connection")).toBeTruthy();
     expect(within(screen.getByRole("tab", { name: /Web/ })).getByTitle("Active connection")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Machines, active connection" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Phone, active connection" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Web, active connection" })).toBeTruthy();
+  });
+
+  it("does not let an older initial snapshot replace a newer event", async () => {
+    let emitSnapshot: ((snapshot: RemoteRuntimeConnectionSnapshot) => void) | undefined;
+    let resolveInitial: ((snapshot: RemoteRuntimeConnectionSnapshot) => void) | undefined;
+    window.ade.remoteRuntime.getConnectionSnapshot = vi.fn(
+      () => new Promise((resolve) => {
+        resolveInitial = resolve;
+      }),
+    );
+    window.ade.remoteRuntime.onConnectionSnapshotChanged = vi.fn((listener) => {
+      emitSnapshot = listener;
+      return () => {};
+    });
+
+    renderPanel();
+    await waitFor(() => expect(emitSnapshot).toBeTruthy());
+    act(() => {
+      emitSnapshot?.({ connections: [], connectedCount: 1, updatedAt: 20 });
+      resolveInitial?.({ connections: [], connectedCount: 0, updatedAt: 10 });
+    });
+
+    expect(await screen.findByRole("tab", { name: "Machines, active connection" })).toBeTruthy();
   });
 
   it("ignores disconnected or local peers when lighting the Phone dot", async () => {

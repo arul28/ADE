@@ -1055,19 +1055,21 @@ describe("multi-project RPC server", () => {
       dispose: vi.fn(),
       disposeAll: vi.fn(),
     } as unknown as ProjectScopeRegistry;
+    const accountDirectoryHealth = {
+      state: "http_error" as const,
+      skipReason: "The account directory returned HTTP 401: invalid audience",
+      directoryOrigin: "https://directory.example",
+      lastAttemptAt: 123,
+      lastSuccessAt: null,
+      lastHttpStatus: 401,
+      lastHttpReason: "invalid audience",
+      reachableEndpointCount: 2,
+    };
     const handler = createMultiProjectRpcRequestHandler({
       serverVersion: "test",
       projectRegistry: registry,
       scopeRegistry,
-      getAccountDirectoryHealth: () => ({
-        state: "no_active_sync_scope",
-        skipReason: "No active sync project scope is available.",
-        directoryOrigin: "https://directory.example",
-        lastAttemptAt: 123,
-        lastSuccessAt: null,
-        lastHttpStatus: null,
-        reachableEndpointCount: 0,
-      }),
+      getAccountDirectoryHealth: () => accountDirectoryHealth,
     });
 
     await handler({
@@ -1081,9 +1083,9 @@ describe("multi-project RPC server", () => {
       id: 2,
       method: "sync.getStatus",
       params: {},
-    }) as { routeHealth: { accountDirectory: { state: string } } };
+    }) as { routeHealth: { accountDirectory: unknown } };
 
-    expect(status.routeHealth.accountDirectory.state).toBe("no_active_sync_scope");
+    expect(status.routeHealth.accountDirectory).toEqual(accountDirectoryHealth);
     expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
     handler.dispose();
   });

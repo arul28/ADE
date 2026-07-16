@@ -301,6 +301,14 @@ export function CommandPalette({
     useState<ProjectLocation | null>(null);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const applyRemoteSnapshot = useCallback(
+    (snapshot: RemoteRuntimeConnectionSnapshot) => {
+      setRemoteSnapshot((current) =>
+        current && current.updatedAt > snapshot.updatedAt ? current : snapshot,
+      );
+    },
+    [],
+  );
   const [pendingRemoteOpen, setPendingRemoteOpen] =
     useState<PendingRemoteProjectOpen | null>(null);
   const [openingPendingRemote, setOpeningPendingRemote] = useState(false);
@@ -396,20 +404,18 @@ export function CommandPalette({
     void remoteRuntime
       .getConnectionSnapshot()
       .then((snapshot) => {
-        if (!cancelled) setRemoteSnapshot(snapshot);
+        if (!cancelled) applyRemoteSnapshot(snapshot);
       })
-      .catch(() => {
-        if (!cancelled) setRemoteSnapshot(null);
-      });
+      .catch(() => {});
     const unsubscribe =
       remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
-        if (!cancelled) setRemoteSnapshot(snapshot);
+        if (!cancelled) applyRemoteSnapshot(snapshot);
       }) ?? (() => {});
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [open]);
+  }, [applyRemoteSnapshot, open]);
 
   const startProjectBrowse = useCallback(() => {
     setMode("project-browse");

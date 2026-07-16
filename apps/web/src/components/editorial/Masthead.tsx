@@ -56,7 +56,9 @@ export function Masthead() {
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 rounded-[2px] bg-[color:var(--color-cream)] px-3.5 py-[7px] text-[12px] font-medium normal-case tracking-normal text-[color:var(--color-bg)] transition-all duration-200 hover:-translate-y-[1px] hover:bg-white"
           >
-            Open web client <span aria-hidden>↗</span>
+            <span className="sm:hidden">Web</span>
+            <span className="hidden sm:inline">Open web client</span>
+            <span aria-hidden>↗</span>
           </a>
           <a
             href={LINKS.releasesLatest}

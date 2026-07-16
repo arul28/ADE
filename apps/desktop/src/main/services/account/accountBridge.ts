@@ -206,9 +206,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       if (result.state === "unavailable") {
         options.logger?.warn("account.machines_fetch_failed", { state: result.state });
       }
-      return result.state === "auth_expired"
-        ? { ...result, message: "Your ADE account session expired. Sign in again." }
-        : result;
+      return result;
     },
 
     pairMachine: async (machineKey: string): Promise<AdeAccountMachinePairResult> => {

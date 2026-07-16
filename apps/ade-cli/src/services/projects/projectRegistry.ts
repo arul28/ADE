@@ -312,7 +312,12 @@ export class ProjectRegistry {
         version?: unknown;
         projects?: unknown;
       };
-      const isLegacy = rawFile.version !== 2;
+      const isLegacy = rawFile.version === 1;
+      if (!isLegacy && rawFile.version !== 2) {
+        throw new Error(
+          `Unsupported project registry version: ${String(rawFile.version)}`,
+        );
+      }
       const projects = Array.isArray(rawFile.projects)
         ? rawFile.projects
             .map((value) => {

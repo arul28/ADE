@@ -968,7 +968,13 @@ export class LocalRuntimeConnectionPool {
   ): Promise<RemoteRuntimeProjectRecord> {
     const normalizedRoot = path.resolve(rootPath);
     const cached = this.projectsByRoot.get(normalizedRoot);
-    if (cached && registration.catalogVisibility === "system") return cached;
+    if (
+      cached
+      && registration.catalogVisibility === "system"
+      && (cached.registrationSource ?? "runtime-auto") === registration.registrationSource
+    ) {
+      return cached;
+    }
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= 2; attempt++) {

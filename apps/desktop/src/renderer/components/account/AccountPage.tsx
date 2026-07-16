@@ -459,19 +459,29 @@ function YourMacsCard() {
   // The ⋮ menu is rendered in a fixed portal so it can never be clipped by, or
   // stack behind, the cards that follow this one (mirrors the TabNav pattern).
   const { ref: menuRef, position: menuPosition } = useClampedFixedPosition(menuAnchor, openMenuKey);
+  const menuItemRef = useRef<HTMLButtonElement | null>(null);
+  const menuTriggerRef = useRef<HTMLElement | null>(null);
   const openMenuMachine = useMemo(
     () => machines.find((m) => m.machineKey === openMenuKey) ?? null,
     [machines, openMenuKey],
   );
   const closeMenu = useCallback(() => {
+    const trigger = menuTriggerRef.current;
     setOpenMenuKey(null);
     setMenuAnchor(null);
+    menuTriggerRef.current = null;
+    if (trigger?.isConnected) trigger.focus();
   }, []);
   const openMenu = useCallback((machineKey: string, anchorEl: HTMLElement) => {
     const rect = anchorEl.getBoundingClientRect();
+    menuTriggerRef.current = anchorEl;
     setMenuAnchor({ x: rect.right - ACCOUNT_MENU_WIDTH, y: rect.bottom + 4 });
     setOpenMenuKey(machineKey);
   }, []);
+
+  useEffect(() => {
+    if (openMenuKey) menuItemRef.current?.focus();
+  }, [openMenuKey]);
 
   let summary: string;
   if (loading && !result) summary = "Checking your Macs…";
@@ -692,6 +702,12 @@ function YourMacsCard() {
               <div
                 ref={menuRef}
                 role="menu"
+                onKeyDown={(event) => {
+                  if (event.key !== "Escape") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  closeMenu();
+                }}
                 style={{
                   position: "fixed",
                   left: menuPosition?.left ?? menuAnchor.x,
@@ -707,6 +723,7 @@ function YourMacsCard() {
                 }}
               >
                 <button
+                  ref={menuItemRef}
                   type="button"
                   role="menuitem"
                   onClick={() => {

@@ -19,6 +19,18 @@ struct HubQuickConnectSection: View {
   @State private var connectingId: String?
   @State private var errorText: String?
 
+  private enum Target: Identifiable {
+    case account(AccountMachine)
+    case saved(DiscoveredSyncHost)
+
+    var id: String {
+      switch self {
+      case .account(let machine): return "account-\(machine.id)"
+      case .saved(let host): return "saved-\(host.id)"
+      }
+    }
+  }
+
   private var onlineAccountMachines: [AccountMachine] {
     account.machines.filter(\.online)
   }
@@ -32,8 +44,23 @@ struct HubQuickConnectSection: View {
     }
   }
 
+  /// Account and saved records can describe the same Mac. Prefer the account
+  /// card when both stable IDs match, while retaining a live saved card when
+  /// the account directory currently considers that Mac offline.
+  private var targets: [Target] {
+    let accountTargets = onlineAccountMachines.map(Target.account)
+    let accountIdentities = Set(onlineAccountMachines.compactMap { normalizedIdentity($0.deviceId) })
+    let savedTargets = onlinePairedHosts.compactMap { host -> Target? in
+      if let identity = normalizedIdentity(host.hostIdentity), accountIdentities.contains(identity) {
+        return nil
+      }
+      return .saved(host)
+    }
+    return accountTargets + savedTargets
+  }
+
   private var hasTargets: Bool {
-    !onlineAccountMachines.isEmpty || !onlinePairedHosts.isEmpty
+    !targets.isEmpty
   }
 
   private var showsEmptyNote: Bool {
@@ -44,23 +71,32 @@ struct HubQuickConnectSection: View {
     Group {
       if hasTargets {
         VStack(spacing: 10) {
-          ForEach(onlineAccountMachines) { machine in
-            HubQuickConnectCard(
-              title: machine.displayName,
-              routeHint: machine.routeLabel ?? machineStatusHint(online: true),
-              deviceSymbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
-              isConnecting: connectingId == accountKey(machine),
-              isDisabled: connectingId != nil
-            ) { connectAccount(machine) }
+          ForEach(targets.prefix(2)) { target in
+            switch target {
+            case .account(let machine):
+              HubQuickConnectCard(
+                title: machine.displayName,
+                routeHint: machine.routeLabel ?? machineStatusHint(online: true),
+                deviceSymbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
+                isConnecting: connectingId == accountKey(machine),
+                isDisabled: connectingId != nil
+              ) { connectAccount(machine) }
+            case .saved(let host):
+              HubQuickConnectCard(
+                title: host.hostName,
+                routeHint: machineStatusHint(online: true),
+                deviceSymbol: machineDeviceSymbol(deviceType: nil, platform: nil),
+                isConnecting: connectingId == savedKey(host),
+                isDisabled: connectingId != nil
+              ) { connectSaved(host) }
+            }
           }
-          ForEach(onlinePairedHosts) { host in
-            HubQuickConnectCard(
-              title: host.hostName,
-              routeHint: machineStatusHint(online: true),
-              deviceSymbol: machineDeviceSymbol(deviceType: nil, platform: nil),
-              isConnecting: connectingId == savedKey(host),
-              isDisabled: connectingId != nil
-            ) { connectSaved(host) }
+          if targets.count > 2 {
+            Button("See all machines", systemImage: "chevron.right") {
+              syncService.settingsPresented = true
+            }
+            .font(.subheadline.bold())
+            .frame(minHeight: 44)
           }
           if let errorText {
             Text(errorText)
@@ -90,6 +126,12 @@ struct HubQuickConnectSection: View {
 
   private func accountKey(_ machine: AccountMachine) -> String { "account-\(machine.id)" }
   private func savedKey(_ host: DiscoveredSyncHost) -> String { "saved-\(host.id)" }
+
+  private func normalizedIdentity(_ identity: String?) -> String? {
+    guard let identity = identity?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !identity.isEmpty else { return nil }
+    return identity.lowercased()
+  }
 
   private func connectAccount(_ machine: AccountMachine) {
     guard connectingId == nil else { return }

@@ -1420,9 +1420,11 @@ export async function resolveRemoteTargetForLaunch(
   });
   if (listed.state !== "ok") {
     if (isUnverifiedLegacyAccountCandidate(target)) {
+      const directoryReason = listed.message?.trim();
       throw new PairedRuntimeTransportUnavailableError(
         `Could not verify whether ${target.name} is an account-created paired-only target because ` +
           `the account machine directory is ${listed.state.replaceAll("_", " ")}. ` +
+          (directoryReason ? `${directoryReason} ` : "") +
           "ADE will not silently downgrade this uncredentialed discovered target to SSH. " +
           "Sign in again or save an explicit SSH user/key for a true SSH target.",
       );
