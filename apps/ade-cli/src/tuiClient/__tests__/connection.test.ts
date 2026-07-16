@@ -392,6 +392,12 @@ describe("connectToAde embedded mode", () => {
       "projects.add",
       "ade/actions/list",
     ]);
+    expect(requests.find((request) => request.method === "projects.add")?.params)
+      .toEqual({
+        rootPath: project.projectRoot,
+        catalogVisibility: "system",
+        registrationSource: "runtime-auto",
+      });
     expect(requests.at(-1)?.params).toMatchObject({ projectId: "project-daemon" });
   });
 

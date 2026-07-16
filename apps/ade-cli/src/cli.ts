@@ -13235,6 +13235,18 @@ export function shouldAutoRegisterProjectForPlan(
   return plan.steps.some((step) => !isMachineRuntimeScopedMethod(step.method));
 }
 
+export function automaticProjectRegistrationParams(rootPath: string): {
+  rootPath: string;
+  catalogVisibility: "system";
+  registrationSource: "runtime-auto";
+} {
+  return {
+    rootPath,
+    catalogVisibility: "system",
+    registrationSource: "runtime-auto",
+  };
+}
+
 function buildMachinesPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (sub === "list" || sub === "ls") {
@@ -13493,7 +13505,15 @@ function buildProjectsPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "projects add",
       formatter: "projects-list",
-      steps: [{ key: "result", method: "projects.add", params: { rootPath } }],
+      steps: [{
+        key: "result",
+        method: "projects.add",
+        params: {
+          rootPath,
+          catalogVisibility: "recent",
+          registrationSource: "cli-explicit",
+        },
+      }],
     };
   }
   if (sub === "remove" || sub === "rm" || sub === "delete") {
@@ -13592,9 +13612,10 @@ async function createConnection(
         close: () => socketClient?.close(),
       };
       if (autoRegisterProject) {
-        const registered = await connection.request("projects.add", {
-          rootPath: roots.projectRoot,
-        });
+        const registered = await connection.request(
+          "projects.add",
+          automaticProjectRegistrationParams(roots.projectRoot),
+        );
         const registeredProjectId = isRecord(registered)
           ? asString(registered.projectId)
           : null;
@@ -14766,6 +14787,10 @@ async function runServe(
     try {
       preferredSyncProjectId = projectRegistry.add(
         path.resolve(preferredSyncProjectRoot),
+        {
+          catalogVisibility: "system",
+          registrationSource: "runtime-auto",
+        },
       ).projectId;
     } catch (error) {
       process.stderr.write(
@@ -14856,7 +14881,10 @@ async function runServe(
   const registerHeadlessMobileProject = async (
     rootPath: string,
   ): Promise<SyncMobileProjectSummary> => {
-    const record = projectRegistry.add(rootPath);
+    const record = projectRegistry.add(rootPath, {
+      catalogVisibility: "recent",
+      registrationSource: "mobile",
+    });
     return await mobileProjectSummaryForHeadlessRecord(record);
   };
   const openHeadlessMobileProject = async (
@@ -14950,7 +14978,7 @@ async function runServe(
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
     listProjects: async () => ({
       projects: projectRegistry
-        .list()
+        .listRecent()
         .map((record) =>
           toMobileProjectSummary(record, {
             isAvailable: fs.existsSync(record.rootPath),
@@ -15159,15 +15187,27 @@ async function runServe(
     });
   clearSyncRuntimeRpcHandlerFactory = setSyncRuntimeRpcHandlerFactory(createHandler);
   const startSyncHost = async () => {
+    let activeScope: Awaited<
+      ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
+    >;
     if (preferredSyncProjectId) {
-      return await scopeRegistry.switchSyncHost(preferredSyncProjectId);
+      activeScope = await scopeRegistry.switchSyncHost(preferredSyncProjectId);
+    } else {
+      activeScope = await scopeRegistry.resolveActiveSyncHost();
     }
-    const activeScope = await scopeRegistry.resolveActiveSyncHost();
-    if (activeScope) return activeScope;
-    if (sharedSyncListener) {
+    if (!activeScope && sharedSyncListener) {
       await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
     }
-    return null;
+    if (activeScope) {
+      const prewarmTimer = setImmediate(() => {
+        void scopeRegistry.prewarmRecentScopes({
+          excludeProjectId: activeScope?.registryProjectId,
+          limit: 2,
+        });
+      });
+      prewarmTimer.unref?.();
+    }
+    return activeScope ?? null;
   };
   const disposeServeResources = async () => {
     accountMachinePublisher?.dispose();
@@ -15511,7 +15551,10 @@ async function runInit(
   ]);
   const layout = resolveMachineAdeLayout();
   const registry = new ProjectRegistry(layout);
-  const project = registry.add(path.resolve(targetPath ?? process.cwd()));
+  const project = registry.add(path.resolve(targetPath ?? process.cwd()), {
+    catalogVisibility: "recent",
+    registrationSource: "cli-explicit",
+  });
   return {
     project,
     registryPath: registry.path,

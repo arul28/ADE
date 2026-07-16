@@ -137,7 +137,6 @@
 		91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */; };
 		C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7F48CB9D3EBD80F1FDBD9F /* RecordingPill.swift */; };
 		B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D40000000000000000A002 /* GlobalDictationPill.swift */; };
-		1F9DE38583114F239DC7616D /* SettingsVoiceInputSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */; };
 		7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */; };
 		D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AttentionDrawerModel.swift */; };
 		D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* AttentionDrawerButton.swift */; };
@@ -236,7 +235,6 @@
 		E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000004A /* SwiftTermSessionView.swift */; };
 		DD20000000000000000000B1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = DD10000000000000000000B1 /* SwiftTerm */; };
 		A90000000000000000000001 /* ProductAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000011 /* ProductAnalytics.swift */; };
-		A90000000000000000000002 /* SettingsAnalyticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000012 /* SettingsAnalyticsSection.swift */; };
 		A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */; };
 		A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90100000000000000000011 /* PrivacyInfo.xcprivacy */; };
 		A90200000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90200000000000000000011 /* PrivacyInfo.xcprivacy */; };
@@ -423,7 +421,6 @@
 		50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationMicButton.swift; path = ADE/Views/Components/DictationMicButton.swift; sourceTree = "<group>"; };
 		1C7F48CB9D3EBD80F1FDBD9F /* RecordingPill.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecordingPill.swift; path = ADE/Views/Components/RecordingPill.swift; sourceTree = "<group>"; };
 		B1D40000000000000000A002 /* GlobalDictationPill.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GlobalDictationPill.swift; path = ADE/Views/Components/GlobalDictationPill.swift; sourceTree = "<group>"; };
-		AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsVoiceInputSection.swift; path = ADE/Views/Settings/SettingsVoiceInputSection.swift; sourceTree = "<group>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		483C5F1818BAE74B19B84617 /* RemoteModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteModels.swift; path = ADE/Models/RemoteModels.swift; sourceTree = "<group>"; };
 		4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEDesignSystem.swift; path = ADE/Views/Components/ADEDesignSystem.swift; sourceTree = "<group>"; };
@@ -508,7 +505,6 @@
 		A1000000000000000000001F /* LaneColorSwatchPicker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneColorSwatchPicker.swift; path = ADE/Views/Lanes/LaneColorSwatchPicker.swift; sourceTree = "<group>"; };
 		B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainService.swift; path = ADE/Services/KeychainService.swift; sourceTree = "<group>"; };
 		A90000000000000000000011 /* ProductAnalytics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalytics.swift; path = ADE/Services/ProductAnalytics.swift; sourceTree = "<group>"; };
-		A90000000000000000000012 /* SettingsAnalyticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsAnalyticsSection.swift; path = ADE/Views/Settings/SettingsAnalyticsSection.swift; sourceTree = "<group>"; };
 		A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalyticsPolicyTests.swift; path = ADETests/ProductAnalyticsPolicyTests.swift; sourceTree = "<group>"; };
 		A90100000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADE/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A90200000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADEWidgets/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -840,8 +836,6 @@
 				F20000000000000000000003 /* SettingsPairingSection.swift */,
 				F20000000000000000000004 /* SettingsPinSheet.swift */,
 				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
-				A90000000000000000000012 /* SettingsAnalyticsSection.swift */,
-				AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */,
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
 				AE00000000000000000000A4 /* SettingsPushDeliverySection.swift */,
 				AF00000000000000000000A3 /* SettingsPairingScannerSheet.swift */,
@@ -1318,7 +1312,6 @@
 				91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */,
 				C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */,
 				B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */,
-				1F9DE38583114F239DC7616D /* SettingsVoiceInputSection.swift in Sources */,
 				D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */,
 				D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */,
 				D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */,
@@ -1389,7 +1382,6 @@
 				B10000000000000000000011 /* LaneStackGraphSheet.swift in Sources */,
 				B10000000000000000000012 /* LaneTypes.swift in Sources */,
 				B10000000000000000000014 /* ConnectionSettingsView.swift in Sources */,
-				A90000000000000000000002 /* SettingsAnalyticsSection.swift in Sources */,
 				B10000000000000000000101 /* LaneDetailRebaseBanner.swift in Sources */,
 				B10000000000000000000103 /* LaneActionsCard.swift in Sources */,
 				B10000000000000000000104 /* LaneSyncDetailScreen.swift in Sources */,

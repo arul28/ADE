@@ -101,8 +101,14 @@ describe("machine state migration", () => {
       phoneA: { name: "Phone A" },
       phoneB: { name: "Phone B" },
     });
-    expect(add).toHaveBeenCalledWith(projectA);
-    expect(add).toHaveBeenCalledWith(projectB);
+    expect(add).toHaveBeenCalledWith(projectA, {
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    });
+    expect(add).toHaveBeenCalledWith(projectB, {
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    });
     expect(add).not.toHaveBeenCalledWith(missingAdeProject);
     expect(fs.existsSync(path.join(layout.adeDir, MACHINE_STATE_MIGRATION_MARKER))).toBe(false);
   });
@@ -113,6 +119,8 @@ describe("machine state migration", () => {
     const alphaLayout = makeLayout(path.join(root, ".ade-alpha"));
     const projectA = makeProject(root, "project-a");
     const projectB = makeProject(root, "project-b");
+    fs.mkdirSync(path.join(projectA, ".git"));
+    fs.mkdirSync(path.join(projectB, ".git"));
     fs.mkdirSync(stableLayout.adeDir, { recursive: true });
     fs.writeFileSync(
       stableLayout.projectsPath,
@@ -146,14 +154,21 @@ describe("machine state migration", () => {
     });
 
     expect(result).toMatchObject({ didRun: true, shouldShowNotice: true });
-    expect(add).toHaveBeenCalledWith(projectA);
-    expect(add).toHaveBeenCalledWith(projectB);
+    expect(add).toHaveBeenCalledWith(projectA, {
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    });
+    expect(add).toHaveBeenCalledWith(projectB, {
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    });
   });
 
   it("exposes machine registry projects as startup recents", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-machine-migration-"));
     const layout = makeLayout(path.join(root, ".ade"));
     const projectRoot = makeProject(root, "project-a");
+    fs.mkdirSync(path.join(projectRoot, ".git"));
     fs.mkdirSync(layout.adeDir, { recursive: true });
     fs.writeFileSync(
       layout.projectsPath,

@@ -109,7 +109,13 @@ function seedDatabase(): void {
 
 const projectRegistry = {
   list: () => [
-    { projectId: PROJECT_ID, rootPath: projectRoot, displayName: "Test", lastOpenedAt: 1_700_000_000_000 },
+    {
+      projectId: PROJECT_ID,
+      rootPath: projectRoot,
+      displayName: "Test",
+      lastOpenedAt: 1_700_000_000_000,
+      catalogVisibility: "recent" as const,
+    },
   ],
 };
 
@@ -139,6 +145,28 @@ afterEach(() => {
 });
 
 describe("buildRosterSnapshot", () => {
+  it("excludes system projects from the mobile roster", async () => {
+    const registry = {
+      list: () => [
+        ...projectRegistry.list(),
+        {
+          projectId: "project_system",
+          rootPath: projectRoot,
+          displayName: "System",
+          lastOpenedAt: 1_800_000_000_000,
+          catalogVisibility: "system" as const,
+        },
+      ],
+    };
+
+    const projects = await buildRosterSnapshot({
+      projectRegistry: registry,
+      scopeRegistry: unbootedScopes,
+    });
+
+    expect(projects.map((project) => project.projectId)).toEqual([PROJECT_ID]);
+  });
+
   it("maps lanes and chats from disk for an un-booted project", async () => {
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
     expect(projects).toHaveLength(1);
@@ -245,7 +273,13 @@ describe("buildRosterSnapshot", () => {
     const emptyRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-roster-empty-"));
     try {
       const registry = {
-        list: () => [{ projectId: "project_empty", rootPath: emptyRoot, displayName: "Empty", lastOpenedAt: 0 }],
+        list: () => [{
+          projectId: "project_empty",
+          rootPath: emptyRoot,
+          displayName: "Empty",
+          lastOpenedAt: 0,
+          catalogVisibility: "recent" as const,
+        }],
       };
       const projects = await buildRosterSnapshot({ projectRegistry: registry, scopeRegistry: unbootedScopes });
       expect(projects).toHaveLength(1);

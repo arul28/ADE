@@ -101,6 +101,7 @@ const MULTI_PROJECT_RUNTIME_METHODS = new Set([
   "account.call",
   "projects.list",
   "projects.add",
+  "projects.setCatalogVisibility",
   "projects.remove",
   "projects.touch",
   "projects.browseDirectories",
@@ -711,6 +712,8 @@ async function connectAttachedSocket(args: {
     if (multiProjectRuntime) {
       const project = await rawRequest<ProjectRecord>("projects.add", {
         rootPath: args.project.projectRoot,
+        catalogVisibility: "system",
+        registrationSource: "runtime-auto",
       });
       const projectId =
         typeof project.projectId === "string" &&

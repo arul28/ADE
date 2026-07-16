@@ -167,6 +167,46 @@ describe("ThisMacCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     expect(clearPin).toHaveBeenCalledTimes(1);
   });
+
+  it("labels this Mac with a chip and lists reachable routes plus the build line", async () => {
+    (globalThis.window as any).ade = {
+      app: { getInfo: vi.fn(async () => ({ appVersion: "1.2.28", platform: "darwin" })) },
+    };
+    const status = makeStatus({
+      routeHealth: {
+        listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        tailscale: { enabled: true, tailscalePublished: true, tailscaleReachable: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      },
+    });
+    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+
+    expect(screen.getByText("This Mac")).toBeTruthy();
+    expect(screen.getByText("Reachable via Wi-Fi · Tailscale · Relay")).toBeTruthy();
+    expect(await screen.findByText("ADE 1.2.28 · macOS")).toBeTruthy();
+  });
+
+  it("omits unknown routes and only advertises the ones that are up", () => {
+    const status = makeStatus({
+      routeHealth: {
+        listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: "off", lastSuccessAt: null },
+        // Relay control connected but bridge not yet validated → not reachable.
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      },
+    });
+    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+
+    expect(screen.getByText("Reachable via Wi-Fi")).toBeTruthy();
+    expect(screen.queryByText(/Tailscale/)).toBeNull();
+    expect(screen.queryByText(/Relay/)).toBeNull();
+  });
+
+  it("no longer embeds a Connect-a-phone disclosure — the Phone tab owns pairing", () => {
+    render(<ThisMacCard sync={makeSync()} accountSignedIn />);
+    expect(screen.queryByText("Connect a phone")).toBeNull();
+    expect(screen.queryByText("Scan to pair")).toBeNull();
+  });
 });
 
 describe("PhoneConnectionsTab", () => {

@@ -830,7 +830,11 @@ export class RemoteConnectionService {
     const value = await this.callMachine(
       this.requireTarget(targetId),
       "projects.create",
-      asRecord(input),
+      {
+        ...asRecord(input),
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
+      },
       { retryOnConnectionError: false },
     );
     const project = coerceConnectionProject(value);
@@ -845,7 +849,11 @@ export class RemoteConnectionService {
     const value = await this.callMachine(
       this.requireTarget(targetId),
       "projects.clone",
-      asRecord(input),
+      {
+        ...asRecord(input),
+        catalogVisibility: "recent",
+        registrationSource: "desktop",
+      },
       { retryOnConnectionError: false },
     );
     const project = coerceConnectionProject(value);

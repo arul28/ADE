@@ -31,7 +31,8 @@ struct AccountConnectionsSection: View {
                 confirmSignOut = true
               }
             }
-            AccountMachinesList(onConnect: onConnectMachine)
+            // Machines now live in the dedicated CONNECTIONS section below, so
+            // this card stays a pure "account identity" surface (M5).
           case .loading:
             ADESkeletonView(height: 64, cornerRadius: 16)
           default:

@@ -58,9 +58,26 @@ function validatedRelayUrl(raw: string, machineKey: string): string | null {
   return url.toString();
 }
 
+export function publishedMachineName(
+  name: string,
+  packageChannel: string | null | undefined,
+): string {
+  const normalizedName = name.trim();
+  const channel = packageChannel?.trim().toLowerCase();
+  const suffix = channel === "beta"
+    ? " · Beta"
+    : channel === "alpha"
+      ? " · Alpha"
+      : "";
+  return suffix && !normalizedName.endsWith(suffix)
+    ? `${normalizedName}${suffix}`
+    : normalizedName;
+}
+
 export function buildAccountMachineRegistration(args: {
   machineKey: string;
   snapshot: AccountMachineRegistrationSnapshot;
+  packageChannel?: string | null;
 }): AccountMachineRegistration | null {
   const machineKey = args.machineKey.trim();
   const connectInfo = args.snapshot.pairingConnectInfo;
@@ -113,7 +130,10 @@ export function buildAccountMachineRegistration(args: {
   return {
     machineKey,
     deviceId: identity.deviceId,
-    name: args.snapshot.runtimeName?.trim() || identity.name,
+    name: publishedMachineName(
+      args.snapshot.runtimeName?.trim() || identity.name,
+      args.packageChannel,
+    ),
     platform: identity.platform,
     deviceType: identity.deviceType,
     // Reserved for a future machine-owned key. Account pairing currently
@@ -163,6 +183,7 @@ export function createAccountMachinePublisherService(options: {
     const registration = buildAccountMachineRegistration({
       machineKey: options.getMachineKey(),
       snapshot,
+      packageChannel: process.env.ADE_PACKAGE_CHANNEL,
     });
     if (!registration) return;
 

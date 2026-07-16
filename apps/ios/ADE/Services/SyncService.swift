@@ -521,6 +521,41 @@ enum SyncConnectionRouteKind: Int, Equatable {
   case relay = 2
 }
 
+/// Closed pairing failures the UI can act on without parsing host strings.
+/// Unknown host codes remain typed as `.other` so newer hosts degrade without
+/// collapsing into a misleading invalid-PIN state.
+enum SyncPairingFailureCode: Equatable {
+  case pinNotSet
+  case invalidPin
+  case other(String)
+
+  init?(hostCode: String?) {
+    guard let code = hostCode?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !code.isEmpty else { return nil }
+    switch code {
+    case "pin_not_set": self = .pinNotSet
+    case "invalid_pin": self = .invalidPin
+    default: self = .other(code)
+    }
+  }
+
+  var hostCode: String {
+    switch self {
+    case .pinNotSet: "pin_not_set"
+    case .invalidPin: "invalid_pin"
+    case .other(let code): code
+    }
+  }
+
+  var analyticsOutcome: ADEAnalyticsPairingOutcome {
+    switch self {
+    case .pinNotSet: .pinNotSet
+    case .invalidPin: .invalidPin
+    case .other: .failed
+    }
+  }
+}
+
 enum SyncRelayAuthorizationRequirement: String, Equatable, Error, LocalizedError {
   case signInRequired
   case sameAccountRequired
@@ -1054,11 +1089,32 @@ func syncRaceAddressCandidates(
   addresses: [String],
   port: Int,
   timeoutNanoseconds: UInt64 = 1_500_000_000,
-  tailscaleTimeoutNanoseconds: UInt64 = 3_000_000_000
+  tailscaleTimeoutNanoseconds: UInt64 = 3_000_000_000,
+  provenAddress: String? = nil,
+  probe: @escaping @Sendable (String, Int, UInt64) async -> Bool = { host, port, timeout in
+    await syncTcpProbe(host: host, port: port, timeoutNanoseconds: timeout)
+  }
 ) async -> [String] {
-  guard addresses.count > 1 else { return addresses }
+  guard !addresses.isEmpty else { return [] }
+  let proven = provenAddress.flatMap { candidate in
+    addresses.contains(candidate) && !syncIsFullWebSocketRoute(candidate) ? candidate : nil
+  }
+  if let proven {
+    let probeTimeout = syncIsTailscaleRoute(proven)
+      ? max(timeoutNanoseconds, tailscaleTimeoutNanoseconds)
+      : timeoutNanoseconds
+    if await probe(proven, port, probeTimeout) {
+      return [proven] + addresses.filter { $0 != proven }
+    }
+  }
+
+  // A failed proven route should not be probed twice or retain stale MRU
+  // priority. Race every other route, then keep it as the final websocket
+  // fallback because TCP probes can be blocked where websocket traffic works.
+  let raceAddresses = proven.map { failed in addresses.filter { $0 != failed } } ?? addresses
+  guard raceAddresses.count > 1 else { return raceAddresses + (proven.map { [$0] } ?? []) }
   return await withTaskGroup(of: (Int, Bool).self) { group in
-    for (index, address) in addresses.enumerated() {
+    for (index, address) in raceAddresses.enumerated() {
       // First contact over a Tailscale route can ride a cold DERP relay and
       // exceed the LAN-sized budget — exactly on the networks where the
       // tailnet is the only working route. Give those candidates more room
@@ -1073,7 +1129,7 @@ func syncRaceAddressCandidates(
         if syncIsFullWebSocketRoute(address) {
           return (index, false)
         }
-        return (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: probeTimeout))
+        return (index, await probe(address, port, probeTimeout))
       }
     }
     var reachable: [Int] = []
@@ -1082,7 +1138,8 @@ func syncRaceAddressCandidates(
       if ok { reachable.append(index) } else { unreachable.append(index) }
     }
     unreachable.sort()
-    return (reachable + unreachable).map { addresses[$0] }
+    return (reachable + unreachable).map { raceAddresses[$0] }
+      + (proven.map { [$0] } ?? [])
   }
 }
 
@@ -1923,6 +1980,8 @@ final class SyncService: ObservableObject {
   /// rather than parsing a localized message. Cleared whenever a fresh pairing
   /// attempt begins or a connection succeeds.
   @Published private(set) var lastPairingErrorCode: String?
+  /// Typed counterpart to `lastPairingErrorCode` for current UI code.
+  @Published private(set) var lastPairingFailure: SyncPairingFailureCode?
   @Published private(set) var hostCompatibilityMode: SyncHostCompatibilityMode = .unknown
   @Published private(set) var hostCompatibilityMissingActions: [String] = []
   @Published private(set) var prefersReducedSyncLoad = false
@@ -2201,6 +2260,8 @@ final class SyncService: ObservableObject {
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
   private var connectAttemptStartedAt: TimeInterval?
+  private var projectSwitchTimingStartedAt: TimeInterval?
+  private var projectSwitchTimingLastPhaseAt: TimeInterval?
   private var lastInboundMessageAt: TimeInterval?
   private var allowAutoReconnect = true
   /// User-initiated disconnects should stay disconnected until the user explicitly reconnects or pairs again.
@@ -2381,6 +2442,7 @@ final class SyncService: ObservableObject {
           try await self.switchToDesktopProject(project, rootPath: rootPath, selectionGeneration: selectionGeneration)
         } catch {
           guard self.isCurrentProjectSelection(selectionGeneration) else { return }
+          self.logProjectSwitchPhase("failed", completed: true)
           self.lastError = SyncUserFacingError.message(for: error)
           self.setDomainStatus(SyncDomain.allCases, phase: .failed, error: self.lastError)
         }
@@ -2444,6 +2506,7 @@ final class SyncService: ObservableObject {
       try await switchToDesktopProject(project, rootPath: rootPath, selectionGeneration: selectionGeneration, dismissHome: false)
     } catch {
       if isCurrentProjectSelection(selectionGeneration) {
+        logProjectSwitchPhase("failed", completed: true)
         lastError = SyncUserFacingError.message(for: error)
       }
     }
@@ -2930,6 +2993,7 @@ final class SyncService: ObservableObject {
     selectionGeneration: UInt64,
     dismissHome: Bool = true
   ) async throws {
+    beginProjectSwitchTiming()
     let requestId = makeRequestId()
     let raw = try await awaitResponse(requestId: requestId) {
       self.sendEnvelope(type: "project_switch_request", requestId: requestId, payload: [
@@ -2946,6 +3010,7 @@ final class SyncService: ObservableObject {
     guard isCurrentProjectSelection(selectionGeneration) else {
       throw CancellationError()
     }
+    logProjectSwitchPhase("target_prepared")
 
     let targetProject = result.project ?? project
     let previousActiveProjectId = activeProjectId
@@ -2990,6 +3055,7 @@ final class SyncService: ObservableObject {
       resetTerminalSubscriptionState(clearHistory: true)
       connectionState = .connecting
       setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
+      logProjectSwitchPhase("reconnect_started")
       Task { @MainActor [weak self] in
         await self?.reconnectIfPossible(userInitiated: true)
       }
@@ -3069,6 +3135,7 @@ final class SyncService: ObservableObject {
       // project's view and may collide with new session ids on the host.
       resetChatEventState(clearHistory: false)
       resetTerminalSubscriptionState(clearHistory: true)
+      logProjectSwitchPhase("reconnect_started")
       let connectedEndpoint = try await connectUsingProfile(
         profile,
         token: resolvedToken,
@@ -3109,6 +3176,7 @@ final class SyncService: ObservableObject {
           await self?.reconnectIfPossible(userInitiated: true)
         }
       }
+      logProjectSwitchPhase("failed", completed: true)
       throw error
     }
   }
@@ -3117,6 +3185,8 @@ final class SyncService: ObservableObject {
     projectSelectionTask?.cancel()
     projectSelectionTask = nil
     projectSwitchInFlightRootPath = nil
+    projectSwitchTimingStartedAt = nil
+    projectSwitchTimingLastPhaseAt = nil
     projectSelectionGeneration &+= 1
     return projectSelectionGeneration
   }
@@ -3994,6 +4064,7 @@ final class SyncService: ObservableObject {
   }
 
   func reconnect(toSavedHost host: DiscoveredSyncHost) async {
+    ProductAnalytics.shared.captureQuickConnect(.pairedMachine)
     let profiles = loadSavedProfiles()
     let candidates = profiles.values.filter { profile in
       if let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !identity.isEmpty {
@@ -4074,6 +4145,7 @@ final class SyncService: ObservableObject {
     accountToken: String,
     authorization: AccountPairingAuthorization
   ) async -> Bool {
+    ProductAnalytics.shared.captureQuickConnect(.accountMachine)
     let token = accountToken.trimmingCharacters(in: .whitespacesAndNewlines)
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard machine.online, !token.isEmpty, !owner.isEmpty,
@@ -4083,6 +4155,7 @@ final class SyncService: ObservableObject {
         ? "Sign in again, then try connecting."
         : "That Mac is offline. Open ADE on the Mac, then try again."
       connectionState = .error
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       return false
     }
 
@@ -4108,6 +4181,7 @@ final class SyncService: ObservableObject {
       guard existing.accountOwnerId == nil || existing.accountOwnerId == owner else {
         lastError = "This saved Mac belongs to a different signed-in account."
         connectionState = .error
+        ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
         return false
       }
       existing.savedAddressCandidates = deduplicatedAddresses(existing.savedAddressCandidates + directHosts)
@@ -4116,12 +4190,15 @@ final class SyncService: ObservableObject {
       existing.updatedAt = syncDateFormatter.string(from: Date())
       saveProfile(existing)
       await reconnectIfPossible(userInitiated: true)
-      return connectionState == .connected || connectionState == .syncing
+      let reconnected = connectionState == .connected || connectionState == .syncing
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(reconnected ? .reconnected : .failed)
+      return reconnected
     }
 
     guard !relayRoutes.isEmpty else {
       lastError = "That Mac is not ready for account connection yet. Open ADE on the Mac and try again."
       connectionState = .error
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       return false
     }
 
@@ -4237,11 +4314,10 @@ final class SyncService: ObservableObject {
               )
             }
           )
-          await restoreTrackedOpenLanesAfterReconnect()
-          await refreshRemoteProjectCatalog()
+          schedulePostHelloWork(for: generation)
           Task { await PushNotificationService.shared.enableIfPaired() }
           LiveActivityService.shared.start()
-          ProductAnalytics.shared.captureFeature(.pairing, outcome: .completed)
+          ProductAnalytics.shared.captureMachineAdoptionOutcome(.adopted)
           return true
         } catch {
           lastFailure = error
@@ -4263,7 +4339,7 @@ final class SyncService: ObservableObject {
       lastError = message
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: message)
-      ProductAnalytics.shared.captureFeature(.pairing, outcome: .failed)
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       ProductAnalytics.shared.captureError(.pairing)
       return false
     }
@@ -4780,18 +4856,18 @@ final class SyncService: ObservableObject {
     tailscaleAddress: String? = nil,
     relayCandidates: [String] = []
   ) async {
-    ProductAnalytics.shared.captureFeature(.pairing, outcome: .started)
     do {
       try ensureDatabaseReady()
     } catch {
       clearConnectTimingMetrics()
       lastError = SyncUserFacingError.message(for: error)
       connectionState = .error
-      ProductAnalytics.shared.captureFeature(.pairing, outcome: .failed)
+      ProductAnalytics.shared.capturePairingOutcome(.failed)
       ProductAnalytics.shared.captureError(.pairing)
       return
     }
     lastPairingErrorCode = nil
+    lastPairingFailure = nil
     relayAuthorizationRequirement = nil
     let connectAttemptGeneration: UInt64
     do {
@@ -4927,7 +5003,7 @@ final class SyncService: ObservableObject {
         // — so the PIN sheet can branch on the code (route to the "Set a PIN"
         // screen) rather than parsing a localized red string.
         if let code = failure.code {
-          userInfo["ADEErrorCode"] = code
+          userInfo["ADEErrorCode"] = code.hostCode
         }
         throw NSError(domain: "ADE", code: 2, userInfo: userInfo)
       }
@@ -4979,7 +5055,7 @@ final class SyncService: ObservableObject {
       // tokens so the brain can start / update remote activities.
       Task { await PushNotificationService.shared.enableIfPaired() }
       LiveActivityService.shared.start()
-      ProductAnalytics.shared.captureFeature(.pairing, outcome: .completed)
+      ProductAnalytics.shared.capturePairingOutcome(.connected)
     } catch {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -4990,10 +5066,12 @@ final class SyncService: ObservableObject {
       clearConnectTimingMetrics()
       lastError = friendlyMessage
       relayAuthorizationRequirement = error as? SyncRelayAuthorizationRequirement
-      lastPairingErrorCode = (error as NSError).userInfo["ADEErrorCode"] as? String
+      let hostCode = (error as NSError).userInfo["ADEErrorCode"] as? String
+      lastPairingErrorCode = hostCode
+      lastPairingFailure = SyncPairingFailureCode(hostCode: hostCode)
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
-      ProductAnalytics.shared.captureFeature(.pairing, outcome: .failed)
+      ProductAnalytics.shared.capturePairingOutcome(lastPairingFailure?.analyticsOutcome ?? .failed)
       ProductAnalytics.shared.captureError(.pairing)
     }
   }
@@ -5003,15 +5081,15 @@ final class SyncService: ObservableObject {
   /// friendly "Set a PIN" screen instead of showing a dead-end red string.
   static let pairingPinNotSetCode = "pin_not_set"
 
-  private func friendlyPairingFailure(_ raw: Any) -> (message: String, code: String?) {
+  private func friendlyPairingFailure(_ raw: Any) -> (message: String, code: SyncPairingFailureCode?) {
     let error = (raw as? [String: Any])?["error"] as? [String: Any]
-    let code = error?["code"] as? String
+    let code = SyncPairingFailureCode(hostCode: error?["code"] as? String)
     let message = error?["message"] as? String
 
     switch code {
-    case "invalid_pin":
+    case .invalidPin:
       return ("Incorrect PIN.", code)
-    case "pin_not_set":
+    case .pinNotSet:
       return ("No PIN set on that machine yet.", code)
     default:
       return (message ?? "Pairing failed.", code)
@@ -9101,6 +9179,29 @@ final class SyncService: ObservableObject {
     return connectAttemptGeneration
   }
 
+  private func beginProjectSwitchTiming() {
+    let now = ProcessInfo.processInfo.systemUptime
+    projectSwitchTimingStartedAt = now
+    projectSwitchTimingLastPhaseAt = now
+    syncConnectLog.notice("ADE_SYNC_TRACE project_switch phase=request_started elapsedMs=0 phaseMs=0")
+  }
+
+  private func logProjectSwitchPhase(_ phase: String, completed: Bool = false) {
+    guard let startedAt = projectSwitchTimingStartedAt else { return }
+    let now = ProcessInfo.processInfo.systemUptime
+    let phaseStartedAt = projectSwitchTimingLastPhaseAt ?? startedAt
+    let elapsedMs = Int((max(0, now - startedAt) * 1_000).rounded())
+    let phaseMs = Int((max(0, now - phaseStartedAt) * 1_000).rounded())
+    syncConnectLog.notice(
+      "ADE_SYNC_TRACE project_switch phase=\(phase, privacy: .public) elapsedMs=\(elapsedMs) phaseMs=\(phaseMs)"
+    )
+    projectSwitchTimingLastPhaseAt = now
+    if completed {
+      projectSwitchTimingStartedAt = nil
+      projectSwitchTimingLastPhaseAt = nil
+    }
+  }
+
   private func markConnectAttemptStarted(_ generation: UInt64) {
     guard isCurrentConnectAttempt(generation) else { return }
     connectAttemptStartedAt = ProcessInfo.processInfo.systemUptime
@@ -9555,10 +9656,20 @@ final class SyncService: ObservableObject {
     let liveDirectAddressSet = Set(
       matchingDiscovery.flatMap(\.addresses) + matchingDiscovery.compactMap(\.tailscaleAddress)
     )
+    markConnectAttemptStarted(connectAttemptGeneration)
+    let probeStartedAt = ProcessInfo.processInfo.systemUptime
     let racedAddresses = await syncRaceAddressCandidates(
       addresses: addresses,
-      port: portCandidates.first ?? profile.port
+      port: portCandidates.first ?? profile.port,
+      provenAddress: profile.lastSuccessfulAddress
     )
+    if projectSwitchTimingStartedAt != nil {
+      let probeDurationMs = Int((max(0, ProcessInfo.processInfo.systemUptime - probeStartedAt) * 1_000).rounded())
+      syncConnectLog.notice(
+        "ADE_SYNC_TRACE project_switch phase=route_probe_finished durationMs=\(probeDurationMs)"
+      )
+      logProjectSwitchPhase("route_ranked")
+    }
     if racedAddresses != addresses {
       syncConnectLog.info(
         "ADE_SYNC_TRACE reconnect probe reorder raced=[\(syncLogAddressList(racedAddresses), privacy: .public)]"
@@ -9568,7 +9679,7 @@ final class SyncService: ObservableObject {
     let racedDirectAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
       ? syncStalePortRecoveryEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
       : syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
-    let orderedEndpointAttempts = syncRankedEndpointAttempts(
+    var orderedEndpointAttempts = syncRankedEndpointAttempts(
       directAttempts: racedDirectAttempts,
       relayRoutes: usableRelayRoutes,
       relayPort: portCandidates.first ?? profile.port,
@@ -9576,8 +9687,16 @@ final class SyncService: ObservableObject {
       lastSuccessfulAddress: profile.lastSuccessfulAddress,
       liveDirectAddresses: liveDirectAddressSet
     )
+    // Preserve a successful proven route+port ahead of broader kind/health
+    // ranking; otherwise that ranking can undo the fast probe result.
+    if let provenAddress = profile.lastSuccessfulAddress,
+       racedAddresses.first == provenAddress,
+       let provenPort = portCandidates.first {
+      let provenEndpoint = SyncConnectionEndpointAttempt(address: provenAddress, port: provenPort)
+      orderedEndpointAttempts.removeAll { $0 == provenEndpoint }
+      orderedEndpointAttempts.insert(provenEndpoint, at: 0)
+    }
 
-    markConnectAttemptStarted(connectAttemptGeneration)
     let connectedEndpoint: SyncConnectionEndpointAttempt
     do {
       connectedEndpoint = try await syncFirstSuccessfulConnectionEndpoint(
@@ -10216,8 +10335,24 @@ final class SyncService: ObservableObject {
       expectedHostIdentity: expectedHostIdentity,
       connectAttemptGeneration: connectAttemptGeneration
     )
-    await restoreTrackedOpenLanesAfterReconnect()
-    await refreshRemoteProjectCatalog()
+    logProjectSwitchPhase("entered_connected")
+    schedulePostHelloWork(for: connectAttemptGeneration)
+  }
+
+  /// `hello_ok` is the authenticated project/cursor barrier. Everything below
+  /// is restorative or redundant and must not keep the reconnect caller (and
+  /// therefore the Hub transition) on the critical path. Initial hydration is
+  /// already running from `applyHelloPayload`; these two network refreshes can
+  /// interleave with it on the main actor while their awaits are in flight.
+  private func schedulePostHelloWork(for generation: UInt64) {
+    Task { @MainActor [weak self] in
+      guard let self, self.isCurrentConnectAttempt(generation) else { return }
+      async let lanePresence: Void = self.restoreTrackedOpenLanesAfterReconnect()
+      async let projectCatalog: Void = self.refreshRemoteProjectCatalog()
+      _ = await (lanePresence, projectCatalog)
+      guard self.isCurrentConnectAttempt(generation) else { return }
+      self.logProjectSwitchPhase("post_hello_ready", completed: true)
+    }
   }
 
   #if DEBUG
@@ -10673,6 +10808,7 @@ final class SyncService: ObservableObject {
     updateReducedSyncLoad()
     lastError = nil
     lastPairingErrorCode = nil
+    lastPairingFailure = nil
     relayAuthorizationRequirement = nil
     markSyncActivity(force: true)
     saveRemoteCommandDescriptors(commandDescriptors)

@@ -11,6 +11,25 @@ import { normalizeProjectRootPath } from "./projectRoots";
 
 export type ProjectId = string;
 
+export type ProjectCatalogVisibility = "recent" | "system";
+
+export type ProjectRegistrationSource =
+  | "desktop"
+  | "mobile"
+  | "cli-explicit"
+  | "runtime-auto"
+  | "test";
+
+export type ProjectRegistrationIntent = {
+  catalogVisibility: ProjectCatalogVisibility;
+  registrationSource: ProjectRegistrationSource;
+};
+
+export const SYSTEM_PROJECT_REGISTRATION: ProjectRegistrationIntent = {
+  catalogVisibility: "system",
+  registrationSource: "runtime-auto",
+};
+
 export type ProjectRecord = {
   projectId: ProjectId;
   rootPath: string;
@@ -18,11 +37,18 @@ export type ProjectRecord = {
   addedAt: number;
   lastOpenedAt: number;
   gitOriginUrl: string | null;
+  catalogVisibility: ProjectCatalogVisibility;
+  registrationSource: ProjectRegistrationSource;
 };
 
 type ProjectRegistryFile = {
-  version: 1;
+  version: 2;
   projects: ProjectRecord[];
+};
+
+type ProjectRegistryOptions = {
+  /** Desktop recents used only while upgrading a legacy v1 registry. */
+  legacyRecentProjectRoots?: Iterable<string>;
 };
 
 function normalizeRoot(rootPath: string): string {
@@ -68,10 +94,35 @@ function ensureProjectAdeDir(rootPath: string): void {
 }
 
 function emptyFile(): ProjectRegistryFile {
-  return { version: 1, projects: [] };
+  return { version: 2, projects: [] };
 }
 
-function coerceRecord(value: unknown): ProjectRecord | null {
+function isProjectRegistrationSource(
+  value: unknown,
+): value is ProjectRegistrationSource {
+  return (
+    value === "desktop" ||
+    value === "mobile" ||
+    value === "cli-explicit" ||
+    value === "runtime-auto" ||
+    value === "test"
+  );
+}
+
+function isExistingGitRoot(rootPath: string): boolean {
+  try {
+    return (
+      fs.statSync(rootPath).isDirectory() && fs.existsSync(path.join(rootPath, ".git"))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function coerceRecord(
+  value: unknown,
+  registration: ProjectRegistrationIntent,
+): ProjectRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const rootPath =
@@ -100,14 +151,31 @@ function coerceRecord(value: unknown): ProjectRecord | null {
       typeof record.gitOriginUrl === "string" && record.gitOriginUrl.trim()
         ? record.gitOriginUrl.trim()
         : null,
+    catalogVisibility: registration.catalogVisibility,
+    registrationSource: registration.registrationSource,
   };
 }
 
 export class ProjectRegistry {
   private readonly layout: MachineAdeLayout;
+  private readonly legacyRecentProjectRoots: Set<string>;
 
-  constructor(layout: MachineAdeLayout = resolveMachineAdeLayout()) {
+  constructor(
+    layout: MachineAdeLayout = resolveMachineAdeLayout(),
+    options: ProjectRegistryOptions = {},
+  ) {
     this.layout = layout;
+    this.legacyRecentProjectRoots = new Set(
+      [...(options.legacyRecentProjectRoots ?? [])]
+        .map((rootPath) => {
+          try {
+            return normalizeRoot(rootPath);
+          } catch {
+            return "";
+          }
+        })
+        .filter(Boolean),
+    );
   }
 
   get path(): string {
@@ -116,6 +184,12 @@ export class ProjectRegistry {
 
   list(): ProjectRecord[] {
     return this.read().projects;
+  }
+
+  listRecent(): ProjectRecord[] {
+    return this.list().filter(
+      (record) => record.catalogVisibility === "recent",
+    );
   }
 
   get(projectId: ProjectId): ProjectRecord | null {
@@ -127,7 +201,10 @@ export class ProjectRegistry {
     return this.list().find((record) => record.rootPath === normalized) ?? null;
   }
 
-  add(rootPath: string): ProjectRecord {
+  add(
+    rootPath: string,
+    registration: ProjectRegistrationIntent = SYSTEM_PROJECT_REGISTRATION,
+  ): ProjectRecord {
     const normalized = normalizeRoot(rootPath);
     if (isDisallowedProjectRoot(normalized)) {
       throw new Error(
@@ -156,12 +233,39 @@ export class ProjectRegistry {
       addedAt: existing?.addedAt ?? now,
       lastOpenedAt: now,
       gitOriginUrl: existing?.gitOriginUrl ?? readGitOriginUrl(normalized),
+      catalogVisibility:
+        existing?.catalogVisibility === "recent" ||
+        registration.catalogVisibility === "recent"
+          ? "recent"
+          : "system",
+      registrationSource: registration.registrationSource,
     };
     if (existingIndex >= 0) {
       file.projects[existingIndex] = next;
     } else {
       file.projects.push(next);
     }
+    this.write(file);
+    return next;
+  }
+
+  setCatalogVisibilityByRootPath(
+    rootPath: string,
+    catalogVisibility: ProjectCatalogVisibility,
+    registrationSource: ProjectRegistrationSource,
+  ): ProjectRecord | null {
+    const normalized = normalizeRoot(rootPath);
+    const file = this.read();
+    const index = file.projects.findIndex(
+      (record) => record.rootPath === normalized,
+    );
+    if (index < 0) return null;
+    const next: ProjectRecord = {
+      ...file.projects[index]!,
+      catalogVisibility,
+      registrationSource,
+    };
+    file.projects[index] = next;
     this.write(file);
     return next;
   }
@@ -197,22 +301,57 @@ export class ProjectRegistry {
       const parsed = JSON.parse(raw) as unknown;
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
         return emptyFile();
-      const projects = Array.isArray(
-        (parsed as { projects?: unknown }).projects,
-      )
-        ? (parsed as { projects: unknown[] }).projects
-            .map(coerceRecord)
+      const rawFile = parsed as {
+        version?: unknown;
+        projects?: unknown;
+      };
+      const isLegacy = rawFile.version !== 2;
+      const projects = Array.isArray(rawFile.projects)
+        ? rawFile.projects
+            .map((value) => {
+              if (isLegacy) {
+                const legacyRecord = value as Record<string, unknown>;
+                const legacyRoot =
+                  typeof legacyRecord?.rootPath === "string"
+                    ? normalizeRoot(legacyRecord.rootPath)
+                    : "";
+                const matchesDesktopRecents =
+                  legacyRoot.length > 0 &&
+                  this.legacyRecentProjectRoots.has(legacyRoot);
+                return coerceRecord(value, {
+                  catalogVisibility:
+                    matchesDesktopRecents || isExistingGitRoot(legacyRoot)
+                      ? "recent"
+                      : "system",
+                  registrationSource: matchesDesktopRecents
+                    ? "desktop"
+                    : "runtime-auto",
+                });
+              }
+              const record = value as Record<string, unknown>;
+              return coerceRecord(value, {
+                catalogVisibility:
+                  record.catalogVisibility === "recent" ? "recent" : "system",
+                registrationSource: isProjectRegistrationSource(
+                  record.registrationSource,
+                )
+                  ? record.registrationSource
+                  : "runtime-auto",
+              });
+            })
             .filter((entry): entry is ProjectRecord => entry != null)
         : [];
       const seen = new Set<string>();
-      return {
-        version: 1,
+      const file: ProjectRegistryFile = {
+        version: 2,
         projects: projects.filter((project) => {
           if (seen.has(project.rootPath)) return false;
           seen.add(project.rootPath);
           return true;
         }),
       };
+      if (isLegacy) this.write(file);
+      return file;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT")
         return emptyFile();
@@ -227,7 +366,7 @@ export class ProjectRegistry {
       mode: 0o700,
     });
     const tempPath = `${this.layout.projectsPath}.${process.pid}.${Date.now()}.tmp`;
-    const payload = `${JSON.stringify({ version: 1, projects: file.projects }, null, 2)}\n`;
+    const payload = `${JSON.stringify({ version: 2, projects: file.projects }, null, 2)}\n`;
     fs.writeFileSync(tempPath, payload, { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tempPath, this.layout.projectsPath);
   }

@@ -1006,7 +1006,11 @@ async function listProjects(client: RemoteRpcClientLike): Promise<RemoteRuntimeP
 
 async function ensureProject(client: RemoteRpcClientLike, query: string): Promise<RemoteRuntimeProjectRecord> {
   const raw = await withTimeout(
-    client.request("projects.add", { rootPath: query }),
+    client.request("projects.add", {
+      rootPath: query,
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    }),
     REMOTE_RPC_TIMEOUT_MS,
     `Timed out registering remote project ${query}.`,
   );

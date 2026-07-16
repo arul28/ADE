@@ -557,12 +557,18 @@ describe("multi-project RPC server", () => {
       jsonrpc: "2.0",
       id: 2,
       method: "projects.add",
-      params: { rootPath: projectRoot },
+      params: {
+        rootPath: projectRoot,
+        catalogVisibility: "system",
+        registrationSource: "test",
+      },
     });
     expect(added).toMatchObject({
       rootPath: expectedProjectRoot,
       displayName: "project",
       gitOriginUrl: null,
+      catalogVisibility: "system",
+      registrationSource: "test",
     });
 
     const listed = await handler({

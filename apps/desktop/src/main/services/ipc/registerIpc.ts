@@ -4168,6 +4168,21 @@ export function registerIpc({
     }
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
+    if (removed && !removed.remote) {
+      const catalogPool = localRuntimeConnectionPool ?? projectRecoveryConnectionPool;
+      if (catalogPool) {
+        try {
+          await catalogPool.setProjectCatalogVisibility(
+            removed.rootPath,
+            "system",
+            "desktop",
+          );
+        } catch {
+          // Best effort; the desktop recent remains forgotten even if the
+          // background service is temporarily unavailable.
+        }
+      }
+    }
     // Only local projects have foreground services / open windows to tear down.
     if (removed && !removed.remote) {
       try {

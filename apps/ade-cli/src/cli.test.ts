@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applySyncWebPairingFlags,
+  automaticProjectRegistrationParams,
   buildAdeCodeArgs,
   buildCliPlan,
   checkLinearReadiness,
@@ -773,7 +774,11 @@ describe("ADE CLI", () => {
         {
           key: "result",
           method: "projects.add",
-          params: { rootPath: "/tmp/project" },
+          params: {
+            rootPath: "/tmp/project",
+            catalogVisibility: "recent",
+            registrationSource: "cli-explicit",
+          },
         },
       ],
     });
@@ -825,6 +830,11 @@ describe("ADE CLI", () => {
     expect(lanes.kind).toBe("execute");
     if (lanes.kind !== "execute") return;
     expect(shouldAutoRegisterProjectForPlan(lanes)).toBe(true);
+    expect(automaticProjectRegistrationParams("/tmp/project")).toEqual({
+      rootPath: "/tmp/project",
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    });
   });
 
   it("builds sync status and pairing PIN commands", () => {

@@ -5,6 +5,10 @@ enum ADEAnalyticsEventName: String, CaseIterable {
   case appOpened = "ade_mobile_app_opened"
   case screenViewed = "ade_mobile_screen_viewed"
   case featureUsed = "ade_mobile_feature_used"
+  case signInOutcome = "ade_mobile_sign_in_outcome"
+  case machineAdoptionOutcome = "ade_mobile_machine_adoption_outcome"
+  case pairingOutcome = "ade_mobile_pairing_outcome"
+  case quickConnectUsed = "ade_mobile_quick_connect_used"
   case error = "ade_mobile_error"
   case analyticsBudget = "ade_mobile_analytics_budget"
 }
@@ -53,6 +57,30 @@ enum ADEAnalyticsOutcome: String, CaseIterable {
   case failed = "failure"
   case approved
   case denied
+}
+
+enum ADEAnalyticsSignInOutcome: String, CaseIterable {
+  case newAccount = "new_account"
+  case returningUser = "returning_user"
+  case failed = "failure"
+}
+
+enum ADEAnalyticsMachineAdoptionOutcome: String, CaseIterable {
+  case adopted
+  case reconnected
+  case failed = "failure"
+}
+
+enum ADEAnalyticsPairingOutcome: String, CaseIterable {
+  case connected
+  case pinNotSet = "pin_not_set"
+  case invalidPin = "invalid_pin"
+  case failed = "failure"
+}
+
+enum ADEAnalyticsQuickConnectSource: String, CaseIterable {
+  case accountMachine = "account_machine"
+  case pairedMachine = "paired_machine"
 }
 
 enum ADEAnalyticsSource: String, CaseIterable {
@@ -335,6 +363,30 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       }
       return sanitized
 
+    case .signInOutcome:
+      guard let outcome = enumString("outcome", as: ADEAnalyticsSignInOutcome.self) else {
+        return nil
+      }
+      return ["outcome": outcome]
+
+    case .machineAdoptionOutcome:
+      guard let outcome = enumString("outcome", as: ADEAnalyticsMachineAdoptionOutcome.self) else {
+        return nil
+      }
+      return ["outcome": outcome]
+
+    case .pairingOutcome:
+      guard let outcome = enumString("outcome", as: ADEAnalyticsPairingOutcome.self) else {
+        return nil
+      }
+      return ["outcome": outcome]
+
+    case .quickConnectUsed:
+      guard let source = enumString("source", as: ADEAnalyticsQuickConnectSource.self) else {
+        return nil
+      }
+      return ["source": source]
+
     case .error:
       guard let errorKind = enumString("error_kind", as: ADEAnalyticsErrorCategory.self),
             properties["recoverable"] as? Bool == true else {
@@ -388,6 +440,10 @@ final class ProductAnalytics {
     .appOpened: 3,
     .screenViewed: 10,
     .featureUsed: 7,
+    .signInOutcome: 2,
+    .machineAdoptionOutcome: 2,
+    .pairingOutcome: 2,
+    .quickConnectUsed: 2,
     .error: 2,
     .analyticsBudget: 1,
   ]
@@ -428,14 +484,11 @@ final class ProductAnalytics {
   }
 
   var isEnabled: Bool {
-    if defaults.object(forKey: Self.enabledDefaultsKey) == nil {
-      return false
-    }
-    return defaults.bool(forKey: Self.enabledDefaultsKey)
+    true
   }
 
   var shouldRequestConsent: Bool {
-    sink.isConfigured && defaults.object(forKey: Self.enabledDefaultsKey) == nil
+    false
   }
 
   func configure(bundle: Bundle = .main) {
@@ -443,15 +496,19 @@ final class ProductAnalytics {
     postHogSink.configure(
       projectToken: Self.configurationValue(for: "ADEPostHogProjectToken", in: bundle),
       host: Self.configurationValue(for: "ADEPostHogHost", in: bundle),
-      enabled: isEnabled
+      enabled: true
     )
   }
 
   func setEnabled(_ enabled: Bool) {
-    defaults.set(enabled, forKey: Self.enabledDefaultsKey)
-    sink.setEnabled(enabled)
+    // Kept temporarily for source compatibility with the Settings UI while
+    // that view is removed by the UI workstream. Native analytics is now
+    // default-on and has no app-level opt-out preference.
+    _ = enabled
+    defaults.removeObject(forKey: Self.enabledDefaultsKey)
+    sink.setEnabled(true)
     Task { @MainActor in
-      await SyncService.shared?.setProductAnalyticsClientEnabled(enabled)
+      await SyncService.shared?.setProductAnalyticsClientEnabled(true)
     }
   }
 
@@ -495,6 +552,38 @@ final class ProductAnalytics {
     )
   }
 
+  func captureSignInOutcome(_ outcome: ADEAnalyticsSignInOutcome) {
+    capture(
+      .signInOutcome,
+      properties: ["outcome": outcome.rawValue],
+      foregroundDeduplicationKey: "sign_in:\(outcome.rawValue)"
+    )
+  }
+
+  func captureMachineAdoptionOutcome(_ outcome: ADEAnalyticsMachineAdoptionOutcome) {
+    capture(
+      .machineAdoptionOutcome,
+      properties: ["outcome": outcome.rawValue],
+      foregroundDeduplicationKey: "machine_adoption:\(outcome.rawValue)"
+    )
+  }
+
+  func capturePairingOutcome(_ outcome: ADEAnalyticsPairingOutcome) {
+    capture(
+      .pairingOutcome,
+      properties: ["outcome": outcome.rawValue],
+      foregroundDeduplicationKey: "pairing_outcome:\(outcome.rawValue)"
+    )
+  }
+
+  func captureQuickConnect(_ source: ADEAnalyticsQuickConnectSource) {
+    capture(
+      .quickConnectUsed,
+      properties: ["source": source.rawValue],
+      foregroundDeduplicationKey: "quick_connect:\(source.rawValue)"
+    )
+  }
+
   func captureError(_ category: ADEAnalyticsErrorCategory) {
     capture(
       .error,
@@ -515,7 +604,7 @@ final class ProductAnalytics {
     properties: [String: Any],
     foregroundDeduplicationKey: String? = nil
   ) {
-    guard isEnabled, sink.canCapture else { return }
+    guard sink.canCapture else { return }
 
     let pendingEvents = lock.withLock { () -> [PendingEvent] in
       var pendingEvents: [PendingEvent] = []

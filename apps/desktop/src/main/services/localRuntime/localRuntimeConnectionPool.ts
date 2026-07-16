@@ -26,6 +26,10 @@ import type {
   SyncRoleSnapshot,
 } from "../../../shared/types";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import type {
+  ProjectRegistrationIntent,
+  ProjectRegistrationSource,
+} from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
@@ -955,10 +959,16 @@ export class LocalRuntimeConnectionPool {
     });
   }
 
-  async ensureProject(rootPath: string): Promise<RemoteRuntimeProjectRecord> {
+  async ensureProject(
+    rootPath: string,
+    registration: ProjectRegistrationIntent = {
+      catalogVisibility: "system",
+      registrationSource: "runtime-auto",
+    },
+  ): Promise<RemoteRuntimeProjectRecord> {
     const normalizedRoot = path.resolve(rootPath);
     const cached = this.projectsByRoot.get(normalizedRoot);
-    if (cached) return cached;
+    if (cached && registration.catalogVisibility === "system") return cached;
 
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
@@ -981,7 +991,7 @@ export class LocalRuntimeConnectionPool {
       try {
         const project = await entry.client.call(
           "projects.add",
-          { rootPath: normalizedRoot },
+          { rootPath: normalizedRoot, ...registration },
           { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS },
         );
         const record = coerceProjects([project])[0];
@@ -1010,6 +1020,27 @@ export class LocalRuntimeConnectionPool {
     // Unreachable: the loop always returns or throws on the final attempt.
     // Required here only for TypeScript's control-flow narrowing.
     throw lastError ?? new Error("Local ADE service did not return a project record.");
+  }
+
+  async setProjectCatalogVisibility(
+    rootPath: string,
+    catalogVisibility: "recent" | "system",
+    registrationSource: ProjectRegistrationSource,
+  ): Promise<RemoteRuntimeProjectRecord | null> {
+    const normalizedRoot = path.resolve(rootPath);
+    const entry = await this.connect();
+    const value = await entry.client.call(
+      "projects.setCatalogVisibility",
+      { rootPath: normalizedRoot, catalogVisibility, registrationSource },
+      { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS },
+    );
+    const record = coerceProjects([value])[0] ?? null;
+    if (record) {
+      this.projectsByRoot.set(normalizedRoot, record);
+    } else {
+      this.projectsByRoot.delete(normalizedRoot);
+    }
+    return record;
   }
 
   async projects(): Promise<RemoteRuntimeProjectRecord[]> {

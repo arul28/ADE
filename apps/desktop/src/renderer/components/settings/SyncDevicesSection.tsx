@@ -4,8 +4,8 @@ import {
   Check,
   Cloud,
   CloudSlash,
-  DeviceMobile,
   Globe,
+  Laptop,
 } from "@phosphor-icons/react";
 import { QRCodeSVG } from "qrcode.react";
 import { createPortal } from "react-dom";
@@ -30,6 +30,7 @@ import {
   SANS_FONT,
   cardStyle,
   dangerButton,
+  inlineBadge,
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
@@ -52,19 +53,6 @@ const detailBlockStyle: React.CSSProperties = {
   borderRadius: 12,
   padding: 14,
   background: "rgba(255,255,255,0.015)",
-};
-
-const detailSummaryStyle: React.CSSProperties = {
-  cursor: "pointer",
-  color: COLORS.textPrimary,
-  fontFamily: SANS_FONT,
-  fontSize: 13,
-  fontWeight: 600,
-  listStyle: "none",
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: 12,
 };
 
 const panelStyle: React.CSSProperties = {
@@ -254,6 +242,60 @@ export function isSyncHost(status: SyncRoleSnapshot): boolean {
 // This-Mac card — persistent header block above the Connections tabs.
 // ---------------------------------------------------------------------------
 
+function platformLabel(platform: string | undefined): string {
+  switch (platform) {
+    case "darwin":
+      return "macOS";
+    case "win32":
+      return "Windows";
+    case "linux":
+      return "Linux";
+    default:
+      return "this computer";
+  }
+}
+
+// Which of the three inbound routes are actually reachable right now. Unknown or
+// down routes are omitted so the line only ever advertises a working path.
+function reachableRouteLabels(status: SyncRoleSnapshot): string[] {
+  const routes: string[] = [];
+  const health = status.routeHealth;
+  if (health?.listener?.listenerBound && health.listener.loopbackAdeValidated) {
+    routes.push("Wi-Fi");
+  }
+  if (health?.tailscale?.tailscaleReachable) {
+    routes.push("Tailscale");
+  }
+  if (
+    health?.relay?.reason == null &&
+    health?.relay?.relayControlConnected &&
+    health?.relay?.relayBridgeValidated
+  ) {
+    routes.push("Relay");
+  }
+  return routes;
+}
+
+// One-shot fetch of the local build/platform for the This-Mac detail line.
+function useAppInfoLine(): { version: string; platform: string } | null {
+  const [info, setInfo] = useState<{ version: string; platform: string } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    window.ade?.app
+      ?.getInfo?.()
+      ?.then((next) => {
+        if (!cancelled && next) {
+          setInfo({ version: next.appVersion, platform: platformLabel(next.platform) });
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return info;
+}
+
 export function ThisMacCard({
   sync,
   accountSignedIn,
@@ -262,6 +304,7 @@ export function ThisMacCard({
   accountSignedIn: boolean;
 }) {
   const { status, busy, error, notice } = sync;
+  const appInfo = useAppInfoLine();
 
   if (sync.loading) {
     return <div style={helperTextStyle}>Getting connection details…</div>;
@@ -290,6 +333,7 @@ export function ThisMacCard({
   const host = isSyncHost(status);
   const machineName = status.runtimeName?.trim() || status.localDevice.name || "This Mac";
   const acceptsConnections = acceptsConnectionsState(status, host);
+  const routeLabels = reachableRouteLabels(status);
 
   return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
@@ -307,21 +351,27 @@ export function ThisMacCard({
             border: `1px solid ${COLORS.accentBorder}`,
           }}
         >
-          <DeviceMobile size={17} weight="duotone" color={COLORS.accent} />
+          <Laptop size={17} weight="duotone" color={COLORS.accent} />
         </span>
         <div style={{ minWidth: 0 }}>
-          <div
-            style={{
-              color: COLORS.textPrimary,
-              fontFamily: SANS_FONT,
-              fontSize: 14,
-              fontWeight: 700,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {machineName}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+            <span
+              style={{
+                color: COLORS.textPrimary,
+                fontFamily: SANS_FONT,
+                fontSize: 14,
+                fontWeight: 700,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                minWidth: 0,
+              }}
+            >
+              {machineName}
+            </span>
+            <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+              This Mac
+            </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
             {accountSignedIn ? (
@@ -362,6 +412,21 @@ export function ThisMacCard({
         </span>
       </div>
 
+      {(host && routeLabels.length > 0) || appInfo ? (
+        <div style={{ display: "grid", gap: 3, paddingLeft: 16, marginTop: -6 }}>
+          {host && routeLabels.length > 0 ? (
+            <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>
+              Reachable via {routeLabels.join(" · ")}
+            </div>
+          ) : null}
+          {appInfo ? (
+            <div style={{ ...helperTextStyle, lineHeight: 1.4 }}>
+              ADE {appInfo.version} · {appInfo.platform}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
       {host ? (
         <PinManager
           pin={status.pairingPin}
@@ -371,18 +436,6 @@ export function ThisMacCard({
           onGenerate={sync.generatePin}
           onRemove={sync.clearPin}
         />
-      ) : null}
-
-      {host && status.pairingConnectInfo ? (
-        <details style={{ ...panelStyle, gap: 0 }}>
-          <summary style={detailSummaryStyle}>
-            <span>Connect a phone</span>
-            <span style={helperTextStyle}>Scan to pair</span>
-          </summary>
-          <div style={{ marginTop: 12, display: "flex", justifyContent: "center" }}>
-            <PairQrPanel connectInfo={status.pairingConnectInfo} title="Pairing QR code" />
-          </div>
-        </details>
       ) : null}
 
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}

@@ -80,7 +80,7 @@ describe("MachinePicker account states", () => {
   it("uses account sign-in for new connections without showing PIN or pairing-link entry points", () => {
     const { onSignIn } = renderPicker(account());
 
-    expect(screen.getByText("Sign in to connect this browser to your Macs, wherever they are.")).toBeTruthy();
+    expect(screen.getByText("Sign in to open your Macs in the browser.")).toBeTruthy();
     expect(screen.queryByText(/pairing link/i)).toBeNull();
     expect(screen.queryByText(/pairing code/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));

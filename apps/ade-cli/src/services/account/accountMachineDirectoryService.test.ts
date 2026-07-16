@@ -416,6 +416,20 @@ describe("AccountMachineDirectoryService", () => {
 });
 
 describe("account machine registration publisher", () => {
+  it("suffixes Beta and Alpha machine names but never stable names", () => {
+    const registrationName = (packageChannel: string | null) =>
+      buildAccountMachineRegistration({
+        machineKey: "machine-studio",
+        snapshot: publisherSnapshot(),
+        packageChannel,
+      })?.name;
+
+    expect(registrationName("beta")).toBe("Arul's Mac Studio · Beta");
+    expect(registrationName(" ALPHA ")).toBe("Arul's Mac Studio · Alpha");
+    expect(registrationName("stable")).toBe("Arul's Mac Studio");
+    expect(registrationName(null)).toBe("Arul's Mac Studio");
+  });
+
   it("publishes health-validated routes without honoring the legacy relay toggle bit", () => {
     const snapshot = publisherSnapshot();
     snapshot.routeHealth.relay.enabled = false;

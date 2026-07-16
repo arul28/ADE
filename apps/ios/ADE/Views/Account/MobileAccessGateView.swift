@@ -13,79 +13,73 @@ struct MobileAccessGateView: View {
 
   var body: some View {
     NavigationStack {
-      ScrollView {
-        VStack(spacing: 24) {
-          Spacer(minLength: 36)
+      VStack(spacing: 0) {
+        Spacer(minLength: 44)
 
-          Image("BrandMark")
-            .resizable()
-            .scaledToFit()
-            .frame(width: 72, height: 72)
-            .accessibilityHidden(true)
+        // Hero: the real ADE wordmark, big and centered, over a single line of
+        // device-neutral copy. No explanatory paragraphs (M1).
+        Image("BrandMark")
+          .resizable()
+          .renderingMode(.original)
+          .interpolation(.high)
+          .aspectRatio(contentMode: .fit)
+          .frame(maxWidth: 260)
+          .frame(height: 132)
+          .frame(maxWidth: .infinity)
+          .shadow(color: ADEColor.purpleAccent.opacity(0.45), radius: 24)
+          .accessibilityLabel("ADE")
+          .padding(.bottom, 24)
 
-          VStack(spacing: 8) {
-            Text(accountSignedIn ? "Choose your Mac" : "Connect your Mac")
-              .font(.largeTitle)
-              .bold()
-              .multilineTextAlignment(.center)
-            Text(accountSignedIn
-              ? "Choose a Mac on your ADE account, or pair one directly."
-              : "ADE Mobile works with ADE on a Mac. Sign in to find your Macs and connect from anywhere, or pair one directly without an account.")
-              .font(.body)
-              .foregroundStyle(.secondary)
-              .multilineTextAlignment(.center)
+        Text("Your agents, anywhere.")
+          .font(.system(.title3, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .multilineTextAlignment(.center)
+
+        Spacer()
+
+        VStack(spacing: 14) {
+          Button {
+            accountConnectionError = nil
+            presentedSheet = .signIn
+          } label: {
+            Text(accountSignedIn ? "View your Macs" : "Sign in")
+              .font(.headline)
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 15)
           }
+          .buttonStyle(.glassProminent)
+          .tint(ADEColor.accent)
+          .disabled(!accountConfigured || accountLoading)
 
-          VStack(spacing: 12) {
-            Button(accountSignedIn ? "View your Macs" : "Sign in to find your Macs", systemImage: "person.crop.circle") {
-              accountConnectionError = nil
-              presentedSheet = .signIn
+          Button {
+            if hasPairedHost {
+              onContinue()
+            } else {
+              presentedSheet = .pairMachine
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(!accountConfigured || accountLoading)
+          } label: {
+            Text("Continue without an account")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(minHeight: 44)
+              .frame(maxWidth: .infinity)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
 
-            Button("Continue without an account", systemImage: "arrow.right") {
-              if hasPairedHost {
-                onContinue()
-              } else {
-                presentedSheet = .pairMachine
-              }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.large)
-
-            Text(hasPairedHost
-              ? "Use your saved Mac now. You can connect another Mac from Settings."
-              : "Next, choose a simple way to connect your Mac on the same Wi-Fi. An account is not required; Tailscale can connect it from elsewhere.")
+          if let accountConnectionError {
+            Text(accountConnectionError)
               .font(.footnote)
-              .foregroundStyle(.secondary)
+              .foregroundStyle(ADEColor.danger)
               .multilineTextAlignment(.center)
-
-            if accountLoading {
-              ProgressView("Checking account…")
-                .font(.subheadline)
-            } else if !accountConfigured {
-              Text("Sign-in is unavailable in this build. You can still connect to a Mac without an account.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            }
-
-            if let accountConnectionError {
-              Text(accountConnectionError)
-                .font(.footnote)
-                .foregroundStyle(.red)
-                .multilineTextAlignment(.center)
-            }
           }
-          .frame(maxWidth: 420)
-
-          Spacer(minLength: 24)
         }
-        .padding()
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: 420)
+        .padding(.horizontal, 28)
+        .padding(.bottom, 40)
       }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background(AccountAuroraBackground().ignoresSafeArea())
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
     }

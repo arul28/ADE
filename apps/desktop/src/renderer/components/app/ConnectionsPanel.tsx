@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   DesktopTower,
@@ -11,6 +11,7 @@ import type { CSSProperties } from "react";
 import type {
   AdeAccountMachinesResult,
   GitHubStatus,
+  RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeTarget,
 } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -207,6 +208,8 @@ export function ConnectionsPanel({
   const [tab, setTab] = useState<ConnectionsPanelTab>(initialTab);
   const [accountMachines, setAccountMachines] = useState<AdeAccountMachinesResult | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const [connectionSnapshot, setConnectionSnapshot] =
+    useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const sync = useSyncConnections();
   const { state: confirmState, confirmAsync, close: closeConfirm } = useConfirmDialog();
 
@@ -226,6 +229,38 @@ export function ConnectionsPanel({
       cancelled = true;
     };
   }, []);
+
+  // Track remote-machine connections so the Machines tab can show a live dot.
+  // The Phone/Web dots reuse the sync device list already fetched above.
+  useEffect(() => {
+    let cancelled = false;
+    const { getConnectionSnapshot, onConnectionSnapshotChanged } = window.ade.remoteRuntime;
+    if (getConnectionSnapshot) {
+      void getConnectionSnapshot()
+        .then((snapshot) => {
+          if (!cancelled && snapshot) setConnectionSnapshot(snapshot);
+        })
+        .catch(() => {});
+    }
+    const unsubscribe = onConnectionSnapshotChanged?.((snapshot) => {
+      if (!cancelled) setConnectionSnapshot(snapshot);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  const activeTabs = useMemo<Record<ConnectionsPanelTab, boolean>>(() => {
+    const machines = (connectionSnapshot?.connectedCount ?? 0) > 0;
+    const mobile = sync.devices.some(
+      (device) => !device.isLocal && device.deviceType === "phone" && device.connectionState === "connected",
+    );
+    const web = sync.devices.some(
+      (device) => !device.isLocal && device.deviceType === "browser" && device.connectionState === "connected",
+    );
+    return { machines, mobile, web };
+  }, [connectionSnapshot, sync.devices]);
 
   const loadAccountMachines = useCallback(async () => {
     const api = (window.ade as typeof window.ade & {
@@ -290,6 +325,20 @@ export function ConnectionsPanel({
           >
             <Icon size={15} weight="regular" />
             {label}
+            {activeTabs[key] ? (
+              <span
+                aria-hidden
+                title="Active connection"
+                style={{
+                  width: 6,
+                  height: 6,
+                  borderRadius: "50%",
+                  flexShrink: 0,
+                  background: COLORS.success,
+                  boxShadow: `0 0 0 2px color-mix(in srgb, ${COLORS.success} 22%, transparent)`,
+                }}
+              />
+            ) : null}
           </button>
         ))}
       </div>

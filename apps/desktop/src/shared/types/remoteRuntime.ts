@@ -97,6 +97,8 @@ export type RemoteRuntimeProjectRecord = {
   addedAt: number;
   lastOpenedAt: number;
   gitOriginUrl: string | null;
+  catalogVisibility?: "recent" | "system";
+  registrationSource?: "desktop" | "mobile" | "cli-explicit" | "runtime-auto" | "test";
   /**
    * The project's icon as resolved on the host machine, inlined as a base64
    * data URL so a connected desktop can render the real project logo in its

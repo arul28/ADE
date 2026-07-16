@@ -29,7 +29,10 @@ import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
 import {
   ProjectRegistry,
+  SYSTEM_PROJECT_REGISTRATION,
   type ProjectId,
+  type ProjectRegistrationIntent,
+  type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import { PersonalChatScope } from "./services/personalChats/personalChatScope";
@@ -93,6 +96,7 @@ const RUNTIME_METHODS = new Set([
   "machineInfo.get",
   "projects.list",
   "projects.add",
+  "projects.setCatalogVisibility",
   "projects.remove",
   "projects.touch",
   "projects.browseDirectories",
@@ -418,6 +422,24 @@ function readProjectId(params: Record<string, unknown>): ProjectId | null {
   return typeof value === "string" && value.trim().length > 0
     ? value.trim()
     : null;
+}
+
+function readProjectRegistrationIntent(
+  params: Record<string, unknown>,
+): ProjectRegistrationIntent {
+  const catalogVisibility =
+    params.catalogVisibility === "recent" || params.catalogVisibility === "system"
+      ? params.catalogVisibility
+      : SYSTEM_PROJECT_REGISTRATION.catalogVisibility;
+  const registrationSource: ProjectRegistrationSource =
+    params.registrationSource === "desktop" ||
+    params.registrationSource === "mobile" ||
+    params.registrationSource === "cli-explicit" ||
+    params.registrationSource === "runtime-auto" ||
+    params.registrationSource === "test"
+      ? params.registrationSource
+      : SYSTEM_PROJECT_REGISTRATION.registrationSource;
+  return { catalogVisibility, registrationSource };
 }
 
 function omitProjectId(
@@ -870,7 +892,27 @@ export function createMultiProjectRpcRequestHandler(
           "projects.add requires rootPath.",
         );
       }
-      return decorateProjectWithIcon(projectRegistry.add(rootPath));
+      return decorateProjectWithIcon(
+        projectRegistry.add(rootPath, readProjectRegistrationIntent(params)),
+      );
+    }
+
+    if (method === "projects.setCatalogVisibility") {
+      const rootPath =
+        typeof params.rootPath === "string" ? params.rootPath.trim() : "";
+      if (!rootPath) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          "projects.setCatalogVisibility requires rootPath.",
+        );
+      }
+      const registration = readProjectRegistrationIntent(params);
+      const project = projectRegistry.setCatalogVisibilityByRootPath(
+        rootPath,
+        registration.catalogVisibility,
+        registration.registrationSource,
+      );
+      return project ? decorateProjectWithIcon(project) : null;
     }
 
     if (method === "projects.remove") {
@@ -950,7 +992,12 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().createLocalProject(
           readCreateProjectInput(params),
         );
-      return decorateProjectWithIcon(projectRegistry.add(result.rootPath));
+      return decorateProjectWithIcon(
+        projectRegistry.add(
+          result.rootPath,
+          readProjectRegistrationIntent(params),
+        ),
+      );
     }
 
     if (method === "projects.clone") {
@@ -958,7 +1005,12 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().cloneRepository(
           readCloneProjectInput(params),
         );
-      return decorateProjectWithIcon(projectRegistry.add(result.rootPath));
+      return decorateProjectWithIcon(
+        projectRegistry.add(
+          result.rootPath,
+          readProjectRegistrationIntent(params),
+        ),
+      );
     }
 
     if (method === "projects.listMyGitHubRepos") {
