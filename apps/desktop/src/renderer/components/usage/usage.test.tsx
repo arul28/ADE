@@ -22,6 +22,7 @@ import {
 } from "../../lib/workSidebarBrowserResize";
 
 type UsageComponentTestBridge = {
+  app: Pick<Window["ade"]["app"], "openExternal">;
   usage: Pick<
     Window["ade"]["usage"],
     "getSnapshot" | "refresh" | "refreshHistory" | "noteDemand" | "getBudgetConfig" | "saveBudgetConfig" | "onUpdate"
@@ -262,6 +263,9 @@ describe("usage components", () => {
   beforeEach(() => {
     const snapshot = makeQuotaPanelSnapshot();
     const bridge = {
+      app: {
+        openExternal: vi.fn<[url: string], Promise<void>>(async () => {}),
+      },
       usage: {
         getSnapshot: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
         refresh: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
@@ -291,6 +295,20 @@ describe("usage components", () => {
       expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
       expect(await screen.findByText("63.0% used")).toBeTruthy();
       expect(screen.queryByText("37.0% remaining")).toBeNull();
+    });
+
+    it("opens each provider usage page in the user's browser", async () => {
+      render(<UsageQuotaPanel />);
+
+      await screen.findByText("Codex");
+      fireEvent.click(screen.getByRole("button", { name: "Open Claude usage in browser" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open Codex usage in browser" }));
+
+      expect(window.ade.app.openExternal).toHaveBeenCalledTimes(2);
+      expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://claude.ai/new#settings/usage");
+      expect(window.ade.app.openExternal).toHaveBeenCalledWith(
+        "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+      );
     });
 
     it("renders weekly and monthly windows as separate meters", async () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowClockwise, Gauge } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, Gauge } from "@phosphor-icons/react";
 import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
@@ -11,15 +11,24 @@ import type {
   UsageWindow,
 } from "../../../shared/types";
 import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
+import { openExternalUrl } from "../../lib/openExternal";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import { cn } from "../ui/cn";
 
 const PROVIDER_ORDER: UsageProvider[] = ["claude", "codex"];
 
-const PROVIDER_META: Record<UsageProvider, { label: string; color: string }> = {
-  claude: { label: "Claude", color: "#D97757" },
-  codex: { label: "Codex", color: providerChatAccent("codex")! },
+const PROVIDER_META: Record<UsageProvider, { label: string; color: string; usageUrl?: string }> = {
+  claude: {
+    label: "Claude",
+    color: "#D97757",
+    usageUrl: "https://claude.ai/new#settings/usage",
+  },
+  codex: {
+    label: "Codex",
+    color: providerChatAccent("codex")!,
+    usageUrl: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+  },
   cursor: { label: "Cursor", color: "#00BFA5" },
 };
 
@@ -553,7 +562,7 @@ function ProviderUsageCard({
     return (
       <div className="rounded-xl px-4 py-3.5" style={CARD_STYLE}>
         <div className="flex items-start justify-between gap-3">
-          <ProviderHeading provider={provider} color={meta.color} label={meta.label} dim />
+          <ProviderHeading provider={provider} color={meta.color} label={meta.label} usageUrl={meta.usageUrl} dim />
           <span className="text-right text-[10px] text-fg/40">
             {providerSourceLabel(status)} · {providerUpdatedLabel(status, nowMs)}
           </span>
@@ -587,7 +596,7 @@ function ProviderUsageCard({
   return (
     <div className="rounded-xl px-4 py-3.5" style={CARD_STYLE}>
       <div className="mb-3 flex items-start justify-between gap-3">
-        <ProviderHeading provider={provider} color={meta.color} label={meta.label} />
+        <ProviderHeading provider={provider} color={meta.color} label={meta.label} usageUrl={meta.usageUrl} />
         <span className="text-right text-[10px] text-fg/40">
           {providerSourceLabel(status)} · {providerUpdatedLabel(status, nowMs)}
         </span>
@@ -672,14 +681,17 @@ function ProviderHeading({
   provider,
   color,
   label,
+  usageUrl,
   dim,
 }: {
   provider: UsageProvider;
   color: string;
   label: string;
+  usageUrl?: string;
   dim?: boolean;
 }) {
   const Logo = provider === "claude" ? ClaudeLogo : provider === "codex" ? CodexLogo : null;
+  const providerLabel = PROVIDER_META[provider].label;
   return (
     <div className="flex items-center gap-2">
       {Logo ? (
@@ -698,6 +710,17 @@ function ProviderHeading({
         />
       )}
       <span className="text-[12.5px] font-semibold tracking-[-0.01em] text-fg">{label}</span>
+      {usageUrl ? (
+        <button
+          type="button"
+          onClick={() => openExternalUrl(usageUrl)}
+          className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/40 hover:bg-white/[0.06] hover:text-fg/75"
+          aria-label={`Open ${providerLabel} usage in browser`}
+          title={`Open ${providerLabel} usage in browser`}
+        >
+          <ArrowSquareOut size={12} weight="regular" />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -719,7 +742,7 @@ function ExtraUsageCard({ extra, reducedMotion }: { extra: ExtraUsage; reducedMo
   return (
     <div className="rounded-xl px-4 py-3.5" style={CARD_STYLE}>
       <div className="flex items-center justify-between gap-3">
-        <ProviderHeading provider={extra.provider} color={meta.color} label={`${meta.label} extra usage`} />
+        <ProviderHeading provider={extra.provider} color={meta.color} label={`${meta.label} extra usage`} usageUrl={meta.usageUrl} />
         <span className="text-[11px] tabular-nums text-fg/70">
           {formatUsd(usedUsd)}
           {limitUsd > 0 ? <span className="text-fg/40"> / {formatUsd(limitUsd)}</span> : null}
