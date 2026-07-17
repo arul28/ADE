@@ -2100,10 +2100,11 @@ export function AgentChatComposer({
     chip.appendChild(label);
     updateSmartLinkChipNode(chip, initial);
 
-    let request = smartLinkPreviewCacheRef.current.get(initial.url);
+    const cacheable = initial.provider === "generic" || initial.provider === "ade";
+    let request = cacheable ? smartLinkPreviewCacheRef.current.get(initial.url) : undefined;
     if (!request) {
       request = window.ade.agentChat.resolveSmartLinkPreview({ url: initial.url }).catch(() => initial);
-      smartLinkPreviewCacheRef.current.set(initial.url, request);
+      if (cacheable) smartLinkPreviewCacheRef.current.set(initial.url, request);
     }
     void request.then((resolved) => {
       if (!resolved || !chip.isConnected || chip.dataset.smartLinkUrl !== resolved.url) return;
