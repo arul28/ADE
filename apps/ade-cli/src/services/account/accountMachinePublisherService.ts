@@ -231,8 +231,17 @@ export function createAccountMachinePublisherService(options: {
 
     let baseUrl: string | null = null;
     try {
+      const configuredBaseUrl = options.directoryBaseUrl?.();
+      let packagedSafeBaseUrl = configuredBaseUrl;
+      if (shouldIgnoreDevelopmentAccountDirectoryUrl(
+        configuredBaseUrl,
+        process.env,
+      )) {
+        warnDevelopmentClerkIgnored();
+        packagedSafeBaseUrl = undefined;
+      }
       baseUrl = resolveTrustedAccountDirectoryBaseUrl(
-        options.directoryBaseUrl?.(),
+        packagedSafeBaseUrl,
       );
     } catch {
       baseUrl = null;

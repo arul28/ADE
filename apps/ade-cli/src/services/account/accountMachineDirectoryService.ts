@@ -17,6 +17,7 @@ import {
   resolveTrustedAccountDirectoryBaseUrl,
   selectAccountMachine,
   shouldIgnoreDevelopmentAccountDirectoryUrl,
+  warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
 import type { AccountAuthService } from "./accountAuthService";
 import { defaultRelayUrl } from "../sync/syncCloudRelayStore";
@@ -107,11 +108,14 @@ export type AccountMachineListOptions = {
 
 export type AccountMachineDeleteOptions = AccountMachineListOptions;
 
-function rawAccountDirectoryEnvironmentFallback(): string | undefined {
-  const rawUrl = process.env.ADE_ACCOUNT_DIRECTORY_URL;
-  return shouldIgnoreDevelopmentAccountDirectoryUrl(rawUrl, process.env)
-    ? undefined
-    : rawUrl;
+function packagedSafeAccountDirectoryOverride(
+  rawUrl: string | null | undefined,
+): string | undefined {
+  if (shouldIgnoreDevelopmentAccountDirectoryUrl(rawUrl, process.env)) {
+    warnDevelopmentClerkIgnored();
+    return undefined;
+  }
+  return rawUrl ?? undefined;
 }
 
 export class AccountMachineDirectoryService {
@@ -144,8 +148,9 @@ export class AccountMachineDirectoryService {
     }
     return await fetchAccountMachines({
       baseUrl: resolveTrustedAccountDirectoryBaseUrl(
-        this.options.directoryBaseUrl?.()
-          ?? rawAccountDirectoryEnvironmentFallback(),
+        packagedSafeAccountDirectoryOverride(
+          this.options.directoryBaseUrl?.() ?? process.env.ADE_ACCOUNT_DIRECTORY_URL,
+        ),
       ),
       accessToken: token,
       fetchImpl: this.options.fetchImpl,
@@ -174,7 +179,9 @@ export class AccountMachineDirectoryService {
     if (!token) throw new Error("Your ADE account session expired. Sign in again.");
 
     const baseUrl = resolveTrustedAccountDirectoryBaseUrl(
-      this.options.directoryBaseUrl?.() ?? rawAccountDirectoryEnvironmentFallback(),
+      packagedSafeAccountDirectoryOverride(
+        this.options.directoryBaseUrl?.() ?? process.env.ADE_ACCOUNT_DIRECTORY_URL,
+      ),
     );
     if (!baseUrl) {
       throw new Error(

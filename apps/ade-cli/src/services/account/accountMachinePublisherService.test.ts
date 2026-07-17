@@ -447,6 +447,29 @@ describe("account machine registration publisher", () => {
     }));
   });
 
+  it("ignores a development directory at the core publisher boundary when packaged", async () => {
+    vi.stubEnv("ADE_RUNTIME_PACKAGED", "1");
+    vi.stubEnv("ADE_ALLOW_DEVELOPMENT_CLERK", "");
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => `${DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL}/tenant`,
+      fetchImpl,
+    });
+
+    await service.publishNow();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/account/machines/register`,
+    );
+  });
+
   it("never sends the bearer to an untrusted URL or logs it on failure", async () => {
     const fetchImpl = vi.fn(async () => new Response("no", { status: 503 }));
     const warn = vi.fn();

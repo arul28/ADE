@@ -189,6 +189,33 @@ describe("AccountMachineDirectoryService", () => {
     }
   });
 
+  it("ignores an explicit development directory callback when packaged", async () => {
+    vi.stubEnv("ADE_RUNTIME_PACKAGED", "1");
+    vi.stubEnv("ADE_ALLOW_DEVELOPMENT_CLERK", "");
+    try {
+      const fetchImpl = directoryFetch([]);
+      const service = new AccountMachineDirectoryService({
+        getStatus: () => ({ signedIn: true, userId: "user", email: null, name: null, expiresAt: null }),
+        getAccessToken: async () => "account-token",
+      }, {
+        directoryBaseUrl: () => `${DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL}/tenant`,
+        fetchImpl,
+      });
+
+      await expect(service.listMachines()).resolves.toMatchObject({ state: "ok" });
+      await expect(service.deleteMachine("mk-studio")).resolves.toEqual({
+        ok: true,
+        machineKey: "mk-studio",
+      });
+      expect((fetchImpl as ReturnType<typeof vi.fn>).mock.calls.map(([input]) => input)).toEqual([
+        `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/account/machines`,
+        `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/account/machines/mk-studio`,
+      ]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps offline machines visible but rejects connecting to them", async () => {
     const offline = machine({ online: false, lastSeenAt: 1 });
     const service = new AccountMachineDirectoryService({

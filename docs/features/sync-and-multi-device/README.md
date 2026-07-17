@@ -232,7 +232,11 @@ Runtime support files outside `services/sync/`:
   to the production directory instead. This follows the same atomic packaged
   Clerk policy as OAuth and attestation resolution: the distributed CLI/brain
   and Electron entry points set `ADE_RUNTIME_PACKAGED=1`; development Clerk
-  hosts cannot produce a mixed development/production configuration; and
+  hosts cannot produce a mixed development/production configuration;
+  persisted or environment-provided credentials pinned to a development
+  issuer/client (including an access-token development `iss` claim) are rejected
+  before refresh or publication, with persisted sessions cleared to signed-out;
+  and
   `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
   hatch. Source-checkout runtimes and non-development custom issuers keep their
   existing override behavior.
