@@ -76,6 +76,25 @@ describe("smart links", () => {
     await expect(streamedResult).rejects.toThrow("too large");
   });
 
+  it("enforces a wall-clock deadline even while preview work remains active", async () => {
+    vi.useFakeTimers();
+    try {
+      let operationSignal: AbortSignal | undefined;
+      const result = smartLinkPreviewTesting.withWallClockTimeout(2_500, async (signal) => {
+        operationSignal = signal;
+        return await new Promise<never>(() => undefined);
+      });
+      const rejection = expect(result).rejects.toThrow("timed out");
+
+      await vi.advanceTimersByTimeAsync(2_500);
+
+      await rejection;
+      expect(operationSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reconciles controlled clears without resetting local editor updates", () => {
     expect(shouldReconcileSmartLinkDraft("", "https://example.com", "https://example.com")).toBe(true);
     expect(shouldReconcileSmartLinkDraft("new prompt", "old prompt", "old prompt")).toBe(true);

@@ -127,6 +127,26 @@ type BoundedResponse = {
   data: Buffer;
 };
 
+async function withWallClockTimeout<T>(
+  timeoutMs: number,
+  operation: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timeout: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      const error = new Error("Link preview request timed out.");
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([operation(controller.signal), timedOut]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
+}
+
 function readBoundedResponse(response: http.IncomingMessage, maxBytes: number): Promise<BoundedResponse> {
   return new Promise<BoundedResponse>((resolve, reject) => {
     response.once("error", reject);
@@ -154,21 +174,24 @@ function readBoundedResponse(response: http.IncomingMessage, maxBytes: number): 
 }
 
 async function requestBounded(url: URL, maxBytes: number, accept: string): Promise<BoundedResponse> {
-  const target = await resolvePublicAddress(url);
-  const requester = url.protocol === "https:" ? https : http;
-  return await new Promise<BoundedResponse>((resolve, reject) => {
-    const request = requester.request(url, {
-      method: "GET",
-      headers: {
-        accept,
-        "accept-encoding": "identity",
-        "user-agent": "ADE-LinkPreview/1.0",
-      },
-      lookup: (_hostname, _options, callback) => callback(null, target.address, target.family),
-    }, (response) => void readBoundedResponse(response, maxBytes).then(resolve, reject));
-    request.setTimeout(REQUEST_TIMEOUT_MS, () => request.destroy(new Error("Link preview request timed out.")));
-    request.on("error", reject);
-    request.end();
+  return await withWallClockTimeout(REQUEST_TIMEOUT_MS, async (signal) => {
+    const target = await resolvePublicAddress(url);
+    signal.throwIfAborted();
+    const requester = url.protocol === "https:" ? https : http;
+    return await new Promise<BoundedResponse>((resolve, reject) => {
+      const request = requester.request(url, {
+        method: "GET",
+        headers: {
+          accept,
+          "accept-encoding": "identity",
+          "user-agent": "ADE-LinkPreview/1.0",
+        },
+        signal,
+        lookup: (_hostname, _options, callback) => callback(null, target.address, target.family),
+      }, (response) => void readBoundedResponse(response, maxBytes).then(resolve, reject));
+      request.on("error", reject);
+      request.end();
+    });
   });
 }
 
@@ -303,4 +326,5 @@ export function clearSmartLinkPreviewCacheForTesting(): void {
 export const smartLinkPreviewTesting = {
   isPublicIpAddress: (address: string): boolean => !isPrivateIp(address),
   readBoundedResponse,
+  withWallClockTimeout,
 };
