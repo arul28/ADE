@@ -36,6 +36,15 @@ const { acquireSyncHostSingletonMock, createDefaultSyncHostServiceMock, createSy
     getPort() {
       return syncHostServiceMockState.port;
     },
+    getLoopbackValidationStatus() {
+      return {
+        port: syncHostServiceMockState.port,
+        loopbackAdeValidated: true,
+        lastFailureAt: null,
+        reason: null,
+        lastSuccessAt: null,
+      };
+    },
     getBootstrapToken() {
       return "test-bootstrap-token";
     },
@@ -740,7 +749,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     const refreshedStatus = await service.getStatus();
     const refreshedCandidates = refreshedStatus.pairingConnectInfo?.addressCandidates ?? [];
-    expect(refreshedCandidates[0]?.kind).toBe("saved");
+    expect(refreshedCandidates[0]?.kind).toBe("lan");
     expect(refreshedCandidates[0]?.host).toBe(refreshedStatus.localDevice.lastHost);
 
     expect(status.pairingConnectInfo?.hostIdentity.deviceId).toBe(localDeviceId);
@@ -1029,6 +1038,15 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         },
         getPort() {
           return attemptedPort;
+        },
+        getLoopbackValidationStatus() {
+          return {
+            port: attemptedPort,
+            loopbackAdeValidated: true,
+            lastFailureAt: null,
+            reason: null,
+            lastSuccessAt: null,
+          };
         },
         getBootstrapToken() {
           return "test-bootstrap-token";
