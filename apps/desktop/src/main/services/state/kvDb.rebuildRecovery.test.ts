@@ -407,7 +407,8 @@ describe("kvDb storage maintenance", () => {
 
   it("reclaims a fragmented file, activates incremental auto-vacuum, and skips a healthy file", async () => {
     const dbPath = makeDbPath();
-    const db = await openKvDb(dbPath, createLogger());
+    const logs: LogEntry[] = [];
+    const db = await openKvDb(dbPath, createLogger(logs));
     closeLater(db);
     db.run("create table maintenance_fragmentation(id integer primary key, payload text not null)");
     db.run("begin immediate");
@@ -433,6 +434,35 @@ describe("kvDb storage maintenance", () => {
     expect(result?.bytesReclaimed).toBeGreaterThan(0);
     expect(fs.statSync(dbPath).size).toBeLessThan(beforeBytes);
     expect(db.get<{ auto_vacuum: number }>("pragma auto_vacuum")?.auto_vacuum).toBe(2);
+
+    // The first fragmented pass ran a one-time full VACUUM.
+    const vacuumModes = () => logs
+      .filter((entry) => entry.event === "db.maintenance_vacuum")
+      .map((entry) => entry.fields.mode);
+    expect(vacuumModes().at(-1)).toBe("full");
+
+    // Re-fragment above the threshold. With incremental auto-vacuum now active,
+    // a second fragmented pass must use the bounded incremental path, never a
+    // second blocking full VACUUM.
+    db.run("begin immediate");
+    for (let index = 0; index < 2_000; index += 1) {
+      db.run(
+        "insert into maintenance_fragmentation(id, payload) values (?, ?)",
+        [index, `${index}-${"z".repeat(4_000)}`],
+      );
+    }
+    db.run("commit");
+    db.flushNow();
+    db.run("delete from maintenance_fragmentation");
+    db.flushNow();
+    const refragPages = Number(db.get<{ freelist_count: number }>("pragma freelist_count")?.freelist_count ?? 0);
+    const refragTotal = Number(db.get<{ page_count: number }>("pragma page_count")?.page_count ?? 0);
+    expect(refragPages / refragTotal).toBeGreaterThan(0.2);
+    const secondFragmented = db.maintenance?.vacuumIfFragmented(0.2);
+    expect(secondFragmented?.skippedReason).toBeNull();
+    expect(secondFragmented?.itemsAffected).toBeGreaterThan(0);
+    expect(vacuumModes().at(-1)).toBe("incremental");
+    expect(vacuumModes().filter((mode) => mode === "full")).toHaveLength(1);
 
     db.run("begin immediate");
     for (let index = 0; index < 256; index += 1) {

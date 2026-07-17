@@ -3,6 +3,20 @@
 // by storageInsightsService via optional chaining so the doctor degrades
 // gracefully on handles that predate the implementation.
 
+// Single source of truth for the retention/count bounds enforced across the
+// automation ingress writer, the kvDb maintenance hooks, and the storage
+// ledger. Hoisted here so a policy change updates every enforcement site and
+// the Settings copy in lockstep.
+const DAY_MS = 24 * 60 * 60 * 1_000;
+/** Automation ingress events older than this are pruned (write-time + doctor). */
+export const INGRESS_EVENT_RETENTION_MS = 7 * DAY_MS;
+/** Newest ingress rows kept per project regardless of age (count cap). */
+export const INGRESS_EVENT_MAX_ROWS_PER_PROJECT = 2_000;
+/** Review artifacts older than this (in days) are deleted. */
+export const REVIEW_ARTIFACT_RETENTION_DAYS = 30;
+/** PR snapshots not updated within this many days are deleted. */
+export const PR_SNAPSHOT_RETENTION_DAYS = 60;
+
 export type DbMaintenanceResult = {
   itemsAffected: number;
   bytesReclaimed: number;

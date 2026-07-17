@@ -10,6 +10,17 @@ import type {
   StorageCategoryId,
   StorageLedgerEntry,
 } from "../../../shared/types/storage";
+import {
+  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
+  INGRESS_EVENT_RETENTION_MS,
+  PR_SNAPSHOT_RETENTION_DAYS,
+  REVIEW_ARTIFACT_RETENTION_DAYS,
+} from "../state/dbMaintenanceApi";
+
+// The DB retention/count policies below derive from the shared enforcement
+// constants so the ledger, the ingress writer, and the kvDb maintenance hooks
+// can never drift apart.
+const INGRESS_EVENT_RETENTION_DAYS = Math.round(INGRESS_EVENT_RETENTION_MS / (24 * 60 * 60 * 1_000));
 
 export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
   // --- Project database tables (§1 evidence) -------------------------------
@@ -18,7 +29,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     kind: "table",
     description: "Webhook history — inbound automation events. 99.99% are written and never read.",
     policyClass: "operational",
-    policy: { maxAgeDays: 7, maxRows: 2_000 },
+    policy: { maxAgeDays: INGRESS_EVENT_RETENTION_DAYS, maxRows: INGRESS_EVENT_MAX_ROWS_PER_PROJECT },
     enforcement: "both",
   },
   {
@@ -34,7 +45,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     kind: "table",
     description: "Review artifacts — cached code-review results, re-derivable from a fresh run.",
     policyClass: "derived",
-    policy: { maxAgeDays: 30 },
+    policy: { maxAgeDays: REVIEW_ARTIFACT_RETENTION_DAYS },
     enforcement: "both",
   },
   {
@@ -42,7 +53,7 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     kind: "table",
     description: "PR cache — pull-request metadata re-fetchable from GitHub.",
     policyClass: "derived",
-    policy: { maxAgeDays: 60 },
+    policy: { maxAgeDays: PR_SNAPSHOT_RETENTION_DAYS },
     enforcement: "both",
   },
   {

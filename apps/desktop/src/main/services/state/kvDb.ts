@@ -9,7 +9,14 @@ import type { Logger } from "../logging/logger";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
-import type { DbMaintenanceApi, DbMaintenanceResult } from "./dbMaintenanceApi";
+import {
+  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
+  INGRESS_EVENT_RETENTION_MS,
+  PR_SNAPSHOT_RETENTION_DAYS,
+  REVIEW_ARTIFACT_RETENTION_DAYS,
+  type DbMaintenanceApi,
+  type DbMaintenanceResult,
+} from "./dbMaintenanceApi";
 import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../../../shared/types/sync";
 
 type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSyncType;
@@ -3690,22 +3697,46 @@ export async function openKvDb(
     const freePagesBefore = Number(getRow<{ freelist_count: number }>(db, "pragma freelist_count")?.freelist_count ?? 0);
     const fragmentation = pageCount > 0 ? freePagesBefore / pageCount : 0;
     const autoVacuum = Number(getRow<{ auto_vacuum: number }>(db, "pragma auto_vacuum")?.auto_vacuum ?? 0);
+    const AUTO_VACUUM_INCREMENTAL = 2;
+    // Bounded per-call incremental budget: at most 25 chunks * 2,000 pages =
+    // 50k pages reclaimed without ever running a blocking full VACUUM again.
+    const INCREMENTAL_VACUUM_CHUNK_PAGES = 2_000;
+    const INCREMENTAL_VACUUM_MAX_ITERATIONS = 25;
     let itemsAffected = 0;
     let skippedReason: DbMaintenanceResult["skippedReason"] = null;
     let mode: "full" | "incremental" | "none" = "none";
 
-    if (pageCount > 0 && fragmentation >= threshold) {
-      // SQLite applies a NONE -> INCREMENTAL auto-vacuum transition when the
-      // following VACUUM rebuilds the file, so the pragma must come first.
+    const readFreePages = (): number =>
+      Number(getRow<{ freelist_count: number }>(db, "pragma freelist_count")?.freelist_count ?? 0);
+    const readFragmentation = (freePages: number): number => {
+      const pages = Number(getRow<{ page_count: number }>(db, "pragma page_count")?.page_count ?? 0);
+      return pages > 0 ? freePages / pages : 0;
+    };
+
+    if (autoVacuum === AUTO_VACUUM_INCREMENTAL) {
+      // Incremental auto-vacuum is already active: never run a blocking full
+      // VACUUM again. Reclaim the freelist in bounded chunks until it drops
+      // below the threshold fraction or the per-call budget is exhausted.
+      if (freePagesBefore > 0) {
+        mode = "incremental";
+        let freeNow = freePagesBefore;
+        for (let iteration = 0; iteration < INCREMENTAL_VACUUM_MAX_ITERATIONS && freeNow > 0; iteration += 1) {
+          db.exec(`PRAGMA incremental_vacuum(${INCREMENTAL_VACUUM_CHUNK_PAGES})`);
+          freeNow = readFreePages();
+          if (readFragmentation(freeNow) < threshold) break;
+        }
+        itemsAffected = Math.max(0, freePagesBefore - freeNow);
+      } else {
+        skippedReason = "below_threshold";
+      }
+    } else if (pageCount > 0 && fragmentation >= threshold) {
+      // Not yet incremental: a one-time full VACUUM rebuilds the file and, via
+      // the preceding pragma, activates incremental auto-vacuum so every later
+      // sweep uses the bounded path above instead of another full VACUUM.
       db.exec("PRAGMA auto_vacuum = INCREMENTAL");
       db.exec("VACUUM");
       itemsAffected = freePagesBefore;
       mode = "full";
-    } else if (autoVacuum === 2 && freePagesBefore > 0) {
-      db.exec("PRAGMA incremental_vacuum(2000)");
-      const freePagesAfter = Number(getRow<{ freelist_count: number }>(db, "pragma freelist_count")?.freelist_count ?? 0);
-      itemsAffected = Math.max(0, freePagesBefore - freePagesAfter);
-      mode = "incremental";
     } else {
       skippedReason = "below_threshold";
     }

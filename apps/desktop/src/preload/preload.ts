@@ -3381,7 +3381,7 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.invoke(IPC.storageCompressNow),
       ),
     runMaintenanceNow: async (): Promise<MaintenanceRunReport> =>
-      callProjectRuntimeActionOr("storage", "runMaintenanceNow", {}, () =>
+      callProjectRuntimeActionOr("storage", "runMaintenanceNow", { args: {} }, () =>
         ipcRenderer.invoke(IPC.storageRunMaintenanceNow),
       ),
     cleanupPreview: async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> =>

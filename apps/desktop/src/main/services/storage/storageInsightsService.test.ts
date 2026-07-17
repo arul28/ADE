@@ -4,12 +4,8 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MaintenanceRunReport, StorageCleanupPreview, StorageCleanupTarget } from "../../../shared/types/storage";
 import { openKvDb, type AdeDb } from "../state/kvDb";
-import {
-  classifyDbTable,
-  createStorageInsightsService,
-  deriveSyncBookkeepingAction,
-  mapDbBreakdown,
-} from "./storageInsightsService";
+import { createStorageInsightsService } from "./storageInsightsService";
+import { classifyDbTable, deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdown";
 import { recordLastFailure } from "../runtime/lastFailureStore";
 
 const logger = {
@@ -443,10 +439,15 @@ describe("storageInsightsService", () => {
     writeSized(path.join(stageStale, "artifact.bin"), 50);
     fs.utimesSync(stageStale, eightDaysAgo, eightDaysAgo);
 
-    // Obsolete recovery backup (old, db healthy, no recent open failure).
-    const backup = path.join(projectRoot, ".ade", "ade.db.recovery-doctor.bak");
-    writeSized(backup, 60);
-    fs.utimesSync(backup, eightDaysAgo, eightDaysAgo);
+    // Recovery backups: two obsolete copies (old, db healthy, no recent open
+    // failure). keepLatest: 1 spares the newest; only the older one is reaped.
+    const backupNewer = path.join(projectRoot, ".ade", "ade.db.recovery-doctor-new.bak");
+    const backupOlder = path.join(projectRoot, ".ade", "ade.db.recovery-doctor-old.bak");
+    writeSized(backupNewer, 61);
+    writeSized(backupOlder, 60);
+    const nineDaysAgo = new Date(Date.now() - 9 * 24 * 60 * 60_000);
+    fs.utimesSync(backupNewer, eightDaysAgo, eightDaysAgo);
+    fs.utimesSync(backupOlder, nineDaysAgo, nineDaysAgo);
 
     // iOS DerivedData build cache.
     const derived = path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData");
@@ -464,7 +465,8 @@ describe("storageInsightsService", () => {
     expect(fs.existsSync(adeTmpStale)).toBe(false);
     expect(fs.existsSync(adeTmpFresh)).toBe(true);
     expect(fs.existsSync(stageStale)).toBe(false);
-    expect(fs.existsSync(backup)).toBe(false);
+    expect(fs.existsSync(backupOlder)).toBe(false);
+    expect(fs.existsSync(backupNewer)).toBe(true);
     expect(fs.existsSync(derived)).toBe(false);
     // Compression outcome (transparent gzip).
     expect(fs.existsSync(`${oldTranscript}.gz`)).toBe(true);
@@ -619,8 +621,9 @@ describe("storageInsightsService", () => {
       reclaimedBytes: 0,
       dbSizeBytes: 1,
     });
-    // No journal yet → compactable.
-    expect(deriveSyncBookkeepingAction([])).toBe("compactable");
+    // No journal yet → nothing proven safe, so we wait rather than offer an
+    // action that might turn out to be peer-blocked.
+    expect(deriveSyncBookkeepingAction([])).toBe("compaction_pending");
     // Last run was peer-blocked → waiting to compact.
     expect(deriveSyncBookkeepingAction([
       run({ ledgerId: "db.operations_crsql", kind: "compact", skippedReason: "has_peers" }),

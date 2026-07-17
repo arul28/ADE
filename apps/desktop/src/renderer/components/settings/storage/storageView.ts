@@ -103,6 +103,11 @@ export function baseName(p: string): string {
 
 const CACHE_SEGMENT = /[\\/]\.ade[\\/]cache[\\/]/;
 const TMP_STAGING = /[\\/]ade-[^\\/]*[\\/]?$/;
+// A direct child of the project-relative `.ade/tmp` release-staging dir (e.g.
+// `.ade/tmp/ios-testflight-123`). The backend validates these under the same
+// `stale_tmp_staging` kind as the system-temp `ade-*` dirs; a deeper path (a
+// grandchild) intentionally does not match.
+const ADE_TMP_STAGING = /[\\/]\.ade[\\/]tmp[\\/][^\\/]+$/;
 
 /**
  * Resolve the cleanup target for a single item, or null when it cannot be safely
@@ -134,6 +139,7 @@ export function buildCleanupTarget(
     case "build_release":
     case "caches":
       if (CACHE_SEGMENT.test(p)) return { kind: "rebuildable_cache", path: p };
+      if (ADE_TMP_STAGING.test(p)) return { kind: "stale_tmp_staging", path: p };
       if (TMP_STAGING.test(p)) return { kind: "stale_tmp_staging", path: p };
       return null;
     default:
@@ -274,31 +280,37 @@ export function dbBreakdownRows(entries: DbBreakdownEntry[] | undefined): DbBrea
 
 /** Copy shown in the "waiting to compact" tooltip. Never references sync internals. */
 export const DB_COMPACTION_PENDING_HINT =
-  "ADE will reclaim this automatically once none of your devices are mid-sync.";
+  "Kept while devices stay in sync. Safe to leave — a future update will reclaim it.";
 
 // ---- Maintenance journal ---------------------------------------------------
 
 /**
- * Best-effort friendly name for a ledger id (e.g. "automation.ingress_events" →
- * "Webhook history"). Falls back to a title-cased version of the last segment so
- * an unknown ledger entry still reads cleanly and never leaks an identifier.
+ * Friendly name for a ledger id, keyed by the exact ids declared in
+ * `storageLedger.ts` (and used verbatim as maintenance-action `ledgerId`s).
+ * Unknown ids fall back to a title-cased last segment so an entry we haven't
+ * labelled still reads cleanly and never leaks a raw identifier.
  */
-const LEDGER_LABEL_RULES: Array<{ match: RegExp; label: string }> = [
-  { match: /ingress|webhook/i, label: "Webhook history" },
-  { match: /operation|tombstone|bookkeep|\bcrr\b|crsql/i, label: "Sync bookkeeping" },
-  { match: /review/i, label: "Review artifacts" },
-  { match: /pull_?request|pr[_.]?(cache|snapshot)|snapshot/i, label: "Pull request cache" },
-  { match: /transcript|chat|terminal|history/i, label: "Chat & terminal history" },
-  { match: /tmp|staging|temp/i, label: "Temporary files" },
-  { match: /backup|recovery/i, label: "Recovery backups" },
-  { match: /cache/i, label: "Caches" },
-  { match: /vacuum|freelist|database|\.db|\bdb\b/i, label: "Database file" },
-];
+const LEDGER_LABELS: Record<string, string> = {
+  "db.automation_ingress_events": "Webhook history",
+  "db.operations_crsql": "Sync bookkeeping",
+  "db.review_run_artifacts": "Review artifacts",
+  "db.pull_request_snapshots": "Pull request cache",
+  "db.core": "Core data",
+  "fs.transcripts": "Chat & terminal history",
+  "fs.tmp": "Release staging",
+  "fs.tmp_staging": "Build staging",
+  "fs.recovery_backups": "Recovery backups",
+  "fs.cache": "Caches",
+  "fs.ios_derived_data": "iOS build cache",
+  "fs.storage_doctor_journal": "Maintenance journal",
+  "fs.artifacts": "Proof & recordings",
+  "fs.attachments": "Attachments",
+  "fs.worktrees": "Lane worktrees",
+};
 
 export function ledgerLabel(ledgerId: string): string {
-  for (const rule of LEDGER_LABEL_RULES) {
-    if (rule.match.test(ledgerId)) return rule.label;
-  }
+  const known = LEDGER_LABELS[ledgerId];
+  if (known) return known;
   const segment = ledgerId.split(/[.:/]/).pop() ?? ledgerId;
   const words = segment.replace(/[_-]+/g, " ").trim();
   if (!words) return "Maintenance";
@@ -558,14 +570,12 @@ export function buildSafeCleanupPlan(
   const fsGroup: SafeCleanupGroup | null = fsRows.length > 0
     ? { heading: "Temporary & rebuildable files", rows: fsRows }
     : null;
-  if (fsGroup) {
-    groups.push(fsGroup);
-    whatHappens.push("Remove temporary and rebuildable files ADE recreates on demand.");
-  } else if (estimatedBytes > 0) {
+  if (fsGroup) groups.push(fsGroup);
+  if (fsGroup || estimatedBytes > 0) {
     whatHappens.push("Remove temporary and rebuildable files ADE recreates on demand.");
   }
 
-  whatHappens.push("Your chats, projects, active lanes, and backups are never touched.");
+  whatHappens.push("Your chats, projects, and active lanes are never touched, and your newest backup is always kept.");
 
   return { fsTargets, fsBytes, groups, fsGroup, whatHappens, estimatedBytes };
 }

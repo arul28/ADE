@@ -4,10 +4,12 @@ import type {
   MaintenanceRunReport,
   RuntimeHealthSnapshot,
   StorageCategorySnapshot,
+  StorageItem,
   StorageSnapshotExtras,
 } from "../../../../shared/types/storage";
 import type { AppResourceUsageSnapshot } from "../../../../shared/types";
 import {
+  buildCleanupTarget,
   buildSafeCleanupPlan,
   categoryPolicyChip,
   daemonMemoryBytes,
@@ -99,12 +101,13 @@ describe("dbBreakdownRows", () => {
 });
 
 describe("ledgerLabel", () => {
-  it("maps known ledger ids to plain names", () => {
-    expect(ledgerLabel("automation.ingress_events")).toBe("Webhook history");
-    expect(ledgerLabel("operations.crsql")).toBe("Sync bookkeeping");
-    expect(ledgerLabel("review_run_artifacts")).toBe("Review artifacts");
-    expect(ledgerLabel("pull_request_snapshots")).toBe("Pull request cache");
-    expect(ledgerLabel("transcripts")).toBe("Chat & terminal history");
+  it("maps known ledger ids (exact keys) to plain names", () => {
+    expect(ledgerLabel("db.automation_ingress_events")).toBe("Webhook history");
+    expect(ledgerLabel("db.operations_crsql")).toBe("Sync bookkeeping");
+    expect(ledgerLabel("db.review_run_artifacts")).toBe("Review artifacts");
+    expect(ledgerLabel("db.pull_request_snapshots")).toBe("Pull request cache");
+    expect(ledgerLabel("fs.transcripts")).toBe("Chat & terminal history");
+    expect(ledgerLabel("fs.ios_derived_data")).toBe("iOS build cache");
   });
 
   it("title-cases an unknown id without leaking an identifier", () => {
@@ -116,9 +119,9 @@ describe("maintenanceActionLines", () => {
   it("orders by reclaim and humanizes each action", () => {
     const report = run({
       actions: [
-        { ledgerId: "automation.ingress_events", kind: "prune", itemsAffected: 100, bytesReclaimed: 128 * MB, durationMs: 12 },
-        { ledgerId: "operations", kind: "compact", itemsAffected: 0, bytesReclaimed: 0, durationMs: 30 },
-        { ledgerId: "review_run_artifacts", kind: "delete", itemsAffected: 3, bytesReclaimed: 0, durationMs: 5, error: "nope" },
+        { ledgerId: "db.automation_ingress_events", kind: "prune", itemsAffected: 100, bytesReclaimed: 128 * MB, durationMs: 12 },
+        { ledgerId: "db.operations_crsql", kind: "compact", itemsAffected: 0, bytesReclaimed: 0, durationMs: 30 },
+        { ledgerId: "db.review_run_artifacts", kind: "delete", itemsAffected: 3, bytesReclaimed: 0, durationMs: 5, error: "nope" },
       ],
     });
     const lines = maintenanceActionLines(report);
@@ -272,5 +275,35 @@ describe("buildSafeCleanupPlan", () => {
     expect(plan.fsBytes).toBe(300 * MB);
     expect(plan.fsGroup?.rows).toHaveLength(1);
     expect(plan.whatHappens.at(-1)).toContain("never touched");
+    expect(plan.whatHappens.at(-1)).toContain("newest backup is always kept");
+  });
+});
+
+describe("buildCleanupTarget", () => {
+  const item = (p: string): StorageItem => ({
+    id: p,
+    label: "x",
+    path: p,
+    bytes: 1,
+    fileCount: 1,
+    lastModifiedAt: null,
+    safety: "safe_to_remove",
+  });
+
+  it("maps a direct .ade/tmp child to stale_tmp_staging", () => {
+    expect(buildCleanupTarget("build_release", item("/proj/.ade/tmp/ios-testflight-1"), new Map()))
+      .toEqual({ kind: "stale_tmp_staging", path: "/proj/.ade/tmp/ios-testflight-1" });
+  });
+
+  it("does not map a deeper (grandchild) .ade/tmp path", () => {
+    expect(buildCleanupTarget("build_release", item("/proj/.ade/tmp/ios-testflight-1/nested"), new Map()))
+      .toBeNull();
+  });
+
+  it("still maps system ade-* staging and .ade/cache paths", () => {
+    expect(buildCleanupTarget("build_release", item("/tmp/ade-run-9"), new Map()))
+      .toEqual({ kind: "stale_tmp_staging", path: "/tmp/ade-run-9" });
+    expect(buildCleanupTarget("caches", item("/proj/.ade/cache/npm"), new Map()))
+      .toEqual({ kind: "rebuildable_cache", path: "/proj/.ade/cache/npm" });
   });
 });

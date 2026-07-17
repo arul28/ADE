@@ -35,6 +35,12 @@ import type {
 import { triggerDeliveryKeyForType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
+import {
+  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
+  INGRESS_EVENT_RETENTION_MS,
+  PR_SNAPSHOT_RETENTION_DAYS,
+  REVIEW_ARTIFACT_RETENTION_DAYS,
+} from "../state/dbMaintenanceApi";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createConflictService } from "../conflicts/conflictService";
@@ -357,11 +363,11 @@ type AutomationIngressEventRow = {
   received_at: string;
 };
 
-const INGRESS_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
-const INGRESS_EVENT_MAX_ROWS_PER_PROJECT = 2_000;
+// Retention/count bounds live in `state/dbMaintenanceApi` so the ingress writer,
+// the kvDb maintenance hooks, and the storage ledger enforce identical policy.
 const INGRESS_PAYLOAD_RECLAIM_CHUNK_ROWS = 2_000;
-const REVIEW_ARTIFACT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
-const PR_SNAPSHOT_RETENTION_MS = 60 * 24 * 60 * 60 * 1_000;
+const REVIEW_ARTIFACT_RETENTION_MS = REVIEW_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
+const PR_SNAPSHOT_RETENTION_MS = PR_SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 
 type AutomationPendingPublishRow = {
   id: string;
@@ -1137,12 +1143,15 @@ export function createAutomationService({
       "delete from automation_ingress_events where project_id = ? and received_at < ?",
       [targetProjectId, cutoff],
     );
+    // Dispatched events are exempt from the count cap (they may still be read
+    // by run detail / the UI); they remain subject to the age prune above, so
+    // they still expire at the retention horizon.
     db.run(
       `delete from automation_ingress_events
         where rowid in (
           select rowid
           from automation_ingress_events
-          where project_id = ?
+          where project_id = ? and status != 'dispatched'
           order by received_at desc, rowid desc
           limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
         )`,
@@ -1363,7 +1372,16 @@ export function createAutomationService({
     // delete completed before the crash, the missing-lane path records success.
     db.run("update automation_scheduled_cleanups set status = 'scheduled' where status = 'executing' and project_id = ?", [projectId]);
 
-    reclaimLegacyIngressPayloads();
+    // A one-time reclaim failure must never block service construction: the
+    // service still functions with the legacy payloads in place (they are only
+    // dead weight), and the next boot retries the reclaim.
+    try {
+      reclaimLegacyIngressPayloads();
+    } catch (error) {
+      logger.warn("automations.ingress_payload_reclaim_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
   };
 

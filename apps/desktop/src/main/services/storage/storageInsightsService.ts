@@ -27,7 +27,6 @@ import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { runQuickCheck } from "../state/kvDb";
-import type { KvDbWithMaintenance } from "../state/dbMaintenanceApi";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import { isEnoentError } from "../shared/utils";
 import type { DiskPressureMonitor } from "./diskPressure";
@@ -37,6 +36,8 @@ import {
   type CompressionRoots,
   type CompressionSweepSummary,
 } from "./historyCompression";
+import { deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdown";
+import { appendMaintenanceJournal, readMaintenanceJournal } from "./storageMaintenanceJournal";
 import { deriveCategoryPolicyChips } from "./storageLedger";
 import { readVolumeSpace } from "./volume";
 
@@ -51,7 +52,6 @@ const RECOVERY_BACKUP_PATTERN = /(?:\.pre-crsqlite-w1\.bak|\.recovery-.*\.bak)$/
 const HISTORY_SWEEP_START_DELAY_MS = 10 * 60_000;
 const HISTORY_SWEEP_INTERVAL_MS = 24 * 60 * 60_000;
 const MAINTENANCE_JOURNAL_FILENAME = "storage-doctor-journal.json";
-const MAINTENANCE_JOURNAL_MAX_RUNS = 30;
 // One completed maintenance run per project per 20 h reaches PostHog; the
 // storage doctor runs daily, so the dedupe interval collapses repeat runs
 // (e.g. daily + a manual "Clean up now") into a single analytics event.
@@ -114,72 +114,6 @@ export type StorageInsightsServiceOptions = {
    */
   stagingTmpDir?: string;
 };
-
-type DbBreakdownCategoryKey = DbBreakdownEntry["category"];
-
-const DB_BREAKDOWN_META: Record<
-  DbBreakdownCategoryKey,
-  { label: string; table: string; action: DbBreakdownEntry["action"] }
-> = {
-  webhooks: { label: "Webhook history", table: "automation_ingress_events", action: "prunable" },
-  sync_bookkeeping: { label: "Sync bookkeeping", table: "operations__crsql", action: "compactable" },
-  review_artifacts: { label: "Review artifacts", table: "review_run_artifacts", action: "prunable" },
-  pr_cache: { label: "PR cache", table: "pull_request_snapshots", action: "prunable" },
-  core: { label: "Core data", table: "core", action: null },
-};
-
-/** Classify a dbstat table/index name into a coarse storage-breakdown category. */
-export function classifyDbTable(name: string): DbBreakdownCategoryKey {
-  const lower = name.toLowerCase();
-  if (lower.startsWith("operations__crsql")) return "sync_bookkeeping";
-  if (lower.includes("automation_ingress_events")) return "webhooks";
-  if (lower.includes("review_run_artifacts")) return "review_artifacts";
-  if (lower.includes("pull_request_snapshots")) return "pr_cache";
-  return "core";
-}
-
-/**
- * Aggregate raw dbstat rows into one breakdown entry per non-empty category.
- * `overrides.syncBookkeeping` lets the caller replace the static
- * "compactable" label with the journal-derived state (see
- * `deriveSyncBookkeepingAction`) so paired projects read "compaction_pending".
- */
-export function mapDbBreakdown(
-  rows: Array<{ name: string; bytes: number }>,
-  overrides?: { syncBookkeeping?: DbBreakdownEntry["action"] },
-): DbBreakdownEntry[] {
-  const totals = new Map<DbBreakdownCategoryKey, number>();
-  for (const row of rows) {
-    if (!row || typeof row.name !== "string") continue;
-    const bytes = typeof row.bytes === "number" && Number.isFinite(row.bytes) ? row.bytes : 0;
-    const category = classifyDbTable(row.name);
-    totals.set(category, (totals.get(category) ?? 0) + Math.max(0, bytes));
-  }
-  const entries: DbBreakdownEntry[] = [];
-  for (const [category, bytes] of totals) {
-    if (bytes <= 0) continue;
-    const meta = DB_BREAKDOWN_META[category];
-    const action = category === "sync_bookkeeping" && overrides?.syncBookkeeping !== undefined
-      ? overrides.syncBookkeeping
-      : meta.action;
-    entries.push({ table: meta.table, label: meta.label, bytes, category, action });
-  }
-  return entries.sort((left, right) => right.bytes - left.bytes || left.table.localeCompare(right.table));
-}
-
-/**
- * Sync-bookkeeping compaction state, derived without any new seam: if the most
- * recent maintenance run skipped its cr-sqlite compaction because the project
- * has sync peers, tombstones cannot be reclaimed yet → "compaction_pending"
- * (WS-C renders this as "Waiting to compact"). Otherwise — no journal yet, or
- * the last compaction actually ran / was not peer-blocked — it is "compactable".
- */
-export function deriveSyncBookkeepingAction(
-  journal: readonly MaintenanceRunReport[],
-): DbBreakdownEntry["action"] {
-  const lastCompact = journal[0]?.actions.find((action) => action.ledgerId === "db.operations_crsql");
-  return lastCompact?.skippedReason === "has_peers" ? "compaction_pending" : "compactable";
-}
 
 export function isObsoleteRecoveryBackup(
   backupPath: string,
@@ -378,46 +312,6 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return sweepFlight;
   };
 
-  const isMaintenanceReport = (value: unknown): value is MaintenanceRunReport => {
-    if (!value || typeof value !== "object") return false;
-    const report = value as Record<string, unknown>;
-    return typeof report.startedAt === "string"
-      && typeof report.finishedAt === "string"
-      && typeof report.trigger === "string"
-      && Array.isArray(report.actions)
-      && typeof report.reclaimedBytes === "number";
-  };
-
-  const readMaintenanceJournal = (): MaintenanceRunReport[] => {
-    let raw: string;
-    try {
-      raw = fs.readFileSync(journalPath, "utf8");
-    } catch (error) {
-      if (isEnoentError(error)) return [];
-      return [];
-    }
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.filter(isMaintenanceReport) : [];
-    } catch {
-      return [];
-    }
-  };
-
-  const appendMaintenanceJournal = (report: MaintenanceRunReport): MaintenanceRunReport[] => {
-    const next = [report, ...readMaintenanceJournal()].slice(0, MAINTENANCE_JOURNAL_MAX_RUNS);
-    try {
-      fs.mkdirSync(path.dirname(journalPath), { recursive: true });
-      fs.writeFileSync(journalPath, JSON.stringify(next, null, 2));
-    } catch (error) {
-      options.logger.warn("storage.maintenance_journal_write_failed", {
-        projectRoot,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    return next;
-  };
-
   const statSizeOrNull = (targetPath: string): number | null => {
     try {
       return fs.statSync(targetPath).size;
@@ -575,7 +469,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       const tempPath = path.join(stagingTmpRoot, name);
       if (path.resolve(tempPath) === projectRoot || path.resolve(tempPath) === adeHome) continue;
       const stat = await lstatOrNull(tempPath);
-      if (!stat) continue;
+      // Skip symlinked staging dirs: the reaper's collectors refuse them, so
+      // showing one here would be an item cleanup could never act on.
+      if (!stat || stat.isSymbolicLink()) continue;
       const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
       const entry = await makeItem({
         category: "build_release",
@@ -708,7 +604,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         if (item.safety === "safe_to_remove") safeReclaimableBytes += item.bytes;
       }
     }
-    const journal = readMaintenanceJournal();
+    const journal = readMaintenanceJournal(journalPath);
     const extras: StorageSnapshotExtras = {
       dbBreakdown: computeDbBreakdown(deriveSyncBookkeepingAction(journal)),
       maintenance: { lastRun: journal[0] ?? null, journal },
@@ -954,11 +850,23 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
 
   const collectObsoleteBackups = async (): Promise<StorageCleanupTarget[]> => {
     const names = await readdirOrEmpty(layout.adeDir);
-    const targets: StorageCleanupTarget[] = [];
+    // Stat every recovery backup so we can always spare the newest one — the
+    // ledger's keepLatest: 1 guarantee. Only strictly-older backups are reap
+    // candidates, and only when they classify obsolete.
+    const backups: Array<{ path: string; mtimeMs: number }> = [];
     for (const name of names.filter((value) => RECOVERY_BACKUP_PATTERN.test(value))) {
       const backupPath = path.join(layout.adeDir, name);
-      if (isObsoleteRecoveryBackup(backupPath, { projectRoot, db: options.db })) {
-        targets.push({ kind: "recovery_backup", path: backupPath });
+      const stat = await lstatOrNull(backupPath);
+      if (!stat || !stat.isFile()) continue;
+      backups.push({ path: backupPath, mtimeMs: stat.mtimeMs });
+    }
+    if (backups.length <= 1) return [];
+    // Newest first; backups[0] is kept no matter what.
+    backups.sort((left, right) => right.mtimeMs - left.mtimeMs);
+    const targets: StorageCleanupTarget[] = [];
+    for (const backup of backups.slice(1)) {
+      if (isObsoleteRecoveryBackup(backup.path, { projectRoot, db: options.db })) {
+        targets.push({ kind: "recovery_backup", path: backup.path });
       }
     }
     return targets;
@@ -1024,7 +932,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
 
       // d. DB retention hooks. `maintenance` is attached by WS-A's kvDb; until it
       // lands the hooks are undefined and each records an "unsupported" skip.
-      const maintenance = (options.db as unknown as KvDbWithMaintenance).maintenance;
+      const maintenance = options.db.maintenance;
       const runDbStep = (
         ledgerId: string,
         kind: MaintenanceActionKind,
@@ -1059,7 +967,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         reclaimedBytes,
         dbSizeBytes: statSizeOrNull(layout.dbPath),
       };
-      appendMaintenanceJournal(report);
+      appendMaintenanceJournal(journalPath, report, { logger: options.logger, projectRoot });
       cachedSnapshot = null;
 
       const failedCount = actions.filter((action) => action.error).length;
