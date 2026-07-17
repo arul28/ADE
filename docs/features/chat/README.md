@@ -152,7 +152,8 @@ schedules use the same seven-day expiry as recurring Claude cron rows.
 Claude SDK chats can arm `ScheduleWakeup` one-shots, `CronCreate` jobs, and
 `/loop` self-pacing work. Claude remains the authority for whether the provider
 tool succeeded and for its canonical job id, but ADE's durable mirror is the
-source of truth for delivery. ADE records a job only after the SDK's successful
+source of truth for delivery: the SDK's `CronList` view is advisory and ADE
+state wins. ADE records a job only after the SDK's successful
 `PostToolUse` hook returns its canonical id, clamped fire time, and recurrence.
 A failed tool call or a tool-use intent never creates an ADE schedule. Every
 successful `CronCreate` enters ADE's management store with `durable: true`,
@@ -228,8 +229,8 @@ is cancelled, while durable provider-owned work is quarantined as paused.
 Delivery reuses the session peer-message path with `kind: "wake"`. A live,
 idle Claude query is resumed through its existing idle reader; otherwise the
 service resumes/cold-starts the session and sends a synthetic turn carrying
-`metadata.scheduledWake`. If a Claude or OpenCode turn is busy, the scheduled
-wake is queued as a new message and starts its own turn at the next boundary;
+`metadata.scheduledWake`. If a turn is busy, the scheduled wake is queued as a
+new message and starts its own turn at the next boundary;
 it is never steered into or dispatched during the running turn. One-shot
 lifecycle is `scheduled` -> `fired` -> `completed`; completed
 wakeups move into Chat Info history. Recurring cron rows briefly record the
@@ -260,7 +261,9 @@ Controls and summaries project this runtime state rather than owning it:
   `ade chat scheduled-work cancel <session> <id>` routes through the same
   provider-aware cancellation path. The equivalent generic actions are
   `chat.createScheduledWork`, `chat.listScheduledWork`, and
-  `chat.cancelScheduledWork`. In an ADE-launched agent, create/list/cancel
+  `chat.cancelScheduledWork`; pause/resume is
+  `ade chat schedules <session> --pause|--resume` or
+  `chat.setScheduledWorkPaused`. In an ADE-launched agent, create/list/cancel
   default an omitted `sessionId` to `ADE_CHAT_SESSION_ID`; the daemon rejects a
   bound agent that names another chat and rejects an external caller with no
   bound session.

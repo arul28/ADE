@@ -748,6 +748,12 @@ struct AgentChatCancelScheduledWorkResult: Codable, Equatable {
   var providerCancellationConfirmed: Bool
 }
 
+struct AgentChatSetScheduledWorkPausedResult: Codable, Equatable {
+  var sessionId: String
+  var paused: Bool
+  var nextWakeAt: String?
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var id: String { sessionId }
   var sessionId: String
@@ -796,6 +802,10 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var pendingInputItemId: String? = nil
   /// Durable scheduled work managed by the paired ADE host. Older hosts omit it.
   var scheduledWork: [AgentChatScheduledWorkItem]? = nil
+  /// True when this chat's durable schedules are paused. Older hosts omit it.
+  var scheduledWorkPaused: Bool? = nil
+  /// Earliest armed, unpaused wake reported by the host. Older hosts omit it.
+  var nextWakeAt: String? = nil
   var threadId: String?
   var requestedCwd: String?
   // Orchestration-mode fields (populated when session is part of an orchestration run)
@@ -849,6 +859,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.awaitingInput == rhs.awaitingInput
       && lhs.pendingInputItemId == rhs.pendingInputItemId
       && lhs.scheduledWork == rhs.scheduledWork
+      && lhs.scheduledWorkPaused == rhs.scheduledWorkPaused
+      && lhs.nextWakeAt == rhs.nextWakeAt
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
       && lhs.orchestrationRunId == rhs.orchestrationRunId

@@ -7663,6 +7663,19 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func setScheduledWorkPaused(sessionId: String, paused: Bool) async throws -> AgentChatSetScheduledWorkPausedResult {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.setScheduledWorkPaused", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    return try await sendDecodableCommand(
+      action: action,
+      args: ["sessionId": sessionId, "paused": paused],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatSetScheduledWorkPausedResult.self
+    )
+  }
+
   func fetchChatEventHistorySnapshot(sessionId: String, maxEvents: Int = chatEventHistoryMaxEvents) async throws -> AgentChatEventHistorySnapshot {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(

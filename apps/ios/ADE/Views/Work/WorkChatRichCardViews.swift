@@ -2516,15 +2516,19 @@ struct WorkChatInfoDetailsSheet: View {
   let sessionId: String
   let subagentSnapshots: [WorkSubagentSnapshot]
   let scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
+  let scheduledWorkPaused: Bool
+  let nextWakeAt: String?
   let provider: String?
   let selectedTaskId: String?
   let probingTaskId: String?
   @Binding var expandedTaskIds: Set<String>
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
   let onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)?
+  let onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)?
   @AppStorage private var paneUiRaw: String
   @AppStorage private var paneClearedRaw: String
   @State private var showAllSections: Set<String> = []
+  @State private var schedulePauseMutationInFlight = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   // Mirrors SUBAGENTS_ACTIVE_CAP / BACKGROUND_ACTIVE_CAP / SCHEDULE_ACTIVE_CAP,
@@ -2539,22 +2543,28 @@ struct WorkChatInfoDetailsSheet: View {
     sessionId: String,
     subagentSnapshots: [WorkSubagentSnapshot],
     scheduledWorkSnapshots: [WorkScheduledWorkSnapshot],
+    scheduledWorkPaused: Bool,
+    nextWakeAt: String?,
     provider: String?,
     selectedTaskId: String?,
     probingTaskId: String?,
     expandedTaskIds: Binding<Set<String>>,
     onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
-    onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)? = nil
+    onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)? = nil,
+    onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)? = nil
   ) {
     self.sessionId = sessionId
     self.subagentSnapshots = subagentSnapshots
     self.scheduledWorkSnapshots = scheduledWorkSnapshots
+    self.scheduledWorkPaused = scheduledWorkPaused
+    self.nextWakeAt = nextWakeAt
     self.provider = provider
     self.selectedTaskId = selectedTaskId
     self.probingTaskId = probingTaskId
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
     self.onCancelScheduledWork = onCancelScheduledWork
+    self.onSetScheduledWorkPaused = onSetScheduledWorkPaused
     self._paneUiRaw = AppStorage(
       wrappedValue: #"{"collapsed":{},"earlier":{}}"#,
       "ade.chat.paneUi.v1:\(sessionId)"
@@ -2583,6 +2593,51 @@ struct WorkChatInfoDetailsSheet: View {
 
   private var isEmpty: Bool {
     subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty
+  }
+
+  private var nextWakeLabel: String? {
+    guard !scheduledWorkPaused,
+          scheduleItems.contains(where: { workScheduledWorkIsActive($0) && !workScheduledWorkIsPaused($0.status) }),
+          let nextWakeAt = workScheduledWorkText(nextWakeAt)
+    else { return nil }
+    return "Next wake · \(relativeTimestamp(nextWakeAt))"
+  }
+
+  private var scheduleHeaderAccessory: AnyView? {
+    guard scheduledWorkPaused || onSetScheduledWorkPaused != nil else { return nil }
+    return AnyView(
+      HStack(spacing: 6) {
+        if scheduledWorkPaused {
+          Text("Paused")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+        if let onSetScheduledWorkPaused {
+          Button {
+            guard !schedulePauseMutationInFlight else { return }
+            schedulePauseMutationInFlight = true
+            Task { @MainActor in
+              await onSetScheduledWorkPaused(!scheduledWorkPaused)
+              schedulePauseMutationInFlight = false
+            }
+          } label: {
+            Group {
+              if schedulePauseMutationInFlight {
+                ProgressView().controlSize(.mini)
+              } else {
+                Image(systemName: scheduledWorkPaused ? "play.fill" : "pause.fill")
+                  .font(.caption2.weight(.bold))
+              }
+            }
+            .frame(width: 32, height: 32)
+          }
+          .buttonStyle(.plain)
+          .foregroundStyle(ADEColor.textMuted)
+          .disabled(schedulePauseMutationInFlight)
+          .accessibilityLabel(scheduledWorkPaused ? "Resume scheduled work for this chat" : "Pause scheduled work for this chat")
+        }
+      }
+    )
   }
 
   private func jsonObject(_ raw: String) -> [String: Any] {
@@ -2775,18 +2830,27 @@ struct WorkChatInfoDetailsSheet: View {
                 collapsible: !schedulePartition.earlier.isEmpty || schedulePartition.active.count > scheduleCap,
                 clearIds: schedulePartition.earlier.map(\.id),
                 clearedCount: schedulePartition.clearedCount,
-                allClear: schedulePartition.active.isEmpty && schedulePartition.earlier.isEmpty && schedulePartition.clearedCount > 0
+                allClear: schedulePartition.active.isEmpty && schedulePartition.earlier.isEmpty && schedulePartition.clearedCount > 0,
+                headerAccessory: scheduleHeaderAccessory
               ) {
-                scalableSectionBody(title: "Schedule", sectionKey: "schedule", spacing: 8, partition: schedulePartition, visible: visibleSchedule) { item, isEarlier in
-                  if isEarlier && workScheduleItemIsFiredOneShotWakeup(item) {
-                    WorkScheduledWorkRow(item: item).opacity(0.55).allowsHitTesting(false)
-                  } else {
-                    WorkScheduledWorkRow(
-                      item: item,
-                      onCancel: onCancelScheduledWork.map { cancel in
-                        { await cancel(item) }
-                      }
-                    )
+                VStack(alignment: .leading, spacing: 8) {
+                  if let nextWakeLabel {
+                    Label(nextWakeLabel, systemImage: "alarm")
+                      .font(.caption2)
+                      .foregroundStyle(ADEColor.textMuted)
+                  }
+                  scalableSectionBody(title: "Schedule", sectionKey: "schedule", spacing: 8, partition: schedulePartition, visible: visibleSchedule) { item, isEarlier in
+                    if isEarlier && workScheduleItemIsFiredOneShotWakeup(item) {
+                      WorkScheduledWorkRow(item: item).opacity(0.55).allowsHitTesting(false)
+                    } else {
+                      WorkScheduledWorkRow(
+                        item: item,
+                        schedulesPaused: scheduledWorkPaused && !isEarlier,
+                        onCancel: onCancelScheduledWork.map { cancel in
+                          { await cancel(item) }
+                        }
+                      )
+                    }
                   }
                 }
               }
@@ -2841,6 +2905,7 @@ struct WorkChatInfoDetailsSheet: View {
     clearIds: [String],
     clearedCount: Int,
     allClear: Bool,
+    headerAccessory: AnyView? = nil,
     @ViewBuilder content: () -> Content
   ) -> some View {
     let collapsed = collapsible && paneFlag("collapsed", section: key)
@@ -2882,6 +2947,9 @@ struct WorkChatInfoDetailsSheet: View {
           Button("Clear") { clear(key, ids: clearIds) }
             .font(.caption)
             .foregroundStyle(ADEColor.textMuted)
+        }
+        if let headerAccessory {
+          headerAccessory
         }
       }
       if !collapsed { content() }
@@ -3133,6 +3201,7 @@ private struct WorkBackgroundWorkRow: View {
 
 private struct WorkScheduledWorkRow: View {
   let item: WorkScheduledWorkSnapshot
+  var schedulesPaused = false
   var onCancel: (@MainActor () async -> Void)? = nil
   @State private var cancellationInFlight = false
 
@@ -3231,7 +3300,7 @@ private struct WorkScheduledWorkRow: View {
         .stroke(tint.opacity(0.18), lineWidth: 0.8)
     )
     // Paused schedules read as inactive (matches desktop's dimmed row).
-    .opacity(workScheduledWorkIsPaused(status) ? 0.55 : 1)
+    .opacity(schedulesPaused || workScheduledWorkIsPaused(status) ? 0.55 : 1)
   }
 }
 

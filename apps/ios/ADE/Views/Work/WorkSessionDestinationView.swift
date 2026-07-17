@@ -809,6 +809,43 @@ struct WorkSessionDestinationView: View {
     }
   }
 
+  private var scheduledWorkPauseAction: (@MainActor (Bool) async -> Void)? {
+    guard syncService.canInvokeChatRemoteAction("chat.setScheduledWorkPaused", sessionId: sessionId) else {
+      return nil
+    }
+    return { paused in
+      await setScheduledWorkPausedOptimistically(paused)
+    }
+  }
+
+  @MainActor
+  private func setScheduledWorkPausedOptimistically(_ paused: Bool) async {
+    let previousSummary = composerChatSummary
+    if var optimisticSummary = previousSummary {
+      optimisticSummary.scheduledWorkPaused = paused
+      chatSummary = optimisticSummary
+      lastKnownChatSummary = optimisticSummary
+    }
+
+    do {
+      let result = try await syncService.setScheduledWorkPaused(sessionId: sessionId, paused: paused)
+      if var confirmedSummary = composerChatSummary {
+        confirmedSummary.scheduledWorkPaused = result.paused
+        confirmedSummary.nextWakeAt = result.nextWakeAt
+        chatSummary = confirmedSummary
+        lastKnownChatSummary = confirmedSummary
+      }
+      await refreshChatSummaryFromHost()
+      refreshScheduledWorkSnapshots()
+    } catch {
+      if let previousSummary {
+        chatSummary = previousSummary
+        lastKnownChatSummary = previousSummary
+      }
+      errorMessage = error.localizedDescription
+    }
+  }
+
   var body: some View {
     sessionDestinationRoot
       .workSessionNavigationChrome(
@@ -826,12 +863,15 @@ struct WorkSessionDestinationView: View {
           sessionId: sessionId,
           subagentSnapshots: subagentSnapshots,
           scheduledWorkSnapshots: scheduledWorkSnapshots,
+          scheduledWorkPaused: composerChatSummary?.scheduledWorkPaused == true,
+          nextWakeAt: composerChatSummary?.nextWakeAt,
           provider: subagentProvider,
           selectedTaskId: subagentView?.taskId,
           probingTaskId: probingSubagentTaskId,
           expandedTaskIds: $expandedSubagentDetailIds,
           onSelect: handleSubagentSelection,
-          onCancelScheduledWork: scheduledWorkCancelAction
+          onCancelScheduledWork: scheduledWorkCancelAction,
+          onSetScheduledWorkPaused: scheduledWorkPauseAction
         )
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)

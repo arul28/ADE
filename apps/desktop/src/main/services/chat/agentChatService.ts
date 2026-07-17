@@ -24750,8 +24750,8 @@ export function createAgentChatService(args: {
         append: [
           "## Runtime Environment",
           "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API. The `claude_code` preset above is the same system prompt the Claude Code CLI uses, so you may think you're in the CLI — you are NOT. You are inside an ADE-hosted SDK session.",
-            "**Wake-up semantics:** ADE durably supports Claude Code scheduled self-resume. `ScheduleWakeup`, `CronCreate`, and `/loop` can start a later unattended turn even after the ADE brain restarts; overdue work fires once when ADE resumes, then recurring cron work returns to its normal cadence. The user can pause this chat's schedules in Chat Info or pause all scheduled work in Settings.",
-            "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer the SDK's scheduled/background tools and include a concise reason/prompt so ADE can show the pending work clearly.",
+            "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically backed by ADE's durable scheduler; the `durable` flag is not needed. They survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire after seven days. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
+            "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
           "",
           "## ADE Workspace",
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,

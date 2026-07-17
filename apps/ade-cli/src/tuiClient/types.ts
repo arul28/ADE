@@ -188,6 +188,8 @@ export type ChatInfoSnapshot = {
   todos: ChatInfoTodoItem[];
   /** Schedule kinds only (wakeup/cron/loop/remote_trigger). */
   scheduledWork: ChatScheduledWorkSnapshot[];
+  /** True when all durable schedules for the active chat are paused. */
+  scheduledWorkPaused?: boolean;
   /** Earliest armed, unpaused wake reported by the active chat session. */
   nextWakeAt?: string | null;
   /** Background command tasks (kind background_task). */

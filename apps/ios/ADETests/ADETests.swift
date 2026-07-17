@@ -10915,8 +10915,8 @@ final class ADETests: XCTestCase {
 
   func testParseWorkChatTranscriptBuildsScheduledWorkSnapshots() {
     let raw = """
-    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"wakeup-1","kind":"wakeup","status":"running","origin":"schedule_wakeup","summary":"Wakeup fired","lastRunAt":"2026-07-07T00:05:00.000Z","turnId":"turn-2"}}
-    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"wakeup-1","kind":"wakeup","status":"scheduled","origin":"schedule_wakeup","title":"Wakeup scheduled","prompt":"Check CI","reason":"CI is still running","nextRunAt":"2026-07-07T00:05:00.000Z","recurring":false,"durable":true,"sourceToolUseId":"tool-1","turnId":"turn-1"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:02.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"action:chat-1:job-1","kind":"wakeup","status":"running","origin":"action","summary":"Wakeup fired","lastRunAt":"2026-07-07T00:05:00.000Z","turnId":"turn-2"}}
+    {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":1,"event":{"type":"scheduled_work_update","id":"action:chat-1:job-1","kind":"wakeup","status":"scheduled","origin":"action","title":"Wakeup scheduled","prompt":"Check CI","reason":"CI is still running","nextRunAt":"2026-07-07T00:05:00.000Z","recurring":false,"durable":true,"turnId":"turn-1"}}
     """
 
     let snapshot = buildWorkChatTimelineSnapshot(
@@ -10927,7 +10927,8 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertEqual(snapshot.scheduledWorkSnapshots.count, 1)
-    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.id, "wakeup-1")
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.id, "action:chat-1:job-1")
+    XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.origin, "action")
     XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.status, "running")
     XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.title, "Wakeup scheduled")
     XCTAssertEqual(snapshot.scheduledWorkSnapshots.first?.summary, "Wakeup fired")
@@ -11013,6 +11014,8 @@ final class ADETests: XCTestCase {
       "status":"idle",
       "startedAt":"2026-07-08T00:00:00.000Z",
       "lastActivityAt":"2026-07-08T00:00:03.000Z",
+      "scheduledWorkPaused":true,
+      "nextWakeAt":"2026-07-08T00:20:00.000Z",
       "scheduledWork":[{
         "id":"managed-1",
         "sessionId":"chat-1",
@@ -11050,12 +11053,32 @@ final class ADETests: XCTestCase {
     let byId = Dictionary(uniqueKeysWithValues: merged.map { ($0.id, $0) })
 
     XCTAssertEqual(summary.scheduledWork?.count, 1)
+    XCTAssertEqual(summary.scheduledWorkPaused, true)
+    XCTAssertEqual(summary.nextWakeAt, "2026-07-08T00:20:00.000Z")
     XCTAssertNil(byId["stale-1"])
     XCTAssertEqual(byId["managed-1"]?.status, "paused")
     XCTAssertEqual(byId["managed-1"]?.title, "Managed CI watcher")
     XCTAssertEqual(byId["managed-1"]?.cancellable, true)
     XCTAssertEqual(byId["provider-only"]?.durable, false)
     XCTAssertNil(byId["provider-only"]?.cancellable)
+  }
+
+  func testScheduledWorkSummaryFieldsRemainOptionalForOlderHosts() throws {
+    let legacyData = Data(#"""
+    {
+      "sessionId":"chat-legacy",
+      "laneId":"lane-1",
+      "provider":"claude",
+      "model":"claude-sonnet",
+      "status":"idle",
+      "startedAt":"2026-07-08T00:00:00.000Z",
+      "lastActivityAt":"2026-07-08T00:00:03.000Z"
+    }
+    """#.utf8)
+
+    let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: legacyData)
+    XCTAssertNil(summary.scheduledWorkPaused)
+    XCTAssertNil(summary.nextWakeAt)
   }
 
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {

@@ -90,6 +90,7 @@ export function deriveChatInfoSnapshot(args: {
     // Schedule kinds only — background command tasks render in their own block.
     scheduledWork: mergeManagedScheduledWorkSnapshots(args.events, args.activeSession?.scheduledWork)
       .filter((item) => item.kind !== "background_task"),
+    scheduledWorkPaused: args.activeSession?.scheduledWorkPaused === true,
     nextWakeAt: args.activeSession?.nextWakeAt ?? null,
     backgroundWork: deriveBackgroundItems(args.events),
     pr: args.pr ?? null,

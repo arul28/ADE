@@ -517,6 +517,36 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(onCancelScheduledWork).toHaveBeenCalledWith(item);
   });
 
+  it("renders and cancels an action-created providerless schedule", () => {
+    const onCancelScheduledWork = vi.fn();
+    const item = scheduledSnapshot({
+      id: "action:session-1:job-1",
+      kind: "cron",
+      origin: "action",
+      title: "Check CI",
+      prompt: "Inspect the latest CI run",
+      reason: "Keep the PR moving",
+      cron: "*/20 * * * *",
+      durable: true,
+      cancellable: true,
+    });
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        scheduleItems={[item]}
+        onCancelScheduledWork={onCancelScheduledWork}
+      />,
+    );
+
+    expect(screen.getByText("Check CI")).toBeTruthy();
+    expect(screen.getByText("cron")).toBeTruthy();
+    expect(screen.getByText("*/20 * * * * · Keep the PR moving")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel Check CI" }));
+    expect(onCancelScheduledWork).toHaveBeenCalledWith(item);
+  });
+
   it("does not offer ADE cancellation for a provider-only schedule", () => {
     render(
       <ChatSubagentsPanel

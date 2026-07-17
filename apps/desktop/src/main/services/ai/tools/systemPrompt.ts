@@ -17,38 +17,40 @@ export type AdeRuntimeKind =
   | "droid-sdk"
   | "opencode";
 
+const adeScheduledWorkGuidance = "**Wake-up semantics:** Autonomous wake is available via `ade actions run chat.createScheduledWork --input-json '{\"cron\":\"<5-field>\",\"prompt\":\"<task>\"}' --text`. Jobs recur by default; pass `{\"recurring\":false}` for a one-shot, and the action targets your own chat session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
+
 function describeRuntime(runtime: AdeRuntimeKind): string[] {
   switch (runtime) {
     case "claude-agent-sdk-query":
       return [
         "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API.",
-        "**Wake-up semantics:** ADE follows the Claude Agent SDK schedule contract. `ScheduleWakeup`, `CronCreate`, and `/loop` can start a later unattended turn. `CronCreate` always creates a new job, so reset or replacement flows must use `CronList` and `CronDelete` to remove the prior job before creating another. ADE mirrors every successful `CronCreate` durably, regardless of the provider tool's `durable` input. Recurring crons auto-expire after seven days, matching Claude. ADE restores mirrored jobs after its brain restarts, late-fires overdue work once, and exposes pause/cancel controls in Chat Info plus a project-wide manager in Settings.",
+        "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically backed by ADE's durable scheduler; the `durable` flag is not needed. They survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire after seven days. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
         "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
       ];
     case "codex-cli":
       return [
         "**Runtime:** ADE Work chat wrapping the Codex CLI as a subprocess. Your turns are driven through the Codex agent loop, but the orchestration host is ADE — slash commands, attachments, and lane scoping come from ADE.",
-        "**Wake-up semantics:** No autonomous wake from ADE. If you need to wait, prefer `sleep ... && <one-shot command>` so the shell holds the wait without burning model tokens, then resume reasoning when the command produces output.",
+        adeScheduledWorkGuidance,
       ];
     case "codex-app-server":
       return [
         "**Runtime:** ADE Work chat hosted on the Codex app-server protocol. Your turns are driven through Codex app-server JSON-RPC, while the orchestration host is ADE — slash commands, attachments, and lane scoping come from ADE.",
-        "**Wake-up semantics:** No autonomous wake from ADE. If you need to wait, prefer `sleep ... && <one-shot command>` so the shell holds the wait without burning model tokens, then resume reasoning when the command produces output.",
+        adeScheduledWorkGuidance,
       ];
     case "cursor-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Cursor SDK (`@cursor/sdk`).",
-        "**Wake-up semantics:** Each turn is driven by ADE through the SDK agent run. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
+        adeScheduledWorkGuidance,
       ];
     case "droid-sdk":
       return [
         "**Runtime:** ADE Work chat hosted on the Factory Droid SDK (`@factory/droid-sdk`) and backed by the local Droid CLI.",
-        "**Wake-up semantics:** Each turn is driven by ADE through the Droid SDK stream. There is no autonomous wake; if you need to wait, use a shell `sleep` and surface results in the next user turn.",
+        adeScheduledWorkGuidance,
       ];
     case "opencode":
       return [
         "**Runtime:** ADE Work chat wrapping an OpenCode session.",
-        "**Wake-up semantics:** Turns are driven by ADE through the OpenCode HTTP session. There is no autonomous wake; use a shell `sleep` for waits.",
+        adeScheduledWorkGuidance,
       ];
   }
 }
