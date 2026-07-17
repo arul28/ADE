@@ -1,5 +1,15 @@
 import { createHash, randomBytes as nodeRandomBytes, randomUUID as nodeRandomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import {
+  DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+  DEFAULT_ADE_CLERK_ISSUER,
+  DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+  isClerkDevelopmentIssuer,
+  isClerkDevelopmentOAuthClientId,
+  shouldIgnoreDevelopmentAccountDirectoryUrl,
+  shouldIgnoreDevelopmentClerkConfiguration,
+  warnDevelopmentClerkIgnored,
+} from "../../../../desktop/src/shared/accountDirectory";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
 
 export const ACCOUNT_SESSION_CREDENTIAL_KEY = "account.session.v1";
@@ -269,6 +279,31 @@ function accessTokenExpiresAt(token: string): string | null {
   return Number.isFinite(expiresAt.getTime()) ? expiresAt.toISOString() : null;
 }
 
+function accessTokenIssuer(token: string): string | null {
+  return readNonEmptyString(decodeJwtPayload(token)?.iss);
+}
+
+function isDevelopmentOAuthConfig(
+  config: AccountOAuthConfig | null | undefined,
+): boolean {
+  return isClerkDevelopmentIssuer(config?.issuer)
+    || isClerkDevelopmentOAuthClientId(config?.clientId);
+}
+
+function shouldRejectDevelopmentAccountMaterial(args: {
+  env: NodeJS.ProcessEnv;
+  accessToken?: string | null;
+  oauthConfig?: AccountOAuthConfig | null;
+}): boolean {
+  return shouldIgnoreDevelopmentClerkConfiguration(args.env)
+    && (
+      isDevelopmentOAuthConfig(args.oauthConfig)
+      || isClerkDevelopmentIssuer(
+        args.accessToken ? accessTokenIssuer(args.accessToken) : null,
+      )
+    );
+}
+
 function classifyEnvCredential(token: string): "access_token" | "refresh_token" {
   const payload = decodeJwtPayload(token);
   if (!payload) return "refresh_token";
@@ -317,6 +352,18 @@ function inspectEnvCredential(credential: string): EnvCredential {
     : { kind: "refresh_token", token: credential, oauthConfig: null };
 }
 
+export function shouldRejectDevelopmentEnvCredential(
+  env: NodeJS.ProcessEnv,
+  credential: string,
+): boolean {
+  const inspected = inspectEnvCredential(credential);
+  return shouldRejectDevelopmentAccountMaterial({
+    env,
+    accessToken: inspected.kind === "invalid" ? null : inspected.token,
+    oauthConfig: inspected.kind === "refresh_token" ? inspected.oauthConfig : null,
+  });
+}
+
 function isLoopbackIssuerHost(hostname: string): boolean {
   // `new URL("http://[::1]/").hostname` returns "[::1]" (brackets included), so
   // accept both bracketed and bare IPv6 loopback forms.
@@ -354,6 +401,23 @@ function normalizeOAuthConfig(config: AccountOAuthConfig): AccountOAuthConfig {
     throw new Error("CLERK_ISSUER must use https (http is only allowed for localhost).");
   }
   return { issuer, clientId };
+}
+
+function normalizeRuntimeOAuthConfig(
+  config: AccountOAuthConfig,
+  env: NodeJS.ProcessEnv,
+): AccountOAuthConfig {
+  if (
+    shouldIgnoreDevelopmentClerkConfiguration(env)
+    && isDevelopmentOAuthConfig(config)
+  ) {
+    warnDevelopmentClerkIgnored();
+    return normalizeOAuthConfig({
+      issuer: DEFAULT_ADE_CLERK_ISSUER,
+      clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+  }
+  return normalizeOAuthConfig(config);
 }
 
 function normalizeOptionalOAuthConfig(args: {
@@ -662,7 +726,10 @@ export function createAccountAuthService(args: {
   let lastObservedSignedIn: boolean | null = null;
   const signedInListeners = new Set<() => void>();
 
-  const readEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
+  const readRawEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
+
+  const resolveOAuthConfig = async (): Promise<AccountOAuthConfig> =>
+    normalizeRuntimeOAuthConfig(await args.getOAuthConfig(), env);
 
   const resetEnvSessionIfCredentialChanged = (
     credential: string,
@@ -676,9 +743,37 @@ export function createAccountAuthService(args: {
     envRefreshToken = inspected.kind === "refresh_token" ? inspected.token : null;
   };
 
-  const envCredentialStatus = (credential: string): AccountAuthStatus => {
+  const rejectDevelopmentEnvCredential = (inspected: EnvCredential): boolean => {
+    const oauthConfig = inspected.kind === "refresh_token" ? inspected.oauthConfig : null;
+    if (!shouldRejectDevelopmentAccountMaterial({
+      env,
+      accessToken: inspected.kind === "invalid" ? null : inspected.token,
+      oauthConfig,
+    })) {
+      return false;
+    }
+    if (envSession || envRefreshInFlight) envCredentialEpoch += 1;
+    envSession = null;
+    envRefreshInFlight = null;
+    envRefreshToken = null;
+    warnDevelopmentClerkIgnored();
+    return true;
+  };
+
+  const readAcceptedEnvCredential = (): {
+    credential: string;
+    inspected: EnvCredential;
+  } | null => {
+    const credential = readRawEnvCredential();
+    if (!credential) return null;
     const inspected = inspectEnvCredential(credential);
     resetEnvSessionIfCredentialChanged(credential, inspected);
+    return rejectDevelopmentEnvCredential(inspected)
+      ? null
+      : { credential, inspected };
+  };
+
+  const envCredentialStatus = (inspected: EnvCredential): AccountAuthStatus => {
     if (envSession) return { ...toStatus(envSession), source: "env-token" };
     const isAccessToken = inspected.kind === "access_token";
     const accessToken = inspected.kind === "access_token" ? inspected.token : null;
@@ -699,18 +794,79 @@ export function createAccountAuthService(args: {
     };
   };
 
+  const persistSession = (record: AccountSessionRecord | null): void => {
+    if (record) {
+      args.credentialStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(record));
+    } else {
+      args.credentialStore.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+    }
+    lastObservedSignedIn = record != null;
+  };
+
+  const invalidateStoredSessionIfCurrent = (raw: string): void => {
+    const updateSync = args.credentialStore.updateSync;
+    if (updateSync) {
+      // Atomic compare-and-delete: remove only the development session we
+      // observed, so a production credential a peer wrote after our read is
+      // never clobbered.
+      updateSync.call(args.credentialStore, (values) => {
+        if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
+        delete values[ACCOUNT_SESSION_CREDENTIAL_KEY];
+        return true;
+      });
+    }
+    // Without atomic compare-and-delete we do NOT get-then-delete — that races a
+    // peer-written production replacement. The development session is simply
+    // rejected on every read instead of being erased.
+    authEpoch += 1;
+    lastObservedSignedIn = false;
+    sessionReadState = "missing";
+    warnDevelopmentClerkIgnored();
+  };
+
   const readSession = (): AccountSessionRecord | null => {
     try {
-      const stored = args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
-      const session = parseStoredSession(stored);
-      sessionReadState = stored == null
-        ? args.credentialStore.getLastReadState?.() === "unreadable"
-          ? "unreadable"
-          : "missing"
-        : session
-          ? "available"
-          : "unreadable";
-      return session;
+      // A peer process may replace the credential between the read and the
+      // atomic delete. Retry once so we never clear or surface that newer
+      // session merely because an older development session was observed.
+      const readStoredSession = (): {
+        raw: string | null;
+        session: AccountSessionRecord | null;
+      } => {
+        const stored = args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
+        const session = parseStoredSession(stored);
+        sessionReadState = stored == null
+          ? args.credentialStore.getLastReadState?.() === "unreadable"
+            ? "unreadable"
+            : "missing"
+          : session
+            ? "available"
+            : "unreadable";
+        return { raw: stored, session };
+      };
+
+      const observed = readStoredSession();
+      if (!observed.session || !observed.raw) return observed.session;
+      if (!shouldRejectDevelopmentAccountMaterial({
+        env,
+        accessToken: observed.session.accessToken,
+        oauthConfig: observed.session.oauthConfig,
+      })) {
+        return observed.session;
+      }
+
+      invalidateStoredSessionIfCurrent(observed.raw);
+      const retry = readStoredSession();
+      if (!retry.session || !retry.raw) return null;
+      if (shouldRejectDevelopmentAccountMaterial({
+        env,
+        accessToken: retry.session.accessToken,
+        oauthConfig: retry.session.oauthConfig,
+      })) {
+        sessionReadState = "missing";
+        return null;
+      }
+      return retry.session;
     } catch (error) {
       sessionReadState = "unreadable";
       logger.warn("account.session_read_failed", {
@@ -728,15 +884,6 @@ export function createAccountAuthService(args: {
         // Account persistence has already succeeded. Observers are best-effort.
       }
     }
-  };
-
-  const persistSession = (record: AccountSessionRecord | null): void => {
-    if (record) {
-      args.credentialStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(record));
-    } else {
-      args.credentialStore.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
-    }
-    lastObservedSignedIn = record != null;
   };
 
   const persistRefreshedSessionIfCurrent = (
@@ -796,6 +943,14 @@ export function createAccountAuthService(args: {
     oauthConfig: AccountOAuthConfig | null,
   ): Promise<ReturnType<typeof decodeAccountClaims> | null> => {
     if (!oauthConfig) return null;
+    if (shouldRejectDevelopmentAccountMaterial({
+      env,
+      accessToken: token.accessToken,
+      oauthConfig,
+    })) {
+      warnDevelopmentClerkIgnored();
+      return null;
+    }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), userinfoRequestTimeoutMs);
     timer.unref?.();
@@ -843,6 +998,16 @@ export function createAccountAuthService(args: {
     authSource: AccountSessionRecord["authSource"] = previous?.authSource ?? "loopback",
     oauthConfig: AccountOAuthConfig | null = previous?.oauthConfig ?? null,
   ): Promise<AccountSessionRecord> => {
+    if (shouldRejectDevelopmentAccountMaterial({
+      env,
+      accessToken: token.accessToken,
+      oauthConfig,
+    })) {
+      warnDevelopmentClerkIgnored();
+      throw new Error(
+        "ADE rejected development Clerk session material in this packaged build. Sign in again to use ADE production.",
+      );
+    }
     const obtainedAtMs = now();
     const claims = decodeAccountClaims(token.accessToken);
     const claimedExpiresAt = accessTokenExpiresAt(token.accessToken);
@@ -947,7 +1112,7 @@ export function createAccountAuthService(args: {
   };
 
   const startLogin = async (): Promise<AccountLoginStartResult> => {
-    if (readEnvCredential()) {
+    if (readAcceptedEnvCredential()) {
       throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
     }
     pruneFinishedSessions();
@@ -961,7 +1126,7 @@ export function createAccountAuthService(args: {
       pendingSessions.delete(oldestId);
     }
 
-    const config = normalizeOAuthConfig(await args.getOAuthConfig());
+    const config = await resolveOAuthConfig();
     const codeVerifier = randomBytes(32).toString("base64url");
     const oauthState = randomBytes(32).toString("base64url");
     const sessionId = randomUUID();
@@ -1057,11 +1222,16 @@ export function createAccountAuthService(args: {
     };
   };
 
-  const resolveDeviceBridgeUrl = async (): Promise<string> => normalizeDeviceBridgeUrl(
-    args.getDeviceBridgeUrl
+  const resolveDeviceBridgeUrl = async (): Promise<string> => {
+    const rawUrl = args.getDeviceBridgeUrl
       ? await args.getDeviceBridgeUrl()
-      : env.ADE_ACCOUNT_DIRECTORY_URL ?? "",
-  );
+      : env.ADE_ACCOUNT_DIRECTORY_URL ?? "";
+    if (shouldIgnoreDevelopmentAccountDirectoryUrl(rawUrl, env)) {
+      warnDevelopmentClerkIgnored();
+      return normalizeDeviceBridgeUrl(DEFAULT_ADE_ACCOUNT_DIRECTORY_URL);
+    }
+    return normalizeDeviceBridgeUrl(rawUrl);
+  };
 
   const requestDeviceBridge = (
     url: string,
@@ -1083,7 +1253,7 @@ export function createAccountAuthService(args: {
   const startDeviceLogin = async (
     options: { ignoreEnvCredential?: boolean } = {},
   ): Promise<AccountDeviceLoginStartResult> => {
-    if (readEnvCredential() && !options.ignoreEnvCredential) {
+    if (readAcceptedEnvCredential() && !options.ignoreEnvCredential) {
       throw new Error("ADE_ACCOUNT_TOKEN is already providing account authentication; no interactive sign-in is required.");
     }
     for (const [sessionId, session] of pendingDeviceSessions) {
@@ -1293,12 +1463,23 @@ export function createAccountAuthService(args: {
         authStatus: toStatus(readSession()),
       };
     }
-    const baseRecord = await buildSessionRecord({
-      accessToken,
-      refreshToken: readNonEmptyString(payload.refresh_token),
-      tokenType: readNonEmptyString(payload.token_type) ?? "Bearer",
-      expiresInSec,
-    }, null, "device", oauthConfig);
+    let baseRecord: AccountSessionRecord;
+    try {
+      baseRecord = await buildSessionRecord({
+        accessToken,
+        refreshToken: readNonEmptyString(payload.refresh_token),
+        tokenType: readNonEmptyString(payload.token_type) ?? "Bearer",
+        expiresInSec,
+      }, null, "device", oauthConfig);
+    } catch (error) {
+      pendingDeviceSessions.delete(normalizedSessionId);
+      return {
+        status: "error",
+        message: error instanceof Error ? error.message : "ADE account device token could not be accepted.",
+        intervalSec: null,
+        authStatus: toStatus(readSession()),
+      };
+    }
     const record: AccountSessionRecord = session.suppressEnvCredential
       ? { ...baseRecord, suppressEnvCredential: true }
       : baseRecord;
@@ -1361,16 +1542,15 @@ export function createAccountAuthService(args: {
   const getStatus = (): AccountAuthStatus => {
     const record = readSession();
     if (record?.suppressEnvCredential) return toStatus(record);
-    const envCredential = readEnvCredential();
-    return envCredential ? envCredentialStatus(envCredential) : toStatus(record);
+    const envCredential = readAcceptedEnvCredential();
+    return envCredential ? envCredentialStatus(envCredential.inspected) : toStatus(record);
   };
 
   const getAccessToken = async (): Promise<string> => {
     const record = readSession();
-    const envCredential = readEnvCredential();
-    if (envCredential && !record?.suppressEnvCredential) {
-      const inspected = inspectEnvCredential(envCredential);
-      resetEnvSessionIfCredentialChanged(envCredential, inspected);
+    const acceptedEnvCredential = readAcceptedEnvCredential();
+    if (acceptedEnvCredential && !record?.suppressEnvCredential) {
+      const { credential: envCredential, inspected } = acceptedEnvCredential;
       if (inspected.kind === "invalid") {
         throw new Error(
           "ADE_ACCOUNT_TOKEN is not a valid provisioned account token. Recreate it with `ade account token create`.",
@@ -1408,7 +1588,7 @@ export function createAccountAuthService(args: {
             config = normalizeOAuthConfig(inspected.oauthConfig);
           } else {
             try {
-              config = normalizeOAuthConfig(await args.getOAuthConfig());
+              config = await resolveOAuthConfig();
             } catch {
               throw new Error(
                 "Legacy ADE_ACCOUNT_TOKEN refresh tokens require local CLERK_ISSUER and CLERK_OAUTH_CLIENT_ID. Recreate the token with `ade account token create` to make it self-contained.",
@@ -1434,7 +1614,7 @@ export function createAccountAuthService(args: {
           if (
             envCredentialEpoch !== epochAtRefresh
             || envSessionCredential !== credentialAtRefresh
-            || readEnvCredential() !== credentialAtRefresh
+            || readRawEnvCredential() !== credentialAtRefresh
             || envRefreshInFlight !== refreshPromise
           ) {
             return getAccessToken();
@@ -1475,7 +1655,7 @@ export function createAccountAuthService(args: {
         for (let attempt = 0; attempt < 2; attempt += 1) {
           config = refreshRecord.oauthConfig
             ? normalizeOAuthConfig(refreshRecord.oauthConfig)
-            : normalizeOAuthConfig(await args.getOAuthConfig());
+            : await resolveOAuthConfig();
           try {
             token = await postTokenForm({
               fetchImpl,
@@ -1530,7 +1710,7 @@ export function createAccountAuthService(args: {
 
   const createToken = async (): Promise<AccountTokenCreateResult> => {
     const record = readSession();
-    if (readEnvCredential() && !record?.suppressEnvCredential) {
+    if (readAcceptedEnvCredential() && !record?.suppressEnvCredential) {
       throw new Error(
         "ADE is using ADE_ACCOUNT_TOKEN. Unset it and sign in interactively before creating a new durable account token.",
       );
@@ -1540,7 +1720,7 @@ export function createAccountAuthService(args: {
     }
     const oauthConfig = record.oauthConfig
       ? normalizeOAuthConfig(record.oauthConfig)
-      : normalizeOAuthConfig(await args.getOAuthConfig());
+      : await resolveOAuthConfig();
     return {
       token: provisionedAccountToken({ refreshToken: record.refreshToken, oauthConfig }),
       source: "refresh_token",

@@ -184,6 +184,87 @@ describe("getSharedAccountAuthService resolves CLERK OAuth config as an atomic p
     expect(authorizeUrl.origin).toBe("https://invoking.example.test");
     expect(authorizeUrl.searchParams.get("client_id")).toBe("invoking-client");
   });
+
+  it("atomically replaces project and environment development pairs when packaged", () => {
+    const developmentRoot = makeProjectRoot({
+      CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+      CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+    const packagedDevelopmentEnv = {
+      ADE_RUNTIME_PACKAGED: "1",
+      CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+      CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    } as NodeJS.ProcessEnv;
+    const productionConfig = {
+      issuer: DEFAULT_ADE_CLERK_ISSUER,
+      clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+    };
+
+    expect(resolveAccountOAuthConfig({
+      env: { ADE_RUNTIME_PACKAGED: "1" } as NodeJS.ProcessEnv,
+      projectRoots: [developmentRoot],
+    })).toEqual(productionConfig);
+    expect(resolveAccountOAuthConfig({
+      env: packagedDevelopmentEnv,
+      projectRoots: [],
+    })).toEqual(productionConfig);
+    expect(resolveAccountOAuthConfig({
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: "https://another.clerk.accounts.dev",
+        CLERK_OAUTH_CLIENT_ID: "another-development-client",
+      } as NodeJS.ProcessEnv,
+      projectRoots: [],
+    })).toEqual(productionConfig);
+  });
+
+  it("honors non-packaged, escape-hatch, and custom production overrides", () => {
+    const developmentConfig = {
+      issuer: DEVELOPMENT_ADE_CLERK_ISSUER,
+      clientId: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    };
+    expect(resolveAccountOAuthConfig({
+      env: {
+        CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+      projectRoots: [],
+    })).toEqual(developmentConfig);
+    expect(resolveAccountOAuthConfig({
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        ADE_ALLOW_DEVELOPMENT_CLERK: "1",
+        CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+      projectRoots: [],
+    })).toEqual(developmentConfig);
+    expect(resolveAccountOAuthConfig({
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: "https://clerk.example.com",
+        CLERK_OAUTH_CLIENT_ID: "custom-client",
+      } as NodeJS.ProcessEnv,
+      projectRoots: [],
+    })).toEqual({
+      issuer: "https://clerk.example.com",
+      clientId: "custom-client",
+    });
+  });
+
+  it("replaces a packaged development OAuth client id behind a custom issuer", () => {
+    expect(resolveAccountOAuthConfig({
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: "https://clerk.example.com",
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+      projectRoots: [],
+    })).toEqual({
+      issuer: DEFAULT_ADE_CLERK_ISSUER,
+      clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+  });
 });
 
 describe("getSharedAccountAttestationConfig", () => {
@@ -219,6 +300,100 @@ describe("getSharedAccountAttestationConfig", () => {
       oauthClientId: "env-client",
     });
   });
+
+  it("atomically replaces packaged development issuers and JWKS URLs", () => {
+    const developmentRoot = makeProjectRoot({
+      CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+      CLERK_JWKS_URL: `${DEVELOPMENT_ADE_CLERK_ISSUER}/.well-known/jwks.json`,
+      CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+    const productionConfig = {
+      issuer: DEFAULT_ADE_CLERK_ISSUER,
+      jwksUrl: DEFAULT_ADE_CLERK_JWKS_URL,
+      oauthClientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+    };
+
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [developmentRoot],
+      env: { ADE_RUNTIME_PACKAGED: "1" } as NodeJS.ProcessEnv,
+    })).toEqual(productionConfig);
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: "https://clerk.example.com",
+        CLERK_JWKS_URL: "https://another.clerk.accounts.dev/.well-known/jwks.json",
+        CLERK_OAUTH_CLIENT_ID: "custom-client",
+      } as NodeJS.ProcessEnv,
+    })).toEqual(productionConfig);
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+        CLERK_JWKS_URL: `${DEVELOPMENT_ADE_CLERK_ISSUER}/.well-known/jwks.json`,
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+    })).toEqual(productionConfig);
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: "https://clerk.example.com",
+        CLERK_JWKS_URL: "https://clerk.example.com/.well-known/jwks.json",
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+    })).toEqual(productionConfig);
+  });
+
+  it("honors non-packaged, escape-hatch, and custom production verifiers", () => {
+    const developmentJwksUrl =
+      `${DEVELOPMENT_ADE_CLERK_ISSUER}/.well-known/jwks.json`;
+    const developmentConfig = {
+      issuer: DEVELOPMENT_ADE_CLERK_ISSUER,
+      jwksUrl: developmentJwksUrl,
+      oauthClientId: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    };
+
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env: {
+        CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+        CLERK_JWKS_URL: developmentJwksUrl,
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+    })).toEqual(developmentConfig);
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        ADE_ALLOW_DEVELOPMENT_CLERK: "1",
+        CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+        CLERK_JWKS_URL: developmentJwksUrl,
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+    })).toEqual(developmentConfig);
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: "https://clerk.example.com",
+        CLERK_JWKS_URL: "https://clerk.example.com/.well-known/jwks.json",
+        CLERK_OAUTH_CLIENT_ID: "custom-client",
+      } as NodeJS.ProcessEnv,
+    })).toEqual({
+      issuer: "https://clerk.example.com",
+      jwksUrl: "https://clerk.example.com/.well-known/jwks.json",
+      oauthClientId: "custom-client",
+    });
+  });
 });
 
 describe("getSharedAccountDirectoryBaseUrl", () => {
@@ -239,5 +414,44 @@ describe("getSharedAccountDirectoryBaseUrl", () => {
         ADE_ACCOUNT_DIRECTORY_URL: "https://environment-directory.example.test",
       } as NodeJS.ProcessEnv,
     })).toBe("https://invoking-directory.example.test");
+  });
+
+  it("forces every packaged development directory path to production", () => {
+    const developmentRoot = makeProjectRoot({
+      CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
+      CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+    const developmentDirectoryRoot = makeProjectRoot({
+      ADE_ACCOUNT_DIRECTORY_URL: DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+    });
+    const env = {
+      ADE_RUNTIME_PACKAGED: "1",
+      ADE_ACCOUNT_DIRECTORY_URL: DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+    } as NodeJS.ProcessEnv;
+
+    expect(getSharedAccountDirectoryBaseUrl({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [developmentRoot],
+      env: { ADE_RUNTIME_PACKAGED: "1" } as NodeJS.ProcessEnv,
+    })).toBe(DEFAULT_ADE_ACCOUNT_DIRECTORY_URL);
+    expect(getSharedAccountDirectoryBaseUrl({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [developmentDirectoryRoot],
+      env,
+    })).toBe(DEFAULT_ADE_ACCOUNT_DIRECTORY_URL);
+    expect(getSharedAccountDirectoryBaseUrl({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env,
+    })).toBe(DEFAULT_ADE_ACCOUNT_DIRECTORY_URL);
+    expect(getSharedAccountDirectoryBaseUrl({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        ADE_ALLOW_DEVELOPMENT_CLERK: "1",
+        ADE_ACCOUNT_DIRECTORY_URL: DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+      } as NodeJS.ProcessEnv,
+    })).toBe(DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL);
   });
 });

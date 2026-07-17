@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
+import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import {
@@ -307,12 +308,15 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
   };
 }
 
-function isSourceCheckoutRuntimeModule(modulePath: string): boolean {
-  return /[/\\]apps[/\\]ade-cli[/\\](?:src|dist)[/\\]bootstrap\.(?:ts|js|cjs)$/i.test(modulePath);
-}
-
 const currentModulePath =
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url);
+
+if (
+  !isSourceCheckoutRuntimeModule(currentModulePath)
+  && process.env.ADE_RUNTIME_PACKAGED === undefined
+) {
+  process.env.ADE_RUNTIME_PACKAGED = "1";
+}
 
 function automationsEnabledForHeadlessRuntime(): boolean {
   const override = readAutomationsEnvOverride(process.env);

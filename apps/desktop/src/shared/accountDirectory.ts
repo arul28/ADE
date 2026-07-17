@@ -27,6 +27,74 @@ export const DEVELOPMENT_ADE_CLERK_ISSUER =
 export const DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID = "d6pUGxQXTqIMYl5w";
 export const DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL =
   "https://ade-account-directory.arulsharma1028.workers.dev";
+const DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_HOST = new URL(
+  DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+).hostname.replace(/\.$/, "").toLowerCase();
+
+const DEVELOPMENT_CLERK_IGNORED_WARNING =
+  "[account] Ignoring development Clerk configuration in a packaged build; using ADE production. Set ADE_ALLOW_DEVELOPMENT_CLERK=1 to override.";
+let warnedDevClerkIgnored = false;
+
+export function isPackagedRuntime(env: NodeJS.ProcessEnv): boolean {
+  return env.ADE_RUNTIME_PACKAGED === "1";
+}
+
+export function developmentClerkOverrideAllowed(env: NodeJS.ProcessEnv): boolean {
+  return env.ADE_ALLOW_DEVELOPMENT_CLERK === "1";
+}
+
+export function shouldIgnoreDevelopmentClerkConfiguration(
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return isPackagedRuntime(env) && !developmentClerkOverrideAllowed(env);
+}
+
+export function warnDevelopmentClerkIgnored(): void {
+  if (warnedDevClerkIgnored) return;
+  warnedDevClerkIgnored = true;
+  console.warn(DEVELOPMENT_CLERK_IGNORED_WARNING);
+}
+
+export function isClerkDevelopmentOAuthClientId(
+  clientId: string | null | undefined,
+): boolean {
+  return clientId?.trim() === DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID;
+}
+
+export function isClerkDevelopmentIssuer(
+  issuer: string | null | undefined,
+): boolean {
+  const trimmed = issuer?.trim();
+  if (!trimmed) return false;
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return false;
+  }
+  url.hostname = url.hostname.replace(/\.$/, "");
+  const normalizedIssuer = `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  return url.hostname.toLowerCase().endsWith(".clerk.accounts.dev")
+    || normalizedIssuer === DEVELOPMENT_ADE_CLERK_ISSUER;
+}
+
+export function isDevelopmentAccountDirectoryUrl(
+  url: string | null | undefined,
+): boolean {
+  const trustedUrl = parseTrustedAccountDirectoryBaseUrl(url);
+  if (!trustedUrl) return false;
+  const parsed = new URL(trustedUrl);
+  const normalizedHost = parsed.hostname.replace(/\.$/, "").toLowerCase();
+  return normalizedHost === DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_HOST;
+}
+
+export function shouldIgnoreDevelopmentAccountDirectoryUrl(
+  url: string | null | undefined,
+  env: NodeJS.ProcessEnv,
+): boolean {
+  return shouldIgnoreDevelopmentClerkConfiguration(env)
+    && isDevelopmentAccountDirectoryUrl(url);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);

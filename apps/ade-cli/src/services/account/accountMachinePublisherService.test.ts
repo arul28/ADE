@@ -3,8 +3,34 @@ import {
   ACCOUNT_MACHINE_HEARTBEAT_MS,
   type AccountMachineRegistrationSnapshot,
   buildAccountMachineRegistration,
+  createBrainAccountMachinePublisherService,
   createAccountMachinePublisherService,
 } from "./accountMachinePublisherService";
+import {
+  DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+  DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+} from "../../../../desktop/src/shared/accountDirectory";
+
+const sharedAccountAuthService = vi.hoisted(() => ({
+  getStatus: vi.fn(() => ({
+    signedIn: true,
+    userId: "account-user",
+    source: "loopback" as const,
+  })),
+  getAccessToken: vi.fn(async () => "account-token"),
+  getSessionReadState: vi.fn(() => "available" as const),
+  onSignedIn: vi.fn(() => () => {}),
+}));
+
+vi.mock("./sharedAccountAuthService", async () => {
+  const actual = await vi.importActual<typeof import("./sharedAccountAuthService")>(
+    "./sharedAccountAuthService",
+  );
+  return {
+    ...actual,
+    getSharedAccountAuthService: () => sharedAccountAuthService,
+  };
+});
 
 function snapshot(
   overrides: Partial<AccountMachineRegistrationSnapshot> = {},
@@ -94,6 +120,8 @@ function routeSnapshot(
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("account machine publisher health", () => {
@@ -293,6 +321,43 @@ describe("account machine publisher health", () => {
   });
 });
 
+describe("brain account machine publisher directory policy", () => {
+  it("posts the account bearer to production when a packaged override targets development", async () => {
+    vi.stubEnv("ADE_RUNTIME_PACKAGED", "1");
+    vi.stubEnv("ADE_ALLOW_DEVELOPMENT_CLERK", "");
+    const requests: Array<{ input: string; init?: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requests.push({ input: String(input), init });
+      return new Response(null, { status: 204 });
+    }));
+    const service = createBrainAccountMachinePublisherService({
+      secretsDir: "/tmp/ade-account-publisher-policy",
+      projectRoots: () => [],
+      isSyncEnabled: () => true,
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+
+    await service.publishNow();
+    service.dispose();
+
+    expect(requests.map((request) => request.input)).toEqual([
+      `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/account/machines/register`,
+    ]);
+    expect(new Headers(requests[0]?.init?.headers).get("authorization"))
+      .toBe("Bearer account-token");
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "published",
+      directoryOrigin: DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+    });
+  });
+});
+
 describe("account machine registration publisher", () => {
   it("suffixes Beta and Alpha machine names but never stable names", () => {
     const registrationName = (packageChannel: string | null) =>
@@ -380,6 +445,29 @@ describe("account machine registration publisher", () => {
       machineKey: "machine-studio",
       deviceId: "device-studio",
     }));
+  });
+
+  it("ignores a development directory at the core publisher boundary when packaged", async () => {
+    vi.stubEnv("ADE_RUNTIME_PACKAGED", "1");
+    vi.stubEnv("ADE_ALLOW_DEVELOPMENT_CLERK", "");
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => `${DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL}/tenant`,
+      fetchImpl,
+    });
+
+    await service.publishNow();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/account/machines/register`,
+    );
   });
 
   it("never sends the bearer to an untrusted URL or logs it on failure", async () => {

@@ -35,6 +35,10 @@ import {
   summarizeExecution,
   unwrapToolResult,
 } from "./cli";
+import {
+  DEVELOPMENT_ADE_CLERK_ISSUER,
+  DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+} from "../../desktop/src/shared/accountDirectory";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -342,6 +346,41 @@ describe("ADE CLI", () => {
     })).toBe("loopback");
     expect(detectAccountLoginMode({ env: {} as NodeJS.ProcessEnv, platform: "darwin" }))
       .toBe("loopback");
+  });
+
+  it("treats rejected packaged development env credentials as absent when selecting login mode", () => {
+    const developmentAccessToken = [
+      Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+      Buffer.from(JSON.stringify({
+        iss: DEVELOPMENT_ADE_CLERK_ISSUER,
+        sub: "development-user",
+        exp: Math.floor(Date.now() / 1000) + 3_600,
+      })).toString("base64url"),
+      "signature",
+    ].join(".");
+    const developmentRefreshToken = `ade_account_v1.${Buffer.from(JSON.stringify({
+      version: 1,
+      refreshToken: "development-refresh-token",
+      issuer: DEVELOPMENT_ADE_CLERK_ISSUER,
+      clientId: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    }), "utf8").toString("base64url")}`;
+
+    for (const credential of [developmentAccessToken, developmentRefreshToken]) {
+      const env = {
+        ADE_RUNTIME_PACKAGED: "1",
+        ADE_ACCOUNT_TOKEN: credential,
+        DISPLAY: ":0",
+      } as NodeJS.ProcessEnv;
+      expect(detectAccountLoginMode({ env, platform: "linux" })).toBe("loopback");
+      expect(detectAccountLoginMode({
+        env: { ...env, SSH_CONNECTION: "host details" },
+        platform: "linux",
+      })).toBe("device");
+      expect(detectAccountLoginMode({
+        env: { ...env, ADE_ALLOW_DEVELOPMENT_CLERK: "1" },
+        platform: "linux",
+      })).toBe("env-token");
+    }
   });
 
   it("formats account auth sources and durable-token provisioning guidance", () => {
