@@ -116,6 +116,7 @@ import {
   resolveIdentityExecutionLane,
 } from "./identitySessionPolicy";
 import type { Logger } from "../logging/logger";
+import type { GithubService } from "../github/githubService";
 import {
   issueBuiltInBrowserActorCapability,
   revokeBuiltInBrowserActorCapability,
@@ -6107,6 +6108,7 @@ export function createAgentChatService(args: {
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearIssueTracker?: IssueTracker | null;
+  githubService?: Pick<GithubService, "getIssue"> | null;
   getOrchestrationService?: () => ReturnType<typeof createOrchestrationService> | null;
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
@@ -6155,6 +6157,7 @@ export function createAgentChatService(args: {
     ctoStateService,
     ctoMemoryService,
     linearIssueTracker,
+    githubService,
     getOrchestrationService,
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
@@ -38129,6 +38132,7 @@ export function createAgentChatService(args: {
     getSessionCapabilities,
     resolveSmartLinkPreview: ({ url }: { url: string }) => resolveSmartLinkPreview({
       url,
+      githubService,
       linearIssueTracker,
     }),
     previewSessionToolNames,

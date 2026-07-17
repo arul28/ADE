@@ -3058,6 +3058,7 @@ app.whenReady().then(async () => {
       transcriptsDir: adePaths.transcriptsDir,
       fileService,
       linearIssueTracker,
+      githubService,
       getOrchestrationService: () => orchestrationServiceRef,
       linearClient,
       linearCredentials: linearCredentialService,
