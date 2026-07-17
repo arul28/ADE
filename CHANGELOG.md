@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.29] - 2026-07-17
+
+### Added
+
+- Manage lanes without leaving the Work tab — create, switch, and clean up lanes inline.
+- Usage panel links out to each provider's own usage dashboard.
+- Smart-link preview badges promoted to a primary surface in the composer and messages.
+
+### Changed
+
+- Rewrote PR freshness: event fan-out, relay WebSocket push, unified status badges, and smoother PRs-tab transitions so PR state tracks GitHub in near real time.
+- Durable scheduling (crons, wakeups, loops) now spans runtimes and retains job ownership across local and remote.
+- Updated to Claude Agent SDK 0.3.211; pinned the Codex app-server to 0.144.5 with forward-compatibility for 0.145 across desktop, iOS, and the TUI.
+
+### Fixed
+
+- Connection reliability fixes and UX polish across desktop, web, and mobile clients.
+
+### Security
+
+- Verify SHA-256 of downloaded build artifacts before use.
+- Use strict host matching for OAuth provider detection.
+- Require a per-boot bearer token on the loopback TCP RPC listener.
+
 ## [1.2.28] - 2026-07-16
 
 ### Added
@@ -808,7 +832,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.28...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.29...HEAD
+[1.2.29]: https://github.com/arul28/ADE/compare/v1.2.28...v1.2.29
 [1.2.28]: https://github.com/arul28/ADE/compare/v1.2.27...v1.2.28
 [1.2.27]: https://github.com/arul28/ADE/compare/v1.2.26...v1.2.27
 [1.2.26]: https://github.com/arul28/ADE/compare/v1.2.25...v1.2.26

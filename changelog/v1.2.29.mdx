@@ -1,0 +1,28 @@
+---
+title: "v1.2.29"
+description: "Release notes for ADE v1.2.29 - July 17, 2026"
+---
+
+v1.2.29 is a reliability-and-reach release. Manage lanes without leaving Work, watch a PR's status change the moment it changes, and connect more dependably across Mac, web, and phone — with a round of security hardening underneath.
+
+---
+
+## Desktop and CLI
+
+- **Manage lanes inside Work.** Create, switch, and tidy up lanes without leaving the Work tab — the lane you need is a step closer to the chat you're in.
+- **PRs update the moment they change.** A rewritten freshness pipeline fans out PR events, pushes them over the relay WebSocket, and unifies the status badges, so the PRs tab tracks GitHub in near real time instead of waiting on a poll — with smoother tab transitions to match.
+- **Connections are steadier.** Reliability fixes across desktop, web, and mobile, plus polish on how connection state is shown and recovered.
+- **Usage links out to your providers.** The usage panel now links straight to each provider's own usage dashboard.
+- **Smart-link previews, promoted.** Link-preview badges are now a primary surface in the composer and messages.
+- **Scheduled work runs anywhere.** Durable scheduling — crons, wakeups, and loops — now spans runtimes, so a scheduled job keeps its owner across local and remote.
+- **Runtime updates.** Claude Agent SDK 0.3.211, and the Codex app-server pinned to 0.144.5 with forward-compatibility for 0.145 across desktop, iOS, and the TUI.
+
+## iOS
+
+- Connection reliability and UX polish carry through to the iPhone client.
+
+## Security notes
+
+- Downloaded build artifacts are now verified by SHA-256 before they are used.
+- OAuth provider detection uses strict host matching, closing a class of look-alike-host confusion.
+- The loopback TCP RPC listener now requires a per-boot bearer token, so only the local ADE that started it can drive it.
