@@ -83,14 +83,11 @@ class RelayClaimError extends Error {
 
   constructor(
     readonly status: number,
-    machineKey: string,
+    readonly machineKey: string,
   ) {
     super(`claim failed (${status})`);
     this.name = "RelayClaimError";
-    this.machineKey = machineKey;
   }
-
-  readonly machineKey: string;
 }
 
 type ControlSocketState = {

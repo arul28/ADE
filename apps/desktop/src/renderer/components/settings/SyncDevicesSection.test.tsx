@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -81,7 +82,7 @@ function makeStatus(overrides: Partial<SyncRoleSnapshot> = {}): SyncRoleSnapshot
     routeHealth: {
       listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
       tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
-      relay: { enabled: false, relayControlConnected: false, relayBridgeValidated: false, lastFailureAt: null, skipReason: null, lastControlError: null, reason: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
+      relay: { enabled: false, relayControlConnected: false, relayBridgeValidated: false, lastFailureAt: null, skipReason: null, lastControlError: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
       accountDirectory: {
         state: "published",
         skipReason: null,
@@ -225,7 +226,7 @@ describe("ThisMacCard", () => {
       routeHealth: {
         listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
         tailscale: { enabled: true, tailscalePublished: true, tailscaleReachable: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
-        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: true, lastFailureAt: null, skipReason: null, lastControlError: null, reason: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: true, lastFailureAt: null, skipReason: null, lastControlError: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
         accountDirectory: makeStatus().routeHealth.accountDirectory,
       },
     });
@@ -242,7 +243,7 @@ describe("ThisMacCard", () => {
         listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
         tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: "off", lastSuccessAt: null },
         // Relay control connected but bridge not yet validated → not reachable.
-        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, lastFailureAt: null, skipReason: null, lastControlError: null, reason: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, lastFailureAt: null, skipReason: null, lastControlError: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
         accountDirectory: makeStatus().routeHealth.accountDirectory,
       },
     });
@@ -530,20 +531,66 @@ describe("useSyncConnections local scoping", () => {
     expect(result.current.devices.map((d) => d.name)).toEqual(["Local iPhone"]);
   });
 
-  it("falls back to the routed snapshot when getLocalStatus is unavailable", async () => {
-    const routed = makeStatus();
+  it("withholds routed data and mutations when local status fails while remote-bound", async () => {
+    const routed = makeStatus({
+      localDevice: { ...makeStatus().localDevice, deviceId: "studio", name: "Mac Studio" },
+      runtimeName: "Mac Studio",
+    });
     installSyncMock({
       getStatus: async () => routed,
       getLocalStatus: async () => {
         throw new Error("no local runtime");
       },
-      listDevices: async () => [],
+      listDevices: async () => [device({ deviceId: "remote-phone", name: "Remote iPhone" })],
     });
 
     const { result } = renderHook(() => useSyncConnections());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.status).toBeTruthy();
+    expect(result.current.status).toBeNull();
+    expect(result.current.devices).toEqual([]);
+    expect(result.current.error).toBe("no local runtime");
+    expect(result.current.canManageDevices).toBe(false);
     expect(result.current.isRemoteBound).toBe(false);
+  });
+
+  it("does not let an older local refresh overwrite a newer degraded result", async () => {
+    const oldLocal = makeStatus({
+      localDevice: { ...makeStatus().localDevice, deviceId: "macbook", name: "MacBook Pro" },
+      runtimeName: "MacBook Pro",
+    });
+    const remote = makeStatus({
+      localDevice: { ...makeStatus().localDevice, deviceId: "studio", name: "Mac Studio" },
+      runtimeName: "Mac Studio",
+    });
+    let resolveOldLocal!: (status: SyncRoleSnapshot) => void;
+    const oldLocalResult = new Promise<SyncRoleSnapshot>((resolve) => {
+      resolveOldLocal = resolve;
+    });
+    let statusCalls = 0;
+    let localCalls = 0;
+    installSyncMock({
+      getStatus: async () => (++statusCalls === 1 ? oldLocal : remote),
+      getLocalStatus: async () => {
+        localCalls += 1;
+        if (localCalls === 1) return await oldLocalResult;
+        throw new Error("local status unavailable");
+      },
+      listDevices: async () => [device({ deviceId: "remote-phone", name: "Remote iPhone" })],
+    });
+
+    const { result } = renderHook(() => useSyncConnections());
+    await waitFor(() => expect(window.ade.sync.getLocalStatus).toHaveBeenCalledTimes(1));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(result.current.error).toBe("local status unavailable"));
+
+    await act(async () => {
+      resolveOldLocal(oldLocal);
+      await oldLocalResult;
+    });
+
+    expect(result.current.status).toBeNull();
+    expect(result.current.devices).toEqual([]);
+    expect(result.current.canManageDevices).toBe(false);
   });
 });

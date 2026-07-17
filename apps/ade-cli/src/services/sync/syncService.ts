@@ -1409,7 +1409,6 @@ export function createSyncService(args: SyncServiceArgs) {
             ?? (relayEnabled && relayReason ? rawListenerValidation.lastFailureAt : null),
           skipReason: relayReason,
           lastControlError: tunnelStatus?.lastControlError ?? null,
-          reason: relayReason,
           lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
           lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
         },

@@ -12428,11 +12428,10 @@ function checkSyncReadiness(value: unknown): ReadinessCheck & {
   }
   if (
     relay?.enabled === true
-    && (relay?.relayControlConnected !== true || asString(relay?.reason) != null)
+    && (relay?.relayControlConnected !== true || asString(relay?.skipReason) != null)
   ) {
     failures.push(`relay: ${asString(relay.skipReason)
       ?? asString(relay.lastControlError)
-      ?? asString(relay.reason)
       ?? "control channel is not connected"}`);
   }
   const usable = failures.length === 0;
@@ -16043,8 +16042,7 @@ function formatSyncStatus(value: unknown): string {
     ? "reachable"
     : asString(tailscale.reason) ?? (tailscale.enabled === true ? "not reachable" : "disabled");
   const relaySkipReason = asString(relay.skipReason)
-    ?? asString(relay.lastControlError)
-    ?? asString(relay.reason);
+    ?? asString(relay.lastControlError);
   const relayState = relay.relayControlConnected === true && relay.relayBridgeValidated === true
     ? "reachable"
     : relaySkipReason ?? (relay.enabled === true ? "not reachable" : "disabled");

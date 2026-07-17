@@ -132,7 +132,7 @@ export function buildAccountMachineRegistration(args: {
       && args.snapshot.routeHealth.listener.loopbackAdeValidated
       && args.snapshot.routeHealth.relay.relayControlConnected
       && args.snapshot.routeHealth.relay.relayBridgeValidated
-      && args.snapshot.routeHealth.relay.reason == null
+      && args.snapshot.routeHealth.relay.skipReason == null
     ) {
       const url = validatedRelayUrl(host, machineKey);
       if (url) add({ kind: "relay", url });

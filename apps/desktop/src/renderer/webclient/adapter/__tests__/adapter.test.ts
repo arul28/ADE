@@ -164,6 +164,25 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("does not cache a recoverable command fallback", async () => {
+    fake.descriptors = descriptors(["lanes.list"]);
+    fake.commandErrors.set(
+      "lanes.list",
+      Object.assign(new Error("host unavailable"), { code: "host_unavailable" }),
+    );
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project);
+
+    await expect(adapter.ade.lanes.list()).resolves.toEqual([]);
+
+    fake.commandErrors.delete("lanes.list");
+    fake.commandResults.set("lanes.list", [{ id: "lane-after-reconnect" }]);
+    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-after-reconnect" }]);
+    expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(2);
+
+    adapter.dispose();
+  });
+
   it("routes scheduled-work management through the web chat adapter", async () => {
     fake.descriptors = descriptors([
       "chat.createScheduledWork",

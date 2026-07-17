@@ -48,7 +48,6 @@ function snapshot(
         lastFailureAt: null,
         skipReason: null,
         lastControlError: null,
-        reason: null,
         lastControlOpenAt: null,
         lastBridgeValidationAt: null,
       },
@@ -87,7 +86,6 @@ function routeSnapshot(
     lastFailureAt: null,
     skipReason: null,
     lastControlError: null,
-    reason: null,
     lastControlOpenAt: "2026-07-16T00:00:00.000Z",
     lastBridgeValidationAt: "2026-07-16T00:00:00.000Z",
   };
@@ -340,7 +338,7 @@ describe("account machine registration publisher", () => {
     const host = routeSnapshot();
     host.routeHealth.listener.loopbackAdeValidated = false;
     host.routeHealth.tailscale.tailscaleReachable = false;
-    host.routeHealth.relay.reason = "Relay route is unusable because loopback validation failed.";
+    host.routeHealth.relay.skipReason = "Relay route is unusable because loopback validation failed.";
     host.pairingConnectInfo!.addressCandidates = [
       { kind: "lan", host: "192.168.1.20" },
       { kind: "tailscale", host: "studio.tailnet.ts.net" },

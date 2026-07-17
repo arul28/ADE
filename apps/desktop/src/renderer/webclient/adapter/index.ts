@@ -11,6 +11,7 @@ import { createGitNamespaces } from "./git";
 import { CommandCaller } from "./infra/commandCaller";
 import { EventBus } from "./infra/eventBus";
 import { createInvalidationScheduler } from "./infra/invalidation";
+import type { InvalidationDomain } from "./infra/invalidation";
 import { createLocalState } from "./infra/localState";
 import { createProjectState } from "./infra/projectState";
 import { withFallbackProxy } from "./infra/proxy";
@@ -46,6 +47,24 @@ export const WEB_HIDDEN_CAPABILITIES = {
   processes: false,
   automations: false,
 } as const;
+
+const DOMAIN_EVENTS = {
+  lanes: "lanesInvalidated",
+  sessions: "sessionsInvalidated",
+  chats: "chatsInvalidated",
+  prs: "prsInvalidated",
+  files: "filesInvalidated",
+  github: "githubInvalidated",
+  rebase: "rebaseInvalidated",
+} as const satisfies Record<InvalidationDomain,
+  | "lanesInvalidated"
+  | "sessionsInvalidated"
+  | "chatsInvalidated"
+  | "prsInvalidated"
+  | "filesInvalidated"
+  | "githubInvalidated"
+  | "rebaseInvalidated"
+>;
 
 export function createAdeWebAdapter(
   client: AdeSyncClient,
@@ -84,13 +103,7 @@ export function createAdeWebAdapter(
   addDispose(
     events.on("invalidation", (event) => {
       for (const domain of event.domains) {
-        if (domain === "lanes") events.emit("lanesInvalidated", event);
-        if (domain === "sessions") events.emit("sessionsInvalidated", event);
-        if (domain === "chats") events.emit("chatsInvalidated", event);
-        if (domain === "prs") events.emit("prsInvalidated", event);
-        if (domain === "files") events.emit("filesInvalidated", event);
-        if (domain === "github") events.emit("githubInvalidated", event);
-        if (domain === "rebase") events.emit("rebaseInvalidated", event);
+        events.emit(DOMAIN_EVENTS[domain], event);
       }
     })
   );

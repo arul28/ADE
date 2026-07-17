@@ -339,8 +339,8 @@ describe("sync loopback collision recovery", () => {
 
         // The regression: an unvalidated relay bridge must yield a non-null reason.
         expect(status.routeHealth.relay.relayBridgeValidated).toBe(false);
-        expect(typeof status.routeHealth.relay.reason).toBe("string");
-        expect(status.routeHealth.relay.reason).toMatch(/not been validated/);
+        expect(typeof status.routeHealth.relay.skipReason).toBe("string");
+        expect(status.routeHealth.relay.skipReason).toMatch(/not been validated/);
       } finally {
         await service.dispose();
         await listener.close();

@@ -12,7 +12,6 @@ import { QRCodeSVG } from "qrcode.react";
 import { createPortal } from "react-dom";
 import type {
   SyncDeviceRuntimeState,
-  SyncPeerConnectionState,
   SyncPeerDeviceType,
   SyncPairingConnectInfo,
   SyncRoleSnapshot,
@@ -36,6 +35,9 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import type { SyncConnections } from "./useSyncConnections";
+
+export { useSyncConnections, type SyncConnections } from "./useSyncConnections";
 
 const helperTextStyle: React.CSSProperties = {
   color: COLORS.textMuted,
@@ -104,205 +106,6 @@ function connectionLoadGuidance(error: string): string {
   return "Restart ADE, then try again.";
 }
 
-// ---------------------------------------------------------------------------
-// Shared data hook — one status + device subscription serving the This-Mac
-// card and the Phone / Web tabs. Actions surface a `busy` flag and a `notice`
-// so callers can render them wherever they choose.
-// ---------------------------------------------------------------------------
-
-export type SyncConnections = ReturnType<typeof useSyncConnections>;
-
-/** Display name for a machine snapshot, preferring its per-runtime name. */
-function machineDisplayName(status: SyncRoleSnapshot | null): string {
-  if (!status) return "This Mac";
-  return status.runtimeName?.trim() || status.localDevice.name || "This Mac";
-}
-
-// When this window is remote-bound, the routed `listDevices()` describes the
-// REMOTE machine's paired devices — not this Mac's. Until a local-scoped device
-// list IPC exists, derive this Mac's connected devices from the local snapshot's
-// live peers so the Phone/Web tabs never mislabel a remote machine's phones and
-// browsers as local ones. Offline-but-paired rows are not available here.
-function peerToDeviceState(peer: SyncPeerConnectionState): SyncDeviceRuntimeState {
-  return {
-    deviceId: peer.deviceId,
-    siteId: peer.siteId,
-    name: peer.deviceName,
-    platform: peer.platform,
-    deviceType: peer.deviceType,
-    createdAt: peer.connectedAt,
-    updatedAt: peer.lastSeenAt,
-    lastSeenAt: peer.lastSeenAt,
-    lastHost: peer.remoteAddress,
-    lastPort: peer.remotePort,
-    tailscaleIp: null,
-    ipAddresses: [],
-    metadata: {},
-    isLocal: false,
-    isBrain: peer.isBrain,
-    isHost: peer.isHost,
-    connectionState: "connected",
-    connectedAt: peer.connectedAt,
-    lastAppliedAt: peer.lastAppliedAt,
-    remoteAddress: peer.remoteAddress,
-    remotePort: peer.remotePort,
-    latencyMs: peer.latencyMs,
-    syncLag: peer.syncLag,
-  };
-}
-
-export function useSyncConnections() {
-  // `status` is always the LOCAL physical machine (via getLocalStatus) so the
-  // This-Mac card, pairing code, and its device tabs describe the Mac the user
-  // is sitting at — never the machine a remote-bound project routes to.
-  const [status, setStatus] = useState<SyncRoleSnapshot | null>(null);
-  // The binding-routed snapshot; only used to detect remote binding and name
-  // the machine this window is currently working on.
-  const [routedStatus, setRoutedStatus] = useState<SyncRoleSnapshot | null>(null);
-  const [routedDevices, setRoutedDevices] = useState<SyncDeviceRuntimeState[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    const [routed, local, nextDevices] = await Promise.all([
-      window.ade.sync.getStatus(),
-      window.ade.sync.getLocalStatus().catch(() => null),
-      window.ade.sync.listDevices(),
-    ]);
-    setStatus(local ?? routed);
-    setRoutedStatus(routed);
-    setRoutedDevices(nextDevices);
-    setError(null);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        await refresh();
-      } catch (refreshError) {
-        if (!cancelled) {
-          setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    const dispose = window.ade.sync.onEvent((event) => {
-      if (event.type !== "sync-status" || cancelled) return;
-      void refresh().catch(() => {});
-    });
-    const refreshWhenVisible = () => {
-      if (!cancelled) void refresh().catch(() => {});
-    };
-    const interval = window.setInterval(refreshWhenVisible, 5_000);
-    window.addEventListener("focus", refreshWhenVisible);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshWhenVisible);
-      dispose();
-    };
-  }, [refresh]);
-
-  // Remote-bound when the routed snapshot describes a different machine than the
-  // local one. Device mutations (revoke, pin) still route to that machine, so
-  // callers gate machine-management affordances on `canManageDevices`.
-  const isRemoteBound = Boolean(
-    status && routedStatus && status.localDevice.deviceId !== routedStatus.localDevice.deviceId,
-  );
-  const boundMachineName = isRemoteBound ? machineDisplayName(routedStatus) : null;
-  const localMachineName = machineDisplayName(status);
-  const devices = isRemoteBound && status
-    ? status.connectedPeers.map(peerToDeviceState)
-    : routedDevices;
-
-  const runAction = useCallback(async (work: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await work();
-      await refresh();
-    } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : String(actionError));
-    } finally {
-      setBusy(false);
-    }
-  }, [refresh]);
-
-  // Throwing setter for the inline PIN editor so it can surface errors next to
-  // the control. Returns the authoritative snapshot rather than re-fetching.
-  const setPinValue = useCallback(async (pin: string) => {
-    const nextStatus = await window.ade.sync.setPin(pin);
-    setStatus(nextStatus);
-  }, []);
-
-  const generatePin = useCallback(() => runAction(async () => {
-    await window.ade.sync.generatePin();
-    setNotice("Pairing code generated.");
-  }), [runAction]);
-
-  const clearPin = useCallback(() => runAction(async () => {
-    await window.ade.sync.clearPin();
-    setNotice("Pairing code removed. New devices can no longer connect.");
-  }), [runAction]);
-
-  const saveRuntimeName = useCallback((name: string) => runAction(async () => {
-    const trimmed = name.trim();
-    if (trimmed) {
-      await window.ade.sync.setRuntimeName(trimmed);
-      setNotice("Machine name updated.");
-    } else {
-      await window.ade.sync.clearRuntimeName();
-      setNotice("Machine name cleared.");
-    }
-  }), [runAction]);
-
-  const forgetDevice = useCallback((device: SyncDeviceRuntimeState) => runAction(async () => {
-    await window.ade.sync.forgetDevice(device.deviceId);
-    setNotice(device.connectionState === "connected" ? "Device revoked." : "Device removed.");
-  }), [runAction]);
-
-  const retryInitialLoad = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    void refresh()
-      .catch((refreshError) => {
-        setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
-      })
-      .finally(() => setLoading(false));
-  }, [refresh]);
-
-  return {
-    status,
-    devices,
-    loading,
-    busy,
-    notice,
-    error,
-    /** True when this window's project is bound to a different (remote) machine. */
-    isRemoteBound,
-    /** Name of the machine this window is currently working on, when remote-bound. */
-    boundMachineName,
-    /** Display name of this physical Mac (from the local snapshot). */
-    localMachineName,
-    /**
-     * Whether device/pairing mutations land on this Mac. False while remote-bound
-     * because forgetDevice / pin actions still route to the bound machine.
-     */
-    canManageDevices: !isRemoteBound,
-    setPinValue,
-    generatePin,
-    clearPin,
-    saveRuntimeName,
-    forgetDevice,
-    retryInitialLoad,
-  };
-}
-
 export function isSyncHost(status: SyncRoleSnapshot): boolean {
   return status.runtimeRole === "host" || status.role === "brain";
 }
@@ -336,7 +139,7 @@ function reachableRouteLabels(status: SyncRoleSnapshot): string[] {
     routes.push("Tailscale");
   }
   if (
-    health?.relay?.reason == null &&
+    health?.relay?.skipReason == null &&
     health?.relay?.relayControlConnected &&
     health?.relay?.relayBridgeValidated
   ) {

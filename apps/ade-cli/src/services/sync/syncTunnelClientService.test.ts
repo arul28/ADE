@@ -154,7 +154,6 @@ describe("createSyncTunnelClientService", () => {
             lastFailureAt: tunnelStatus.lastFailureAt,
             skipReason: tunnelStatus.lastError,
             lastControlError: tunnelStatus.lastControlError,
-            reason: tunnelStatus.lastError,
             lastControlOpenAt: tunnelStatus.lastControlOpenAt,
             lastBridgeValidationAt: tunnelStatus.lastBridgeValidationAt,
           },

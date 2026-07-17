@@ -2,13 +2,14 @@ import type { FileChangeEvent, FileContent, FilesReadFileRangeResult, FilesWorks
 import type { SupportedFileAction } from "../sync";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { stableCacheKey } from "./infra/cacheKey";
+import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { fileContentFromBlob, requestFileBlob } from "./infra/fileBlob";
 
 export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files"> {
   const { client, events, state } = infra;
-  const readCache = new Map<string, { expiresAt: number; promise: Promise<unknown> }>();
   const knownWorkspaceIdsByProject = new Map<string, Set<string>>();
   const HOT_FILE_READ_TTL_MS = 3_000;
+  const readCache = createCoalescingReadCache(HOT_FILE_READ_TTL_MS);
 
   function clearReadCache(): void {
     readCache.clear();
@@ -38,13 +39,7 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     const cacheKey = options.cache
       ? `${projectId ?? "missing-project"}\u0000${action}\u0000${stableCacheKey(asRecord(args))}`
       : null;
-    if (cacheKey) {
-      const cached = readCache.get(cacheKey);
-      if (cached && cached.expiresAt > Date.now()) return await cached.promise as T;
-      if (cached) readCache.delete(cacheKey);
-    }
-
-    const request = (async () => {
+    const fetchResult = async (): Promise<T> => {
       try {
         const result = await client.requestFile(action, asRecord(args) as never, {
           projectId,
@@ -54,26 +49,11 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
         if (options.surfaceErrors) throw error;
         return fallback;
       }
-    })();
+    };
 
-    if (cacheKey) {
-      const entry = {
-        expiresAt: Number.POSITIVE_INFINITY,
-        promise: request as Promise<unknown>,
-      };
-      readCache.set(cacheKey, entry);
-      void request.then(
-        () => {
-          if (readCache.get(cacheKey) === entry) {
-            entry.expiresAt = Date.now() + HOT_FILE_READ_TTL_MS;
-          }
-        },
-        () => {
-          if (readCache.get(cacheKey) === entry) readCache.delete(cacheKey);
-        },
-      );
-    }
-    return await request;
+    return cacheKey
+      ? await readCache.coalesce(cacheKey, fetchResult)
+      : await fetchResult();
   }
 
   async function requestVoid(action: SupportedFileAction, args: unknown, event?: FileChangeEvent): Promise<void> {

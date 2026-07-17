@@ -757,7 +757,6 @@ export function createMultiProjectRpcRequestHandler(
           lastFailureAt: null,
           skipReason: null,
           lastControlError: null,
-          reason: null,
           lastControlOpenAt: null,
           lastBridgeValidationAt: null,
         },

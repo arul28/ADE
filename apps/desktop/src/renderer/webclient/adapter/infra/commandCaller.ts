@@ -1,6 +1,7 @@
 import type { SyncRemoteCommandDescriptor } from "../../../../shared/types/sync";
 import type { AdeSyncClient } from "../../sync";
 import { stableCacheKey } from "./cacheKey";
+import { createCoalescingReadCache } from "./coalescingReadCache";
 import type { AdapterProjectState } from "./projectState";
 
 type Fallback<T> = T | (() => T | Promise<T>);
@@ -25,12 +26,15 @@ const RECOVERABLE_CODES = new Set([
   "command_rejected",
 ]);
 
+const READ_CACHE_TTL_MS = 3_000;
+
+type CommandResult<T> = {
+  value: T;
+  cacheable: boolean;
+};
+
 export class CommandCaller {
-  private readonly readCache = new Map<string, {
-    action: string;
-    expiresAt: number;
-    promise: Promise<unknown>;
-  }>();
+  private readonly readCache = createCoalescingReadCache(READ_CACHE_TTL_MS);
 
   constructor(
     private readonly client: AdeSyncClient,
@@ -42,11 +46,10 @@ export class CommandCaller {
       this.readCache.clear();
       return;
     }
-    for (const [key, entry] of this.readCache) {
-      if (actionPrefixes.some((prefix) => entry.action.startsWith(prefix))) {
-        this.readCache.delete(key);
-      }
-    }
+    this.readCache.invalidate((key) => {
+      const actionStart = key.indexOf("\u0000") + 1;
+      return actionPrefixes.some((prefix) => key.startsWith(prefix, actionStart));
+    });
   }
 
   getDescriptor(action: string): SyncRemoteCommandDescriptor | null {
@@ -74,51 +77,36 @@ export class CommandCaller {
     const cacheKey = options.cacheTtlMs !== undefined && options.idempotent !== false
       ? `${projectId ?? "runtime"}\u0000${action}\u0000${stableCacheKey(args)}`
       : null;
-    if (cacheKey) {
-      const cached = this.readCache.get(cacheKey);
-      if (cached && cached.expiresAt > Date.now()) {
-        return await cached.promise as T;
-      }
-      if (cached) this.readCache.delete(cacheKey);
-    }
-
-    const request = (async (): Promise<T> => {
+    const fetchCommand = async (): Promise<CommandResult<T>> => {
       try {
-        return (await this.client.sendCommand(action, args, {
-          projectId,
-          timeoutMs: options.timeoutMs,
-        })) as T;
+        return {
+          value: (await this.client.sendCommand(action, args, {
+            projectId,
+            timeoutMs: options.timeoutMs,
+          })) as T,
+          cacheable: true,
+        };
       } catch (error) {
         // The relay transport already owns reconnect/replay. An immediate
         // adapter retry doubles billable relay traffic and normally repeats
         // the same unavailable-project failure, so recover locally instead.
-        if (isRecoverable(error)) return await resolveFallback(options.fallback);
+        if (isRecoverable(error)) {
+          return {
+            value: await resolveFallback(options.fallback),
+            cacheable: false,
+          };
+        }
         throw error;
       }
-    })();
+    };
 
-    if (cacheKey && options.cacheTtlMs !== undefined) {
-      const entry = {
-        action,
-        // Keep concurrent callers joined even when the relay itself takes
-        // longer than the TTL; start the freshness window after resolution.
-        expiresAt: Number.POSITIVE_INFINITY,
-        promise: request as Promise<unknown>,
-      };
-      this.readCache.set(cacheKey, entry);
-      void request.then(
-        () => {
-          if (this.readCache.get(cacheKey) === entry) {
-            entry.expiresAt = Date.now() + Math.max(0, options.cacheTtlMs!);
-          }
-        },
-        () => {
-          if (this.readCache.get(cacheKey) === entry) this.readCache.delete(cacheKey);
-        },
-      );
-    }
-
-    return await request;
+    const result = cacheKey && options.cacheTtlMs !== undefined
+      ? await this.readCache.coalesce(cacheKey, fetchCommand, {
+          cacheResult: (next) => next.cacheable,
+          ttlMs: options.cacheTtlMs,
+        })
+      : await fetchCommand();
+    return result.value;
   }
 }
 

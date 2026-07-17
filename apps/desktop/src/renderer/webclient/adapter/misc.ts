@@ -1,4 +1,9 @@
-import type { GitHubStatus, SyncDeviceRuntimeState, SyncRoleSnapshot } from "../../../shared/types";
+import {
+  peerToRuntimeDeviceState,
+  type GitHubStatus,
+  type SyncDeviceRuntimeState,
+  type SyncRoleSnapshot,
+} from "../../../shared/types";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
@@ -125,34 +130,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       latencyMs: snapshot.client.latencyMs,
       syncLag: snapshot.client.syncLag,
     };
-    const peers = snapshot.connectedPeers.map<SyncDeviceRuntimeState>((peer) => ({
-      deviceId: peer.deviceId,
-      siteId: peer.siteId,
-      name: peer.deviceName,
-      platform: peer.platform,
-      deviceType: peer.deviceType,
-      createdAt: peer.connectedAt,
-      updatedAt: peer.lastSeenAt,
-      lastSeenAt: peer.lastSeenAt,
-      lastHost: peer.remoteAddress,
-      lastPort: peer.remotePort,
-      tailscaleIp: null,
-      ipAddresses: [],
-      metadata: {
-        appVersion: peer.appVersion,
-        appBuild: peer.appBuild,
-        bundleIdentifier: peer.bundleIdentifier,
-      },
-      isLocal: false,
-      isBrain: peer.isBrain,
-      isHost: peer.isHost,
-      connectionState: "connected",
-      connectedAt: peer.connectedAt,
-      lastAppliedAt: peer.lastAppliedAt,
-      remoteAddress: peer.remoteAddress,
-      remotePort: peer.remotePort,
-      latencyMs: peer.latencyMs,
-      syncLag: peer.syncLag,
+    const peers = snapshot.connectedPeers.map((peer) => peerToRuntimeDeviceState(peer, {
+      appVersion: peer.appVersion,
+      appBuild: peer.appBuild,
+      bundleIdentifier: peer.bundleIdentifier,
     }));
     return [localRuntime, ...peers];
   }
