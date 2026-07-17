@@ -102,6 +102,7 @@ import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
+import { shouldRejectDevelopmentEnvCredential } from "./services/account/accountAuthService";
 import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
 import {
   runAdeCodeRemote,
@@ -18213,7 +18214,13 @@ export function detectAccountLoginMode(args: {
 } = {}): AccountLoginMode {
   const env = args.env ?? process.env;
   if (args.explicitHeadless) return "device";
-  if (env.ADE_ACCOUNT_TOKEN?.trim()) return "env-token";
+  const envCredential = env.ADE_ACCOUNT_TOKEN?.trim();
+  if (
+    envCredential
+    && !shouldRejectDevelopmentEnvCredential(env, envCredential)
+  ) {
+    return "env-token";
+  }
   if (args.browserOpenFailed) return "device";
   if (env.SSH_TTY?.trim() || env.SSH_CONNECTION?.trim() || env.SSH_CLIENT?.trim()) {
     return "device";

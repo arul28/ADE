@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
   DEVELOPMENT_ADE_CLERK_ISSUER,
@@ -319,6 +320,12 @@ describe("AccountAuthService packaged development-session policy", () => {
     });
     class RacingCredentialStore extends MemoryCredentialStore {
       private replacementPending = true;
+      accountReads = 0;
+
+      override getSync(key: string): string | null {
+        if (key === ACCOUNT_SESSION_CREDENTIAL_KEY) this.accountReads += 1;
+        return super.getSync(key);
+      }
 
       override updateSync(updater: (values: Record<string, string>) => boolean | void): void {
         if (this.replacementPending) {
@@ -329,7 +336,6 @@ describe("AccountAuthService packaged development-session policy", () => {
       }
     }
     const store = new RacingCredentialStore();
-    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(developmentSession));
     const fetchImpl = vi.fn();
     const service = createAccountAuthService({
       credentialStore: store,
@@ -343,7 +349,16 @@ describe("AccountAuthService packaged development-session policy", () => {
     });
     activeServices.push(service);
 
-    expect(service.getStatus().signedIn).toBe(true);
+    // Seed the development session after construction so this getStatus() is
+    // the call that observes it, loses the compare-delete race, and must retry.
+    store.accountReads = 0;
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(developmentSession));
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: productionSession.userId,
+      source: "loopback",
+    });
+    expect(store.accountReads).toBe(2);
     await expect(service.getAccessToken()).resolves.toBe(productionSession.accessToken);
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(JSON.stringify(productionSession));
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -376,6 +391,7 @@ describe("AccountAuthService packaged development-session policy", () => {
     activeServices.push(service);
 
     expect(service.getStatus()).toMatchObject({ signedIn: false, source: null });
+    expect(service.getSessionReadState()).toBe("missing");
     await expect(service.getAccessToken()).rejects.toThrow(/not signed in/i);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(
@@ -1411,9 +1427,22 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
         clientId: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
       }), "utf8").toString("base64url")}`,
     },
-  ])("rejects a packaged ADE_ACCOUNT_TOKEN with $name without using it", async ({ credential }) => {
+  ])("treats a packaged ADE_ACCOUNT_TOKEN with $name as absent across auth flows", async ({ credential }) => {
     const store = new MemoryCredentialStore();
-    const fetchImpl = vi.fn();
+    const fetchImpl = vi.fn(async (input: string): Promise<Response> => {
+      expect(input).toBe(`${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/device/code`);
+      return jsonResponse({
+        device_code: `device-code-${fetchImpl.mock.calls.length}`,
+        user_code: "PROD-1234",
+        verification_uri: `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/device`,
+        expires_in: 600,
+        interval: 5,
+      });
+    });
+    const randomUUID = vi.fn()
+      .mockReturnValueOnce("packaged-loopback-session")
+      .mockReturnValueOnce("packaged-device-session")
+      .mockReturnValueOnce("packaged-headless-device-session");
     const service = createAccountAuthService({
       credentialStore: store,
       getOAuthConfig: () => ({
@@ -1424,7 +1453,9 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
         ADE_RUNTIME_PACKAGED: "1",
         ADE_ACCOUNT_TOKEN: credential,
       } as NodeJS.ProcessEnv,
+      getDeviceBridgeUrl: () => DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
       now: () => Date.parse("2026-07-14T12:00:00.000Z"),
+      randomUUID,
       fetchImpl,
     });
     activeServices.push(service);
@@ -1434,9 +1465,71 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
       userId: null,
       source: null,
     });
-    await expect(service.getAccessToken()).rejects.toThrow(/development Clerk/i);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(service.getAccessToken()).rejects.toThrow(/not signed in/i);
+
+    const loopback = await service.startLogin();
+    expect(new URL(loopback.authorizeUrl).origin).toBe(DEFAULT_ADE_CLERK_ISSUER);
+    await expect(service.startDeviceLogin()).resolves.toMatchObject({
+      sessionId: "packaged-device-session",
+      verificationUri: `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/device`,
+    });
+    await expect(service.startDeviceLogin({ ignoreEnvCredential: true })).resolves.toMatchObject({
+      sessionId: "packaged-headless-device-session",
+      verificationUri: `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/device`,
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+  });
+
+  it("lets a stored production session win over a rejected packaged env credential", async () => {
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const productionSession = storedSession({
+      accessToken: jwt({
+        iss: DEFAULT_ADE_CLERK_ISSUER,
+        sub: "production-user",
+        exp: nowMs / 1000 + 3_600,
+      }),
+      refreshToken: "production-refresh-token",
+      userId: "production-user",
+      oauthConfig: {
+        issuer: DEFAULT_ADE_CLERK_ISSUER,
+        clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+      },
+    });
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(productionSession));
+    const fetchImpl = vi.fn();
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({
+        issuer: DEFAULT_ADE_CLERK_ISSUER,
+        clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+      }),
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        ADE_ACCOUNT_TOKEN: jwt({
+          iss: DEVELOPMENT_ADE_CLERK_ISSUER,
+          sub: "development-user",
+          exp: nowMs / 1000 + 3_600,
+        }),
+      } as NodeJS.ProcessEnv,
+      now: () => nowMs,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus()).toMatchObject({
+      signedIn: true,
+      userId: "production-user",
+      source: "loopback",
+    });
+    await expect(service.getAccessToken()).resolves.toBe(productionSession.accessToken);
+    await expect(service.createToken()).resolves.toMatchObject({
+      token: expect.stringMatching(/^ade_account_v1\./),
+      source: "refresh_token",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("refreshes a newly provisioned token without local OAuth configuration", async () => {
