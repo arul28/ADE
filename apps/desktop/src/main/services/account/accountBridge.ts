@@ -11,6 +11,7 @@
 import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
+  resolveAccountOAuthConfig,
   resolveOfficialAccountDirectoryBaseUrl,
 } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
@@ -20,7 +21,6 @@ import type {
   AccountAuthStatus,
   AccountLoginStartResult,
 } from "../../../../../ade-cli/src/services/account/accountAuthService";
-import { createProjectSecretService } from "../secrets/projectSecretService";
 import type { AccountMachineReconciliationResult } from "../remoteRuntime/remoteConnectionService";
 import type {
   AdeAccountMachinePairResult,
@@ -30,8 +30,6 @@ import type {
   AdeAccountStatus,
 } from "../../../shared/types";
 import {
-  DEFAULT_ADE_CLERK_ISSUER,
-  DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
   parseTrustedAccountDirectoryBaseUrl,
   shouldIgnoreDevelopmentAccountDirectoryUrl,
   warnDevelopmentClerkIgnored,
@@ -49,27 +47,18 @@ type AccountBridgeOptions = {
   };
 };
 
-function readProjectSecret(projectRoot: string | null, name: string): string | null {
-  if (!projectRoot) return null;
-  try {
-    return createProjectSecretService(projectRoot).get({ name }).value.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Best-effort: is machine sign-in configured (CLERK issuer + client id present)? */
+/**
+ * Best-effort: is machine sign-in configured (CLERK issuer + client id present)?
+ * Derive it from the SAME resolver `startLogin()` uses so the packaged
+ * development-Clerk-ignore policy is reflected here — otherwise a stale partial
+ * development secret would disable the sign-in UI even though login would fall
+ * back to the production defaults and succeed.
+ */
 function isLoginConfigured(projectRoot: string | null): boolean {
-  const projectIssuer = readProjectSecret(projectRoot, "CLERK_ISSUER");
-  const projectClientId = readProjectSecret(projectRoot, "CLERK_OAUTH_CLIENT_ID");
-  const envIssuer = process.env.CLERK_ISSUER?.trim() ?? "";
-  const envClientId = process.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "";
-  if (projectIssuer || projectClientId) {
-    return Boolean(projectIssuer ?? envIssuer) && Boolean(projectClientId ?? envClientId);
-  }
-  if (envIssuer || envClientId) return Boolean(envIssuer && envClientId);
-  const issuer = DEFAULT_ADE_CLERK_ISSUER;
-  const clientId = DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID;
+  const { issuer, clientId } = resolveAccountOAuthConfig({
+    env: process.env,
+    projectRoots: projectRoot ? [projectRoot] : [],
+  });
   return Boolean(issuer && clientId);
 }
 

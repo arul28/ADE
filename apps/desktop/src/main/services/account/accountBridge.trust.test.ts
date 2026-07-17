@@ -50,6 +50,10 @@ vi.mock(
       signOut,
     }),
     registerAccountConfigProjectRoot: vi.fn(),
+    resolveAccountOAuthConfig: () => ({
+      issuer: "https://clerk.ade-app.dev",
+      clientId: "prod-client",
+    }),
     resolveOfficialAccountDirectoryBaseUrl,
   }),
 );
