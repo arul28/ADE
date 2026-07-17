@@ -15,6 +15,8 @@ const signedOutAccount: BrowserAccountSnapshot = {
   userId: null,
   email: null,
   name: null,
+  imageUrl: null,
+  expiresAt: null,
   machines: [],
   relayBaseUrls: ["wss://relay.example"],
   message: null,

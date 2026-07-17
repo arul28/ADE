@@ -83,6 +83,25 @@ describe("account status cache", () => {
 
     unsubscribe();
   });
+
+  it("coerces a null bridge response to the signed-out account shape", async () => {
+    const status = vi.fn(async () => null);
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        account: { status },
+      } as unknown as typeof window.ade,
+    });
+
+    const { fetchAccountStatus, SIGNED_OUT_ACCOUNT } = await import("./account");
+
+    const normalized = await fetchAccountStatus({ force: true });
+
+    expect(normalized).toBe(SIGNED_OUT_ACCOUNT);
+    expect(normalized).toMatchObject({ signedIn: false, userId: null, email: null });
+    expect(status).toHaveBeenCalledOnce();
+  });
 });
 
 describe("account avatar presentation", () => {

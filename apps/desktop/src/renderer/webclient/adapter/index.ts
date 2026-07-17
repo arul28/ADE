@@ -1,6 +1,8 @@
 import type { ProjectInfo } from "../../../shared/types";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
+import { BrowserAccountClient } from "../account/client";
+import { createAccountNamespace } from "./account";
 import { createAgentChatNamespace } from "./agentChat";
 import { createAnalyticsNamespace } from "./analytics";
 import { createAppNamespace, webUpdateMethods } from "./app";
@@ -44,7 +46,11 @@ export const WEB_HIDDEN_CAPABILITIES = {
   automations: false,
 } as const;
 
-export function createAdeWebAdapter(client: AdeSyncClient, initialCatalog?: SyncMobileProjectSummary[]): AdeWebAdapter {
+export function createAdeWebAdapter(
+  client: AdeSyncClient,
+  initialCatalog?: SyncMobileProjectSummary[],
+  providedAccountClient?: BrowserAccountClient,
+): AdeWebAdapter {
   const disposers: Array<() => void> = [];
   const addDispose = (dispose: () => void) => disposers.push(dispose);
   const state = createProjectState(client);
@@ -91,9 +97,11 @@ export function createAdeWebAdapter(client: AdeSyncClient, initialCatalog?: Sync
   const { sessions, pty, terminal } = createSessionsPtyNamespaces(infra);
   const { git, diff, conflicts } = createGitNamespaces(infra);
   const misc = createMiscNamespaces(infra);
+  const accountClient = providedAccountClient ?? new BrowserAccountClient();
 
   const surface = {
     app: createAppNamespace(infra),
+    account: createAccountNamespace(accountClient),
     analytics: createAnalyticsNamespace(infra),
     project: createProjectNamespace(infra),
     lanes: createLanesNamespace(infra),

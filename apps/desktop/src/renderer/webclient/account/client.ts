@@ -11,19 +11,38 @@ import {
 } from "../../../shared/accountDirectory";
 import type {
   AdeAccountMachine,
+  AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
 } from "../../../shared/types/account";
+import {
+  BrowserAccountSessionStore,
+  type BrowserAccountSessionPersistence,
+  type PersistedBrowserAccountSession,
+} from "./sessionStore";
 
 const OAUTH_STATE_KEY = "ade-web:account-oauth-state";
 const OAUTH_VERIFIER_KEY = "ade-web:account-oauth-verifier";
 const OAUTH_RETURN_PATH_KEY = "ade-web:account-oauth-return-path";
 const REFRESH_SKEW_MS = 2 * 60_000;
+const USERINFO_REQUEST_TIMEOUT_MS = 3_000;
+const DIRECTORY_MUTATION_TIMEOUT_MS = 8_000;
 
 type BrowserAccountConfig = {
   issuer: string;
   clientId: string;
   directoryBaseUrl: string;
   relayBaseUrls: string[];
+};
+
+type BrowserAccountClientOptions = {
+  config?: BrowserAccountConfig | null;
+  fetchImpl?: typeof fetch;
+  location?: BrowserLocation;
+  history?: Pick<History, "replaceState">;
+  storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+  sessionStore?: BrowserAccountSessionPersistence;
+  now?: () => number;
+  userinfoRequestTimeoutMs?: number;
 };
 
 type BrowserAccountSession = {
@@ -33,6 +52,7 @@ type BrowserAccountSession = {
   userId: string | null;
   email: string | null;
   name: string | null;
+  imageUrl: string | null;
 };
 
 export type BrowserAccountState =
@@ -48,6 +68,8 @@ export type BrowserAccountSnapshot = {
   userId: string | null;
   email: string | null;
   name: string | null;
+  imageUrl: string | null;
+  expiresAt: string | null;
   machines: AdeAccountMachine[];
   relayBaseUrls: string[];
   message: string | null;
@@ -57,6 +79,10 @@ export type BrowserAccountSessionLease = Readonly<{
   userId: string;
   generation: number;
 }>;
+
+export function browserAccountIsSignedIn(state: BrowserAccountState): boolean {
+  return state === "signed_in" || state === "directory_unavailable";
+}
 
 type TokenPayload = {
   accessToken: string;
@@ -97,23 +123,65 @@ async function pkceChallenge(verifier: string): Promise<string> {
   return bytesToBase64Url(new Uint8Array(digest));
 }
 
-function decodeClaims(accessToken: string): Pick<BrowserAccountSession, "userId" | "email" | "name"> {
+type BrowserAccountProfile = Pick<
+  BrowserAccountSession,
+  "userId" | "email" | "name" | "imageUrl"
+>;
+
+function decodeJwtPayload(accessToken: string): Record<string, unknown> | null {
   try {
     const encoded = accessToken.split(".")[1];
     if (!encoded) throw new Error("missing claims");
     const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
     const claims = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="))) as unknown;
-    if (!isRecord(claims)) throw new Error("invalid claims");
-    const givenName = stringValue(claims.given_name ?? claims.first_name);
-    const familyName = stringValue(claims.family_name ?? claims.last_name);
-    return {
-      userId: stringValue(claims.sub),
-      email: stringValue(claims.email ?? claims.primary_email ?? claims.email_address),
-      name: stringValue(claims.name) ?? ([givenName, familyName].filter(Boolean).join(" ") || null),
-    };
+    return isRecord(claims) ? claims : null;
   } catch {
-    return { userId: null, email: null, name: null };
+    return null;
   }
+}
+
+function accessTokenExpiresAtMs(accessToken: string): number | null {
+  const exp = decodeJwtPayload(accessToken)?.exp;
+  if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= 0) return null;
+  const expiresAtMs = Math.trunc(exp * 1000);
+  return Number.isFinite(expiresAtMs) ? expiresAtMs : null;
+}
+
+function profileFromRecord(record: Record<string, unknown> | null): BrowserAccountProfile {
+  if (!record) return { userId: null, email: null, name: null, imageUrl: null };
+  const givenName = stringValue(record.given_name ?? record.first_name);
+  const familyName = stringValue(record.family_name ?? record.last_name);
+  return {
+    userId: stringValue(record.sub),
+    email: stringValue(record.email ?? record.primary_email ?? record.email_address),
+    name: stringValue(record.name) ?? ([givenName, familyName].filter(Boolean).join(" ") || null),
+    imageUrl: stringValue(record.picture ?? record.image_url ?? record.avatar_url),
+  };
+}
+
+function trustedProfileImageUrl(value: string | null, issuer: string): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:") return null;
+    if (url.origin === new URL(issuer).origin) return url.toString();
+    if (url.origin === "https://img.clerk.com" || url.origin === "https://images.clerk.dev") {
+      return url.toString();
+    }
+    if (
+      url.origin === "https://storage.googleapis.com"
+      && url.pathname.startsWith("/images.clerk.dev/")
+    ) {
+      return url.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeClaims(accessToken: string): BrowserAccountProfile {
+  return profileFromRecord(decodeJwtPayload(accessToken));
 }
 
 export function readBrowserAccountConfig(env: Record<string, unknown>): BrowserAccountConfig | null {
@@ -159,21 +227,20 @@ export class BrowserAccountClient {
   private sessionGeneration = 0;
   private refreshPromise: Promise<string> | null = null;
   private snapshot: BrowserAccountSnapshot;
+  private readonly options: BrowserAccountClientOptions;
+  private readonly sessionStore: BrowserAccountSessionPersistence;
 
-  constructor(private readonly options: {
-    config?: BrowserAccountConfig | null;
-    fetchImpl?: typeof fetch;
-    location?: BrowserLocation;
-    history?: Pick<History, "replaceState">;
-    storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
-    now?: () => number;
-  } = {}) {
+  constructor(options: BrowserAccountClientOptions = {}) {
+    this.options = options;
+    this.sessionStore = options.sessionStore ?? new BrowserAccountSessionStore();
     const config = this.config;
     this.snapshot = {
       state: config ? "signed_out" : "unconfigured",
       userId: null,
       email: null,
       name: null,
+      imageUrl: null,
+      expiresAt: null,
       machines: [],
       relayBaseUrls: config?.relayBaseUrls ?? trustedAccountRelayBaseUrls(),
       message: config
@@ -212,7 +279,7 @@ export class BrowserAccountClient {
     const userId = this.session?.userId?.trim() ?? "";
     if (
       !userId
-      || (this.snapshot.state !== "signed_in" && this.snapshot.state !== "directory_unavailable")
+      || !browserAccountIsSignedIn(this.snapshot.state)
     ) {
       return null;
     }
@@ -229,8 +296,7 @@ export class BrowserAccountClient {
     if (!config) return this.getSnapshot();
     const params = new URLSearchParams(this.location.search);
     if (this.location.pathname !== "/account/callback") {
-      this.snapshot = { ...this.snapshot, state: "signed_out", message: null };
-      return this.getSnapshot();
+      return await this.restorePersistedSession(config);
     }
 
     const expectedState = this.storage.getItem(OAUTH_STATE_KEY);
@@ -243,11 +309,11 @@ export class BrowserAccountClient {
     (this.options.history ?? window.history).replaceState(null, "", returnPath.startsWith("/") ? returnPath : "/");
 
     if (oauthError || !code || !expectedState || actualState !== expectedState || !verifier) {
-      this.snapshot = {
-        ...this.snapshot,
-        state: "auth_expired",
-        message: oauthError ? "ADE account sign-in was not completed." : "ADE account sign-in could not be verified. Try again.",
-      };
+      await this.expireSession(
+        oauthError
+          ? "ADE account sign-in was not completed."
+          : "ADE account sign-in could not be verified. Try again.",
+      );
       return this.getSnapshot();
     }
 
@@ -259,22 +325,15 @@ export class BrowserAccountClient {
         code_verifier: verifier,
         redirect_uri: `${this.location.origin}/account/callback`,
       }, null);
-      this.setSession(token);
+      await this.setSession(token, config);
       return await this.loadMachines();
     } catch {
-      this.session = null;
-      this.sessionGeneration += 1;
-      this.snapshot = {
-        ...this.snapshot,
-        state: "auth_expired",
-        machines: [],
-        message: "ADE account sign-in expired or was rejected. Try again.",
-      };
+      await this.expireSession("ADE account sign-in expired or was rejected. Try again.");
       return this.getSnapshot();
     }
   }
 
-  async startSignIn(): Promise<void> {
+  async startSignIn(): Promise<string> {
     const config = this.config;
     if (!config) throw new Error("Account sign-in isn't configured for this hosted client.");
     const verifier = randomBase64Url(48);
@@ -294,19 +353,24 @@ export class BrowserAccountClient {
     authorizeUrl.searchParams.set("code_challenge_method", "S256");
     authorizeUrl.searchParams.set("state", state);
     authorizeUrl.searchParams.set("scope", "openid profile email offline_access");
-    this.location.assign(authorizeUrl.toString());
+    const url = authorizeUrl.toString();
+    this.location.assign(url);
+    return url;
   }
 
-  signOut(): BrowserAccountSnapshot {
+  async signOut(): Promise<BrowserAccountSnapshot> {
     this.session = null;
     this.sessionGeneration += 1;
     this.refreshPromise = null;
     this.clearPendingOAuth();
+    await this.sessionStore.clear();
     this.snapshot = {
       state: this.config ? "signed_out" : "unconfigured",
       userId: null,
       email: null,
       name: null,
+      imageUrl: null,
+      expiresAt: null,
       machines: [],
       relayBaseUrls: this.config?.relayBaseUrls ?? trustedAccountRelayBaseUrls(),
       message: null,
@@ -328,7 +392,7 @@ export class BrowserAccountClient {
       accessToken,
       fetchImpl: this.options.fetchImpl,
     });
-    this.applyDirectoryResult(result);
+    await this.applyDirectoryResult(result);
     return this.getSnapshot();
   }
 
@@ -340,7 +404,7 @@ export class BrowserAccountClient {
       return session.accessToken;
     }
     if (!session.refreshToken) {
-      this.expireSession();
+      await this.expireSession();
       throw new Error("ADE account session expired.");
     }
     if (this.refreshPromise) return await this.refreshPromise;
@@ -365,9 +429,17 @@ export class BrowserAccountClient {
         if (this.session) return this.session.accessToken;
         throw new Error("ADE account sign-in is required.");
       }
-      this.setSession(token);
+      const applied = await this.setSession(token, config, session);
+      if (!applied) {
+        if (this.session) return await this.getAccessToken();
+        throw new Error("ADE account sign-in is required.");
+      }
       const refreshed = this.session;
       if (!refreshed) throw new Error("ADE account session expired.");
+      if (refreshed.expiresAtMs <= (this.options.now?.() ?? Date.now())) {
+        await this.expireSession();
+        throw new Error("ADE account session expired.");
+      }
       return refreshed.accessToken;
     } catch (error) {
       if (
@@ -375,7 +447,7 @@ export class BrowserAccountClient {
         && error.invalidatesSession
         && this.session === session
       ) {
-        this.expireSession();
+        await this.expireSession();
         throw new Error("ADE account session expired.");
       }
       throw error;
@@ -414,53 +486,237 @@ export class BrowserAccountClient {
     return token;
   }
 
-  private setSession(token: TokenPayload): void {
+  private async fetchUserinfoProfile(
+    config: BrowserAccountConfig,
+    accessToken: string,
+  ): Promise<BrowserAccountProfile | null> {
+    const controller = new AbortController();
+    const requestedTimeoutMs = this.options.userinfoRequestTimeoutMs;
+    const timeoutMs = typeof requestedTimeoutMs === "number"
+      && Number.isFinite(requestedTimeoutMs)
+      && requestedTimeoutMs > 0
+      ? Math.trunc(requestedTimeoutMs)
+      : USERINFO_REQUEST_TIMEOUT_MS;
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await (this.options.fetchImpl ?? fetch)(`${config.issuer}/oauth/userinfo`, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${accessToken}`,
+        },
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+      });
+      if (!response.ok) return null;
+      const profile = await response.json().catch(() => null);
+      if (!isRecord(profile)) return null;
+      return profileFromRecord(profile);
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async setSession(
+    token: TokenPayload,
+    config: BrowserAccountConfig,
+    expectedSession?: BrowserAccountSession,
+  ): Promise<boolean> {
     const claims = decodeClaims(token.accessToken);
-    const machines = this.session?.userId === claims.userId
+    const previous = this.session;
+    const now = this.options.now?.() ?? Date.now();
+    const expiresAtMs = accessTokenExpiresAtMs(token.accessToken)
+      ?? now + token.expiresInSec * 1000;
+    // Do not send a near-expiry JWT to userinfo. Install only enough session
+    // state to let getAccessToken() refresh it before any authenticated read.
+    const userinfo = expiresAtMs - now > REFRESH_SKEW_MS
+      ? await this.fetchUserinfoProfile(config, token.accessToken)
+      : null;
+    if (expectedSession && this.session !== expectedSession) return false;
+    const profile: BrowserAccountProfile = {
+      userId: claims.userId ?? userinfo?.userId ?? previous?.userId ?? null,
+      email: claims.email ?? userinfo?.email ?? previous?.email ?? null,
+      name: claims.name ?? userinfo?.name ?? previous?.name ?? null,
+      imageUrl: trustedProfileImageUrl(
+        userinfo?.imageUrl ?? claims.imageUrl ?? previous?.imageUrl ?? null,
+        config.issuer,
+      ),
+    };
+    const machines = previous?.userId === profile.userId
       ? this.snapshot.machines
       : [];
     this.session = {
-      ...claims,
+      ...profile,
       accessToken: token.accessToken,
       refreshToken: token.refreshToken,
-      expiresAtMs: (this.options.now?.() ?? Date.now()) + token.expiresInSec * 1000,
+      expiresAtMs,
     };
     this.sessionGeneration += 1;
     this.snapshot = {
       state: "signed_in",
-      ...claims,
+      ...profile,
+      expiresAt: new Date(expiresAtMs).toISOString(),
       machines,
       relayBaseUrls: this.snapshot.relayBaseUrls,
       message: null,
     };
+    if (token.refreshToken) {
+      await this.sessionStore.save({
+        version: 1,
+        refreshToken: token.refreshToken,
+        issuer: config.issuer,
+        clientId: config.clientId,
+        ...profile,
+      });
+    } else {
+      await this.sessionStore.clear();
+    }
+    return true;
   }
 
-  private applyDirectoryResult(result: AdeAccountMachinesResult): void {
+  private async applyDirectoryResult(result: AdeAccountMachinesResult): Promise<void> {
     if (result.state === "auth_expired") {
-      this.expireSession();
+      await this.expireSession(result.message ?? undefined);
       return;
     }
-    const identity = this.session ?? { userId: null, email: null, name: null };
+    const identity = this.session ?? {
+      userId: null,
+      email: null,
+      name: null,
+      imageUrl: null,
+      expiresAtMs: Number.NaN,
+    };
     this.snapshot = {
       state: result.state === "ok" ? "signed_in" : "directory_unavailable",
       userId: identity.userId,
       email: identity.email,
       name: identity.name,
+      imageUrl: identity.imageUrl,
+      expiresAt: Number.isFinite(identity.expiresAtMs)
+        ? new Date(identity.expiresAtMs).toISOString()
+        : null,
       machines: result.state === "ok" ? result.machines : [],
       relayBaseUrls: this.snapshot.relayBaseUrls,
       message: result.message,
     };
   }
 
-  private expireSession(): void {
+  private async restorePersistedSession(
+    config: BrowserAccountConfig,
+  ): Promise<BrowserAccountSnapshot> {
+    let persisted: PersistedBrowserAccountSession | null;
+    try {
+      persisted = await this.sessionStore.load();
+    } catch {
+      persisted = null;
+    }
+    if (!persisted) {
+      this.snapshot = { ...this.snapshot, state: "signed_out", message: null };
+      return this.getSnapshot();
+    }
+    if (persisted.issuer !== config.issuer || persisted.clientId !== config.clientId) {
+      await this.sessionStore.clear();
+      this.snapshot = { ...this.snapshot, state: "signed_out", message: null };
+      return this.getSnapshot();
+    }
+
+    this.session = {
+      accessToken: "",
+      refreshToken: persisted.refreshToken,
+      expiresAtMs: 0,
+      userId: persisted.userId,
+      email: persisted.email,
+      name: persisted.name,
+      imageUrl: persisted.imageUrl,
+    };
+    this.sessionGeneration += 1;
+    this.snapshot = {
+      ...this.snapshot,
+      state: "directory_unavailable",
+      userId: persisted.userId,
+      email: persisted.email,
+      name: persisted.name,
+      imageUrl: persisted.imageUrl,
+      expiresAt: null,
+      machines: [],
+      message: null,
+    };
+    try {
+      await this.getAccessToken();
+      return await this.loadMachines();
+    } catch {
+      if (this.snapshot.state === "auth_expired") return this.getSnapshot();
+      this.snapshot = {
+        ...this.snapshot,
+        state: "directory_unavailable",
+        machines: [],
+        message: "Couldn't refresh your ADE account session. Try again.",
+      };
+      return this.getSnapshot();
+    }
+  }
+
+  async removeMachine(machineKeyValue: string): Promise<AdeAccountMachineRemovalResult> {
+    const config = this.config;
+    const machineKey = machineKeyValue.trim();
+    if (!config || !machineKey) throw new Error("A machine is required.");
+    const accessToken = await this.getAccessToken();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
+    try {
+      const response = await (this.options.fetchImpl ?? fetch)(
+        `${config.directoryBaseUrl}/account/machines/${encodeURIComponent(machineKey)}`,
+        {
+          method: "DELETE",
+          headers: {
+            accept: "application/json",
+            authorization: `Bearer ${accessToken}`,
+          },
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          cache: "no-store",
+          redirect: "error",
+          signal: controller.signal,
+        },
+      );
+      if (response.status === 401 || response.status === 403) {
+        await this.expireSession();
+        throw new Error("ADE account session expired.");
+      }
+      if (!response.ok) throw new Error(`Couldn't remove that machine (${response.status}).`);
+      await response.body?.cancel().catch(() => undefined);
+      this.snapshot = {
+        ...this.snapshot,
+        machines: this.snapshot.machines.filter((machine) => machine.machineKey !== machineKey),
+      };
+      return { ok: true, machineKey };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async expireSession(
+    message = "Your ADE account session expired. Sign in again.",
+  ): Promise<void> {
     this.session = null;
     this.sessionGeneration += 1;
     this.refreshPromise = null;
+    await this.sessionStore.clear();
     this.snapshot = {
-      ...this.snapshot,
       state: "auth_expired",
+      userId: null,
+      email: null,
+      name: null,
+      imageUrl: null,
+      expiresAt: null,
       machines: [],
-      message: "Your ADE account session expired. Sign in again.",
+      relayBaseUrls: this.snapshot.relayBaseUrls,
+      message,
     };
   }
 

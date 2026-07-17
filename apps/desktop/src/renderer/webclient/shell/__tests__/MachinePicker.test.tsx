@@ -15,6 +15,8 @@ function account(overrides: Partial<BrowserAccountSnapshot> = {}): BrowserAccoun
     userId: null,
     email: null,
     name: null,
+    imageUrl: null,
+    expiresAt: null,
     machines: [],
     relayBaseUrls: ["wss://relay.example"],
     message: null,
@@ -80,7 +82,7 @@ describe("MachinePicker account states", () => {
   it("uses account sign-in for new connections without showing PIN or pairing-link entry points", () => {
     const { onSignIn } = renderPicker(account());
 
-    expect(screen.getByText("Sign in to open your Macs in the browser.")).toBeTruthy();
+    expect(screen.getByText("Sign in to open your machines in the browser.")).toBeTruthy();
     expect(screen.queryByText(/pairing link/i)).toBeNull();
     expect(screen.queryByText(/pairing code/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
@@ -118,8 +120,9 @@ describe("MachinePicker account states", () => {
     };
     const { onSelectAccountMachine } = renderPicker(account({
       state: "signed_in",
-      userId: "user-1",
+      userId: "user_3GYkSensitiveSubject",
       email: "owner@example.test",
+      imageUrl: "https://img.clerk.com/avatar.png",
       machines: [available, offline],
     }));
 
@@ -129,6 +132,8 @@ describe("MachinePicker account states", () => {
     expect((onlineButton as HTMLButtonElement).disabled).toBe(false);
     expect((offlineButton as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByText("Signed in as owner@example.test")).toBeTruthy();
+    expect(screen.queryByText("user_3GYkSensitiveSubject")).toBeNull();
+    expect(document.querySelector('img[src="https://img.clerk.com/avatar.png"]')).toBeTruthy();
     fireEvent.click(onlineButton);
     expect(onSelectAccountMachine).toHaveBeenCalledWith(available);
   });
@@ -153,7 +158,7 @@ describe("MachinePicker account states", () => {
     }));
 
     expect(screen.getByText("Signed in as owner@example.test")).toBeTruthy();
-    expect(screen.getByText("We couldn't load your Macs. Your saved connections still work.")).toBeTruthy();
+    expect(screen.getByText("We couldn't load your machines. Your saved connections still work.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(onRetryDirectory).toHaveBeenCalledOnce();
   });

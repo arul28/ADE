@@ -5,7 +5,11 @@ import {
 } from "../sync/endpoints";
 import type { WebClientEnvironmentRecord } from "../sync/envStore";
 import type { WebRelayAccess } from "../sync/relayPolicy";
-import type { BrowserAccountClient, BrowserAccountSnapshot } from "./client";
+import {
+  browserAccountIsSignedIn,
+  type BrowserAccountClient,
+  type BrowserAccountSnapshot,
+} from "./client";
 
 export type AccountLeaseMonitorResult = {
   state: "current" | "transient" | "revoked";
@@ -13,9 +17,7 @@ export type AccountLeaseMonitorResult = {
 };
 
 function activeOwner(snapshot: BrowserAccountSnapshot): string | null {
-  if (snapshot.state !== "signed_in" && snapshot.state !== "directory_unavailable") {
-    return null;
-  }
+  if (!browserAccountIsSignedIn(snapshot.state)) return null;
   return snapshot.userId?.trim() || null;
 }
 
@@ -51,8 +53,7 @@ export async function reconcileActiveAccountLease(args: {
   const snapshot = args.accountClient.getSnapshot();
   const currentOwnerUserId = activeOwner(snapshot);
   const expectedOwnerUserId = args.expectedOwnerUserId.trim();
-  const hasUsableAccountState = snapshot.state === "signed_in"
-    || snapshot.state === "directory_unavailable";
+  const hasUsableAccountState = browserAccountIsSignedIn(snapshot.state);
   const confirmedInvalid = snapshot.state === "auth_expired"
     || snapshot.state === "signed_out"
     || snapshot.state === "unconfigured"

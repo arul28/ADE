@@ -11,6 +11,7 @@ import type {
 } from "../../../../shared/types/sync";
 import { createAdeWebAdapter } from "../index";
 import type { AdeSyncClient, ChatHandlers, TerminalHandlers } from "../../sync";
+import type { BrowserAccountClient, BrowserAccountSnapshot } from "../../account/client";
 
 const project: ProjectInfo = {
   rootPath: "/repo",
@@ -48,6 +49,62 @@ describe("createAdeWebAdapter", () => {
       windowId: null,
       project,
       binding: null,
+    });
+
+    adapter.dispose();
+  });
+
+  it("exposes a complete account status surface backed by the browser account client", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "user_3GYkAdapter",
+      email: "adapter@example.test",
+      name: "Adapter Owner",
+      imageUrl: "https://images.example.test/adapter.png",
+      expiresAt: "2026-07-18T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      startSignIn: vi.fn(async () => "https://clerk.example/oauth/authorize"),
+      signOut: vi.fn(async () => ({ ...snapshot, state: "signed_out" as const })),
+      loadMachines: vi.fn(async () => snapshot),
+      removeMachine: vi.fn(async (machineKey: string) => ({ ok: true as const, machineKey })),
+    } as unknown as BrowserAccountClient;
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    expect(Object.keys(adapter.ade.account).sort()).toEqual([
+      "cancelLogin",
+      "getLocalMachineIdentity",
+      "listMachines",
+      "pairMachine",
+      "pollLogin",
+      "removeMachine",
+      "signOut",
+      "startLogin",
+      "status",
+    ]);
+
+    await expect(adapter.ade.account.status()).resolves.toEqual({
+      signedIn: true,
+      userId: "user_3GYkAdapter",
+      email: "adapter@example.test",
+      name: "Adapter Owner",
+      imageUrl: "https://images.example.test/adapter.png",
+      expiresAt: "2026-07-18T00:00:00.000Z",
+      provider: null,
+      configured: true,
+    });
+    await expect(adapter.ade.account.listMachines()).resolves.toEqual({
+      state: "ok",
+      machines: [],
+      message: null,
+    });
+    await expect(adapter.ade.account.getLocalMachineIdentity()).resolves.toEqual({
+      machineKey: "",
+      deviceId: "",
     });
 
     adapter.dispose();
