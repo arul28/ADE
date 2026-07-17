@@ -38,6 +38,11 @@ describe("ContextUsageDial", () => {
     expect(container.querySelector('circle[stroke="#fb7185"]')).toBeTruthy();
   });
 
+  it("uses amber when the displayed percentage rounds up to 80", () => {
+    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.795 })} />);
+    expect(container.querySelector('circle[stroke="#fbbf24"]')).toBeTruthy();
+  });
+
   it("falls back to a tokens-only readout when the window is unknown", () => {
     const { getByText, container } = render(
       <ContextUsageDial usage={vm({ ratio: null, contextWindow: null, usedTokens: 12_000 })} />,
