@@ -4173,6 +4173,7 @@ export function createPtyService({
       const normalizedSessionId = sessionId.trim();
       const session = normalizedSessionId ? sessionService.get(normalizedSessionId) : null;
       if (!session?.tracked || !isTrackedAgentCliToolType(session.toolType)) return false;
+      if (isOwnedByLivePeerRuntime(session)) return false;
       const live = liveEntryBySessionId(normalizedSessionId);
       if (!live) return true;
       const provider = session.resumeMetadata?.provider
@@ -4188,6 +4189,11 @@ export function createPtyService({
 
       const session = sessionService.get(sessionId);
       assertAgentCliSessionAction(sessionId, session, "continued");
+      if (session && isOwnedByLivePeerRuntime(session)) {
+        throw ptySendPreDeliveryError(
+          `Terminal session '${sessionId}' is owned by another live ADE runtime.`,
+        );
+      }
       const writeSubmittedText = async (
         targetSessionId: string,
         inputText: string,

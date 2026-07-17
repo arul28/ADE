@@ -2354,6 +2354,38 @@ describe("ptyService", () => {
       }
     });
 
+    it("keeps peer-owned tracked CLIs unavailable for scheduled delivery", async () => {
+      const processRegistry = {
+        pid: 12_345,
+        startedAt: "2026-07-16T20:00:00.000Z",
+        isPidLive: vi.fn((pid: number) => pid === 99_999),
+        isProcessIdentityLive: vi.fn((pid: number, startedAt: string | null) => (
+          pid === 99_999 && startedAt === "2026-07-16T20:01:00.000Z"
+        )),
+      };
+      const { service, sessionService, loadPty } = createHarness({ processRegistry });
+      sessionService.get.mockReturnValue({
+        id: "peer-owned-cli",
+        laneId: "lane-1",
+        tracked: true,
+        toolType: "codex",
+        status: "running",
+        ownerPid: 99_999,
+        ownerProcessStartedAt: "2026-07-16T20:01:00.000Z",
+      });
+
+      expect(service.canAcceptScheduledTurn("peer-owned-cli")).toBe(false);
+      await expect(service.sendToSession({
+        sessionId: "peer-owned-cli",
+        text: "check CI",
+      })).rejects.toThrow("owned by another live ADE runtime");
+      expect(loadPty).not.toHaveBeenCalled();
+      expect(processRegistry.isProcessIdentityLive).toHaveBeenCalledWith(
+        99_999,
+        "2026-07-16T20:01:00.000Z",
+      );
+    });
+
     it("sendToSession uses line-submit for Droid CLI sessions", async () => {
       const { service, mockPty } = createHarness();
       const created = await service.create({
