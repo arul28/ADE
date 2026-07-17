@@ -151,6 +151,52 @@ describe("BrowserAccountClient", () => {
     });
   });
 
+  it("decodes non-ASCII identity claims from JWT UTF-8 bytes", async () => {
+    const storage = new MemorySessionStorage();
+    const assigned: string[] = [];
+    const location = browserLocation(assigned);
+    const token = accessToken("user_unicode", {
+      email: "josé@example.test",
+      name: "李 雷",
+    });
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://clerk.example/oauth/token") {
+        return new Response(JSON.stringify({
+          access_token: token,
+          refresh_token: "refresh-secret",
+          expires_in: 3600,
+        }), { status: 200 });
+      }
+      if (url === "https://clerk.example/oauth/userinfo") {
+        return new Response(null, { status: 503 });
+      }
+      return new Response(JSON.stringify({ machines: [] }), { status: 200 });
+    }) as typeof fetch;
+    const client = new BrowserAccountClient({
+      config: {
+        issuer: "https://clerk.example",
+        clientId: "client_ade",
+        directoryBaseUrl: "https://directory.example",
+        relayBaseUrls: ["wss://relay.example"],
+      },
+      fetchImpl,
+      location,
+      history: { replaceState: () => {} },
+      storage,
+      sessionStore: new BrowserAccountSessionStore(new MemoryStorage()),
+    });
+
+    await completeSignIn(client, location, assigned);
+
+    expect(client.getSnapshot()).toMatchObject({
+      state: "signed_in",
+      userId: "user_unicode",
+      email: "josé@example.test",
+      name: "李 雷",
+    });
+  });
+
   it("deduplicates concurrent refreshes and keeps transient failures retryable", async () => {
     const storage = new MemorySessionStorage();
     const assigned: string[] = [];
@@ -224,6 +270,68 @@ describe("BrowserAccountClient", () => {
     expect(client.getSnapshot().state).toBe("signed_in");
     await expect(client.getAccessToken()).resolves.toBe(refreshedToken);
     expect(refreshAttempts).toBe(3);
+  });
+
+  it("keeps the prior in-memory session when the refreshed session write fails", async () => {
+    const storage = new MemorySessionStorage();
+    const assigned: string[] = [];
+    const location = browserLocation(assigned);
+    const persistedStorage = new MemoryStorage();
+    const sessionStore = new BrowserAccountSessionStore(persistedStorage);
+    let now = 0;
+    const initialToken = accessToken("user_atomic", {
+      email: "before@example.test",
+      name: "Before Write",
+    });
+    const refreshedToken = accessToken("user_atomic", {
+      email: "after@example.test",
+      name: "After Write",
+    });
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://directory.example/account/machines") {
+        return new Response(JSON.stringify({ machines: [] }), { status: 200 });
+      }
+      if (url === "https://clerk.example/oauth/userinfo") {
+        return new Response(null, { status: 503 });
+      }
+      const grantType = new URLSearchParams(String(init?.body ?? "")).get("grant_type");
+      return new Response(JSON.stringify({
+        access_token: grantType === "refresh_token" ? refreshedToken : initialToken,
+        refresh_token: grantType === "refresh_token" ? "refresh-rotated" : "refresh-original",
+        expires_in: 3600,
+      }), { status: 200 });
+    }) as typeof fetch;
+    const client = new BrowserAccountClient({
+      config: {
+        issuer: "https://clerk.example",
+        clientId: "client_ade",
+        directoryBaseUrl: "https://directory.example",
+        relayBaseUrls: ["wss://relay.example"],
+      },
+      fetchImpl,
+      location,
+      history: { replaceState: () => {} },
+      storage,
+      sessionStore,
+      now: () => now,
+    });
+    await completeSignIn(client, location, assigned);
+    const priorSnapshot = client.getSnapshot();
+    const priorLease = client.captureSessionLease();
+    expect(priorLease).not.toBeNull();
+    vi.spyOn(persistedStorage, "put").mockRejectedValueOnce(new Error("IndexedDB write failed."));
+    now = 3_500_000;
+
+    await expect(client.getAccessToken()).rejects.toThrow("IndexedDB write failed.");
+
+    expect(client.getSnapshot()).toEqual(priorSnapshot);
+    expect(client.isSessionLeaseCurrent(priorLease!)).toBe(true);
+    await expect(sessionStore.load()).resolves.toMatchObject({
+      refreshToken: "refresh-original",
+      email: "before@example.test",
+      name: "Before Write",
+    });
   });
 
   it("expires the browser session only for a confirmed refresh rejection", async () => {
@@ -414,8 +522,14 @@ describe("BrowserAccountClient", () => {
     const hostedHeaders = readFileSync(new URL("../public/_headers", import.meta.url), "utf8");
     expect(hostedHeaders).toContain("img-src 'self' data: blob: https://img.clerk.com");
 
+    vi.spyOn(sessionStore, "clear").mockRejectedValueOnce(new Error("IndexedDB unavailable."));
+    await expect(restoredClient.signOut()).resolves.toMatchObject({
+      state: "signed_out",
+      userId: null,
+    });
+    expect(restoredClient.getSnapshot()).toMatchObject({ state: "signed_out", userId: null });
+
     await restoredClient.signOut();
     await expect(sessionStore.load()).resolves.toBeNull();
-    expect(restoredClient.getSnapshot()).toMatchObject({ state: "signed_out", userId: null });
   });
 });

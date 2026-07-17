@@ -133,7 +133,9 @@ function decodeJwtPayload(accessToken: string): Record<string, unknown> | null {
     const encoded = accessToken.split(".")[1];
     if (!encoded) throw new Error("missing claims");
     const base64 = encoded.replace(/-/g, "+").replace(/_/g, "/");
-    const claims = JSON.parse(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="))) as unknown;
+    const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "="));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const claims = JSON.parse(new TextDecoder("utf-8").decode(bytes)) as unknown;
     return isRecord(claims) ? claims : null;
   } catch {
     return null;
@@ -363,7 +365,6 @@ export class BrowserAccountClient {
     this.sessionGeneration += 1;
     this.refreshPromise = null;
     this.clearPendingOAuth();
-    await this.sessionStore.clear();
     this.snapshot = {
       state: this.config ? "signed_out" : "unconfigured",
       userId: null,
@@ -375,6 +376,7 @@ export class BrowserAccountClient {
       relayBaseUrls: this.config?.relayBaseUrls ?? trustedAccountRelayBaseUrls(),
       message: null,
     };
+    await this.clearPersistedSessionBestEffort();
     return this.getSnapshot();
   }
 
@@ -550,14 +552,13 @@ export class BrowserAccountClient {
     const machines = previous?.userId === profile.userId
       ? this.snapshot.machines
       : [];
-    this.session = {
+    const nextSession: BrowserAccountSession = {
       ...profile,
       accessToken: token.accessToken,
       refreshToken: token.refreshToken,
       expiresAtMs,
     };
-    this.sessionGeneration += 1;
-    this.snapshot = {
+    const nextSnapshot: BrowserAccountSnapshot = {
       state: "signed_in",
       ...profile,
       expiresAt: new Date(expiresAtMs).toISOString(),
@@ -576,6 +577,9 @@ export class BrowserAccountClient {
     } else {
       await this.sessionStore.clear();
     }
+    this.session = nextSession;
+    this.sessionGeneration += 1;
+    this.snapshot = nextSnapshot;
     return true;
   }
 
@@ -620,7 +624,7 @@ export class BrowserAccountClient {
       return this.getSnapshot();
     }
     if (persisted.issuer !== config.issuer || persisted.clientId !== config.clientId) {
-      await this.sessionStore.clear();
+      await this.clearPersistedSessionBestEffort();
       this.snapshot = { ...this.snapshot, state: "signed_out", message: null };
       return this.getSnapshot();
     }
@@ -706,7 +710,6 @@ export class BrowserAccountClient {
     this.session = null;
     this.sessionGeneration += 1;
     this.refreshPromise = null;
-    await this.sessionStore.clear();
     this.snapshot = {
       state: "auth_expired",
       userId: null,
@@ -718,6 +721,16 @@ export class BrowserAccountClient {
       relayBaseUrls: this.snapshot.relayBaseUrls,
       message,
     };
+    await this.clearPersistedSessionBestEffort();
+  }
+
+  private async clearPersistedSessionBestEffort(): Promise<void> {
+    try {
+      await this.sessionStore.clear();
+    } catch {
+      // IndexedDB can be unavailable (for example in private browsing). The
+      // in-memory sign-out remains authoritative for this browser session.
+    }
   }
 
   private clearPendingOAuth(): void {
