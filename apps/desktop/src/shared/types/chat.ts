@@ -411,6 +411,15 @@ export type CodexThreadGoal = {
 
 export type CodexThreadGoalUpdateKind = "set" | "status" | "sync" | "budget";
 
+export type ClaudeActiveGoal = {
+  condition: string;
+  iterations: number;
+  setAt: number;
+  tokensAtStart: number;
+  lastReason?: string;
+  updatedAt: number;
+};
+
 export type AgentChatCompletionArtifact = {
   type: string;
   description: string;
@@ -506,6 +515,8 @@ export type AgentChatEvent =
       type: "text";
       text: string;
       messageId?: string;
+      /** Provider-origin timestamp. Display-only; transcript ordering remains envelope-based. */
+      originTimestamp?: string;
       turnId?: string;
       itemId?: string;
       runtime?: AgentChatRuntime;
@@ -533,6 +544,13 @@ export type AgentChatEvent =
       parentItemId?: string;
       turnId?: string;
       status?: "running" | "completed" | "failed" | "interrupted";
+      structured?: unknown;
+      timedOutAfterMs?: number;
+      backgroundCwdHint?: string;
+      grepTotals?: {
+        files?: number;
+        lines?: number;
+      };
       runtime?: AgentChatRuntime;
     }
   | {
@@ -654,6 +672,8 @@ export type AgentChatEvent =
       // Set only at render time when multiple done events from one cancellation
       // (parent + subagents) are consolidated into a single row.
       subagentStoppedCount?: number;
+      terminalReason?: string;
+      terminalReasonSource?: "sdk";
       runtime?: AgentChatRuntime;
     }
   | {
@@ -773,6 +793,10 @@ export type AgentChatEvent =
       };
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       workflowName?: string;
+      worktreePath?: string;
+      worktreeBranch?: string;
+      totalTokens?: number;
+      toolUseCount?: number;
       turnId?: string;
     }
   | {
@@ -881,7 +905,7 @@ export type AgentChatEvent =
     }
   | {
       type: "context_compact";
-      trigger: "manual" | "auto";
+      trigger: "manual" | "auto" | "ade_fallback";
       preTokens?: number;
       postTokens?: number;
       tokensRemoved?: number;
@@ -926,6 +950,43 @@ export type AgentChatEvent =
   | {
       type: "context_usage";
       usage: AgentChatContextUsage;
+      origin?: "command" | "live" | "compact";
+      turnId?: string;
+    }
+  | {
+      type: "conversation_reset";
+      newConversationId: string;
+      turnId?: string;
+    }
+  | {
+      type: "interrupt_receipt";
+      stillQueuedUuids: string[];
+      known: Array<{ uuid: string; preview: string; steerId?: string }>;
+      turnId?: string;
+    }
+  | {
+      type: "command_lifecycle";
+      commandUuid: string;
+      status: "queued" | "started" | "completed" | "cancelled" | "discarded";
+      preview?: string;
+      steerId?: string;
+      turnId?: string;
+    }
+  | {
+      type: "claude_goal_updated";
+      goal: ClaudeActiveGoal;
+      turnId?: string;
+    }
+  | {
+      type: "claude_goal_cleared";
+      turnId?: string;
+    }
+  | {
+      type: "api_retry";
+      attempt: number;
+      maxRetries: number;
+      retryDelayMs: number;
+      errorStatus: number | null;
       turnId?: string;
     }
   | {
@@ -1253,7 +1314,9 @@ export type AgentChatSession = {
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
   codexGoal?: CodexThreadGoal | null;
+  claudeGoal?: ClaudeActiveGoal | null;
   codexTokenUsage?: CodexThreadTokenUsage | null;
+  protocolCapabilities?: string[];
   runtimeMode?: AgentChatRuntimeMode;
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
@@ -1304,7 +1367,9 @@ export type AgentChatSessionSummary = {
   capabilityMode?: CtoCapabilityMode;
   completion?: AgentChatCompletionReport | null;
   codexGoal?: CodexThreadGoal | null;
+  claudeGoal?: ClaudeActiveGoal | null;
   codexTokenUsage?: CodexThreadTokenUsage | null;
+  protocolCapabilities?: string[];
   status: AgentChatSessionStatus;
   idleSinceAt?: string | null;
   startedAt: string;
@@ -1349,6 +1414,7 @@ export type AgentChatTranscriptEntry = {
 export type AgentChatSubagentSnapshot = {
   taskId: string;
   agentId?: string;
+  parentAgentId?: string | null;
   agentType?: string;
   label?: string | null;
   parentToolUseId?: string | null;
@@ -1514,6 +1580,7 @@ export type AgentChatClaudeSessionMessage = {
   uuid: string;
   sessionId: string;
   parentToolUseId: string | null;
+  parentAgentId?: string | null;
   message: unknown;
   text?: string | null;
   subagentMetadata?: AgentChatSubagentMetadata | null;

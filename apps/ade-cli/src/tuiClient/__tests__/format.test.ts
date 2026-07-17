@@ -12,6 +12,27 @@ import {
   webSearchResultPreviewLines,
 } from "../format";
 import { formatRelativePastTime } from "../relativeTime";
+import { terminalReasonLabel } from "../terminalReason";
+
+describe("terminalReasonLabel", () => {
+  it.each([
+    ["budget_exhausted", "budget limit reached"],
+    ["max_turns", "max turns reached"],
+    ["prompt_too_long", "context window overflow"],
+    ["api_error", "API error after retries"],
+    ["malformed_tool_use_exhausted", "tool-call retries exhausted"],
+    ["structured_output_retry_exhausted", "output retries exhausted"],
+    ["model_error", "model error"],
+    ["turn_setup_failed", "turn setup failed"],
+    ["tool_deferred_unavailable", "deferred tool unavailable"],
+  ])("maps %s to its shared short label", (reason, label) => {
+    expect(terminalReasonLabel(reason)).toBe(label);
+  });
+
+  it("keeps unknown future reasons silent", () => {
+    expect(terminalReasonLabel("future_reason")).toBeNull();
+  });
+});
 
 describe("webSearchResultPreviewLines", () => {
   it("derives domains defensively and never throws on malformed urls", () => {
@@ -304,6 +325,74 @@ describe("renderChatLines", () => {
     const value: { self?: unknown } = {};
     value.self = value;
     expect(renderObject(value)).toBe("[object Object]");
+  });
+
+  it("passes known terminal-reason labels through failed turn endings", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "status", turnStatus: "failed", turnId: "turn-1" },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "done", status: "failed", turnId: "turn-1", terminalReason: "prompt_too_long" },
+        },
+      ],
+    });
+
+    expect(terminalReasonLabel("budget_exhausted")).toBe("budget limit reached");
+    expect(terminalReasonLabel("future_reason")).toBeNull();
+    expect(lines.map((line) => line.body)).toEqual([
+      "[status] failed · context window overflow",
+      "[done] failed · context window overflow",
+    ]);
+  });
+
+  it("renders stop receipts and conversation resets as dim notice lines", () => {
+    const lines = renderChatLines({
+      activeSession: null,
+      notices: [],
+      events: [
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.000Z",
+          sequence: 1,
+          event: { type: "interrupt_receipt", stillQueuedUuids: ["a", "b"], known: [] },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:01.000Z",
+          sequence: 2,
+          event: { type: "conversation_reset", newConversationId: "conversation-2" },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:02.000Z",
+          sequence: 3,
+          event: {
+            type: "command_lifecycle",
+            commandUuid: "command-1",
+            status: "discarded",
+            preview: "Run the old request",
+          },
+        },
+      ],
+    });
+
+    expect(lines).toEqual([
+      expect.objectContaining({ tone: "notice", body: "stopped — 2 queued messages will still run" }),
+      expect.objectContaining({ tone: "notice", body: "conversation reset" }),
+      expect.objectContaining({ tone: "notice", body: "queued message discarded · Run the old request" }),
+    ]);
+    expect(lines).toHaveLength(3);
+    expect(lines.every((line) => line.tone === "notice")).toBe(true);
   });
 
   it("renders tool, edit, and compaction events compactly", () => {

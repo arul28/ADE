@@ -32,6 +32,8 @@ export type ChatSubagentSnapshot = {
   model?: string | null;
   reasoningEffort?: string | null;
   parentToolUseId?: string | null;
+  /** agentId of the subagent that spawned this one (nested trees); null at depth 1. */
+  parentAgentId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
   turnId?: string;
@@ -54,6 +56,35 @@ export type ChatSubagentSnapshot = {
 
 function compareIsoDesc(left: string, right: string): number {
   return Date.parse(right) - Date.parse(left);
+}
+
+/**
+ * Visual nesting depth for a subagent row: the number of ancestors, reached via
+ * `parentAgentId`, that are present in `snapshots` — capped at `cap` (default 3).
+ * Depth 0 = top-level (no known parent). Pure; cycle-guarded.
+ */
+export function subagentTreeDepth(
+  snapshot: ChatSubagentSnapshot,
+  snapshots: ChatSubagentSnapshot[],
+  cap = 3,
+): number {
+  const byAgentId = new Map<string, ChatSubagentSnapshot>();
+  for (const candidate of snapshots) {
+    if (candidate.agentId) byAgentId.set(candidate.agentId, candidate);
+  }
+  const seen = new Set<string>();
+  let depth = 0;
+  let current: ChatSubagentSnapshot | undefined = snapshot;
+  while (current?.parentAgentId && depth < cap) {
+    const id = current.agentId ?? current.taskId;
+    if (seen.has(id)) break; // cycle guard
+    seen.add(id);
+    const parent = byAgentId.get(current.parentAgentId);
+    if (!parent || parent === current) break;
+    depth += 1;
+    current = parent;
+  }
+  return depth;
 }
 
 type ChatSubagentEvent = NormalizedSubagentLifecycleEvent;
@@ -153,6 +184,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         model: event.model?.trim() || existing?.model,
         reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
+        parentAgentId: event.parentAgentId ?? existing?.parentAgentId ?? null,
         description: event.description.trim() || existing?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
@@ -179,6 +211,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         model: event.model?.trim() || existing?.model,
         reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
+        parentAgentId: event.parentAgentId ?? existing?.parentAgentId ?? null,
         description: event.description?.trim() || existing?.description || "Subagent task",
         status: "running",
         turnId: event.turnId ?? existing?.turnId,
@@ -205,6 +238,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         model: event.model?.trim() || existing?.model,
         reasoningEffort: event.reasoningEffort?.trim() || existing?.reasoningEffort,
         parentToolUseId: subagentParentKey(event) ?? existing?.parentToolUseId ?? null,
+        parentAgentId: event.parentAgentId ?? existing?.parentAgentId ?? null,
         description: existing?.description ?? "Subagent task",
         status: event.status,
         turnId: event.turnId ?? existing?.turnId,

@@ -3463,6 +3463,62 @@ final class ADETests: XCTestCase {
     }
   }
 
+  func testChatEventHistorySnapshotToleratesUnknownEventBetweenKnownEvents() throws {
+    let json = """
+    {
+      "sessionId": "chat-1",
+      "events": [
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-16T00:00:00.000Z",
+          "sequence": 1,
+          "event": {
+            "type": "text",
+            "text": "Before",
+            "messageId": "message-1",
+            "futureOptionalField": "ignored"
+          }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-16T00:00:01.000Z",
+          "sequence": 2,
+          "event": { "type": "zz_future_event", "foo": 1 }
+        },
+        {
+          "sessionId": "chat-1",
+          "timestamp": "2026-07-16T00:00:02.000Z",
+          "sequence": 3,
+          "event": {
+            "type": "done",
+            "turnId": "turn-1",
+            "status": "completed",
+            "futureOptionalField": { "enabled": true }
+          }
+        }
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+
+    XCTAssertEqual(snapshot.events.count, 3)
+    guard case .text(let text, _, _, _) = snapshot.events[0].event else {
+      return XCTFail("Expected the known text event before the unknown event to survive.")
+    }
+    XCTAssertEqual(text, "Before")
+    guard case .unknown(let type) = snapshot.events[1].event else {
+      return XCTFail("Expected the future event to decode as an inert unknown event.")
+    }
+    XCTAssertEqual(type, "zz_future_event")
+    guard case .done(let turnId, let status, _, _, _, _, _) = snapshot.events[2].event else {
+      return XCTFail("Expected the known done event after the unknown event to survive.")
+    }
+    XCTAssertEqual(turnId, "turn-1")
+    XCTAssertEqual(status, .completed)
+  }
+
   func testMakeWorkChatTranscriptDropsCodexSubagentChildThreadMessages() throws {
     let json = """
     {
@@ -3775,6 +3831,7 @@ final class ADETests: XCTestCase {
       "event": {
         "type": "context_usage",
         "turnId": "turn-usage",
+        "origin": "live",
         "usage": {
           "totalTokens": 31000,
           "maxTokens": 200000
@@ -3784,7 +3841,7 @@ final class ADETests: XCTestCase {
     """
 
     let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
-    guard case .contextUsage(let decodedUsage, let decodedTurnId) = envelope.event else {
+    guard case .contextUsage(let decodedUsage, let decodedTurnId, let origin) = envelope.event else {
       return XCTFail("Expected a context usage event.")
     }
     XCTAssertTrue(decodedUsage.categories.isEmpty)
@@ -3792,6 +3849,7 @@ final class ADETests: XCTestCase {
     XCTAssertNil(decodedUsage.rawMaxTokens)
     XCTAssertNil(decodedUsage.model)
     XCTAssertEqual(decodedTurnId, "turn-usage")
+    XCTAssertEqual(origin, "live")
 
     let event = makeWorkChatEvent(from: envelope.event)
     guard case .tokens(let usage, let turnId, let itemId) = event else {
@@ -3830,6 +3888,64 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(viewModel?.usedTokens, 31_000)
     XCTAssertEqual(viewModel?.contextWindow, 200_000)
     XCTAssertEqual(viewModel?.ratio ?? 0, 0.155, accuracy: 0.0001)
+  }
+
+  func testAgentChatParityEventsDecodeAndMapToMobileSurfaces() throws {
+    let json = """
+    {
+      "sessionId": "session-parity",
+      "capturedAt": "2026-07-16T12:00:00.000Z",
+      "events": [
+        {"sessionId":"session-parity","timestamp":"2026-07-16T12:00:00.000Z","sequence":1,"event":{"type":"conversation_reset","newConversationId":"conversation-2"}},
+        {"sessionId":"session-parity","timestamp":"2026-07-16T12:00:01.000Z","sequence":2,"event":{"type":"interrupt_receipt","stillQueuedUuids":["queued-1","queued-2"],"known":[{"uuid":"queued-1","preview":"First"}]}},
+        {"sessionId":"session-parity","timestamp":"2026-07-16T12:00:02.000Z","sequence":3,"event":{"type":"command_lifecycle","commandUuid":"command-1","status":"discarded","preview":"Run the old request","steerId":"steer-1","turnId":"turn-1"}},
+        {"sessionId":"session-parity","timestamp":"2026-07-16T12:00:03.000Z","sequence":4,"event":{"type":"claude_goal_updated","turnId":"turn-1","goal":{"condition":"All tests pass","iterations":3,"setAt":100,"tokensAtStart":200,"lastReason":"One failure left","updatedAt":300}}},
+        {"sessionId":"session-parity","timestamp":"2026-07-16T12:00:04.000Z","sequence":5,"event":{"type":"claude_goal_cleared","turnId":"turn-1"}},
+        {"sessionId":"session-parity","timestamp":"2026-07-16T12:00:05.000Z","sequence":6,"event":{"type":"done","turnId":"turn-1","status":"failed","terminalReason":"prompt_too_long"}}
+      ],
+      "truncated": false
+    }
+    """
+
+    let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
+    XCTAssertEqual(snapshot.events.count, 6)
+
+    guard case .conversationReset(let conversationId) = snapshot.events[0].event else {
+      return XCTFail("Expected conversation reset.")
+    }
+    XCTAssertEqual(conversationId, "conversation-2")
+
+    guard case .interruptReceipt(let stillQueued) = snapshot.events[1].event else {
+      return XCTFail("Expected interrupt receipt.")
+    }
+    XCTAssertEqual(stillQueued, ["queued-1", "queued-2"])
+
+    guard case .commandLifecycle(let commandUuid, let status, let preview, let steerId, _) = snapshot.events[2].event else {
+      return XCTFail("Expected command lifecycle event.")
+    }
+    XCTAssertEqual(commandUuid, "command-1")
+    XCTAssertEqual(status, "discarded")
+    XCTAssertEqual(preview, "Run the old request")
+    XCTAssertEqual(steerId, "steer-1")
+
+    guard case .claudeGoalUpdated(let goal, let turnId) = snapshot.events[3].event else {
+      return XCTFail("Expected Claude goal update.")
+    }
+    XCTAssertEqual(goal.condition, "All tests pass")
+    XCTAssertEqual(goal.iterations, 3)
+    XCTAssertEqual(goal.lastReason, "One failure left")
+    XCTAssertEqual(turnId, "turn-1")
+
+    guard case .done(_, _, _, _, _, _, let terminalReason) = snapshot.events[5].event else {
+      return XCTFail("Expected terminal done event.")
+    }
+    XCTAssertEqual(terminalReason, "prompt_too_long")
+
+    let transcript = makeWorkChatTranscript(from: snapshot.events)
+    let cards = buildWorkEventCards(from: transcript)
+    XCTAssertEqual(cards.map(\.kind), ["conversationReset", "notice", "notice"])
+    XCTAssertEqual(cards.last?.body, "Queued message discarded: Run the old request")
+    XCTAssertNil(workClaudeGoal(snapshot: nil, transcript: transcript))
   }
 
   @MainActor
@@ -12106,7 +12222,7 @@ final class ADETests: XCTestCase {
     XCTAssertNil(blockerDescription)
     XCTAssertEqual(reportTurnId, nil)
 
-    guard case .done(let doneStatus, let doneSummary, let usage, let doneTurnId, let doneModel, let doneModelId) = transcript[3].event else {
+    guard case .done(let doneStatus, let doneSummary, let usage, let doneTurnId, let doneModel, let doneModelId, _) = transcript[3].event else {
       return XCTFail("Expected done event.")
     }
     XCTAssertEqual(doneStatus, "completed")
@@ -15383,7 +15499,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:05.000Z",
         sequence: 2,
-        event: .done(status: "interrupted", summary: "Interrupted\ngpt-5.5", usage: nil, turnId: "turn-1", model: "gpt-5.5", modelId: "openai/gpt-5.5")
+        event: .done(status: "interrupted", summary: "Interrupted\ngpt-5.5", usage: nil, turnId: "turn-1", model: "gpt-5.5", modelId: "openai/gpt-5.5", terminalReason: "prompt_too_long")
       ),
     ]
 
@@ -15395,6 +15511,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(markers.map(\.modelLabel), ["GPT-5.5"])
     XCTAssertEqual(markers.map(\.provider), ["codex"])
     XCTAssertEqual(markers.map(\.workedDurationLabel), ["5s"])
+    XCTAssertEqual(markers.map(\.terminalReasonLabel), ["context window overflow"])
+  }
+
+  func testWorkTerminalReasonLabelsStayTerseAndIgnoreUnknownValues() {
+    XCTAssertEqual(workTerminalReasonLabel("budget_exhausted"), "budget limit reached")
+    XCTAssertEqual(workTerminalReasonLabel("max_turns"), "max turns reached")
+    XCTAssertEqual(workTerminalReasonLabel("prompt_too_long"), "context window overflow")
+    XCTAssertEqual(workTerminalReasonLabel("api_error"), "API error after retries")
+    XCTAssertEqual(workTerminalReasonLabel("malformed_tool_use_exhausted"), "tool-call retries exhausted")
+    XCTAssertEqual(workTerminalReasonLabel("structured_output_retry_exhausted"), "output retries exhausted")
+    XCTAssertEqual(workTerminalReasonLabel("model_error"), "model error")
+    XCTAssertEqual(workTerminalReasonLabel("turn_setup_failed"), "turn setup failed")
+    XCTAssertEqual(workTerminalReasonLabel("tool_deferred_unavailable"), "deferred tool unavailable")
+    XCTAssertNil(workTerminalReasonLabel("future_reason"))
+  }
+
+  func testWorkClaudeGoalReplaysUpdatesAndClearsOverSnapshot() {
+    let snapshot = AgentChatClaudeGoal(
+      condition: "Snapshot goal",
+      iterations: 1,
+      setAt: 100,
+      tokensAtStart: 200,
+      lastReason: nil,
+      updatedAt: 300
+    )
+    let updated = AgentChatClaudeGoal(
+      condition: "Updated goal",
+      iterations: 4,
+      setAt: 100,
+      tokensAtStart: 200,
+      lastReason: "Keep iterating",
+      updatedAt: 400
+    )
+    let updateEnvelope = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-07-16T12:00:00.000Z",
+      sequence: 1,
+      event: .claudeGoalUpdated(goal: updated, turnId: "turn-1")
+    )
+    XCTAssertEqual(workClaudeGoal(snapshot: snapshot, transcript: [updateEnvelope]), updated)
+
+    let clearEnvelope = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-07-16T12:00:01.000Z",
+      sequence: 2,
+      event: .claudeGoalCleared(turnId: "turn-1")
+    )
+    XCTAssertNil(workClaudeGoal(snapshot: snapshot, transcript: [updateEnvelope, clearEnvelope]))
   }
 
   func testWorkTimelineSnapshotCachesTranscriptActiveTurnState() {

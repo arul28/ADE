@@ -1006,6 +1006,18 @@ struct WorkTurnEndMarkerView: View {
     ADEColor.chatSurfaceAccent(modelId: marker.modelId, provider: marker.provider)
   }
 
+  private var markerAccessibilityLabel: String {
+    if completed {
+      return "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Worked for \(marker.workedDurationLabel)"
+    }
+    return [
+      "Turn \(status)",
+      marker.terminalReasonLabel,
+      marker.modelLabel.isEmpty ? nil : marker.modelLabel,
+      "Worked for \(marker.workedDurationLabel)",
+    ].compactMap { $0 }.joined(separator: ". ")
+  }
+
   var body: some View {
     HStack(spacing: 10) {
       hairline
@@ -1015,11 +1027,7 @@ struct WorkTurnEndMarkerView: View {
     .frame(maxWidth: .infinity)
     .padding(.vertical, 8)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      completed
-        ? "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Worked for \(marker.workedDurationLabel)"
-        : "Turn \(status). \(marker.modelLabel). Worked for \(marker.workedDurationLabel)"
-    )
+    .accessibilityLabel(markerAccessibilityLabel)
   }
 
   @ViewBuilder
@@ -1042,6 +1050,12 @@ struct WorkTurnEndMarkerView: View {
         Text(status.uppercased())
           .font(.caption2.weight(.semibold))
           .tracking(0.5)
+        if let terminalReasonLabel = marker.terminalReasonLabel {
+          Text("·")
+            .opacity(0.42)
+          Text(terminalReasonLabel)
+            .font(.caption2)
+        }
         Text("·")
           .opacity(0.42)
         Text("Worked for \(marker.workedDurationLabel)")
@@ -1074,6 +1088,38 @@ struct WorkTurnEndMarkerView: View {
     Rectangle()
       .fill(ADEColor.glassBorder)
       .frame(height: 0.6)
+  }
+}
+
+struct WorkClaudeGoalPill: View {
+  let goal: AgentChatClaudeGoal
+
+  private var iterationLabel: String {
+    "\(goal.iterations) iteration\(goal.iterations == 1 ? "" : "s")"
+  }
+
+  var body: some View {
+    HStack(spacing: 7) {
+      Image(systemName: "target")
+        .font(.caption2.weight(.bold))
+      Text(goal.condition)
+        .font(.caption.weight(.medium))
+        .lineLimit(1)
+      Text("·")
+        .foregroundStyle(ADEColor.textMuted)
+      Text(iterationLabel)
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+    }
+    .foregroundStyle(ADEColor.textSecondary)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 6)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(ADEColor.accent.opacity(0.07), in: Capsule(style: .continuous))
+    .overlay(Capsule(style: .continuous).stroke(ADEColor.accent.opacity(0.16), lineWidth: 0.5))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Goal: \(goal.condition). \(iterationLabel).")
   }
 }
 

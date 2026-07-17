@@ -33,6 +33,7 @@ import {
   buildParallelLaunchPrompt,
   cleanupChatActionsAutoOpenStorage,
   cleanupTransientParallelLaunchLanes,
+  deriveRuntimeState,
   formatParallelLaunchFailureMessage,
   getChatActionsAutoOpenStorageKey,
   advanceOlderHistoryCursor,
@@ -7528,6 +7529,32 @@ describe("shouldPromoteSessionForComputerUse", () => {
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: "light" })).toBe(true);
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: undefined })).toBe(true);
     expect(shouldPromoteSessionForComputerUse({ sessionProfile: "workflow" })).toBe(false);
+  });
+});
+
+describe("deriveRuntimeState", () => {
+  it("clears a staged steer when Claude reports that its command started", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-16T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "queued", steerId: "steer-1", deliveryState: "queued" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-07-16T12:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "command_lifecycle",
+          commandUuid: "command-1",
+          status: "started",
+          steerId: "steer-1",
+        },
+      },
+    ];
+
+    expect(deriveRuntimeState(events).pendingSteers).toEqual([]);
   });
 });
 

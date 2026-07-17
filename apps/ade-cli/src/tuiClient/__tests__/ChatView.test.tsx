@@ -420,6 +420,42 @@ describe("ChatView", () => {
     expect(frame).not.toContain("model working");
   });
 
+  it("renders conversation reset with the completed-compaction divider style", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "conversation_reset", newConversationId: "conversation-2" },
+      },
+    ], { width: 80 });
+
+    expect(frame).toContain("✓ conversation reset");
+    expect(frame).not.toContain("Context compacted");
+    expect(frame).not.toContain("[conversation_reset]");
+  });
+
+  it("shows a mapped terminal reason on the visible failed status row", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "status", turnStatus: "failed", turnId: "turn-1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "done", status: "failed", turnId: "turn-1", terminalReason: "prompt_too_long" },
+      },
+    ], { width: 80 });
+
+    expect(frame).toContain("[status] failed · context window overflow");
+    expect(frame).not.toContain("[done]");
+    expect(frame).not.toContain("prompt_too_long");
+  });
+
   it("renders queued steer messages as staged instead of normal sent bubbles", () => {
     const frame = renderEvents([
       {

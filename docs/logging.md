@@ -22,6 +22,14 @@ Only closed event names, closed property keys, and coarse allowlisted values may
 
 Operational logs use ADE's local logging services and may include bounded diagnostic context appropriate for the local machine. They are for debugging a specific installation and must not be forwarded to PostHog.
 
+Claude compaction observations use the local structured line
+`agent_chat.claude_context_compaction_observed` with `sessionId`, `trigger`
+(`natural`, `ade_fallback`, or `recovery`), and `occupancyPctAtTrigger`. Record
+every natural and ADE-issued compaction so production logs can verify that the
+SDK still compacts naturally above its high-water mark. The fallback gate's
+debug line is `agent_chat.claude_context_compaction_fallback_gate`; neither line
+is a PostHog event.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map

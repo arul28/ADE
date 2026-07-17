@@ -11,8 +11,8 @@ type ContextCompactDividerProps = {
   event: Extract<AgentChatEvent, { type: "context_compact" }>;
 };
 
-function completedTitle(_sessionCompactionCount?: number): string {
-  return "Context compacted";
+function completedTitle(_sessionCompactionCount?: number, fallback?: boolean): string {
+  return fallback ? "Context compacted (fallback)" : "Context compacted";
 }
 
 export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
@@ -20,6 +20,10 @@ export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
   if (!compact) return null;
 
   const isInProgress = compact.state === "started";
+  // ADE only steps in when the SDK's own >90% auto-compaction demonstrably did
+  // not run; label it distinctly so the accompanying notice doesn't read as a
+  // duplicate of a normal compaction.
+  const isFallback = compact.trigger === "ade_fallback";
   const tint = resolveProviderTint(compact.provider);
 
   return (
@@ -29,7 +33,7 @@ export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
       initial={false}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.28, ease: "easeOut" }}
-      aria-label={isInProgress ? "Compacting context" : completedTitle(compact.sessionCompactionCount)}
+      aria-label={isInProgress ? "Compacting context" : completedTitle(compact.sessionCompactionCount, isFallback)}
     >
       <span
         className="h-px min-w-8 flex-1 bg-gradient-to-r from-transparent via-amber-400/20 to-transparent"
@@ -51,7 +55,9 @@ export function ContextCompactDivider({ event }: ContextCompactDividerProps) {
           <Check size={12} weight="bold" className="text-amber-200/90" aria-hidden />
         )}
         <span className="ml-2 whitespace-nowrap text-[length:calc(var(--chat-font-size)*10/14)] font-semibold tracking-[0.02em]">
-          {isInProgress ? "Compacting context…" : completedTitle(compact.sessionCompactionCount)}
+          {isInProgress
+            ? (isFallback ? "Compacting context (fallback)…" : "Compacting context…")
+            : completedTitle(compact.sessionCompactionCount, isFallback)}
         </span>
       </motion.div>
       <span

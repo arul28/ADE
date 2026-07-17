@@ -781,6 +781,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var capabilityMode: String?
   var computerUse: RemoteJSONValue?
   var completion: ChatCompletionReport?
+  /// Read-only Claude `/goal` state mirrored by the paired host. Older hosts
+  /// omit this additive snapshot field.
+  var claudeGoal: AgentChatClaudeGoal? = nil
   var status: String
   var idleSinceAt: String?
   var startedAt: String
@@ -829,6 +832,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.cursorConfigValues == rhs.cursorConfigValues
       && lhs.computerUse == rhs.computerUse
       && lhs.completion == rhs.completion
+      && lhs.claudeGoal == rhs.claudeGoal
       && lhs.identityKey == rhs.identityKey
       && lhs.surface == rhs.surface
       && lhs.automationId == rhs.automationId
@@ -1675,6 +1679,16 @@ enum AgentChatAutoApprovalReviewStatus: String, Codable, Equatable {
 enum AgentChatContextCompactTrigger: String, Codable, Equatable {
   case manual
   case auto
+  case adeFallback = "ade_fallback"
+}
+
+struct AgentChatClaudeGoal: Codable, Equatable {
+  var condition: String
+  var iterations: Int
+  var setAt: Double
+  var tokensAtStart: Int
+  var lastReason: String?
+  var updatedAt: Double
 }
 
 /// Lifecycle state for a context-compaction event. Hosts emit `started` when
@@ -2021,10 +2035,15 @@ enum AgentChatEvent: Decodable, Equatable {
   case status(turnStatus: AgentChatTurnStatus, turnId: String?, message: String?)
   case delegationState(contract: RemoteJSONValue, message: String?, turnId: String?)
   case error(message: String, detail: String?, turnId: String?, itemId: String?, errorInfo: RemoteJSONValue?)
-  case done(turnId: String, status: AgentChatTurnStatus, model: String?, modelId: String?, usage: AgentChatTurnUsage?, costUsd: Double?)
+  case done(turnId: String, status: AgentChatTurnStatus, model: String?, modelId: String?, usage: AgentChatTurnUsage?, costUsd: Double?, terminalReason: String? = nil)
   case tokens(turnId: String, itemId: String?, inputTokens: Int?, outputTokens: Int?, cacheReadTokens: Int?, cacheWriteTokens: Int?, contextWindow: Int?)
   case codexTokenUsage(usage: AgentChatCodexThreadTokenUsage, turnId: String?)
-  case contextUsage(usage: AgentChatContextUsage, turnId: String?)
+  case contextUsage(usage: AgentChatContextUsage, turnId: String?, origin: String?)
+  case conversationReset(newConversationId: String)
+  case interruptReceipt(stillQueuedUuids: [String])
+  case commandLifecycle(commandUuid: String, status: String, preview: String?, steerId: String?, turnId: String?)
+  case claudeGoalUpdated(goal: AgentChatClaudeGoal, turnId: String?)
+  case claudeGoalCleared(turnId: String?)
   case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
   case stepBoundary(stepNumber: Int, turnId: String?)
   case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
@@ -2113,6 +2132,7 @@ extension AgentChatEvent {
     case usage
     case tokens
     case costUsd
+    case terminalReason
     case inputTokens
     case outputTokens
     case cacheReadTokens
@@ -2132,6 +2152,11 @@ extension AgentChatEvent {
     case options
     case id
     case origin
+    case newConversationId
+    case stillQueuedUuids
+    case commandUuid
+    case preview
+    case goal
     case title
     case prompt
     case cron
@@ -2311,7 +2336,8 @@ extension AgentChatEvent {
         model: try container.decodeIfPresent(String.self, forKey: .model),
         modelId: try container.decodeIfPresent(String.self, forKey: .modelId),
         usage: try container.decodeIfPresent(AgentChatTurnUsage.self, forKey: .usage),
-        costUsd: try container.decodeIfPresent(Double.self, forKey: .costUsd)
+        costUsd: try container.decodeIfPresent(Double.self, forKey: .costUsd),
+        terminalReason: try container.decodeIfPresent(String.self, forKey: .terminalReason)
       )
     case "tokens":
       self = .tokens(
@@ -2331,6 +2357,32 @@ extension AgentChatEvent {
     case "context_usage":
       self = .contextUsage(
         usage: try container.decode(AgentChatContextUsage.self, forKey: .usage),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        origin: try container.decodeIfPresent(String.self, forKey: .origin)
+      )
+    case "conversation_reset":
+      self = .conversationReset(
+        newConversationId: try container.decode(String.self, forKey: .newConversationId)
+      )
+    case "interrupt_receipt":
+      self = .interruptReceipt(
+        stillQueuedUuids: try container.decodeIfPresent([String].self, forKey: .stillQueuedUuids) ?? []
+      )
+    case "command_lifecycle":
+      self = .commandLifecycle(
+        commandUuid: try container.decode(String.self, forKey: .commandUuid),
+        status: try container.decode(String.self, forKey: .status),
+        preview: try container.decodeIfPresent(String.self, forKey: .preview),
+        steerId: try container.decodeIfPresent(String.self, forKey: .steerId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "claude_goal_updated":
+      self = .claudeGoalUpdated(
+        goal: try container.decode(AgentChatClaudeGoal.self, forKey: .goal),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "claude_goal_cleared":
+      self = .claudeGoalCleared(
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "activity":
@@ -2634,6 +2686,11 @@ extension AgentChatEvent {
     case .tokens: return "tokens"
     case .codexTokenUsage: return "codex_token_usage"
     case .contextUsage: return "context_usage"
+    case .conversationReset: return "conversation_reset"
+    case .interruptReceipt: return "interrupt_receipt"
+    case .commandLifecycle: return "command_lifecycle"
+    case .claudeGoalUpdated: return "claude_goal_updated"
+    case .claudeGoalCleared: return "claude_goal_cleared"
     case .activity: return "activity"
     case .stepBoundary: return "step_boundary"
     case .todoUpdate: return "todo_update"

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { aggregateChatBlocks, type AggregatedBlock } from "../aggregate";
+import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "../aggregate";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 
 let sequenceCounter = 0;
@@ -370,6 +370,30 @@ describe("aggregateChatBlocks typed groups", () => {
     const blocks = aggregate(events).filter((b) => b.kind === "compaction");
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toMatchObject({ kind: "compaction", live: true, trigger: "manual" });
+  });
+
+  it("routes conversation resets through the compaction-style divider block", () => {
+    const blocks = aggregate([
+      env("2026-01-01T12:00:00.000Z", { type: "conversation_reset", newConversationId: "conversation-2" }),
+    ]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.kind).toBe("conversation-reset");
+    expect(blocks[0]?.id).toContain("conversation_reset");
+  });
+
+  it("clears a staged steer when Claude starts its queued command", () => {
+    const events = [
+      env("2026-01-01T12:00:00.000Z", { type: "user_message", text: "queued", steerId: "steer-1", deliveryState: "queued" }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "command_lifecycle",
+        commandUuid: "command-1",
+        status: "started",
+        steerId: "steer-1",
+      }),
+    ];
+
+    expect(derivePendingSteers(events)).toEqual([]);
   });
 
   it("treats a stateless context_compact as a completed (done) block", () => {

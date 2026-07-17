@@ -25,15 +25,16 @@ import type {
   AgentChatClaudePlugin,
   AgentChatCodexRecoveryAction,
   AgentChatReloadClaudePluginsResult,
-	  AgentChatEventEnvelope,
-	  AgentChatFileRef,
-		  AgentChatModelCatalog,
-		  AgentChatModelCatalogModel,
-		  AgentChatModelCatalogRefreshProvider,
-		  AgentChatModelInfo,
+  AgentChatEventEnvelope,
+  AgentChatFileRef,
+  AgentChatModelCatalog,
+  AgentChatModelCatalogModel,
+  AgentChatModelCatalogRefreshProvider,
+  AgentChatModelInfo,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
+  ClaudeActiveGoal,
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
@@ -52,6 +53,7 @@ import {
   deleteChatSession,
   discoverProjectSlashCommands,
   dispatchSteerMessage,
+  deriveClaudeGoalFromEvents,
   editSteerMessage,
   getAvailableModels,
   getAiSettingsStatus,
@@ -870,6 +872,7 @@ export function chatSessionToOptimisticSummary(
     ...(session.capabilityMode ? { capabilityMode: session.capabilityMode } : {}),
     ...(session.completion ? { completion: session.completion } : {}),
     ...(session.codexGoal ? { codexGoal: session.codexGoal } : {}),
+    ...(session.claudeGoal ? { claudeGoal: session.claudeGoal } : {}),
     ...(session.codexTokenUsage ? { codexTokenUsage: session.codexTokenUsage } : {}),
     status: session.status,
     ...(session.idleSinceAt !== undefined ? { idleSinceAt: session.idleSinceAt } : {}),
@@ -1037,7 +1040,12 @@ function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string 
   return parts.length ? parts.join(" ") : null;
 }
 
-function formatGoalBannerLine(goal: CodexThreadGoal | null): string | null {
+export function formatGoalBannerLine(goal: CodexThreadGoal | ClaudeActiveGoal | null): string | null {
+  if (goal && "condition" in goal) {
+    const condition = goal.condition.trim();
+    if (!condition) return null;
+    return `◎ goal: ${condition}${goal.iterations > 0 ? ` · iter ${goal.iterations}` : ""}`;
+  }
   if (!goal?.objective) return null;
   const objective = goal.objective.trim();
   if (!objective) return null;
@@ -4146,7 +4154,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setVimModeEnabled(readClaudeVimMode(project.workspaceRoot));
     setVimMode("insert");
   }, [project.workspaceRoot]);
-  const goalBannerText = useMemo(() => formatGoalBannerLine(currentGoal), [currentGoal]);
+  const currentClaudeGoal = useMemo(
+    () => deriveClaudeGoalFromEvents(events, activeSession?.claudeGoal),
+    [activeSession?.claudeGoal, events],
+  );
+  const goalBannerText = useMemo(
+    () => formatGoalBannerLine(activeSession?.provider === "claude" ? currentClaudeGoal : currentGoal),
+    [activeSession?.provider, currentClaudeGoal, currentGoal],
+  );
   const statusLineRows = statusLineText ? Math.min(3, statusLineText.split(/\r?\n/).filter(Boolean).length || 1) : 0;
   const statusRows = statusLineRows;
   const modelStatusOverlayRows = statusRows

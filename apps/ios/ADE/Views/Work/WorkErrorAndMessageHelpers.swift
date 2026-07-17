@@ -1682,7 +1682,7 @@ func pendingWorkInputItemIds(from transcript: [WorkChatEnvelope]) -> Set<String>
          .fileChange(_, _, _, _, let itemId, _):
       approvals.removeValue(forKey: itemId)
       questions.removeValue(forKey: itemId)
-    case .done(let status, _, _, let turnId, _, _):
+    case .done(let status, _, _, let turnId, _, _, _):
       if status == "completed" {
         approvals = approvals.filter { $0.value != turnId }
       } else {
@@ -1793,8 +1793,18 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["system_notice", turnId ?? "", steerId ?? "", kind, message, detail ?? ""].joined(separator: "|")
   case .error(let message, let detail, let category, let turnId):
     return ["error", turnId ?? "", category, message, detail ?? ""].joined(separator: "|")
-  case .done(let status, let summary, let usage, let turnId, let model, let modelId):
-    return ["done", turnId, status, model ?? "", modelId ?? "", summary, workUsageSummaryMergeKey(usage)].joined(separator: "|")
+  case .done(let status, let summary, let usage, let turnId, let model, let modelId, let terminalReason):
+    return ["done", turnId, status, model ?? "", modelId ?? "", terminalReason ?? "", summary, workUsageSummaryMergeKey(usage)].joined(separator: "|")
+  case .claudeGoalUpdated(let goal, let turnId):
+    return [
+      "claude_goal_updated",
+      turnId ?? "",
+      goal.condition,
+      String(goal.iterations),
+      String(goal.updatedAt),
+    ].joined(separator: "|")
+  case .claudeGoalCleared(let turnId):
+    return ["claude_goal_cleared", turnId ?? ""].joined(separator: "|")
   case .tokens(let usage, let turnId, let itemId):
     return ["tokens", turnId, itemId ?? "", workUsageSummaryMergeKey(usage)].joined(separator: "|")
   case .promptSuggestion(let text, let turnId):

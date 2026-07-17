@@ -1020,6 +1020,15 @@ function bridgeClaudeSessionToQuery(sessionHandle: any, prompt: unknown) {
       }
       return undefined;
     }),
+    cancelAsyncMessage: vi.fn(async (uuid: string) => {
+      if (typeof session.cancelAsyncMessage === "function") {
+        return session.cancelAsyncMessage(uuid);
+      }
+      if (typeof session.query?.cancelAsyncMessage === "function") {
+        return session.query.cancelAsyncMessage(uuid);
+      }
+      return false;
+    }),
     setPermissionMode: vi.fn(async (mode: string) => {
       if (typeof session.setPermissionMode === "function") {
         return session.setPermissionMode(mode);
@@ -1716,10 +1725,10 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
   throw new Error("Timed out waiting for agent chat event.");
 }
 
-async function runClaudeStreamFixture(args: {
+async function createClaudeStreamFixture(args: {
   sdkSessionId: string;
   messages: Array<Record<string, unknown>>;
-}): Promise<AgentChatEventEnvelope[]> {
+}) {
   const events: AgentChatEventEnvelope[] = [];
   const setPermissionMode = vi.fn().mockResolvedValue(undefined);
   const send = vi.fn().mockResolvedValue(undefined);
@@ -1750,9 +1759,10 @@ async function runClaudeStreamFixture(args: {
     setPermissionMode,
   } as any);
 
-  const { service } = createService({
+  const harness = createService({
     onEvent: (event: AgentChatEventEnvelope) => events.push(event),
   });
+  const { service } = harness;
   const session = await service.createSession({
     laneId: "lane-1",
     provider: "claude",
@@ -1765,7 +1775,28 @@ async function runClaudeStreamFixture(args: {
     text: "Exercise Claude streaming text.",
   });
 
-  return events;
+  return { ...harness, events, session, send };
+}
+
+async function runClaudeStreamFixture(args: {
+  sdkSessionId: string;
+  messages: Array<Record<string, unknown>>;
+}): Promise<AgentChatEventEnvelope[]> {
+  return (await createClaudeStreamFixture(args)).events;
+}
+
+function claudeInputText(message: unknown): string {
+  if (typeof message === "string") return message;
+  const content = (message as { message?: { content?: unknown } } | null)?.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => typeof block === "string"
+      ? block
+      : typeof block === "object" && block !== null && typeof (block as { text?: unknown }).text === "string"
+        ? String((block as { text: string }).text)
+        : "")
+    .join("");
 }
 
 async function waitForSessionTitle(sessionService: ReturnType<typeof createMockSessionService>, sessionId: string, title: string): Promise<void> {
@@ -9024,6 +9055,7 @@ describe("createAgentChatService", () => {
         uuid: "wire-1",
         session_id: "sdk-session-1",
         parent_tool_use_id: null,
+        parent_agent_id: "parent-agent-1",
         message: {
           id: "msg-1",
           role: "assistant",
@@ -9040,6 +9072,7 @@ describe("createAgentChatService", () => {
       })).resolves.toEqual([expect.objectContaining({
         uuid: "wire-1",
         sessionId: "sdk-session-1",
+        parentAgentId: "parent-agent-1",
         text: "SDK transcript text",
       })]);
       expect(getSessionMessages).toHaveBeenCalledWith("sdk-session-1", {
@@ -26700,6 +26733,99 @@ describe("createAgentChatService", () => {
   // --------------------------------------------------------------------------
 
   describe("interrupt", () => {
+    it.each([
+      { providerFirst: true, expectedOrder: ["interrupt_receipt", "done"] },
+      { providerFirst: false, expectedOrder: ["done", "interrupt_receipt"] },
+    ])("matches known and unknown Claude interrupt receipts when providerFirst=$providerFirst", async ({
+      providerFirst,
+      expectedOrder,
+    }) => {
+      const events: AgentChatEventEnvelope[] = [];
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let releaseTurn!: () => void;
+      const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      const queryInterrupt = vi.fn(async () => {
+        const sent = send.mock.calls.find(([message]) => typeof message?.uuid === "string")?.[0];
+        setTimeout(releaseTurn, 0);
+        return { still_queued: [sent.uuid, "unknown-internal-uuid"] };
+      });
+      const close = vi.fn(() => releaseTurn());
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: `sdk-interrupt-receipt-${providerFirst}`,
+            slash_commands: [],
+            capabilities: ["interrupt_receipt_v1"],
+          };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            id: `receipt-assistant-${providerFirst}`,
+            content: [{ type: "text", text: "Still working." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        await turnGate;
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close,
+        interrupt: queryInterrupt,
+        sessionId: `sdk-interrupt-receipt-${providerFirst}`,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      const turnPromise = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep the turn active while a queued message is dispatched.",
+      });
+      await waitForEvent(events, (entry): entry is AgentChatEventEnvelope => entry.event.type === "text");
+      const queued = await service.steer({
+        sessionId: session.id,
+        text: "Match this visible queued-message preview.",
+      });
+      expect(queued.queued).toBe(true);
+      await service.dispatchSteer({
+        sessionId: session.id,
+        steerId: queued.steerId,
+        mode: "inline",
+      });
+      await vi.waitFor(() => {
+        expect(send.mock.calls.some(([message]) => typeof message?.uuid === "string")).toBe(true);
+      });
+
+      await (service.interrupt as any)(
+        { sessionId: session.id },
+        providerFirst ? { requireClaudeProviderInterrupt: true } : undefined,
+      );
+      await turnPromise;
+
+      const receipt = events.find((entry) => entry.event.type === "interrupt_receipt");
+      const sentUuid = send.mock.calls.find(([message]) => typeof message?.uuid === "string")?.[0].uuid;
+      expect(receipt?.event).toMatchObject({
+        stillQueuedUuids: [sentUuid, "unknown-internal-uuid"],
+        known: [{ uuid: sentUuid, preview: "Match this visible queued-message preview." }],
+      });
+      const relevantOrder = events
+        .map((entry) => entry.event.type)
+        .filter((type) => type === "interrupt_receipt" || type === "done");
+      expect(relevantOrder.slice(0, 2)).toEqual(expectedOrder);
+    });
+
     it("throws when interrupting an unknown session", async () => {
       const { service } = createService();
       await expect(
@@ -28403,11 +28529,11 @@ describe("createAgentChatService", () => {
       ).rejects.toThrow(/not supported on Codex/i);
     });
 
-    it("cancelDispatchedSteer reports inline-dispatched Claude steers as non-cancellable", async () => {
+    it("cancelDispatchedSteer cancels an SDK-queued Claude steer by its command UUID", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const send = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
-      const cancelAsyncMessage = vi.fn().mockResolvedValue({ cancelled: true });
+      const cancelAsyncMessage = vi.fn().mockResolvedValue(true);
       let streamCall = 0;
       let interruptedTurnClosed = false;
 
@@ -28471,8 +28597,17 @@ describe("createAgentChatService", () => {
       expect(sentUuid.length).toBeGreaterThan(0);
 
       const cancelResult = await service.cancelDispatchedSteer({ sessionId: session.id, steerId });
-      expect(cancelResult.cancelled).toBe(false);
-      expect(cancelAsyncMessage).not.toHaveBeenCalled();
+      expect(cancelResult.cancelled).toBe(true);
+      expect(cancelAsyncMessage).toHaveBeenCalledWith(sentUuid);
+      expect(events.find((entry) =>
+        entry.event.type === "system_notice"
+        && entry.event.steerId === steerId
+        && /cancelled/i.test(entry.event.message)
+      )?.event).toMatchObject({
+        type: "system_notice",
+        steerId,
+        message: "Queued message cancelled.",
+      });
 
       // Cleanup
       await service.interrupt({ sessionId: session.id });
@@ -29444,6 +29579,517 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
+  it.each([
+    { subtype: "error_during_execution", terminalReason: undefined, expectedStatus: "failed" },
+    { subtype: "error_max_turns", terminalReason: undefined, expectedStatus: "failed" },
+    { subtype: "error_max_budget_usd", terminalReason: undefined, expectedStatus: "failed" },
+    { subtype: "error_max_structured_output_retries", terminalReason: undefined, expectedStatus: "failed" },
+    { subtype: "success", terminalReason: "budget_exhausted", expectedStatus: "failed" },
+    { subtype: "success", terminalReason: "structured_output_retry_exhausted", expectedStatus: "failed" },
+    { subtype: "success", terminalReason: "max_turns", expectedStatus: "failed" },
+    { subtype: "success", terminalReason: "api_error", expectedStatus: "failed" },
+    { subtype: "success", terminalReason: "malformed_tool_use_exhausted", expectedStatus: "failed" },
+    { subtype: "success", terminalReason: "prompt_too_long", expectedStatus: "failed" },
+    { subtype: "error_during_execution", terminalReason: "aborted_streaming", expectedStatus: "interrupted" },
+    { subtype: "error_during_execution", terminalReason: "aborted_tools", expectedStatus: "interrupted" },
+  ])("maps Claude $subtype/$terminalReason results to $expectedStatus", async ({
+    subtype,
+    terminalReason,
+    expectedStatus,
+  }) => {
+    const events = await runClaudeStreamFixture({
+      sdkSessionId: `sdk-terminal-${subtype}-${terminalReason ?? "none"}`,
+      messages: [{
+        type: "result",
+        subtype,
+        is_error: subtype !== "success",
+        ...(terminalReason ? { terminal_reason: terminalReason } : {}),
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }],
+    });
+
+    const done = events.find((entry) =>
+      entry.event.type === "done"
+      && entry.event.terminalReason === terminalReason
+    );
+    expect(done?.event).toMatchObject({
+      type: "done",
+      status: expectedStatus,
+      ...(terminalReason
+        ? { terminalReason, terminalReasonSource: "sdk" }
+        : {}),
+    });
+  });
+
+  it("surfaces Claude protocol frames and adopts a reset conversation as the SDK resume pointer", async () => {
+    const goal = {
+      condition: "Finish the SDK wiring",
+      iterations: 1,
+      set_at: 100,
+      tokens_at_start: 200,
+      last_reason: "initial",
+    };
+    const { events, service, session } = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-protocol-surfaces",
+      messages: [
+        {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-protocol-surfaces",
+          slash_commands: [],
+          capabilities: ["interrupt_receipt_v1", "future_capability", "interrupt_receipt_v1"],
+        },
+        {
+          type: "conversation_reset",
+          new_conversation_id: "conversation-after-clear",
+          session_id: "sdk-protocol-surfaces",
+          uuid: "conversation-reset-1",
+        },
+        { type: "active_goal", value: goal, session_id: "conversation-after-clear", uuid: "goal-1" },
+        { type: "active_goal", value: goal, session_id: "conversation-after-clear", uuid: "goal-duplicate" },
+        {
+          type: "active_goal",
+          value: { ...goal, iterations: 2, last_reason: "continued" },
+          session_id: "conversation-after-clear",
+          uuid: "goal-2",
+        },
+        { type: "active_goal", value: null, session_id: "conversation-after-clear", uuid: "goal-clear" },
+        {
+          type: "system",
+          subtype: "api_retry",
+          attempt: 2,
+          max_retries: 5,
+          retry_delay_ms: 750,
+          error_status: 529,
+          error: "overloaded",
+        },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+
+    expect(events.find((entry) => entry.event.type === "conversation_reset")?.event).toEqual(expect.objectContaining({
+      type: "conversation_reset",
+      newConversationId: "conversation-after-clear",
+    }));
+    expect(events.filter((entry) => entry.event.type === "claude_goal_updated")).toHaveLength(2);
+    expect(events.filter((entry) => entry.event.type === "claude_goal_cleared")).toHaveLength(1);
+    expect(events.find((entry) => entry.event.type === "api_retry")?.event).toMatchObject({
+      attempt: 2,
+      maxRetries: 5,
+      retryDelayMs: 750,
+      errorStatus: 529,
+    });
+    expect(readPersistedChatState(session.id)).toMatchObject({
+      sdkSessionId: "conversation-after-clear",
+      protocolCapabilities: ["interrupt_receipt_v1", "future_capability"],
+    });
+    await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+      protocolCapabilities: ["interrupt_receipt_v1", "future_capability"],
+    });
+  });
+
+  it("emits deduplicated command lifecycle events only for ADE-owned Claude messages", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-command-lifecycle", slash_commands: [] };
+        return;
+      }
+      let sentUuid: string | undefined;
+      await vi.waitFor(() => {
+        const userMessage = events.find((entry) => entry.event.type === "user_message")?.event;
+        sentUuid = userMessage?.type === "user_message" ? userMessage.messageId : undefined;
+        expect(sentUuid).toEqual(expect.any(String));
+      });
+      yield { type: "command_lifecycle", command_uuid: "internal-command", status: "queued" };
+      yield { type: "command_lifecycle", command_uuid: sentUuid, status: "queued" };
+      yield { type: "command_lifecycle", command_uuid: sentUuid, status: "queued" };
+      yield { type: "command_lifecycle", command_uuid: sentUuid, status: "started" };
+      yield { type: "command_lifecycle", command_uuid: sentUuid, status: "discarded" };
+      yield { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    })());
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-command-lifecycle",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    await service.runSessionTurn({ sessionId: session.id, text: "Track this command." });
+
+    const lifecycle = events
+      .map((entry) => entry.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "command_lifecycle" }> =>
+        event.type === "command_lifecycle");
+    expect(lifecycle.map((event) => event.status)).toEqual(["queued", "started", "discarded"]);
+    expect(lifecycle.every((event) => event.preview === "Track this command.")).toBe(true);
+  });
+
+  it("persists and rehydrates the current Claude active goal", async () => {
+    const goal = {
+      condition: "Prove goal persistence",
+      iterations: 3,
+      set_at: 1_234,
+      tokens_at_start: 5_678,
+      last_reason: "verification",
+    };
+    const harness = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-goal-persistence",
+      messages: [
+        { type: "active_goal", value: goal, session_id: "sdk-goal-persistence", uuid: "goal-persist" },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+
+    expect(readPersistedChatState(harness.session.id).claudeGoal).toMatchObject({
+      condition: goal.condition,
+      iterations: 3,
+      setAt: 1_234,
+      tokensAtStart: 5_678,
+      lastReason: "verification",
+      updatedAt: expect.any(Number),
+    });
+
+    const rehydrated = createService({ sessionService: harness.sessionService });
+    await expect(rehydrated.service.getSessionSummary(harness.session.id)).resolves.toMatchObject({
+      claudeGoal: {
+        condition: goal.condition,
+        iterations: 3,
+        setAt: 1_234,
+        tokensAtStart: 5_678,
+        lastReason: "verification",
+        updatedAt: expect.any(Number),
+      },
+    });
+  });
+
+  it("attaches structured Claude tool outputs and enriches Agent and Task results", async () => {
+    const toolUseResult = (toolUseId: string, structured: unknown) => ({
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: toolUseId, content: `result:${toolUseId}` }],
+      },
+      tool_use_result: structured,
+    });
+    const agentOutput = (summary: string, worktreePath: string) => ({
+      status: "completed",
+      content: [{ type: "text", text: summary }],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 20,
+        cache_creation_input_tokens: 2,
+        cache_read_input_tokens: 3,
+      },
+      toolStats: {
+        readCount: 1,
+        searchCount: 2,
+        bashCount: 3,
+        editFileCount: 4,
+        otherToolCount: 5,
+      },
+      worktreePath,
+      worktreeBranch: "feature/sdk-wiring",
+    });
+    const { events } = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-structured-tool-results",
+      messages: [
+        {
+          type: "assistant",
+          message: {
+            id: "assistant-tools",
+            content: [
+              { type: "tool_use", id: "bash-1", name: "Bash", input: { command: "npm test" } },
+              { type: "tool_use", id: "grep-1", name: "Grep", input: { pattern: "needle" } },
+              { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "README.md" } },
+              { type: "tool_use", id: "agent-1", name: "Agent", input: { prompt: "Inspect Agent output" } },
+              { type: "tool_use", id: "task-1", name: "Task", input: { prompt: "Inspect Task output" } },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        },
+        {
+          type: "system",
+          subtype: "task_started",
+          task_id: "agent-task-1",
+          agent_id: "agent-id-1",
+          parent_tool_use_id: "agent-1",
+          description: "Inspect Agent output",
+        },
+        {
+          type: "system",
+          subtype: "task_started",
+          task_id: "agent-task-2",
+          agent_id: "agent-id-2",
+          parent_tool_use_id: "task-1",
+          description: "Inspect Task output",
+        },
+        toolUseResult("bash-1", { timedOutAfterMs: 30_000, backgroundCwdHint: "cwd remains unchanged" }),
+        toolUseResult("grep-1", { totalFiles: 7, totalLines: 19 }),
+        toolUseResult("read-1", { futureShape: { preserved: true } }),
+        toolUseResult("agent-1", agentOutput("Agent completed.", "/tmp/agent-worktree")),
+        toolUseResult("task-1", agentOutput("Task completed.", "/tmp/task-worktree")),
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+
+    const toolResults = events
+      .map((entry) => entry.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "tool_result" }> =>
+        event.type === "tool_result");
+    expect(toolResults.find((event) => event.itemId === "bash-1")).toMatchObject({
+      structured: { timedOutAfterMs: 30_000, backgroundCwdHint: "cwd remains unchanged" },
+      timedOutAfterMs: 30_000,
+      backgroundCwdHint: "cwd remains unchanged",
+    });
+    expect(toolResults.find((event) => event.itemId === "grep-1")).toMatchObject({
+      grepTotals: { files: 7, lines: 19 },
+    });
+    expect(toolResults.find((event) => event.itemId === "read-1")?.structured).toEqual({
+      futureShape: { preserved: true },
+    });
+
+    const subagentResults = events
+      .map((entry) => entry.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "subagent_result" }> =>
+        event.type === "subagent_result" && event.worktreePath != null);
+    expect(subagentResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        taskId: "agent-task-1",
+        worktreePath: "/tmp/agent-worktree",
+        worktreeBranch: "feature/sdk-wiring",
+        totalTokens: 35,
+        toolUseCount: 15,
+      }),
+      expect.objectContaining({
+        taskId: "agent-task-2",
+        worktreePath: "/tmp/task-worktree",
+        worktreeBranch: "feature/sdk-wiring",
+        totalTokens: 35,
+        toolUseCount: 15,
+      }),
+    ]));
+  });
+
+  it("throttles live Claude context usage by both time and percentage movement", async () => {
+    let now = 0;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const messages = [
+      {
+        type: "stream_event",
+        event: {
+          type: "message_start",
+          message: {
+            id: "usage-message",
+            usage: {
+              input_tokens: 100_000,
+              cache_read_input_tokens: 20_000,
+              cache_creation_input_tokens: 30_000,
+              output_tokens: 0,
+            },
+          },
+        },
+      },
+      {
+        type: "stream_event",
+        event: { type: "message_delta", usage: { output_tokens: 20_000 } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "message_delta", usage: { output_tokens: 5_000 } },
+      },
+      {
+        type: "stream_event",
+        event: { type: "message_delta", usage: { output_tokens: 20_000 } },
+      },
+      { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+    ];
+    const timedMessages = (async function* () {
+      now = 0;
+      yield messages[0]!;
+      now = 1_000;
+      yield messages[1]!;
+      now = 6_000;
+      yield messages[2]!;
+      now = 7_000;
+      yield messages[3]!;
+      yield messages[4]!;
+    })();
+    const materialized: Array<Record<string, unknown>> = [];
+    for await (const message of timedMessages) materialized.push(message);
+    // Re-apply the intended times from inside the SDK stream rather than while
+    // materializing the fixtures.
+    let streamCall = 0;
+    const send = vi.fn().mockResolvedValue(undefined);
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-live-usage", slash_commands: [] };
+        return;
+      }
+      now = 0;
+      yield materialized[0]!;
+      now = 1_000;
+      yield materialized[1]!;
+      now = 6_000;
+      yield materialized[2]!;
+      now = 7_000;
+      yield materialized[3]!;
+      yield materialized[4]!;
+    })());
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-live-usage",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    await service.runSessionTurn({ sessionId: session.id, text: "Measure context." });
+    dateNow.mockRestore();
+
+    const usageEvents = events
+      .map((entry) => entry.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "context_usage" }> =>
+        event.type === "context_usage" && event.origin === "live");
+    expect(usageEvents.map((event) => event.usage.percentage)).toEqual([15, 17]);
+  });
+
+  it("lets natural compaction suppress the 97% fallback", async () => {
+    const harness = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-natural-compact",
+      messages: [
+        {
+          type: "stream_event",
+          event: {
+            type: "message_start",
+            message: { id: "natural-usage", usage: { input_tokens: 980_000, output_tokens: 0 } },
+          },
+        },
+        { type: "system", subtype: "status", status: "compacting" },
+        {
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "auto", pre_tokens: 980_000, post_tokens: 500_000 },
+        },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+
+    expect(harness.send.mock.calls.map(([message]) => claudeInputText(message))).not.toContain("/compact");
+    expect(harness.logger.info).toHaveBeenCalledWith(
+      "agent_chat.claude_context_compaction_observed",
+      expect.objectContaining({ trigger: "natural", occupancyPctAtTrigger: 98 }),
+    );
+  });
+
+  it("starts a fresh guardrail episode after occupancy drops below 80%", async () => {
+    const harness = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-guardrail-episode-reset",
+      messages: [
+        {
+          type: "stream_event",
+          event: {
+            type: "message_start",
+            message: { id: "first-episode", usage: { input_tokens: 920_000, output_tokens: 0 } },
+          },
+        },
+        { type: "system", subtype: "status", status: "compacting" },
+        {
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "auto", pre_tokens: 920_000, post_tokens: 700_000 },
+        },
+        {
+          type: "stream_event",
+          event: {
+            type: "message_start",
+            message: { id: "second-episode", usage: { input_tokens: 970_000, output_tokens: 0 } },
+          },
+        },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+
+    await vi.waitFor(() => {
+      expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+        .toHaveLength(1);
+    });
+  });
+
+  it("issues one fallback compact at a 97% turn boundary", async () => {
+    const harness = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-fallback-compact",
+      messages: [
+        {
+          type: "stream_event",
+          event: {
+            type: "message_start",
+            message: { id: "fallback-usage", usage: { input_tokens: 970_000, output_tokens: 0 } },
+          },
+        },
+        { type: "result", subtype: "success", is_error: false, usage: { input_tokens: 1, output_tokens: 1 } },
+      ],
+    });
+
+    await vi.waitFor(() => {
+      expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+        .toHaveLength(1);
+    });
+    expect(harness.events.find((entry) =>
+      entry.event.type === "context_compact"
+      && entry.event.trigger === "ade_fallback"
+      && entry.event.state === "started"
+    )?.event).toMatchObject({ compactionId: expect.any(String) });
+  });
+
+  it("recovers once from prompt_too_long without replaying the failed user message", async () => {
+    const harness = await createClaudeStreamFixture({
+      sdkSessionId: "sdk-overflow-recovery",
+      messages: [{
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        terminal_reason: "prompt_too_long",
+        errors: ["prompt is too long for this context window"],
+        usage: { input_tokens: 1, output_tokens: 0 },
+      }],
+    });
+
+    await vi.waitFor(() => {
+      expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) => text === "/compact"))
+        .toHaveLength(1);
+    });
+    expect(harness.events.find((entry) =>
+      entry.event.type === "system_notice"
+      && entry.event.message === "context overflowed — compacted; please re-send your last message"
+    )?.event).toMatchObject({
+      type: "system_notice",
+      noticeKind: "info",
+      message: "context overflowed — compacted; please re-send your last message",
+    });
+    expect(harness.send.mock.calls.map(([message]) => claudeInputText(message)).filter((text) =>
+      text.includes("Exercise Claude streaming text."))).toHaveLength(1);
+  });
+
   it("does not duplicate Claude thinking when the final assistant message repeats streamed content", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -30288,6 +30934,42 @@ describe("createAgentChatService", () => {
       source: "claude_turn_finalization",
       finalTurnStatus: "completed",
     });
+  });
+
+  it("allows generic Claude tools without manufacturing updatedInput", async () => {
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send: vi.fn().mockResolvedValue(undefined),
+      stream: vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-can-use-tool", slash_commands: [] };
+      })()),
+      close: vi.fn(),
+      sessionId: "sdk-can-use-tool",
+      setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    const { service } = createService();
+    await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    await vi.waitFor(() => expect(claudeSdkCreateSessionCompat).toHaveBeenCalled());
+    const options = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+      canUseTool: (
+        tool: string,
+        input: Record<string, unknown>,
+        options: Record<string, unknown>,
+      ) => Promise<Record<string, unknown>>;
+    };
+
+    const result = await options.canUseTool(
+      "Read",
+      { file_path: "README.md" },
+      { signal: new AbortController().signal, toolUseID: "read-tool-1" },
+    );
+
+    expect(result).toEqual({ behavior: "allow" });
+    expect(result).not.toHaveProperty("updatedInput");
   });
 
   it("suppresses the 'tool calls were denied' notice for tool_use_ids resolved inline via canUseTool", async () => {

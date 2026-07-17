@@ -6,6 +6,7 @@ import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import type { AgentChatSpawnKind } from "../../../shared/types";
 import { navigateToSpawnedChat } from "./spawnNavigation";
+import { formatContextTokens } from "./usage/contextUsageModel";
 import type {
   BackgroundFinishChipRenderEvent,
   SubagentResultCardRenderEvent,
@@ -109,6 +110,7 @@ export function SubagentSpawnCard({
       ? `${event.toolCount} tool${event.toolCount === 1 ? "" : "s"}`
       : null,
     elapsed,
+    event.parentLabel ? `spawned by ${event.parentLabel}` : null,
   ].filter((part): part is string => Boolean(part));
 
   // A spawned ADE chat (peer/subagent) carries a child session id → the whole
@@ -254,10 +256,33 @@ export function SubagentResultCard({
             {duration ? (
               <span className="font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/38">{duration}</span>
             ) : null}
+            {typeof event.toolUseCount === "number" && event.toolUseCount > 0 ? (
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/38">
+                · {event.toolUseCount} tool{event.toolUseCount === 1 ? "" : "s"}
+              </span>
+            ) : null}
+            {typeof event.totalTokens === "number" && event.totalTokens > 0 ? (
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/38">
+                · {formatContextTokens(event.totalTokens)} tokens
+              </span>
+            ) : null}
             {isFailed && event.error?.trim() ? (
               <span className="rounded-md border border-amber-400/18 bg-amber-400/[0.07] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold uppercase tracking-[0.12em] text-amber-100/75">
                 error
               </span>
+            ) : null}
+            {event.worktreeBranch?.trim() ? (
+              <button
+                type="button"
+                onClick={() => void navigator.clipboard?.writeText(event.worktreePath || event.worktreeBranch || "")}
+                title={event.worktreePath || event.worktreeBranch}
+                className="rounded-md border border-white/10 bg-white/[0.04] px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8/14)] font-bold text-fg/55 transition-colors hover:text-fg/75"
+              >
+                worktree: {event.worktreeBranch}
+              </button>
+            ) : null}
+            {event.parentLabel ? (
+              <span className="font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/40">spawned by {event.parentLabel}</span>
             ) : null}
           </div>
           {event.summaryPreview?.trim() ? (

@@ -1063,6 +1063,16 @@ function compactionRows(block: Extract<AggregatedBlock, { kind: "compaction" }>,
   }];
 }
 
+function conversationResetRows(block: Extract<AggregatedBlock, { kind: "conversation-reset" }>): RenderedChatRow[] {
+  return [{
+    id: block.id,
+    tone: "work",
+    text: "        ✓ conversation reset",
+    color: theme.color.violet,
+    rail: null,
+  }];
+}
+
 function formatCompactTokenCount(value: number): string {
   if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
   if (value >= 10_000) return `${Math.round(value / 1_000)}k`;
@@ -1252,6 +1262,8 @@ function rowsForBlock(
       return reasoningRows(block, spinFrame);
     case "compaction":
       return compactionRows(block, brailleFrame);
+    case "conversation-reset":
+      return conversationResetRows(block);
     case "queued-steer":
       return queuedSteerRows(block, width);
     case "plan":

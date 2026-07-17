@@ -14,7 +14,7 @@ import {
 import { cn } from "../ui/cn";
 import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
 import type { ChatScheduledWorkSnapshot, ChatSubagentSnapshot } from "./chatExecutionSummary";
-import { derivePlan } from "./chatExecutionSummary";
+import { derivePlan, subagentTreeDepth } from "./chatExecutionSummary";
 import type { TodoItemSnapshot } from "./chatExecutionSummary";
 import { ChatTaskList } from "./ChatTasksPanel";
 import type { ChatInfoPlanStep, PaneSectionKey } from "../../../shared/chatSubagents";
@@ -37,10 +37,10 @@ import {
   isFiredOneShotWakeup,
   scheduledNextFireLabel,
 } from "../../../shared/chatScheduledWork";
-import type { AgentChatEventEnvelope, CodexThreadGoal } from "../../../shared/types";
+import type { AgentChatEventEnvelope, ClaudeActiveGoal, CodexThreadGoal } from "../../../shared/types";
 import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
-import { CodexGoalCard } from "./codex/CodexGoalCard";
+import { GoalCard } from "./GoalCard";
 import { ChatSubagentGlyph, chatSubagentColor, chatSubagentDisplayName } from "./chatSubagentIdentity";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 
@@ -780,11 +780,14 @@ function SubagentRow({
   probing,
   canViewFullTranscript,
   onClick,
+  depth = 0,
 }: {
   snapshot: ChatSubagentSnapshot;
   selected: boolean;
   category: GlyphCategory;
   expanded: boolean;
+  /** Nesting depth (parentAgentId chain); indents the row one level per ancestor. */
+  depth?: number;
   /** True while we're checking whether this agent has a pullable transcript. */
   probing: boolean;
   /** Whether this runtime can surface a full child transcript (drives the
@@ -823,7 +826,7 @@ function SubagentRow({
   const summaryText = summaryRaw && summaryRaw !== snapshot.description?.trim() ? summaryRaw : null;
 
   return (
-    <div>
+    <div style={depth > 0 ? { paddingLeft: depth * 14 } : undefined}>
       <button
         type="button"
         onClick={onClick}
@@ -837,6 +840,9 @@ function SubagentRow({
             && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
         )}
       >
+        {depth > 0 ? (
+          <span aria-hidden className="-mr-1 shrink-0 self-center text-[12px] leading-none text-fg/25">↳</span>
+        ) : null}
         <ChatSubagentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} />
 
         <span
@@ -956,6 +962,7 @@ export function ChatSubagentsPanel({
   variant = "drawer",
   onClose,
   goal,
+  claudeGoal,
   onEditGoal,
   onClearGoal,
   onSetGoalStatus,
@@ -985,6 +992,8 @@ export function ChatSubagentsPanel({
   variant?: "drawer" | "pane";
   onClose?: () => void;
   goal?: CodexThreadGoal | null;
+  /** Read-only Claude goal (owned by the CLI's /goal loop); Claude sessions only. */
+  claudeGoal?: ClaudeActiveGoal | null;
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
   onSetGoalStatus?: (status: Extract<NonNullable<CodexThreadGoal["status"]>, "active" | "paused" | "blocked" | "complete">) => void;
@@ -1305,11 +1314,12 @@ export function ChatSubagentsPanel({
   const stickyHeaders = variant === "pane";
 
   const hasGoal = Boolean(goal?.objective?.trim());
+  const hasClaudeGoal = Boolean(claudeGoal?.condition?.trim());
   const hasTasks = todoItems.length > 0;
   const hasSubagents = subagents.length > 0;
   const hasBackground = backgroundItems.length > 0;
   const hasScheduled = scheduleItems.length > 0;
-  const hasAnything = hasGoal || Boolean(plan) || hasTasks || hasSubagents || hasBackground || hasScheduled;
+  const hasAnything = hasGoal || hasClaudeGoal || Boolean(plan) || hasTasks || hasSubagents || hasBackground || hasScheduled;
   const renderSubagentPaneRow = (snap: ChatSubagentSnapshot) => (
     <SubagentRow
       snapshot={snap}
@@ -1318,21 +1328,25 @@ export function ChatSubagentsPanel({
       probing={probingTaskId === snap.taskId}
       canViewFullTranscript={canTakeover}
       category={snap.background ? "background" : "subagent"}
+      depth={subagentTreeDepth(snap, snapshots)}
       onClick={() => handleRowClick(snap)}
     />
   );
 
   const body = (
     <div className="flex min-h-full flex-col font-sans">
-      {/* ── Goal (Codex chat goal) ───────────────────────────────── */}
+      {/* ── Goal (Codex editable, or Claude read-only /goal loop) ─── */}
       {hasGoal && goal ? (
-        <CodexGoalCard
+        <GoalCard
+          variant="codex"
           goal={goal}
           onEdit={onEditGoal}
           onClear={onClearGoal}
           onSetStatus={onSetGoalStatus}
           pending={goalPending}
         />
+      ) : hasClaudeGoal && claudeGoal ? (
+        <GoalCard variant="claude" goal={claudeGoal} />
       ) : null}
 
       {/* ── Progress ─────────────────────────────────────────────── */}

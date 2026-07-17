@@ -265,9 +265,15 @@ function textDelta(messageId: string, text: string) {
   };
 }
 
-function assistantSnapshot(messageId: string, text: string) {
+function assistantSnapshot(
+  messageId: string,
+  text: string,
+  extras: { timestamp?: string; resumedFromIncompleteThinking?: boolean } = {},
+) {
   return {
     type: "assistant",
+    ...(extras.timestamp ? { timestamp: extras.timestamp } : {}),
+    ...(extras.resumedFromIncompleteThinking ? { resumed_from_incomplete_thinking: true } : {}),
     message: {
       id: messageId,
       content: [{ type: "text", text }],
@@ -331,5 +337,24 @@ describe("Claude assistant text snapshot deduplication", () => {
     expect(textEvents).toHaveLength(1);
     expect(textEvents[0]).toMatchObject({ text: fullText, messageId });
     expect(textEvents.map((event) => event.text).join("")).toBe(fullText);
+  });
+
+  it("preserves resumed incomplete-thinking text and its provider timestamp", async () => {
+    const messageId = "msg-resumed-incomplete-thinking";
+    const fullText = "Recovered text must not be discarded.";
+    const originTimestamp = "2026-07-16T14:15:16.000Z";
+    const textEvents = await runTextFixture([
+      assistantSnapshot(messageId, fullText),
+      assistantSnapshot(messageId, fullText, {
+        timestamp: originTimestamp,
+        resumedFromIncompleteThinking: true,
+      }),
+    ]);
+
+    expect(textEvents.map((event) => event.text).join("")).toBe(`${fullText}${fullText}`);
+    expect(textEvents.at(-1)).toMatchObject({
+      messageId,
+      originTimestamp,
+    });
   });
 });

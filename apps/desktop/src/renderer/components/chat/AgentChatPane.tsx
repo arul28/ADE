@@ -37,6 +37,7 @@ import {
   type ChatSurfacePresentation,
   type AgentChatSessionSummary,
   type CodexThreadGoal,
+  type ClaudeActiveGoal,
   type BuiltInBrowserContextItem,
   type ComputerUseOwnerSnapshot,
   type AppControlContextItem,
@@ -1058,6 +1059,9 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
         steerMap.delete(event.steerId);
         resolvedSteerIds.add(event.steerId);
       }
+    } else if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
+      steerMap.delete(event.steerId);
+      resolvedSteerIds.add(event.steerId);
     }
   }
 
@@ -3801,6 +3805,30 @@ export function AgentChatPane({
     }
     return sawGoalEvent ? goalFromEvents : (selectedSession?.codexGoal ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexGoal]);
+  // Claude goal is owned by the CLI's /goal loop — read-only here. Mirror the
+  // Codex derivation: latest claude_goal_updated/cleared wins, else the snapshot.
+  const selectedClaudeGoal = useMemo<ClaudeActiveGoal | null>(() => {
+    let goalFromEvents: ClaudeActiveGoal | null = null;
+    let sawGoalEvent = false;
+    for (const envelope of selectedEventsForDisplay) {
+      const event = envelope.event;
+      if (event.type === "claude_goal_updated") {
+        goalFromEvents = event.goal;
+        sawGoalEvent = true;
+      }
+      if (event.type === "claude_goal_cleared") {
+        goalFromEvents = null;
+        sawGoalEvent = true;
+      }
+    }
+    return sawGoalEvent ? goalFromEvents : (selectedSession?.claudeGoal ?? null);
+  }, [selectedEventsForDisplay, selectedSession?.claudeGoal]);
+  const cancelQueuedMessageFromReceipt = useCallback((steerId: string) => {
+    if (!selectedSessionId) return;
+    void window.ade.agentChat
+      .cancelDispatchedSteer({ sessionId: selectedSessionId, steerId })
+      .catch(() => { /* best-effort: already delivered or unknown steer */ });
+  }, [selectedSessionId]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
   const selectedScheduledWorkSnapshots = useMemo(
     () => mergeManagedScheduledWorkSnapshots(selectedEvents, selectedSession?.scheduledWork),
@@ -9713,6 +9741,7 @@ export function AgentChatPane({
       capability={selectedSubagentCapability}
       selectedTaskId={subagentView?.taskId ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
+      claudeGoal={selectedSession?.provider === "claude" ? selectedClaudeGoal : null}
       goalPending={selectedCodexGoalPending}
       onEditGoal={
         selectedSession?.provider === "codex" && selectedSessionId
@@ -11511,6 +11540,7 @@ export function AgentChatPane({
                       onRevealChatTerminal={revealChatTerminal}
                       turnDiffSummaries={selectedTurnDiffSummaries}
                       onRewindFiles={selectedSession?.provider === "claude" || selectedSession?.provider === "codex" ? rewindFilesFromMessage : undefined}
+                      onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
                       onApproval={handleListApproval}
                       onCodexRecovery={handleListCodexRecovery}
                       onRetryProviderFailure={handleListRetryProviderFailure}

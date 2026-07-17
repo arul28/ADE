@@ -24,7 +24,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.207",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.211",
     "@anthropic-ai/sdk": "^0.103.0",
     "@cursor/sdk": "^1.0.23",
     "@factory/droid-sdk": "^0.2.0",
