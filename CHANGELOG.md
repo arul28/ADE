@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.30] - 2026-07-17
+
+### Fixed
+
+- Web client no longer times out connecting to your Mac over the account relay; Files and PRs tabs load quickly via cached, coalesced reads instead of lagging per round-trip.
+- Web client keeps its session across reloads, shows account identity (name and avatar) instead of a raw id, and no longer crashes right after connecting.
+- Connections "This Mac" card always describes the local machine even when the window is remote-bound, scopes pairing-code management locally, and stays populated when a routed runtime is offline.
+
+### Changed
+
+- Relay machine-key rotation writes credentials as one atomic pair under a live-owner lock, and the relay claim is scoped to the machine identity, so concurrent brains can't clobber each other's relay connection during rotation.
+
+### iOS
+
+- Connection reliability improvements to how the iPhone client reaches your Mac over the relay.
+
 ## [1.2.29] - 2026-07-17
 
 ### Added
@@ -832,7 +848,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.29...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.30...HEAD
+[1.2.30]: https://github.com/arul28/ADE/compare/v1.2.29...v1.2.30
 [1.2.29]: https://github.com/arul28/ADE/compare/v1.2.28...v1.2.29
 [1.2.28]: https://github.com/arul28/ADE/compare/v1.2.27...v1.2.28
 [1.2.27]: https://github.com/arul28/ADE/compare/v1.2.26...v1.2.27
