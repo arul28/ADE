@@ -1,0 +1,140 @@
+name: Deploy Web Surfaces
+
+# Merged = deployed for the web tier. The desktop/iOS release workflow never
+# touches these five surfaces (hosted web client on Cloudflare Pages + four
+# Workers), which let production drift silently in the past. Push-to-main
+# deploys exactly the surfaces whose code changed; workflow_dispatch deploys
+# everything (manual full reconcile). Secrets are never exposed to fork PRs
+# because this only runs on push to main and manual dispatch.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/desktop/src/renderer/**"
+      - "apps/desktop/src/shared/**"
+      - "apps/desktop/vite.webclient.config.ts"
+      - "apps/account-directory/**"
+      - "apps/webhook-relay/**"
+      - "apps/tunnel-relay/**"
+      - "apps/push-relay/**"
+      - ".github/workflows/deploy-web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-web
+  cancel-in-progress: false
+
+env:
+  CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+  CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      webclient: ${{ steps.filter.outputs.webclient }}
+      account-directory: ${{ steps.filter.outputs.account-directory }}
+      webhook-relay: ${{ steps.filter.outputs.webhook-relay }}
+      tunnel-relay: ${{ steps.filter.outputs.tunnel-relay }}
+      push-relay: ${{ steps.filter.outputs.push-relay }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            webclient:
+              - "apps/desktop/src/renderer/**"
+              - "apps/desktop/src/shared/**"
+              - "apps/desktop/vite.webclient.config.ts"
+            account-directory:
+              - "apps/account-directory/**"
+            webhook-relay:
+              - "apps/webhook-relay/**"
+            tunnel-relay:
+              - "apps/tunnel-relay/**"
+            push-relay:
+              - "apps/push-relay/**"
+
+  webclient:
+    needs: changes
+    if: needs.changes.outputs.webclient == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+      - name: Build web client
+        run: cd apps/desktop && npm run build:webclient
+      - name: Deploy to Cloudflare Pages
+        run: npx wrangler@4 pages deploy apps/desktop/dist/web-client --project-name ade-web-client --branch main --commit-hash "$GITHUB_SHA"
+      - name: Verify live bundle
+        run: |
+          built="$(basename apps/desktop/dist/web-client/assets/index-*.js)"
+          for i in 1 2 3 4 5 6; do
+            live="$(curl -fsS https://app.ade-app.dev | grep -oE 'index-[A-Za-z0-9_-]+\.js' | head -1 || true)"
+            [ "$built" = "$live" ] && { echo "verified: $live"; exit 0; }
+            echo "waiting for propagation ($i): built=$built live=$live"; sleep 20
+          done
+          echo "::error::deployed bundle did not propagate (built=$built live=$live)"; exit 1
+
+  account-directory:
+    needs: changes
+    if: needs.changes.outputs.account-directory == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd apps/account-directory && npm ci
+      - name: Deploy production Worker
+        run: cd apps/account-directory && npx wrangler deploy --env production
+      - name: Verify health
+        run: curl -fsS https://ade-account-directory-production.arulsharma1028.workers.dev/health | grep -q '"ok":true'
+
+  webhook-relay:
+    needs: changes
+    if: needs.changes.outputs.webhook-relay == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd apps/webhook-relay && npm ci
+      - name: Deploy Worker
+        run: cd apps/webhook-relay && npx wrangler deploy
+
+  tunnel-relay:
+    needs: changes
+    if: needs.changes.outputs.tunnel-relay == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd apps/tunnel-relay && npm ci
+      - name: Deploy Worker
+        run: cd apps/tunnel-relay && npx wrangler deploy
+
+  push-relay:
+    needs: changes
+    if: needs.changes.outputs.push-relay == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: cd apps/push-relay && npm ci
+      - name: Deploy Worker
+        run: cd apps/push-relay && npx wrangler deploy
