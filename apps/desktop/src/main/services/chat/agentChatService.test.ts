@@ -1727,6 +1727,31 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
   throw new Error("Timed out waiting for agent chat event.");
 }
 
+async function waitForFakeTimerCondition(
+  predicate: () => boolean,
+  description: string,
+): Promise<void> {
+  const timeoutMs = 10_000;
+  for (let elapsedMs = 0; elapsedMs < timeoutMs; elapsedMs += 1) {
+    if (predicate()) return;
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+  }
+  if (predicate()) return;
+  throw new Error(`Timed out after ${timeoutMs}ms waiting for ${description}.`);
+}
+
+async function waitForFakeTimerPromise<T>(
+  promise: Promise<T>,
+  description: string,
+): Promise<T> {
+  let settled = false;
+  const trackedPromise = promise.finally(() => { settled = true; });
+  void trackedPromise.catch(() => undefined);
+  await waitForFakeTimerCondition(() => settled, description);
+  return trackedPromise;
+}
+
 async function createClaudeStreamFixture(args: {
   sdkSessionId: string;
   messages: Array<Record<string, unknown>>;
@@ -13069,9 +13094,10 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Keep working through the backstop deadline.",
       });
-      for (let index = 0; index < 100 && !send.mock.calls.length; index += 1) {
-        await vi.advanceTimersByTimeAsync(1);
-      }
+      await waitForFakeTimerCondition(
+        () => send.mock.calls.length > 0,
+        "the foreground Claude send to start",
+      );
       expect(send).toHaveBeenCalled();
       expect(service.hasActiveWorkloads()).toBe(true);
       const options = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
@@ -15127,6 +15153,8 @@ describe("createAgentChatService", () => {
     });
 
     it("does not create task-id scheduled rows for ambiguous parentless cron runs", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
       const scheduledWork = createScheduledWorkDb();
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -15204,13 +15232,14 @@ describe("createAgentChatService", () => {
       } | undefined;
       const stopHook = opts?.hooks?.Stop?.[0]?.hooks[0];
 
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Schedule two recurring crons.",
-      });
+      await waitForFakeTimerPromise(
+        service.runSessionTurn({
+          sessionId: session.id,
+          text: "Schedule two recurring crons.",
+        }),
+        "the cron setup turn to settle",
+      );
 
-      vi.useFakeTimers();
-      vi.setSystemTime(SCHEDULE_TEST_START);
       const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
       await postToolUseHook?.({
         hook_event_name: "PostToolUse",
@@ -15246,15 +15275,20 @@ describe("createAgentChatService", () => {
         ],
       });
 
-      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      vi.setSystemTime(SCHEDULE_TEST_START + 15 * 60_000);
       startCronRun();
-      for (let index = 0; index < 100 && !events.some((event) =>
-        event.sessionId === session.id
-        && event.event.type === "subagent_result"
-        && event.event.taskId === "cron-run-task-ambiguous"
-      ); index += 1) {
-        await vi.advanceTimersByTimeAsync(1);
-      }
+      await waitForFakeTimerCondition(
+        () => events.some((event) =>
+          event.sessionId === session.id
+          && event.event.type === "subagent_result"
+          && event.event.taskId === "cron-run-task-ambiguous"
+        ) && events.some((event) =>
+          event.sessionId === session.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.scheduledWake != null
+        ),
+        "the ambiguous cron result and scheduled-wake message",
+      );
       expect(events.some((event) =>
         event.sessionId === session.id
         && event.event.type === "subagent_result"
@@ -15297,6 +15331,8 @@ describe("createAgentChatService", () => {
     });
 
     it("claims a native cron when unrelated idle output already opened the turn", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
       const scheduledWork = createScheduledWorkDb();
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
@@ -15378,12 +15414,13 @@ describe("createAgentChatService", () => {
       } | undefined;
       const postToolUseHook = options?.hooks?.PostToolUse?.[0]?.hooks[0];
 
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Keep watching CI in the background.",
-      });
-      vi.useFakeTimers();
-      vi.setSystemTime(SCHEDULE_TEST_START);
+      await waitForFakeTimerPromise(
+        service.runSessionTurn({
+          sessionId: session.id,
+          text: "Keep watching CI in the background.",
+        }),
+        "the idle-output setup turn to settle",
+      );
       await postToolUseHook?.({
         hook_event_name: "PostToolUse",
         session_id: "sdk-cron-existing-idle-turn",
@@ -15402,13 +15439,14 @@ describe("createAgentChatService", () => {
         }],
       });
       releaseIdle();
-      for (let index = 0; index < 100 && !events.some((event) =>
-        event.sessionId === session.id
-        && event.event.type === "activity"
-        && event.event.detail === "Tool 'BackgroundTask' running (1s)"
-      ); index += 1) {
-        await vi.advanceTimersByTimeAsync(1);
-      }
+      await waitForFakeTimerCondition(
+        () => events.some((event) =>
+          event.sessionId === session.id
+          && event.event.type === "activity"
+          && event.event.detail === "Tool 'BackgroundTask' running (1s)"
+        ),
+        "the unrelated idle activity",
+      );
       const idleActivity = events.find((event) =>
         event.sessionId === session.id
         && event.event.type === "activity"
@@ -15418,13 +15456,14 @@ describe("createAgentChatService", () => {
 
       await vi.advanceTimersByTimeAsync(15 * 60_000);
       releaseCron();
-      for (let index = 0; index < 100 && !events.some((event) =>
-        event.sessionId === session.id
-        && event.event.type === "user_message"
-        && event.event.metadata?.scheduledWake?.scheduleId === "cron-provider-existing-idle-turn"
-      ); index += 1) {
-        await vi.advanceTimersByTimeAsync(1);
-      }
+      await waitForFakeTimerCondition(
+        () => events.some((event) =>
+          event.sessionId === session.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.scheduledWake?.scheduleId === "cron-provider-existing-idle-turn"
+        ),
+        "the native cron scheduled-wake message",
+      );
 
       const scheduledWake = events.find((event) =>
         event.sessionId === session.id
