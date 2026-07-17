@@ -31,6 +31,7 @@ import type {
   AgentChatModelCatalogModel,
   AgentChatModelCatalogRefreshProvider,
   AgentChatModelInfo,
+  AgentChatScheduledWorkState,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
@@ -68,6 +69,7 @@ import {
   toggleModelPickerFavorite,
   getOpenCodeRuntimeDiagnostics,
   getSlashCommands,
+  getScheduledWorkState,
   getStoredApiKeyProviders,
   getSubagentTranscript,
   interruptChat,
@@ -2857,6 +2859,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [diffByLaneId, setDiffByLaneId] = useState<Record<string, DiffLineStats>>({});
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [terminalSessions, setTerminalSessions] = useState<ChatTerminalSession[]>([]);
+  const [terminalScheduledWorkById, setTerminalScheduledWorkById] = useState<Record<string, AgentChatScheduledWorkState>>({});
   const [terminalPreview, setTerminalPreview] = useState<ChatTerminalPreviewResult | null>(null);
   // Per-terminal seed snapshots for grid tiles (the single-view pane uses
   // `terminalPreview`). Live updates after the seed arrive via terminalLiveChunks,
@@ -3809,25 +3812,45 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => terminalSessions.find((session) => session.terminalId === activeSessionId) ?? null,
     [activeSessionId, terminalSessions],
   );
+  useEffect(() => {
+    if (!connection || !activeTerminalSession) return;
+    let cancelled = false;
+    void getScheduledWorkState(connection, activeTerminalSession.terminalId)
+      .then((state) => {
+        if (cancelled) return;
+        setTerminalScheduledWorkById((current) => ({
+          ...current,
+          [activeTerminalSession.terminalId]: state,
+        }));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [activeTerminalSession, connection]);
   // Chat-shaped view of the active session that ALSO covers Claude terminal
   // sessions (which never appear in `sessions`). Drives chat-info availability
   // and the context resolver so terminal chats get the same chat-info default
   // pane as SDK chats instead of falling back to lane-details.
   const activeDisplaySession = useMemo(
-    () => activeSession ?? (activeTerminalSession ? terminalSessionToChatSummary(activeTerminalSession) : null),
-    [activeSession, activeTerminalSession],
+    () => activeSession ?? (activeTerminalSession
+      ? terminalSessionToChatSummary(
+          activeTerminalSession,
+          terminalScheduledWorkById[activeTerminalSession.terminalId],
+        )
+      : null),
+    [activeSession, activeTerminalSession, terminalScheduledWorkById],
   );
   const activeTerminalProvider = terminalSessionProvider(activeTerminalSession);
   const displaySessions = useMemo(
     () => sortSessionsByRecentActivity([
       ...sessions.filter((session) => !session.archivedAt),
-      ...terminalSessions.map(terminalSessionToChatSummary),
+      ...terminalSessions.map((session) =>
+        terminalSessionToChatSummary(session, terminalScheduledWorkById[session.terminalId])),
     ]),
-    [sessions, terminalSessions],
+    [sessions, terminalScheduledWorkById, terminalSessions],
   );
   const closedCliSessions = useMemo(
-    () => deriveClosedCliSessions(terminalSessions),
-    [terminalSessions],
+    () => deriveClosedCliSessions(terminalSessions, terminalScheduledWorkById),
+    [terminalScheduledWorkById, terminalSessions],
   );
   const openDrawerSessions = useMemo(
     () => deriveOpenDrawerSessions(displaySessions, closedCliSessions),
@@ -6946,7 +6969,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const nextTerminalSessions = mergeOptimisticTerminalSessions(listedTerminalSessions, optimisticTerminalSessionsRef.current);
     const nextDisplaySessions = sortSessionsByRecentActivity([
       ...nextSessions,
-      ...nextTerminalSessions.map(terminalSessionToChatSummary),
+      ...nextTerminalSessions.map((session) => terminalSessionToChatSummary(session)),
     ]);
     const draftMode = draftChatActiveRef.current;
     const target = resolveTuiChatRefreshTarget({
@@ -10827,7 +10850,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         session =
           freshChatSessions.find((entry) => entry.sessionId === sessionId)
           ?? (freshTerminalSessions
-            .map(terminalSessionToChatSummary)
+            .map((terminal) => terminalSessionToChatSummary(terminal))
             .find((entry) => entry.sessionId === sessionId) ?? null);
       }
     }

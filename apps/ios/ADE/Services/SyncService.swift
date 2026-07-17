@@ -7663,6 +7663,19 @@ final class SyncService: ObservableObject {
     )
   }
 
+  func setScheduledWorkPaused(sessionId: String, paused: Bool) async throws -> AgentChatSetScheduledWorkPausedResult {
+    let scope = chatCommandScope(for: sessionId)
+    let action = chatActionName("chat.setScheduledWorkPaused", sessionId: sessionId)
+    try requireInvokableRemoteAction(action)
+    return try await sendDecodableCommand(
+      action: action,
+      args: ["sessionId": sessionId, "paused": paused],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatSetScheduledWorkPausedResult.self
+    )
+  }
+
   func fetchChatEventHistorySnapshot(sessionId: String, maxEvents: Int = chatEventHistoryMaxEvents) async throws -> AgentChatEventHistorySnapshot {
     let scope = chatCommandScope(for: sessionId)
     return try await sendDecodableCommand(
@@ -9142,6 +9155,7 @@ final class SyncService: ObservableObject {
   /// available and are persisted for replay.
   func canInvokeRemoteAction(_ action: String) -> Bool {
     guard supportsRemoteAction(action) else { return false }
+    guard commandPolicy(for: action)?.viewerAllowed != false else { return false }
     return canSendLiveRequests() || isRemoteActionQueueable(action)
   }
 
@@ -9151,6 +9165,13 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 15,
         userInfo: [NSLocalizedDescriptionKey: "This action is not available for the current machine. Reconnect to refresh capabilities."]
+      )
+    }
+    guard commandPolicy(for: action)?.viewerAllowed != false else {
+      throw NSError(
+        domain: "ADE",
+        code: 15,
+        userInfo: [NSLocalizedDescriptionKey: "This action is not available from a viewer device."]
       )
     }
     guard canSendLiveRequests() || isRemoteActionQueueable(action) else {

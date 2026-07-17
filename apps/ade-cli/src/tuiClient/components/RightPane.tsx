@@ -686,15 +686,28 @@ function selectedRosterDetail(snapshot: SubagentSnapshot, capability: SubagentCa
     || "…";
 }
 
-function ChatInfoSectionHead({ title, hint, color, width }: { title: string; hint?: string; color: string; width?: number }) {
+function ChatInfoSectionHead({
+  title,
+  dimSuffix,
+  hint,
+  color,
+  width,
+}: {
+  title: string;
+  dimSuffix?: string;
+  hint?: string;
+  color: string;
+  width?: number;
+}) {
   // Section header with a hairline rule that fills the gap to the hint, so each
   // block reads as a titled card divider rather than a bare label.
   const inner = Math.max(12, (width ?? 40) - 4);
-  const used = title.length + 2 + (hint ? hint.length + 1 : 0);
+  const used = title.length + (dimSuffix ? dimSuffix.length + 1 : 0) + 2 + (hint ? hint.length + 1 : 0);
   const ruleLen = Math.max(1, inner - used);
   return (
     <Box flexDirection="row" marginTop={1}>
       <Text bold color={color}>{title}</Text>
+      {dimSuffix ? <Text color={theme.color.t4} dimColor>{` ${dimSuffix}`}</Text> : null}
       <Text color={theme.color.borderSoft}>{` ${"─".repeat(ruleLen)}${hint ? " " : ""}`}</Text>
       {hint ? <Text color={theme.color.t4} dimColor>{hint}</Text> : null}
     </Box>
@@ -1127,7 +1140,13 @@ function ChatInfoScheduleBlock({ info, brandColor, width, viewState }: { info: C
   };
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="SCHEDULE" hint={`${grouped.active.length}`} color={brandColor} width={width} />
+      <ChatInfoSectionHead
+        title="SCHEDULE"
+        dimSuffix={info.scheduledWorkPaused ? "(paused)" : undefined}
+        hint={`${grouped.active.length}`}
+        color={brandColor}
+        width={width}
+      />
       {nextWake ? (
         <Text color={theme.color.t2} wrap="truncate-end">
           {` ⏰ next wake ${nextWake}`}

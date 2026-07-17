@@ -104,7 +104,10 @@ Browser `window.ade` adapter:
   sync sub-protocols, and local browser-only state. The chat adapter routes
   smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
   and falls back to the shared deterministic provider label when an older host
-  does not advertise the action. `misc.ts` routes
+  does not advertise the action. It also routes
+  durable scheduled-work create/list/cancel/pause through the host command
+  descriptors, so the reused Work and Settings surfaces do not depend on
+  Electron-only preload methods. `misc.ts` routes
   `window.ade.usage.getAdeStats` through the viewer-allowed
   `usage.getAdeStats` command so the reused empty-Work activity module shows
   the runtime's cached cross-client aggregate instead of an empty native stub.

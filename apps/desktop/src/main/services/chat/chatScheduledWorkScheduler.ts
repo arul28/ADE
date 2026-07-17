@@ -2,6 +2,14 @@ import { nextCronFireAt as nextChatScheduledCronFireAt } from "../../../shared/c
 
 export { nextChatScheduledCronFireAt };
 
+/**
+ * Durable scheduled-work delivery for chat sessions.
+ *
+ * ADE state wins, SDK view is advisory: the mirrored ADE record is the source
+ * of truth for delivery. Claude's in-process scheduler is only a latency
+ * optimization, and its CronList view may drift after restarts or busy ticks.
+ */
+
 export type ChatScheduledWorkKind = "wakeup" | "cron" | "loop";
 
 export type ChatScheduledWorkStatus =
@@ -62,7 +70,11 @@ export type ChatScheduledWorkSchedulerOptions = {
   timers?: ChatScheduledWorkTimerApi;
   isGlobalPaused(): boolean;
   sessionState(sessionId: string): "active" | "ended" | "archived" | "missing";
-  fire(schedule: ChatScheduledWorkRecord, context: { late: boolean }): Promise<void>;
+  shouldDefer?(schedule: ChatScheduledWorkRecord): boolean;
+  fire(
+    schedule: ChatScheduledWorkRecord,
+    context: { late: boolean },
+  ): Promise<void | { complete: true } | { retry: true }>;
   onTransition?: (
     schedule: ChatScheduledWorkRecord,
     status: ChatScheduledWorkStatus,
@@ -80,16 +92,22 @@ export type ChatScheduledWorkScheduler = {
   list(sessionId?: string): ChatScheduledWorkRecord[];
   isSessionPaused(sessionId: string): boolean;
   nextWakeAt(sessionId: string): number | null;
-  claimNativeFire(sessionId: string, turnId: string): ChatScheduledWorkRecord | null;
+  claimNativeFire(sessionId: string, turnId: string, scheduleId?: string): ChatScheduledWorkRecord | null;
   recordTurnStarted(scheduleId: string, turnId: string): Promise<void>;
   recordTurnFinished(turnId: string, outcomeSummary?: string): Promise<void>;
 };
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TIMER_LATE_TOLERANCE_MS = 1_000;
+const NATIVE_FIRE_GRACE_MS = 90_000;
+const BUSY_DEFER_RETRY_MS = 20_000;
 const TERMINAL_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_TERMINAL_HISTORY_RECORDS = 200;
 const LEGACY_PROVISIONAL_CRON_PREFIX = "cron-tool:";
+
+function nativeFireGraceMs(schedule: ChatScheduledWorkRecord): number {
+  return schedule.provider === "claude" ? NATIVE_FIRE_GRACE_MS : 0;
+}
 
 const defaultTimers: ChatScheduledWorkTimerApi = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -315,16 +333,32 @@ export function createChatScheduledWorkScheduler(
       return;
     }
 
+    // Busy targets stay claimable until their next safe turn boundary. This
+    // check must happen before the durable row transitions to `fired`: Claude's
+    // native turn can otherwise arrive in the small persistence window and
+    // miss claimNativeFire, leaving both native and ADE delivery active.
+    if (options.shouldDefer?.(cloneSchedule(schedule)) === true) {
+      armBusyDeferRetry(schedule);
+      return;
+    }
+
     inFlight.add(scheduleId);
-    const late = overdueWhenArmed || currentTime - schedule.fireAt > TIMER_LATE_TOLERANCE_MS;
+    const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
+    const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
+    const previousLastFiredAt = schedule.lastFiredAt;
+    const previousLateFlag = schedule.lateFlag;
     schedule.status = "fired";
     schedule.lastFiredAt = currentTime;
     schedule.lateFlag = late;
     await persist();
     await emitTransition(schedule, "fired");
 
+    let complete = false;
+    let retry = false;
     try {
-      await options.fire(cloneSchedule(schedule), { late });
+      const result = await options.fire(cloneSchedule(schedule), { late });
+      complete = result != null && "complete" in result && result.complete === true;
+      retry = result != null && "retry" in result && result.retry === true;
     } catch {
       // A delivery may have reached the session before its caller failed. Keep
       // one-shots fired and advance crons so a retry cannot double-deliver.
@@ -334,7 +368,25 @@ export function createChatScheduledWorkScheduler(
 
     const current = schedules.get(scheduleId);
     if (!current || current.status === "cancelled" || current.status === "done") return;
-    if (current.kind !== "cron") return;
+    if (retry) {
+      current.status = isEffectivelyPaused(current) ? "paused" : "scheduled";
+      if (previousLastFiredAt == null) delete current.lastFiredAt;
+      else current.lastFiredAt = previousLastFiredAt;
+      current.lateFlag = previousLateFlag;
+      delete current.activeTurnId;
+      await persist();
+      await emitTransition(current, current.status);
+      if (current.status === "scheduled") armBusyDeferRetry(current);
+      return;
+    }
+    if (current.kind !== "cron") {
+      if (!complete) return;
+      markTerminal(current, "done");
+      pruneTerminalHistory();
+      await persist();
+      await emitTransition(current, "done");
+      return;
+    }
 
     current.fireAt = current.cron
       ? nextChatScheduledCronFireAt(current.cron, now()) ?? undefined
@@ -345,18 +397,38 @@ export function createChatScheduledWorkScheduler(
     arm(current);
   };
 
+  const armBusyDeferRetry = (schedule: ChatScheduledWorkRecord): void => {
+    clearTimer(schedule.id);
+    if (disposed || inFlight.has(schedule.id) || schedule.status !== "scheduled") return;
+    const retryAt = now() + BUSY_DEFER_RETRY_MS;
+    const nextAt = schedule.expiresAt == null
+      ? retryAt
+      : Math.min(retryAt, schedule.expiresAt);
+    const handle = timers.setTimeout(() => {
+      timerHandles.delete(schedule.id);
+      void processDue(schedule.id, false).catch(() => undefined);
+    }, Math.max(0, nextAt - now()));
+    timerHandles.set(schedule.id, handle);
+  };
+
   const arm = (schedule: ChatScheduledWorkRecord): void => {
     clearTimer(schedule.id);
     if (disposed || inFlight.has(schedule.id) || schedule.status !== "scheduled") return;
+    // Claude normally fires at fireAt (plus provider jitter). ADE waits through
+    // this grace window so claimNativeFire can claim the row first; this timer
+    // remains the backstop for busy, skipped, or dead provider processes.
+    const providerAdjustedFireAt = schedule.fireAt == null
+      ? undefined
+      : schedule.fireAt + nativeFireGraceMs(schedule);
     const nextAt = schedule.expiresAt == null
-      ? schedule.fireAt
-      : schedule.fireAt == null
+      ? providerAdjustedFireAt
+      : providerAdjustedFireAt == null
         ? schedule.expiresAt
-        : Math.min(schedule.fireAt, schedule.expiresAt);
+        : Math.min(providerAdjustedFireAt, schedule.expiresAt);
     if (nextAt == null || !Number.isFinite(nextAt)) return;
 
     const currentTime = now();
-    const overdueWhenArmed = schedule.fireAt != null && schedule.fireAt < currentTime;
+    const overdueWhenArmed = providerAdjustedFireAt != null && providerAdjustedFireAt < currentTime;
     const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, nextAt - currentTime));
     const handle = timers.setTimeout(() => {
       timerHandles.delete(schedule.id);
@@ -590,12 +662,15 @@ export function createChatScheduledWorkScheduler(
       return next;
     },
 
-    claimNativeFire(sessionId, turnId): ChatScheduledWorkRecord | null {
+    claimNativeFire(sessionId, turnId, scheduleId): ChatScheduledWorkRecord | null {
       if (disposed || options.isGlobalPaused() || pausedSessionIds.has(sessionId)) return null;
       const currentTime = now();
       const schedule = [...schedules.values()]
         .filter((candidate) =>
           candidate.sessionId === sessionId
+          && (scheduleId == null || candidate.id === scheduleId || candidate.providerScheduleId === scheduleId)
+          && (scheduleId != null || (candidate.kind === "cron" && candidate.providerScheduleId != null))
+          && candidate.provider === "claude"
           && candidate.status === "scheduled"
           && !candidate.pausedFlag
           && !isExpired(candidate, currentTime)

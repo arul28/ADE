@@ -369,6 +369,39 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("⏰ next wake 12m");
   });
 
+  it("labels a paused schedule in the Schedule header", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            scheduledWorkPaused: true,
+            scheduledWork: [{
+              id: "action:session-1:job-1",
+              kind: "cron",
+              status: "scheduled",
+              origin: "action",
+              title: "Check CI",
+              summary: null,
+              prompt: "Inspect the latest CI run",
+              cron: "*/20 * * * *",
+              createdAt: "2026-07-09T12:00:00.000Z",
+              updatedAt: "2026-07-09T12:00:00.000Z",
+            }],
+          }),
+        }}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("SCHEDULE (paused)");
+    expect(frame).toContain("Check CI");
+    expect(frame).toContain("cron · scheduled");
+    expect(frame).toContain("*/20 * * * *");
+  });
+
   it("does not render a next wake line for invalid or past timestamps", () => {
     for (const nextWakeAt of ["not-a-date", new Date(Date.now() - 1_000).toISOString()]) {
       const result = render(

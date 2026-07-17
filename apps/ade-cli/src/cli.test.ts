@@ -4169,8 +4169,8 @@ describe("ADE CLI", () => {
     expect(inspect.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "chat",
-        action: "getSessionSummary",
-        argsList: ["chat-1"],
+        action: "getScheduledWorkState",
+        args: { sessionId: "chat-1" },
       },
     });
 
@@ -4197,6 +4197,69 @@ describe("ADE CLI", () => {
         args: { includeTerminal: true },
       },
     });
+
+    const create = expectExecutePlan(buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--cron",
+      "9,29,49 * * * *",
+      "--prompt",
+      "Check CI and report",
+    ]));
+    expect(create.label).toBe("chat scheduled-work create");
+    expect(create.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "chat",
+        action: "createScheduledWork",
+        args: {
+          cron: "9,29,49 * * * *",
+          prompt: "Check CI and report",
+          recurring: true,
+        },
+      },
+    });
+
+    const createOnce = expectExecutePlan(buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--cron",
+      "15 10 * * 1",
+      "--prompt",
+      "Prepare the weekly report",
+      "--once",
+      "--reason",
+      "Weekly report",
+      "--session",
+      "chat-1",
+    ]));
+    expect(createOnce.steps[0]?.params).toMatchObject({
+      arguments: {
+        action: "createScheduledWork",
+        args: {
+          sessionId: "chat-1",
+          cron: "15 10 * * 1",
+          prompt: "Prepare the weekly report",
+          recurring: false,
+          reason: "Weekly report",
+        },
+      },
+    });
+    expect(() => buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--prompt",
+      "Missing cron",
+    ])).toThrow(/cron is required/);
+    expect(() => buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--cron",
+      "0 * * * *",
+    ])).toThrow(/prompt is required/);
 
     for (const alias of ["schedule", "schedules"]) {
       expect(expectExecutePlan(buildCliPlan(["chat", alias, "list", "chat-1"])).steps[0]?.params)

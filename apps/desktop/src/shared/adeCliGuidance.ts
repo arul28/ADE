@@ -50,6 +50,7 @@ export function buildAdeBootstrapGuidance(
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "If the direct `mcp__computer_use` tools are present, use them for Codex Computer Use and honor their per-app approvals; do not initialize `@oai/sky` through `node_repl` as a substitute.",
     "Ground truth for any `ade` invocation is `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Project secrets are available through `ade secrets`; read only the named secret the user asks you to use and avoid printing secret values. Track and clean up processes you start.",
+    "`ade chat scheduled-work create` schedules durable self-resume for bound chats and tracked provider CLIs.",
   ].join("\n");
 }
 

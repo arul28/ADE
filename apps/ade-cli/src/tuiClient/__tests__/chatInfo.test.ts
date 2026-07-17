@@ -177,10 +177,13 @@ describe("deriveChatInfoSnapshot", () => {
     expect(snapshot.inspectedSubagentId).toBe("x1");
   });
 
-  it("carries the active session's earliest next wake into chat info", () => {
+  it("carries the active session's scheduled-work state into chat info", () => {
     const snapshot = deriveChatInfoSnapshot({
       events: [],
-      activeSession: session({ nextWakeAt: "2026-07-09T12:12:00.000Z" }),
+      activeSession: session({
+        scheduledWorkPaused: true,
+        nextWakeAt: "2026-07-09T12:12:00.000Z",
+      }),
       provider: "claude",
       modelLabel: "claude-opus-4-8",
       laneLabel: "lane",
@@ -190,7 +193,48 @@ describe("deriveChatInfoSnapshot", () => {
       streaming: false,
     });
 
+    expect(snapshot.scheduledWorkPaused).toBe(true);
     expect(snapshot.nextWakeAt).toBe("2026-07-09T12:12:00.000Z");
+  });
+
+  it("keeps action-created providerless schedules in the normal schedule pipeline", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [{
+        sessionId: "session-1",
+        timestamp: "2026-07-09T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "scheduled_work_update",
+          id: "action:session-1:job-1",
+          kind: "cron",
+          status: "scheduled",
+          origin: "action",
+          title: "Check CI",
+          prompt: "Inspect the latest CI run",
+          reason: "Keep the PR moving",
+          cron: "*/20 * * * *",
+          recurring: true,
+          durable: true,
+        },
+      }],
+      activeSession: session({ provider: "codex" }),
+      provider: "codex",
+      modelLabel: "gpt-5.5",
+      laneLabel: "lane",
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+    });
+
+    expect(snapshot.scheduledWork).toEqual([
+      expect.objectContaining({
+        id: "action:session-1:job-1",
+        kind: "cron",
+        origin: "action",
+        title: "Check CI",
+      }),
+    ]);
   });
 
   it("carries the Claude session tag into the chat info header", () => {

@@ -2382,18 +2382,23 @@ function scopeTerminalAdeActionArgs(
   }
 }
 
+const SCOPED_CHAT_ACTIONS = new Set([
+  "readTranscript",
+  "sendMessage",
+  "createScheduledWork",
+  "listScheduledWork",
+  "getScheduledWorkState",
+  "cancelScheduledWork",
+  "setScheduledWorkPaused",
+]);
+
 function scopeChatAdeActionArgs(
   session: SessionState,
   action: string,
   chatArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:chat.${action}`;
-  if (
-    action !== "readTranscript"
-    && action !== "sendMessage"
-    && action !== "listScheduledWork"
-    && action !== "cancelScheduledWork"
-  ) return chatArgs;
+  if (!SCOPED_CHAT_ACTIONS.has(action)) return chatArgs;
   if (isUnboundAdeCliCaller(session)) return chatArgs;
 
   const scopedArgs = { ...chatArgs };
@@ -3481,12 +3486,7 @@ async function runTool(args: {
     } else if (
       !callerIsCto
       && domain === "chat"
-      && (
-        action === "readTranscript"
-        || action === "sendMessage"
-        || action === "listScheduledWork"
-        || action === "cancelScheduledWork"
-      )
+      && SCOPED_CHAT_ACTIONS.has(action)
     ) {
       scopedObjectArgs = scopeChatAdeActionArgs(
         session,

@@ -5028,6 +5028,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       unarchive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
       updateSession: resolvedArg({ id: "mock" }),
+      createScheduledWork: async () => {
+        throw new Error("Scheduled work is unavailable in the browser preview.");
+      },
       listScheduledWork: resolved([]),
       cancelScheduledWork: async () => {
         throw new Error("Scheduled work is unavailable in the browser preview.");

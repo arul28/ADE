@@ -853,6 +853,7 @@ import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursor
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
 import type { AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
+import { PTY_SEND_PRE_DELIVERY_ERROR_CODE } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { stableStringify } from "../shared/utils";
 import {
@@ -1252,6 +1253,7 @@ function createMockSessionService() {
         id: args.sessionId,
         laneId: args.laneId,
         ptyId: args.ptyId ?? null,
+        tracked: args.tracked ?? true,
         title: args.title ?? "Chat",
         toolType: args.toolType ?? "opencode-chat",
         status: "running",
@@ -1925,6 +1927,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   if (ORIGINAL_CURSOR_API_KEY === undefined) {
     delete process.env.CURSOR_API_KEY;
@@ -12671,6 +12674,461 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
+    it("creates durable recurring and one-shot scheduled work and validates inputs and session state", async () => {
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      const recurring = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "9,29,49 * * * *",
+        prompt: "  Check CI and report.  ",
+        reason: " CI watcher ",
+      });
+      const oneShot = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "15 10 * * 1",
+        prompt: "Prepare the weekly report.",
+        recurring: false,
+      });
+
+      expect(recurring.item).toMatchObject({
+        id: `action:${session.id}:test-uuid-2`,
+        sessionId: session.id,
+        kind: "cron",
+        status: "scheduled",
+        prompt: "Check CI and report.",
+        reason: "CI watcher",
+        cron: "9,29,49 * * * *",
+        durable: true,
+      });
+      expect(oneShot.item).toMatchObject({
+        id: `action:${session.id}:test-uuid-3`,
+        kind: "wakeup",
+        status: "scheduled",
+        durable: true,
+      });
+      expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([
+        recurring.item,
+        oneShot.item,
+      ]);
+      const storedSchedules = scheduledWork.readState()?.schedules ?? [];
+      expect(storedSchedules).toEqual([
+        expect.objectContaining({
+          id: recurring.item.id,
+          kind: "cron",
+          expiresAt: expect.any(Number),
+        }),
+        expect.objectContaining({
+          id: oneShot.item.id,
+          kind: "wakeup",
+        }),
+      ]);
+      expect(storedSchedules[0]?.provider).toBeUndefined();
+      expect(storedSchedules[1]?.provider).toBeUndefined();
+      expect(storedSchedules[1]?.expiresAt).toBeUndefined();
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: session.id,
+          event: expect.objectContaining({
+            type: "scheduled_work_update",
+            id: recurring.item.id,
+            origin: "action",
+            status: "scheduled",
+          }),
+        }),
+      ]));
+
+      await service.setScheduledWorkPaused({ sessionId: session.id, paused: true });
+      const pausedCreate = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "0 * * * *",
+        prompt: "Wait until scheduling resumes.",
+      });
+      expect(pausedCreate.item.status).toBe("paused");
+      const pausedCreateEvents = events.filter((envelope) =>
+        envelope.event.type === "scheduled_work_update"
+        && envelope.event.id === pausedCreate.item.id
+      );
+      expect(pausedCreateEvents.at(-1)?.event).toEqual(expect.objectContaining({
+        status: "paused",
+        nextRunAt: expect.any(String),
+      }));
+
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        cron: "not a cron",
+        prompt: "Check CI.",
+      })).rejects.toThrow(/cron.*valid 5-field cron/i);
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        cron: "0 * * * *",
+        prompt: "   ",
+      })).rejects.toThrow(/prompt is required/i);
+
+      sessionService.create({
+        sessionId: "ended-chat",
+        laneId: "lane-1",
+        toolType: "codex-chat",
+      });
+      sessionService.end({ sessionId: "ended-chat", status: "completed" });
+      await expect(service.createScheduledWork({
+        sessionId: "ended-chat",
+        cron: "0 * * * *",
+        prompt: "This must not be scheduled.",
+      })).rejects.toThrow(/ended or archived/i);
+
+      sessionService.create({
+        sessionId: "untracked-cli",
+        laneId: "lane-1",
+        toolType: "codex",
+        tracked: false,
+      });
+      await expect(service.createScheduledWork({
+        sessionId: "untracked-cli",
+        cron: "0 * * * *",
+        prompt: "This must not be scheduled.",
+      })).rejects.toThrow(/not found/i);
+    });
+
+    it("delivers a provider-neutral action schedule through messageSession for an idle live Claude chat", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      installClaudeWakeupFixture({
+        sdkSessionId: "sdk-action-schedule",
+        delaySeconds: 600,
+        lingerAfterTurn: new Promise<void>(() => undefined),
+      });
+      const { service } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const foregroundTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep the Claude runtime warm.",
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await foregroundTurn;
+
+      const created = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "1 * * * *",
+        prompt: "Deliver this through the ADE wake path.",
+        recurring: false,
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.useRealTimers();
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: session.id,
+          event: expect.objectContaining({
+            type: "user_message",
+            metadata: expect.objectContaining({
+              scheduledWake: expect.objectContaining({ scheduleId: created.item.id }),
+            }),
+          }),
+        }),
+      ]));
+      service.forceDisposeAll();
+    });
+
+    it("resumes an ended tracked CLI session when its durable one-shot becomes due", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const sendToSession = vi.fn(async () => ({
+        ptyId: "pty-cli-scheduled",
+        sessionId: "cli-scheduled",
+        pid: 42,
+        session: null,
+        resumed: true,
+        reusedExistingRuntime: false,
+      }));
+      const { service, sessionService } = createService({
+        db: scheduledWork.db,
+        ptyService: {
+          create: vi.fn(),
+          canAcceptScheduledTurn: () => true,
+          enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
+            ...row,
+            runtimeState: "exited",
+          })),
+          sendToSession,
+        },
+      });
+      sessionService.create({
+        sessionId: "cli-scheduled",
+        laneId: "lane-1",
+        toolType: "codex",
+      });
+      sessionService.end({ sessionId: "cli-scheduled", status: "completed" });
+
+      const created = await service.createScheduledWork({
+        sessionId: "cli-scheduled",
+        cron: "1 * * * *",
+        prompt: "Check CI and report the result.",
+        recurring: false,
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(sendToSession).toHaveBeenCalledWith({
+        sessionId: "cli-scheduled",
+        text: "Check CI and report the result.",
+      });
+      expect(await service.listScheduledWork({
+        sessionId: "cli-scheduled",
+        includeTerminal: true,
+      })).toEqual([
+        expect.objectContaining({
+          id: created.item.id,
+          status: "completed",
+        }),
+      ]);
+      service.forceDisposeAll();
+    });
+
+    it("reads durable schedule state for a tracked CLI session", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const { service, sessionService } = createService({ db: scheduledWork.db });
+      sessionService.create({
+        sessionId: "cli-state",
+        laneId: "lane-1",
+        toolType: "codex",
+      });
+      const created = await service.createScheduledWork({
+        sessionId: "cli-state",
+        cron: "1 * * * *",
+        prompt: "Inspect this from ADE Code.",
+        recurring: false,
+      });
+
+      expect(await service.getScheduledWorkState({ sessionId: "cli-state" })).toEqual({
+        sessionId: "cli-state",
+        paused: false,
+        nextWakeAt: new Date(SCHEDULE_TEST_START + 60_000).toISOString(),
+        items: [expect.objectContaining({ id: created.item.id, status: "scheduled" })],
+      });
+      await service.setScheduledWorkPaused({ sessionId: "cli-state", paused: true });
+      expect(await service.getScheduledWorkState({ sessionId: "cli-state" })).toMatchObject({
+        sessionId: "cli-state",
+        paused: true,
+        nextWakeAt: null,
+      });
+      service.forceDisposeAll();
+    });
+
+    it("waits for a tracked CLI turn boundary before delivering scheduled work", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      let canAcceptScheduledTurn = false;
+      const sendToSession = vi.fn(async () => ({
+        ptyId: "pty-cli-busy",
+        sessionId: "cli-busy",
+        pid: 42,
+        session: null,
+        resumed: false,
+        reusedExistingRuntime: true,
+      }));
+      const { service, sessionService } = createService({
+        db: scheduledWork.db,
+        ptyService: {
+          create: vi.fn(),
+          canAcceptScheduledTurn: () => canAcceptScheduledTurn,
+          enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
+            ...row,
+            runtimeState: canAcceptScheduledTurn ? "waiting-input" : "running",
+          })),
+          sendToSession,
+        },
+      });
+      sessionService.create({
+        sessionId: "cli-busy",
+        laneId: "lane-1",
+        toolType: "claude",
+      });
+      await service.createScheduledWork({
+        sessionId: "cli-busy",
+        cron: "1 * * * *",
+        prompt: "Continue after the foreground CLI turn.",
+        recurring: false,
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sendToSession).not.toHaveBeenCalled();
+      expect(scheduledWork.readState()?.schedules[0]?.status).toBe("scheduled");
+
+      canAcceptScheduledTurn = true;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sendToSession).toHaveBeenCalledOnce();
+      expect(scheduledWork.readState()?.schedules[0]?.status).toBe("done");
+      service.forceDisposeAll();
+    });
+
+    it("retries a tracked CLI occurrence when resume fails before delivery", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const sendToSession = vi.fn(async () => {
+        throw Object.assign(
+          new Error("Terminal session 'cli-no-resume' does not have a resume command."),
+          { code: PTY_SEND_PRE_DELIVERY_ERROR_CODE },
+        );
+      });
+      const { service, sessionService } = createService({
+        db: scheduledWork.db,
+        ptyService: {
+          create: vi.fn(),
+          canAcceptScheduledTurn: () => true,
+          enrichSessions: (rows: Array<Record<string, unknown>>) => rows.map((row) => ({
+            ...row,
+            runtimeState: "exited",
+          })),
+          sendToSession,
+        },
+      });
+      sessionService.create({
+        sessionId: "cli-no-resume",
+        laneId: "lane-1",
+        toolType: "codex",
+      });
+      sessionService.end({ sessionId: "cli-no-resume", status: "completed" });
+      await service.createScheduledWork({
+        sessionId: "cli-no-resume",
+        cron: "1 * * * *",
+        prompt: "Retry this only after a resumable target exists.",
+        recurring: false,
+      });
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(sendToSession).toHaveBeenCalledOnce();
+      expect(scheduledWork.readState()?.schedules[0]).toEqual(expect.objectContaining({
+        status: "scheduled",
+        fireAt: SCHEDULE_TEST_START + 60_000,
+      }));
+      expect(scheduledWork.readState()?.schedules[0]?.lastFiredAt).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sendToSession).toHaveBeenCalledTimes(2);
+      expect(scheduledWork.readState()?.schedules[0]?.status).toBe("scheduled");
+      service.forceDisposeAll();
+    });
+
+    it("defers provider and ADE-action schedules while their live session is busy", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let releaseBusySend!: () => void;
+      const busySendGate = new Promise<void>((resolve) => { releaseBusySend = resolve; });
+      const send = vi.fn(async () => { await busySendGate; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-busy-backstop", slash_commands: [] };
+          return;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-busy-backstop",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const foregroundTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep working through the backstop deadline.",
+      });
+      for (let index = 0; index < 100 && !send.mock.calls.length; index += 1) {
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(send).toHaveBeenCalled();
+      expect(service.hasActiveWorkloads()).toBe(true);
+      const options = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      await options?.hooks?.PostToolUse?.[0]?.hooks[0]?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-busy-backstop",
+        tool_name: "ScheduleWakeup",
+        tool_use_id: "tool-busy-backstop",
+        tool_input: {
+          delaySeconds: 60,
+          reason: "Check PR CI",
+          prompt: "Check PR CI after the foreground turn.",
+        },
+        tool_response: {
+          scheduledFor: SCHEDULE_TEST_START,
+          clampedDelaySeconds: 60,
+          wasClamped: false,
+        },
+      });
+      const actionSchedule = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "1 * * * *",
+        prompt: "Run the ADE-owned follow-up after the foreground turn.",
+        recurring: false,
+      });
+      await vi.advanceTimersByTimeAsync(90_000);
+
+      expect(scheduledWork.readState()?.schedules.find((item) => item.id === `wakeup:${session.id}`)).toEqual(expect.objectContaining({
+        status: "scheduled",
+        fireAt: SCHEDULE_TEST_START,
+        lateFlag: false,
+      }));
+      expect(scheduledWork.readState()?.schedules.find((item) => item.id === actionSchedule.item.id)).toEqual(expect.objectContaining({
+        status: "scheduled",
+        fireAt: SCHEDULE_TEST_START + 60_000,
+      }));
+      expect(scheduledWork.readState()?.schedules.every((item) => item.lastFiredAt == null)).toBe(true);
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake != null
+      )).toBe(false);
+
+      releaseBusySend();
+      await vi.advanceTimersByTimeAsync(0);
+      await foregroundTurn;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake?.scheduleId === actionSchedule.item.id
+      )).toBe(true);
+      service.forceDisposeAll();
+    });
+
     it("projects the next durable wake onto the chat session summary", async () => {
       const before = Date.now();
       let streamCall = 0;
@@ -13618,7 +14076,7 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
-    it("keys Claude cron create and delete events by the provider cron id", async () => {
+    it("mirrors Claude CronCreate without a durable flag and keys events by the provider cron id", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const scheduledWork = createScheduledWorkDb();
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -13708,7 +14166,19 @@ describe("createAgentChatService", () => {
         tool_input: { cron: "*/15 * * * *", prompt: "Check CI status." },
         tool_response: { id: "cron-sdk-1", recurring: true, durable: false },
       });
-      expect(scheduledWork.readState()?.schedules ?? []).toEqual([]);
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: "cron-sdk-1",
+          kind: "cron",
+          cron: "*/15 * * * *",
+          prompt: "Check CI status.",
+          durable: true,
+          provider: "claude",
+          providerSessionId: "sdk-cron-provider-id",
+          providerScheduleId: "cron-sdk-1",
+          status: "scheduled",
+        }),
+      ]);
       await postToolUseHook?.({
         hook_event_name: "PostToolUse",
         tool_name: "CronDelete",
@@ -13734,6 +14204,7 @@ describe("createAgentChatService", () => {
         status: "cancelled",
         cron: "*/15 * * * *",
         prompt: "Check CI status.",
+        durable: true,
         sourceToolUseId: "tool-cron-delete",
       });
     });
@@ -13900,7 +14371,7 @@ describe("createAgentChatService", () => {
       } finally {
         dateNow.mockRestore();
       }
-      expect(scheduledWork.readState()?.schedules[0]?.expiresAt).toBeGreaterThan(initialExpiresAt ?? 0);
+      expect(scheduledWork.readState()?.schedules[0]?.expiresAt).toBe(initialExpiresAt);
 
       await service.runSessionTurn({
         sessionId: session.id,
@@ -13909,8 +14380,8 @@ describe("createAgentChatService", () => {
       expect(scheduledWork.readState()?.schedules).toEqual([
         expect.objectContaining({
           id: "cron-provider-1",
-          status: "paused",
-          pausedFlag: true,
+          status: "scheduled",
+          pausedFlag: false,
           providerSessionId: "sdk-cron-provider-id",
         }),
       ]);
@@ -13930,7 +14401,7 @@ describe("createAgentChatService", () => {
       expect(scheduledWork.readState()?.schedules).toEqual([
         expect.objectContaining({
           id: "cron-provider-1",
-          status: "paused",
+          status: "scheduled",
           providerSessionId: "sdk-cron-provider-id",
         }),
       ]);
@@ -14247,6 +14718,79 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ id: "ade-local-wakeup", status: "scheduled" }),
         expect.objectContaining({ id: "other-provider-wakeup", status: "scheduled" }),
       ]));
+      resumed.forceDisposeAll();
+      original.forceDisposeAll();
+    });
+
+    it("keeps a previous provider session's mirrored cron after a fresh session reports an empty snapshot", async () => {
+      const previousProviderSessionId = "sdk-before-brain-restart";
+      const currentProviderSessionId = "sdk-after-brain-restart";
+      const sdkHandle = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: currentProviderSessionId,
+            slash_commands: [],
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: currentProviderSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+
+      const original = createService().service;
+      const session = await original.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        sdkSessionId: previousProviderSessionId,
+      });
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup(session.id, {
+          id: "cron-survives-restart",
+          kind: "cron",
+          cron: "*/15 * * * *",
+          durable: true,
+          provider: "claude",
+          providerSessionId: previousProviderSessionId,
+          providerScheduleId: "cron-survives-restart",
+        })],
+        pausedSessionIds: [],
+      });
+      const resumed = createService({ db: scheduledWork.db }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "Resume after the brain restart.",
+      });
+      const resumeOptions = vi.mocked(claudeSdkResumeSessionCompat).mock.calls.at(-1)?.[1] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const stopHook = resumeOptions?.hooks?.Stop?.[0]?.hooks[0];
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_id: currentProviderSessionId,
+        session_crons: [],
+      });
+
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: "cron-survives-restart",
+          status: "scheduled",
+          pausedFlag: false,
+          providerSessionId: previousProviderSessionId,
+        }),
+      ]);
       resumed.forceDisposeAll();
       original.forceDisposeAll();
     });
@@ -14583,6 +15127,7 @@ describe("createAgentChatService", () => {
     });
 
     it("does not create task-id scheduled rows for ambiguous parentless cron runs", async () => {
+      const scheduledWork = createScheduledWorkDb();
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
       const send = vi.fn().mockResolvedValue(undefined);
@@ -14646,6 +15191,7 @@ describe("createAgentChatService", () => {
       } as any);
 
       const { service } = createService({
+        db: scheduledWork.db,
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
       const session = await service.createSession({
@@ -14663,6 +15209,25 @@ describe("createAgentChatService", () => {
         text: "Schedule two recurring crons.",
       });
 
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const postToolUseHook = opts?.hooks?.PostToolUse?.[0]?.hooks[0];
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-cron-parentless-ambiguous",
+        tool_name: "CronCreate",
+        tool_use_id: "tool-cron-ambiguous-ci",
+        tool_input: { cron: "*/15 * * * *", prompt: "Check CI status." },
+        tool_response: { id: "cron-provider-ambiguous-ci", recurring: true },
+      });
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-cron-parentless-ambiguous",
+        tool_name: "CronCreate",
+        tool_use_id: "tool-cron-ambiguous-review",
+        tool_input: { cron: "*/20 * * * *", prompt: "Review issue comments." },
+        tool_response: { id: "cron-provider-ambiguous-review", recurring: true },
+      });
       await stopHook?.({
         hook_event_name: "Stop",
         session_crons: [
@@ -14681,14 +15246,20 @@ describe("createAgentChatService", () => {
         ],
       });
 
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
       startCronRun();
-      await waitForEvent(
-        events,
-        (event): event is AgentChatEventEnvelope =>
-          event.sessionId === session.id
-          && event.event.type === "subagent_result"
-          && event.event.taskId === "cron-run-task-ambiguous",
-      );
+      for (let index = 0; index < 100 && !events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "subagent_result"
+        && event.event.taskId === "cron-run-task-ambiguous"
+      ); index += 1) {
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "subagent_result"
+        && event.event.taskId === "cron-run-task-ambiguous"
+      )).toBe(true);
 
       const scheduledEvents = events
         .filter((event): event is AgentChatEventEnvelope & {
@@ -14697,15 +15268,178 @@ describe("createAgentChatService", () => {
           event.sessionId === session.id
           && event.event.type === "scheduled_work_update"
           && event.event.kind === "cron");
-      expect(scheduledEvents.map((event) => event.event.id)).toEqual([
-        "cron-provider-ambiguous-ci",
-        "cron-provider-ambiguous-review",
-      ]);
       expect(scheduledEvents.map((event) => event.event.id)).not.toContain("cron-run-task-ambiguous");
+      expect(scheduledEvents.every((event) =>
+        event.event.id === "cron-provider-ambiguous-ci"
+        || event.event.id === "cron-provider-ambiguous-review"
+      )).toBe(true);
+
+      const scheduledWakeMessages = events.filter((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake != null
+      );
+      expect(scheduledWakeMessages).toHaveLength(1);
+      expect(scheduledWakeMessages[0]?.event).toMatchObject({
+        type: "user_message",
+        metadata: {
+          scheduledWake: { scheduleId: "cron-provider-ambiguous-ci" },
+        },
+      });
 
       const snapshots = deriveScheduledWorkSnapshots(events);
       expect(snapshots).toHaveLength(2);
       expect(snapshots.map((snapshot) => snapshot.status).sort()).toEqual(["scheduled", "scheduled"]);
+      expect(scheduledWork.readState()?.schedules.find((item) =>
+        item.id === "cron-provider-ambiguous-ci"
+      )?.lastFiredAt).toEqual(expect.any(Number));
+      service.forceDisposeAll();
+    });
+
+    it("claims a native cron when unrelated idle output already opened the turn", async () => {
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let releaseIdle!: () => void;
+      const idleGate = new Promise<void>((resolve) => { releaseIdle = resolve; });
+      let releaseCron!: () => void;
+      const cronGate = new Promise<void>((resolve) => { releaseCron = resolve; });
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-cron-existing-idle-turn",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-existing-idle-turn",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+        await idleGate;
+        yield {
+          type: "tool_progress",
+          tool_name: "BackgroundTask",
+          elapsed_time_seconds: 1,
+        };
+        await cronGate;
+        yield {
+          type: "system",
+          subtype: "task_started",
+          session_id: "sdk-cron-existing-idle-turn",
+          task_id: "cron-existing-idle-turn-task",
+          task_type: "cron",
+          description: "Check CI status.",
+        };
+        yield {
+          type: "system",
+          subtype: "task_updated",
+          session_id: "sdk-cron-existing-idle-turn",
+          task_id: "cron-existing-idle-turn-task",
+          task_type: "cron",
+          patch: { status: "completed" },
+          summary: "CI passed.",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          is_error: false,
+          session_id: "sdk-cron-existing-idle-turn",
+          usage: { input_tokens: 2, output_tokens: 2 },
+        };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-cron-existing-idle-turn",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const options = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const postToolUseHook = options?.hooks?.PostToolUse?.[0]?.hooks[0];
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep watching CI in the background.",
+      });
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      await postToolUseHook?.({
+        hook_event_name: "PostToolUse",
+        session_id: "sdk-cron-existing-idle-turn",
+        tool_name: "CronCreate",
+        tool_use_id: "tool-cron-existing-idle-turn",
+        tool_input: { cron: "*/15 * * * *", prompt: "Check CI status." },
+        tool_response: { id: "cron-provider-existing-idle-turn", recurring: true },
+      });
+      await options?.hooks?.Stop?.[0]?.hooks[0]?.({
+        hook_event_name: "Stop",
+        session_crons: [{
+          id: "cron-provider-existing-idle-turn",
+          schedule: "*/15 * * * *",
+          prompt: "Check CI status.",
+          recurring: true,
+        }],
+      });
+      releaseIdle();
+      for (let index = 0; index < 100 && !events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "activity"
+        && event.event.detail === "Tool 'BackgroundTask' running (1s)"
+      ); index += 1) {
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      const idleActivity = events.find((event) =>
+        event.sessionId === session.id
+        && event.event.type === "activity"
+        && event.event.detail === "Tool 'BackgroundTask' running (1s)"
+      );
+      expect(idleActivity?.event.turnId).toBeTruthy();
+
+      await vi.advanceTimersByTimeAsync(15 * 60_000);
+      releaseCron();
+      for (let index = 0; index < 100 && !events.some((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake?.scheduleId === "cron-provider-existing-idle-turn"
+      ); index += 1) {
+        await vi.advanceTimersByTimeAsync(1);
+      }
+
+      const scheduledWake = events.find((event) =>
+        event.sessionId === session.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.scheduledWake?.scheduleId === "cron-provider-existing-idle-turn"
+      );
+      expect(scheduledWake?.event).toMatchObject({
+        type: "user_message",
+        turnId: idleActivity?.event.turnId,
+      });
+      const startedTurnIds = events
+        .filter((event) => event.sessionId === session.id && event.event.type === "status" && event.event.turnStatus === "started")
+        .map((event) => event.event.turnId);
+      expect(new Set(startedTurnIds).size).toBe(2);
+      service.forceDisposeAll();
     });
 
     it("does not create task-id scheduled rows for parentless cron runs when aliases are empty", async () => {
@@ -14997,18 +15731,17 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
-    it("finishSession clears pending native scheduled wakes", async () => {
+    it("injects the overdue prompt when the live Claude native scheduler misses its tick", async () => {
       vi.useFakeTimers();
       vi.setSystemTime(SCHEDULE_TEST_START);
       const scheduledWork = createScheduledWorkDb();
       const events: AgentChatEventEnvelope[] = [];
-      installClaudeWakeupFixture({
-        sdkSessionId: "sdk-pending-native-wake",
+      const { send } = installClaudeWakeupFixture({
+        sdkSessionId: "sdk-backstop-input",
         delaySeconds: 60,
-        prompt: "Stale native wake must not survive dispose.",
-        // Keep the stable SDK query alive after the foreground result so the
-        // scheduler exercises the native pending-wake handoff instead of the
-        // cold-query fallback path.
+        prompt: "Deliver the missed native wake through ADE.",
+        // The provider never emits a native cron turn after the foreground
+        // result. ADE must push a real user message into this live query.
         lingerAfterTurn: new Promise<void>(() => undefined),
       });
       const { service } = createService({
@@ -15022,22 +15755,22 @@ describe("createAgentChatService", () => {
       });
       const foregroundTurn = service.runSessionTurn({
         sessionId: session.id,
-        text: "Queue a native wake.",
+        text: "Schedule a native wake.",
       });
       await vi.advanceTimersByTimeAsync(1_000);
       await foregroundTurn;
-      await vi.advanceTimersByTimeAsync(59_000);
+      const sendsBeforeBackstop = send.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(149_000);
       expect(scheduledWork.readState()?.schedules[0]?.status).toBe("fired");
-      expect(service.pendingNativeScheduledWakeCountForTesting(session.id)).toBe(1);
-
-      await service.dispose({ sessionId: session.id });
-
-      expect(service.pendingNativeScheduledWakeCountForTesting(session.id)).toBe(0);
+      expect(send).toHaveBeenCalledTimes(sendsBeforeBackstop + 1);
       expect(events.some((event) =>
         event.sessionId === session.id
         && event.event.type === "user_message"
-        && event.event.metadata?.scheduledWake?.reason === "Stale native wake must not survive dispose."
-      )).toBe(false);
+        && event.event.metadata?.scheduledWake?.reason === "Check PR CI"
+        && event.event.text === "Deliver the missed native wake through ADE."
+      )).toBe(true);
+
+      await service.dispose({ sessionId: session.id });
       service.forceDisposeAll();
     });
 
@@ -15245,7 +15978,7 @@ describe("createAgentChatService", () => {
       });
       await restarted.service.refreshScheduledWork();
 
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(150_000);
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.sessionId === session.id
@@ -27717,7 +28450,7 @@ describe("createAgentChatService", () => {
         },
       });
 
-      expect(result).toMatchObject({ routedAction: "steer", delivery: "queued", queued: true });
+      expect(result).toMatchObject({ routedAction: "sendMessage", delivery: "queued", queued: true });
       const queued = events.find((event): event is AgentChatEventEnvelope & {
         event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
       } =>
@@ -27725,6 +28458,27 @@ describe("createAgentChatService", () => {
         && event.event.deliveryState === "queued"
         && event.event.text === "Check PR CI");
       expect(queued?.event.metadata?.scheduledWake).toBeUndefined();
+      expect(send.mock.calls.some(([payload]) => JSON.stringify(payload).includes("Check PR CI"))).toBe(false);
+
+      const childCompletion = await service.messageSession({
+        sessionId: session.id,
+        text: "Your subagent finished.",
+        kind: "wake",
+        metadata: {
+          spawnCompletion: {
+            childSessionId: "child-1",
+            childTitle: "Review agent",
+            spawnKind: "subagent",
+            status: "completed",
+            summary: "Review complete.",
+          },
+        },
+      });
+      expect(childCompletion).toMatchObject({
+        routedAction: "sendMessage",
+        delivery: "queued",
+        queued: true,
+      });
 
       finishActiveTurn();
       await activeTurn;
@@ -27736,6 +28490,70 @@ describe("createAgentChatService", () => {
       expect(delivered.event.turnId).toBeTruthy();
       expect(delivered.event.turnId).not.toBe(activeTurnId);
       expect(send).toHaveBeenCalledWith(expect.stringContaining("Check PR CI"));
+    });
+
+    it("queues an active Codex wake and dispatches it as a new turn at the boundary", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Finish the foreground work.",
+      }, { awaitDispatch: true });
+
+      const result = await service.messageSession({
+        sessionId: session.id,
+        text: "Check PR CI after the current turn.",
+        kind: "wake",
+        metadata: {
+          scheduledWake: {
+            scheduleId: "codex-wake-boundary-1",
+            kind: "wakeup",
+            firedAt: "2026-07-09T09:00:00.000Z",
+            reason: "Check PR CI",
+          },
+        },
+      });
+
+      expect(result).toMatchObject({
+        routedAction: "sendMessage",
+        delivery: "queued",
+        queued: true,
+      });
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(1);
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+
+      mockState.emitCodexPayload({
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start")).toHaveLength(2);
+      });
+
+      const turnStarts = mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start");
+      expect(turnStarts[1]?.params).toEqual(expect.objectContaining({
+        input: expect.arrayContaining([
+          expect.objectContaining({ text: expect.stringContaining("Check PR CI after the current turn.") }),
+        ]),
+      }));
+      expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/steer")).toBe(false);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "user_message",
+            metadata: expect.objectContaining({
+              scheduledWake: expect.objectContaining({ scheduleId: "codex-wake-boundary-1" }),
+            }),
+          }),
+        }),
+      ]));
     });
 
     it("throws when steering an unknown session", async () => {

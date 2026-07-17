@@ -52,6 +52,11 @@ describe("PersonalChatScope", () => {
       interrupt: vi.fn(async () => undefined),
       respondToInput: vi.fn(async () => undefined),
       approveToolUse: vi.fn(async () => undefined),
+      createScheduledWork: vi.fn(async ({ sessionId, cron, prompt }: {
+        sessionId: string;
+        cron: string;
+        prompt: string;
+      }) => ({ item: { id: "cron-created", sessionId, cron, prompt, status: "scheduled" } })),
       cancelScheduledWork: vi.fn(async ({ sessionId, scheduleId }: {
         sessionId: string;
         scheduleId: string;
@@ -60,6 +65,10 @@ describe("PersonalChatScope", () => {
         providerCancellationRequested: true,
         providerCancellationConfirmed: true,
       })),
+      setScheduledWorkPaused: vi.fn(async ({ sessionId, paused }: {
+        sessionId: string;
+        paused: boolean;
+      }) => ({ sessionId, paused, nextWakeAt: null })),
       updateSession: vi.fn(async () => summary),
       archiveSession: vi.fn(async () => undefined),
       unarchiveSession: vi.fn(async () => undefined),
@@ -179,6 +188,42 @@ describe("PersonalChatScope", () => {
     expect(service.cancelScheduledWork).toHaveBeenCalledTimes(1);
   });
 
+  it("creates and pauses scheduled work only for an owned personal session", async () => {
+    const { createRuntime, service } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.call("createScheduledWork", {
+      sessionId: "chat-1",
+      cron: "*/20 * * * *",
+      prompt: "Check PR CI",
+    })).resolves.toMatchObject({
+      action: "createScheduledWork",
+      result: { item: { id: "cron-created", sessionId: "chat-1", status: "scheduled" } },
+    });
+    expect(service.createScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      cron: "*/20 * * * *",
+      prompt: "Check PR CI",
+    });
+
+    await expect(scope.call("setScheduledWorkPaused", {
+      sessionId: "chat-1",
+      paused: true,
+    })).resolves.toEqual({
+      action: "setScheduledWorkPaused",
+      result: { sessionId: "chat-1", paused: true, nextWakeAt: null },
+    });
+    expect(service.setScheduledWorkPaused).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      paused: true,
+    });
+    await expect(scope.call("setScheduledWorkPaused", {
+      sessionId: "chat-1",
+      paused: "yes",
+    })).rejects.toThrow("paused must be a boolean");
+    expect(service.setScheduledWorkPaused).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes only the hard allowlisted personal-chat actions", () => {
     const scope = new PersonalChatScope();
     const capabilities = scope.capabilities();
@@ -187,7 +232,9 @@ describe("PersonalChatScope", () => {
       "list",
       "create",
       "send",
+      "createScheduledWork",
       "cancelScheduledWork",
+      "setScheduledWorkPaused",
       "updateSession",
       "delete",
     ]));

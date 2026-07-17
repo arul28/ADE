@@ -35,6 +35,39 @@ export type TerminalToolType =
   | "continue"
   | "other";
 
+export type TrackedAgentCliToolType =
+  | "claude"
+  | "codex"
+  | "cursor-cli"
+  | "droid"
+  | "opencode"
+  | "claude-orchestrated"
+  | "codex-orchestrated"
+  | "opencode-orchestrated";
+
+export const PTY_SEND_PRE_DELIVERY_ERROR_CODE = "pty_send_pre_delivery" as const;
+
+export function isPtySendPreDeliveryError(
+  error: unknown,
+): error is Error & { code: typeof PTY_SEND_PRE_DELIVERY_ERROR_CODE } {
+  return error instanceof Error
+    && "code" in error
+    && error.code === PTY_SEND_PRE_DELIVERY_ERROR_CODE;
+}
+
+export function isTrackedAgentCliToolType(
+  toolType: TerminalToolType | null | undefined,
+): toolType is TrackedAgentCliToolType {
+  return toolType === "claude"
+    || toolType === "codex"
+    || toolType === "cursor-cli"
+    || toolType === "droid"
+    || toolType === "opencode"
+    || toolType === "claude-orchestrated"
+    || toolType === "codex-orchestrated"
+    || toolType === "opencode-orchestrated";
+}
+
 export type TerminalRuntimeState = "running" | "waiting-input" | "idle" | "exited" | "killed";
 
 export type TerminalResumeProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";

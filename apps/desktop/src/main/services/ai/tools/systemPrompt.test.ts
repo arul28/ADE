@@ -108,7 +108,8 @@ describe("buildCodingAgentSystemPrompt", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "codex-cli" });
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Codex CLI");
-      expect(result).toContain("No autonomous wake from ADE");
+      expect(result).toContain("chat.createScheduledWork");
+      expect(result).toContain("targets your own tracked agent session automatically");
     });
 
     it("describes the Codex app-server runtime", () => {
@@ -116,7 +117,8 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Codex app-server protocol");
       expect(result).toContain("JSON-RPC");
-      expect(result).toContain("No autonomous wake from ADE");
+      expect(result).toContain("chat.createScheduledWork");
+      expect(result).toContain("next turn boundary");
     });
 
     it("describes durable Claude scheduled self-resume and pause controls", () => {
@@ -125,12 +127,14 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("Claude Agent SDK stable `query()`");
       expect(result).toContain("ScheduleWakeup");
       expect(result).toContain("CronCreate");
-      expect(result).toContain("can start a later unattended turn");
-      expect(result).toContain("session-bound by default");
+      expect(result).toContain("automatically mirrored into ADE's durable scheduler");
+      expect(result).toContain("`durable: true` also persists Claude's provider copy");
+      expect(result).toContain("next turn boundary even if the chat was busy");
+      expect(result).toContain("`CronList` view is advisory; ADE state wins");
       expect(result).toContain("CronCreate` always creates a new job");
-      expect(result).toContain("`CronList` and `CronDelete`");
-      expect(result).toContain("auto-expire after seven days");
-      expect(result).toContain("project-wide manager in Settings");
+      expect(result).toContain("`CronList` + `CronDelete`");
+      expect(result).toContain("expire seven days after creation");
+      expect(result).toContain("project-wide in Settings");
       expect(result).not.toContain("unavailable in this ADE chat");
       expect(result).not.toContain("will not start a later turn by itself");
     });
@@ -138,16 +142,19 @@ describe("buildCodingAgentSystemPrompt", () => {
     it("describes the Cursor SDK runtime", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "cursor-sdk" });
       expect(result).toContain("Cursor SDK");
+      expect(result).toContain("chat.createScheduledWork");
     });
 
     it("describes the Droid SDK runtime", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "droid-sdk" });
       expect(result).toContain("Factory Droid SDK");
+      expect(result).toContain("chat.createScheduledWork");
     });
 
     it("describes the OpenCode runtime", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "opencode" });
       expect(result).toContain("OpenCode session");
+      expect(result).toContain("chat.createScheduledWork");
     });
   });
 

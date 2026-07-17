@@ -63,6 +63,10 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
+import {
+  isTrackedAgentCliToolType,
+  PTY_SEND_PRE_DELIVERY_ERROR_CODE,
+} from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
   sanitizeTrackedCliPromptSeed,
@@ -272,6 +276,12 @@ function openCodeSupportsReplayResume(): boolean {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function ptySendPreDeliveryError(
+  message: string,
+): Error & { code: typeof PTY_SEND_PRE_DELIVERY_ERROR_CODE } {
+  return Object.assign(new Error(message), { code: PTY_SEND_PRE_DELIVERY_ERROR_CODE });
 }
 
 function hasEnvKey(env: NodeJS.ProcessEnv, key: string): boolean {
@@ -813,17 +823,6 @@ function attributionRootKindForToolType(toolType: TerminalToolType | null): Reso
   if (toolType == null || toolType === "shell" || toolType === "run-shell") return "shell";
   if (toolType === "other") return "unknown";
   return "provider-agent";
-}
-
-function isTrackedCliToolType(toolType: TerminalToolType | null): toolType is "claude" | "codex" | "cursor-cli" | "droid" | "opencode" | "claude-orchestrated" | "codex-orchestrated" | "opencode-orchestrated" {
-  return toolType === "claude"
-    || toolType === "codex"
-    || toolType === "cursor-cli"
-    || toolType === "droid"
-    || toolType === "opencode"
-    || toolType === "claude-orchestrated"
-    || toolType === "codex-orchestrated"
-    || toolType === "opencode-orchestrated";
 }
 
 function isCodexTrackedCliToolType(toolType: TerminalToolType | null | undefined): toolType is "codex" | "codex-orchestrated" {
@@ -2223,7 +2222,7 @@ export function createPtyService({
     const session = sessionService.get(sessionId);
     if (!session?.tracked) return false;
     const effectiveToolType = preferredToolType ?? session.toolType ?? null;
-    if (!isTrackedCliToolType(effectiveToolType)) return false;
+    if (!isTrackedAgentCliToolType(effectiveToolType)) return false;
     const existingTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null);
     if (existingTargetId) {
       const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
@@ -2610,7 +2609,7 @@ export function createPtyService({
     if (!entry) return;
     if (entry.disposed) return;
     entry.disposed = true;
-    if (!entry.chatSessionId && isTrackedCliToolType(entry.toolTypeHint)) {
+    if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       revokeBuiltInBrowserActorCapability(entry.sessionId);
     }
     if (entry.aiTitleTimer) {
@@ -3127,26 +3126,32 @@ export function createPtyService({
   ): Promise<boolean> => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const live = liveEntryBySessionId(sessionId);
-      if (!live) return false;
-      const entry = live[1];
-      if (entry.disposed) return false;
-      const outputTail = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n");
-      const visibleText = entry.terminalSnapshot
-        ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal)
-          .map((row) => row.text)
-          .join("\n")
-        : "";
-      const readinessText = visibleText.trim().length > 0 ? visibleText : outputTail;
-      const runtime = runtimeStates.get(sessionId);
-      const quietForMs = runtime ? Date.now() - runtime.lastActivityAt : 0;
-      if (providerReadyMarkerVisible(provider, readinessText) && quietForMs >= AGENT_CLI_READY_QUIET_MS) {
-        return true;
-      }
+      if (agentCliInputReadyNow(sessionId, provider)) return true;
+      if (!liveEntryBySessionId(sessionId)) return false;
       await delay(AGENT_CLI_READY_POLL_MS);
     }
     logger.warn("pty.agent_cli_ready_wait_timeout", { sessionId, provider, timeoutMs });
     return false;
+  };
+
+  const agentCliInputReadyNow = (
+    sessionId: string,
+    provider: TerminalResumeProvider,
+  ): boolean => {
+    const live = liveEntryBySessionId(sessionId);
+    if (!live || live[1].disposed) return false;
+    const entry = live[1];
+    const outputTail = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n");
+    const visibleText = entry.terminalSnapshot
+      ? visibleRowsFromTerminal(entry.terminalSnapshot.terminal)
+        .map((row) => row.text)
+        .join("\n")
+      : "";
+    const readinessText = visibleText.trim().length > 0 ? visibleText : outputTail;
+    const runtime = runtimeStates.get(sessionId);
+    const quietForMs = runtime ? Date.now() - runtime.lastActivityAt : 0;
+    return providerReadyMarkerVisible(provider, readinessText)
+      && quietForMs >= AGENT_CLI_READY_QUIET_MS;
   };
 
   const writeAgentCliInput = async (
@@ -3259,10 +3264,10 @@ export function createPtyService({
     action: "continued" | "resumed",
   ): void => {
     if (session?.tracked === false) {
-      throw new Error(`Terminal session '${sessionId}' is not tracked and cannot be ${action}.`);
+      throw ptySendPreDeliveryError(`Terminal session '${sessionId}' is not tracked and cannot be ${action}.`);
     }
     if (session && (session.toolType === "shell" || session.toolType === "run-shell" || isPersistedChatToolType(session.toolType))) {
-      throw new Error(`Terminal session '${sessionId}' is not an agent CLI session.`);
+      throw ptySendPreDeliveryError(`Terminal session '${sessionId}' is not an agent CLI session.`);
     }
   };
 
@@ -3270,14 +3275,14 @@ export function createPtyService({
     sessionId: string,
     session: TerminalSessionSummary | null,
   ): Promise<{ session: TerminalSessionSummary; provider: TerminalResumeProvider }> => {
-    if (!session) throw new Error(`Terminal session '${sessionId}' was not found.`);
+    if (!session) throw ptySendPreDeliveryError(`Terminal session '${sessionId}' was not found.`);
 
     const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
-    if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
+    if (!provider) throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
 
     const throwMissingResumeTarget = (): never => {
       const displayName = resumeProviderDisplayName(provider);
-      throw new Error(
+      throw ptySendPreDeliveryError(
         `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
       );
     };
@@ -3291,7 +3296,7 @@ export function createPtyService({
 
     let resolvedSession = session;
     let storedResumeTargetId = resumeTargetIdFor(resolvedSession);
-    if (!storedResumeTargetId && provider !== "cursor" && isTrackedCliToolType(resolvedSession.toolType)) {
+    if (!storedResumeTargetId && provider !== "cursor" && isTrackedAgentCliToolType(resolvedSession.toolType)) {
       const cwd = inferSessionCwdFromTranscriptPath(resolvedSession.transcriptPath);
       const backfilled = await tryBackfillResumeTarget(sessionId, resolvedSession.toolType, "resume-launch", cwd);
       const updatedSession = backfilled ? sessionService.get(sessionId) : null;
@@ -3307,7 +3312,7 @@ export function createPtyService({
     ) {
       const transcript = await sessionService.readTranscriptTail(resolvedSession.transcriptPath, 220_000);
       if (isCodexCliUpdateTranscript(transcript)) {
-        throw new Error(
+        throw ptySendPreDeliveryError(
           "Codex updated and exited before ADE could create a resumable thread. Start a new Codex session.",
         );
       }
@@ -3449,13 +3454,13 @@ export function createPtyService({
         ? sessionService.get(requestedSessionId)
         : null;
       if (requestedSessionId.length && !existingSession && isResumeAttempt && !allowNewSessionId) {
-        throw new Error(`Terminal session '${requestedSessionId}' was not found.`);
+        throw ptySendPreDeliveryError(`Terminal session '${requestedSessionId}' was not found.`);
       }
       if (existingSession && existingSession.laneId !== laneId) {
         throw new Error(`Terminal session '${requestedSessionId}' belongs to lane '${existingSession.laneId}', not '${laneId}'.`);
       }
       if (existingSession && !existingSession.tracked) {
-        throw new Error(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
+        throw ptySendPreDeliveryError(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
       }
       const liveAttachedEntry = existingSession
         ? Array.from(ptys.entries()).find(([, entry]) => entry.sessionId === existingSession.id && !entry.disposed)
@@ -3501,7 +3506,7 @@ export function createPtyService({
       // Reaching here always spawns a NEW PTY/process — the live-attach case
       // returned above — so resuming a tracked CLI session whose PTY is gone
       // is a new launch and must be gated too, not only brand-new sessions.
-      if (tracked && isTrackedCliToolType(toolTypeHint)) {
+      if (tracked && isTrackedAgentCliToolType(toolTypeHint)) {
         const decision = diskPressureMonitor?.canPerform("cli_launch");
         if (decision && !decision.allowed) {
           throw Object.assign(new Error(decision.message), { code: decision.code });
@@ -3644,7 +3649,7 @@ export function createPtyService({
         projectRoot,
         laneId,
         chatSessionId,
-        ownerSessionId: isTrackedCliToolType(toolTypeHint) ? sessionId : null,
+        ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
@@ -3655,7 +3660,7 @@ export function createPtyService({
       });
       const shouldBackfillResumeTarget =
         existingSession
-        && isTrackedCliToolType(toolTypeHint)
+        && isTrackedAgentCliToolType(toolTypeHint)
         && !sanitizeResumeTargetId(existingSession.resumeMetadata?.targetId ?? null);
       if (shouldBackfillResumeTarget) {
         const backfilled = await tryBackfillResumeTarget(sessionId, toolTypeHint, "resume-launch", cwd);
@@ -4164,6 +4169,18 @@ export function createPtyService({
       return { ptyId, sessionId, pid: pty.pid ?? null };
     },
 
+    canAcceptScheduledTurn(sessionId: string): boolean {
+      const normalizedSessionId = sessionId.trim();
+      const session = normalizedSessionId ? sessionService.get(normalizedSessionId) : null;
+      if (!session?.tracked || !isTrackedAgentCliToolType(session.toolType)) return false;
+      if (isOwnedByLivePeerRuntime(session)) return false;
+      const live = liveEntryBySessionId(normalizedSessionId);
+      if (!live) return true;
+      const provider = session.resumeMetadata?.provider
+        ?? providerFromTool(session.toolType ?? live[1].toolTypeHint);
+      return provider != null && agentCliInputReadyNow(normalizedSessionId, provider);
+    },
+
     async sendToSession(args: PtySendToSessionArgs): Promise<PtySendToSessionResult> {
       const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       const text = typeof args.text === "string" ? args.text.trim() : "";
@@ -4172,6 +4189,11 @@ export function createPtyService({
 
       const session = sessionService.get(sessionId);
       assertAgentCliSessionAction(sessionId, session, "continued");
+      if (session && isOwnedByLivePeerRuntime(session)) {
+        throw ptySendPreDeliveryError(
+          `Terminal session '${sessionId}' is owned by another live ADE runtime.`,
+        );
+      }
       const writeSubmittedText = async (
         targetSessionId: string,
         inputText: string,
@@ -4214,7 +4236,7 @@ export function createPtyService({
       if (live) {
         const [ptyId, entry] = live;
         const provider = session?.resumeMetadata?.provider ?? providerFromTool(session?.toolType ?? entry.toolTypeHint);
-        if (!provider) throw new Error(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
+        if (!provider) throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resumable CLI provider.`);
         const written = await writeSubmittedText(sessionId, text, provider, {
           waitForReady: provider === "cursor",
         });
@@ -4260,7 +4282,7 @@ export function createPtyService({
       const promptAtLaunch = !openCodeReplayCommand && !resumeFlightAlreadyInProgress && builtResume.promptAtLaunch;
       const resumeCommand = openCodeReplayCommand ?? builtResume.command;
       if (!resumeCommand) {
-        throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
+        throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resume command.`);
       }
 
       const { flight, created: resumeFlightCreated } = getOrCreateResumeFlight(resumableSession, resumeCommand, args);
@@ -4958,7 +4980,7 @@ export function createPtyService({
         // so stale sessions do not get stuck in a "running" state forever.
         const endedAt = new Date().toISOString();
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
-        if (!session.chatSessionId && isTrackedCliToolType(session.toolType)) {
+        if (!session.chatSessionId && isTrackedAgentCliToolType(session.toolType)) {
           revokeBuiltInBrowserActorCapability(sessionId);
         }
         backfillResumeTargetFromTranscriptBestEffort(sessionId, session.toolType ?? null, "orphan-dispose");
@@ -4993,7 +5015,7 @@ export function createPtyService({
       }
       if (entry.disposed) return { disposed: false, reason: "already-disposed" };
       entry.disposed = true;
-      if (!entry.chatSessionId && isTrackedCliToolType(entry.toolTypeHint)) {
+      if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
         revokeBuiltInBrowserActorCapability(entry.sessionId);
       }
       if (entry.aiTitleTimer) {

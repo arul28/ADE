@@ -107,6 +107,64 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("routes scheduled-work management through the web chat adapter", async () => {
+    fake.descriptors = descriptors([
+      "chat.createScheduledWork",
+      "chat.listScheduledWork",
+      "chat.cancelScheduledWork",
+      "chat.setScheduledWorkPaused",
+    ]);
+    const scheduledItem = {
+      id: "action:chat-1:job-1",
+      sessionId: "chat-1",
+      kind: "cron",
+      status: "scheduled",
+      title: "Check CI",
+      prompt: "Check CI",
+      createdAt: "2026-07-16T00:00:00.000Z",
+      durable: true,
+      cancellable: true,
+    };
+    fake.commandResults.set("chat.createScheduledWork", { item: scheduledItem });
+    fake.commandResults.set("chat.listScheduledWork", [scheduledItem]);
+    fake.commandResults.set("chat.cancelScheduledWork", {
+      schedule: { ...scheduledItem, status: "cancelled" },
+      providerCancellationRequested: false,
+      providerCancellationConfirmed: true,
+    });
+    fake.commandResults.set("chat.setScheduledWorkPaused", {
+      sessionId: "chat-1",
+      paused: true,
+      nextWakeAt: null,
+    });
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project);
+
+    await expect(adapter.ade.agentChat.createScheduledWork({
+      sessionId: "chat-1",
+      cron: "*/20 * * * *",
+      prompt: "Check CI",
+    })).resolves.toEqual({ item: scheduledItem });
+    await expect(adapter.ade.agentChat.listScheduledWork({ sessionId: "chat-1" })).resolves.toEqual([scheduledItem]);
+    await expect(adapter.ade.agentChat.cancelScheduledWork({
+      sessionId: "chat-1",
+      scheduleId: scheduledItem.id,
+    })).resolves.toMatchObject({ schedule: { status: "cancelled" } });
+    await expect(adapter.ade.agentChat.setScheduledWorkPaused({
+      sessionId: "chat-1",
+      paused: true,
+    })).resolves.toEqual({ sessionId: "chat-1", paused: true, nextWakeAt: null });
+
+    expect(fake.commandCalls.map((call) => call.action)).toEqual([
+      "chat.createScheduledWork",
+      "chat.listScheduledWork",
+      "chat.cancelScheduledWork",
+      "chat.setScheduledWorkPaused",
+    ]);
+    adapter.dispose();
+  });
+
   it("runs personal chats at machine scope and streams their subscribed events", async () => {
     fake.descriptors = [{
       action: "personalChats.list",

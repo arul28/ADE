@@ -162,12 +162,13 @@ describe("AiFeaturesSection", () => {
   it("lists and cancels an active durable job", async () => {
     installAdeMocks();
     (window as any).ade.agentChat.listScheduledWork.mockResolvedValueOnce([{
-      id: "wake-1",
+      id: "action:chat-12345678:job-1",
       sessionId: "chat-12345678",
-      kind: "wakeup",
+      kind: "cron",
       status: "scheduled",
       title: "Check PR CI",
       prompt: "Check PR CI",
+      cron: "*/20 * * * *",
       createdAt: "2026-07-14T00:00:00.000Z",
       durable: true,
       cancellable: true,
@@ -197,7 +198,7 @@ describe("AiFeaturesSection", () => {
     await waitFor(() => {
       expect((window as any).ade.agentChat.cancelScheduledWork).toHaveBeenCalledWith({
         sessionId: "chat-12345678",
-        scheduleId: "wake-1",
+        scheduleId: "action:chat-12345678:job-1",
       });
     });
   });

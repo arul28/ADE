@@ -148,6 +148,33 @@ Use `ade chat show <session> --text` before messaging a chat you do not own:
   `ade chat send ...` with the new instruction. Do not send a second normal turn
   into an active chat and hope the provider interprets it as steering.
 
+### Scheduled work
+
+Persistent ADE chats and tracked provider CLI sessions can schedule their own
+durable wakeups. Use the typed `ade chat scheduled-work create|list|cancel`
+commands or the generic `chat.createScheduledWork`, `chat.listScheduledWork`,
+and `chat.cancelScheduledWork` actions. Pause or resume that session with
+`ade chat schedules <session> --pause|--resume` or
+`chat.setScheduledWorkPaused`. Omit the pause/resume flag, or call
+`chat.getScheduledWorkState`, to inspect pause state, the next wake, and active
+jobs for either a chat or tracked provider CLI session.
+
+Omitting the target in an ADE-bound agent defaults create/list to
+`ADE_CHAT_SESSION_ID`; an agent cannot schedule another session, and an
+ordinary untracked shell fails instead of creating orphaned work. Chat delivery
+starts a new turn at the next safe turn boundary. Tracked provider CLI delivery
+waits for the provider's visible composer boundary, or resumes the same ended
+CLI session before sending the prompt. Both survive brain restarts, and
+recurring schedules expire seven days after creation. Users can pause chat jobs
+in Chat Info or all scheduled work in Settings; CLI-owned jobs remain
+manageable through these commands and the Settings recovery list.
+
+```
+ade actions run chat.createScheduledWork --input-json '{"cron":"9,29,49 * * * *","prompt":"Check CI and report"}' --text
+ade chat scheduled-work list --all --text
+ade chat schedules "$ADE_CHAT_SESSION_ID" --pause --text
+```
+
 Compatibility commands still exist, but do not teach them as the first choice:
 
 ```

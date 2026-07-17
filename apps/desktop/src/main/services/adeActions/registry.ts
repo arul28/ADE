@@ -506,7 +506,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "killDroidWorker",
     "launchCli",
     "launchHeadless",
+    "createScheduledWork",
     "listScheduledWork",
+    "getScheduledWorkState",
     "listClaudePlugins",
     "listClaudeSessions",
     "listSessions",
@@ -882,10 +884,20 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getSessionSummary --scalar chat-123",
     },
+    createScheduledWork: {
+      description: "Create a durable recurring or one-shot wakeup for an eligible chat or tracked provider CLI session.",
+      input: "object { sessionId?: string, cron: string, prompt: string, recurring?: boolean, reason?: string }",
+      example: "ade actions run chat.createScheduledWork --input-json '{\"cron\":\"9,29,49 * * * *\",\"prompt\":\"Check CI and report\"}' --text",
+    },
     listScheduledWork: {
       description: "List ADE-managed durable wakeups, cron jobs, and loops, optionally for one chat.",
       input: "object { sessionId?: string, includeTerminal?: boolean }",
       example: "ade actions run chat.listScheduledWork --input-json '{\"sessionId\":\"chat-123\"}' --text",
+    },
+    getScheduledWorkState: {
+      description: "Read pause state, next wake time, and active durable jobs for an eligible chat or tracked provider CLI session.",
+      input: "object { sessionId: string }",
+      example: "ade actions run chat.getScheduledWorkState --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
     cancelScheduledWork: {
       description: "Cancel one ADE-managed scheduled job. Claude cron cancellation is also requested through CronDelete.",
@@ -1490,6 +1502,14 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
       return agentChatService.listScheduledWork({
         ...(sessionId ? { sessionId } : {}),
         ...(record.includeTerminal === true ? { includeTerminal: true } : {}),
+      });
+    };
+  }
+  if (typeof base.getScheduledWorkState === "function") {
+    service.getScheduledWorkState = (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.getScheduledWorkState");
+      return agentChatService.getScheduledWorkState({
+        sessionId: requireNonEmptyString(record.sessionId, "sessionId"),
       });
     };
   }

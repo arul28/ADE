@@ -10,6 +10,7 @@ import {
   closedCliSessionStatusKind,
   deriveClosedCliSessions,
   deriveOpenDrawerSessions,
+  terminalSessionToChatSummary,
   type ClosedCliSessionSummary,
 } from "../closedCliSessions";
 
@@ -117,6 +118,22 @@ describe("Drawer diff stats", () => {
 });
 
 describe("Drawer closed CLI sessions", () => {
+  it("projects durable schedule state onto tracked CLI summaries", () => {
+    const summary = terminalSessionToChatSummary(terminal({ terminalId: "cli-scheduled" }), {
+      sessionId: "cli-scheduled",
+      paused: true,
+      nextWakeAt: "2026-07-16T21:00:00.000Z",
+      items: [],
+    });
+
+    expect(summary).toMatchObject({
+      sessionId: "cli-scheduled",
+      scheduledWorkPaused: true,
+      nextWakeAt: "2026-07-16T21:00:00.000Z",
+      scheduledWork: [],
+    });
+  });
+
   it.each([
     ["failed status", { status: "failed", exitCode: 1, runtimeState: "killed" }, "failed"],
     ["non-zero exit", { status: "completed", exitCode: 2, runtimeState: "exited" }, "failed"],

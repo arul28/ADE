@@ -533,6 +533,16 @@ The renderer's Work continuation composer, the iOS Work tab's
 "continue" path (`work.sendToSession` remote command), and the TUI's
 `send_to_session` JSON-RPC tool all go through `sendToSession`.
 
+Durable scheduled work uses this same delivery boundary for tracked provider
+CLI sessions. `chat.createScheduledWork` may target only an ADE-tracked agent
+chat or provider CLI owned by the caller. A live CLI becomes eligible only when
+the PTY service sees that provider's visible composer marker after a short quiet
+window; the generic 12.5-second no-output state is not sufficient because a
+model may be silently thinking. An ended CLI is resumed through
+`sendToSession`. A proven pre-delivery failure restores the occurrence and
+retries instead of advancing it, while an ambiguous partial-write failure keeps
+the at-most-once behavior. Untracked shells are rejected.
+
 ### Agent CLI input protocol
 
 Live `sendToSession` text submissions, post-resume sends that could

@@ -75,6 +75,7 @@ import {
   type ChatScheduledWorkRecord,
   type ChatScheduledWorkScheduler,
   type ChatScheduledWorkStatus,
+  type ChatScheduledWorkUpsert,
 } from "./chatScheduledWorkScheduler";
 import {
   drainRunningClaudeWorkflowAgents,
@@ -142,6 +143,7 @@ import {
 } from "./threadPointerLedger";
 import type { createFileService } from "../files/fileService";
 import type { createProcessService } from "../processes/processService";
+import type { createPtyService } from "../pty/ptyService";
 import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
 import {
   readHistoryFileSync,
@@ -176,6 +178,9 @@ import type {
   AgentChatAcceptCrossMachineHandoffResult,
   AgentChatArchiveArgs,
   AgentChatCancelSteerArgs,
+  AgentChatCreateScheduledWorkArgs,
+  AgentChatCreateScheduledWorkResult,
+  AgentChatGetScheduledWorkStateArgs,
   AgentChatClaudeOutputStyle,
   AgentChatClaudeOutputStylesArgs,
   AgentChatClaudePlugin,
@@ -260,6 +265,7 @@ import type {
   AgentChatScheduledWorkItem,
   AgentChatSetScheduledWorkPausedArgs,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatScheduledWorkState,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
   AgentChatKillDroidWorkerArgs,
@@ -311,7 +317,11 @@ import type {
   LaneLinearIssue,
   SessionLinearIssueLink,
 } from "../../../shared/types";
-import { providerSupportsHandoffFork } from "../../../shared/types";
+import {
+  isPtySendPreDeliveryError,
+  isTrackedAgentCliToolType,
+  providerSupportsHandoffFork,
+} from "../../../shared/types";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
   CROSS_MACHINE_FORK_BRIEF_STUB,
@@ -1118,6 +1128,7 @@ type CodexRuntime = {
     turnId: string | null;
     followupText: string;
   }>;
+  pendingSteers: QueuedSteer[];
   request: <T = unknown>(method: string, params?: unknown, options?: CodexRequestOptions) => Promise<T>;
   notify: (method: string, params?: unknown) => void;
   sendResponse: (id: string | number, result: unknown) => void;
@@ -3540,6 +3551,16 @@ function isChatToolType(
   toolType: TerminalToolType | null | undefined,
 ): toolType is ChatSessionToolType {
   return toolType != null && CHAT_SESSION_TOOL_TYPES.includes(toolType as ChatSessionToolType);
+}
+
+function isSchedulableAgentSession(
+  session: {
+    toolType: TerminalToolType | null | undefined;
+    tracked: boolean;
+  },
+): boolean {
+  return isChatToolType(session.toolType)
+    || (session.tracked && isTrackedAgentCliToolType(session.toolType));
 }
 
 function providerFromToolType(toolType: TerminalToolType | null | undefined): AgentChatProvider {
@@ -6343,7 +6364,10 @@ export function createAgentChatService(args: {
   processService?: ReturnType<typeof createProcessService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
-  ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
+  ptyService?: Pick<
+    ReturnType<typeof createPtyService>,
+    "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn"
+  > | null;
   getAutomationService?: () => { list: () => any[]; triggerManually: (args: any) => Promise<any>; listRuns: (args?: any) => any[] } | null;
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
@@ -6978,15 +7002,6 @@ export function createAgentChatService(args: {
   let scheduledWorkScheduler: ChatScheduledWorkScheduler | null = null;
   let scheduledWorkReady: Promise<void> = Promise.resolve();
   const durableScheduleUiStatusById = new Map<string, ChatScheduledWorkStatus>();
-  type PendingNativeScheduledWake = {
-    scheduleId: string;
-    kind: "wakeup" | "cron" | "loop";
-    prompt: string;
-    reason?: string;
-    firedAt: string;
-    late: boolean;
-  };
-  const pendingNativeScheduledWakeBySession = new Map<string, PendingNativeScheduledWake[]>();
 
   const runScheduledWorkMutation = (operation: string, mutation: Promise<unknown>): void => {
     void mutation.catch((error) => {
@@ -12469,6 +12484,39 @@ export function createAgentChatService(args: {
       || normalized.startsWith("/loop ");
   };
 
+  const buildClaudeScheduleUpsert = (input: {
+    id: string;
+    sessionId: string;
+    kind: "wakeup" | "cron" | "loop";
+    prompt: string;
+    reason?: string;
+    cron?: string;
+    fireAt?: number;
+    createdAt?: number;
+    recurring: boolean;
+    expiresAtBase?: number;
+    providerSessionId?: string;
+    providerScheduleId?: string;
+  }): ChatScheduledWorkUpsert => ({
+    id: input.id,
+    sessionId: input.sessionId,
+    kind: input.kind,
+    prompt: input.prompt,
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.cron ? { cron: input.cron } : {}),
+    ...(Object.prototype.hasOwnProperty.call(input, "fireAt") ? { fireAt: input.fireAt } : {}),
+    ...(input.createdAt != null ? { createdAt: input.createdAt } : {}),
+    ...(input.recurring && input.expiresAtBase != null
+      ? { expiresAt: input.expiresAtBase + claudeRecurringCronTtlMs }
+      : {}),
+    status: "scheduled",
+    lateFlag: false,
+    durable: true,
+    provider: "claude",
+    ...(input.providerSessionId ? { providerSessionId: input.providerSessionId } : {}),
+    ...(input.providerScheduleId ? { providerScheduleId: input.providerScheduleId } : {}),
+  });
+
   const nextClaudeWakeupId = (
     sessionId: string,
     sourceId: string,
@@ -12505,18 +12553,13 @@ export function createAgentChatService(args: {
     });
   };
 
-  const adoptClaudeProviderSessionId = async (
+  const adoptClaudeProviderSessionId = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     nextProviderSessionId: string | null | undefined,
-  ): Promise<void> => {
+  ): void => {
     const next = nextProviderSessionId?.trim();
     if (!next || runtime.sdkSessionId === next) return;
-    await quarantineClaudeScheduledWorkForProviderSessionChange(
-      managed,
-      runtime.sdkSessionId,
-      next,
-    );
     runtime.sdkSessionId = next;
     mirrorClaudeSessionPointer(managed, next);
     persistChatState(managed);
@@ -12617,7 +12660,7 @@ export function createAgentChatService(args: {
     const output = claudeScheduledWorkToolOutput(input.tool_response) ?? {};
     const turnId = runtime.activeTurnId ?? undefined;
     const hookProviderSessionId = compactString(input.session_id);
-    await adoptClaudeProviderSessionId(managed, runtime, hookProviderSessionId);
+    adoptClaudeProviderSessionId(managed, runtime, hookProviderSessionId);
     const providerSessionId = hookProviderSessionId ?? runtime.sdkSessionId?.trim();
 
     if (tool === "ScheduleWakeup") {
@@ -12670,19 +12713,16 @@ export function createAgentChatService(args: {
         await Promise.all(activeWakeups.map((schedule) =>
           scheduledWorkScheduler!.cancel(schedule.id)));
       } else {
-        await scheduledWorkScheduler.upsert({
+        await scheduledWorkScheduler.upsert(buildClaudeScheduleUpsert({
           id: wakeupId,
           sessionId: managed.session.id,
           kind,
           prompt,
           ...(compactString(args.reason) ? { reason: compactString(args.reason) } : {}),
           fireAt,
-          status: "scheduled",
-          lateFlag: false,
-          durable: true,
-          provider: "claude",
+          recurring: false,
           ...(providerSessionId ? { providerSessionId } : {}),
-        });
+        }));
       }
       return;
     }
@@ -12695,9 +12735,6 @@ export function createAgentChatService(args: {
       const recurring = typeof output.recurring === "boolean"
         ? output.recurring
         : args.recurring !== false;
-      const durable = typeof output.durable === "boolean"
-        ? output.durable
-        : args.durable === true;
       const kind: "cron" | "wakeup" | "loop" = recurring
         ? "cron"
         : isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
@@ -12714,20 +12751,17 @@ export function createAgentChatService(args: {
         prompt,
         ...(fireAt != null ? { nextRunAt: new Date(fireAt).toISOString() } : {}),
         recurring,
-        durable,
+        durable: true,
         sourceToolUseId: input.tool_use_id,
         ...(turnId ? { turnId } : {}),
       });
       if (!scheduledWorkScheduler) return;
-      if (!durable) {
-        if (scheduledWorkScheduler.list(managed.session.id).some((schedule) => schedule.id === id)) {
-          await scheduledWorkScheduler.cancel(id);
-        }
-        return;
-      }
+      // ADE state wins, SDK view is advisory: every successful provider cron
+      // is mirrored durably whether or not Claude also persists its provider
+      // copy with durable: true; the SDK's CronList may drift after restarts.
       durableScheduleUiStatusById.set(id, "scheduled");
       const createdAt = Date.now();
-      await scheduledWorkScheduler.upsert({
+      await scheduledWorkScheduler.upsert(buildClaudeScheduleUpsert({
         id,
         sessionId: managed.session.id,
         kind,
@@ -12735,14 +12769,11 @@ export function createAgentChatService(args: {
         cron,
         fireAt,
         createdAt,
-        ...(recurring ? { expiresAt: createdAt + claudeRecurringCronTtlMs } : {}),
-        status: "scheduled",
-        lateFlag: false,
-        durable: true,
-        provider: "claude",
+        recurring,
+        expiresAtBase: createdAt,
         ...(providerSessionId ? { providerSessionId } : {}),
         providerScheduleId: id,
-      });
+      }));
       return;
     }
 
@@ -12779,7 +12810,7 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     const hookRecord = input as unknown as Record<string, unknown>;
     const hookProviderSessionId = compactString(hookRecord.session_id);
-    await adoptClaudeProviderSessionId(managed, runtime, hookProviderSessionId);
+    adoptClaudeProviderSessionId(managed, runtime, hookProviderSessionId);
     const turnId = runtime.activeTurnId ?? undefined;
     const backgroundTasks = Array.isArray(hookRecord.background_tasks) ? hookRecord.background_tasks : [];
     const snapshotBackgroundTaskIds = new Set<string>();
@@ -12871,6 +12902,8 @@ export function createAgentChatService(args: {
         .find((schedule) => schedule.id === scheduledWorkId);
       const ownerMatches = !durableSchedule?.providerSessionId
         || durableSchedule.providerSessionId === providerSessionId;
+      const canAdoptCurrentProvider = durableSchedule?.provider === "claude"
+        && durableSchedule.pausedFlag !== true;
       const kind: "cron" | "wakeup" | "loop" = recurring
         ? "cron"
         : isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
@@ -12892,11 +12925,15 @@ export function createAgentChatService(args: {
       if (
         scheduledWorkScheduler
         && durableSchedule
-        && ownerMatches
+        && (ownerMatches || canAdoptCurrentProvider)
         && durableSchedule.status !== "done"
         && durableSchedule.status !== "cancelled"
       ) {
-        await scheduledWorkScheduler.upsert({
+        // Stop/SubagentStop is an inventory snapshot, not a reschedule event.
+        // Preserve the original occurrence and seven-day creation TTL so an
+        // overdue tick cannot be skipped and repeated snapshots cannot extend
+        // the provider job indefinitely.
+        await scheduledWorkScheduler.upsert(buildClaudeScheduleUpsert({
           id: scheduledWorkId,
           sessionId: managed.session.id,
           kind,
@@ -12904,17 +12941,10 @@ export function createAgentChatService(args: {
           // the full PostToolUse prompt already stored under the canonical id.
           prompt: durableSchedule.prompt,
           ...(cronSchedule ? { cron: cronSchedule } : {}),
-          ...(cronSchedule
-            ? { fireAt: nextChatScheduledCronFireAt(cronSchedule, Date.now()) ?? undefined }
-            : {}),
-          ...(recurring ? { expiresAt: Date.now() + claudeRecurringCronTtlMs } : {}),
-          status: "scheduled",
-          lateFlag: false,
-          durable: true,
-          provider: "claude",
+          recurring,
           ...(providerSessionId ? { providerSessionId } : {}),
           providerScheduleId: id,
-        });
+        }));
       }
     }
     if (hasSessionCrons && scheduledWorkScheduler) {
@@ -14139,7 +14169,6 @@ export function createAgentChatService(args: {
     status: TerminalSessionStatus,
     options?: { exitCode?: number | null; summary?: string | null }
   ): Promise<void> => {
-    pendingNativeScheduledWakeBySession.delete(managed.session.id);
     if (managed.endedNotified) return;
     managed.endedNotified = true;
     clearSubagentSnapshots(managed.session.id);
@@ -15232,22 +15261,20 @@ export function createAgentChatService(args: {
     runtime: ClaudeRuntime,
     state: ClaudeIdleTurnState,
     detail = "Claude resumed background work",
+    nativeScheduleId?: string,
+    explicitNativeCron = false,
   ): string => {
-    if (state.turnId) return state.turnId;
-    const turnId = `claude-idle-${randomUUID()}`;
-    state.turnId = turnId;
-    captureTurnBeforeSha(managed);
-    runtime.interrupted = false;
-    runtime.interruptEventsEmitted = false;
-    runtime.busy = true;
-    runtime.activeTurnId = turnId;
-    setSessionActive(managed);
-    const pendingScheduledWakes = pendingNativeScheduledWakeBySession.get(managed.session.id) ?? [];
-    const pendingScheduledWake = pendingScheduledWakes[0];
-    const claimedSchedule = !pendingScheduledWake
-      ? scheduledWorkScheduler?.claimNativeFire(managed.session.id, turnId) ?? null
+    const existingTurnId = state.turnId;
+    const turnId = existingTurnId ?? `claude-idle-${randomUUID()}`;
+    // Only an explicit native cron task may claim the provider-first window.
+    // Unrelated background/subagent output also arrives through this idle
+    // reader and must never consume a due schedule by proximity alone. When
+    // older SDK task events omit the provider id, the explicit cron task type
+    // still safely claims the earliest due Claude row.
+    const claimedSchedule = explicitNativeCron
+      ? scheduledWorkScheduler?.claimNativeFire(managed.session.id, turnId, nativeScheduleId) ?? null
       : null;
-    const scheduledWake = pendingScheduledWake ?? (claimedSchedule
+    const scheduledWake = claimedSchedule
       ? {
           scheduleId: claimedSchedule.id,
           kind: claimedSchedule.kind,
@@ -15256,16 +15283,8 @@ export function createAgentChatService(args: {
           firedAt: new Date(claimedSchedule.lastFiredAt ?? Date.now()).toISOString(),
           late: claimedSchedule.lateFlag,
         }
-      : null);
+      : null;
     if (scheduledWake) {
-      if (pendingScheduledWake) {
-        pendingScheduledWakes.shift();
-        if (pendingScheduledWakes.length) {
-          pendingNativeScheduledWakeBySession.set(managed.session.id, pendingScheduledWakes);
-        } else {
-          pendingNativeScheduledWakeBySession.delete(managed.session.id);
-        }
-      }
       state.scheduledWakeAttached = true;
       emitChatEvent(managed, {
         type: "user_message",
@@ -15282,6 +15301,14 @@ export function createAgentChatService(args: {
         turnId,
       });
     }
+    if (existingTurnId) return existingTurnId;
+    state.turnId = turnId;
+    captureTurnBeforeSha(managed);
+    runtime.interrupted = false;
+    runtime.interruptEventsEmitted = false;
+    runtime.busy = true;
+    runtime.activeTurnId = turnId;
+    setSessionActive(managed);
     emitChatEvent(managed, { type: "status", turnStatus: "started", turnId });
     emitChatEvent(managed, {
       type: "activity",
@@ -15418,10 +15445,24 @@ export function createAgentChatService(args: {
     const command = compactString(msg.command) ?? existing?.command;
     const description = compactString(msg.description) ?? existing?.description ?? "Background task";
     const backgroundShell = classification.backgroundShell;
+    const nativeCronScheduleId = taskType === "cron"
+      ? resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg)
+      : null;
+    const explicitNativeCron = subtype === "task_started" && taskType === "cron";
     // Progress from a task that outlives its parent turn must not manufacture a
-    // new main-thread turn. A genuine parent assistant frame (normally the
-    // completion wake-up) will start the next idle turn when it arrives.
-    const turnId = state.turnId ?? undefined;
+    // new main-thread turn. A native cron start is the exception: it is the
+    // provider's explicit ownership signal for a scheduled turn. Generic idle
+    // assistant/tool output is not sufficient evidence to claim a schedule.
+    const turnId = explicitNativeCron
+      ? startClaudeIdleTurn(
+          managed,
+          runtime,
+          state,
+          "Claude resumed scheduled work",
+          nativeCronScheduleId ?? undefined,
+          true,
+        )
+      : state.turnId ?? undefined;
     // Background shell commands are tracked as background scheduled_work rows,
     // not subagents — mirror the main-loop gating in every idle subtype.
     if (backgroundShell) {
@@ -15529,7 +15570,7 @@ export function createAgentChatService(args: {
         ...(workflowName ? { workflowName } : {}),
       });
       if (taskType === "cron") {
-        const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
+        const scheduledWorkId = nativeCronScheduleId;
         if (scheduledWorkId) {
           emitClaudeScheduledWorkUpdate(managed, runtime, {
             type: "scheduled_work_update",
@@ -15575,7 +15616,7 @@ export function createAgentChatService(args: {
       if (notificationAgentId) runtime.activeSubagents.delete(notificationAgentId);
       if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
       if (taskType === "cron") {
-        const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
+        const scheduledWorkId = nativeCronScheduleId;
         if (scheduledWorkId) {
           emitClaudeScheduledWorkUpdate(managed, runtime, {
             type: "scheduled_work_update",
@@ -15640,7 +15681,7 @@ export function createAgentChatService(args: {
       if (parentToolUseId) runtime.taskToolInputByToolUseId.delete(parentToolUseId);
       const finalStatus = status === "completed" ? "completed" : status === "killed" ? "stopped" : "failed";
       if (taskType === "cron") {
-        const scheduledWorkId = resolveClaudeCronScheduledWorkId(runtime, taskId, parentToolUseId, msg);
+        const scheduledWorkId = nativeCronScheduleId;
         if (scheduledWorkId) {
           emitClaudeScheduledWorkUpdate(managed, runtime, {
             type: "scheduled_work_update",
@@ -15709,7 +15750,7 @@ export function createAgentChatService(args: {
     const record = msg as unknown as Record<string, unknown>;
     const messageSessionId = compactString(record.session_id);
     if (messageSessionId && runtime.sdkSessionId !== messageSessionId) {
-      await adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
+      adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
     }
 
     if (record.type === "conversation_reset") {
@@ -16210,7 +16251,7 @@ export function createAgentChatService(args: {
   const startClaudeIdleReader = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
-    reason: "turn_completed" | "query_ready" | "durable_schedule_fire" = "turn_completed",
+    reason: "turn_completed" | "query_ready" = "turn_completed",
   ): void => {
     if (managed.closed || managed.deleted) return;
     if (!runtime.query || !runtime.inputPump) return;
@@ -16888,7 +16929,7 @@ export function createAgentChatService(args: {
           ? (msg as any).session_id.trim()
           : "";
         if (messageSessionId.length > 0 && runtime.sdkSessionId !== messageSessionId) {
-          await adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
+          adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
         }
 
         if ((msg as any).type === "conversation_reset") {
@@ -16925,7 +16966,7 @@ export function createAgentChatService(args: {
             ? initMsg.session_id.trim()
             : "";
           if (initSessionId.length > 0 && runtime.sdkSessionId !== initSessionId) {
-            await adoptClaudeProviderSessionId(managed, runtime, initSessionId);
+            adoptClaudeProviderSessionId(managed, runtime, initSessionId);
           }
           reportedInitModel = normalizeReportedModelName(initMsg.model) ?? reportedInitModel;
           if (Array.isArray(initMsg.slash_commands)) {
@@ -22959,6 +23000,9 @@ export function createAgentChatService(args: {
       sessionService.setHeadShaEnd(managed.session.id, endSha);
     }
     persistChatState(managed);
+    if (runtime.pendingSteers.length && managed.runtime === runtime) {
+      await deliverNextQueuedSteer(managed, runtime);
+    }
   }
 
   function isCodexSilentTurnStillCurrent(
@@ -23406,6 +23450,9 @@ export function createAgentChatService(args: {
       }
 
       persistChatState(managed);
+      if (runtime.pendingSteers.length && managed.runtime === runtime) {
+        await deliverNextQueuedSteer(managed, runtime);
+      }
       return;
     }
 
@@ -23666,6 +23713,9 @@ export function createAgentChatService(args: {
         ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       });
       persistChatState(managed);
+      if (runtime.pendingSteers.length && managed.runtime === runtime) {
+        await deliverNextQueuedSteer(managed, runtime);
+      }
       return;
     }
 
@@ -24012,6 +24062,7 @@ export function createAgentChatService(args: {
       stallReconcileInFlight: new Set<string>(),
       mcpStartupNoticeKeys: new Set<string>(),
       pendingPlanFollowups: [],
+      pendingSteers: [],
       slashCommands: [],
       rateLimits: null,
       collaborationModes: null,
@@ -24757,8 +24808,8 @@ export function createAgentChatService(args: {
         append: [
           "## Runtime Environment",
           "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API. The `claude_code` preset above is the same system prompt the Claude Code CLI uses, so you may think you're in the CLI — you are NOT. You are inside an ADE-hosted SDK session.",
-            "**Wake-up semantics:** ADE durably supports Claude Code scheduled self-resume. `ScheduleWakeup`, `CronCreate`, and `/loop` can start a later unattended turn even after the ADE brain restarts; overdue work fires once when ADE resumes, then recurring cron work returns to its normal cadence. The user can pause this chat's schedules in Chat Info or pause all scheduled work in Settings.",
-            "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer the SDK's scheduled/background tools and include a concise reason/prompt so ADE can show the pending work clearly.",
+            "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically mirrored into ADE's durable scheduler. `durable: true` also persists Claude's provider copy, while ADE's delivery guarantee does not depend on that flag. Jobs survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire seven days after creation. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
+            "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
           "",
           "## ADE Workspace",
           `ADE launched this session in lane worktree: ${managed.laneWorktreePath}.`,
@@ -25190,7 +25241,7 @@ export function createAgentChatService(args: {
 
   const deliverNextQueuedSteer = async (
     managed: ManagedChatSession,
-    runtime: ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime,
+    runtime: CodexRuntime | ClaudeRuntime | OpenCodeRuntime | CursorRuntime | DroidRuntime,
   ): Promise<boolean> => {
     if (managed.closed) return false;
     // A user-selected priority dispatch owns the staged queue while its SDK
@@ -25217,7 +25268,7 @@ export function createAgentChatService(args: {
       turnId: runtime.activeTurnId ?? undefined,
     });
 
-    runtime.interrupted = false;
+    if (runtime.kind !== "codex") runtime.interrupted = false;
     persistChatState(managed);
 
     // Re-resolve lane context so that a lane switch that occurred while the
@@ -25260,7 +25311,18 @@ export function createAgentChatService(args: {
       buildChatContextAttachmentPrompt(nextSteer.contextAttachments) || null,
     ]);
 
-    if (runtime.kind === "claude") {
+    if (runtime.kind === "codex") {
+      await sendCodexMessage(managed, {
+        promptText,
+        userText: trimmed,
+        displayText,
+        attachments: nextSteer.attachments,
+        contextAttachments: nextSteer.contextAttachments,
+        resolvedAttachments: nextSteer.resolvedAttachments,
+        metadata: nextSteer.metadata,
+        laneDirectiveKey: shouldInjectLaneDirective ? laneDirectiveKey : null,
+      });
+    } else if (runtime.kind === "claude") {
       await runClaudeTurn(managed, {
         promptText,
         userText: trimmed,
@@ -25314,7 +25376,7 @@ export function createAgentChatService(args: {
   /** Enqueue a steer or drop it if the queue is full. Returns true if queued. */
   const enqueueSteerOrDrop = (
     managed: ManagedChatSession,
-    runtime: ClaudeRuntime | OpenCodeRuntime,
+    runtime: ChatRuntime,
     sessionId: string,
     steerId: string,
     text: string,
@@ -27797,7 +27859,7 @@ export function createAgentChatService(args: {
       });
       if (args.managed.runtime?.kind === "claude") {
         await resetClaudeQuerySession(args.managed, args.managed.runtime, "session_reset", { clearSdkSessionId: true });
-        await adoptClaudeProviderSessionId(args.managed, args.managed.runtime, placed.newSessionId);
+        adoptClaudeProviderSessionId(args.managed, args.managed.runtime, placed.newSessionId);
         args.managed.runtime.forkFromSdkSessionId = null;
         args.managed.runtimeInvalidated = false;
       }
@@ -28417,7 +28479,7 @@ export function createAgentChatService(args: {
       const managed = ensureManagedSession(created.id);
       if (managed.runtime?.kind === "claude") {
         await resetClaudeQuerySession(managed, managed.runtime, "session_reset", { clearSdkSessionId: true });
-        await adoptClaudeProviderSessionId(managed, managed.runtime, targetClaudeSessionId);
+        adoptClaudeProviderSessionId(managed, managed.runtime, targetClaudeSessionId);
         managed.runtime.forkFromSdkSessionId = null;
         managed.runtimeInvalidated = false;
       }
@@ -32858,10 +32920,16 @@ export function createAgentChatService(args: {
     if (awaitingInputBefore && normalizedKind !== "wake") {
       throw new Error(`${PENDING_INPUT_SEND_BLOCKED_MESSAGE} Use chat.respondToInput for the pending input instead.`);
     }
+    const runtimeBusy = managed.runtime?.kind === "codex"
+      ? managed.runtime.activeTurnId != null
+      : managed.runtime?.busy === true;
+    const wakeNeedsQueue = normalizedKind === "wake"
+      && (statusBefore === "active" || runtimeBusy);
 
     const steerTarget =
       normalizedKind === "queue" ||
-      ((normalizedKind === "auto" || normalizedKind === "wake") && statusBefore === "active");
+      ((normalizedKind === "auto" || (normalizedKind === "wake" && !wakeNeedsQueue))
+        && statusBefore === "active");
     if (steerTarget) {
       const result = await steer({
         sessionId,
@@ -32882,6 +32950,55 @@ export function createAgentChatService(args: {
         delivery: result.queued ? "queued" : statusBefore === "active" ? "delivered" : "sent",
         steerId: result.steerId,
         queued: result.queued,
+      };
+    }
+
+    if (wakeNeedsQueue) {
+      const runtime = managed.runtime;
+      if (!runtime) {
+        throw new Error("Scheduled wake delivery requires an active queueable chat runtime.");
+      }
+      const preparedWake = prepareSendMessage({
+        sessionId,
+        text,
+        attachments,
+        contextAttachments,
+        metadata,
+      });
+      if (!preparedWake) {
+        return {
+          sessionId,
+          kind: normalizedKind,
+          routedAction: "sendMessage",
+          statusBefore,
+          awaitingInputBefore,
+          delivery: "sent",
+        };
+      }
+      const wakeId = randomUUID();
+      const queued = enqueueSteerOrDrop(
+        managed,
+        runtime,
+        sessionId,
+        wakeId,
+        preparedWake.submittedText,
+        preparedWake.attachments,
+        preparedWake.contextAttachments,
+        preparedWake.resolvedAttachments,
+        preparedWake.metadata,
+        { displayText: preparedWake.visibleText },
+      );
+      if (!queued) {
+        throw new Error("The scheduled wake queue is full; the wake was not queued.");
+      }
+      return {
+        sessionId,
+        kind: normalizedKind,
+        routedAction: "sendMessage",
+        statusBefore,
+        awaitingInputBefore,
+        delivery: "queued",
+        queued: true,
       };
     }
 
@@ -33860,7 +33977,7 @@ export function createAgentChatService(args: {
       if (managed.session.provider === "claude") {
         const runtime = ensureClaudeSessionRuntime(managed);
         resetClaudeQuerySession(managed, runtime, "session_reset");
-        await adoptClaudeProviderSessionId(managed, runtime, originalThreadId);
+        adoptClaudeProviderSessionId(managed, runtime, originalThreadId);
         delete managed.session.continuityRecovery;
         managed.runtimeInvalidated = false;
         try {
@@ -34416,6 +34533,65 @@ export function createAgentChatService(args: {
     ...(schedule.outcomeSummary ? { outcomeSummary: schedule.outcomeSummary } : {}),
   });
 
+  const createScheduledWork = async (
+    args: AgentChatCreateScheduledWorkArgs,
+  ): Promise<AgentChatCreateScheduledWorkResult> => {
+    await scheduledWorkReady;
+    if (!scheduledWorkScheduler) {
+      throw new Error("Scheduled work is unavailable for this project runtime.");
+    }
+
+    const normalizedSessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (!normalizedSessionId) throw new Error("Agent session id is required.");
+    const row = sessionService.get(normalizedSessionId);
+    if (!row || !isSchedulableAgentSession(row)) {
+      throw new Error(`Agent session '${normalizedSessionId}' was not found.`);
+    }
+    const chatBacked = isChatToolType(row.toolType);
+    const summary = chatBacked ? summarizeSessionRow(row) : null;
+    if (row.archivedAt || summary?.status === "ended") {
+      throw new Error(`Agent session '${normalizedSessionId}' is ended or archived.`);
+    }
+
+    const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+    if (!prompt) throw new Error("Scheduled work prompt is required.");
+    if (prompt.length > 4_000) {
+      throw new Error("Scheduled work prompt must be 4000 characters or fewer.");
+    }
+    const cron = typeof args.cron === "string" ? args.cron.trim() : "";
+    const createdAt = Date.now();
+    const fireAt = nextChatScheduledCronFireAt(cron, createdAt);
+    if (fireAt == null) {
+      throw new Error("Scheduled work cron must be a valid 5-field cron expression.");
+    }
+    if (args.recurring != null && typeof args.recurring !== "boolean") {
+      throw new Error("Scheduled work recurring must be a boolean.");
+    }
+    if (args.reason != null && typeof args.reason !== "string") {
+      throw new Error("Scheduled work reason must be a string.");
+    }
+
+    const recurring = args.recurring !== false;
+    const reason = args.reason?.trim();
+    const id = `action:${normalizedSessionId}:${randomUUID()}`;
+    if (chatBacked) ensureManagedSession(normalizedSessionId);
+    const schedule = await scheduledWorkScheduler.upsert({
+      id,
+      sessionId: normalizedSessionId,
+      kind: recurring ? "cron" : "wakeup",
+      prompt,
+      ...(reason ? { reason } : {}),
+      cron,
+      fireAt,
+      createdAt,
+      ...(recurring ? { expiresAt: createdAt + claudeRecurringCronTtlMs } : {}),
+      status: "scheduled",
+      lateFlag: false,
+      durable: true,
+    });
+    return { item: toScheduledWorkItem(schedule) };
+  };
+
   const listScheduledWork = async ({
     sessionId,
     includeTerminal = false,
@@ -34424,13 +34600,36 @@ export function createAgentChatService(args: {
     const normalizedSessionId = sessionId?.trim();
     if (normalizedSessionId) {
       const row = sessionService.get(normalizedSessionId);
-      if (!row || !isChatToolType(row.toolType)) {
-        throw new Error(`Chat session '${normalizedSessionId}' was not found.`);
+      if (!row || !isSchedulableAgentSession(row)) {
+        throw new Error(`Agent session '${normalizedSessionId}' was not found.`);
       }
     }
     return (scheduledWorkScheduler?.list(normalizedSessionId) ?? [])
       .filter((schedule) => includeTerminal || (schedule.status !== "done" && schedule.status !== "cancelled"))
       .map(toScheduledWorkItem);
+  };
+
+  const getScheduledWorkState = async ({
+    sessionId,
+  }: AgentChatGetScheduledWorkStateArgs): Promise<AgentChatScheduledWorkState> => {
+    const normalizedSessionId = sessionId.trim();
+    if (!normalizedSessionId) throw new Error("Agent session id is required.");
+    const row = sessionService.get(normalizedSessionId);
+    if (!row || !isSchedulableAgentSession(row)) {
+      throw new Error(`Agent session '${normalizedSessionId}' was not found.`);
+    }
+    await scheduledWorkReady;
+    const nextWakeAt = scheduledWorkScheduler?.nextWakeAt(normalizedSessionId) ?? null;
+    return {
+      sessionId: normalizedSessionId,
+      paused:
+        scheduledWorkScheduler?.isSessionPaused(normalizedSessionId) === true
+        || projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true,
+      nextWakeAt: nextWakeAt == null ? null : new Date(nextWakeAt).toISOString(),
+      items: (scheduledWorkScheduler?.list(normalizedSessionId) ?? [])
+        .filter((schedule) => schedule.status !== "done" && schedule.status !== "cancelled")
+        .map(toScheduledWorkItem),
+    };
   };
 
   const requestClaudeScheduledWorkCancellation = async (
@@ -34619,10 +34818,10 @@ export function createAgentChatService(args: {
     paused,
   }: AgentChatSetScheduledWorkPausedArgs): Promise<AgentChatSetScheduledWorkPausedResult> => {
     const normalizedSessionId = sessionId.trim();
-    if (!normalizedSessionId) throw new Error("Chat session id is required.");
+    if (!normalizedSessionId) throw new Error("Agent session id is required.");
     const row = sessionService.get(normalizedSessionId);
-    if (!row || !isChatToolType(row.toolType)) {
-      throw new Error(`Chat session '${normalizedSessionId}' was not found.`);
+    if (!row || !isSchedulableAgentSession(row)) {
+      throw new Error(`Agent session '${normalizedSessionId}' was not found.`);
     }
     await scheduledWorkReady;
     if (!scheduledWorkScheduler) {
@@ -34643,9 +34842,6 @@ export function createAgentChatService(args: {
     await scheduledWorkReady;
     await scheduledWorkScheduler?.refreshGlobalPause();
   };
-
-  const pendingNativeScheduledWakeCountForTesting = (sessionId: string): number =>
-    pendingNativeScheduledWakeBySession.get(sessionId)?.length ?? 0;
 
   const hasActiveWorkloads = (): boolean => {
     for (const managed of managedSessions.values()) {
@@ -36093,7 +36289,6 @@ export function createAgentChatService(args: {
     }
     eventHistoryBySession.delete(trimmedSessionId);
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
-    pendingNativeScheduledWakeBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -36158,7 +36353,6 @@ export function createAgentChatService(args: {
         // ignore shutdown errors
       }
     }
-    pendingNativeScheduledWakeBySession.clear();
     flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("dispose_all");
   };
@@ -36190,7 +36384,6 @@ export function createAgentChatService(args: {
       revokeBuiltInBrowserActorCapability(sessionId);
     }
     managedSessions.clear();
-    pendingNativeScheduledWakeBySession.clear();
     flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("force_dispose_all");
   };
@@ -38864,31 +39057,57 @@ export function createAgentChatService(args: {
       const row = sessionService.get(sessionId);
       if (!row) return "missing";
       if (row.archivedAt) return "archived";
+      // A tracked agent CLI can be resumed by ptyService.sendToSession after
+      // its process exits, so an ended runtime is still a valid durable target.
+      if (row.tracked && isTrackedAgentCliToolType(row.toolType)) return "active";
       if (row.status === "running" || row.status === "detached") return "active";
       return "ended";
     },
-    fire: async (schedule, context) => {
-      const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
+    shouldDefer: (schedule) => {
+      const row = sessionService.get(schedule.sessionId);
+      if (row?.tracked && isTrackedAgentCliToolType(row.toolType)) {
+        // A quiet-output heuristic is not a turn boundary: a CLI can think for
+        // longer than the idle timer without printing. The PTY service checks
+        // provider-specific visible composer markers plus a short quiet window.
+        return ptyService?.canAcceptScheduledTurn(schedule.sessionId) !== true;
+      }
       const liveManaged = managedSessions.get(schedule.sessionId);
       const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
-      if (
-        liveManaged
-        && liveRuntime?.query
-        && !liveRuntime.busy
-        && liveManaged.session.status !== "active"
-      ) {
-        const pending = pendingNativeScheduledWakeBySession.get(schedule.sessionId) ?? [];
-        pending.push({
-          scheduleId: schedule.id,
-          kind: schedule.kind,
-          prompt: schedule.prompt,
-          ...(schedule.reason ? { reason: schedule.reason } : {}),
-          firedAt,
-          late: context.late,
-        });
-        pendingNativeScheduledWakeBySession.set(schedule.sessionId, pending);
-        startClaudeIdleReader(liveManaged, liveRuntime, "durable_schedule_fire");
-        return;
+      // Never enqueue a scheduler-owned wake behind a foreground turn. Queued
+      // input is owned by that turn's runtime lifecycle and can be discarded
+      // when the turn fails or is interrupted. Keep the durable row armed and
+      // retry at the next boundary instead, regardless of which runtime or API
+      // created it.
+      if (liveManaged?.session.status === "active") return true;
+      return schedule.provider === "claude"
+        && liveRuntime?.query != null
+        && liveRuntime.busy;
+    },
+    fire: async (schedule, context) => {
+      const firedAt = new Date(schedule.lastFiredAt ?? Date.now()).toISOString();
+      const row = sessionService.get(schedule.sessionId);
+      if (row?.tracked && isTrackedAgentCliToolType(row.toolType)) {
+        if (!ptyService) {
+          return { retry: true };
+        }
+        try {
+          await ptyService.sendToSession({
+            sessionId: schedule.sessionId,
+            text: schedule.prompt,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (isPtySendPreDeliveryError(error)) {
+            logger.warn("agent_chat.scheduled_cli_delivery_retry", {
+              sessionId: schedule.sessionId,
+              scheduleId: schedule.id,
+              error: message,
+            });
+            return { retry: true };
+          }
+          throw error;
+        }
+        return { complete: true };
       }
       await messageSession({
         sessionId: schedule.sessionId,
@@ -38925,14 +39144,19 @@ export function createAgentChatService(args: {
         ?? (status === "fired" && (row.status === "running" || row.status === "detached")
           ? ensureManagedSession(schedule.sessionId)
           : null);
-      if (!managed || managed.session.provider !== "claude") return;
+      if (!managed) return;
 
       const eventStatus: ScheduledWorkEvent["status"] = status === "done" ? "completed" : status;
-      const origin: ScheduledWorkEvent["origin"] = schedule.kind === "cron"
-        ? "cron"
-        : schedule.kind === "loop"
-          ? "loop"
-          : "schedule_wakeup";
+      let origin: ScheduledWorkEvent["origin"];
+      if (schedule.id.startsWith("action:")) {
+        origin = "action";
+      } else if (schedule.kind === "cron") {
+        origin = "cron";
+      } else if (schedule.kind === "loop") {
+        origin = "loop";
+      } else {
+        origin = "schedule_wakeup";
+      }
       emitChatEvent(managed, {
         type: "scheduled_work_update",
         id: schedule.id,
@@ -38990,11 +39214,12 @@ export function createAgentChatService(args: {
     markCrossMachineHandoff,
     sendMessage,
     messageSession,
+    createScheduledWork,
     listScheduledWork,
+    getScheduledWorkState,
     cancelScheduledWork,
     setScheduledWorkPaused,
     refreshScheduledWork,
-    pendingNativeScheduledWakeCountForTesting,
     readTranscript,
     setOrchestrationFields,
     getCodexGoal,

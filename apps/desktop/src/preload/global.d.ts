@@ -144,6 +144,8 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSetScheduledWorkPausedArgs,
   AgentChatSetScheduledWorkPausedResult,
+  AgentChatCreateScheduledWorkArgs,
+  AgentChatCreateScheduledWorkResult,
   AgentChatListScheduledWorkArgs,
   AgentChatScheduledWorkItem,
   AgentChatCancelScheduledWorkArgs,
@@ -1444,6 +1446,9 @@ declare global {
         updateSession: (
           args: AgentChatUpdateSessionArgs,
         ) => Promise<AgentChatSession>;
+        createScheduledWork: (
+          args: AgentChatCreateScheduledWorkArgs,
+        ) => Promise<AgentChatCreateScheduledWorkResult>;
         listScheduledWork: (
           args?: AgentChatListScheduledWorkArgs,
         ) => Promise<AgentChatScheduledWorkItem[]>;

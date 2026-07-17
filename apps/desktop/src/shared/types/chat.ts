@@ -492,6 +492,7 @@ export type AgentChatScheduledWorkOrigin =
   | "schedule_wakeup"
   | "cron"
   | "loop"
+  | "action"
   | "remote_trigger"
   | "background_task"
   | "sdk";
@@ -2168,6 +2169,17 @@ export type AgentChatSetScheduledWorkPausedResult = {
   nextWakeAt: string | null;
 };
 
+export type AgentChatGetScheduledWorkStateArgs = {
+  sessionId: string;
+};
+
+export type AgentChatScheduledWorkState = {
+  sessionId: string;
+  paused: boolean;
+  nextWakeAt: string | null;
+  items: AgentChatScheduledWorkItem[];
+};
+
 export type AgentChatScheduledWorkItem = {
   id: string;
   sessionId: string;
@@ -2191,6 +2203,18 @@ export type AgentChatScheduledWorkItem = {
 export type AgentChatListScheduledWorkArgs = {
   sessionId?: string;
   includeTerminal?: boolean;
+};
+
+export type AgentChatCreateScheduledWorkArgs = {
+  sessionId: string;
+  prompt: string;
+  cron: string;
+  recurring?: boolean;
+  reason?: string;
+};
+
+export type AgentChatCreateScheduledWorkResult = {
+  item: AgentChatScheduledWorkItem;
 };
 
 export type AgentChatCancelScheduledWorkArgs = {

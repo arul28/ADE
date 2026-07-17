@@ -1641,9 +1641,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
-    $ ade chat schedules <session> --pause           Pause this chat's durable wakeups/cron/loops
+    $ ade chat schedules <session> --pause           Pause this agent session's durable wakeups/cron/loops
     $ ade chat schedules <session>                   Inspect pause state + next armed wake (--resume to re-arm)
     $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
+    $ ade chat scheduled-work create --cron "<expr>" --prompt "<text>" [--once]
+                                                    Optional: --reason "<text>" --session <id>
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
     $ ade new chat --mode cli --lane <lane> --provider claude --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
@@ -6633,7 +6635,7 @@ function buildChatPlan(args: string[]): CliPlan {
     || sub === "schedules"
     || sub === "schedule"
   )
-    && (args[0] === "list" || args[0] === "cancel")
+    && (args[0] === "list" || args[0] === "create" || args[0] === "cancel")
     ? firstStandalonePositional(args)
     : null;
   const sessionId =
@@ -7280,6 +7282,29 @@ function buildChatPlan(args: string[]): CliPlan {
     sub === "schedule" ||
     sub === "scheduled-work"
   ) {
+    if (scheduledWorkOperation === "create") {
+      const cron = requireValue(readValue(args, ["--cron"]), "cron");
+      const prompt = requireValue(readValue(args, ["--prompt", "--text"]), "prompt");
+      const reason = readValue(args, ["--reason"]);
+      return {
+        kind: "execute",
+        label: "chat scheduled-work create",
+        steps: [
+          actionStep(
+            "result",
+            "chat",
+            "createScheduledWork",
+            collectGenericObjectArgs(args, {
+              ...(sessionId ? { sessionId } : {}),
+              cron,
+              prompt,
+              recurring: !readFlag(args, ["--once"]),
+              ...(reason ? { reason } : {}),
+            }),
+          ),
+        ],
+      };
+    }
     if (scheduledWorkOperation === "list") {
       return {
         kind: "execute",
@@ -7316,9 +7341,8 @@ function buildChatPlan(args: string[]): CliPlan {
         ],
       };
     }
-    // Per-chat scheduled-work control: pause/resume this chat's durable
-    // wakeups/cron/loop schedules, or inspect (no flag) the current pause
-    // state + next armed wake via getSessionSummary.
+    // Per-session scheduled-work control. The state query works for both chat
+    // sessions and tracked provider CLI terminals.
     const targetSession = requireValue(sessionId, "sessionId");
     const pause = readFlag(args, ["--pause", "--pause-scheduled-work"]);
     const resume = readFlag(args, ["--resume", "--unpause"]);
@@ -7326,14 +7350,13 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("Use either --pause or --resume, not both.");
     }
     if (!pause && !resume) {
-      // Inspection mode: summary carries nextWakeAt + scheduledWorkPaused.
       return {
         kind: "execute",
         label: "chat schedules",
         steps: [
-          actionArgsListStep("result", "chat", "getSessionSummary", [
-            targetSession,
-          ]),
+          actionStep("result", "chat", "getScheduledWorkState", {
+            sessionId: targetSession,
+          }),
         ],
       };
     }
@@ -11242,6 +11265,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--compare-to",
   "--content",
   "--context-file",
+  "--cron",
   "--cwd",
   "--data",
   "--cpu",

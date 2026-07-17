@@ -29,6 +29,8 @@ describe("ADE bootstrap guidance", () => {
     // The fallback: CLI help is ground truth (agents are not trained on `ade`).
     expect(bootstrap).toContain("ade help <command>");
     expect(bootstrap).toContain("ade actions list --text");
+    expect(bootstrap).toContain("ade chat scheduled-work create");
+    expect(bootstrap).toContain("tracked provider CLIs");
     // The skill index is still advertised so the model knows what exists.
     for (const skillName of adeBundledAgentSkills) {
       expect(bootstrap).toContain(`\`${skillName}\``);
