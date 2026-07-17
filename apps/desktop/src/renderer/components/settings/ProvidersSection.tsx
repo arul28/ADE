@@ -871,9 +871,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const saveAdvancedProvider = async () => {
     const draft = customProviderDraft;
     const id = draft.id.trim();
+    const baseURL = draft.baseUrl.trim();
     const slugs = draft.slugs.split(",").map((s) => s.trim()).filter(Boolean);
-    if (!id || slugs.length === 0) {
-      setError("A custom provider needs an id and at least one model slug.");
+    if (!id || !baseURL || slugs.length === 0) {
+      setError("A custom provider needs an id, a base URL, and at least one model slug.");
       return;
     }
     setSavingAdvanced(true);
@@ -892,7 +893,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
           {
             id,
             name: draft.name.trim() || prettifyProviderId(id),
-            baseURL: draft.baseUrl.trim(),
+            baseURL,
             npm: draft.npm as AiCustomProviderConfig["npm"],
             models: slugs,
           },
