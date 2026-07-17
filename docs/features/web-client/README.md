@@ -2,10 +2,10 @@
 
 The web client is an owner-only browser controller for an ADE machine runtime.
 It is a hosted static SPA. New connections are account-only: the browser signs
-in to ADE, loads the account machine directory, and adopts the chosen Mac over
+in to ADE, loads the account machine directory, and adopts the chosen machine over
 ADE Relay. Localhost pages retain direct `ws://` for development.
 
-Hosted Relay connections require the browser and Mac to be signed in to the
+Hosted Relay connections require the browser and machine to be signed in to the
 same ADE account. The browser sends a fresh short-lived account proof with each
 paired Relay hello, and never persists that proof. Signing out immediately
 stops the Relay connection. Environments created from the account machine
@@ -34,17 +34,24 @@ Build and static host:
 - `apps/desktop/src/renderer/webclient.html` - browser entry HTML.
 - `apps/desktop/src/renderer/webclient/public/_headers` - Pages headers,
   including CSP. `connect-src` allows `wss:` and `https:`, not arbitrary
-  hosted-page `ws:` connections.
+  hosted-page `ws:` connections; `img-src` allowlists the Clerk image CDNs and
+  Clerk's Google Storage profile-image path used by the account client.
 - `apps/desktop/src/renderer/webclient/public/_redirects` - SPA fallback:
   `/* /index.html 200`.
 
 Browser sync client:
 
 - `apps/desktop/src/renderer/webclient/account/client.ts` - Clerk
-  OAuth authorization-code + PKCE session for the static client. Access and
-  refresh tokens remain in module memory, the callback is scrubbed from the
-  address bar before directory loading, and account requests use exact trusted
-  origins with omitted browser credentials and referrers.
+  OAuth authorization-code + PKCE session for the static client. Access tokens
+  remain in module memory; the refresh credential plus exact OAuth issuer/client
+  identity persist in IndexedDB so reload boot can restore and refresh before
+  directory access. Profile identity is enriched through a bounded, best-effort
+  OAuth userinfo request. The callback is scrubbed from the address bar before
+  directory loading, and account requests use exact trusted origins with omitted
+  browser credentials and referrers.
+- `apps/desktop/src/renderer/webclient/account/sessionStore.ts` - versioned
+  IndexedDB refresh-session record. Explicit sign-out and confirmed auth expiry
+  clear it; OAuth access tokens are never persisted.
 - `apps/desktop/src/renderer/webclient/account/leaseMonitor.ts` - live account
   lifetime enforcement for account-owned environments and active Relay
   sockets. A 30-second check refreshes the in-memory token; confirmed expiry,
@@ -69,7 +76,8 @@ Browser sync client:
   hosted page; plain `ws://` is dialable only from local/http pages.
 - `apps/desktop/src/renderer/webclient/sync/envStore.ts` - IndexedDB storage
   for paired machine environments, per-device secret, host/candidate metadata,
-  and the WebCrypto `CryptoKeyPair`. A versioned one-time trust migration
+  the WebCrypto `CryptoKeyPair`, and the separate account-session object store.
+  A versioned one-time trust migration
   clears legacy environments and selection while preserving unrelated browser
   and account state; environments paired after the marker persist normally.
 - `apps/desktop/src/renderer/webclient/sync/dpop.ts` - WebCrypto P-256 ECDSA
@@ -82,7 +90,11 @@ Browser sync client:
 Browser `window.ade` adapter:
 
 - `apps/desktop/src/renderer/webclient/adapter/index.ts` - installs a
-  sync-backed `window.ade` surface and hides native-only capabilities.
+  sync-backed `window.ade` surface, including the browser account client, and
+  hides native-only capabilities.
+- `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
+  OAuth session and account directory onto the reused `window.ade.account`
+  contract for status, sign-in/out, machine listing, and machine removal.
 - `apps/desktop/src/renderer/webclient/adapter/analytics.ts` - affirmative
   browser-local analytics preference, runtime-scoped status/capture calls, and
   per-connection consent reassertion. A failed opt-out acknowledgement closes
@@ -136,6 +148,9 @@ Browser shell and routes:
   boot sequence composes (account machines, compatible saved-machine list,
   project list, and the shared screen frame); `shellTokens.ts` holds the
   standalone-shell design tokens.
+- `apps/desktop/src/renderer/webclient/shell/AccountIdentity.tsx` - shared
+  signed-in identity label and trusted profile-image/initials fallback for the
+  machine picker and connected shell; opaque account IDs are not shown.
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
   layer over `apps/desktop/src/shared/deeplinks.ts`.
 
@@ -231,10 +246,17 @@ Account connection and entry points:
 
 Tests:
 
+- `apps/desktop/src/renderer/webclient/account/client.test.ts` - OAuth callback,
+  refresh-session persistence/rotation/expiry, JWT lifetime, userinfo profile,
+  and browser storage/URL privacy contracts.
+- `apps/desktop/src/renderer/webclient/sync/envStore.test.ts` - browser trust
+  migration plus bounded and cooperative IndexedDB schema upgrades.
 - `apps/desktop/src/renderer/components/app/TopBar.test.tsx`.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`.
 - `apps/desktop/src/renderer/webclient/sync/__tests__/sync.test.ts`.
 - `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts`.
+- `apps/desktop/src/renderer/webclient/shell/__tests__/MachinePicker.test.tsx` -
+  signed-in identity, account-machine availability, and reauthentication UI.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/webRoutes.test.ts`.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/WebClientRoot.test.tsx` -
   verifies that legacy `/pair#...` entry is scrubbed and lands on account sign-in.
@@ -258,8 +280,9 @@ Tests:
   desktop-only `rpc_*` and `fwd_*` channels. Unknown `hello_ok.features` keys
   are harmless, and missing additive keys mean the related capability is not
   available rather than failing the handshake.
-- **IndexedDB is the connection store.** Clearing site data removes paired
-  secrets and non-extractable DPoP private keys. The browser must sign in and
+- **IndexedDB is the connection and refresh-session store.** Clearing site data
+  removes the account refresh credential, paired secrets, and non-extractable
+  DPoP private keys. The browser must sign in and
   adopt the account machine again; a legacy direct environment cannot be
   recreated through the hosted UI. The private key cannot be exported for
   backup or migration.

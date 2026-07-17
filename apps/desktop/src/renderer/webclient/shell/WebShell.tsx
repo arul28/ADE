@@ -3,9 +3,10 @@ import { buildDeeplink } from "../../../shared/deeplinks";
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
-import type { BrowserAccountSnapshot } from "../account/client";
+import { browserAccountIsSignedIn, type BrowserAccountSnapshot } from "../account/client";
 import type { AdeSyncClientStatus, WebClientEnvironmentRecord } from "../sync";
 import { parseWebPath } from "./webRoutes";
+import { AccountIdentity } from "./AccountIdentity";
 import { COLORS, MONO_FONT, SANS_FONT, connectionTone } from "./shellTokens";
 
 const STRIP_HEIGHT = 30;
@@ -103,15 +104,14 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
   onSignOut: () => void;
   onRetry: () => void;
 }) {
-  const identity = account.email ?? account.name ?? account.userId ?? "ADE account";
   return (
     <>
       <div style={{ height: 1, background: COLORS.border, margin: "4px 0" }} />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px 6px", gap: 10 }}>
         <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10, letterSpacing: "0.04em", textTransform: "uppercase" }}>
-          Your Macs
+          Your machines
         </span>
-        {account.state === "signed_in" || account.state === "directory_unavailable" ? (
+        {browserAccountIsSignedIn(account.state) ? (
           <button type="button" onClick={onSignOut} style={{ border: "none", background: "transparent", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 10, cursor: "pointer" }}>
             Sign out
           </button>
@@ -123,12 +123,12 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
       </div>
       {account.state === "signed_in" ? (
         <div style={{ display: "grid", gap: 2, maxHeight: 220, overflow: "auto" }}>
-          <div style={{ padding: "0 8px 4px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 10 }}>
-            Signed in as {identity}
+          <div style={{ padding: "0 8px 4px" }}>
+            <AccountIdentity account={account} size={20} />
           </div>
           {account.machines.length === 0 ? (
             <div style={{ padding: "4px 8px 7px", color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11 }}>
-              No Macs found
+              No machines found
             </div>
           ) : account.machines.map((machine) => {
             const connectionState = accountMachineConnectionState(machine, account.relayBaseUrls);
@@ -140,7 +140,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
                 type="button"
                 disabled={!available || connecting}
                 onClick={() => onSelect(machine)}
-                title={connectionState === "offline" ? "This Mac is offline" : !available ? "Open ADE on this Mac to finish setup" : undefined}
+                title={connectionState === "offline" ? "This machine is offline" : !available ? "Open ADE on this machine to finish setup" : undefined}
                 style={{
                   ...menuItemStyle,
                   height: 36,
@@ -150,7 +150,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
               >
                 <span style={{ display: "grid", minWidth: 0 }}>
                   <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: COLORS.textSecondary }}>
-                    {machine.name ?? "Unnamed Mac"}
+                    {machine.name ?? "Unnamed machine"}
                   </span>
                   <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>
                     {machine.lastSeenAt == null ? "Last seen unknown" : `Last seen ${new Date(machine.lastSeenAt).toLocaleString()}`}
@@ -165,7 +165,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
         </div>
       ) : account.state === "directory_unavailable" ? (
         <button type="button" style={menuItemStyle} onClick={onRetry}>
-          <span style={{ color: COLORS.textMuted }}>Couldn't load your Macs</span>
+          <span style={{ color: COLORS.textMuted }}>Couldn't load your machines</span>
           <span style={{ color: COLORS.textSecondary }}>Retry</span>
         </button>
       ) : account.state === "auth_expired" ? (

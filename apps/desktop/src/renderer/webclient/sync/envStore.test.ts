@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  IndexedDbStorage,
   MemoryStorage,
   WEB_TRUST_RESET_VERSION,
   WebClientEnvStore,
@@ -25,6 +26,50 @@ function legacyEnvironment(envId: string): WebClientEnvironmentRecord {
 }
 
 describe("web-client trust reset migration", () => {
+  it("bounds a v2 schema upgrade blocked by a tab holding the v1 database", async () => {
+    const request = {} as IDBOpenDBRequest;
+    const open = vi.fn(() => request);
+    const storage = new IndexedDbStorage({
+      indexedDb: { open },
+      upgradeBlockedTimeoutMs: 0,
+    });
+
+    const pendingRead = storage.get("account", "oauthSession");
+    expect(open).toHaveBeenCalledWith("ade-web-client", 2);
+    expect(request.onblocked).toBeTypeOf("function");
+    request.onblocked?.(new Event("blocked") as IDBVersionChangeEvent);
+
+    await expect(pendingRead).rejects.toThrow("Close other ADE tabs and try again");
+  });
+
+  it("closes an open database when a future schema version requests an upgrade", async () => {
+    const request = {} as IDBOpenDBRequest;
+    const getRequest = {} as IDBRequest<unknown>;
+    const close = vi.fn();
+    const db = {
+      close,
+      onversionchange: null,
+      transaction: () => ({
+        objectStore: () => ({ get: () => getRequest }),
+      }),
+    } as unknown as IDBDatabase;
+    const storage = new IndexedDbStorage({
+      indexedDb: { open: () => request },
+    });
+
+    const pendingRead = storage.get("account", "oauthSession");
+    Object.defineProperty(request, "result", { value: db });
+    request.onsuccess?.(new Event("success"));
+    expect(db.onversionchange).toBeTypeOf("function");
+    await vi.waitFor(() => expect(getRequest.onsuccess).toBeTypeOf("function"));
+    Object.defineProperty(getRequest, "result", { value: undefined });
+    getRequest.onsuccess?.(new Event("success"));
+
+    await expect(pendingRead).resolves.toBeNull();
+    db.onversionchange?.(new Event("versionchange") as IDBVersionChangeEvent);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("clears legacy environments and selection but preserves unrelated metadata", async () => {
     const storage = new MemoryStorage();
     await storage.put("environments", "legacy", legacyEnvironment("legacy"));

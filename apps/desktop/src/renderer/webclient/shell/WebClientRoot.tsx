@@ -12,6 +12,7 @@ import type {
 import { WebRelayAuthRequiredError } from "../sync";
 import {
   BrowserAccountClient,
+  browserAccountIsSignedIn,
   type BrowserAccountSnapshot,
 } from "../account/client";
 import {
@@ -31,9 +32,13 @@ type AdeWebAdapter = {
   dispose: () => void;
 };
 
-async function loadAdapter(client: AdeSyncClient, initialCatalog?: SyncMobileProjectSummary[]): Promise<AdeWebAdapter> {
+async function loadAdapter(
+  client: AdeSyncClient,
+  accountClient: BrowserAccountClient,
+  initialCatalog?: SyncMobileProjectSummary[],
+): Promise<AdeWebAdapter> {
   const module = await import("../adapter/index");
-  return module.createAdeWebAdapter(client, initialCatalog);
+  return module.createAdeWebAdapter(client, initialCatalog, accountClient);
 }
 
 async function loadAppRoot(): Promise<React.ComponentType> {
@@ -111,7 +116,7 @@ function relayAccessFromAccount(
   getAccessToken: () => Promise<string>,
 ): WebRelayAccess {
   if (
-    (account.state === "signed_in" || account.state === "directory_unavailable")
+    browserAccountIsSignedIn(account.state)
     && account.userId
   ) {
     return {
@@ -160,9 +165,7 @@ export function WebClientRoot({
   const applyAccountPrivacy = useCallback(async (
     snapshot: BrowserAccountSnapshot,
   ): Promise<WebClientEnvironmentRecord[]> => {
-    const currentOwnerUserId = (
-      snapshot.state === "signed_in" || snapshot.state === "directory_unavailable"
-    )
+    const currentOwnerUserId = browserAccountIsSignedIn(snapshot.state)
       ? snapshot.userId
       : null;
     await client.pruneAccountOwnedEnvironments(currentOwnerUserId);
@@ -186,7 +189,7 @@ export function WebClientRoot({
       await client.switchProject(project.id).catch(() => {});
     }
     if (!adapterRef.current) {
-      adapterRef.current = await loadAdapter(client, catalogSeed);
+      adapterRef.current = await loadAdapter(client, accountClient, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
     adapterRef.current.bindProject(toProjectInfo(project));
@@ -203,14 +206,14 @@ export function WebClientRoot({
 
     const AppRoot = await loadAppRoot();
     setPhase({ kind: "ready", AppRoot });
-  }, [client]);
+  }, [accountClient, client]);
 
   const enterChats = useCallback(async (
     catalogSeed?: SyncMobileProjectSummary[],
     initialPath = "/chats",
   ) => {
     if (!adapterRef.current) {
-      adapterRef.current = await loadAdapter(client, catalogSeed);
+      adapterRef.current = await loadAdapter(client, accountClient, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
     adapterRef.current.bindProject(null);
@@ -219,7 +222,7 @@ export function WebClientRoot({
     window.history.replaceState(null, "", initialPath);
     const AppRoot = await loadAppRoot();
     setPhase({ kind: "ready", AppRoot });
-  }, [client]);
+  }, [accountClient, client]);
 
   const afterConnect = useCallback(async () => {
     const activeEnv = (await client.listEnvironments()).find((environment) => environment.envId === client.getStatus().selectedEnvId) ?? null;
@@ -448,8 +451,8 @@ export function WebClientRoot({
   }, [accountClient]);
 
   const onAccountSignOut = useCallback(() => {
-    const snapshot = accountClient.signOut();
     void (async () => {
+      const snapshot = await accountClient.signOut();
       client.disconnect();
       await applyAccountPrivacy(snapshot);
       showMachinePicker();
@@ -489,7 +492,7 @@ export function WebClientRoot({
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {account.state !== "unconfigured" ? (
               <button type="button" style={primaryButton({ height: 36 })} onClick={onAccountSignIn}>
-                {account.state === "signed_in" || account.state === "directory_unavailable" || account.state === "auth_expired"
+                {browserAccountIsSignedIn(account.state) || account.state === "auth_expired"
                   ? "Sign in again"
                   : "Sign in"}
               </button>
@@ -499,7 +502,7 @@ export function WebClientRoot({
               style={primaryButton({ height: 36, background: "transparent", color: COLORS.textSecondary, border: `1px solid ${COLORS.border}` })}
               onClick={showMachinePicker}
             >
-              Choose another Mac
+              Choose another machine
             </button>
           </div>
         </ScreenShell>

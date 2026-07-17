@@ -19,7 +19,7 @@ export const SIGNED_OUT_RELAY_ACCESS: WebRelayAccess = { kind: "signed_out" };
 export class WebRelayAuthRequiredError extends Error {
   readonly code = "web_relay_auth_required";
 
-  constructor(message = "Sign in with the same ADE account as this Mac.") {
+  constructor(message = "Sign in with the same ADE account as this machine.") {
     super(message);
     this.name = "WebRelayAuthRequiredError";
   }
@@ -66,5 +66,5 @@ export function requireDialableAuthorizedEndpoint(
   if (original.some((candidate) => browserEndpointRequiresRelayAccess(candidate) && candidate.dialable)) {
     throw new WebRelayAuthRequiredError();
   }
-  throw new Error("No direct browser connection is available for this Mac.");
+  throw new Error("No direct browser connection is available for this machine.");
 }
