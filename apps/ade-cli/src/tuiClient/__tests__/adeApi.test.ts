@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, recoverCodexTurn, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
+import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, recoverCodexTurn, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
@@ -314,6 +314,23 @@ describe("latestTokenStats", () => {
       }),
     ];
     expect(latestTokenStats(events).percent).toBeNull();
+  });
+
+  it("uses live context usage events for mid-turn occupancy", () => {
+    const stats = latestTokenStats([
+      envelope(1, { type: "status", turnStatus: "started", turnId: "turn-1" }),
+      envelope(2, {
+        type: "context_usage",
+        origin: "live",
+        turnId: "turn-1",
+        usage: { categories: [], totalTokens: 48_000, maxTokens: 100_000, percentage: 48 },
+      }),
+    ]);
+
+    expect(stats.streaming).toBe(true);
+    expect(stats.inputTokens).toBe(48_000);
+    expect(stats.contextWindow).toBe(100_000);
+    expect(stats.percent).toBe(48);
   });
 
   it("reads cachedInputTokens / cacheReadTokens from both tokens and codex_token_usage events", () => {
@@ -668,6 +685,38 @@ describe("latestGoal", () => {
       } as AgentChatEventEnvelope["event"]),
       envelope(2, { type: "codex_goal_cleared" } as AgentChatEventEnvelope["event"]),
     ])).toBeNull();
+  });
+});
+
+describe("deriveClaudeGoalFromEvents", () => {
+  const snapshotGoal = {
+    condition: "All checks pass",
+    iterations: 2,
+    setAt: 10,
+    tokensAtStart: 100,
+    updatedAt: 20,
+  };
+
+  it("falls back to the session snapshot when the transcript window has no goal event", () => {
+    const derived = deriveClaudeGoalFromEvents([], snapshotGoal);
+    expect(derived).toBe(snapshotGoal);
+    expect(derived?.condition).toBe("All checks pass");
+    expect(deriveClaudeGoalFromEvents([], null)).toBeNull();
+  });
+
+  it("uses the latest update and lets an explicit clear override the snapshot", () => {
+    const updated = { ...snapshotGoal, condition: "Tests and lint pass", iterations: 4, updatedAt: 30 };
+    expect(deriveClaudeGoalFromEvents([
+      envelope(1, { type: "claude_goal_updated", goal: updated }),
+    ], snapshotGoal)).toEqual(updated);
+    expect(deriveClaudeGoalFromEvents([
+      envelope(1, { type: "claude_goal_updated", goal: updated }),
+    ], snapshotGoal)?.iterations).toBe(4);
+
+    expect(deriveClaudeGoalFromEvents([
+      envelope(1, { type: "claude_goal_updated", goal: updated }),
+      envelope(2, { type: "claude_goal_cleared" }),
+    ], snapshotGoal)).toBeNull();
   });
 });
 

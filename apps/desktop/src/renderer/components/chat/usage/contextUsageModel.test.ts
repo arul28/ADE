@@ -234,6 +234,18 @@ describe("latestContextUsageInput", () => {
     expect(viewModel?.contextWindow).toBe(200_000);
     expect(viewModel?.ratio).toBeCloseTo(0.155, 5);
   });
+
+  it("consumes live context_usage (origin: 'live') the same as an exact snapshot", () => {
+    const input = latestContextUsageInput([
+      envelope(1, { type: "context_usage", origin: "command", usage: { totalTokens: 20_000, maxTokens: 200_000 }, turnId: "turn-1" }),
+      // A live mid-turn sample updates the meter immediately, like an exact one.
+      envelope(2, { type: "context_usage", origin: "live", usage: { totalTokens: 170_000, maxTokens: 200_000 }, turnId: "turn-1" }),
+    ] as any, "claude");
+    const viewModel = toUsageViewModel(input);
+    expect(viewModel?.usedTokens).toBe(170_000);
+    expect(viewModel?.contextWindow).toBe(200_000);
+    expect(viewModel?.ratio).toBeCloseTo(0.85, 5);
+  });
 });
 
 describe("formatContextTokens", () => {

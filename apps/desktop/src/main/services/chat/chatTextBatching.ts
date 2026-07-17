@@ -3,6 +3,7 @@ import type { AgentChatEvent } from "../../../shared/types";
 export type BufferedAssistantText = {
   text: string;
   messageId?: string;
+  originTimestamp?: string;
   turnId?: string;
   itemId?: string;
 };
@@ -42,12 +43,14 @@ export function appendBufferedAssistantText(
     return {
       ...buffered!,
       text: `${buffered!.text}${event.text}`,
+      ...(event.originTimestamp ? { originTimestamp: event.originTimestamp } : {}),
     };
   }
 
   return {
     text: event.text,
     ...(event.messageId ? { messageId: event.messageId } : {}),
+    ...(event.originTimestamp ? { originTimestamp: event.originTimestamp } : {}),
     ...(event.turnId ? { turnId: event.turnId } : {}),
     ...(event.itemId ? { itemId: event.itemId } : {}),
   };

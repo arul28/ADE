@@ -1061,6 +1061,8 @@ struct WorkEventCardView: View {
   var body: some View {
     if card.kind == "contextCompact" {
       WorkContextCompactDivider(summary: card.body, isInProgress: card.isInProgress)
+    } else if card.kind == "conversationReset" {
+      WorkConversationResetDivider()
     } else if card.kind == "status" {
       statusRibbonBody
     } else if isRibbonKind(card.kind) {

@@ -20,6 +20,7 @@ import {
   firstUrlInText,
   footerControlsForAvailability,
   inlineRowCellOrder,
+  formatGoalBannerLine,
   formatGitConflictReport,
   formatLaneDeleteRisk,
   formFieldUsesPromptInput,
@@ -1970,6 +1971,21 @@ describe("optimistic chat summaries", () => {
     expect(optimistic.has("chat-new")).toBe(true);
   });
 
+  it("forwards the Claude goal snapshot into an optimistic summary", () => {
+    const claudeGoal = {
+      condition: "All checks pass",
+      iterations: 4,
+      setAt: 10,
+      tokensAtStart: 100,
+      updatedAt: 20,
+    };
+
+    const summary = chatSessionToOptimisticSummary(createdSession({ provider: "claude", claudeGoal }));
+    expect(summary.provider).toBe("claude");
+    expect(summary.claudeGoal).toEqual(claudeGoal);
+    expect(summary.claudeGoal?.iterations).toBe(4);
+  });
+
   it("drops the optimistic row once the runtime returns the created chat", () => {
     const optimistic = new Map<string, AgentChatSessionSummary>();
     optimistic.set("chat-new", chatSessionToOptimisticSummary(createdSession()));
@@ -1978,6 +1994,21 @@ describe("optimistic chat summaries", () => {
 
     expect(merged.map((session) => session.sessionId)).toEqual(["chat-new"]);
     expect(optimistic.size).toBe(0);
+  });
+});
+
+describe("formatGoalBannerLine", () => {
+  it("renders Claude goals through the shared banner with iterations only after the first check", () => {
+    const goal = {
+      condition: "All checks pass",
+      iterations: 4,
+      setAt: 10,
+      tokensAtStart: 100,
+      updatedAt: 20,
+    };
+    expect(formatGoalBannerLine(goal)).toBe("◎ goal: All checks pass · iter 4");
+    expect(formatGoalBannerLine({ ...goal, iterations: 0 })).toBe("◎ goal: All checks pass");
+    expect(formatGoalBannerLine({ ...goal, condition: "  " })).toBeNull();
   });
 });
 

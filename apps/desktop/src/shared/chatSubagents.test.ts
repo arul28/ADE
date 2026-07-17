@@ -83,6 +83,27 @@ describe("chat pane scalability helpers", () => {
     });
   });
 
+  it("preserves parentAgentId while deriving nested subagent snapshots", () => {
+    const events: AgentChatEventEnvelope[] = [{
+      sessionId: "session-nested",
+      timestamp: "2026-07-16T12:00:00.000Z",
+      event: {
+        type: "subagent_started",
+        taskId: "nested-task",
+        agentId: "nested-agent",
+        parentAgentId: "parent-agent",
+        description: "Inspect the nested transcript",
+      },
+    }];
+
+    expect(subagentSnapshotsFromEvents(events)).toEqual([
+      expect.objectContaining({
+        id: "nested-agent",
+        parentAgentId: "parent-agent",
+      }),
+    ]);
+  });
+
   it("partitions in source order while pins override earlier and cleared membership", () => {
     const running = paneSnapshot("running", "running");
     const completed = paneSnapshot("completed", "completed");

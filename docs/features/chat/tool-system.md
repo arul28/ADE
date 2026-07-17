@@ -35,6 +35,19 @@ Built by `createUniversalToolSet()` in `universalTools.ts`.
 | `askUser` (universal form) | Legacy ask-user helper. Claude SDK sessions use their native `AskUserQuestion` tool instead; see [ask-user](#ask-user-handling). | Always allowed. |
 | `TodoWrite`, `TodoRead` | Session-state todo list. Writes emit `todo_update` events. | Always allowed. |
 
+### Structured SDK tool results
+
+Claude user/replay messages may carry the full SDK `tool_use_result`. ADE
+preserves that value as `tool_result.structured` and also extracts narrow
+fields for thin clients: Bash exposes `timedOutAfterMs` and
+`backgroundCwdHint`, while Grep exposes `grepTotals.files` and
+`grepTotals.lines`.
+
+Completed Agent/Task results use the SDK's enriched
+`AgentToolCompletedOutput` when present. Their `subagent_result` rows can carry
+`worktreePath`, `worktreeBranch`, `totalTokens`, and `toolUseCount`; clients do
+not need to parse the raw structured object to show those values.
+
 ### Permission gate
 
 `PermissionMode` (`plan | edit | full-auto`) maps to tool categories

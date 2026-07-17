@@ -174,6 +174,39 @@ struct WorkContextCompactDivider: View {
   }
 }
 
+/// Calm transcript boundary used when Claude starts a fresh conversation
+/// while retaining the same ADE chat session.
+struct WorkConversationResetDivider: View {
+  var body: some View {
+    HStack(spacing: 8) {
+      hairline
+      HStack(spacing: 6) {
+        Image(systemName: "arrow.counterclockwise")
+          .font(.caption2.weight(.bold))
+        Text("New conversation")
+          .font(.caption2.weight(.semibold))
+          .tracking(0.3)
+      }
+      .foregroundStyle(ADEColor.textMuted)
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .background(ADEColor.textMuted.opacity(0.07), in: Capsule())
+      .overlay(Capsule().stroke(ADEColor.glassBorder, lineWidth: 0.5))
+      hairline
+    }
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("New conversation")
+  }
+
+  private var hairline: some View {
+    Rectangle()
+      .fill(ADEColor.glassBorder)
+      .frame(minWidth: 8, maxWidth: .infinity)
+      .frame(height: 0.6)
+  }
+}
+
 /// Parses the free-form summary string emitted by `contextCompact` events
 /// into a display label. Looks for two hints: a "~Ntokens" style fragment
 /// and an "auto" / "manual" trigger tag. Anything else falls back to just

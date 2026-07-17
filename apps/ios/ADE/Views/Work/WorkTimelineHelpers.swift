@@ -265,13 +265,24 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     combineOptionalText(detail, into: &hasher)
     hasher.combine(category)
     combineOptional(turnId, into: &hasher)
-  case .done(let status, let summary, let usage, let turnId, let model, let modelId):
+  case .done(let status, let summary, let usage, let turnId, let model, let modelId, let terminalReason):
     hasher.combine(status)
     combineLongTextSignature(summary, into: &hasher)
     combineUsageSummary(usage, into: &hasher)
     hasher.combine(turnId)
     combineOptional(model, into: &hasher)
     combineOptional(modelId, into: &hasher)
+    combineOptional(terminalReason, into: &hasher)
+  case .claudeGoalUpdated(let goal, let turnId):
+    combineLongTextSignature(goal.condition, into: &hasher)
+    hasher.combine(goal.iterations)
+    hasher.combine(goal.setAt)
+    hasher.combine(goal.tokensAtStart)
+    combineOptionalText(goal.lastReason, into: &hasher)
+    hasher.combine(goal.updatedAt)
+    combineOptional(turnId, into: &hasher)
+  case .claudeGoalCleared(let turnId):
+    combineOptional(turnId, into: &hasher)
   case .tokens(let usage, let turnId, let itemId):
     combineUsageSummary(usage, into: &hasher)
     hasher.combine(turnId)
@@ -467,7 +478,7 @@ func workTranscriptIndicatesActiveTurn(_ transcript: [WorkChatEnvelope]) -> Bool
       default:
         break
       }
-    case .done(_, _, _, let turnId, _, _):
+    case .done(_, _, _, let turnId, _, _, _):
       activeTurnIds.remove(turnId)
       bootstrapStartOpen = false
     default:
@@ -1490,7 +1501,7 @@ func buildWorkTimeline(
   // transcript.
 
   let turnUsageSummaries = transcript.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary)? in
-    guard case .done(_, _, let usage, _, _, _) = envelope.event, let usage else { return nil }
+    guard case .done(_, _, let usage, _, _, _, _) = envelope.event, let usage else { return nil }
     return (envelope.id, envelope.timestamp, usage)
   }
 
@@ -2267,7 +2278,7 @@ func buildWorkEventCards(
 
 private func workTerminalDoneTurnIds(from transcript: [WorkChatEnvelope]) -> Set<String> {
   Set(transcript.compactMap { envelope in
-    guard case .done(_, _, _, let turnId, _, _) = envelope.event else { return nil }
+    guard case .done(_, _, _, let turnId, _, _, _) = envelope.event else { return nil }
     return normalizedWorkTurnId(turnId)
   })
 }
@@ -2675,7 +2686,7 @@ private func eventCard(
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,
-        kind: "notice",
+        kind: kind == "conversation_reset" ? "conversationReset" : "notice",
         title: noticeTitle(for: kind),
         icon: noticeIcon(for: kind),
         tint: noticeTint(for: kind),
@@ -2985,7 +2996,7 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
       default:
         continue
       }
-    case .done(let status, _, _, let turnId, let model, let modelId):
+    case .done(let status, _, _, let turnId, let model, let modelId, let terminalReason):
       guard let key = normalizedWorkTurnId(turnId) else { continue }
       guard !seenEndedTurns.contains(key), let start = startByTurn[key] else { continue }
       seenEndedTurns.insert(key)
@@ -2995,6 +3006,7 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
         time: envelope.timestamp,
         workedDurationLabel: formattedSessionDuration(startedAt: start, endedAt: envelope.timestamp),
         status: status,
+        terminalReasonLabel: workTerminalReasonLabel(terminalReason),
         provider: metadata.provider,
         modelLabel: metadata.modelLabel,
         modelId: metadata.modelId
@@ -3006,6 +3018,45 @@ func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMark
   }
 
   return markers
+}
+
+/// Keep this map aligned with the desktop renderer's terse terminal-reason
+/// labels. The SDK reason is intentionally an open string; unknown values add
+/// no secondary label instead of leaking wire names into the UI.
+func workTerminalReasonLabel(_ reason: String?) -> String? {
+  switch reason?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "budget_exhausted": return "budget limit reached"
+  case "max_turns": return "max turns reached"
+  case "prompt_too_long": return "context window overflow"
+  case "api_error": return "API error after retries"
+  case "malformed_tool_use_exhausted": return "tool-call retries exhausted"
+  case "structured_output_retry_exhausted": return "output retries exhausted"
+  case "model_error": return "model error"
+  case "turn_setup_failed": return "turn setup failed"
+  case "tool_deferred_unavailable": return "deferred tool unavailable"
+  default: return nil
+  }
+}
+
+/// Resolve the current Claude goal from the session snapshot, then replay
+/// transcript updates in wire order so a newer update/clear wins over a stale
+/// summary refresh.
+func workClaudeGoal(
+  snapshot: AgentChatClaudeGoal?,
+  transcript: [WorkChatEnvelope]
+) -> AgentChatClaudeGoal? {
+  var current = snapshot
+  for envelope in sortedWorkChatEnvelopes(transcript) {
+    switch envelope.event {
+    case .claudeGoalUpdated(let goal, _):
+      current = goal
+    case .claudeGoalCleared:
+      current = nil
+    default:
+      continue
+    }
+  }
+  return current
 }
 
 private func normalizedWorkTurnId(_ turnId: String?) -> String? {
@@ -3044,11 +3095,13 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .reasoning(_, let turnId, _, _),
        .completionReport(_, _, _, _, let turnId),
        .command(_, _, _, _, _, _, _, let turnId),
-       .fileChange(_, _, _, _, _, let turnId):
+       .fileChange(_, _, _, _, _, let turnId),
+       .claudeGoalUpdated(_, let turnId),
+       .claudeGoalCleared(let turnId):
     return turnId
   case .tokens(_, let turnId, _):
     return turnId
-  case .done(_, _, _, let turnId, _, _):
+  case .done(_, _, _, let turnId, _, _, _):
     return turnId
   case .unknown:
     return nil
@@ -3070,7 +3123,7 @@ func workTurnModelMetadataByTurn(
   if let matchingTurnIds {
     guard !matchingTurnIds.isEmpty else { return metadataByTurn }
     for envelope in transcript.reversed() {
-      guard case .done(_, _, _, let turnId, let model, let modelId) = envelope.event else { continue }
+      guard case .done(_, _, _, let turnId, let model, let modelId, _) = envelope.event else { continue }
       let normalizedTurnId = turnId.trimmingCharacters(in: .whitespacesAndNewlines)
       guard matchingTurnIds.contains(normalizedTurnId),
             metadataByTurn[normalizedTurnId] == nil else { continue }
@@ -3087,7 +3140,7 @@ func workTurnModelMetadataByTurn(
   }
 
   for envelope in transcript {
-    guard case .done(_, _, _, let turnId, let model, let modelId) = envelope.event else { continue }
+    guard case .done(_, _, _, let turnId, let model, let modelId, _) = envelope.event else { continue }
     let normalizedTurnId = turnId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !normalizedTurnId.isEmpty else { continue }
     metadataByTurn[normalizedTurnId] = workTurnModelMetadata(
@@ -3202,7 +3255,7 @@ func summarizeWorkSessionUsage(from transcript: [WorkChatEnvelope]) -> WorkUsage
   )
 
   for envelope in transcript {
-    guard case .done(_, _, let usage, _, _, _) = envelope.event, let usage else { continue }
+    guard case .done(_, _, let usage, _, _, _, _) = envelope.event, let usage else { continue }
     summary.turnCount += usage.turnCount
     summary.inputTokens += usage.inputTokens
     summary.outputTokens += usage.outputTokens
@@ -3262,7 +3315,7 @@ func workContextUsageViewModel(
     case .tokens(let usage, _, _):
       if compactionProtected && !usage.isContextSnapshot { continue }
       latestUsage = usage
-    case .done(_, _, let usage, _, _, _):
+    case .done(_, _, let usage, _, _, _, _):
       if let usage {
         if compactionProtected && !usage.isContextSnapshot { continue }
         latestUsage = usage

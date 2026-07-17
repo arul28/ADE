@@ -29,6 +29,7 @@ struct WorkChatSummaryRenderContext: Equatable {
   let requestedCwd: String?
   let modelLabel: String
   let contextWindowFallback: Int?
+  let claudeGoal: AgentChatClaudeGoal?
 
   init(_ summary: AgentChatSessionSummary?) {
     guard let summary else {
@@ -46,6 +47,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.requestedCwd = nil
       self.modelLabel = "Model"
       self.contextWindowFallback = nil
+      self.claudeGoal = nil
       return
     }
 
@@ -63,6 +65,7 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.requestedCwd = summary.requestedCwd
     self.modelLabel = prettyWorkChatModelName(summary.model)
     self.contextWindowFallback = workContextWindowFallback(modelId: summary.modelId, model: summary.model)
+    self.claudeGoal = summary.claudeGoal
   }
 
   var currentModelId: String {
@@ -646,6 +649,10 @@ struct WorkChatSessionView: View {
       // The redundant ENDED/RUNNING status pill row has been retired. Chat
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
+      if let claudeGoal = workClaudeGoal(snapshot: chatSummaryContext.claudeGoal, transcript: transcript) {
+        WorkClaudeGoalPill(goal: claudeGoal)
+      }
+
       let subagentCount = subagentSnapshots.count
       let activeScheduledWorkCount = workScheduledWorkActiveCount(scheduledWorkSnapshots)
       let showsChatInfoBadge = inputLockMessage == nil && activeScheduledWorkCount > 0 && onOpenChatInfo != nil

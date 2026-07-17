@@ -152,6 +152,8 @@ export type SubagentSpawnAnchorRenderEvent = {
   spawnKind: AgentChatSpawnKind | null;
   /** Final result summary, surfaced on the card once the agent settles. */
   resultSummary: string | null;
+  /** Best-effort parent label (parent's description/agentType); null/absent if unknown. */
+  parentLabel?: string | null;
 };
 
 /**
@@ -170,6 +172,11 @@ export type SubagentResultCardRenderEvent = {
   startedAt: string | null;
   endedAt: string;
   durationMs: number | null;
+  totalTokens: number | null;
+  toolUseCount: number | null;
+  worktreeBranch: string | null;
+  worktreePath: string | null;
+  parentLabel: string | null;
 };
 
 /** One folded agent inside a {@link SubagentStoppedGroupEvent}. */
@@ -303,6 +310,13 @@ type SubagentAnchorState = {
   childSessionId: string | null;
   /** Spawn-kind carried on the `subagent_started` event; null for runtime-native subagents. */
   spawnKind: AgentChatSpawnKind | null;
+  /** Result-only usage/worktree metadata surfaced on the result card. */
+  totalTokens: number | null;
+  toolUseCount: number | null;
+  worktreeBranch: string | null;
+  worktreePath: string | null;
+  /** Parent agent id carried on any lifecycle event; resolves the parent label. */
+  parentAgentId: string | null;
 };
 
 type CollapseTranscriptContext = {
@@ -945,7 +959,22 @@ function backgroundExitCode(event: NormalizedSubagentLifecycleEvent): number | n
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function spawnAnchorEvent(state: SubagentAnchorState): SubagentSpawnAnchorRenderEvent {
+// Best-effort parent label from the anchors map — the parent's description or
+// agentType. Null when the parent isn't (yet) in the map; renders nothing.
+function resolveParentLabel(
+  state: SubagentAnchorState,
+  anchors: Map<string, SubagentAnchorState>,
+): string | null {
+  if (!state.parentAgentId) return null;
+  const parent = anchors.get(state.parentAgentId);
+  const label = parent?.description?.trim() || parent?.agentType?.trim() || null;
+  return label;
+}
+
+function spawnAnchorEvent(
+  state: SubagentAnchorState,
+  anchors?: Map<string, SubagentAnchorState>,
+): SubagentSpawnAnchorRenderEvent {
   // agentKey mirrors the stable renderKeyBase so the jump affordances derive the
   // same row keys the collapse pass assigned (see subagentSpawnKey/subagentResultKey).
   return {
@@ -963,6 +992,7 @@ function spawnAnchorEvent(state: SubagentAnchorState): SubagentSpawnAnchorRender
     childSessionId: state.childSessionId,
     spawnKind: state.spawnKind,
     resultSummary: state.resultSummary,
+    parentLabel: anchors ? resolveParentLabel(state, anchors) : null,
   };
 }
 
@@ -999,6 +1029,8 @@ function enrichSubagentStateFromEvent(
   if (typeof record.spawnKind === "string" && (record.spawnKind === "subagent" || record.spawnKind === "peer" || record.spawnKind === "none")) {
     state.spawnKind = record.spawnKind;
   }
+  const parentAgentId = subagentText((event as { parentAgentId?: unknown }).parentAgentId);
+  if (parentAgentId) state.parentAgentId = parentAgentId;
 }
 
 function classificationInput(state: SubagentAnchorState) {
@@ -1067,6 +1099,11 @@ function handleSubagentLifecycleEvent(
       error: null,
       childSessionId: null,
       spawnKind: null,
+      totalTokens: null,
+      toolUseCount: null,
+      worktreeBranch: null,
+      worktreePath: null,
+      parentAgentId: null,
     };
     anchors.set(agentKey, state);
     if (taskId) anchors.set(taskId, state);
@@ -1085,7 +1122,7 @@ function handleSubagentLifecycleEvent(
       rows.push({
         key: subagentSpawnKey(state.renderKeyBase),
         timestamp,
-        event: spawnAnchorEvent(state),
+        event: spawnAnchorEvent(state, anchors),
       });
     }
 
@@ -1106,7 +1143,7 @@ function handleSubagentLifecycleEvent(
         rows[rowIndex] = {
           key: expectedKey,
           timestamp,
-          event: spawnAnchorEvent(state),
+          event: spawnAnchorEvent(state, anchors),
         };
       }
     }
@@ -1146,6 +1183,14 @@ function handleSubagentLifecycleEvent(
 
   // Real subagent terminal: flip the anchor + push/mutate the result card.
   state.status = terminalStatus;
+  if (event.type === "subagent_result") {
+    if (typeof event.totalTokens === "number") state.totalTokens = event.totalTokens;
+    if (typeof event.toolUseCount === "number") state.toolUseCount = event.toolUseCount;
+    const wb = subagentText(event.worktreeBranch);
+    if (wb) state.worktreeBranch = wb;
+    const wp = subagentText(event.worktreePath);
+    if (wp) state.worktreePath = wp;
+  }
   state.endedAt = timestamp;
   state.resultSummary = preferSubagentSummary(state.resultSummary, incomingSummary);
   if (terminalStatus === "failed") {
@@ -1156,7 +1201,7 @@ function handleSubagentLifecycleEvent(
   if (state.rowIndex != null) {
     const expectedKey = subagentSpawnKey(state.renderKeyBase);
     const rowIndex = resolveSubagentRowPosition(rows, state, "rowIndex", expectedKey);
-    if (rowIndex != null) rows[rowIndex] = { key: expectedKey, timestamp, event: spawnAnchorEvent(state) };
+    if (rowIndex != null) rows[rowIndex] = { key: expectedKey, timestamp, event: spawnAnchorEvent(state, anchors) };
   }
 
   const resultEvent: SubagentResultCardRenderEvent = {
@@ -1169,6 +1214,11 @@ function handleSubagentLifecycleEvent(
     startedAt: state.startedAt,
     endedAt: timestamp,
     durationMs: durationMsBetween(state.startedAt, timestamp),
+    totalTokens: state.totalTokens,
+    toolUseCount: state.toolUseCount,
+    worktreeBranch: state.worktreeBranch,
+    worktreePath: state.worktreePath,
+    parentLabel: resolveParentLabel(state, anchors),
   };
   if (state.resultRowIndex == null) {
     state.resultRowIndex = rows.length;

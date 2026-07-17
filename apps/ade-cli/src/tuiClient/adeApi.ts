@@ -43,6 +43,7 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
+  ClaudeActiveGoal,
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type {
@@ -982,6 +983,27 @@ export function latestGoal(events: AgentChatEventEnvelope[]): CodexThreadGoal | 
       const next = (event as { goal?: CodexThreadGoal | null }).goal ?? null;
       goal = next ?? null;
     } else if (event.type === "codex_goal_cleared") {
+      goal = null;
+    }
+  }
+  return goal;
+}
+
+/**
+ * Walk the event stream and return the most recently observed Claude goal.
+ * When this transcript window has no goal event, retain the session snapshot;
+ * an explicit clear event always wins over that fallback.
+ */
+export function deriveClaudeGoalFromEvents(
+  events: AgentChatEventEnvelope[],
+  sessionGoal: ClaudeActiveGoal | null | undefined = null,
+): ClaudeActiveGoal | null {
+  let goal = sessionGoal ?? null;
+  for (const envelope of events) {
+    const event = envelope.event;
+    if (event.type === "claude_goal_updated") {
+      goal = event.goal;
+    } else if (event.type === "claude_goal_cleared") {
       goal = null;
     }
   }

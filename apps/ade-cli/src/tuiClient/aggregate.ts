@@ -87,7 +87,8 @@ export type AggregatedBlock =
   | { kind: "files-changed-group"; id: string; turnId: string | null; entries: FileChangeEntry[]; live: boolean; durationMs?: number }
   | { kind: "runtime-activity"; id: string; turnId: string | null; entries: RuntimeActivityEntry[]; live: boolean }
   | { kind: "activity-bundle"; id: string; turnId: string | null; entries: ActivityBundleEntry[]; live: boolean }
-  | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto"; live: boolean; preTokens?: number; postTokens?: number; durationMs?: number; sessionCompactionCount?: number }
+  | { kind: "compaction"; id: string; turnId: string | null; trigger: "manual" | "auto" | "ade_fallback"; live: boolean; preTokens?: number; postTokens?: number; durationMs?: number; sessionCompactionCount?: number }
+  | { kind: "conversation-reset"; id: string }
   | { kind: "queued-steer"; id: string; turnId: string | null; steerId: string; text: string }
   | { kind: "plan"; id: string; turnId: string | null; steps: PlanStep[]; current: number; total: number; live: boolean }
   | { kind: "approval"; id: string; line: RenderedChatLine }
@@ -762,6 +763,11 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
     if (isSteerLifecycleNotice(event) && event.message.trim().toLowerCase() !== "message queued") {
       steerMap.delete(event.steerId);
       resolvedSteerIds.add(event.steerId);
+      continue;
+    }
+    if (event.type === "command_lifecycle" && event.steerId && event.status !== "queued") {
+      steerMap.delete(event.steerId);
+      resolvedSteerIds.add(event.steerId);
     }
   }
   return Array.from(steerMap.values());
@@ -1070,6 +1076,10 @@ export function aggregateChatBlocks(args: {
         durationMs: event.durationMs,
         sessionCompactionCount: event.sessionCompactionCount,
       });
+      continue;
+    }
+    if (event.type === "conversation_reset") {
+      blocks.push({ kind: "conversation-reset", id });
       continue;
     }
     if (event.type === "codex_image_generation" || event.type === "codex_image_view") {

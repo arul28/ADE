@@ -6,6 +6,7 @@ import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
 import { appendStreamingText, isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
+import { terminalReasonLabel } from "./terminalReason";
 
 export type { HighlightedToken } from "./highlightCache";
 
@@ -526,6 +527,13 @@ export function renderChatLines(args: {
   maxLines?: number;
 }): RenderedChatLine[] {
   const lines: RenderedChatLine[] = [];
+  const terminalReasonByTurnId = new Map<string, string>();
+  for (const envelope of args.events) {
+    const event = envelope.event;
+    if (event.type !== "done" || event.status === "completed") continue;
+    const label = terminalReasonLabel(event.terminalReason);
+    if (label) terminalReasonByTurnId.set(event.turnId, label);
+  }
   const timeline: TimelineEntry[] = [
     ...args.events.map((envelope, index): TimelineEntry => ({
       kind: "event",
@@ -744,10 +752,9 @@ export function renderChatLines(args: {
       });
       continue;
     }
-    // codex_goal_updated / codex_goal_cleared: rendered as amber banner above
-    // chat by app.tsx — suppress here. codex_token_usage: rendered in
-    // ContextMeter footer — suppress here too.
-    if (event.type === "codex_goal_updated" || event.type === "codex_goal_cleared") {
+    // Provider goal events render as the amber banner above chat in app.tsx.
+    if (event.type === "codex_goal_updated" || event.type === "codex_goal_cleared"
+      || event.type === "claude_goal_updated" || event.type === "claude_goal_cleared") {
       continue;
     }
     if (event.type === "codex_token_usage") {
@@ -787,6 +794,32 @@ export function renderChatLines(args: {
       });
       continue;
     }
+    if (event.type === "conversation_reset") {
+      lines.push({ id, tone: "notice", body: "conversation reset" });
+      continue;
+    }
+    if (event.type === "interrupt_receipt") {
+      const count = event.stillQueuedUuids.length;
+      if (count > 0) {
+        lines.push({
+          id,
+          tone: "notice",
+          body: `stopped — ${count} queued message${count === 1 ? "" : "s"} will still run`,
+        });
+      }
+      continue;
+    }
+    if (event.type === "command_lifecycle") {
+      if (event.status === "cancelled" || event.status === "discarded") {
+        const verb = event.status === "discarded" ? "discarded" : "cancelled";
+        lines.push({
+          id,
+          tone: "notice",
+          body: `queued message ${verb}${event.preview ? ` · ${singleLine(event.preview, 120)}` : ""}`,
+        });
+      }
+      continue;
+    }
     if (event.type === "status") {
       // The interrupted state is conveyed by the dedicated "Interrupted · chat to continue"
       // suffix row, so suppress the redundant [status] interrupted transcript line.
@@ -794,7 +827,14 @@ export function renderChatLines(args: {
         continue;
       }
       const tone: "error" | "notice" = event.turnStatus === "failed" ? "error" : "notice";
-      lines.push({ id, tone, body: `[status] ${event.turnStatus}${event.message ? ` · ${singleLine(event.message, 120)}` : ""}` });
+      const terminalReason = event.turnStatus !== "completed" && event.turnId
+        ? terminalReasonByTurnId.get(event.turnId) ?? null
+        : null;
+      lines.push({
+        id,
+        tone,
+        body: `[status] ${event.turnStatus}${terminalReason ? ` · ${terminalReason}` : ""}${event.message ? ` · ${singleLine(event.message, 120)}` : ""}`,
+      });
       continue;
     }
     if (event.type === "error") {
@@ -806,6 +846,7 @@ export function renderChatLines(args: {
       const inputTokens = compactTokenCount(usage.inputTokens);
       const outputTokens = compactTokenCount(usage.outputTokens);
       const parts = [
+        event.status !== "completed" ? terminalReasonLabel(event.terminalReason) : null,
         inputTokens ? `in ${inputTokens}` : null,
         outputTokens ? `out ${outputTokens}` : null,
         typeof event.costUsd === "number" ? `$${event.costUsd.toFixed(2)}` : null,

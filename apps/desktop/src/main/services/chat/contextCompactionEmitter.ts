@@ -38,7 +38,7 @@ export function buildContextCompactEvent(
   state: CompactionEmitterState,
   session: AgentChatSession,
   input: {
-    trigger: "manual" | "auto";
+    trigger: "manual" | "auto" | "ade_fallback";
     state?: "started" | "completed";
     turnId?: string;
     compactionId?: string;

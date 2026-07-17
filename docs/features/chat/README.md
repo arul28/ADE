@@ -248,7 +248,7 @@ Controls and summaries project this runtime state rather than owning it:
 ## Key concepts
 
 - **Claude Agent SDK pipeline.** The Claude adapter is built on the
-  stable `query()` API (SDK 0.3.207): every chat owns a `ClaudeQuery`,
+  stable `query()` API (SDK 0.3.211): every chat owns a `ClaudeQuery`,
   fed by a `ClaudeInputPump` (`claudeInputPump.ts`) async iterable that
   hands live user turns to `query.streamInput`. Warmup goes through the
   SDK `startup()` hook, output styles and plugins are discovered by
@@ -261,8 +261,10 @@ Controls and summaries project this runtime state rather than owning it:
   binary, then detected auth/PATH/common locations, and the resolved
   path is passed through `pathToClaudeCodeExecutable`. Context usage,
   rewindFiles, forkSession, and output-style selection all run through the SDK control channel surfaced on the active
-  `Query` handle.
-- **Claude SDK 0.3.207 event surfaces.** ADE enables SDK hook events,
+  `Query` handle. The `claude_sdk.version` telemetry tag is derived from the
+  resolved runtime package metadata (with `0.3.211` only as the partial-install
+  fallback), so packaged telemetry reports the SDK that actually shipped.
+- **Claude SDK 0.3.211 event surfaces.** ADE enables SDK hook events,
   agent progress summaries, prompt suggestions, defensive filtering of tagged child frames,
   file checkpointing, and all skills for full Claude chats. The adapter
   translates SDK retry/refusal/notification/memory/mirror/permission events
@@ -275,7 +277,11 @@ Controls and summaries project this runtime state rather than owning it:
   disabled; any tagged child tool/stream frames the parent query still emits carry
   `parent_tool_use_id` and are kept out of the parent transcript. The full child
   transcript is read with the backing Claude session id. Claude sessions keep a long-lived idle reader
-  attached after a visible turn completes. The SDK's level-triggered
+  attached after a visible turn completes. ADE also consumes `conversation_reset`
+  as a real SDK continuity change, deduplicates ADE-owned `command_lifecycle`
+  frames, preserves the query when an interrupt receipt reports queued messages,
+  and calls the runtime's capability-probed `cancelAsyncMessage` control for
+  attributed queued steers. The SDK's level-triggered
   `background_tasks_changed` set and active subagents protect that query from
   idle-TTL cleanup and runtime-budget eviction until the work actually ends.
   That level set is also authoritative for whether a `local_bash` task is
@@ -878,7 +884,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.steer` | invoke | Send a follow-up message mid-turn. Claude callers may pass `dispatchMode: "inline" | "interrupt"` for atomic SDK `priority: "next" | "now"` delivery; omitting it stages the message. Returns `AgentChatSteerResult` (`{ steerId, queued, reason?: "queue_full" }`) — `queued: false, reason: "queue_full"` when the queue is at its cap. |
 | `ade.agentChat.cancelSteer` / `ade.agentChat.editSteer` | invoke | Queue management for queued steers. `cancelSteer({ requireQueued: true })` rejects if delivery already claimed the row; desktop Edit uses that guarded form before restoring the message and attachments to the composer. |
 | `ade.agentChat.dispatchSteer` | invoke | Claude-only: deliver an already staged steer as SDK `priority: "next"` (`mode: "inline"`) or `priority: "now"` (`mode: "interrupt"`), both with `shouldQuery: true`. The staged row is removed only after the input pump accepts the message. Throws on Codex/OpenCode/Cursor. |
-| `ade.agentChat.cancelDispatchedSteer` | invoke | Claude-only compatibility endpoint. The public SDK query does not expose cancellation for an already pushed priority message, so it reports `cancelled: false` and leaves the delivered transcript intact. |
+| `ade.agentChat.cancelDispatchedSteer` | invoke | Claude-only cancellation for an attributed SDK-queued priority message. Resolves the ADE `steerId` to its bounded command UUID, capability-probes the runtime `cancelAsyncMessage` control, and returns `{ cancelled: true }` only after Claude confirms cancellation. |
 | `ade.agentChat.interrupt` | invoke | Provider-specific interruption of the in-flight turn. |
 | `ade.agentChat.recoverCodexTurn` | invoke | Execute one guarded recovery action for the currently active stalled Codex turn: `wait`, `steer`, `interrupt_retry_same_thread`, or `restart_resume_thread`. Calls are single-flight per session/turn and reject stale cards once that turn is no longer active. |
 | `ade.agentChat.approve` | invoke | Legacy approval channel (pre-pending-input). |
@@ -1024,10 +1030,12 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   shared with the live queue (`MAX_PENDING_STEERS`), so a corrupt
   persisted record can't grow it beyond the in-memory budget.
 - **Dispatched steer cancellation.** Every priority message receives a fresh
-  client-side SDK UUID, but the public 0.3.207 `Query` surface does not expose
-  cancellation after the input pump accepts it. ADE therefore retains no
-  growing cancellation registry; the compatibility endpoint returns
-  `cancelled: false`.
+  client-side SDK UUID. ADE keeps a bounded UUID-to-`steerId` attribution map,
+  returns those attributed messages in interrupt receipts, and capability-probes
+  the runtime `cancelAsyncMessage(uuid)` control (present in the 0.3.211 runtime
+  even though its public declaration currently omits it). Successful cancellation
+  clears the receipt/staged row through the existing `cancelDispatchedSteer`
+  desktop, web, mobile, and ADE Code action.
 - **Pending input derivation.** The renderer's `derivePendingInputRequests`
   in `pendingInput.ts` must handle: (a) legacy `askUser` tool calls, (b)
   Claude `AskUserQuestion` SDK events, (c) Codex `permissions` requests,

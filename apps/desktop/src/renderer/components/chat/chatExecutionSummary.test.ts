@@ -4,7 +4,59 @@ import {
   deriveChatSubagentSnapshots,
   deriveScheduledWorkSnapshots,
   deriveTodoItems,
+  subagentTreeDepth,
+  type ChatSubagentSnapshot,
 } from "./chatExecutionSummary";
+
+describe("subagentTreeDepth", () => {
+  const snap = (agentId: string, parentAgentId: string | null): ChatSubagentSnapshot => ({
+    taskId: agentId,
+    agentId,
+    parentAgentId,
+    description: agentId,
+    status: "running",
+    startedAt: "2026-03-10T12:00:00.000Z",
+    updatedAt: "2026-03-10T12:00:00.000Z",
+    summary: null,
+  });
+
+  it("returns 0 for a top-level agent with no known parent", () => {
+    const list = [snap("root", null)];
+    expect(subagentTreeDepth(list[0]!, list)).toBe(0);
+  });
+
+  it("indents one level per ancestor present in the list", () => {
+    const root = snap("root", null);
+    const child = snap("child", "root");
+    const grandchild = snap("grandchild", "child");
+    const list = [root, child, grandchild];
+    expect(subagentTreeDepth(child, list)).toBe(1);
+    expect(subagentTreeDepth(grandchild, list)).toBe(2);
+  });
+
+  it("ignores a parentAgentId that is not in the list (depth 1 fallback)", () => {
+    const orphan = snap("orphan", "missing-parent");
+    const list = [orphan];
+    expect(subagentTreeDepth(orphan, list)).toBe(0);
+  });
+
+  it("caps depth at 3 for deep chains", () => {
+    const a = snap("a", null);
+    const b = snap("b", "a");
+    const c = snap("c", "b");
+    const d = snap("d", "c");
+    const e = snap("e", "d");
+    const list = [a, b, c, d, e];
+    expect(subagentTreeDepth(e, list)).toBe(3);
+  });
+
+  it("is cycle-guarded", () => {
+    const x = snap("x", "y");
+    const y = snap("y", "x");
+    const list = [x, y];
+    expect(subagentTreeDepth(x, list)).toBeLessThanOrEqual(3);
+  });
+});
 
 describe("deriveChatSubagentSnapshots", () => {
   it("keeps running subagents ahead of completed ones and preserves descriptions", () => {

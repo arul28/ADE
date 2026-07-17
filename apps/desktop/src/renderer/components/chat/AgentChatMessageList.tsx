@@ -119,6 +119,7 @@ import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
 import { ContextCompactDivider } from "./ContextCompactDivider";
+import { terminalReasonLabel, formatTimedOutAfter, formatGrepTotalsPrefix } from "./chatEventDisplay";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "../terminals/pendingSessionAnchors";
 import { ChatTurnFileChangesPanel, aggregateFiles } from "./ChatFileChangesPanel";
 
@@ -1787,7 +1788,13 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   const resultStr = formatStructuredValue(event.result);
   const isTruncated = resultStr.length > TOOL_RESULT_TRUNCATE_LIMIT;
   const displayStr = !expanded && isTruncated ? `${resultStr.slice(0, TOOL_RESULT_TRUNCATE_LIMIT)}...` : resultStr;
-  const preview = summarizeStructuredValue(event.result, 180);
+  const rawPreview = summarizeStructuredValue(event.result, 180);
+  // Grep: prefix the preview with the match/file totals the service extracted.
+  const preview = `${formatGrepTotalsPrefix(event.grepTotals)}${rawPreview}`;
+  // Bash: a command that auto-backgrounded on timeout carries the elapsed ms;
+  // surface it as a calm chip instead of the generic status word.
+  const timedOutMs = typeof event.timedOutAfterMs === "number" ? event.timedOutAfterMs : null;
+  const timedOutLabel = timedOutMs != null ? formatTimedOutAfter(timedOutMs) : null;
 
   return (
     <motion.div
@@ -1815,7 +1822,14 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
             <span className="font-bold text-fg/75">{toolDisplay.secondaryLabel}</span>
           ) : null}
           {preview.length ? <span className="max-w-[360px] truncate text-[length:calc(var(--chat-font-size)*10/14)] text-fg/35">{preview}</span> : null}
-          {event.status ? (
+          {timedOutLabel ? (
+            <span
+              className="inline-flex items-center gap-1 rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-fg/55"
+              title={event.backgroundCwdHint ? `Running in ${event.backgroundCwdHint}` : undefined}
+            >
+              auto-backgrounded after {timedOutLabel}
+            </span>
+          ) : event.status ? (
             <span className={cn("text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-wider", statusColorClass(event.status))}>
               {event.status}
             </span>
@@ -2737,6 +2751,23 @@ function InlineQuestionRequestCard({
 // replay read as a flicker once the bubble settled.
 const animatedUserMessageKeys = new Set<string>();
 
+/** Stable-ish identity for an interrupt receipt row (no id on the event). */
+function interruptReceiptIdentity(event: Extract<AgentChatEvent, { type: "interrupt_receipt" }>): string {
+  return `${event.turnId ?? ""}:${(event.stillQueuedUuids ?? []).join(",")}`;
+}
+
+/** Muted per-row timestamp, revealed on row hover only (lives inside an existing
+ * group-hover toolbar so it adds zero layout shift). */
+function RowHoverTimestamp({ iso, className }: { iso: string; className?: string }) {
+  const label = formatTime(iso);
+  if (!label) return null;
+  return (
+    <span className={cn("pointer-events-none select-none whitespace-nowrap font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] tabular-nums text-fg/35", className)}>
+      {label}
+    </span>
+  );
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
@@ -2765,6 +2796,10 @@ function renderEvent(
     /** Scroll a row into view by its stable render key (subagent jump affordances). */
     onScrollToRowKey?: (rowKey: string) => void;
     assistantTurnCopy?: { text: string } | null;
+    /** Interrupt-receipt identities whose queued messages already ran → collapse. */
+    staleInterruptReceipts?: Set<string>;
+    /** Cancel an ADE-owned queued message by uuid (stop-receipt affordance). */
+    onCancelQueuedMessage?: (uuid: string) => void;
   }
 ) {
   const event = envelope.event;
@@ -2841,6 +2876,7 @@ function renderEvent(
             </span>
           ) : null}
           <div className="absolute right-2 top-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+            <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />
             {event.messageId && options?.onRewindFiles ? (
               <button
                 type="button"
@@ -2957,6 +2993,7 @@ function renderEvent(
         {/* Unbubbled assistant prose — plain markdown on the flat canvas (Codex/t3 reference). */}
         <div className="group relative min-w-0 max-w-full overflow-visible py-0.5 pr-7 text-[length:var(--chat-font-size)] leading-[1.7]">
           <div className="absolute right-0 top-0 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+            <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
             <MessageCopyButton value={event.text} />
             {options?.assistantTurnCopy ? (
               <MessageCopyButton
@@ -3389,6 +3426,81 @@ function renderEvent(
         <span className="min-w-0 truncate">{message}</span>
       </div>
     );
+  }
+
+  /* ── Claude Goal (read-only /goal loop pills) ── */
+  if (event.type === "claude_goal_updated" || event.type === "claude_goal_cleared") {
+    const message = event.type === "claude_goal_cleared"
+      ? "Goal met"
+      : event.goal.iterations > 1
+        ? (event.goal.lastReason?.trim()
+            ? `Goal check ${event.goal.iterations}: ${event.goal.lastReason.trim()}`
+            : `Goal check ${event.goal.iterations}`)
+        : `Goal set: ${event.goal.condition.trim()}`;
+    return (
+      <div className="inline-flex max-w-[min(100%,70ch)] items-center gap-2 rounded-lg border border-amber-400/16 bg-amber-500/[0.055] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/78">
+        <Target size={11} weight="duotone" className="shrink-0 text-amber-300/80" />
+        <span className="shrink-0 text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">goal</span>
+        <span className="min-w-0 truncate">{message}</span>
+      </div>
+    );
+  }
+
+  /* ── Stop receipt (interrupt) ── */
+  if (event.type === "interrupt_receipt") {
+    // Auto-collapse once the referenced messages have run (best-effort: a later
+    // `done` arrived for this session).
+    if (options?.staleInterruptReceipts?.has(interruptReceiptIdentity(event))) return null;
+    const known = event.known ?? [];
+    const stillQueued = event.stillQueuedUuids ?? [];
+    // Count-only when we can't attribute any queued message to a user-visible one.
+    const totalCount = stillQueued.length;
+    if (totalCount === 0) return null;
+    const onCancel = options?.onCancelQueuedMessage;
+    return (
+      <div className="inline-flex max-w-[min(100%,70ch)] flex-col gap-1 rounded-lg border border-amber-400/16 bg-amber-500/[0.05] px-2.5 py-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/80">
+        <div className="flex items-center gap-2">
+          <Warning size={11} weight="bold" className="shrink-0 text-amber-300/80" aria-hidden />
+          <span className="min-w-0">
+            Stopped — {totalCount} queued message{totalCount === 1 ? "" : "s"} will still run
+          </span>
+        </div>
+        {known.length > 0 ? (
+          <ul className="flex flex-col gap-0.5 pl-[19px]">
+            {known.map((item) => (
+              <li key={item.uuid} className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 flex-1 truncate text-amber-100/60">{item.preview}</span>
+                {onCancel && item.steerId ? (
+                  <button
+                    type="button"
+                    onClick={() => onCancel(item.steerId!)}
+                    className="shrink-0 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-200/60 underline-offset-2 transition-colors hover:text-amber-100 hover:underline"
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
+    );
+  }
+
+  if (event.type === "command_lifecycle") {
+    if (event.status !== "cancelled" && event.status !== "discarded") return null;
+    const label = event.status === "discarded" ? "Queued message discarded" : "Queued message cancelled";
+    return (
+      <div className="inline-flex max-w-[min(100%,70ch)] items-center gap-2 rounded-lg border border-border/15 bg-surface-raised/20 px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55">
+        <Warning size={11} weight="bold" className="shrink-0 text-fg/40" aria-hidden />
+        <span className="min-w-0 truncate">{event.preview ? `${label}: ${event.preview}` : label}</span>
+      </div>
+    );
+  }
+
+  /* ── Conversation reset / API retry: surfaced elsewhere, no inline row. ── */
+  if (event.type === "conversation_reset" || event.type === "api_retry") {
+    return null;
   }
 
   /* ── System Notice ── */
@@ -4276,6 +4388,7 @@ function DoneTurnDivider({
 }) {
   const completed = event.status === "completed";
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
+  const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
   const workedFor = durationMs !== null && durationMs > 1500
     ? `Worked for ${formatTurnDuration(durationMs)}`
     : null;
@@ -4299,6 +4412,12 @@ function DoneTurnDivider({
         ) : (
           <span className="font-medium uppercase tracking-wide">{event.status}</span>
         )}
+        {reasonLabel ? (
+          <>
+            <span className="opacity-40">·</span>
+            <span className="normal-case">{reasonLabel}</span>
+          </>
+        ) : null}
         {workedFor ? (
           <>
             <span className="opacity-40">·</span>
@@ -4319,6 +4438,35 @@ function deriveLatestActivity(events: AgentChatEventEnvelope[]): { activity: str
     }
     if (evt.type === "done") return null;
     if (evt.type === "status" && evt.turnStatus !== "started") return null;
+  }
+  return null;
+}
+
+// The latest `api_retry` for the live turn, but only while it is the newest
+// signal — an assistant/stream/activity event after it means the retry
+// resolved, so the verb clears. Drives a better working-indicator verb than the
+// generic "taking longer than usual".
+function deriveActiveApiRetry(
+  events: AgentChatEventEnvelope[],
+  activeTurnId: string | null,
+): { attempt: number; maxRetries: number; retryDelayMs: number } | null {
+  if (!activeTurnId) return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const evt = events[i]!.event;
+    if (evt.type === "api_retry") {
+      if (evt.turnId && evt.turnId !== activeTurnId) continue;
+      return { attempt: evt.attempt, maxRetries: evt.maxRetries, retryDelayMs: evt.retryDelayMs };
+    }
+    if (
+      evt.type === "text"
+      || evt.type === "reasoning"
+      || evt.type === "activity"
+      || evt.type === "tool_call"
+      || evt.type === "tool_result"
+      || evt.type === "done"
+    ) {
+      return null;
+    }
   }
   return null;
 }
@@ -4401,6 +4549,8 @@ type EventRowProps = {
   anchored?: boolean;
   onScrollToRowKey?: (rowKey: string) => void;
   assistantTurnCopy?: { text: string } | null;
+  staleInterruptReceipts?: Set<string>;
+  onCancelQueuedMessage?: (uuid: string) => void;
 };
 
 const EventRow = React.memo(function EventRow({
@@ -4438,6 +4588,8 @@ const EventRow = React.memo(function EventRow({
   anchored,
   onScrollToRowKey,
   assistantTurnCopy,
+  staleInterruptReceipts,
+  onCancelQueuedMessage,
 }: EventRowProps) {
   const workLogAnimate = Boolean(turnActive)
     && !sessionEnded
@@ -4517,6 +4669,8 @@ const EventRow = React.memo(function EventRow({
             mosaic,
             onScrollToRowKey,
             assistantTurnCopy,
+            staleInterruptReceipts,
+            onCancelQueuedMessage,
           })}
       {envelope.event.type === "done" ? (
         <DoneTurnDivider
@@ -4840,6 +4994,7 @@ function AgentChatMessageListMain({
   onInsertDraft,
   onRevealChatTerminal,
   onRewindFiles,
+  onCancelQueuedMessage,
   turnDiffSummaries,
   sessionEnded = false,
   hasOlderHistory = false,
@@ -4863,6 +5018,8 @@ function AgentChatMessageListMain({
   onInsertDraft?: (text: string) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
+  /** Cancel an ADE-owned queued message by uuid (stop-receipt affordance). */
+  onCancelQueuedMessage?: (uuid: string) => void;
   turnDiffSummaries?: TurnDiffSummary[];
   respondingApprovalIds?: Set<string>;
   pendingApprovalIds?: Set<string>;
@@ -5025,6 +5182,37 @@ function AgentChatMessageListMain({
   }
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
+  const activeApiRetry = useMemo(
+    () => (showStreamingIndicator ? deriveActiveApiRetry(events, activeTurnId) : null),
+    [events, showStreamingIndicator, activeTurnId],
+  );
+  // A stop receipt auto-collapses once its queued messages have run — best-effort:
+  // once a *later* turn (different turnId, i.e. the next turn) completes. The
+  // interrupted turn's own `done` does not count.
+  const staleInterruptReceipts = useMemo(() => {
+    const stale = new Set<string>();
+    const pending: { identity: string; turnId: string | undefined; donesAfter: number }[] = [];
+    for (const envelope of events) {
+      const evt = envelope.event;
+      if (evt.type === "interrupt_receipt") {
+        pending.push({ identity: interruptReceiptIdentity(evt), turnId: evt.turnId, donesAfter: 0 });
+      } else if (evt.type === "done") {
+        for (const p of pending) {
+          if (stale.has(p.identity)) continue;
+          if (p.turnId && evt.turnId && evt.turnId !== p.turnId) {
+            stale.add(p.identity);
+          } else if (p.turnId && evt.turnId === p.turnId) {
+            // Interrupted turn's own done — wait for the next turn.
+          } else {
+            // Missing turnId on either side: fall back to "second done after".
+            p.donesAfter += 1;
+            if (p.donesAfter >= 2) stale.add(p.identity);
+          }
+        }
+      }
+    }
+    return stale;
+  }, [events]);
   const activeTurnStartedAt = useMemo(
     () => (showStreamingIndicator ? deriveTurnStartedAt(events, activeTurnId) : null),
     [events, showStreamingIndicator, activeTurnId],
@@ -5730,9 +5918,11 @@ function AgentChatMessageListMain({
         anchored={anchored}
         onScrollToRowKey={scrollToRowKey}
         assistantTurnCopy={assistantTurnCopy}
+        staleInterruptReceipts={staleInterruptReceipts}
+        onCancelQueuedMessage={onCancelQueuedMessage}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, onCancelQueuedMessage]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
@@ -5756,7 +5946,11 @@ function AgentChatMessageListMain({
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
       <WorkingIndicator
-        activity={latestActivity ? (ACTIVITY_LABELS[latestActivity.activity] ?? null) : null}
+        activity={
+          activeApiRetry
+            ? `retrying (attempt ${activeApiRetry.attempt}/${activeApiRetry.maxRetries} · waiting ${Math.max(0, Math.round(activeApiRetry.retryDelayMs / 1000))}s)`
+            : latestActivity ? (ACTIVITY_LABELS[latestActivity.activity] ?? null) : null
+        }
         startedAt={activeTurnStartedAt}
       />
     </motion.div>

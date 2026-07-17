@@ -259,7 +259,8 @@ struct WorkActivityIndicator: View {
            .autoApprovalReview, .pendingInputResolved, .subagentResult,
            .codexState, .codexTurnStalled,
            .scheduledWorkUpdate, .transcriptRetraction,
-           .completionReport, .tokens, .unknown:
+           .completionReport, .tokens, .claudeGoalUpdated,
+           .claudeGoalCleared, .unknown:
         continue
       }
     }
@@ -269,7 +270,7 @@ struct WorkActivityIndicator: View {
 
   private static func endedTurnId(from envelope: WorkChatEnvelope) -> String? {
     switch envelope.event {
-    case .done(_, _, _, let turnId, _, _):
+    case .done(_, _, _, let turnId, _, _, _):
       return normalizedActivityTurnId(turnId)
     case .status(let turnStatus, _, let turnId) where isTerminalStatus(turnStatus):
       return normalizedActivityTurnId(turnId)

@@ -83,7 +83,7 @@ Two helpers summarise a parsed stream:
 | `structured_question` | Claude SDK `AskUserQuestion` tool surface. |
 | `pending_input_resolved` | Hidden row; consumed by pending-input derivation to clear UI state. |
 | `status` | Turn-level lifecycle: `started`, `completed`, `interrupted`, `failed`. |
-| `done` | Final turn marker with model, model id, usage, cost. Also clears non-question pending inputs when status is not `completed`. |
+| `done` | Final turn marker with model, model id, usage, cost, and optional open-string `terminalReason`. Failed/interrupted dividers translate known reasons into a short explanation; completed turns omit the reason. Also clears non-question pending inputs when status is not `completed`. |
 | `error` | Provider/runtime failure with message, detail, and semantic `errorInfo`. Codex can report the same terminal failure first as an app-server `error` notification and again on failed `turn/completed`; ADE keeps one visible row for the same turn/error identity while preserving distinct failures. |
 | `activity` | Ephemeral UI hint (thinking, searching, running_command). Hidden from the transcript. |
 | `todo_update` | Task-list snapshot; consumed by `ChatTasksPanel`. |
@@ -92,16 +92,34 @@ Two helpers summarise a parsed stream:
 | `tool_use_start` / `tool_use_complete` / `tool_use_summary` | Claude SDK tool lifecycle tracking (see [Claude tool-use tracking](#claude-tool-use-tracking)). |
 | `step_boundary` | Workflow step boundary marker. |
 | `system_notice` | Non-transcript chrome: auth errors, rate limits, and file persistence hints. Special-cased renders: the "Promoted to Cursor Cloud" pill, and the `status:"subagent_spawned"` chip (emitted into the parent when a child chat session is created with a parent lineage; `detail.spawnedSession` carries the child sessionId/laneId/title and the chip deep-links via `ade:work:select-session`; the TUI shows the message line; iOS renders it through its existing system_notice mapping). |
+| `conversation_reset` | Marks a fresh Claude conversation inside the same ADE session. ADE adopts `newConversationId` as the next SDK resume pointer, clears conversation-scoped auto-title/continuity caches while preserving a manual title, and renderers show a `New conversation` divider. |
+| `interrupt_receipt` | Records SDK UUIDs that remain queued after an interrupt. Clients show the full queued count; ADE-attributed messages include their `steerId` and offer cancellation through the SDK control channel. The long-lived query remains attached while those messages are queued so the receipt stays actionable. |
+| `command_lifecycle` | Ground-truth lifecycle for ADE-owned Claude messages (`queued`, `started`, `completed`, `cancelled`, `discarded`). ADE ignores internal UUIDs it cannot attribute, deduplicates repeated states, clears staged composer rows once execution begins, and renders only cancelled/discarded terminal anomalies to keep transcripts quiet. |
+| `claude_goal_updated` / `claude_goal_cleared` | Read-only Claude `/goal` lifecycle. The update carries the condition, iteration count, token baseline, timestamps, and optional last reason; the session summary mirrors the latest value as `claudeGoal`. |
 | `session_meta_updated` | Runtime-native session metadata update. Carries title / manual-name state, and — when a client changes the session's mode via `updateSession` — the permission/interaction mode fields (`permissionMode`, `interactionMode`, `claudePermissionMode`, `codexApprovalPolicy`/`codexSandbox`/`codexConfigSource`, `opencodePermissionMode`, `droidPermissionMode`, `cursorModeId`, `cursorModeSnapshot`). The renderer treats it as a local-touch event so Work lists and grid tiles refresh when a provider renames a session, patches the session summary with any mode fields present, and re-seeds the selected chat's composer mode controls so a mode change on another client (desktop ↔ iOS) shows up live without a refetch. All mode fields are optional; a title-only emit carries none of them. |
 | `completion_report` | Structured closeout produced by the `reportCompletion` workflow tool. |
 | `turn_diff_summary` | Git-level before/after SHA + per-file stats for a completed turn. |
 | `delegation_state` | Delegated worker state updates. |
-| `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary and `state: "completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, and per-session count. A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; exact post-compaction snapshots may refill the meter immediately, while stale same-turn aggregate counters are ignored. |
+| `context_usage` | Provider-neutral context occupancy. `origin: "live"` identifies throttled per-API-call Claude usage; absent origin remains compatible with legacy command snapshots. |
+| `context_compact` | Provider-neutral manual/automatic compaction lifecycle. `state: "started"` begins the boundary and `state: "completed"` may carry `preTokens`, `postTokens`, `tokensRemoved`, `durationMs`, provider, and per-session count. `trigger: "ade_fallback"` identifies ADE's guarded fallback. A completed boundary invalidates older context-meter usage on desktop, ADE Code, and iOS; exact post-compaction snapshots may refill the meter immediately, while stale same-turn aggregate counters are ignored. |
 | `web_search` | Provider-neutral web-search/fetch lifecycle; renderers group these with other tool calls instead of showing them as standalone event cards. Actions can carry `query`, `queries`, `title`, `url`, and `snippet`; desktop and iOS render URL actions as in-app-browser result chips, while the TUI keeps a concise one-line action summary. Codex 0.145 additionally emits structured `results` (an array of `{ url, title, snippet }` capped at 8 by the adapter) plus `resultsTotal` (the pre-cap hit count). Renderers thread these onto the same grouped row — desktop/iOS surface them as `Sources` chips (deduped against the action URLs) and the Sources tab, and the TUI shows up to three `title — domain` preview lines with a `+N more` tail. Codex emits native web-search items; `claudeStructuredActivity.ts` maps Claude server-tool blocks into the same event. |
 | `codex_image_generation` / `codex_image_view` | Compact generated/viewed-image lifecycle used across providers despite the legacy type prefix. Codex emits native image items, Cursor maps `generateImage`, OpenCode maps image `file` parts, and Droid maps assistant image blocks. Large stored data URIs are removed with original/omitted byte metadata. |
 | `codex_safety_buffering` / `codex_moderation_metadata` / `codex_sleep` / `codex_thread_deleted` / `codex_turn_stalled` | Codex app-server runtime state. Safety buffering, moderation metadata, and sleep are compact status rows; `codex_thread_deleted` clears the stored upstream thread; `codex_turn_stalled` is the structured recovery event shown when a turn produced no useful output after app-server reconciliation. Its actions are `wait`, `steer`, `interrupt_retry_same_thread`, and `restart_resume_thread`. |
 | `auto_approval_review` | When auto-approval policy kicks in, this event carries the review text. |
 | `prompt_suggestion` | Suggested follow-up prompts for the user. |
+
+## Claude context guardrails
+
+Live Claude occupancy emits at most once every five seconds and only after a
+one-point percentage change. ADE never preempts the SDK's natural compaction.
+It sends a fallback `/compact` only at a turn boundary when all three gates
+hold: occupancy is at least 97%, no natural `context_compact` has appeared
+since occupancy crossed 90%, and no fallback was already issued in the same
+high-water episode. The episode resets below 80%.
+
+If a turn ends with `terminalReason: "prompt_too_long"` (or the equivalent
+overflow signature), ADE compacts once and asks the user to re-send the last
+message. It does not automatically replay that message.
 
 ## Canonical runtime events
 

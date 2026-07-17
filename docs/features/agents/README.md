@@ -39,6 +39,12 @@ it and GPT-5.5 retained. Provider-native web, MCP/connector, image, and
 subagent activity is normalized into compact transcript events so every client
 can show what the agent did without dumping raw SDK/app-server envelopes.
 
+Claude SDK session-message snapshots include `parent_agent_id`. ADE preserves
+it as `parentAgentId` on subagent snapshots so desktop surfaces can build the
+real nested hierarchy; `null` or absent means a depth-one child of the main
+session. Live frames remain defensive because not every SDK start event carries
+the parent id.
+
 The `ade --socket browser ...` driver is available only to an ADE-launched,
 chat-bound agent or owned terminal. Its opaque browser actor capability binds
 the call to that chat's lane/project or personal tab collection. The runtime

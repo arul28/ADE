@@ -17,7 +17,9 @@ const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS; // ≈ 50.27
 
 function ratioColor(ratio: number): string {
   if (ratio >= 0.9) return "#fb7185"; // rose-400 — nearing the limit
-  if (ratio >= 0.7) return "#fbbf24"; // amber-400
+  // Amber tier aligns with the ≥80% tooltip warning so the color shift is
+  // visible without opening the tooltip.
+  if (Math.round(ratio * 100) >= 80) return "#fbbf24"; // amber-400 — context may soon be trimmed/compacted
   return "#38bdf8"; // sky-400
 }
 

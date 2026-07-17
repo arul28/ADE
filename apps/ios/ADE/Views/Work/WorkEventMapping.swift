@@ -304,7 +304,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .error(let message, let detail, let turnId, _, let errorInfo):
     let detailText = detail ?? prettyPrintedRemoteJSONValue(errorInfo)
     return .error(message: message, detail: detailText, category: workErrorCategory(message: message, detail: detailText), turnId: turnId)
-  case .done(let turnId, let status, let model, let modelId, let usage, let costUsd):
+  case .done(let turnId, let status, let model, let modelId, let usage, let costUsd, let terminalReason):
     var parts = [status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized]
     if let model, !model.isEmpty {
       parts.append(model)
@@ -343,7 +343,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       ),
       turnId: turnId,
       model: model,
-      modelId: modelId
+      modelId: modelId,
+      terminalReason: terminalReason
     )
   case .tokens(let turnId, let itemId, let inputTokens, let outputTokens, let cacheReadTokens, let cacheWriteTokens, let contextWindow):
     return .tokens(
@@ -397,7 +398,7 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       turnId: turnId ?? usage.turnId ?? "",
       itemId: nil
     )
-  case .contextUsage(let usage, let turnId):
+  case .contextUsage(let usage, let turnId, _):
     return .tokens(
       usage: WorkUsageSummary(
         turnCount: 1,
@@ -413,6 +414,39 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       turnId: turnId ?? "",
       itemId: nil
     )
+  case .conversationReset:
+    return .systemNotice(
+      kind: "conversation_reset",
+      message: "New conversation",
+      detail: nil,
+      turnId: nil,
+      steerId: nil
+    )
+  case .interruptReceipt(let stillQueuedUuids):
+    let count = stillQueuedUuids.count
+    return .systemNotice(
+      kind: "interrupt_receipt",
+      message: "Stopped — \(count) queued will still run",
+      detail: nil,
+      turnId: nil,
+      steerId: nil
+    )
+  case .commandLifecycle(_, let status, let preview, let steerId, let turnId):
+    guard status == "cancelled" || status == "discarded" else {
+      return .unknown(type: "command_lifecycle")
+    }
+    let verb = status == "discarded" ? "discarded" : "cancelled"
+    return .systemNotice(
+      kind: "command_lifecycle",
+      message: preview.map { "Queued message \(verb): \($0)" } ?? "Queued message \(verb)",
+      detail: nil,
+      turnId: turnId,
+      steerId: steerId
+    )
+  case .claudeGoalUpdated(let goal, let turnId):
+    return .claudeGoalUpdated(goal: goal, turnId: turnId)
+  case .claudeGoalCleared(let turnId):
+    return .claudeGoalCleared(turnId: turnId)
   case .promptSuggestion(let suggestion, let turnId):
     return .promptSuggestion(text: suggestion, turnId: turnId)
   case .contextCompact(

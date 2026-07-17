@@ -5,7 +5,7 @@ export type ContextCompactProvider = "claude" | "codex" | "opencode" | "cursor" 
 export type ContextCompactEvent = Extract<AgentChatEvent, { type: "context_compact" }>;
 
 export type NormalizedContextCompact = {
-  trigger: "manual" | "auto";
+  trigger: "manual" | "auto" | "ade_fallback";
   state: "started" | "completed";
   turnId?: string;
   compactionId?: string;

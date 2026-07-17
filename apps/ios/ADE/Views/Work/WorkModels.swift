@@ -566,6 +566,7 @@ struct WorkTurnEndMarker: Equatable {
   let time: String
   let workedDurationLabel: String
   let status: String
+  let terminalReasonLabel: String?
   let provider: String
   let modelLabel: String
   let modelId: String?
@@ -911,10 +912,12 @@ enum WorkChatEvent: Equatable {
   case todoUpdate(items: [String], turnId: String?)
   case systemNotice(kind: String, message: String, detail: String?, turnId: String?, steerId: String?)
   case error(message: String, detail: String?, category: String, turnId: String?)
-  case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String, model: String?, modelId: String?)
+  case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String, model: String?, modelId: String?, terminalReason: String? = nil)
   case tokens(usage: WorkUsageSummary, turnId: String, itemId: String?)
   case promptSuggestion(text: String, turnId: String?)
   case contextCompact(summary: String, isInProgress: Bool, postTokens: Int?, turnId: String?, compactionId: String?)
+  case claudeGoalUpdated(goal: AgentChatClaudeGoal, turnId: String?)
+  case claudeGoalCleared(turnId: String?)
   case autoApprovalReview(summary: String, turnId: String?)
   case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, results: [CodexWebSearchResult]?, status: WorkToolCardStatus, itemId: String, turnId: String?)
   case codexState(title: String, message: String, icon: String, turnId: String?)
@@ -951,6 +954,8 @@ enum WorkChatEvent: Equatable {
     case .tokens: return "tokens"
     case .promptSuggestion: return "prompt_suggestion"
     case .contextCompact: return "context_compact"
+    case .claudeGoalUpdated: return "claude_goal_updated"
+    case .claudeGoalCleared: return "claude_goal_cleared"
     case .autoApprovalReview: return "auto_approval_review"
     case .webSearch: return "web_search"
     case .codexState: return "codex_state"

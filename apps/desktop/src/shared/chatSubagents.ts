@@ -12,6 +12,7 @@ export type SubagentSnapshot = {
   status: "running" | "completed" | "failed" | "stopped";
   summary: string;
   parentToolUseId?: string | null;
+  parentAgentId?: string | null;
   turnId?: string | null;
   label?: string | null;
   model?: string | null;
@@ -761,6 +762,7 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
     const id = agentId ?? taskId;
     if (!id) continue;
     const incomingParentToolUseId = textField(event.parentToolUseId) ?? textField(event.parentAgentId);
+    const incomingParentAgentId = textField(event.parentAgentId);
     const parentPlaceholder = incomingParentToolUseId ? snapshots.get(incomingParentToolUseId) : undefined;
     const parentResolvedIds = incomingParentToolUseId ? resolvedIdsByParent.get(incomingParentToolUseId) : undefined;
     const parentIsPlaceholder = Boolean(
@@ -802,6 +804,7 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
       status: existing?.status ?? "running",
       summary,
       parentToolUseId,
+      parentAgentId: incomingParentAgentId ?? existing?.parentAgentId ?? null,
       turnId: typeof event.turnId === "string" ? event.turnId : existing?.turnId ?? null,
       label: typeof event.label === "string" ? event.label : existing?.label ?? null,
       model: typeof event.model === "string" ? event.model : existing?.model ?? null,
