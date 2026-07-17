@@ -16,6 +16,7 @@ import {
   fetchAccountMachines,
   resolveTrustedAccountDirectoryBaseUrl,
   selectAccountMachine,
+  shouldIgnoreDevelopmentAccountDirectoryUrl,
 } from "../../../../desktop/src/shared/accountDirectory";
 import type { AccountAuthService } from "./accountAuthService";
 import { defaultRelayUrl } from "../sync/syncCloudRelayStore";
@@ -106,6 +107,13 @@ export type AccountMachineListOptions = {
 
 export type AccountMachineDeleteOptions = AccountMachineListOptions;
 
+function rawAccountDirectoryEnvironmentFallback(): string | undefined {
+  const rawUrl = process.env.ADE_ACCOUNT_DIRECTORY_URL;
+  return shouldIgnoreDevelopmentAccountDirectoryUrl(rawUrl, process.env)
+    ? undefined
+    : rawUrl;
+}
+
 export class AccountMachineDirectoryService {
   constructor(
     private readonly account: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
@@ -137,7 +145,7 @@ export class AccountMachineDirectoryService {
     return await fetchAccountMachines({
       baseUrl: resolveTrustedAccountDirectoryBaseUrl(
         this.options.directoryBaseUrl?.()
-          ?? process.env.ADE_ACCOUNT_DIRECTORY_URL,
+          ?? rawAccountDirectoryEnvironmentFallback(),
       ),
       accessToken: token,
       fetchImpl: this.options.fetchImpl,
@@ -166,7 +174,7 @@ export class AccountMachineDirectoryService {
     if (!token) throw new Error("Your ADE account session expired. Sign in again.");
 
     const baseUrl = resolveTrustedAccountDirectoryBaseUrl(
-      this.options.directoryBaseUrl?.() ?? process.env.ADE_ACCOUNT_DIRECTORY_URL,
+      this.options.directoryBaseUrl?.() ?? rawAccountDirectoryEnvironmentFallback(),
     );
     if (!baseUrl) {
       throw new Error(

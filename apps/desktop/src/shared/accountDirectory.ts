@@ -27,6 +27,9 @@ export const DEVELOPMENT_ADE_CLERK_ISSUER =
 export const DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID = "d6pUGxQXTqIMYl5w";
 export const DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL =
   "https://ade-account-directory.arulsharma1028.workers.dev";
+const DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_HOST = new URL(
+  DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+).hostname.replace(/\.$/, "").toLowerCase();
 
 const DEVELOPMENT_CLERK_IGNORED_WARNING =
   "[account] Ignoring development Clerk configuration in a packaged build; using ADE production. Set ADE_ALLOW_DEVELOPMENT_CLERK=1 to override.";
@@ -75,9 +78,8 @@ export function isDevelopmentAccountDirectoryUrl(
   const trustedUrl = parseTrustedAccountDirectoryBaseUrl(url);
   if (!trustedUrl) return false;
   const parsed = new URL(trustedUrl);
-  parsed.hostname = parsed.hostname.replace(/\.$/, "");
-  const normalizedUrl = `${parsed.origin}${parsed.pathname.replace(/\/+$/, "")}`;
-  return normalizedUrl === DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL;
+  const normalizedHost = parsed.hostname.replace(/\.$/, "").toLowerCase();
+  return normalizedHost === DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_HOST;
 }
 
 export function shouldIgnoreDevelopmentAccountDirectoryUrl(

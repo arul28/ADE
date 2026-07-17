@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
+import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import {
@@ -305,10 +306,6 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
     chatTranscriptsDir: paths.chatTranscriptsDir,
     orchestratorCacheDir: paths.orchestratorCacheDir,
   };
-}
-
-function isSourceCheckoutRuntimeModule(modulePath: string): boolean {
-  return /[/\\]apps[/\\]ade-cli[/\\](?:src|dist)[/\\]bootstrap\.(?:ts|js|cjs)$/i.test(modulePath);
 }
 
 const currentModulePath =

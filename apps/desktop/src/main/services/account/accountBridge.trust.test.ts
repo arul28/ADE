@@ -147,12 +147,18 @@ describe("parseTrustedDirectoryBaseUrl", () => {
     expect(isClerkDevelopmentIssuer("garbage")).toBe(false);
   });
 
-  it("normalizes a terminal DNS dot when detecting the development directory", () => {
+  it("detects the development directory by trusted host regardless of path", () => {
     expect(isDevelopmentAccountDirectoryUrl(
-      "https://ade-account-directory.arulsharma1028.workers.dev./",
+      "https://ade-account-directory.arulsharma1028.workers.dev./tenant",
     )).toBe(true);
     expect(isDevelopmentAccountDirectoryUrl(DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL)).toBe(true);
     expect(isDevelopmentAccountDirectoryUrl(DEFAULT_ADE_ACCOUNT_DIRECTORY_URL)).toBe(false);
+    expect(isDevelopmentAccountDirectoryUrl(
+      `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/tenant`,
+    )).toBe(false);
+    expect(isDevelopmentAccountDirectoryUrl(
+      "https://ade-account-directory.arulsharma1028.workers.dev.attacker.example/tenant",
+    )).toBe(false);
   });
 
   it("accepts an https URL and normalizes trailing slashes", () => {
