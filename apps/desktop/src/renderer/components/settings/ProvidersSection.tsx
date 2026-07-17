@@ -467,6 +467,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const [customModelSlugs, setCustomModelSlugs] = useState("");
   const [savingAdvanced, setSavingAdvanced] = useState(false);
   const pendingRefreshTimerRef = useRef<number | null>(null);
+  // Seed the slugs field from config exactly once — saves send the full list
+  // (replace semantics), so the field must start from what's persisted or a
+  // save would silently wipe existing entries.
+  const slugsSeededRef = useRef(false);
   const revealClaudeLoginTerminalInWork = useCallback((terminal: { terminalId: string; laneId: string }) => {
     revealTerminalSessionInWork(navigate, terminal);
   }, [navigate]);
@@ -520,6 +524,15 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     void loadAuthMethods();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [forceRefreshOnMount]);
+
+  useEffect(() => {
+    if (slugsSeededRef.current) return;
+    const persisted = status?.customModelSlugs;
+    if (!persisted) return;
+    slugsSeededRef.current = true;
+    // Never clobber text the user typed while the initial probe was loading.
+    setCustomModelSlugs((current) => (current === "" && persisted.length ? persisted.join(", ") : current));
+  }, [status?.customModelSlugs]);
 
   useEffect(() => {
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
@@ -870,8 +883,12 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       if (draft.apiKey.trim()) {
         await window.ade.ai.storeApiKey(id, draft.apiKey.trim());
       }
+      // Full-list write: config merge uses replace semantics, so include every
+      // existing provider (replacing any same-id entry) or they'd be dropped.
+      const existingProviders = (status?.customProviders ?? []).filter((entry) => entry.id !== id);
       await window.ade.ai.updateConfig({
         customProviders: [
+          ...existingProviders,
           {
             id,
             name: draft.name.trim() || prettifyProviderId(id),

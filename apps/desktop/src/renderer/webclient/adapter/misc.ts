@@ -42,16 +42,11 @@ export type MiscNamespaces = {
   automations: AdeNamespace<"automations">;
 };
 
-// Local mirrors of the desktop `window.ade.ai` OpenCode contract. The preload's
-// global.d.ts is the source of truth; these keep the web adapter self-contained
-// (and typed) even if that contract lands separately.
-type OpenCodeProviderAuthMethods = Record<string, { type: "oauth" | "api"; label: string; prompts?: unknown[] }>;
-type OpenCodeOAuthStartResult = { url: string; method: "auto" | "code"; instructions: string };
-type OpenCodeOAuthStatusEvent = {
-  providerId: string;
-  state: "pending" | "connected" | "failed" | "cancelled" | "timeout";
-  error?: string;
-};
+import type {
+  OpenCodeOAuthStartResult,
+  OpenCodeOAuthStatusEvent,
+  OpenCodeProviderAuthMethods,
+} from "../../../shared/types";
 
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const { client, commands, events, localState, state } = infra;
@@ -453,7 +448,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         false,
       ),
     refreshModelsDev: () =>
-      call<{ lastFetchedAt: string | null }>("ai.refreshModelsDev", undefined, { lastFetchedAt: null }),
+      call<{ lastFetchedAt: number | null }>("ai.refreshModelsDev", undefined, { lastFetchedAt: null }),
     onOpencodeOAuthStatus: (cb: (status: OpenCodeOAuthStatusEvent) => void) =>
       events.on("opencodeOAuthStatus" as never, cb as never),
   };

@@ -6,6 +6,7 @@ import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentE
 import type {
   AiApiKeyVerificationResult,
   AiClaudeAvailability,
+  AiCustomProviderConfig,
   AiLocalProviderConfigs,
   AiProviderConnections,
   AiRuntimeConnections,
@@ -149,6 +150,10 @@ export type AiIntegrationStatus = {
   opencodeProvidersStale?: boolean;
   /** Epoch ms of the last successful models.dev fetch (or cache mtime on fallback); null if never fetched. */
   modelsDevLastFetchedAt?: number | null;
+  /** Effective ai.customProviders — surfaced so the settings UI can do authoritative full-list writes. */
+  customProviders?: AiCustomProviderConfig[];
+  /** Effective ai.customModelSlugs — surfaced so the settings UI can do authoritative full-list writes. */
+  customModelSlugs?: string[];
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     macosKeychainAvailable?: boolean;
@@ -1796,6 +1801,15 @@ export function createAiIntegrationService(args: {
                 force: true,
                 discoveredLocalModels,
               });
+              // A transient probe failure (e.g. server launch hiccup) must not
+              // collapse the settings chips to empty when we have a persisted
+              // list — serve it flagged stale, keeping the error visible.
+              if (probed.error && !probed.providers.length) {
+                const persisted = loadPersistedOpenCodeInventory(projectRoot);
+                if (persisted.length) {
+                  return { ...probed, providers: persisted, stale: true };
+                }
+              }
               return { ...probed, stale: false };
             }
             const peeked = peekOpenCodeInventoryCache({
@@ -1847,6 +1861,8 @@ export function createAiIntegrationService(args: {
             opencodeProviders: opencodeInventory.providers,
             opencodeProvidersStale: opencodeInventory.stale,
             modelsDevLastFetchedAt: getModelsDevLastFetchedAt(),
+            customProviders: effectiveConfig?.ai?.customProviders,
+            customModelSlugs: effectiveConfig?.ai?.customModelSlugs,
             apiKeyStore: timeSyncPhase("api_key_store_status", () => getApiKeyStoreStatus()),
           };
           if (requestGeneration === providerReadinessCacheGeneration) {

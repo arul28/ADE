@@ -80,10 +80,24 @@ export function OAuthConnectModal({
   const deviceCode = extractDeviceCode(startResult?.instructions);
   const host = extractHost(startResult?.url);
 
+  // Tracks whether a backend flow is in flight so unmount can cancel it —
+  // in-modal close paths cancel explicitly, but a parent unmount (nav away,
+  // settings close) would otherwise leave the poller running to its timeout.
+  const flowActiveRef = useRef(false);
+  useEffect(
+    () => () => {
+      if (flowActiveRef.current) {
+        void window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+      }
+    },
+    [providerId],
+  );
+
   // Subscribe to backend OAuth status pushes for this provider.
   useEffect(() => {
     const unsubscribe = window.ade.ai.onOpencodeOAuthStatus((event: OpenCodeOAuthStatusEvent) => {
       if (event.providerId !== providerId) return;
+      if (event.state !== "pending") flowActiveRef.current = false;
       if (event.state === "connected") {
         onConnected();
         onClose();
@@ -128,6 +142,7 @@ export function OAuthConnectModal({
         inputs: Object.keys(filteredInputs).length ? filteredInputs : undefined,
       });
       setStartResult(result);
+      flowActiveRef.current = true;
       setPhase("waiting");
     } catch (err) {
       setPhase("error");
@@ -136,6 +151,7 @@ export function OAuthConnectModal({
   };
 
   const handleCancel = async () => {
+    flowActiveRef.current = false;
     try {
       await window.ade.ai.opencodeOAuthCancel({ providerId });
     } catch {

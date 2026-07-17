@@ -1986,13 +1986,11 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.apiKeys ?? {}),
     ...(localAi?.apiKeys ?? {})
   };
-  const customProvidersById = new Map(
-    [...(sharedAi?.customProviders ?? []), ...(localAi?.customProviders ?? [])]
-      .filter((entry) => entry?.id)
-      .map((entry) => [entry.id, entry] as const),
-  );
-  const customProviders = [...customProvidersById.values()];
-  const customModelSlugs = [...new Set([...(sharedAi?.customModelSlugs ?? []), ...(localAi?.customModelSlugs ?? [])])];
+  // Replace semantics (not union): the UI writes the full authoritative list,
+  // and this merge also runs on the ai.updateConfig write-patch path — a union
+  // would make removals impossible to persist. Absent = keep, [] = clear.
+  const customProviders = localAi?.customProviders ?? sharedAi?.customProviders ?? [];
+  const customModelSlugs = localAi?.customModelSlugs ?? sharedAi?.customModelSlugs ?? [];
   const localProvidersEntries = (["ollama", "lmstudio"] as const)
     .map((provider) => {
       const mergedProvider = {

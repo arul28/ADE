@@ -240,7 +240,6 @@ function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
 function normalizeOpenCodeProviderModel(
   providerId: string,
   modelId: string,
-  _availableProviderModelIds: Set<string>,
   displayName?: string,
 ): {
   modelId: string;
@@ -426,14 +425,6 @@ export async function probeOpenCodeProviderInventory(args: {
           // local-provider catalog; only show models ADE just discovered as loaded.
           if (isLocal && !discoveryExists) continue;
           const models = provider.models ?? {};
-          const availableProviderModelIds = new Set(
-            Object.values(models)
-              .map((model) => {
-                const record = model as Record<string, unknown>;
-                return typeof record.id === "string" ? record.id.trim().toLowerCase() : "";
-              })
-              .filter(Boolean),
-          );
           for (const model of Object.values(models)) {
             const modelRecord = model as Record<string, unknown>;
             const mid = typeof modelRecord.id === "string" ? modelRecord.id.trim() : "";
@@ -442,7 +433,7 @@ export async function probeOpenCodeProviderInventory(args: {
             if (discoveryExists && (!allowedModels || !allowedModels.has(mid))) continue;
             const variants = classifyOpenCodeVariants(modelRecord);
             const rawDisplayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
-            const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, availableProviderModelIds, rawDisplayName);
+            const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, rawDisplayName);
             const limit = typeof modelRecord.limit === "object" && modelRecord.limit
               ? modelRecord.limit as { context?: number; output?: number }
               : null;

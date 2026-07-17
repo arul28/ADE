@@ -276,11 +276,7 @@ export async function initialize(): Promise<Map<string, ModelsDevModelData>> {
   if (!refreshTimer) {
     refreshTimer = setInterval(async () => {
       try {
-        const fresh = await fetchFromApi();
-        modelDataMap = fresh;
-        lastFetchedAt = Date.now();
-        await persistToCache(fresh);
-        applyEnrichment();
+        const fresh = await refreshNow();
         console.info(`[models.dev] Refreshed metadata for ${fresh.size} models`);
       } catch (err) {
         console.warn(`[models.dev] Background refresh failed: ${err instanceof Error ? err.message : err}`);

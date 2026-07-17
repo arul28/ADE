@@ -1232,6 +1232,8 @@ export type AiSettingsStatus = {
   opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
   /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */
   opencodeProvidersStale?: boolean;
+  customProviders?: AiCustomProviderConfig[];
+  customModelSlugs?: string[];
   /** Epoch ms of the last successful models.dev fetch (or cache mtime on fallback); null if never fetched. */
   modelsDevLastFetchedAt?: number | null;
   apiKeyStore?: {
