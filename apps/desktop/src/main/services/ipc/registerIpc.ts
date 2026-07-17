@@ -4324,6 +4324,8 @@ export function registerIpc({
         opencodeProviders: status.opencodeProviders,
         opencodeProvidersStale: status.opencodeProvidersStale,
         modelsDevLastFetchedAt: status.modelsDevLastFetchedAt,
+        customProviders: status.customProviders,
+        customModelSlugs: status.customModelSlugs,
         apiKeyStore: status.apiKeyStore,
         features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
           feature,

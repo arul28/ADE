@@ -85,9 +85,16 @@ const defaultHooks: OpenCodeAuthHooks = {
     return Array.isArray(data?.connected) ? data.connected : [];
   },
   async openExternal(url) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { shell } = require("electron") as { shell: { openExternal(u: string): Promise<void> } };
-    await shell.openExternal(url);
+    // try/catch keeps esbuild treating this as a runtime-optional require so
+    // the ade-cli static runtime (no electron) can bundle this module; there
+    // the OAuth URL is still surfaced to the caller, just not auto-opened.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { shell } = require("electron") as { shell: { openExternal(u: string): Promise<void> } };
+      await shell.openExternal(url);
+    } catch {
+      // Not running inside Electron — caller shows the URL instead.
+    }
   },
   async probeInventory(deps) {
     await probeOpenCodeProviderInventory({
