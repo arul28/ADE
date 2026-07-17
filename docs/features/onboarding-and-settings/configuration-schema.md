@@ -296,6 +296,8 @@ type AiConfig = {
   defaultModel?: ModelId;
   apiKeys?: Record<string, string>;       // stored encrypted per provider
   localProviders?: AiLocalProviderConfigs;
+  customProviders?: AiCustomProviderConfig[];  // user-defined OpenAI-/Anthropic-compatible providers
+  customModelSlugs?: string[];            // extra provider/model slugs pinned as selectable
   workerSafety?: WorkerSafetyPolicy;
   featureModelOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
@@ -306,6 +308,41 @@ type AiConfig = {
 `effective.ai.mode` is the source of truth for guest vs subscription
 behavior. Legacy `providers.mode` migration is still in the service
 but idempotent.
+
+### Custom providers and model slugs
+
+`ai.customProviders` and `ai.customModelSlugs` back the **Advanced —
+custom providers & model slugs** block in AI Connections settings. They
+let a user add an OpenAI-/Anthropic-compatible provider (or extra model
+slugs) that flow into ADE's managed OpenCode server config and the model
+picker.
+
+```ts
+type AiCustomProviderConfig = {
+  id: string;
+  name: string;                 // falls back to id when omitted
+  baseURL: string;
+  npm?: "@ai-sdk/openai-compatible" | "@ai-sdk/openai" | "@ai-sdk/anthropic";
+  models: string[];             // provider-local model ids
+};
+```
+
+`coerceAiConfig` drops any custom-provider entry missing `id`,
+`baseURL`, or a non-empty `models` list, and coerces an unrecognized
+`npm` value back to `undefined`. `customModelSlugs` are trimmed
+`providerId/modelId` strings.
+
+**Both fields must be handled in two places in `projectConfigService`:**
+`coerceAiConfig` (validate/parse off disk) and `mergeAiConfig` (fold
+shared + local into `effective`). A field added to only one is silently
+dropped. Unlike the id-matched array merges elsewhere in this schema,
+these two use **replace semantics**: `local` provides the full
+authoritative list and wins outright, because the same merge runs on the
+`ai.updateConfig` write-patch path where a union would make removals
+impossible. Absent keeps the existing list; `[]` clears it. The AI
+Connections UI always writes the complete list, never a delta. Any new
+`ai.*` field follows the same both-places rule and must also be added to
+`AiConfig` in `shared/types/config.ts`.
 
 `AiChatConfig.scheduledWorkPaused?: boolean` is the project-runtime-wide
 pause for durable Claude wakeups, cron tasks, and `/loop`. It suppresses

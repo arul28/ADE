@@ -626,6 +626,36 @@ describe("projectConfigService - AI mode migration", () => {
     expect(merged?.sessionIntelligence?.summaries?.reasoningEffort).toBeNull();
     expect(merged?.featureReasoningOverrides?.terminal_summaries).toBeNull();
   });
+
+  // Regression pin (quality gate): custom providers/slugs must use REPLACE
+  // semantics, not union — a union made removals impossible to persist because
+  // the settings UI writes the full authoritative list on every save.
+  it("replaces custom providers and model slugs on write instead of unioning", () => {
+    const shared = {
+      customProviders: [
+        { id: "acme", name: "Acme", baseURL: "https://acme.example/v1", models: ["m1"] },
+        { id: "beta", name: "Beta", baseURL: "https://beta.example/v1", models: ["b1"] },
+      ],
+      customModelSlugs: ["acme/m1", "beta/b1"],
+    };
+
+    const merged = mergeAiConfig(shared, {
+      customProviders: [{ id: "acme", name: "Acme", baseURL: "https://acme.example/v1", models: ["m1", "m2"] }],
+      customModelSlugs: ["acme/m2"],
+    });
+    expect(merged?.customProviders).toEqual([
+      { id: "acme", name: "Acme", baseURL: "https://acme.example/v1", models: ["m1", "m2"] },
+    ]);
+    expect(merged?.customModelSlugs).toEqual(["acme/m2"]);
+
+    const kept = mergeAiConfig(shared, { defaultModel: "openai/gpt-5.4" });
+    expect(kept?.customProviders).toEqual(shared.customProviders);
+    expect(kept?.customModelSlugs).toEqual(shared.customModelSlugs);
+
+    const cleared = mergeAiConfig(shared, { customProviders: [], customModelSlugs: [] });
+    expect(cleared?.customProviders).toBeUndefined();
+    expect(cleared?.customModelSlugs).toBeUndefined();
+  });
 });
 
 describe("projectConfigService - PR transcript gists", () => {

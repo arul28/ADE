@@ -272,8 +272,46 @@ Renderer — settings:
   confirms deletion, and a load/cancel failure renders explicitly rather than
   being mistaken for an empty list.
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
-  — AI Connections settings for provider CLIs, authentication, API keys,
-  and model availability.
+  — AI Connections settings, organized into two top-level groups. **Coding
+  Agents** renders four provider-CLI cards in fixed order — Claude Code,
+  Codex CLI, Cursor, and Droid — each showing readiness/auth tone, credential
+  source, and CLI path. Claude offers a `ClaudeLoginPromptButton` when the
+  binary is present but signed out; Cursor is the only card with an inline
+  `CURSOR_API_KEY` field (Add key stores then verifies). **OpenCode —
+  Universal Model Access** is the managed universal-model surface with a
+  models.dev "catalog synced … · refresh" freshness control (backed by
+  `modelsDevLastFetchedAt` + `refreshModelsDev`) and five sub-sections:
+  **Subscriptions** (one card per OpenCode provider whose auth methods
+  include an `oauth` entry — Connect opens `OAuthConnectModal` — plus an
+  always-present **Kimi for Coding** membership-key row that opens
+  `KimiKeyDialog`); **API Provider Keys** (a fixed grid of Anthropic, OpenAI,
+  Google AI, Mistral, DeepSeek, xAI, Groq, Together AI, OpenRouter, and
+  Moonshot AI, each saved with `alsoOpenCode: true` so the key is registered
+  with OpenCode via `setOpencodeProviderKey`); **More Providers** (a
+  searchable ~160-provider chip cloud sourced from the OpenCode inventory,
+  first 30 shown until the user searches; a keyless chip seeds a provider key
+  inline); **Local Model Servers** (LM Studio and Ollama endpoints/preferred
+  model, written through `updateConfig({ localProviders })`); and **Advanced —
+  custom providers & model slugs** (a collapsed `<details>` that adds
+  OpenAI-/Anthropic-compatible custom providers — id, name, baseURL, `npm`
+  select, models, optional key — writing `ai.customProviders`, and extra
+  `provider/model` slugs writing `ai.customModelSlugs`, both via
+  `updateConfig`). When the OpenCode provider inventory is served from the
+  persisted disk cache on a cold start, `opencodeProvidersStale` renders an
+  italic "updating…" hint until the first live probe. When the OpenCode
+  binary is missing the group collapses to an install card.
+- `apps/desktop/src/renderer/components/settings/OAuthConnectModal.tsx`
+  — subscription OAuth connect dialog for OpenCode providers. Runs a
+  `form → starting → waiting → error` phase machine: it renders the
+  provider's `oauth` auth-method selection and any typed `text`/`select`
+  prompts (respecting a prompt's `when` conditional), calls
+  `opencodeOAuthStart({ providerId, methodIndex, inputs })` to open the
+  browser, extracts and displays a device code from the returned
+  instructions when present, and subscribes to `onOpencodeOAuthStatus` to
+  settle on `connected` / `failed` / `timeout` / `cancelled` without polling.
+  Cancel, Escape, backdrop click, and unmount-while-active all call
+  `opencodeOAuthCancel`. Success force-refreshes status, reloads auth
+  methods, and toasts the added-model count.
 - `apps/desktop/src/renderer/components/settings/SecretsSection.tsx`
   — Settings > Secrets. Lists project-scoped ADE secrets without values,
   adds/replaces secrets, reveals values on demand, copies them to the
@@ -597,7 +635,7 @@ changing rather than which service backs it:
 |---|---|---|
 | General | `GeneralSection.tsx` (GitHub/Linear connections, product analytics, voice input, launch prompts, completion sound, PR transcripts, project files, environment) | Consolidated day-to-day preferences and integrations. Product analytics exposes only status and the machine-wide opt-out. GitHub and Linear auth live here (not a separate Integrations tab). Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` redirect to General with hash anchors (`#github-connection`, `#linear-connection`). Also receives `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` via `TAB_ALIASES`. |
 | Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, chat font size, transcript density, chrome tint, shell geometry, and the user-message minimap toggle. Persisted to `localStorage` under `ade.userPreferences.v1`. |
-| AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
+| AI Connections | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Two groups: **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid) and **OpenCode — Universal Model Access** (models.dev catalog freshness + Subscriptions/OAuth & Kimi, API Provider Keys incl. Moonshot AI, a searchable ~160-provider chip cloud, Local Model Servers, and Advanced custom providers/model slugs). Subscription connects run through `OAuthConnectModal`; custom providers/slugs persist to `ai.customProviders` / `ai.customModelSlugs`. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
 | Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus project-wide scheduled-work recovery. **Pause all scheduled work** keeps Claude wakeups, cron tasks, and loops armed while suppressing `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. **Active scheduled work** lists KV-backed durable jobs from every chat with per-job Cancel and an explicit unavailable/error state. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
 | Storage | `StorageSection.tsx`, `storage/StorageCleanupDialog.tsx`, `storage/storageView.ts` | Disk-usage dashboard: current volume pressure, ADE storage broken down by category (lanes/worktrees, chats & terminal history, caches, build & release, proof & attachments, recovery backups, database), preview-confirmed cleanup of the removable subset, and a manual "compress old history" action. Reads `window.ade.storage.getPressure` / `getSnapshot` and mutates through `compressNow` / `cleanupPreview` / `cleanup`. Deep links from `?tab=storage` and `?tab=disk` (via `TAB_ALIASES`). See [Storage and recovery](../storage-and-recovery/README.md). |
@@ -661,6 +699,14 @@ Onboarding and settings follow a simple rule:
   callbacks (the config service iterates listeners). A hot reload is
   best-effort — some changes only take full effect on app restart
   (e.g. proxy port changes).
+- **New `ai.*` config fields need both `coerceAiConfig` and
+  `mergeAiConfig`.** A field added to only one of `projectConfigService`'s
+  two functions is silently dropped (it fails to load off disk, or fails
+  to survive the shared+local merge). This bit `ai.customProviders` /
+  `ai.customModelSlugs` written by the AI Connections **Advanced** block.
+  Both use replace semantics rather than the id-matched merges used
+  elsewhere — the UI writes the full authoritative list. See
+  [configuration-schema.md](./configuration-schema.md#custom-providers-and-model-slugs).
 - **Onboarding status.** `freshProject` is computed at
   `createOnboardingService` construction and does not update at
   runtime. Passing the wrong boolean flips the "first-run" surface on

@@ -454,6 +454,28 @@ describe("aiIntegrationService", () => {
     expect(status.availableModelIds).toContain(`opencode/lmstudio/${modelId}`);
   });
 
+  // Regression pin (quality gate): a transient probe failure on a forced
+  // refresh must serve the persisted provider list flagged stale — not
+  // collapse the settings chips to empty while keeping the error visible.
+  it("serves the persisted provider list as stale when a forced probe fails", async () => {
+    const { service } = makeService();
+    const persisted = [{ id: "moonshotai", name: "Moonshot AI", connected: false, modelCount: 10 }];
+    mockState.probeOpenCodeProviderInventory.mockResolvedValue({
+      modelIds: [],
+      catalogModelIds: [],
+      providers: [],
+      error: "OpenCode: launch-timeout: OpenCode server did not become ready in time.",
+      descriptors: [],
+    });
+    mockState.loadPersistedOpenCodeInventory.mockReturnValueOnce(persisted);
+
+    const status = await service.getStatus({ refreshOpenCodeInventory: true });
+
+    expect(status.opencodeProviders).toEqual(persisted);
+    expect(status.opencodeProvidersStale).toBe(true);
+    expect(status.opencodeInventoryError).toContain("launch-timeout");
+  });
+
   it("coalesces concurrent getStatus calls for the same request shape", async () => {
     const { service } = makeService();
     let resolveAuth: ((value: Array<Record<string, unknown>>) => void) | null = null;

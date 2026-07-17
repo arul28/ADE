@@ -1227,9 +1227,14 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   the layer merge, with no error. This bit `ai.customProviders` and
   `ai.customModelSlugs` during the OpenCode providers build (custom
   providers/model slugs written by `ProvidersSection` never reaching the
-  managed OpenCode config). Both keys are now merged by id/set-union in
-  `mergeAiConfig` and coerced in `coerceAiConfig`; add any future `ai.*`
-  field to both, plus `AiConfig` in `shared/types/config.ts`.
+  managed OpenCode config). Both keys are now folded by `mergeAiConfig`
+  and validated by `coerceAiConfig`. The merge is **replace semantics,
+  not union**: `local` supplies the full authoritative list and wins
+  outright (`localAi ?? sharedAi ?? []`), because the same merge runs on
+  the `ai.updateConfig` write-patch path where a union would make
+  removals impossible — absent keeps the existing list, `[]` clears it.
+  Add any future `ai.*` field to both functions, plus `AiConfig` in
+  `shared/types/config.ts`.
 
 ## Configuration
 
