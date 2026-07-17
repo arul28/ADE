@@ -8,6 +8,8 @@ import {
 import {
   readAccountDirectoryHttpReason,
   resolveTrustedAccountDirectoryBaseUrl,
+  shouldIgnoreDevelopmentAccountDirectoryUrl,
+  warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
 import {
   getSignedInAccountAccessToken,
@@ -521,7 +523,7 @@ export function createBrainAccountMachinePublisherService(options: {
   secretsDir: string;
   projectRoots: () => Iterable<string>;
   isSyncEnabled: () => boolean;
-  getSnapshot: () => Promise<SyncRoleSnapshot | null>;
+  getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
   directoryBaseUrl?: () => string | null | undefined;
   logger: BrainAccountMachinePublisherLogger;
@@ -546,7 +548,12 @@ export function createBrainAccountMachinePublisherService(options: {
     getMachineKey: options.getMachineKey,
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
-      if (explicit?.trim()) return explicit;
+      if (explicit?.trim()) {
+        if (!shouldIgnoreDevelopmentAccountDirectoryUrl(explicit, process.env)) {
+          return explicit;
+        }
+        warnDevelopmentClerkIgnored();
+      }
       return resolveOfficialAccountDirectoryBaseUrl({
         env: process.env,
         projectRoots: options.projectRoots(),

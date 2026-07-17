@@ -33,6 +33,8 @@ import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
   parseTrustedAccountDirectoryBaseUrl,
+  shouldIgnoreDevelopmentAccountDirectoryUrl,
+  warnDevelopmentClerkIgnored,
 } from "../../../shared/accountDirectory";
 
 type AccountBridgeOptions = {
@@ -101,6 +103,13 @@ export function parseTrustedDirectoryBaseUrl(
 function resolveDirectoryBaseUrl(projectRoot: string | null): string | null {
   const machineOverride = process.env.ADE_ACCOUNT_DIRECTORY_URL;
   if (machineOverride?.trim()) {
+    if (shouldIgnoreDevelopmentAccountDirectoryUrl(machineOverride, process.env)) {
+      warnDevelopmentClerkIgnored();
+      return resolveOfficialAccountDirectoryBaseUrl({
+        env: process.env,
+        projectRoots: projectRoot ? [projectRoot] : [],
+      });
+    }
     return parseTrustedAccountDirectoryBaseUrl(machineOverride);
   }
   return resolveOfficialAccountDirectoryBaseUrl({

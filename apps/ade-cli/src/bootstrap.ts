@@ -314,6 +314,13 @@ function isSourceCheckoutRuntimeModule(modulePath: string): boolean {
 const currentModulePath =
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url);
 
+if (
+  !isSourceCheckoutRuntimeModule(currentModulePath)
+  && process.env.ADE_RUNTIME_PACKAGED === undefined
+) {
+  process.env.ADE_RUNTIME_PACKAGED = "1";
+}
+
 function automationsEnabledForHeadlessRuntime(): boolean {
   const override = readAutomationsEnvOverride(process.env);
   if (override !== null) return override;

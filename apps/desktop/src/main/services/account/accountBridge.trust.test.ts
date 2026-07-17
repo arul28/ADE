@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
   accountMachinePairedSyncEndpoints,
@@ -8,6 +8,8 @@ import {
   DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
   DEVELOPMENT_ADE_CLERK_ISSUER,
   fetchAccountMachines,
+  isClerkDevelopmentIssuer,
+  isDevelopmentAccountDirectoryUrl,
   MAX_ACCOUNT_DIRECTORY_ERROR_BYTES,
   MAX_ACCOUNT_DIRECTORY_RESPONSE_BYTES,
   officialAccountDirectoryUrlForIssuer,
@@ -32,6 +34,10 @@ const pollLogin = vi.hoisted(() => vi.fn());
 const signOut = vi.hoisted(() => vi.fn());
 const deleteMachine = vi.hoisted(() => vi.fn());
 const listMachines = vi.hoisted(() => vi.fn());
+const observedDirectoryBaseUrls = vi.hoisted(() => [] as Array<string | null>);
+const resolveOfficialAccountDirectoryBaseUrl = vi.hoisted(() => vi.fn(
+  () => "https://ade-account-directory-production.arulsharma1028.workers.dev",
+));
 
 vi.mock(
   "../../../../../ade-cli/src/services/account/sharedAccountAuthService",
@@ -44,6 +50,7 @@ vi.mock(
       signOut,
     }),
     registerAccountConfigProjectRoot: vi.fn(),
+    resolveOfficialAccountDirectoryBaseUrl,
   }),
 );
 
@@ -51,7 +58,17 @@ vi.mock(
   "../../../../../ade-cli/src/services/account/accountMachineDirectoryService",
   () => ({
     AccountMachineDirectoryService: class {
+      private readonly options: { directoryBaseUrl(): string | null };
+
+      constructor(
+        _accountService: unknown,
+        options: { directoryBaseUrl(): string | null },
+      ) {
+        this.options = options;
+      }
+
       async listMachines() {
+        observedDirectoryBaseUrls.push(this.options.directoryBaseUrl());
         return listMachines();
       }
 
@@ -65,6 +82,10 @@ vi.mock(
     },
   }),
 );
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 vi.mock(
   "../../../../../ade-cli/src/services/projects/machineLayout",
@@ -114,6 +135,24 @@ describe("parseTrustedDirectoryBaseUrl", () => {
     expect(officialAccountDirectoryUrlForIssuer("https://attacker.example")).toBe(
       DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
     );
+  });
+
+  it("detects only parsed Clerk development hosts as development issuers", () => {
+    expect(isClerkDevelopmentIssuer(DEVELOPMENT_ADE_CLERK_ISSUER)).toBe(true);
+    expect(isClerkDevelopmentIssuer("https://another.clerk.accounts.dev")).toBe(true);
+    expect(isClerkDevelopmentIssuer("https://deep.tenant.clerk.accounts.dev/path")).toBe(true);
+    expect(isClerkDevelopmentIssuer("https://another.clerk.accounts.dev./")).toBe(true);
+    expect(isClerkDevelopmentIssuer(DEFAULT_ADE_CLERK_ISSUER)).toBe(false);
+    expect(isClerkDevelopmentIssuer("https://clerk.example.com")).toBe(false);
+    expect(isClerkDevelopmentIssuer("garbage")).toBe(false);
+  });
+
+  it("normalizes a terminal DNS dot when detecting the development directory", () => {
+    expect(isDevelopmentAccountDirectoryUrl(
+      "https://ade-account-directory.arulsharma1028.workers.dev./",
+    )).toBe(true);
+    expect(isDevelopmentAccountDirectoryUrl(DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL)).toBe(true);
+    expect(isDevelopmentAccountDirectoryUrl(DEFAULT_ADE_ACCOUNT_DIRECTORY_URL)).toBe(false);
   });
 
   it("accepts an https URL and normalizes trailing slashes", () => {
@@ -374,6 +413,25 @@ describe("desktop account machine lifecycle", () => {
     signOut.mockReset().mockReturnValue({ ...accountStatus });
     deleteMachine.mockReset();
     listMachines.mockReset().mockResolvedValue({ state: "ok", machines: [], message: null });
+    observedDirectoryBaseUrls.splice(0);
+    resolveOfficialAccountDirectoryBaseUrl.mockClear();
+  });
+
+  it("ignores the development directory environment override when packaged", async () => {
+    vi.stubEnv("ADE_RUNTIME_PACKAGED", "1");
+    vi.stubEnv("ADE_ALLOW_DEVELOPMENT_CLERK", "");
+    vi.stubEnv("ADE_ACCOUNT_DIRECTORY_URL", DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL);
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({ getProjectRoot: () => null });
+
+    await bridge.listMachines();
+
+    expect(observedDirectoryBaseUrls).toEqual([DEFAULT_ADE_ACCOUNT_DIRECTORY_URL]);
+    expect(resolveOfficialAccountDirectoryBaseUrl).toHaveBeenCalledWith({
+      env: process.env,
+      projectRoots: [],
+    });
+    expect(resolveOfficialAccountDirectoryBaseUrl).toHaveBeenCalledOnce();
   });
 
   it("keeps status pure and reconciles only authoritative auth transitions", async () => {

@@ -1,4 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, protocol, safeStorage, shell } from "electron";
+
+if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
+  process.env.ADE_RUNTIME_PACKAGED = "1";
+}
+
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";

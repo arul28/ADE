@@ -227,7 +227,15 @@ Runtime support files outside `services/sync/`:
   the account bearer. The publisher and desktop account bridge derive the
   official directory from the same project-aware Clerk issuer resolver, while
   the machine-owned `ADE_ACCOUNT_DIRECTORY_URL` override remains fail-closed
-  behind the trusted-origin parser.
+  behind the trusted-origin parser. In a packaged runtime, an explicit override
+  of that publisher URL to ADE's development directory is ignored and resolves
+  to the production directory instead. This follows the same atomic packaged
+  Clerk policy as OAuth and attestation resolution: the distributed CLI/brain
+  and Electron entry points set `ADE_RUNTIME_PACKAGED=1`; development Clerk
+  hosts cannot produce a mixed development/production configuration; and
+  `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
+  hatch. Source-checkout runtimes and non-development custom issuers keep their
+  existing override behavior.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
   origin, bounded success/error response decoding, route allowlisting, machine
   selection, and paired endpoint validation shared by desktop, the brain, ADE
