@@ -312,6 +312,8 @@ export type RightPaneContent =
       }>;
       quotaWindows?: Array<{ id: string; label: string; percent: number; resetAt?: number | null }>;
       session?: { input: number | null; output: number | null; cost: number | null } | null;
+      /** Codex account-level spend control tripped — surfaces a terse cap marker. */
+      spendControlReached?: boolean;
     }
   | {
       kind: "form";

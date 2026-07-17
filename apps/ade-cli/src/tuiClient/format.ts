@@ -24,6 +24,44 @@ function singleLine(value: unknown, max = 96): string {
     .slice(0, max);
 }
 
+// Web-search results (Codex) render as compact `title — domain` previews under
+// the search line. Domain is derived defensively so a malformed url can never
+// throw. Shared by renderChatLines (subagent pane) and ChatView (work log) so
+// both surfaces show the same lines.
+export function webSearchResultDomain(url: string | undefined | null): string {
+  if (!url) return "";
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    const host = url.replace(/^[a-z]+:\/\//i, "").split(/[/?#]/)[0] ?? "";
+    return host.replace(/^www\./, "");
+  }
+}
+
+export function webSearchResultPreviewLines(
+  results: ReadonlyArray<{ title?: string; url?: string }> | undefined,
+  resultsTotal: number | undefined,
+  max = 3,
+): string[] {
+  if (!results || results.length === 0) return [];
+  const shown = results.slice(0, max);
+  const lines = shown
+    .map((result) => {
+      const domain = webSearchResultDomain(result.url);
+      const title = (result.title ?? "").trim() || domain || (result.url ?? "").trim();
+      if (!title) return "";
+      return domain && title !== domain ? `${title} — ${domain}` : title;
+    })
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return [];
+  const total = typeof resultsTotal === "number" && resultsTotal > lines.length ? resultsTotal : results.length;
+  const remaining = total - shown.length;
+  if (remaining > 0) {
+    lines[lines.length - 1] = `${lines[lines.length - 1]}  +${remaining} more`;
+  }
+  return lines;
+}
+
 function summarizeCommandOutput(output: unknown): string {
   const text = singleLine(output, 160);
   const passed = /\b(\d+)\s+passed\b/i.exec(text)?.[1];
@@ -646,10 +684,13 @@ export function renderChatLines(args: {
           return `   ${kind.padEnd(12, " ")} ${singleLine(detail, 96)}`.trimEnd();
         })
         : event.action ? [`   ${event.action}`] : [];
+      const resultLines = webSearchResultPreviewLines(event.results, event.resultsTotal, 3)
+        .map((line) => `   ${singleLine(line, 96)}`);
+      const bodyLines = [head, ...actionLines, ...resultLines];
       lines.push({
         id,
         tone: event.status === "failed" ? "error" : "tool",
-        body: actionLines.length ? `${head}\n${actionLines.join("\n")}` : head,
+        body: bodyLines.join("\n"),
       });
       continue;
     }

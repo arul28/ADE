@@ -77,6 +77,7 @@ import {
   buildTextRenderKey,
   collapseChatTranscriptEvents,
   collapseChatTranscriptEventsIncrementalWithContext,
+  deriveWebSearchResultDisplay,
   formatStructuredValue,
   groupChatTranscriptRows,
   readRecord,
@@ -972,6 +973,59 @@ function WebSearchActionList({ actions, isFailed }: WebSearchActionListProps) {
         >
           +{hiddenCount} more
         </button>
+      ) : null}
+    </div>
+  );
+}
+
+type WebSearchResultListProps = {
+  results: NonNullable<Extract<AgentChatEvent, { type: "web_search" }>["results"]>;
+  resultsTotal?: number;
+  isFailed: boolean;
+};
+
+function WebSearchResultList({ results, resultsTotal, isFailed }: WebSearchResultListProps) {
+  const HEAD = 8;
+  const visible = results.slice(0, HEAD);
+  const total = typeof resultsTotal === "number" ? resultsTotal : results.length;
+  const moreCount = Math.max(0, total - visible.length);
+  return (
+    <div className="mt-2 flex flex-col gap-0.5">
+      {visible.map((result, index) => {
+        const display = deriveWebSearchResultDisplay(result);
+        const className = cn(
+          "flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[length:calc(var(--chat-font-size)*12/14)] leading-tight transition-colors",
+          isFailed ? "text-red-100/75" : "text-cyan-100/80",
+          display.href && !isFailed && "hover:bg-cyan-500/[0.08]",
+        );
+        const body = (
+          <>
+            <Globe size={11} weight="bold" className={cn("shrink-0", isFailed ? "text-red-200/55" : "text-cyan-200/60")} aria-hidden />
+            <span className="min-w-0 truncate text-fg/78">{display.title}</span>
+            {display.domain ? <span className="shrink-0 truncate text-fg/38">{display.domain}</span> : null}
+            {display.href ? <CaretRight size={10} className="ml-auto shrink-0 text-fg/35" aria-hidden /> : null}
+          </>
+        );
+        return display.href ? (
+          <button
+            key={`${display.href}:${index}`}
+            type="button"
+            className={className}
+            title={display.href}
+            onClick={() => openUrlInAdeBrowser(display.href!)}
+          >
+            {body}
+          </button>
+        ) : (
+          <span key={`result:${index}`} className={className}>
+            {body}
+          </span>
+        );
+      })}
+      {moreCount > 0 ? (
+        <span className="px-1.5 py-0.5 text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">
+          +{moreCount} more
+        </span>
       ) : null}
     </div>
   );
@@ -3055,7 +3109,9 @@ function renderEvent(
               <MagnifyingGlass size={12} weight="bold" className="mr-1.5 inline text-fg/30" />
               {event.query}
             </div>
-            {event.actions?.length ? (
+            {event.results?.length ? (
+              <WebSearchResultList results={event.results} resultsTotal={event.resultsTotal} isFailed={isFailed} />
+            ) : event.actions?.length ? (
               <WebSearchActionList actions={event.actions} isFailed={isFailed} />
             ) : null}
           </div>

@@ -146,9 +146,15 @@ export function UsagePane({ content, width }: { content: UsageContent; width: nu
   const windows = content.quotaWindows ?? [];
   const providerStatuses = content.providerStatuses ?? [];
   const session = content.session ?? null;
+  const spendControlReached = content.spendControlReached === true;
 
   return (
     <Box flexDirection="column">
+      {spendControlReached ? (
+        <Box marginBottom={providerStatuses.length > 0 || windows.length > 0 ? 1 : 0}>
+          <Text color={theme.color.warning} wrap="wrap">Codex spending cap reached</Text>
+        </Box>
+      ) : null}
       {providerStatuses.map((status, index) => (
         <Box key={status.id} marginTop={index === 0 ? 0 : 1} flexDirection="column">
           <ProviderStatusRow status={status} nowMs={nowMs} />

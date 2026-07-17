@@ -37,6 +37,18 @@ private func parseCodexWebSearchActions(from value: Any?) -> [CodexWebSearchActi
   return actions.isEmpty ? nil : actions
 }
 
+private func parseCodexWebSearchResults(from value: Any?) -> [CodexWebSearchResult]? {
+  guard let rawResults = value as? [[String: Any]] else { return nil }
+  let results = rawResults.compactMap { result -> CodexWebSearchResult? in
+    let url = optionalString(result["url"])
+    let title = optionalString(result["title"])
+    let snippet = optionalString(result["snippet"])
+    guard url != nil || title != nil || snippet != nil else { return nil }
+    return CodexWebSearchResult(url: url, title: title, snippet: snippet)
+  }
+  return results.isEmpty ? nil : results
+}
+
 private func workTranscriptToolName(from eventDict: [String: Any]) -> String {
   let fallback = stringValue(eventDict["tool"])
   guard let mcp = eventDict["mcp"] as? [String: Any] else { return fallback }
@@ -513,6 +525,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           query: stringValue(eventDict["query"]),
           action: optionalString(eventDict["action"]),
           actions: parseCodexWebSearchActions(from: eventDict["actions"]),
+          results: parseCodexWebSearchResults(from: eventDict["results"]),
           status: toolStatus(from: stringValue(eventDict["status"])),
           itemId: stableToolItemId ?? workFallbackItemID(
             sessionId: sessionId,

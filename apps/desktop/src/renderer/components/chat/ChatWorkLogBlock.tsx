@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { ArrowSquareOut, CaretDown, CaretRight, Check, Globe, Terminal, Warning, XCircle } from "@phosphor-icons/react";
 import type { OperatorNavigationSuggestion } from "../../../shared/types";
 import {
+  deriveWebSearchResultDisplay,
   formatStructuredValue,
   readRecord,
   summarizeDiffStats,
@@ -389,6 +390,61 @@ function webSearchUrlActions(entry: ChatWorkLogEntry): NonNullable<ChatWorkLogEn
   return entry.actions.filter((action) => typeof action.url === "string" && action.url.trim().length > 0);
 }
 
+const WEB_SEARCH_RESULT_LIMIT = 8;
+
+function webSearchResults(entry: ChatWorkLogEntry): NonNullable<ChatWorkLogEntry["results"]> {
+  if (entry.entryKind !== "web_search" || !entry.results?.length) return [];
+  return entry.results.slice(0, WEB_SEARCH_RESULT_LIMIT);
+}
+
+function WebSearchResultRows({ entry }: { entry: ChatWorkLogEntry }) {
+  const results = webSearchResults(entry);
+  if (results.length === 0) return null;
+  const total = typeof entry.resultsTotal === "number" ? entry.resultsTotal : results.length;
+  const moreCount = Math.max(0, total - results.length);
+  return (
+    <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-col gap-0.5 border-t border-white/[0.05] pt-2">
+      {results.map((result, index) => {
+        const display = deriveWebSearchResultDisplay(result);
+        const body = (
+          <>
+            <Globe size={10} weight="bold" className="shrink-0 text-cyan-100/45" aria-hidden />
+            <span className="min-w-0 truncate">{display.title}</span>
+            {display.domain ? (
+              <span className="shrink-0 truncate text-cyan-100/45">{display.domain}</span>
+            ) : null}
+            {display.href ? (
+              <ArrowSquareOut size={10} weight="bold" className="ml-auto shrink-0 text-cyan-100/40" aria-hidden />
+            ) : null}
+          </>
+        );
+        const className =
+          "flex min-w-0 max-w-full items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-cyan-100/78";
+        return display.href ? (
+          <button
+            key={`${display.href}:${index}`}
+            type="button"
+            onClick={() => openUrlInAdeBrowser(display.href!)}
+            className={cn(className, "transition-colors hover:bg-cyan-400/[0.06] hover:text-cyan-50")}
+            title={display.href}
+          >
+            {body}
+          </button>
+        ) : (
+          <span key={`result:${index}`} className={className}>
+            {body}
+          </span>
+        );
+      })}
+      {moreCount > 0 ? (
+        <span className="ml-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/35">
+          +{moreCount} more
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function ToolCallRow({
   entry,
   onNavigateSuggestion,
@@ -410,7 +466,10 @@ function ToolCallRow({
   const kindSlug = workLogEntryKindSlug(entry);
   const argText = replaceInternalToolNames(entryArgText(entry));
   const kindTone = workLogEntryKindToneClass(entry);
-  const searchUrlActions = webSearchUrlActions(entry);
+  const searchResults = webSearchResults(entry);
+  // Structured results are the richer, deduped surface; fall back to raw action
+  // URLs only when the provider didn't send a results array.
+  const searchUrlActions = searchResults.length > 0 ? [] : webSearchUrlActions(entry);
 
   const detailBody = useMemo(() => buildEntryDetail(entry), [entry]);
   const detailIsTruncated = Boolean(detailBody && detailBody.length > WORK_LOG_DETAIL_TRUNCATE_LIMIT);
@@ -448,6 +507,7 @@ function ToolCallRow({
           ))}
         </div>
       ) : null}
+      {open && searchResults.length > 0 ? <WebSearchResultRows entry={entry} /> : null}
       {open && searchUrlActions.length > 0 ? (
         <div className="mt-1 ml-[18px] flex min-w-0 max-w-full flex-wrap gap-1.5 border-t border-white/[0.05] pt-2">
           {searchUrlActions.slice(0, 6).map((action, index) => {

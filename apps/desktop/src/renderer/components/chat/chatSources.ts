@@ -228,6 +228,17 @@ export function deriveChatSources(events: AgentChatEventEnvelope[]): ChatSources
           url,
         });
       }
+      for (const result of event.results ?? []) {
+        const url = canonicalHttpUrl(result.url);
+        if (!url) continue;
+        addPreferred(web, `url:${url.toLowerCase()}`, {
+          id: `web:${url.toLowerCase()}`,
+          kind: "web",
+          title: result.title?.trim() || sourceLabelFromUrl(url),
+          detail: result.snippet?.trim() || url,
+          url,
+        });
+      }
       for (const query of queries) {
         const key = query.toLocaleLowerCase();
         addPreferred(web, `query:${key}`, {

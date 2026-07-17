@@ -79,6 +79,7 @@ struct WorkToolCardModel: Identifiable, Equatable {
   let argsText: String?
   let resultText: String?
   let webSearchActions: [CodexWebSearchAction]?
+  let webSearchResults: [CodexWebSearchResult]?
 
   init(
     id: String,
@@ -88,7 +89,8 @@ struct WorkToolCardModel: Identifiable, Equatable {
     completedAt: String?,
     argsText: String?,
     resultText: String?,
-    webSearchActions: [CodexWebSearchAction]? = nil
+    webSearchActions: [CodexWebSearchAction]? = nil,
+    webSearchResults: [CodexWebSearchResult]? = nil
   ) {
     self.id = id
     self.toolName = toolName
@@ -98,6 +100,7 @@ struct WorkToolCardModel: Identifiable, Equatable {
     self.argsText = argsText
     self.resultText = resultText
     self.webSearchActions = webSearchActions
+    self.webSearchResults = webSearchResults
   }
 }
 
@@ -913,7 +916,7 @@ enum WorkChatEvent: Equatable {
   case promptSuggestion(text: String, turnId: String?)
   case contextCompact(summary: String, isInProgress: Bool, postTokens: Int?, turnId: String?, compactionId: String?)
   case autoApprovalReview(summary: String, turnId: String?)
-  case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, status: WorkToolCardStatus, itemId: String, turnId: String?)
+  case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, results: [CodexWebSearchResult]?, status: WorkToolCardStatus, itemId: String, turnId: String?)
   case codexState(title: String, message: String, icon: String, turnId: String?)
   case codexTurnStalled(message: String, recoveryOptions: [String], turnId: String?, sourceSessionId: String?)
   case planText(text: String, turnId: String?)

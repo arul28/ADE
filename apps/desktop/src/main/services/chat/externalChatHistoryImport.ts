@@ -3,6 +3,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatImportProvider,
+  CodexWebSearchResult,
 } from "../../../shared/types";
 import { cleanExternalSessionUserText } from "../externalSessions/discoveryUtils";
 
@@ -33,6 +34,28 @@ function isRecord(value: unknown): value is JsonRecord {
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value : null;
+}
+
+function normalizeCodexWebSearchResults(value: unknown): { results: CodexWebSearchResult[]; total: number } | null {
+  const MAX = 8;
+  if (!Array.isArray(value)) return null;
+  const results: CodexWebSearchResult[] = [];
+  let total = 0;
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    const url = stringOrNull(entry.url ?? entry.link)?.trim() ?? null;
+    const title = stringOrNull(entry.title)?.trim() ?? null;
+    const snippet = stringOrNull(entry.snippet ?? entry.text ?? entry.description)?.trim() ?? null;
+    if (!url && !title) continue;
+    total += 1;
+    if (results.length >= MAX) continue;
+    results.push({
+      ...(url ? { url } : {}),
+      ...(title ? { title } : {}),
+      ...(snippet ? { snippet } : {}),
+    });
+  }
+  return total > 0 ? { results, total } : null;
 }
 
 function timestampFrom(value: unknown, fallbackMs: number): string {
@@ -471,7 +494,19 @@ function codexThreadItemToEvents(
       const query = stringOrNull(item.query) ?? stringOrNull(item.input) ?? "";
       if (!query) return [];
       const action = isRecord(item.action) ? stringOrNull(item.action.kind) : stringOrNull(item.action);
-      return [base({ type: "web_search", query, itemId, turnId, status: mapStatus(item.status), ...(action ? { action } : {}) })];
+      const normalizedResults = normalizeCodexWebSearchResults(item.results);
+      return [base({
+        type: "web_search",
+        query,
+        itemId,
+        turnId,
+        status: mapStatus(item.status),
+        ...(action ? { action } : {}),
+        ...(normalizedResults ? {
+          results: normalizedResults.results,
+          resultsTotal: normalizedResults.total,
+        } : {}),
+      })];
     }
     case "imageGeneration":
     case "image_generation": {

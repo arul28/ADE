@@ -96,6 +96,7 @@ import { localDayKey, localDayOffset, localDayStart } from "./localDay";
 import {
   computeResetsInMs,
   parseClaudeWindows,
+  parseCodexRateLimitSnapshot,
   parseCodexRateLimitWindows,
   type ClaudeUsageResponse,
 } from "./providerQuotaParsers";
@@ -140,6 +141,7 @@ function isCostSnapshotArray(value: unknown): value is CostSnapshot[] {
 function isUsageSnapshot(value: unknown): value is UsageSnapshot {
   return isRecord(value)
     && Array.isArray(value.windows)
+    && (value.spendControlReached === undefined || typeof value.spendControlReached === "boolean")
     && isCostSnapshotArray(value.costs)
     && isCostSnapshotArray(value.adeCosts)
     && typeof value.lastPolledAt === "string"
@@ -677,9 +679,9 @@ async function pollCodexUsage(
     );
 
     if (result.ok && isRecord(result.data)) {
-      const windows = parseCodexRateLimitWindows(result.data);
-      if (windows.length > 0) {
-        return { windows, source: "http", errors: [] };
+      const snapshot = parseCodexRateLimitSnapshot(result.data);
+      if (snapshot.windows.length > 0) {
+        return { ...snapshot, source: "http", errors: [] };
       }
       const fallback = await measureUsagePhase(
         logger,
@@ -731,6 +733,7 @@ async function pollCodexUsage(
 async function pollCodexViaCliRpc(logger: Logger): Promise<UsageProviderPollResult> {
   const windows: UsageWindow[] = [];
   const errors: string[] = [];
+  let spendControlReached: boolean | undefined;
 
   try {
     const initPayload = JSON.stringify({
@@ -866,9 +869,12 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<UsageProviderPollResu
       const id = typeof parsed.id === "number" ? parsed.id : null;
 
       if (id === 1) {
-        const parsedWindows = parseCodexRateLimitWindows(res);
-        if (parsedWindows.length > 0) {
-          windows.push(...parsedWindows);
+        const snapshot = parseCodexRateLimitSnapshot(res);
+        if (snapshot.windows.length > 0) {
+          windows.push(...snapshot.windows);
+        }
+        if (typeof snapshot.spendControlReached === "boolean") {
+          spendControlReached = snapshot.spendControlReached;
         }
       }
     }
@@ -887,6 +893,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<UsageProviderPollResu
   }
   return {
     windows,
+    ...(typeof spendControlReached === "boolean" ? { spendControlReached } : {}),
     source: "cli",
     errors,
     ...(windows.length === 0 ? { errorKind: "invalid_response" as const } : {}),
@@ -2699,10 +2706,17 @@ export function createUsageTrackingService({
           ...(lastSnapshot?.providerMessages ?? []).filter((message) => message.provider !== "codex"),
           ...(codexResult.providerMessages ?? []),
         ];
+        const codexPollEntry = resultsByProvider.get("codex");
+        let spendControlReached = codexResult.spendControlReached;
+        if (typeof spendControlReached !== "boolean" && (codexPollEntry?.skipped || codexResult.windows.length === 0)) {
+          // Codex wasn't polled this round — retain the last known spend-control state.
+          spendControlReached = lastSnapshot?.spendControlReached;
+        }
         const costResult = cachedCostResult();
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
+          ...(typeof spendControlReached === "boolean" ? { spendControlReached } : {}),
           pacing,
           pacingByProvider,
           providerStatus,
@@ -3003,7 +3017,9 @@ export const _testing = {
   refreshClaudeCredentials,
   parseClaudeWindows,
   parseClaudeCliUsage,
+  parseCodexRateLimitSnapshot,
   parseCodexRateLimitWindows,
+  isUsageSnapshot,
   pollClaudeUsage,
   pollCodexUsage,
   discoverClaudeProjectDirs,

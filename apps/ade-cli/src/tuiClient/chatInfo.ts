@@ -29,8 +29,15 @@ function tokenStatsSummary(stats: TokenStats | null): string | null {
     const output = stats.outputTokens != null ? compactNumber(stats.outputTokens) : "0";
     parts.push(`${input}/${output}`);
   }
+  const cacheParts: string[] = [];
   if (stats.cacheReadTokens != null && stats.cacheReadTokens > 0) {
-    parts.push(`(${compactNumber(stats.cacheReadTokens)}✶)`);
+    cacheParts.push(`${compactNumber(stats.cacheReadTokens)}✶`);
+  }
+  if (stats.cacheCreationTokens != null && stats.cacheCreationTokens > 0) {
+    cacheParts.push(`${compactNumber(stats.cacheCreationTokens)}✎`);
+  }
+  if (cacheParts.length) {
+    parts.push(`(${cacheParts.join(" ")})`);
   }
   if (stats.costUsd != null) {
     parts.push(`$${stats.costUsd.toFixed(2)}`);

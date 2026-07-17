@@ -52,6 +52,36 @@ describe("deriveChatSources", () => {
     expect(sources.web.find((source) => !source.url)?.title).toBe("GPT-5.6 docs");
   });
 
+  it("includes structured web_search results as web sources and dedupes against action urls", () => {
+    const sources = deriveChatSources([
+      envelope({
+        type: "web_search",
+        query: "codex releases",
+        actions: [{ type: "open_page", url: "https://openai.com/index/codex#top" }],
+        results: [
+          {
+            url: "https://openai.com/index/codex#pricing",
+            title: "Codex pricing",
+            snippet: "Plans and limits.",
+          },
+          { url: "https://platform.openai.com/docs/codex", title: "Codex API docs" },
+        ],
+        resultsTotal: 5,
+        itemId: "search-9",
+        status: "completed",
+      }),
+    ]);
+
+    // Action url and the first result share a canonical url → one web source.
+    const urls = sources.web.filter((source) => source.url).map((source) => source.url).sort();
+    expect(urls).toEqual([
+      "https://openai.com/index/codex",
+      "https://platform.openai.com/docs/codex",
+    ]);
+    expect(sources.web.find((source) => source.url === "https://platform.openai.com/docs/codex")?.title)
+      .toBe("Codex API docs");
+  });
+
   it("groups MCP calls by connected app and extracts safe external resources", () => {
     const mcp = {
       server: "github",

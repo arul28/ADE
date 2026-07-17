@@ -8,8 +8,54 @@ import {
   parseInlineRuns,
   renderChatLines,
   renderObject,
+  webSearchResultDomain,
+  webSearchResultPreviewLines,
 } from "../format";
 import { formatRelativePastTime } from "../relativeTime";
+
+describe("webSearchResultPreviewLines", () => {
+  it("derives domains defensively and never throws on malformed urls", () => {
+    expect(webSearchResultDomain("https://www.example.com/codex")).toBe("example.com");
+    expect(webSearchResultDomain("docs.example.org/server?x=1")).toBe("docs.example.org");
+    expect(webSearchResultDomain("not a url")).toBe("not a url");
+    expect(webSearchResultDomain(undefined)).toBe("");
+  });
+
+  it("renders `title — domain` lines, falling back to domain then url", () => {
+    const lines = webSearchResultPreviewLines(
+      [
+        { title: "Codex docs", url: "https://www.example.com/codex" },
+        { url: "https://docs.example.org/server" },
+      ],
+      undefined,
+      3,
+    );
+    expect(lines).toEqual([
+      "Codex docs — example.com",
+      "docs.example.org",
+    ]);
+  });
+
+  it("caps at max and appends `+N more` using resultsTotal", () => {
+    const lines = webSearchResultPreviewLines(
+      [
+        { title: "One", url: "https://a.com" },
+        { title: "Two", url: "https://b.com" },
+        { title: "Three", url: "https://c.com" },
+        { title: "Four", url: "https://d.com" },
+      ],
+      9,
+      3,
+    );
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toBe("Three — c.com  +6 more");
+  });
+
+  it("returns no lines when results are absent", () => {
+    expect(webSearchResultPreviewLines(undefined, undefined)).toEqual([]);
+    expect(webSearchResultPreviewLines([], 0)).toEqual([]);
+  });
+});
 
 describe("diffLineKind", () => {
   it("classifies hunk, meta, add, del, and context lines", () => {
@@ -328,6 +374,11 @@ describe("renderChatLines", () => {
               { type: "search", query: "Codex app server" },
               { type: "openPage", url: "https://example.com/codex" },
             ],
+            results: [
+              { title: "Codex app server docs", url: "https://www.example.com/codex" },
+              { title: "Deep dive", url: "https://docs.example.org/deep" },
+            ],
+            resultsTotal: 4,
           },
         },
         {
@@ -378,6 +429,9 @@ describe("renderChatLines", () => {
     expect(body).toContain("web Codex app server");
     expect(body).toMatch(/search\s+Codex app server/);
     expect(body).toMatch(/openPage\s+https:\/\/example\.com\/codex/);
+    // Result hits render as compact `title — domain` previews with a `+N more` tail.
+    expect(body).toContain("Codex app server docs — example.com");
+    expect(body).toContain("Deep dive — docs.example.org +2 more");
     expect(body).toContain("image generated");
     expect(body).toContain("/recover wait · nudge · retry · resume");
     // Goal/token-usage events are suppressed in the chat transcript.

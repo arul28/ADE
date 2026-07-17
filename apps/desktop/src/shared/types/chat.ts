@@ -331,6 +331,12 @@ export type CodexWebSearchAction = {
   snippet?: string;
 };
 
+export type CodexWebSearchResult = {
+  url?: string;
+  title?: string;
+  snippet?: string;
+};
+
 export type AgentChatMcpAppContext = {
   connectorId?: string;
   linkId?: string;
@@ -942,6 +948,8 @@ export type AgentChatEvent =
       query: string;
       action?: string;
       actions?: CodexWebSearchAction[];
+      results?: CodexWebSearchResult[];
+      resultsTotal?: number;
       itemId: string;
       logicalItemId?: string;
       turnId?: string;

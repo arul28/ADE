@@ -142,7 +142,12 @@ export function parseClaudeWindows(data: ClaudeUsageResponse): { windows: UsageW
   return { windows, extraUsage };
 }
 
-export function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[] {
+export type CodexRateLimitSnapshot = {
+  windows: UsageWindow[];
+  spendControlReached?: boolean;
+};
+
+export function parseCodexRateLimitSnapshot(data: Record<string, unknown>): CodexRateLimitSnapshot {
   const windows: UsageWindow[] = [];
   const snakeRateLimit = isRecord(data.rate_limit) ? data.rate_limit : null;
   const camelRateLimits = isRecord(data.rateLimits) ? data.rateLimits : null;
@@ -196,7 +201,25 @@ export function parseCodexRateLimitWindows(data: Record<string, unknown>): Usage
     }
   }
 
-  return windows;
+  const spendControlReached = [
+    data,
+    camelRateLimits,
+    isRecord(data.rate_limits) ? data.rate_limits : null,
+    snakeRateLimit,
+  ].flatMap((snapshot) => {
+    if (!snapshot) return [];
+    const value = snapshot.spendControlReached ?? snapshot.spend_control_reached;
+    return typeof value === "boolean" ? [value] : [];
+  })[0];
+
+  return {
+    windows,
+    ...(typeof spendControlReached === "boolean" ? { spendControlReached } : {}),
+  };
+}
+
+export function parseCodexRateLimitWindows(data: Record<string, unknown>): UsageWindow[] {
+  return parseCodexRateLimitSnapshot(data).windows;
 }
 
 function codexWindowTypeFromDuration(value: number | null): UsageWindow["windowType"] | null {

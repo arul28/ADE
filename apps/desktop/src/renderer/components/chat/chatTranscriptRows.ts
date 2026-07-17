@@ -3,7 +3,7 @@ import {
   mergeReasoningTextFragments,
   type ActivityPhaseMergeMeta,
 } from "../../../shared/chatActivityPhase";
-import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSpawnKind } from "../../../shared/types";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSpawnKind, CodexWebSearchResult } from "../../../shared/types";
 import {
   isBackgroundShellCommand,
   longerSubagentText,
@@ -62,6 +62,10 @@ export type ChatWorkLogEntry = {
   query?: string;
   action?: string;
   actions?: NonNullable<Extract<AgentChatEvent, { type: "web_search" }>["actions"]>;
+  /** Structured web-search results (max 8), rendered as compact external links. */
+  results?: NonNullable<Extract<AgentChatEvent, { type: "web_search" }>["results"]>;
+  /** Result count before the producer capped `results` — drives the "+N more" line. */
+  resultsTotal?: number;
   itemId?: string;
   turnId?: string;
   parentItemId?: string;
@@ -674,6 +678,41 @@ function buildFileWorkLogEvent(
   };
 }
 
+export type WebSearchResultDisplay = {
+  /** Openable http(s) URL, or null when the result carries no usable link. */
+  href: string | null;
+  /** Title, falling back to the domain, then the raw URL. */
+  title: string;
+  /** Host (www-stripped) shown subtly next to the title when it differs from it. */
+  domain: string | null;
+};
+
+/**
+ * Normalize a structured web-search result into the fields the transcript rows
+ * render: an openable href, a primary title (title → domain → url), and the
+ * domain to show subtly beside the title. Pure so both renderers stay in step.
+ */
+export function deriveWebSearchResultDisplay(result: CodexWebSearchResult): WebSearchResultDisplay {
+  const url = result.url?.trim() ?? "";
+  let domain: string | null = null;
+  if (url) {
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") {
+        domain = parsed.hostname.replace(/^www\./i, "");
+      }
+    } catch {
+      // Non-URL text falls through to the raw-string fallback below.
+    }
+  }
+  const title = result.title?.trim() || domain || url || "Result";
+  return {
+    href: url.length ? url : null,
+    title,
+    domain: domain && domain !== title ? domain : null,
+  };
+}
+
 function buildWebSearchWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "web_search" }>,
   timestamp: string,
@@ -690,6 +729,8 @@ function buildWebSearchWorkLogEvent(
       query: event.query,
       action: event.action,
       ...(event.actions?.length ? { actions: event.actions } : {}),
+      ...(event.results?.length ? { results: event.results } : {}),
+      ...(typeof event.resultsTotal === "number" ? { resultsTotal: event.resultsTotal } : {}),
       tone: deriveTone(event.status, "info"),
       status: event.status,
       entryKind: "web_search",

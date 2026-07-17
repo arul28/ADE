@@ -79,6 +79,30 @@ describe("RightPane usage", () => {
     expect(text).toContain("$0.00");
   });
 
+  it("surfaces a terse Codex spending-cap marker when spendControlReached is set", () => {
+    const { lastFrame } = renderPane({
+      kind: "usage",
+      title: "Usage",
+      quotaWindows: [{ id: "codex:weekly", label: "Codex weekly", percent: 61, resetAt: null }],
+      session: null,
+      spendControlReached: true,
+    });
+    const text = lastFrame() ?? "";
+    expect(text).toContain("Codex spending cap reached");
+    // Marker must not suppress the rest of the pane.
+    expect(text).toContain("Codex weekly");
+  });
+
+  it("omits the spending-cap marker when the flag is unset", () => {
+    const { lastFrame } = renderPane({
+      kind: "usage",
+      title: "Usage",
+      quotaWindows: [{ id: "codex:weekly", label: "Codex weekly", percent: 61, resetAt: null }],
+      session: null,
+    });
+    expect(lastFrame() ?? "").not.toContain("spending cap reached");
+  });
+
   it("renders a loading state while the snapshot is being fetched", () => {
     const { lastFrame } = renderPane({ kind: "usage", title: "Usage", loading: true });
     expect(lastFrame() ?? "").toContain("Loading usage…");

@@ -320,6 +320,31 @@ describe("ChatView", () => {
     expect(maxOffset).toBeGreaterThan(0);
   });
 
+  it("renders web-search result previews under an expanded search entry", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "web_search",
+          query: "codex app server",
+          itemId: "w1",
+          turnId: "turn-1",
+          status: "completed",
+          results: [
+            { title: "Codex docs", url: "https://www.example.com/codex" },
+            { title: "Server guide", url: "https://docs.example.org/server" },
+          ],
+          resultsTotal: 4,
+        },
+      },
+    ], { expanded: true, width: 100 });
+
+    expect(frame).toContain("Codex docs — example.com");
+    expect(frame).toContain("Server guide — docs.example.org  +2 more");
+  });
+
   it("keeps showing the model working indicator while active text is streaming", () => {
     const frame = renderEvents([
       {

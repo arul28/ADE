@@ -209,7 +209,7 @@ struct WorkActivityIndicator: View {
           tint: ADEColor.accent
         )
 
-      case .webSearch(let query, _, _, let status, _, let turnId):
+      case .webSearch(let query, _, _, _, let status, _, let turnId):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
           return Presentation(

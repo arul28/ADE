@@ -451,6 +451,8 @@ export type UsageProviderMessage = {
 
 export type UsageSnapshot = {
   windows: UsageWindow[];
+  /** Codex account-level spend control state. Omitted when the server does not report it. */
+  spendControlReached?: boolean;
   pacing: UsagePacing;
   pacingByProvider?: UsagePacingByProvider;
   /** Per-provider freshness/health for the latest poll (drives quiet-retry UI). */

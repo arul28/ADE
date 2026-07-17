@@ -98,6 +98,40 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(toolGroups[0]!.entries.map((e) => e.tool)).toEqual(["read", "shell", "grep"]);
   });
 
+  it("threads web_search results and resultsTotal onto the aggregated search entry", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "web_search",
+        query: "codex app server",
+        itemId: "w1",
+        turnId: "turn-1",
+        status: "running",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "web_search",
+        query: "codex app server",
+        itemId: "w1",
+        turnId: "turn-1",
+        status: "completed",
+        results: [
+          { title: "Codex docs", url: "https://www.example.com/codex" },
+          { title: "Server guide", url: "https://docs.example.org/server?x=1" },
+        ],
+        resultsTotal: 5,
+      }),
+    ];
+    const blocks = aggregate(events);
+    const toolGroup = blocks.find((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }> | undefined;
+    expect(toolGroup).toBeDefined();
+    expect(toolGroup!.entries).toHaveLength(1);
+    const entry = toolGroup!.entries[0]!;
+    expect(entry).toMatchObject({ itemId: "w1", tool: "search", status: "ok", resultsTotal: 5 });
+    expect(entry.results).toEqual([
+      { title: "Codex docs", url: "https://www.example.com/codex" },
+      { title: "Server guide", url: "https://docs.example.org/server?x=1" },
+    ]);
+  });
+
   it("propagates failed tool_result status to the matching entry", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "read", args: { path: "a.ts" }, itemId: "t1", turnId: "turn-1" }),

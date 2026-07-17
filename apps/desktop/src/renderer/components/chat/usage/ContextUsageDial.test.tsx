@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
-import { ContextUsageDial } from "./ContextUsageDial";
+import { ContextUsageDial, buildContent } from "./ContextUsageDial";
 import type { ContextUsageViewModel } from "./contextUsageModel";
 
 function vm(partial: Partial<ContextUsageViewModel>): ContextUsageViewModel {
@@ -56,5 +56,19 @@ describe("ContextUsageDial", () => {
   it("exposes the percentage on the accessible label", () => {
     const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.42 })} />);
     expect(container.querySelector('[aria-label="Context usage: 42% full"]')).toBeTruthy();
+  });
+
+  it("adds a cache-write breakdown segment after cached when present", () => {
+    const content = buildContent(vm({ cacheReadTokens: 4_000, cacheWriteTokens: 2_048 }));
+    expect(content.gitCommand).toContain("cache write 2.0k");
+    const cachedIndex = content.gitCommand!.indexOf("cached");
+    const cacheWriteIndex = content.gitCommand!.indexOf("cache write");
+    expect(cachedIndex).toBeGreaterThanOrEqual(0);
+    expect(cacheWriteIndex).toBeGreaterThan(cachedIndex);
+  });
+
+  it("omits the cache-write segment when there is no cache-write usage", () => {
+    const content = buildContent(vm({ cacheWriteTokens: null }));
+    expect(content.gitCommand ?? "").not.toContain("cache write");
   });
 });
