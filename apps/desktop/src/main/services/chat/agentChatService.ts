@@ -11828,6 +11828,12 @@ export function createAgentChatService(args: {
         rawMaxTokens: maxTokens,
         percentage: occupancyPct,
         model: managed.session.model,
+        // Typed breakdown for the composer meter's hover (parallels `categories`,
+        // which stays display-shaped for the inline `/context` card).
+        inputTokens: guardrail.inputTokens,
+        outputTokens: guardrail.outputTokens,
+        cacheReadTokens: guardrail.cacheReadTokens,
+        cacheCreationTokens: guardrail.cacheCreationTokens,
       },
       ...(turnId ? { turnId } : {}),
     });
@@ -38288,6 +38294,10 @@ export function createAgentChatService(args: {
       const usage = normalizeClaudeContextUsage(await control.getContextUsage());
       emitChatEvent(managed, {
         type: "context_usage",
+        // User-requested via the `/context` command — this is the one context_usage
+        // event that still renders an inline card in the transcript. The automatic
+        // per-turn "live" snapshots only feed the composer's context meter.
+        origin: "command",
         usage,
         turnId: managed.runtime?.activeTurnId ?? undefined,
       });

@@ -206,12 +206,26 @@ export function latestContextUsageInput(
     }
     if (event.type === "context_usage") {
       lastRuntimeWindow = positive(event.usage.maxTokens) ?? lastRuntimeWindow;
+      // Surface the same breakdown the old inline card showed, so the composer
+      // meter's hover is a complete replacement. `usedTokens` stays the total
+      // occupancy (drives the ring %); the typed per-turn fields (present on
+      // automatic "live" snapshots) fill the breakdown line. When they're absent
+      // (SDK `/context` command payload), fall back to showing the total as input.
+      const inputTokens = positive(event.usage.inputTokens);
+      const outputTokens = positive(event.usage.outputTokens);
+      const cacheReadTokens = positive(event.usage.cacheReadTokens);
+      const cacheWriteTokens = positive(event.usage.cacheCreationTokens);
+      const hasBreakdown =
+        inputTokens != null || outputTokens != null || cacheReadTokens != null || cacheWriteTokens != null;
       current = {
         kind: "generic",
         provider,
         usage: {
           usedTokens: event.usage.totalTokens,
-          inputTokens: event.usage.totalTokens,
+          inputTokens: hasBreakdown ? inputTokens : event.usage.totalTokens,
+          outputTokens,
+          cacheReadTokens,
+          cacheWriteTokens,
           totalTokens: event.usage.totalTokens,
         },
         contextWindow: event.usage.maxTokens,

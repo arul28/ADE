@@ -2768,6 +2768,17 @@ function RowHoverTimestamp({ iso, className }: { iso: string; className?: string
   );
 }
 
+/**
+ * Automatic per-turn ("live") context-usage snapshots exist only to drive the
+ * composer's context meter (ContextUsageDial) in real time — rendering them
+ * inline spammed the thread with a repeating card. They are filtered out of the
+ * transcript row list before it renders; only the user-requested `/context`
+ * command ("command", or historical undefined-origin events) still shows a card.
+ */
+function isAutomaticContextUsageEvent(event: { type: string; origin?: string }): boolean {
+  return event.type === "context_usage" && event.origin === "live";
+}
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
@@ -3361,6 +3372,8 @@ function renderEvent(
 
   /* ── Context Usage ── */
   if (event.type === "context_usage") {
+    // Automatic "live" snapshots are filtered out of the row list upstream (see
+    // isAutomaticContextUsageEvent); only user-requested `/context` reaches here.
     const usage = event.usage;
     const totalLabel = formatTokenCount(usage.totalTokens) ?? "0";
     const maxLabel = formatTokenCount(usage.maxTokens) ?? "0";
@@ -5166,7 +5179,13 @@ function AgentChatMessageListMain({
     }
     return byRowKey;
   }, [rows]);
-  const groupedRows = useMemo(() => groupChatTranscriptRows(rows), [rows]);
+  const groupedRows = useMemo(
+    // Drop automatic context-usage snapshots before they become flex rows: an
+    // empty (null-rendered) row still consumes a `--chat-row-gap` on each side,
+    // so leaving them in would stack blank gaps during a streaming turn.
+    () => groupChatTranscriptRows(rows).filter((row) => !isAutomaticContextUsageEvent(row.event)),
+    [rows],
+  );
   const groupedRowKeys = useMemo(() => groupedRows.map((row) => row.key), [groupedRows]);
   const forkHistoryDividerRowKey = useMemo(
     () => computeForkHistoryDividerRowKey(events, groupedRowKeys),
