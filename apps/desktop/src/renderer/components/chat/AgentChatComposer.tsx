@@ -60,6 +60,7 @@ import {
 } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
+import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { hasPendingInputOptions } from "./pendingInput";
@@ -91,6 +92,13 @@ const ISSUE_CONTEXT_MENU_WIDTH = 256;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
+
+// Icon slot styling for smart-link chips. Real brand marks / favicons render as
+// a clean square glyph; only the text-monogram fallback keeps the tiled badge.
+const SMART_LINK_ICON_MARK_CLASS =
+  "inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-violet-100/85";
+const SMART_LINK_ICON_GLYPH_CLASS =
+  "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
 
 const voiceShimmerStyleId = "ade-voice-shimmer-effects";
 
@@ -2068,14 +2076,25 @@ export function AgentChatComposer({
     if (!icon) return;
     icon.replaceChildren();
     if (preview.iconDataUrl) {
+      icon.className = SMART_LINK_ICON_MARK_CLASS;
       const image = document.createElement("img");
       image.src = preview.iconDataUrl;
       image.alt = "";
       image.draggable = false;
-      image.className = "h-3 w-3 rounded-[2px] object-contain";
+      image.className = "h-full w-full rounded-[2px] object-contain";
       icon.appendChild(image);
       return;
     }
+    // Catalogued providers (GitHub, Linear, ADE) and the generic web fallback
+    // render their real brand mark; only an unknown provider drops to the
+    // text monogram.
+    const markSvg = smartLinkChipMarkSvg(preview.provider);
+    if (markSvg) {
+      icon.className = SMART_LINK_ICON_MARK_CLASS;
+      icon.innerHTML = markSvg;
+      return;
+    }
+    icon.className = SMART_LINK_ICON_GLYPH_CLASS;
     icon.textContent = smartLinkProviderGlyph(preview.provider);
   }, []);
 
@@ -2091,7 +2110,7 @@ export function AgentChatComposer({
 
     const icon = document.createElement("span");
     icon.dataset.smartLinkIcon = "true";
-    icon.className = "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
+    icon.className = SMART_LINK_ICON_GLYPH_CLASS;
     chip.appendChild(icon);
 
     const label = document.createElement("span");
@@ -4756,7 +4775,11 @@ export function AgentChatComposer({
                 aria-label={composerInputAccessibleLabel}
                 suppressContentEditableWarning
                 className={cn(
-                  "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
+                  // `text-left` is load-bearing: without it the contenteditable
+                  // inherits `text-align: center` from centered empty-state
+                  // ancestors, so pasting a URL (which swaps textarea → rich
+                  // editor) makes the whole prompt box render and type centered.
+                  "block max-h-[200px] min-h-[2.6rem] w-full overflow-auto whitespace-pre-wrap break-words bg-transparent px-4 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none transition-colors",
                   dragActive ? "opacity-30" : "",
                   parallelLaunchBusy || composerInputLocked ? "cursor-not-allowed opacity-50" : "",
                 )}
