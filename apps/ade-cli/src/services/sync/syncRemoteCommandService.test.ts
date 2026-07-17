@@ -478,6 +478,47 @@ describe("createSyncRemoteCommandService", () => {
     expect(cancelScheduledWork).toHaveBeenCalledTimes(1);
   });
 
+  it("routes scheduled-work creation and pause control through owner-only mobile commands", async () => {
+    const createScheduledWork = vi.fn(async (args: Record<string, unknown>) => ({ item: args }));
+    const setScheduledWorkPaused = vi.fn(async (args: { sessionId: string; paused: boolean }) => ({
+      ...args,
+      nextWakeAt: null,
+    }));
+    const { service } = createService({
+      agentChatService: { createScheduledWork, setScheduledWorkPaused },
+    });
+
+    expect(service.getDescriptor("chat.createScheduledWork")).toEqual({
+      action: "chat.createScheduledWork",
+      scope: "project",
+      policy: { viewerAllowed: false, queueable: false },
+    });
+    expect(service.getDescriptor("chat.setScheduledWorkPaused")).toEqual({
+      action: "chat.setScheduledWorkPaused",
+      scope: "project",
+      policy: { viewerAllowed: false, queueable: false },
+    });
+    await service.execute(makePayload("chat.createScheduledWork", {
+      sessionId: "chat-1",
+      cron: "0 * * * *",
+      prompt: "Check CI.",
+      recurring: false,
+      reason: "CI watcher",
+    }));
+    expect(createScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      cron: "0 * * * *",
+      prompt: "Check CI.",
+      recurring: false,
+      reason: "CI watcher",
+    });
+    await service.execute(makePayload("chat.setScheduledWorkPaused", {
+      sessionId: "chat-1",
+      paused: true,
+    }));
+    expect(setScheduledWorkPaused).toHaveBeenCalledWith({ sessionId: "chat-1", paused: true });
+  });
+
   it("rejects unsupported Codex recovery actions before invoking chat", async () => {
     const recoverCodexTurn = vi.fn();
     const { service } = createService({ agentChatService: { recoverCodexTurn } });
@@ -1116,7 +1157,9 @@ describe("createSyncRemoteCommandService", () => {
       "work.getSessionDelta",
       "chat.getSlashCommands",
       "chat.resolveSmartLinkPreview",
+      "chat.createScheduledWork",
       "chat.cancelScheduledWork",
+      "chat.setScheduledWorkPaused",
       "chat.getParallelLaunchState",
       "chat.setParallelLaunchState",
       "chat.handoff",

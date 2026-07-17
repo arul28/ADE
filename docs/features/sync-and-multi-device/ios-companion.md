@@ -104,6 +104,10 @@ an active durable row and only when `canInvokeChatRemoteAction` confirms that
 the selected chat's host advertises `chat.cancelScheduledWork`. The command is
 non-queueable: an offline phone or older brain leaves Chat Info view-only rather
 than recording a cancellation that could run after the job has already fired.
+The host registry also advertises non-queueable `chat.createScheduledWork` and
+`chat.setScheduledWorkPaused` mutations to mobile controllers. Those are remote
+transport capabilities; the current native Chat Info surface still implements
+only Cancel and must not infer create/pause UI from descriptor availability.
 
 The Settings machine card mirrors this state through
 `SettingsConnectionHeader`: connected limited hosts show a compact "Machine
@@ -1468,6 +1472,11 @@ reflected in the phone's UI on the next descriptor read.
 `WorkSessionDestinationView` asks `canInvokeChatRemoteAction` before constructing
 the cancellation callback, and `WorkScheduledWorkRow` additionally requires
 `durable == true` and an active status before rendering the control.
+`chat.createScheduledWork` and `chat.setScheduledWorkPaused` are also
+project-scoped and non-queueable, but require a controller role with mutation
+access (`viewerAllowed: false`). They are available to mobile clients through
+the host registry even though the current Swift UI does not render create or
+pause controls.
 
 The usage commands are viewer-allowed project actions:
 

@@ -489,6 +489,21 @@ function createRuntime() {
         lastActivityAt: "2026-03-17T19:00:00.000Z",
         createdAt: "2026-03-17T19:00:00.000Z",
       })),
+      createScheduledWork: vi.fn(async ({ sessionId, cron, prompt, recurring = true }: {
+        sessionId: string;
+        cron: string;
+        prompt: string;
+        recurring?: boolean;
+      }) => ({
+        item: {
+          id: `action:${sessionId}:schedule-1`,
+          sessionId,
+          cron,
+          prompt,
+          kind: recurring ? "cron" : "wakeup",
+          status: "scheduled",
+        },
+      })),
       listScheduledWork: vi.fn(async ({ sessionId, includeTerminal }: {
         sessionId?: string;
         includeTerminal?: boolean;
@@ -3194,6 +3209,26 @@ describe("adeRpcServer", () => {
       text: "own-chat write",
     });
 
+    const ownScheduledWorkCreate = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "createScheduledWork",
+      args: { cron: "0 * * * *", prompt: "Check CI." },
+    });
+    expect(ownScheduledWorkCreate?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.createScheduledWork).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      cron: "0 * * * *",
+      prompt: "Check CI.",
+    });
+
+    const deniedScheduledWorkCreate = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "createScheduledWork",
+      args: { sessionId: "chat-2", cron: "0 * * * *", prompt: "Cross-chat schedule." },
+    });
+    expect(deniedScheduledWorkCreate.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.createScheduledWork).toHaveBeenCalledTimes(1);
+
     const deniedScheduledWorkList = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "listScheduledWork",
@@ -3824,6 +3859,14 @@ describe("adeRpcServer", () => {
     });
     expect(scheduledWorkList.isError).toBe(true);
     expect(fixture.runtime.agentChatService.listScheduledWork).not.toHaveBeenCalled();
+
+    const scheduledWorkCreate = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "createScheduledWork",
+      args: { sessionId: "chat-2", cron: "0 * * * *", prompt: "Check CI." },
+    });
+    expect(scheduledWorkCreate.isError).toBe(true);
+    expect(fixture.runtime.agentChatService.createScheduledWork).not.toHaveBeenCalled();
 
     const scheduledWorkCancel = await callTool(handler, "run_ade_action", {
       domain: "chat",

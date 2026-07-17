@@ -506,6 +506,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "killDroidWorker",
     "launchCli",
     "launchHeadless",
+    "createScheduledWork",
     "listScheduledWork",
     "listClaudePlugins",
     "listClaudeSessions",
@@ -881,6 +882,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Read one chat session summary.",
       input: "scalar sessionId string, positional argsList [sessionId], or object { sessionId }",
       example: "ade actions run chat.getSessionSummary --scalar chat-123",
+    },
+    createScheduledWork: {
+      description: "Create a durable recurring or one-shot scheduled wakeup for a chat.",
+      input: "object { sessionId?: string, cron: string, prompt: string, recurring?: boolean, reason?: string }",
+      example: "ade actions run chat.createScheduledWork --input-json '{\"cron\":\"9,29,49 * * * *\",\"prompt\":\"Check CI and report\"}' --text",
     },
     listScheduledWork: {
       description: "List ADE-managed durable wakeups, cron jobs, and loops, optionally for one chat.",

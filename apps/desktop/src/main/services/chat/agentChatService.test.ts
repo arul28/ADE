@@ -12671,6 +12671,169 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
+    it("creates durable recurring and one-shot scheduled work and validates inputs and session state", async () => {
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service, sessionService } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4-codex",
+      });
+
+      const recurring = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "9,29,49 * * * *",
+        prompt: "  Check CI and report.  ",
+        reason: " CI watcher ",
+      });
+      const oneShot = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "15 10 * * 1",
+        prompt: "Prepare the weekly report.",
+        recurring: false,
+      });
+
+      expect(recurring.item).toMatchObject({
+        id: `action:${session.id}:test-uuid-2`,
+        sessionId: session.id,
+        kind: "cron",
+        status: "scheduled",
+        prompt: "Check CI and report.",
+        reason: "CI watcher",
+        cron: "9,29,49 * * * *",
+        durable: true,
+      });
+      expect(oneShot.item).toMatchObject({
+        id: `action:${session.id}:test-uuid-3`,
+        kind: "wakeup",
+        status: "scheduled",
+        durable: true,
+      });
+      expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([
+        recurring.item,
+        oneShot.item,
+      ]);
+      const storedSchedules = scheduledWork.readState()?.schedules ?? [];
+      expect(storedSchedules).toEqual([
+        expect.objectContaining({
+          id: recurring.item.id,
+          kind: "cron",
+          expiresAt: expect.any(Number),
+        }),
+        expect.objectContaining({
+          id: oneShot.item.id,
+          kind: "wakeup",
+        }),
+      ]);
+      expect(storedSchedules[0]?.provider).toBeUndefined();
+      expect(storedSchedules[1]?.provider).toBeUndefined();
+      expect(storedSchedules[1]?.expiresAt).toBeUndefined();
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: session.id,
+          event: expect.objectContaining({
+            type: "scheduled_work_update",
+            id: recurring.item.id,
+            origin: "action",
+            status: "scheduled",
+          }),
+        }),
+      ]));
+
+      await service.setScheduledWorkPaused({ sessionId: session.id, paused: true });
+      const pausedCreate = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "0 * * * *",
+        prompt: "Wait until scheduling resumes.",
+      });
+      expect(pausedCreate.item.status).toBe("paused");
+      const pausedCreateEvents = events.filter((envelope) =>
+        envelope.event.type === "scheduled_work_update"
+        && envelope.event.id === pausedCreate.item.id
+      );
+      expect(pausedCreateEvents.at(-1)?.event).toEqual(expect.objectContaining({
+        status: "paused",
+        nextRunAt: expect.any(String),
+      }));
+
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        cron: "not a cron",
+        prompt: "Check CI.",
+      })).rejects.toThrow(/cron.*valid 5-field cron/i);
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        cron: "0 * * * *",
+        prompt: "   ",
+      })).rejects.toThrow(/prompt is required/i);
+
+      sessionService.create({
+        sessionId: "ended-chat",
+        laneId: "lane-1",
+        toolType: "codex-chat",
+      });
+      sessionService.end({ sessionId: "ended-chat", status: "completed" });
+      await expect(service.createScheduledWork({
+        sessionId: "ended-chat",
+        cron: "0 * * * *",
+        prompt: "This must not be scheduled.",
+      })).rejects.toThrow(/ended or archived/i);
+    });
+
+    it("delivers a provider-neutral action schedule through messageSession for an idle live Claude chat", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      const events: AgentChatEventEnvelope[] = [];
+      installClaudeWakeupFixture({
+        sdkSessionId: "sdk-action-schedule",
+        delaySeconds: 600,
+        lingerAfterTurn: new Promise<void>(() => undefined),
+      });
+      const { service } = createService({
+        db: scheduledWork.db,
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      const foregroundTurn = service.runSessionTurn({
+        sessionId: session.id,
+        text: "Keep the Claude runtime warm.",
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await foregroundTurn;
+
+      const created = await service.createScheduledWork({
+        sessionId: session.id,
+        cron: "1 * * * *",
+        prompt: "Deliver this through the ADE wake path.",
+        recurring: false,
+      });
+      await vi.advanceTimersByTimeAsync(60_000);
+      vi.useRealTimers();
+
+      expect(service.pendingNativeScheduledWakeCountForTesting(session.id)).toBe(0);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: session.id,
+          event: expect.objectContaining({
+            type: "user_message",
+            metadata: expect.objectContaining({
+              scheduledWake: expect.objectContaining({ scheduleId: created.item.id }),
+            }),
+          }),
+        }),
+      ]));
+      service.forceDisposeAll();
+    });
+
     it("projects the next durable wake onto the chat session summary", async () => {
       const before = Date.now();
       let streamCall = 0;

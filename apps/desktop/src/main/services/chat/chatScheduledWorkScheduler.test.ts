@@ -320,7 +320,7 @@ describe("createChatScheduledWorkScheduler", () => {
       sessionState: () => sessionState,
       fire: createFireMock(),
     });
-    await scheduler.upsert(wakeup({ fireAt: START }));
+    await scheduler.upsert(wakeup({ fireAt: START, provider: "claude" }));
 
     sessionState = "ended";
     const claimed = scheduler.claimNativeFire("session-1", "native-turn-ended");
@@ -658,7 +658,7 @@ describe("createChatScheduledWorkScheduler", () => {
       sessionState: () => "active",
       fire,
     });
-    await scheduler.upsert(wakeup({ fireAt: START + 500 }));
+    await scheduler.upsert(wakeup({ fireAt: START + 500, provider: "claude" }));
 
     const claimed = scheduler.claimNativeFire("session-1", "native-turn-1");
     expect(claimed).toMatchObject({
@@ -705,6 +705,34 @@ describe("createChatScheduledWorkScheduler", () => {
     await vi.advanceTimersByTimeAsync(90_000);
 
     expect(fire).not.toHaveBeenCalled();
+    scheduler.dispose();
+  });
+
+  it("does not let a native Claude turn claim provider-neutral scheduled work", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: () => undefined,
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+    });
+    await scheduler.upsert(wakeup({
+      id: "action:session-1:schedule-1",
+      fireAt: START,
+      durable: true,
+    }));
+
+    expect(scheduler.claimNativeFire("session-1", "unrelated-native-turn")).toBeNull();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fire).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "action:session-1:schedule-1" }),
+      { late: false },
+    );
+    expect(fire.mock.calls[0]?.[0]).not.toHaveProperty("provider");
     scheduler.dispose();
   });
 
@@ -801,6 +829,7 @@ describe("createChatScheduledWorkScheduler", () => {
       kind: "cron",
       cron: "* * * * *",
       fireAt: START + 500,
+      provider: "claude",
     }));
 
     expect(scheduler.claimNativeFire("session-1", "native-turn-1")).toMatchObject({

@@ -220,6 +220,7 @@ so the win is transport and decode, not host compute.
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
+- `createScheduledWork`, `cancelScheduledWork`, `setScheduledWorkPaused`
 - `launch`, `getSlashCommands`, `resolveSmartLinkPreview`, `getContextUsage`, `warmupModel`,
   `getParallelLaunchState`, `setParallelLaunchState`, `handoff`,
   `prepareCrossMachineHandoff`, `validateCrossMachineSource`,
@@ -244,6 +245,17 @@ only by the runtime's SSRF-hardened preview service. Unsupported, unreachable,
 local/private, oversized, or non-HTML URLs fall back to the deterministic
 preview instead of failing the composer. The canonical URL is never replaced by
 the title.
+
+`chat.createScheduledWork` takes `{ sessionId, cron, prompt, recurring?,
+reason? }` and creates an ADE-owned durable schedule for any provider-backed
+chat. `recurring` defaults to true; false creates a one-shot at the next
+five-field cron match. `chat.setScheduledWorkPaused` takes `{ sessionId,
+paused }`, and `chat.cancelScheduledWork` takes `{ sessionId, scheduleId }`.
+Create and pause are controller mutations (`viewerAllowed: false`); cancel
+retains its viewer-allowed recovery policy. All three are deliberately
+non-queueable so an offline replay cannot create a duplicate schedule or apply
+stale management state. Controllers expose each control only when the brain's
+descriptor list advertises it.
 
 `chat.modelCatalog` accepts `{ mode?, refreshProvider?, cursorSource? }`
 where `mode` is `"cached" | "refresh-stale" | "force"` (default

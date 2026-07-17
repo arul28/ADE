@@ -70,6 +70,7 @@ const MEANINGFUL_ACTIONS = new Set([
   "chat.restart",
   "chat.handoff",
   "chat.rewindFiles",
+  "chat.createScheduledWork",
   "chat.cancelScheduledWork",
   "chat.delete",
   "chat.archive",
@@ -137,7 +138,14 @@ const MEANINGFUL_ACTIONS = new Set([
 
 export function usageActionFromIpcChannel(channel: string): string {
   const action = channel.replace(/^ade\./, "");
-  if (action.startsWith("agentChat.")) return `chat.${action.slice("agentChat.".length)}`;
+  if (action.startsWith("agentChat.")) {
+    const chatAction = action.slice("agentChat.".length);
+    const aliases: Record<string, string> = {
+      "scheduledWork.create": "createScheduledWork",
+      "scheduledWork.cancel": "cancelScheduledWork",
+    };
+    return `chat.${aliases[chatAction] ?? chatAction}`;
+  }
   if (action === "pty.create") return "work.startCliSession";
   if (action === "pty.resumeSession") return "work.resumeCliSession";
   if (action === "pty.sendToSession") return "work.sendToSession";

@@ -4240,7 +4240,9 @@ describe("ADE database usage aggregation", () => {
     expect(usageClientSurfaceFromRpcName("ade-web-client")).toBe("web");
     expect(usageClientSurfaceFromPeer("phone", "ios")).toBe("mobile");
     expect(usageActionFromIpcChannel("ade.agentChat.send")).toBe("chat.send");
-    expect(usageActionFromIpcChannel("ade.agentChat.cancelScheduledWork")).toBe("chat.cancelScheduledWork");
+    expect(usageActionFromIpcChannel("ade.agentChat.scheduledWork.create")).toBe("chat.createScheduledWork");
+    expect(isMeaningfulUsageAction("chat.createScheduledWork")).toBe(true);
+    expect(usageActionFromIpcChannel("ade.agentChat.scheduledWork.cancel")).toBe("chat.cancelScheduledWork");
     expect(isMeaningfulUsageAction("chat.cancelScheduledWork")).toBe(true);
     expect(usageActionFromIpcChannel("ade.pty.create")).toBe("work.startCliSession");
     expect(usageActionFromRpcDomain("lane", "create")).toBe("lanes.create");

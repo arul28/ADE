@@ -5213,10 +5213,25 @@ describe("preload OAuth bridge", () => {
     await expect(
       bridge.agentChat.send({ sessionId: "session-1", text: "hello" }),
     ).rejects.toThrow(/Project is switching/i);
+    await expect(
+      bridge.agentChat.createScheduledWork({
+        sessionId: "session-1",
+        prompt: "Post the status update",
+        cron: "0 9 * * 1-5",
+      }),
+    ).rejects.toThrow(/Project is switching/i);
+    await expect(
+      bridge.agentChat.setScheduledWorkPaused({
+        sessionId: "session-1",
+        paused: true,
+      }),
+    ).rejects.toThrow(/Project is switching/i);
 
     expect(invoke).toHaveBeenCalledWith(IPC.projectSwitchToPath, { rootPath: "/next" });
     expect(invoke).not.toHaveBeenCalledWith(IPC.appGetWindowSession);
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatSend, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatCreateScheduledWork, expect.anything());
+    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatSetScheduledWorkPaused, expect.anything());
 
     resolveSwitch({ rootPath: "/next", displayName: "Next", baseRef: "main" });
     await pendingSwitch;

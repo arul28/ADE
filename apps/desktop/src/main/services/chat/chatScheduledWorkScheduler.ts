@@ -616,6 +616,7 @@ export function createChatScheduledWorkScheduler(
       const schedule = [...schedules.values()]
         .filter((candidate) =>
           candidate.sessionId === sessionId
+          && candidate.provider === "claude"
           && candidate.status === "scheduled"
           && !candidate.pausedFlag
           && !isExpired(candidate, currentTime)

@@ -3818,11 +3818,30 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSessionSummary(parseAgentChatGetSummaryArgs(payload).sessionId));
+  register("chat.createScheduledWork", { viewerAllowed: false, queueable: false }, async (payload) => {
+    const recurring = asOptionalBoolean(payload.recurring);
+    const reason = asTrimmedString(payload.reason);
+    return requireService(args.agentChatService, "Agent chat service not available.").createScheduledWork({
+      sessionId: requireString(payload.sessionId, "chat.createScheduledWork requires sessionId."),
+      cron: requireString(payload.cron, "chat.createScheduledWork requires cron."),
+      prompt: requireString(payload.prompt, "chat.createScheduledWork requires prompt."),
+      ...(recurring !== undefined ? { recurring } : {}),
+      ...(reason ? { reason } : {}),
+    });
+  });
   register("chat.cancelScheduledWork", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").cancelScheduledWork({
       sessionId: requireString(payload.sessionId, "chat.cancelScheduledWork requires sessionId."),
       scheduleId: requireString(payload.scheduleId, "chat.cancelScheduledWork requires scheduleId."),
     }));
+  register("chat.setScheduledWorkPaused", { viewerAllowed: false, queueable: false }, async (payload) => {
+    const paused = asOptionalBoolean(payload.paused);
+    if (paused === undefined) throw new Error("chat.setScheduledWorkPaused requires paused.");
+    return requireService(args.agentChatService, "Agent chat service not available.").setScheduledWorkPaused({
+      sessionId: requireString(payload.sessionId, "chat.setScheduledWorkPaused requires sessionId."),
+      paused,
+    });
+  });
   register("chat.getChatEventHistory", { viewerAllowed: true }, async (payload): Promise<AgentChatEventHistorySnapshot> => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");

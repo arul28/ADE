@@ -176,6 +176,8 @@ import type {
   AgentChatAcceptCrossMachineHandoffResult,
   AgentChatArchiveArgs,
   AgentChatCancelSteerArgs,
+  AgentChatCreateScheduledWorkArgs,
+  AgentChatCreateScheduledWorkResult,
   AgentChatClaudeOutputStyle,
   AgentChatClaudeOutputStylesArgs,
   AgentChatClaudePlugin,
@@ -34464,6 +34466,81 @@ export function createAgentChatService(args: {
     ...(schedule.outcomeSummary ? { outcomeSummary: schedule.outcomeSummary } : {}),
   });
 
+  const createScheduledWork = async (
+    args: AgentChatCreateScheduledWorkArgs,
+  ): Promise<AgentChatCreateScheduledWorkResult> => {
+    await scheduledWorkReady;
+    if (!scheduledWorkScheduler) {
+      throw new Error("Scheduled work is unavailable for this project runtime.");
+    }
+
+    const normalizedSessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+    if (!normalizedSessionId) throw new Error("Chat session id is required.");
+    const row = sessionService.get(normalizedSessionId);
+    if (!row || !isChatToolType(row.toolType)) {
+      throw new Error(`Chat session '${normalizedSessionId}' was not found.`);
+    }
+    const summary = summarizeSessionRow(row);
+    if (summary.status === "ended" || summary.archivedAt) {
+      throw new Error(`Chat session '${normalizedSessionId}' is ended or archived.`);
+    }
+
+    const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+    if (!prompt) throw new Error("Scheduled work prompt is required.");
+    if (prompt.length > 4_000) {
+      throw new Error("Scheduled work prompt must be 4000 characters or fewer.");
+    }
+    const cron = typeof args.cron === "string" ? args.cron.trim() : "";
+    const createdAt = Date.now();
+    const fireAt = nextChatScheduledCronFireAt(cron, createdAt);
+    if (fireAt == null) {
+      throw new Error("Scheduled work cron must be a valid 5-field cron expression.");
+    }
+    if (args.recurring != null && typeof args.recurring !== "boolean") {
+      throw new Error("Scheduled work recurring must be a boolean.");
+    }
+    if (args.reason != null && typeof args.reason !== "string") {
+      throw new Error("Scheduled work reason must be a string.");
+    }
+
+    const recurring = args.recurring !== false;
+    const reason = args.reason?.trim();
+    const id = `action:${normalizedSessionId}:${randomUUID()}`;
+    const managed = ensureManagedSession(normalizedSessionId);
+    durableScheduleUiStatusById.set(id, "scheduled");
+    const schedule = await scheduledWorkScheduler.upsert({
+      id,
+      sessionId: normalizedSessionId,
+      kind: recurring ? "cron" : "wakeup",
+      prompt,
+      ...(reason ? { reason } : {}),
+      cron,
+      fireAt,
+      createdAt,
+      ...(recurring ? { expiresAt: createdAt + claudeRecurringCronTtlMs } : {}),
+      status: "scheduled",
+      lateFlag: false,
+      durable: true,
+    });
+    emitChatEvent(managed, {
+      type: "scheduled_work_update",
+      id,
+      kind: schedule.kind,
+      status: schedule.status === "done" ? "completed" : schedule.status,
+      origin: "action",
+      title: reason || prompt,
+      prompt,
+      ...(reason ? { reason } : {}),
+      cron,
+      ...((schedule.status === "scheduled" || schedule.status === "paused") && schedule.fireAt != null
+        ? { nextRunAt: new Date(schedule.fireAt).toISOString() }
+        : {}),
+      recurring,
+      durable: true,
+    });
+    return { item: toScheduledWorkItem(schedule) };
+  };
+
   const listScheduledWork = async ({
     sessionId,
     includeTerminal = false,
@@ -38920,7 +38997,8 @@ export function createAgentChatService(args: {
       const liveManaged = managedSessions.get(schedule.sessionId);
       const liveRuntime = liveManaged?.runtime?.kind === "claude" ? liveManaged.runtime : null;
       if (
-        liveManaged
+        schedule.provider === "claude"
+        && liveManaged
         && liveRuntime?.query
         && !liveRuntime.busy
         && liveManaged.session.status !== "active"
@@ -38973,14 +39051,19 @@ export function createAgentChatService(args: {
         ?? (status === "fired" && (row.status === "running" || row.status === "detached")
           ? ensureManagedSession(schedule.sessionId)
           : null);
-      if (!managed || managed.session.provider !== "claude") return;
+      if (!managed) return;
 
       const eventStatus: ScheduledWorkEvent["status"] = status === "done" ? "completed" : status;
-      const origin: ScheduledWorkEvent["origin"] = schedule.kind === "cron"
-        ? "cron"
-        : schedule.kind === "loop"
-          ? "loop"
-          : "schedule_wakeup";
+      let origin: ScheduledWorkEvent["origin"];
+      if (schedule.id.startsWith("action:")) {
+        origin = "action";
+      } else if (schedule.kind === "cron") {
+        origin = "cron";
+      } else if (schedule.kind === "loop") {
+        origin = "loop";
+      } else {
+        origin = "schedule_wakeup";
+      }
       emitChatEvent(managed, {
         type: "scheduled_work_update",
         id: schedule.id,
@@ -39038,6 +39121,7 @@ export function createAgentChatService(args: {
     markCrossMachineHandoff,
     sendMessage,
     messageSession,
+    createScheduledWork,
     listScheduledWork,
     cancelScheduledWork,
     setScheduledWorkPaused,

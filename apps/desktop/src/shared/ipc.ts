@@ -230,6 +230,7 @@ export const IPC = {
   agentChatUnarchive: "ade.agentChat.unarchive",
   agentChatEvent: "ade.agentChat.event",
   agentChatUpdateSession: "ade.agentChat.updateSession",
+  agentChatCreateScheduledWork: "ade.agentChat.scheduledWork.create",
   agentChatListScheduledWork: "ade.agentChat.scheduledWork.list",
   agentChatCancelScheduledWork: "ade.agentChat.scheduledWork.cancel",
   agentChatSetScheduledWorkPaused: "ade.agentChat.scheduledWork.pause",

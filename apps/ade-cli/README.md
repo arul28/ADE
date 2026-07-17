@@ -391,6 +391,7 @@ ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
 ade chat schedules session-id --pause              # pause this chat's durable wakeups/cron/loops (omit flag to inspect, --resume to re-arm)
 ade chat scheduled-work list [session-id] --all     # list durable jobs; --all includes recent terminal history
+ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --once --reason "CI check" --session session-id
 ade chat scheduled-work cancel session-id job-id    # cancel one job; Claude-native jobs request CronDelete in the owning chat
 ade chat wait session-id --for idle --timeout-ms 600000
 ade chat recover session-id --turn turn-id --action nudge        # wait | nudge | retry | resume
