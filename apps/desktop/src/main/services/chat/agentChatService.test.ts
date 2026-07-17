@@ -13618,7 +13618,7 @@ describe("createAgentChatService", () => {
       expect(service.hasActiveWorkloads()).toBe(false);
     });
 
-    it("keys Claude cron create and delete events by the provider cron id", async () => {
+    it("mirrors Claude CronCreate without a durable flag and keys events by the provider cron id", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const scheduledWork = createScheduledWorkDb();
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -13708,7 +13708,19 @@ describe("createAgentChatService", () => {
         tool_input: { cron: "*/15 * * * *", prompt: "Check CI status." },
         tool_response: { id: "cron-sdk-1", recurring: true, durable: false },
       });
-      expect(scheduledWork.readState()?.schedules ?? []).toEqual([]);
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: "cron-sdk-1",
+          kind: "cron",
+          cron: "*/15 * * * *",
+          prompt: "Check CI status.",
+          durable: true,
+          provider: "claude",
+          providerSessionId: "sdk-cron-provider-id",
+          providerScheduleId: "cron-sdk-1",
+          status: "scheduled",
+        }),
+      ]);
       await postToolUseHook?.({
         hook_event_name: "PostToolUse",
         tool_name: "CronDelete",
@@ -13734,6 +13746,7 @@ describe("createAgentChatService", () => {
         status: "cancelled",
         cron: "*/15 * * * *",
         prompt: "Check CI status.",
+        durable: true,
         sourceToolUseId: "tool-cron-delete",
       });
     });
@@ -13909,8 +13922,8 @@ describe("createAgentChatService", () => {
       expect(scheduledWork.readState()?.schedules).toEqual([
         expect.objectContaining({
           id: "cron-provider-1",
-          status: "paused",
-          pausedFlag: true,
+          status: "scheduled",
+          pausedFlag: false,
           providerSessionId: "sdk-cron-provider-id",
         }),
       ]);
@@ -13930,7 +13943,7 @@ describe("createAgentChatService", () => {
       expect(scheduledWork.readState()?.schedules).toEqual([
         expect.objectContaining({
           id: "cron-provider-1",
-          status: "paused",
+          status: "scheduled",
           providerSessionId: "sdk-cron-provider-id",
         }),
       ]);
@@ -14247,6 +14260,79 @@ describe("createAgentChatService", () => {
         expect.objectContaining({ id: "ade-local-wakeup", status: "scheduled" }),
         expect.objectContaining({ id: "other-provider-wakeup", status: "scheduled" }),
       ]));
+      resumed.forceDisposeAll();
+      original.forceDisposeAll();
+    });
+
+    it("keeps a previous provider session's mirrored cron after a fresh session reports an empty snapshot", async () => {
+      const previousProviderSessionId = "sdk-before-brain-restart";
+      const currentProviderSessionId = "sdk-after-brain-restart";
+      const sdkHandle = {
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: currentProviderSessionId,
+            slash_commands: [],
+          };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        })()),
+        close: vi.fn(),
+        sessionId: currentProviderSessionId,
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(sdkHandle);
+      vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(sdkHandle);
+
+      const original = createService().service;
+      const session = await original.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        sdkSessionId: previousProviderSessionId,
+      });
+      const scheduledWork = createScheduledWorkDb({
+        version: 1,
+        schedules: [storedWakeup(session.id, {
+          id: "cron-survives-restart",
+          kind: "cron",
+          cron: "*/15 * * * *",
+          durable: true,
+          provider: "claude",
+          providerSessionId: previousProviderSessionId,
+          providerScheduleId: "cron-survives-restart",
+        })],
+        pausedSessionIds: [],
+      });
+      const resumed = createService({ db: scheduledWork.db }).service;
+      await resumed.resumeSession({ sessionId: session.id });
+      await resumed.runSessionTurn({
+        sessionId: session.id,
+        text: "Resume after the brain restart.",
+      });
+      const resumeOptions = vi.mocked(claudeSdkResumeSessionCompat).mock.calls.at(-1)?.[1] as {
+        hooks?: Record<string, Array<{ hooks: Array<(input: unknown) => Promise<unknown>> }>>;
+      } | undefined;
+      const stopHook = resumeOptions?.hooks?.Stop?.[0]?.hooks[0];
+
+      await stopHook?.({
+        hook_event_name: "Stop",
+        session_id: currentProviderSessionId,
+        session_crons: [],
+      });
+
+      expect(scheduledWork.readState()?.schedules).toEqual([
+        expect.objectContaining({
+          id: "cron-survives-restart",
+          status: "scheduled",
+          pausedFlag: false,
+          providerSessionId: previousProviderSessionId,
+        }),
+      ]);
       resumed.forceDisposeAll();
       original.forceDisposeAll();
     });
@@ -15026,7 +15112,7 @@ describe("createAgentChatService", () => {
       });
       await vi.advanceTimersByTimeAsync(1_000);
       await foregroundTurn;
-      await vi.advanceTimersByTimeAsync(59_000);
+      await vi.advanceTimersByTimeAsync(149_000);
       expect(scheduledWork.readState()?.schedules[0]?.status).toBe("fired");
       expect(service.pendingNativeScheduledWakeCountForTesting(session.id)).toBe(1);
 
@@ -15245,7 +15331,7 @@ describe("createAgentChatService", () => {
       });
       await restarted.service.refreshScheduledWork();
 
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(150_000);
       await vi.waitFor(() => {
         expect(events.some((event) =>
           event.sessionId === session.id
@@ -27717,7 +27803,7 @@ describe("createAgentChatService", () => {
         },
       });
 
-      expect(result).toMatchObject({ routedAction: "steer", delivery: "queued", queued: true });
+      expect(result).toMatchObject({ routedAction: "sendMessage", delivery: "queued", queued: true });
       const queued = events.find((event): event is AgentChatEventEnvelope & {
         event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
       } =>
@@ -27725,6 +27811,27 @@ describe("createAgentChatService", () => {
         && event.event.deliveryState === "queued"
         && event.event.text === "Check PR CI");
       expect(queued?.event.metadata?.scheduledWake).toBeUndefined();
+      expect(send.mock.calls.some(([payload]) => JSON.stringify(payload).includes("Check PR CI"))).toBe(false);
+
+      const childCompletion = await service.messageSession({
+        sessionId: session.id,
+        text: "Your subagent finished.",
+        kind: "wake",
+        metadata: {
+          spawnCompletion: {
+            childSessionId: "child-1",
+            childTitle: "Review agent",
+            spawnKind: "subagent",
+            status: "completed",
+            summary: "Review complete.",
+          },
+        },
+      });
+      expect(childCompletion).toMatchObject({
+        routedAction: "steer",
+        delivery: "queued",
+        queued: true,
+      });
 
       finishActiveTurn();
       await activeTurn;

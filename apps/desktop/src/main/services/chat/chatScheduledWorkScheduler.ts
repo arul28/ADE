@@ -2,6 +2,14 @@ import { nextCronFireAt as nextChatScheduledCronFireAt } from "../../../shared/c
 
 export { nextChatScheduledCronFireAt };
 
+/**
+ * Durable scheduled-work delivery for chat sessions.
+ *
+ * ADE state wins, SDK view is advisory: the mirrored ADE record is the source
+ * of truth for delivery. Claude's in-process scheduler is only a latency
+ * optimization, and its CronList view may drift after restarts or busy ticks.
+ */
+
 export type ChatScheduledWorkKind = "wakeup" | "cron" | "loop";
 
 export type ChatScheduledWorkStatus =
@@ -87,9 +95,14 @@ export type ChatScheduledWorkScheduler = {
 
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const TIMER_LATE_TOLERANCE_MS = 1_000;
+const NATIVE_FIRE_GRACE_MS = 90_000;
 const TERMINAL_HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const MAX_TERMINAL_HISTORY_RECORDS = 200;
 const LEGACY_PROVISIONAL_CRON_PREFIX = "cron-tool:";
+
+function nativeFireGraceMs(schedule: ChatScheduledWorkRecord): number {
+  return schedule.provider === "claude" ? NATIVE_FIRE_GRACE_MS : 0;
+}
 
 const defaultTimers: ChatScheduledWorkTimerApi = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
@@ -316,7 +329,8 @@ export function createChatScheduledWorkScheduler(
     }
 
     inFlight.add(scheduleId);
-    const late = overdueWhenArmed || currentTime - schedule.fireAt > TIMER_LATE_TOLERANCE_MS;
+    const lateThresholdMs = nativeFireGraceMs(schedule) + TIMER_LATE_TOLERANCE_MS;
+    const late = overdueWhenArmed || currentTime - schedule.fireAt > lateThresholdMs;
     schedule.status = "fired";
     schedule.lastFiredAt = currentTime;
     schedule.lateFlag = late;
@@ -348,15 +362,21 @@ export function createChatScheduledWorkScheduler(
   const arm = (schedule: ChatScheduledWorkRecord): void => {
     clearTimer(schedule.id);
     if (disposed || inFlight.has(schedule.id) || schedule.status !== "scheduled") return;
+    // Claude normally fires at fireAt (plus provider jitter). ADE waits through
+    // this grace window so claimNativeFire can claim the row first; this timer
+    // remains the backstop for busy, skipped, or dead provider processes.
+    const providerAdjustedFireAt = schedule.fireAt == null
+      ? undefined
+      : schedule.fireAt + nativeFireGraceMs(schedule);
     const nextAt = schedule.expiresAt == null
-      ? schedule.fireAt
-      : schedule.fireAt == null
+      ? providerAdjustedFireAt
+      : providerAdjustedFireAt == null
         ? schedule.expiresAt
-        : Math.min(schedule.fireAt, schedule.expiresAt);
+        : Math.min(providerAdjustedFireAt, schedule.expiresAt);
     if (nextAt == null || !Number.isFinite(nextAt)) return;
 
     const currentTime = now();
-    const overdueWhenArmed = schedule.fireAt != null && schedule.fireAt < currentTime;
+    const overdueWhenArmed = providerAdjustedFireAt != null && providerAdjustedFireAt < currentTime;
     const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, nextAt - currentTime));
     const handle = timers.setTimeout(() => {
       timerHandles.delete(schedule.id);

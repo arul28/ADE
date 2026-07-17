@@ -676,6 +676,113 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
   });
 
+  it("gives Claude native fire a grace window and cancels the ADE backstop after a native claim", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => cloneState(state),
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+    });
+    await scheduler.upsert(wakeup({
+      fireAt: START,
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "native-grace-claim",
+    }));
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(fire).not.toHaveBeenCalled();
+    expect(scheduler.claimNativeFire("session-1", "native-turn-grace")).toMatchObject({
+      id: "wake-1",
+      status: "fired",
+      activeTurnId: "native-turn-grace",
+    });
+    await vi.advanceTimersByTimeAsync(90_000);
+
+    expect(fire).not.toHaveBeenCalled();
+    scheduler.dispose();
+  });
+
+  it("uses the Claude grace deadline for normal and genuinely late backstop fires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const onTimeFire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: () => undefined,
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire: onTimeFire,
+    });
+    await scheduler.upsert(wakeup({
+      fireAt: START,
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "native-grace-backstop",
+    }));
+
+    await vi.advanceTimersByTimeAsync(89_999);
+    expect(onTimeFire).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(onTimeFire).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "wake-1", lateFlag: false }),
+      { late: false },
+    );
+    scheduler.dispose();
+
+    vi.setSystemTime(START + 91_001);
+    const lateFire = createFireMock();
+    const lateScheduler = createChatScheduledWorkScheduler({
+      loadState: () => storedState([wakeup({
+        id: "wake-late",
+        fireAt: START,
+        durable: true,
+        provider: "claude",
+        providerScheduleId: "native-grace-late",
+      })]),
+      saveState: () => undefined,
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire: lateFire,
+    });
+    await lateScheduler.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(lateFire).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "wake-late", lateFlag: true }),
+      { late: true },
+    );
+    lateScheduler.dispose();
+  });
+
+  it("fires non-Claude schedules at their exact fire time", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const fire = createFireMock();
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: () => undefined,
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+    });
+    await scheduler.upsert(wakeup({ fireAt: START + 1_000 }));
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(fire).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fire).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "wake-1", lateFlag: false }),
+      { late: false },
+    );
+    scheduler.dispose();
+  });
+
   it("clears a native cron claim's active turn before re-arming", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);

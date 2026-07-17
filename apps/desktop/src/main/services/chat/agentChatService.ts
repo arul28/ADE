@@ -12505,18 +12505,13 @@ export function createAgentChatService(args: {
     });
   };
 
-  const adoptClaudeProviderSessionId = async (
+  const adoptClaudeProviderSessionId = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     nextProviderSessionId: string | null | undefined,
-  ): Promise<void> => {
+  ): void => {
     const next = nextProviderSessionId?.trim();
     if (!next || runtime.sdkSessionId === next) return;
-    await quarantineClaudeScheduledWorkForProviderSessionChange(
-      managed,
-      runtime.sdkSessionId,
-      next,
-    );
     runtime.sdkSessionId = next;
     mirrorClaudeSessionPointer(managed, next);
     persistChatState(managed);
@@ -12617,7 +12612,7 @@ export function createAgentChatService(args: {
     const output = claudeScheduledWorkToolOutput(input.tool_response) ?? {};
     const turnId = runtime.activeTurnId ?? undefined;
     const hookProviderSessionId = compactString(input.session_id);
-    await adoptClaudeProviderSessionId(managed, runtime, hookProviderSessionId);
+    adoptClaudeProviderSessionId(managed, runtime, hookProviderSessionId);
     const providerSessionId = hookProviderSessionId ?? runtime.sdkSessionId?.trim();
 
     if (tool === "ScheduleWakeup") {
@@ -12695,9 +12690,6 @@ export function createAgentChatService(args: {
       const recurring = typeof output.recurring === "boolean"
         ? output.recurring
         : args.recurring !== false;
-      const durable = typeof output.durable === "boolean"
-        ? output.durable
-        : args.durable === true;
       const kind: "cron" | "wakeup" | "loop" = recurring
         ? "cron"
         : isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
@@ -12714,17 +12706,14 @@ export function createAgentChatService(args: {
         prompt,
         ...(fireAt != null ? { nextRunAt: new Date(fireAt).toISOString() } : {}),
         recurring,
-        durable,
+        durable: true,
         sourceToolUseId: input.tool_use_id,
         ...(turnId ? { turnId } : {}),
       });
       if (!scheduledWorkScheduler) return;
-      if (!durable) {
-        if (scheduledWorkScheduler.list(managed.session.id).some((schedule) => schedule.id === id)) {
-          await scheduledWorkScheduler.cancel(id);
-        }
-        return;
-      }
+      // ADE state wins, SDK view is advisory: every successful provider cron
+      // is mirrored durably even though Claude's tool schema says its durable
+      // input has no effect and its in-process CronList may drift.
       durableScheduleUiStatusById.set(id, "scheduled");
       const createdAt = Date.now();
       await scheduledWorkScheduler.upsert({
@@ -12779,7 +12768,7 @@ export function createAgentChatService(args: {
   ): Promise<void> => {
     const hookRecord = input as unknown as Record<string, unknown>;
     const hookProviderSessionId = compactString(hookRecord.session_id);
-    await adoptClaudeProviderSessionId(managed, runtime, hookProviderSessionId);
+    adoptClaudeProviderSessionId(managed, runtime, hookProviderSessionId);
     const turnId = runtime.activeTurnId ?? undefined;
     const backgroundTasks = Array.isArray(hookRecord.background_tasks) ? hookRecord.background_tasks : [];
     const snapshotBackgroundTaskIds = new Set<string>();
@@ -12871,6 +12860,8 @@ export function createAgentChatService(args: {
         .find((schedule) => schedule.id === scheduledWorkId);
       const ownerMatches = !durableSchedule?.providerSessionId
         || durableSchedule.providerSessionId === providerSessionId;
+      const canAdoptCurrentProvider = durableSchedule?.provider === "claude"
+        && durableSchedule.pausedFlag !== true;
       const kind: "cron" | "wakeup" | "loop" = recurring
         ? "cron"
         : isClaudeLoopPrompt(prompt) ? "loop" : "wakeup";
@@ -12892,7 +12883,7 @@ export function createAgentChatService(args: {
       if (
         scheduledWorkScheduler
         && durableSchedule
-        && ownerMatches
+        && (ownerMatches || canAdoptCurrentProvider)
         && durableSchedule.status !== "done"
         && durableSchedule.status !== "cancelled"
       ) {
@@ -15709,7 +15700,7 @@ export function createAgentChatService(args: {
     const record = msg as unknown as Record<string, unknown>;
     const messageSessionId = compactString(record.session_id);
     if (messageSessionId && runtime.sdkSessionId !== messageSessionId) {
-      await adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
+      adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
     }
 
     if (record.type === "conversation_reset") {
@@ -16888,7 +16879,7 @@ export function createAgentChatService(args: {
           ? (msg as any).session_id.trim()
           : "";
         if (messageSessionId.length > 0 && runtime.sdkSessionId !== messageSessionId) {
-          await adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
+          adoptClaudeProviderSessionId(managed, runtime, messageSessionId);
         }
 
         if ((msg as any).type === "conversation_reset") {
@@ -16925,7 +16916,7 @@ export function createAgentChatService(args: {
             ? initMsg.session_id.trim()
             : "";
           if (initSessionId.length > 0 && runtime.sdkSessionId !== initSessionId) {
-            await adoptClaudeProviderSessionId(managed, runtime, initSessionId);
+            adoptClaudeProviderSessionId(managed, runtime, initSessionId);
           }
           reportedInitModel = normalizeReportedModelName(initMsg.model) ?? reportedInitModel;
           if (Array.isArray(initMsg.slash_commands)) {
@@ -27797,7 +27788,7 @@ export function createAgentChatService(args: {
       });
       if (args.managed.runtime?.kind === "claude") {
         await resetClaudeQuerySession(args.managed, args.managed.runtime, "session_reset", { clearSdkSessionId: true });
-        await adoptClaudeProviderSessionId(args.managed, args.managed.runtime, placed.newSessionId);
+        adoptClaudeProviderSessionId(args.managed, args.managed.runtime, placed.newSessionId);
         args.managed.runtime.forkFromSdkSessionId = null;
         args.managed.runtimeInvalidated = false;
       }
@@ -28417,7 +28408,7 @@ export function createAgentChatService(args: {
       const managed = ensureManagedSession(created.id);
       if (managed.runtime?.kind === "claude") {
         await resetClaudeQuerySession(managed, managed.runtime, "session_reset", { clearSdkSessionId: true });
-        await adoptClaudeProviderSessionId(managed, managed.runtime, targetClaudeSessionId);
+        adoptClaudeProviderSessionId(managed, managed.runtime, targetClaudeSessionId);
         managed.runtime.forkFromSdkSessionId = null;
         managed.runtimeInvalidated = false;
       }
@@ -32858,10 +32849,18 @@ export function createAgentChatService(args: {
     if (awaitingInputBefore && normalizedKind !== "wake") {
       throw new Error(`${PENDING_INPUT_SEND_BLOCKED_MESSAGE} Use chat.respondToInput for the pending input instead.`);
     }
+    const isScheduledWake = normalizedKind === "wake" && metadata?.scheduledWake != null;
+    const wakeNeedsQueue = isScheduledWake
+      && (managed.runtime?.kind === "claude" || managed.runtime?.kind === "opencode")
+      && (
+        statusBefore === "active"
+        || managed.runtime.busy
+      );
 
     const steerTarget =
       normalizedKind === "queue" ||
-      ((normalizedKind === "auto" || normalizedKind === "wake") && statusBefore === "active");
+      ((normalizedKind === "auto" || (normalizedKind === "wake" && !wakeNeedsQueue))
+        && statusBefore === "active");
     if (steerTarget) {
       const result = await steer({
         sessionId,
@@ -32882,6 +32881,55 @@ export function createAgentChatService(args: {
         delivery: result.queued ? "queued" : statusBefore === "active" ? "delivered" : "sent",
         steerId: result.steerId,
         queued: result.queued,
+      };
+    }
+
+    if (wakeNeedsQueue) {
+      const runtime = managed.runtime;
+      if (!runtime || (runtime.kind !== "claude" && runtime.kind !== "opencode")) {
+        throw new Error("Scheduled wake delivery requires an active queueable chat runtime.");
+      }
+      const preparedWake = prepareSendMessage({
+        sessionId,
+        text,
+        attachments,
+        contextAttachments,
+        metadata,
+      });
+      if (!preparedWake) {
+        return {
+          sessionId,
+          kind: normalizedKind,
+          routedAction: "sendMessage",
+          statusBefore,
+          awaitingInputBefore,
+          delivery: "sent",
+        };
+      }
+      const wakeId = randomUUID();
+      const queued = enqueueSteerOrDrop(
+        managed,
+        runtime,
+        sessionId,
+        wakeId,
+        preparedWake.submittedText,
+        preparedWake.attachments,
+        preparedWake.contextAttachments,
+        preparedWake.resolvedAttachments,
+        preparedWake.metadata,
+        { displayText: preparedWake.visibleText },
+      );
+      if (!queued) {
+        throw new Error("The scheduled wake queue is full; the wake was not queued.");
+      }
+      return {
+        sessionId,
+        kind: normalizedKind,
+        routedAction: "sendMessage",
+        statusBefore,
+        awaitingInputBefore,
+        delivery: "queued",
+        queued: true,
       };
     }
 
@@ -33860,7 +33908,7 @@ export function createAgentChatService(args: {
       if (managed.session.provider === "claude") {
         const runtime = ensureClaudeSessionRuntime(managed);
         resetClaudeQuerySession(managed, runtime, "session_reset");
-        await adoptClaudeProviderSessionId(managed, runtime, originalThreadId);
+        adoptClaudeProviderSessionId(managed, runtime, originalThreadId);
         delete managed.session.continuityRecovery;
         managed.runtimeInvalidated = false;
         try {

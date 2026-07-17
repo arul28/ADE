@@ -126,7 +126,8 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("ScheduleWakeup");
       expect(result).toContain("CronCreate");
       expect(result).toContain("can start a later unattended turn");
-      expect(result).toContain("session-bound by default");
+      expect(result).toContain("mirrors every successful `CronCreate` durably");
+      expect(result).toContain("regardless of the provider tool's `durable` input");
       expect(result).toContain("CronCreate` always creates a new job");
       expect(result).toContain("`CronList` and `CronDelete`");
       expect(result).toContain("auto-expire after seven days");
