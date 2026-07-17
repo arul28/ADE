@@ -2198,14 +2198,25 @@ export function AgentChatComposer({
   const removeSmartLinkNode = useCallback((node: HTMLElement) => {
     const editor = richEditorRef.current;
     if (!editor || !editor.contains(node)) return;
+    const parent = node.parentNode;
+    const index = parent ? Array.prototype.indexOf.call(parent.childNodes, node) as number : -1;
     const next = node.nextSibling;
     node.remove();
     if (next?.nodeType === Node.TEXT_NODE && next.textContent?.startsWith(" ")) {
       next.textContent = next.textContent.slice(1);
     }
     setSelectedSmartLinkNode(null);
-    syncRichDraft();
     editor.focus({ preventScroll: true });
+    if (parent?.isConnected && index >= 0) {
+      const range = document.createRange();
+      range.setStart(parent, Math.min(index, parent.childNodes.length));
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      richSelectionRef.current = range.cloneRange();
+    }
+    syncRichDraft();
   }, [syncRichDraft]);
 
   const removeAdjacentSmartLink = useCallback((direction: "backward" | "forward"): boolean => {
@@ -3258,12 +3269,15 @@ export function AgentChatComposer({
       const pastedText = event.clipboardData.getData("text/plain");
       if (pastedText && findSmartLinks(pastedText).length > 0) {
         if (event.currentTarget instanceof HTMLTextAreaElement) {
-          event.preventDefault();
           const node = event.currentTarget;
-          const start = node.selectionStart ?? draft.length;
-          const end = node.selectionEnd ?? start;
-          onDraftChange(`${draft.slice(0, start)}${pastedText}${draft.slice(end)}`);
-          setSmartLinkEditorEnabled(true);
+          // Let the browser perform the canonical textarea paste so clipboard
+          // text keeps native selection, undo, and input-event semantics. Once
+          // that default action has updated the controlled draft, promote the
+          // composer to the rich editor and tokenize the pasted URL.
+          window.requestAnimationFrame(() => {
+            onDraftChange(node.value);
+            setSmartLinkEditorEnabled(true);
+          });
         } else {
           window.requestAnimationFrame(() => tokenizeSmartLinksInEditor());
         }

@@ -38127,7 +38127,10 @@ export function createAgentChatService(args: {
     warmupModel,
     listSubagents,
     getSessionCapabilities,
-    resolveSmartLinkPreview: ({ url }: { url: string }) => resolveSmartLinkPreview({ url }),
+    resolveSmartLinkPreview: ({ url }: { url: string }) => resolveSmartLinkPreview({
+      url,
+      linearIssueTracker,
+    }),
     previewSessionToolNames,
     cancelCursorCloudRun,
     cursorCloudFollowUp,

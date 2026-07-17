@@ -3,6 +3,26 @@ import UIKit
 
 // MARK: - Smart links
 
+private func workSmartLinkPathParts(_ components: URLComponents) -> [String] {
+  components.path.split(separator: "/").map(String.init)
+}
+
+private func workSmartLinkLinearIdentifier(_ components: URLComponents) -> String? {
+  let parts = workSmartLinkPathParts(components)
+  guard let issueIndex = parts.firstIndex(where: { $0.caseInsensitiveCompare("issue") == .orderedSame }),
+        parts.indices.contains(issueIndex + 1)
+  else { return nil }
+  let identifier = parts[issueIndex + 1].uppercased()
+  guard identifier.range(of: "^[A-Z][A-Z0-9]+-[0-9]+$", options: .regularExpression) != nil else {
+    return nil
+  }
+  return identifier
+}
+
+private func workSmartLinkIsAsciiNumber(_ value: String) -> Bool {
+  !value.isEmpty && value.unicodeScalars.allSatisfy { $0.value >= 48 && $0.value <= 57 }
+}
+
 struct WorkSmartLink: Equatable {
   enum Provider: Equatable {
     case github
@@ -17,23 +37,30 @@ struct WorkSmartLink: Equatable {
 
   var compactLabel: String {
     guard let components = URLComponents(string: url) else { return url }
-    let parts = components.path.split(separator: "/").map(String.init)
+    let parts = workSmartLinkPathParts(components)
     switch provider {
     case .github:
-      guard parts.count >= 2 else { return "GitHub" }
-      if parts.count >= 4, parts[2] == "pull" { return "\(parts[0])/\(parts[1])#\(parts[3])" }
-      if parts.count >= 4, parts[2] == "issues" { return "\(parts[0])/\(parts[1])#\(parts[3])" }
-      if parts.count >= 4, parts[2] == "commit" { return "\(parts[0])/\(parts[1])@\(parts[3].prefix(7))" }
-      return "\(parts[0])/\(parts[1])"
-    case .linear:
-      if let issueIndex = parts.firstIndex(of: "issue"), parts.indices.contains(issueIndex + 1) {
-        return parts[issueIndex + 1]
+      guard parts.count >= 2 else { return url }
+      let repo = parts[1].lowercased().hasSuffix(".git") ? String(parts[1].dropLast(4)) : parts[1]
+      let repoLabel = "\(parts[0])/\(repo)"
+      let section = parts.indices.contains(2) ? parts[2].lowercased() : ""
+      if parts.count >= 4,
+         (section == "pull" || section == "issues"),
+         workSmartLinkIsAsciiNumber(parts[3]) {
+        return "\(repoLabel)#\(parts[3])"
       }
-      return "Linear"
+      if parts.count >= 4, section == "commit" { return "\(repoLabel)@\(parts[3].prefix(7))" }
+      if parts.count >= 5, section == "actions", parts[3].lowercased() == "runs" {
+        return "\(repoLabel) · run \(parts[4])"
+      }
+      return repoLabel
+    case .linear:
+      return workSmartLinkLinearIdentifier(components) ?? url
     case .ade:
-      return components.host.map { "ADE \($0)" } ?? "ADE link"
+      let target = ([components.host].compactMap { $0 } + parts).joined(separator: "/")
+      return target.isEmpty ? "ADE link" : "ADE · \(target)"
     case .web:
-      return components.host ?? url
+      return url
     }
   }
 }
@@ -82,7 +109,7 @@ enum WorkSmartLinkDetector {
         provider = .ade
       } else if host == "github.com" {
         provider = .github
-      } else if host == "linear.app" {
+      } else if host == "linear.app", workSmartLinkLinearIdentifier(components) != nil {
         provider = .linear
       } else {
         provider = .web

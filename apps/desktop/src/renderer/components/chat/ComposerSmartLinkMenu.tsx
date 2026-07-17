@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Copy, Trash } from "@phosphor-icons/react";
 
@@ -14,6 +14,10 @@ export function ComposerSmartLinkMenu({
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [position, setPosition] = useState({ left: 8, top: 8 });
   const url = anchor.dataset.smartLinkUrl ?? "";
+  const closeWithAnchorFocus = useCallback(() => {
+    if (anchor.isConnected) anchor.focus({ preventScroll: true });
+    onClose();
+  }, [anchor, onClose]);
 
   useLayoutEffect(() => {
     const update = () => {
@@ -34,13 +38,19 @@ export function ComposerSmartLinkMenu({
   }, [anchor]);
 
   useEffect(() => {
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]')
+      ?.focus({ preventScroll: true });
+  }, [anchor]);
+
+  useEffect(() => {
     const handlePointer = (event: MouseEvent) => {
       const target = event.target as Node;
       if (anchor.contains(target) || menuRef.current?.contains(target)) return;
       onClose();
     };
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") closeWithAnchorFocus();
     };
     window.addEventListener("mousedown", handlePointer);
     window.addEventListener("keydown", handleKey);
@@ -48,7 +58,7 @@ export function ComposerSmartLinkMenu({
       window.removeEventListener("mousedown", handlePointer);
       window.removeEventListener("keydown", handleKey);
     };
-  }, [anchor, onClose]);
+  }, [anchor, closeWithAnchorFocus, onClose]);
 
   return createPortal(
     <div
@@ -64,7 +74,7 @@ export function ComposerSmartLinkMenu({
         className="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium text-fg/78 transition-colors hover:bg-violet-500/[0.10] hover:text-violet-100"
         onClick={() => {
           void window.ade.app.writeClipboardText(url);
-          onClose();
+          closeWithAnchorFocus();
         }}
       >
         <Copy size={13} weight="bold" />
@@ -75,7 +85,10 @@ export function ComposerSmartLinkMenu({
         type="button"
         role="menuitem"
         className="flex flex-1 items-center justify-center gap-1.5 px-3 py-2 text-[11px] font-medium text-fg/78 transition-colors hover:bg-red-500/[0.10] hover:text-red-200"
-        onClick={() => onRemove(anchor)}
+        onClick={() => {
+          onRemove(anchor);
+          if (anchor.isConnected) anchor.focus({ preventScroll: true });
+        }}
       >
         <Trash size={13} weight="bold" />
         Remove link

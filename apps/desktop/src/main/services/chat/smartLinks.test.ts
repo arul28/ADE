@@ -1,3 +1,5 @@
+import type { IncomingMessage } from "node:http";
+import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   deriveSmartLinkPreview,
@@ -9,7 +11,12 @@ import {
 import {
   clearSmartLinkPreviewCacheForTesting,
   resolveSmartLinkPreview,
+  smartLinkPreviewTesting,
 } from "./smartLinkPreviewService";
+
+function fakeIncomingMessage(headers: IncomingMessage["headers"] = {}): IncomingMessage & PassThrough {
+  return Object.assign(new PassThrough(), { headers, statusCode: 200 }) as IncomingMessage & PassThrough;
+}
 
 describe("smart links", () => {
   beforeEach(() => clearSmartLinkPreviewCacheForTesting());
@@ -47,6 +54,26 @@ describe("smart links", () => {
     expect(second?.title).toBe("Project B title");
     expect(firstLookup).toHaveBeenCalledTimes(1);
     expect(secondLookup).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows only globally routable IP addresses for generic previews", () => {
+    expect(smartLinkPreviewTesting.isPublicIpAddress("8.8.8.8")).toBe(true);
+    expect(smartLinkPreviewTesting.isPublicIpAddress("2606:4700:4700::1111")).toBe(true);
+    expect(smartLinkPreviewTesting.isPublicIpAddress("169.254.169.254")).toBe(false);
+    expect(smartLinkPreviewTesting.isPublicIpAddress("::ffff:a9fe:a9fe")).toBe(false);
+    expect(smartLinkPreviewTesting.isPublicIpAddress("2002:a9fe:a9fe::1")).toBe(false);
+    expect(smartLinkPreviewTesting.isPublicIpAddress("2001:db8::1")).toBe(false);
+  });
+
+  it("rejects declared and streamed responses that exceed the byte limit", async () => {
+    const declared = fakeIncomingMessage({ "content-length": "11" });
+    await expect(smartLinkPreviewTesting.readBoundedResponse(declared, 10)).rejects.toThrow("too large");
+
+    const streamed = fakeIncomingMessage();
+    const streamedResult = smartLinkPreviewTesting.readBoundedResponse(streamed, 10);
+    streamed.write(Buffer.alloc(6));
+    streamed.write(Buffer.alloc(6));
+    await expect(streamedResult).rejects.toThrow("too large");
   });
 
   it("reconciles controlled clears without resetting local editor updates", () => {

@@ -32,6 +32,19 @@ const MAX_HTML_BYTES = 256 * 1024;
 const MAX_ICON_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 2_500;
 const previewCache = new Map<string, CachedPreview>();
+const publicIpv6Ranges = new net.BlockList();
+publicIpv6Ranges.addSubnet("2000::", 3, "ipv6");
+const nonPublicIpv6Ranges = new net.BlockList();
+for (const [network, prefix] of [
+  ["2001::", 32], // Teredo
+  ["2001:2::", 48], // benchmarking
+  ["2001:10::", 28], // ORCHID
+  ["2001:20::", 28], // ORCHIDv2
+  ["2001:db8::", 32], // documentation
+  ["2002::", 16], // 6to4 can embed non-public IPv4 destinations
+] as const) {
+  nonPublicIpv6Ranges.addSubnet(network, prefix, "ipv6");
+}
 
 function rememberPreview(key: string, value: SmartLinkPreview, ttlMs: number): SmartLinkPreview {
   previewCache.delete(key);
@@ -66,8 +79,9 @@ function isPrivateIpv4(address: string): boolean {
     || (a === 100 && b >= 64 && b <= 127)
     || (a === 169 && b === 254)
     || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168)
-    || (a === 198 && (b === 18 || b === 19))
+    || (a === 192 && (b === 0 || b === 168 || (b === 88 && parts[2] === 99)))
+    || (a === 198 && (b === 18 || b === 19 || (b === 51 && parts[2] === 100)))
+    || (a === 203 && b === 0 && parts[2] === 113)
     || a >= 224;
 }
 
@@ -75,11 +89,12 @@ function isPrivateIp(address: string): boolean {
   const version = net.isIP(address);
   if (version === 4) return isPrivateIpv4(address);
   if (version !== 6) return true;
-  const normalized = address.toLowerCase();
-  if (normalized === "::" || normalized === "::1") return true;
-  if (normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") || normalized.startsWith("fea") || normalized.startsWith("feb")) return true;
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
-  return mapped ? isPrivateIpv4(mapped) : false;
+  // BlockList performs Node's canonical IPv6 parsing, including compressed and
+  // hex-form IPv4-mapped addresses. Be conservative: only ordinary global
+  // unicast space is eligible, and reject tunnelling/documentation ranges that
+  // can encode non-public IPv4 destinations or are not globally routable.
+  return !publicIpv6Ranges.check(address, "ipv6")
+    || nonPublicIpv6Ranges.check(address, "ipv6");
 }
 
 async function resolvePublicAddress(url: URL): Promise<{ address: string; family: 4 | 6 }> {
@@ -90,9 +105,13 @@ async function resolvePublicAddress(url: URL): Promise<{ address: string; family
   if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
     throw new Error("Local link previews are disabled.");
   }
-  if (net.isIP(hostname)) {
-    if (isPrivateIp(hostname)) throw new Error("Private link previews are disabled.");
-    return { address: hostname, family: net.isIP(hostname) as 4 | 6 };
+  const ipLiteral = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+  const literalFamily = net.isIP(ipLiteral);
+  if (literalFamily) {
+    if (isPrivateIp(ipLiteral)) throw new Error("Private link previews are disabled.");
+    return { address: ipLiteral, family: literalFamily as 4 | 6 };
   }
   const addresses = await dns.lookup(hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some((entry) => isPrivateIp(entry.address))) {
@@ -108,6 +127,32 @@ type BoundedResponse = {
   data: Buffer;
 };
 
+function readBoundedResponse(response: http.IncomingMessage, maxBytes: number): Promise<BoundedResponse> {
+  return new Promise<BoundedResponse>((resolve, reject) => {
+    response.once("error", reject);
+    const declaredLength = Number(response.headers["content-length"] ?? 0);
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      response.destroy(new Error("Link preview response is too large."));
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    response.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        response.destroy(new Error("Link preview response is too large."));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    response.once("end", () => resolve({
+      statusCode: response.statusCode ?? 0,
+      headers: response.headers,
+      data: Buffer.concat(chunks),
+    }));
+  });
+}
+
 async function requestBounded(url: URL, maxBytes: number, accept: string): Promise<BoundedResponse> {
   const target = await resolvePublicAddress(url);
   const requester = url.protocol === "https:" ? https : http;
@@ -120,28 +165,7 @@ async function requestBounded(url: URL, maxBytes: number, accept: string): Promi
         "user-agent": "ADE-LinkPreview/1.0",
       },
       lookup: (_hostname, _options, callback) => callback(null, target.address, target.family),
-    }, (response) => {
-      const declaredLength = Number(response.headers["content-length"] ?? 0);
-      if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-        response.destroy(new Error("Link preview response is too large."));
-        return;
-      }
-      const chunks: Buffer[] = [];
-      let size = 0;
-      response.on("data", (chunk: Buffer) => {
-        size += chunk.length;
-        if (size > maxBytes) {
-          response.destroy(new Error("Link preview response is too large."));
-          return;
-        }
-        chunks.push(chunk);
-      });
-      response.on("end", () => resolve({
-        statusCode: response.statusCode ?? 0,
-        headers: response.headers,
-        data: Buffer.concat(chunks),
-      }));
-    });
+    }, (response) => void readBoundedResponse(response, maxBytes).then(resolve, reject));
     request.setTimeout(REQUEST_TIMEOUT_MS, () => request.destroy(new Error("Link preview request timed out.")));
     request.on("error", reject);
     request.end();
@@ -275,3 +299,8 @@ export async function resolveSmartLinkPreview(args: ResolveSmartLinkPreviewArgs)
 export function clearSmartLinkPreviewCacheForTesting(): void {
   previewCache.clear();
 }
+
+export const smartLinkPreviewTesting = {
+  isPublicIpAddress: (address: string): boolean => !isPrivateIp(address),
+  readBoundedResponse,
+};
