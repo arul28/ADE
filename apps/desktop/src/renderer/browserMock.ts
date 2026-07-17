@@ -33,6 +33,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
+import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import {
   isAdeUsageRangePreset,
   type AdeUsageRangePreset,
@@ -5087,6 +5088,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
       }),
       saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
+      getImageDataUrl: resolvedArg({ dataUrl: "" }),
+      resolveSmartLinkPreview: async ({ url }: { url: string }) => deriveSmartLinkPreview(url),
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;

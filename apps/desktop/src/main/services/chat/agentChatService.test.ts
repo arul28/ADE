@@ -2129,6 +2129,20 @@ describe("buildLinearSessionDirective", () => {
 // ============================================================================
 
 describe("createAgentChatService", () => {
+  it("uses the injected GitHub service to enrich smart-link previews", async () => {
+    const getIssue = vi.fn().mockResolvedValue({ title: "Keep desktop previews consistent" });
+    const { service } = createService({ githubService: { getIssue } });
+
+    await expect(service.resolveSmartLinkPreview({
+      url: "https://github.com/arul28/ADE/pull/987654321",
+    })).resolves.toMatchObject({
+      kind: "github_pr",
+      title: "Keep desktop previews consistent",
+    });
+    expect(getIssue).toHaveBeenCalledWith("arul28", "ADE", 987654321);
+    service.forceDisposeAll();
+  });
+
   describe("disk pressure enforcement", () => {
     it("fails an exhausted send without starting a provider turn", async () => {
       const events: AgentChatEventEnvelope[] = [];

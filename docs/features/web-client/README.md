@@ -101,7 +101,10 @@ Browser `window.ade` adapter:
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
   `personalChats.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
   web implementations of desktop renderer namespaces, mixing remote commands,
-  sync sub-protocols, and local browser-only state. `misc.ts` routes
+  sync sub-protocols, and local browser-only state. The chat adapter routes
+  smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
+  and falls back to the shared deterministic provider label when an older host
+  does not advertise the action. `misc.ts` routes
   `window.ade.usage.getAdeStats` through the viewer-allowed
   `usage.getAdeStats` command so the reused empty-Work activity module shows
   the runtime's cached cross-client aggregate instead of an empty native stub.
@@ -160,9 +163,10 @@ Machine runtime and sync host:
   project switch, file/chat/terminal sub-protocols, and command routing
   advertisement.
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` - remote
-  command registry. It carries 45 web-parity `register("...")` entries for
+  command registry. It carries the web-parity `register("...")` entries for
   Work, chat, terminal, files/git, PRs, project config, AI status, GitHub
-  status, history, orchestration, and rebase surfaces. The legacy runtime-scoped
+  status, history, orchestration, rebase, and safe smart-link preview surfaces.
+  The legacy runtime-scoped
   `sync.getWebPairingInfo` descriptor remains in the protocol, but no current
   iOS or hosted-web UI uses it to create browser pairings.
 - `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` and
@@ -452,7 +456,8 @@ domains such as lanes, sessions, chats, PRs, files, GitHub, and rebase. The
 adapter then refreshes through the appropriate remote command or sub-protocol:
 
 - Remote commands: `command` / `command_ack` / `command_result`, routed by
-  `syncRemoteCommandService.ts`.
+  `syncRemoteCommandService.ts`. This includes best-effort smart-link metadata;
+  the browser never fetches arbitrary pasted URLs directly.
 - Files: `file_request` / `file_response`.
 - Chat: `chat_subscribe`, `chat_event`, `chat_unsubscribe`.
 - Terminal: `terminal_subscribe`, `terminal_data`, `terminal_history`,

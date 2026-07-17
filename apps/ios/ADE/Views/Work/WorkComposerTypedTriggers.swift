@@ -1,6 +1,134 @@
 import SwiftUI
 import UIKit
 
+// MARK: - Smart links
+
+private func workSmartLinkPathParts(_ components: URLComponents) -> [String] {
+  components.path.split(separator: "/").map(String.init)
+}
+
+private func workSmartLinkLinearIdentifier(_ components: URLComponents) -> String? {
+  let parts = workSmartLinkPathParts(components)
+  guard let issueIndex = parts.firstIndex(where: { $0.caseInsensitiveCompare("issue") == .orderedSame }),
+        parts.indices.contains(issueIndex + 1)
+  else { return nil }
+  let identifier = parts[issueIndex + 1].uppercased()
+  guard identifier.range(of: "^[A-Z][A-Z0-9]+-[0-9]+$", options: .regularExpression) != nil else {
+    return nil
+  }
+  return identifier
+}
+
+private func workSmartLinkIsAsciiNumber(_ value: String) -> Bool {
+  !value.isEmpty && value.unicodeScalars.allSatisfy { $0.value >= 48 && $0.value <= 57 }
+}
+
+struct WorkSmartLink: Equatable {
+  enum Provider: Equatable {
+    case github
+    case linear
+    case ade
+    case web
+  }
+
+  let url: String
+  let range: NSRange
+  let provider: Provider
+
+  var compactLabel: String {
+    guard let components = URLComponents(string: url) else { return url }
+    let parts = workSmartLinkPathParts(components)
+    switch provider {
+    case .github:
+      guard parts.count >= 2 else { return url }
+      let repo = parts[1].lowercased().hasSuffix(".git") ? String(parts[1].dropLast(4)) : parts[1]
+      let repoLabel = "\(parts[0])/\(repo)"
+      let section = parts.indices.contains(2) ? parts[2].lowercased() : ""
+      if parts.count >= 4,
+         (section == "pull" || section == "issues"),
+         workSmartLinkIsAsciiNumber(parts[3]) {
+        return "\(repoLabel)#\(parts[3])"
+      }
+      if parts.count >= 4, section == "commit" { return "\(repoLabel)@\(parts[3].prefix(7))" }
+      if parts.count >= 5, section == "actions", parts[3].lowercased() == "runs" {
+        return "\(repoLabel) · run \(parts[4])"
+      }
+      return repoLabel
+    case .linear:
+      return workSmartLinkLinearIdentifier(components) ?? url
+    case .ade:
+      let target = ([components.host].compactMap { $0 } + parts).joined(separator: "/")
+      return target.isEmpty ? "ADE link" : "ADE · \(target)"
+    case .web:
+      return url
+    }
+  }
+}
+
+enum WorkSmartLinkDetector {
+  private static let regex = try! NSRegularExpression(
+    pattern: "(?:https?://|ade://)[^\\s<>\\\"'`]+",
+    options: [.caseInsensitive]
+  )
+  private static let trailingPunctuation = CharacterSet(charactersIn: ".,;:!?")
+  private static let balancedTrailingCharacters: [Character: Character] = [")": "(", "]": "[", "}": "{"]
+
+  private static func trimmedRange(_ initialRange: NSRange, in text: NSString) -> NSRange {
+    var range = initialRange
+    while range.length > 0 {
+      let final = text.substring(with: NSRange(location: NSMaxRange(range) - 1, length: 1))
+      if final.unicodeScalars.allSatisfy({ trailingPunctuation.contains($0) }) {
+        range.length -= 1
+        continue
+      }
+      guard let close = final.first,
+            let open = balancedTrailingCharacters[close]
+      else { break }
+      let candidate = text.substring(with: range)
+      let opens = candidate.filter { $0 == open }.count
+      let closes = candidate.filter { $0 == close }.count
+      guard closes > opens else { break }
+      range.length -= 1
+    }
+    return range
+  }
+
+  static func links(in text: NSString) -> [WorkSmartLink] {
+    let fullRange = NSRange(location: 0, length: text.length)
+    return regex.matches(in: text as String, range: fullRange).compactMap { match in
+      let range = trimmedRange(match.range, in: text)
+      guard range.length > 0 else { return nil }
+      let url = text.substring(with: range)
+      guard let components = URLComponents(string: url),
+            let scheme = components.scheme?.lowercased(),
+            scheme == "ade" || ((scheme == "http" || scheme == "https") && components.host?.isEmpty == false)
+      else { return nil }
+      let host = components.host?.lowercased()
+      let provider: WorkSmartLink.Provider
+      if scheme == "ade" {
+        provider = .ade
+      } else if host == "github.com" {
+        provider = .github
+      } else if host == "linear.app", workSmartLinkLinearIdentifier(components) != nil {
+        provider = .linear
+      } else {
+        provider = .web
+      }
+      return WorkSmartLink(url: url, range: range, provider: provider)
+    }
+  }
+
+  static func atomicDeletionRange(in text: NSString, range: NSRange, replacementText: String) -> NSRange? {
+    guard replacementText.isEmpty, range.length > 0 else { return nil }
+    let intersected = links(in: text).filter { NSIntersectionRange($0.range, range).length > 0 }
+    guard !intersected.isEmpty else { return nil }
+    if range.length == 1, let link = intersected.first { return link.range }
+    let start = intersected.reduce(range.location) { min($0, $1.range.location) }
+    let end = intersected.reduce(NSMaxRange(range)) { max($0, NSMaxRange($1.range)) }
+    return NSRange(location: start, length: end - start)
+  }
+}
+
 // MARK: - Trigger detection
 
 /// The two typed triggers the composer recognizes, matching the shared
@@ -308,6 +436,52 @@ private final class WorkComposerPastingTextView: UITextView {
   }
 }
 
+@MainActor
+private final class WorkSmartLinkContextMenuController: NSObject, UIContextMenuInteractionDelegate {
+  weak var textView: UITextView?
+  var onRemove: ((WorkSmartLink) -> Void)?
+
+  init(textView: UITextView, onRemove: @escaping (WorkSmartLink) -> Void) {
+    self.textView = textView
+    self.onRemove = onRemove
+    super.init()
+    textView.addInteraction(UIContextMenuInteraction(delegate: self))
+  }
+
+  func contextMenuInteraction(
+    _ interaction: UIContextMenuInteraction,
+    configurationForMenuAtLocation location: CGPoint
+  ) -> UIContextMenuConfiguration? {
+    guard let textView,
+          let link = link(at: location, in: textView)
+    else { return nil }
+    return UIContextMenuConfiguration(identifier: link.url as NSString, previewProvider: nil) { [weak self] _ in
+      let copy = UIAction(title: "Copy link", image: UIImage(systemName: "doc.on.doc")) { _ in
+        UIPasteboard.general.string = link.url
+      }
+      let remove = UIAction(title: "Remove link", image: UIImage(systemName: "trash"), attributes: .destructive) { _ in
+        self?.onRemove?(link)
+      }
+      return UIMenu(children: [copy, remove])
+    }
+  }
+
+  private func link(at point: CGPoint, in textView: UITextView) -> WorkSmartLink? {
+    let adjusted = CGPoint(
+      x: point.x + textView.contentOffset.x - textView.textContainerInset.left,
+      y: point.y + textView.contentOffset.y - textView.textContainerInset.top
+    )
+    let glyph = textView.layoutManager.glyphIndex(for: adjusted, in: textView.textContainer)
+    guard glyph < textView.layoutManager.numberOfGlyphs else { return nil }
+    let hitRect = textView.layoutManager
+      .boundingRect(forGlyphRange: NSRange(location: glyph, length: 1), in: textView.textContainer)
+      .insetBy(dx: -6, dy: -6)
+    guard hitRect.contains(adjusted) else { return nil }
+    let character = textView.layoutManager.characterIndexForGlyph(at: glyph)
+    return WorkSmartLinkDetector.links(in: textView.text as NSString).first { NSLocationInRange(character, $0.range) }
+  }
+}
+
 /// UIKit responder changes can synchronously re-enter SwiftUI's view graph.
 /// Always apply the latest focus request after the current representable update
 /// has yielded so send-time draft mutations cannot create an AttributeGraph
@@ -377,13 +551,23 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
   }
 
   func makeUIView(context: Context) -> UITextView {
-    let textView = WorkComposerPastingTextView()
+    let textStorage = NSTextStorage()
+    let layoutManager = WorkComposerChipLayoutManager()
+    textStorage.addLayoutManager(layoutManager)
+    let container = NSTextContainer(size: CGSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+    container.widthTracksTextView = true
+    container.lineFragmentPadding = 0
+    layoutManager.addTextContainer(container)
+    let textView = WorkComposerPastingTextView(frame: .zero, textContainer: container)
+    context.coordinator.textStorage = textStorage
+    context.coordinator.layoutManager = layoutManager
     textView.delegate = context.coordinator
     textView.backgroundColor = .clear
     textView.textContainerInset = .zero
     textView.textContainer.lineFragmentPadding = 0
     textView.isScrollEnabled = false
     textView.font = UIFont.preferredFont(forTextStyle: .body)
+    textView.adjustsFontForContentSizeCategory = true
     textView.textColor = UIColor(ADEColor.textPrimary)
     textView.tintColor = UIColor(ADEColor.accent)
     textView.autocorrectionType = .yes
@@ -394,13 +578,16 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textView.accessibilityIdentifier = "Work.StartChat.Composer.TextView"
+    textView.accessibilityHint = "Long press a link for copy and remove actions."
     textView.onPasteImages = { [weak coordinator = context.coordinator] images in
       coordinator?.handlePasteImages(images) ?? false
     }
 
     context.coordinator.textView = textView
+    context.coordinator.installSmartLinkMenu(on: textView)
     context.coordinator.applyPlaceholder(placeholder)
     if !text.isEmpty { textView.text = text }
+    context.coordinator.restyleSmartLinks()
     context.coordinator.updatePlaceholderVisibility()
     context.coordinator.updateHeight()
     return textView
@@ -415,6 +602,7 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     }
     if textView.text != text {
       textView.text = text
+      context.coordinator.restyleSmartLinks()
       context.coordinator.updatePlaceholderVisibility()
     }
     context.coordinator.applyPlaceholder(placeholder)
@@ -426,6 +614,9 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
   final class Coordinator: NSObject, UITextViewDelegate {
     var parent: WorkPlainComposerTextView
     weak var textView: UITextView?
+    var textStorage: NSTextStorage?
+    var layoutManager: WorkComposerChipLayoutManager?
+    private var smartLinkMenu: WorkSmartLinkContextMenuController?
     private var placeholderLabel: UILabel?
     private let focusScheduler = WorkComposerFocusScheduler()
 
@@ -445,6 +636,70 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
       if parent.text != textView.text {
         parent.text = textView.text
       }
+      if textView.markedTextRange == nil { restyleSmartLinks() }
+      updatePlaceholderVisibility()
+      updateHeight()
+    }
+
+    func textView(
+      _ textView: UITextView,
+      shouldChangeTextIn range: NSRange,
+      replacementText text: String
+    ) -> Bool {
+      guard let deletionRange = WorkSmartLinkDetector.atomicDeletionRange(
+        in: textView.text as NSString,
+        range: range,
+        replacementText: text
+      ) else { return true }
+      remove(range: deletionRange)
+      return false
+    }
+
+    func textView(
+      _ textView: UITextView,
+      shouldInteractWith URL: URL,
+      in characterRange: NSRange,
+      interaction: UITextItemInteraction
+    ) -> Bool {
+      false
+    }
+
+    func installSmartLinkMenu(on textView: UITextView) {
+      smartLinkMenu = WorkSmartLinkContextMenuController(textView: textView) { [weak self] link in
+        self?.remove(range: link.range)
+      }
+    }
+
+    func restyleSmartLinks() {
+      guard let textView else { return }
+      let storage = textView.textStorage
+      let fullRange = NSRange(location: 0, length: storage.length)
+      let baseAttributes: [NSAttributedString.Key: Any] = [
+        .font: UIFont.preferredFont(forTextStyle: .body),
+        .foregroundColor: UIColor(ADEColor.textPrimary),
+      ]
+      textView.typingAttributes = baseAttributes
+      guard fullRange.length > 0 else { return }
+      let tint = UIColor(ADEColor.accent)
+      storage.beginEditing()
+      storage.setAttributes(baseAttributes, range: fullRange)
+      for link in WorkSmartLinkDetector.links(in: storage.string as NSString) {
+        storage.addAttributes([
+          .font: UIFont.preferredFont(forTextStyle: .body).withWeight(.semibold),
+          .foregroundColor: tint,
+          .workComposerChipTint: tint,
+          .link: link.url,
+        ], range: link.range)
+      }
+      storage.endEditing()
+    }
+
+    private func remove(range: NSRange) {
+      guard let textView, NSMaxRange(range) <= (textView.text as NSString).length else { return }
+      textView.textStorage.replaceCharacters(in: range, with: "")
+      textView.selectedRange = NSRange(location: min(range.location, textView.textStorage.length), length: 0)
+      if parent.text != textView.text { parent.text = textView.text }
+      restyleSmartLinks()
       updatePlaceholderVisibility()
       updateHeight()
     }
@@ -469,6 +724,7 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
         let label = UILabel()
         label.numberOfLines = 0
         label.font = UIFont.preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
         label.textColor = UIColor(ADEColor.textMuted)
         label.translatesAutoresizingMaskIntoConstraints = false
         textView.addSubview(label)
@@ -554,15 +810,18 @@ struct WorkComposerTextView: UIViewRepresentable {
     textView.smartQuotesType = .no
     textView.smartDashesType = .no
     textView.tintColor = UIColor(ADEColor.accent)
+    textView.adjustsFontForContentSizeCategory = true
     textView.typingAttributes = context.coordinator.baseAttributes
     textView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textView.accessibilityIdentifier = "Work.Chat.Composer.TextView"
+    textView.accessibilityHint = "Long press a link for copy and remove actions."
     textView.onPasteImages = { [weak coordinator = context.coordinator] images in
       coordinator?.handlePasteImages(images) ?? false
     }
 
     context.coordinator.textView = textView
+    context.coordinator.installSmartLinkMenu(on: textView)
     // Route committed suggestions straight to the live text view.
     controller.onCommit = { [weak coordinator = context.coordinator] suggestion, range in
       coordinator?.commit(suggestion, replacing: range)
@@ -609,6 +868,7 @@ struct WorkComposerTextView: UIViewRepresentable {
     private var placeholderLabel: UILabel?
     private var triggerInputTraitsActive = false
     private let focusScheduler = WorkComposerFocusScheduler()
+    private var smartLinkMenu: WorkSmartLinkContextMenuController?
 
     init(_ parent: WorkComposerTextView) {
       self.parent = parent
@@ -646,6 +906,15 @@ struct WorkComposerTextView: UIViewRepresentable {
       }
       return [
         .font: font,
+        .foregroundColor: tint,
+        .workComposerChipTint: tint,
+      ]
+    }
+
+    private var smartLinkAttributes: [NSAttributedString.Key: Any] {
+      let tint = UIColor(ADEColor.accent)
+      return [
+        .font: UIFont.preferredFont(forTextStyle: .body).withWeight(.semibold),
         .foregroundColor: tint,
         .workComposerChipTint: tint,
       ]
@@ -700,6 +969,14 @@ struct WorkComposerTextView: UIViewRepresentable {
       shouldChangeTextIn range: NSRange,
       replacementText text: String
     ) -> Bool {
+      if let deletionRange = WorkSmartLinkDetector.atomicDeletionRange(
+        in: textView.text as NSString,
+        range: range,
+        replacementText: text
+      ) {
+        remove(range: deletionRange)
+        return false
+      }
       let delta = (text as NSString).length - range.length
       let editStart = range.location
       let editEnd = range.location + range.length
@@ -725,6 +1002,21 @@ struct WorkComposerTextView: UIViewRepresentable {
       }
       chips = next
       return true
+    }
+
+    func installSmartLinkMenu(on textView: UITextView) {
+      smartLinkMenu = WorkSmartLinkContextMenuController(textView: textView) { [weak self] link in
+        self?.remove(range: link.range)
+      }
+    }
+
+    func textView(
+      _ textView: UITextView,
+      shouldInteractWith URL: URL,
+      in characterRange: NSRange,
+      interaction: UITextItemInteraction
+    ) -> Bool {
+      false
     }
 
     func textViewDidChange(_ textView: UITextView) {
@@ -836,7 +1128,31 @@ struct WorkComposerTextView: UIViewRepresentable {
         let kind: WorkComposerTriggerKind = chip.text.hasPrefix("/") ? .slash : .at
         storage.addAttributes(chipAttributes(kind: kind), range: chip.range)
       }
+      for link in WorkSmartLinkDetector.links(in: storage.string as NSString) {
+        var attributes = smartLinkAttributes
+        attributes[.link] = link.url
+        storage.addAttributes(attributes, range: link.range)
+      }
       storage.endEditing()
+    }
+
+    private func remove(range: NSRange) {
+      guard let textView, NSMaxRange(range) <= (textView.text as NSString).length else { return }
+      chips = chips.compactMap { chip in
+        if NSIntersectionRange(chip.range, range).length > 0 { return nil }
+        if chip.range.location >= NSMaxRange(range) {
+          return (NSRange(location: chip.range.location - range.length, length: chip.range.length), chip.text)
+        }
+        return chip
+      }
+      textView.textStorage.replaceCharacters(in: range, with: "")
+      textView.selectedRange = NSRange(location: min(range.location, textView.textStorage.length), length: 0)
+      textView.typingAttributes = baseAttributes
+      if parent.draftState.text != textView.text { parent.draftState.text = textView.text }
+      restyle()
+      updatePlaceholderVisibility()
+      updateHeight()
+      detectTrigger()
     }
 
     // MARK: Placeholder + height
@@ -847,6 +1163,7 @@ struct WorkComposerTextView: UIViewRepresentable {
         let label = UILabel()
         label.numberOfLines = 0
         label.font = UIFont.preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
         label.textColor = UIColor(ADEColor.textMuted)
         label.translatesAutoresizingMaskIntoConstraints = false
         textView.addSubview(label)

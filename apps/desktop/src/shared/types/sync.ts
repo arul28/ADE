@@ -1110,6 +1110,7 @@ export type SyncRemoteCommandAction =
   | "processes.stop"
   | "processes.kill"
   | "chat.getSlashCommands"
+  | "chat.resolveSmartLinkPreview"
   | "chat.getParallelLaunchState"
   | "chat.setParallelLaunchState"
   | "chat.handoff"

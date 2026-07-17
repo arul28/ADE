@@ -2610,6 +2610,14 @@ describe("adeRpcServer", () => {
 
   it("lists ADE actions across runtime domains", async () => {
     const fixture = createRuntime();
+    const resolveSmartLinkPreview = vi.fn(async ({ url }: { url: string }) => ({
+      url,
+      provider: "github",
+      kind: "github_pr",
+      label: "acme/ade#42",
+      title: "Ship smart links",
+    }));
+    (fixture.runtime.agentChatService as any).resolveSmartLinkPreview = resolveSmartLinkPreview;
     const crossMachineActions = [
       "prepareCrossMachineHandoff",
       "validateCrossMachineSource",
@@ -2641,6 +2649,14 @@ describe("adeRpcServer", () => {
     expect(getSessionSummary).toMatchObject({
       input: expect.stringContaining("scalar sessionId"),
     });
+    const smartLinkPreview = chatActions.structuredContent.actions.find(
+      (entry: { action: string }) => entry.action === "resolveSmartLinkPreview",
+    );
+    expect(smartLinkPreview).toMatchObject({
+      name: "chat.resolveSmartLinkPreview",
+      input: "object { url: string }",
+      example: expect.stringContaining("chat.resolveSmartLinkPreview"),
+    });
     const listedChatActionNames = chatActions.structuredContent.actions.map((entry: { name: string }) => entry.name);
     expect(listedChatActionNames).toEqual(expect.arrayContaining(
       crossMachineActions.map((action) => `chat.${action}`),
@@ -2663,6 +2679,20 @@ describe("adeRpcServer", () => {
         handoffId: "handoff-1",
         targetModelId: "openai/gpt-5.5",
       },
+    });
+
+    const resolvedLink = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "resolveSmartLinkPreview",
+      args: { url: "https://github.com/acme/ade/pull/42" },
+    });
+    expect(resolvedLink?.isError).toBeUndefined();
+    expect(resolvedLink.structuredContent.result).toMatchObject({
+      label: "acme/ade#42",
+      title: "Ship smart links",
+    });
+    expect(resolveSmartLinkPreview).toHaveBeenCalledWith({
+      url: "https://github.com/acme/ade/pull/42",
     });
 
     const usageActions = await callTool(handler, "list_ade_actions", { domain: "usage" });

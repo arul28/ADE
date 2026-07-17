@@ -80,6 +80,23 @@ describe("headlessLinearServices", () => {
     vi.clearAllMocks();
   });
 
+  it("resolves smart-link previews through the headless chat action surface", async () => {
+    const services = createHeadlessLinearServices(createDeps());
+
+    const preview = await services.agentChatService.resolveSmartLinkPreview({
+      url: "https://github.com/acme/ade",
+    });
+
+    expect(preview).toMatchObject({
+      url: "https://github.com/acme/ade",
+      provider: "github",
+      kind: "github_repo",
+      label: "acme/ade",
+    });
+    expect(preview?.title).toBeUndefined();
+    expect(preview?.iconDataUrl).toBeUndefined();
+  });
+
   it("emits GitHub status changes from the headless shared credential service", async () => {
     const previousAdeHome = process.env.ADE_HOME;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-status-"));

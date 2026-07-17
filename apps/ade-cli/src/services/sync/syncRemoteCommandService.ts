@@ -220,6 +220,7 @@ import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAtta
 import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } from "../../../../desktop/src/main/services/ai/aiSettingsStatus";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
+import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -3734,6 +3735,15 @@ function registerProcessRemoteCommands({ args, register }: RemoteCommandRegistra
 }
 
 function registerChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  register("chat.resolveSmartLinkPreview", { viewerAllowed: true }, async (payload) => {
+    const url = requireString(payload.url, "chat.resolveSmartLinkPreview requires url.");
+    const linearIssueTracker = await getConnectedLinearIssueTracker(args);
+    return resolveSmartLinkPreview({
+      url,
+      githubService: args.githubService,
+      linearIssueTracker,
+    });
+  });
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
       parseAgentChatSlashCommandsArgs(payload),

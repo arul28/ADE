@@ -1098,6 +1098,7 @@ export async function createAdeRuntime(args: {
       transcriptsDir: paths.transcriptsDir,
       fileService: headlessLinearServices.fileService,
       linearIssueTracker: headlessLinearServices.linearIssueTracker,
+      githubService: headlessLinearServices.githubService,
       linearClient: headlessLinearServices.linearClient,
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,

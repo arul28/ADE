@@ -1056,6 +1056,9 @@ describe("createSyncRemoteCommandService", () => {
       service.execute(makePayload("prs.postReviewComment", { prId: "pr-1", threadId: "thread-1" })),
     ).rejects.toThrow("prs.postReviewComment requires body.");
     await expect(service.execute(makePayload("projectConfig.save"))).rejects.toThrow("projectConfig.save requires candidate.");
+    await expect(service.execute(makePayload("chat.resolveSmartLinkPreview"))).rejects.toThrow(
+      "chat.resolveSmartLinkPreview requires url.",
+    );
 
     expect(activeForChat).not.toHaveBeenCalled();
     expect(postReviewComment).not.toHaveBeenCalled();
@@ -1112,6 +1115,7 @@ describe("createSyncRemoteCommandService", () => {
       "work.deleteSession",
       "work.getSessionDelta",
       "chat.getSlashCommands",
+      "chat.resolveSmartLinkPreview",
       "chat.cancelScheduledWork",
       "chat.getParallelLaunchState",
       "chat.setParallelLaunchState",
@@ -1162,6 +1166,11 @@ describe("createSyncRemoteCommandService", () => {
       "orchestration.runCreate",
     ]));
     expect(service.getDescriptor("chat.saveTempAttachment")?.scope).toBe("project");
+    expect(service.getDescriptor("chat.resolveSmartLinkPreview")).toEqual({
+      action: "chat.resolveSmartLinkPreview",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
     expect(service.getDescriptor("rebase.execute")?.policy).toEqual({ viewerAllowed: true, queueable: true });
     expect(service.getDescriptor("prs.delete")?.policy).toEqual({ viewerAllowed: false, queueable: true });
     expect(service.getDescriptor("prs.cleanupBranch")?.policy).toEqual({ viewerAllowed: false, queueable: true });

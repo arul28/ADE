@@ -220,7 +220,7 @@ so the win is transport and decode, not host compute.
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
-- `launch`, `getSlashCommands`, `getContextUsage`, `warmupModel`,
+- `launch`, `getSlashCommands`, `resolveSmartLinkPreview`, `getContextUsage`, `warmupModel`,
   `getParallelLaunchState`, `setParallelLaunchState`, `handoff`,
   `prepareCrossMachineHandoff`, `validateCrossMachineSource`,
   `preflightCrossMachineDestination`, `acceptCrossMachineHandoff`,
@@ -235,6 +235,15 @@ before.
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,
   `modelCatalog`
+
+`chat.resolveSmartLinkPreview` is a viewer-allowed, non-mutating enrichment
+read. Its `{ url }` payload returns the shared deterministic provider/kind/label
+shape and may add a title or bounded favicon data URL. GitHub and Linear titles
+use the runtime's configured integrations; generic HTTP(S) metadata is fetched
+only by the runtime's SSRF-hardened preview service. Unsupported, unreachable,
+local/private, oversized, or non-HTML URLs fall back to the deterministic
+preview instead of failing the composer. The canonical URL is never replaced by
+the title.
 
 `chat.modelCatalog` accepts `{ mode?, refreshProvider?, cursorSource? }`
 where `mode` is `"cached" | "refresh-stale" | "force"` (default
@@ -580,6 +589,7 @@ services:
   diffService?,
   conflictService?,
   agentChatService?,
+  githubService?,
   projectConfigService?,
   portAllocationService?,
   laneEnvironmentService?,
@@ -652,6 +662,10 @@ can be sensitive.
   envelopes but sends `chatScope: "personal"`; that explicit discriminator
   resolves the hidden durable transcript and active-turn state without a
   `projectId`.
+- **Smart-link preview** is a normal viewer-allowed command rather than a chat
+  stream message. Hosted web uses it so arbitrary pasted URLs are fetched at
+  the trusted runtime boundary; older hosts simply leave the local fallback
+  label in place.
 - **File access sub-protocol** (`file_request` / `file_response`) is
   a separate envelope from remote commands; it handles large binary
   payloads and streaming reads outside the command surface to avoid

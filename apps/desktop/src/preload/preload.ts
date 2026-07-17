@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
+import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
@@ -1291,6 +1292,7 @@ const READ_ONLY_RUNTIME_ACTIONS = new Set([
   "chat.codexFuzzyFileSearch",
   "chat.fileSearch",
   "chat.modelCatalog",
+  "chat.resolveSmartLinkPreview",
   "file.quickOpen",
   "ios_simulator.resolvePreviewMatch",
   "terminal.activeForChat",
@@ -5694,6 +5696,10 @@ contextBridge.exposeInMainWorld("ade", {
     getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
       callProjectRuntimeActionOr("chat", "getImageDataUrl", { args: { path } }, () =>
         ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
+      ),
+    resolveSmartLinkPreview: async (args: { url: string }): Promise<SmartLinkPreview | null> =>
+      callProjectRuntimeActionOr("chat", "resolveSmartLinkPreview", { args }, async () =>
+        deriveSmartLinkPreview(args.url),
       ),
     getEventHistory: async (args: {
       sessionId: string;

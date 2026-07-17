@@ -216,6 +216,35 @@ function makeLinearIssue(overrides: Partial<NormalizedLinearIssue> = {}): Normal
 }
 
 describe("AgentChatComposer", () => {
+  it("re-resolves credentialed smart-link previews when the composer is reused", async () => {
+    const url = "https://github.com/arul28/ADE/pull/835";
+    const resolveSmartLinkPreview = vi.fn()
+      .mockResolvedValueOnce({
+        url,
+        provider: "github",
+        kind: "github_pr",
+        label: "arul28/ADE#835",
+        title: "First project title",
+      })
+      .mockResolvedValueOnce({
+        url,
+        provider: "github",
+        kind: "github_pr",
+        label: "arul28/ADE#835",
+        title: "Second project title",
+      });
+    (window as any).ade = { agentChat: { resolveSmartLinkPreview } };
+    const props = buildComposerProps({ draft: url, turnActive: false });
+    const view = render(<AgentChatComposer {...props} />);
+
+    await waitFor(() => expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(1));
+    view.rerender(<AgentChatComposer {...props} draft="" />);
+    await waitFor(() => expect(screen.getByRole("textbox").textContent).toBe(""));
+    view.rerender(<AgentChatComposer {...props} draft={url} />);
+
+    await waitFor(() => expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(2));
+  });
+
   it("clear draft only triggers the draft-clear action during an active turn", () => {
     const props = renderComposer();
 
