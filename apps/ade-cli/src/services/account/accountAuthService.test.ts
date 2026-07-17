@@ -348,6 +348,40 @@ describe("AccountAuthService packaged development-session policy", () => {
     expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(JSON.stringify(productionSession));
     expect(fetchImpl).not.toHaveBeenCalled();
   });
+
+  it("rejects but does not delete a packaged development session when the store lacks atomic compare-and-delete", async () => {
+    const developmentSession = storedSession({
+      accessToken: developmentAccessToken(),
+      oauthConfig: {
+        issuer: DEVELOPMENT_ADE_CLERK_ISSUER,
+        clientId: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      },
+    });
+    const store = new MemoryCredentialStore();
+    // A store without atomic compare-and-delete must not get-then-delete (that
+    // would race a peer-written production replacement); reject on read instead.
+    (store as { updateSync?: unknown }).updateSync = undefined;
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(developmentSession));
+    const fetchImpl = vi.fn();
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({
+        issuer: DEFAULT_ADE_CLERK_ISSUER,
+        clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+      }),
+      env: { ADE_RUNTIME_PACKAGED: "1" } as NodeJS.ProcessEnv,
+      now,
+      fetchImpl,
+    });
+    activeServices.push(service);
+
+    expect(service.getStatus()).toMatchObject({ signedIn: false, source: null });
+    await expect(service.getAccessToken()).rejects.toThrow(/not signed in/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(
+      JSON.stringify(developmentSession),
+    );
+  });
 });
 
 describe("AccountAuthService CLERK_ISSUER scheme enforcement", () => {
@@ -1398,7 +1432,7 @@ describe("AccountAuthService ADE_ACCOUNT_TOKEN", () => {
     expect(service.getStatus()).toMatchObject({
       signedIn: false,
       userId: null,
-      source: "env-token",
+      source: null,
     });
     await expect(service.getAccessToken()).rejects.toThrow(/development Clerk/i);
     expect(fetchImpl).not.toHaveBeenCalled();

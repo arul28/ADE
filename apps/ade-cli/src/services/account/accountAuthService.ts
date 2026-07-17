@@ -752,13 +752,17 @@ export function createAccountAuthService(args: {
     const inspected = inspectEnvCredential(credential);
     resetEnvSessionIfCredentialChanged(credential, inspected);
     if (rejectDevelopmentEnvCredential(inspected)) {
+      // Report a fully signed-out status (source: null, not "env-token") so
+      // downstream flows run their signed-out handling and re-auth against
+      // production instead of treating the rejected dev token as an active
+      // env-credential path.
       return {
         signedIn: false,
         userId: null,
         email: null,
         name: null,
         expiresAt: null,
-        source: "env-token",
+        source: null,
       };
     }
     if (envSession) return { ...toStatus(envSession), source: "env-token" };
@@ -790,27 +794,25 @@ export function createAccountAuthService(args: {
     lastObservedSignedIn = record != null;
   };
 
-  const invalidateStoredSessionIfCurrent = (raw: string): boolean => {
+  const invalidateStoredSessionIfCurrent = (raw: string): void => {
     const updateSync = args.credentialStore.updateSync;
-    let invalidated = false;
     if (updateSync) {
+      // Atomic compare-and-delete: remove only the development session we
+      // observed, so a production credential a peer wrote after our read is
+      // never clobbered.
       updateSync.call(args.credentialStore, (values) => {
         if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
         delete values[ACCOUNT_SESSION_CREDENTIAL_KEY];
-        invalidated = true;
         return true;
       });
-    } else if (args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY) === raw) {
-      args.credentialStore.deleteSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
-      invalidated = true;
     }
-    if (invalidated) {
-      authEpoch += 1;
-      lastObservedSignedIn = false;
-      sessionReadState = "missing";
-      warnDevelopmentClerkIgnored();
-    }
-    return invalidated;
+    // Without atomic compare-and-delete we do NOT get-then-delete — that races a
+    // peer-written production replacement. The development session is simply
+    // rejected on every read instead of being erased.
+    authEpoch += 1;
+    lastObservedSignedIn = false;
+    sessionReadState = "missing";
+    warnDevelopmentClerkIgnored();
   };
 
   const readSession = (): AccountSessionRecord | null => {
@@ -836,7 +838,8 @@ export function createAccountAuthService(args: {
         })) {
           return session;
         }
-        if (invalidateStoredSessionIfCurrent(stored)) return null;
+        invalidateStoredSessionIfCurrent(stored);
+        return null;
       }
       sessionReadState = "unreadable";
       return null;
