@@ -50,7 +50,6 @@ function tableDomains(table: string): InvalidationDomain[] {
   const domains = new Set<InvalidationDomain>();
   if (normalized.includes("lane") || normalized.includes("worktree")) {
     domains.add("lanes");
-    domains.add("sessions");
   }
   if (
     normalized.includes("terminal") ||
@@ -65,18 +64,26 @@ function tableDomains(table: string): InvalidationDomain[] {
   }
   if (
     normalized.includes("pull_request") ||
+    normalized.includes("github_pr") ||
     normalized === "prs" ||
     normalized.startsWith("pr_") ||
     normalized.includes("queue") ||
     normalized.includes("integration")
   ) {
     domains.add("prs");
-    domains.add("github");
   }
   if (normalized.includes("file") || normalized.includes("tree") || normalized.includes("git_status")) {
     domains.add("files");
   }
-  if (normalized.includes("github") || normalized.includes("remote")) {
+  // PR projection/snapshot tables also contain "github" in their names, but
+  // their changes are already represented by the PR domain. Do not fan those
+  // batches out into an unrelated GitHub-account status refetch.
+  if (
+    normalized.includes("github")
+    && !normalized.includes("pull_request")
+    && !normalized.includes("github_pr")
+    && !normalized.startsWith("pr_")
+  ) {
     domains.add("github");
   }
   if (normalized.includes("rebase") || normalized.includes("conflict")) {

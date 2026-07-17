@@ -1,16 +1,26 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { parsePairingQrUrl } from "../../../shared/pairingQr";
 import type {
   SyncDeviceRuntimeState,
+  SyncPeerConnectionState,
   SyncRoleSnapshot,
 } from "../../../shared/types";
 import {
   PhoneConnectionsTab,
   ThisMacCard,
   WebConnectionsTab,
+  useSyncConnections,
   type SyncConnections,
 } from "./SyncDevicesSection";
 
@@ -72,7 +82,7 @@ function makeStatus(overrides: Partial<SyncRoleSnapshot> = {}): SyncRoleSnapshot
     routeHealth: {
       listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
       tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
-      relay: { enabled: false, relayControlConnected: false, relayBridgeValidated: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+      relay: { enabled: false, relayControlConnected: false, relayBridgeValidated: false, lastFailureAt: null, skipReason: null, lastControlError: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
       accountDirectory: {
         state: "published",
         skipReason: null,
@@ -114,6 +124,10 @@ function makeSync(overrides: Partial<SyncConnections> = {}): SyncConnections {
     busy: false,
     notice: null,
     error: null,
+    isRemoteBound: false,
+    boundMachineName: null,
+    localMachineName: "Studio",
+    canManageDevices: true,
     setPinValue: vi.fn(async () => {}),
     generatePin: vi.fn(),
     clearPin: vi.fn(),
@@ -212,7 +226,7 @@ describe("ThisMacCard", () => {
       routeHealth: {
         listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
         tailscale: { enabled: true, tailscalePublished: true, tailscaleReachable: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
-        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: true, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: true, lastFailureAt: null, skipReason: null, lastControlError: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
         accountDirectory: makeStatus().routeHealth.accountDirectory,
       },
     });
@@ -229,7 +243,7 @@ describe("ThisMacCard", () => {
         listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, lastFailureAt: null, reason: null, lastSuccessAt: null },
         tailscale: { enabled: false, tailscalePublished: false, tailscaleReachable: false, lastFailureAt: null, reason: "off", lastSuccessAt: null },
         // Relay control connected but bridge not yet validated → not reachable.
-        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, lastFailureAt: null, reason: null, lastSuccessAt: null },
+        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, lastFailureAt: null, skipReason: null, lastControlError: null, lastControlOpenAt: null, lastBridgeValidationAt: null },
         accountDirectory: makeStatus().routeHealth.accountDirectory,
       },
     });
@@ -244,6 +258,41 @@ describe("ThisMacCard", () => {
     render(<ThisMacCard sync={makeSync()} accountSignedIn />);
     expect(screen.queryByText("Connect a phone")).toBeNull();
     expect(screen.queryByText("Scan to pair")).toBeNull();
+  });
+
+  it("shows this Mac's own name even while the window is remote-bound", () => {
+    render(
+      <ThisMacCard
+        sync={makeSync({ isRemoteBound: true, boundMachineName: "Mac Studio", localMachineName: "Studio" })}
+        accountSignedIn
+      />,
+    );
+    // The card names the local machine, never the machine it routes to.
+    expect(screen.getByText("Studio")).toBeTruthy();
+    expect(screen.queryByText("Mac Studio")).toBeNull();
+  });
+
+  it("replaces pairing-code controls with a read-only note when remote-bound", () => {
+    const generatePin = vi.fn();
+    render(
+      <ThisMacCard
+        sync={makeSync({
+          status: makeStatus({ pairingPin: "123456" }),
+          isRemoteBound: true,
+          boundMachineName: "Mac Studio",
+          generatePin,
+        })}
+        accountSignedIn
+      />,
+    );
+    expect(screen.getByText("This Mac's pairing code is 123456.")).toBeTruthy();
+    expect(
+      screen.getByText(/Pairing changes aren.t available while this window is connected to/),
+    ).toBeTruthy();
+    // No mutation controls that would silently change the bound machine.
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Generate" })).toBeNull();
+    expect(generatePin).not.toHaveBeenCalled();
   });
 });
 
@@ -297,6 +346,26 @@ describe("PhoneConnectionsTab", () => {
     await waitFor(() => {});
     expect(forgetDevice).not.toHaveBeenCalled();
   });
+
+  it("scopes the list to this Mac and hides revoke when remote-bound", () => {
+    render(
+      <PhoneConnectionsTab
+        sync={makeSync({
+          devices: [device()],
+          isRemoteBound: true,
+          boundMachineName: "Mac Studio",
+          localMachineName: "Studio",
+          canManageDevices: false,
+        })}
+        confirmRevoke={vi.fn(autoConfirm)}
+      />,
+    );
+    expect(screen.getByText("Arul iPhone")).toBeTruthy();
+    // Labeled as this Mac's phones — never the remote machine's.
+    expect(screen.getByText("on Studio")).toBeTruthy();
+    // Revoke would route to the bound machine, so it is withheld.
+    expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
+  });
 });
 
 describe("WebConnectionsTab", () => {
@@ -340,5 +409,188 @@ describe("WebConnectionsTab", () => {
     expect(screen.getByText("Chrome")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
     await waitFor(() => expect(forgetDevice).toHaveBeenCalled());
+  });
+
+  it("scopes connected browsers to this Mac and hides revoke when remote-bound", () => {
+    render(
+      <WebConnectionsTab
+        sync={makeSync({
+          devices: [device({ deviceId: "browser-1", name: "Chrome", deviceType: "browser" })],
+          isRemoteBound: true,
+          boundMachineName: "Mac Studio",
+          localMachineName: "Studio",
+          canManageDevices: false,
+        })}
+        accountSignedIn
+        confirmRevoke={vi.fn(autoConfirm)}
+      />,
+    );
+    expect(screen.getByText("Chrome")).toBeTruthy();
+    expect(screen.getByText("on Studio")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Data hook — local vs remote-bound scoping
+// ---------------------------------------------------------------------------
+
+function peer(overrides: Partial<SyncPeerConnectionState> = {}): SyncPeerConnectionState {
+  return {
+    deviceId: "phone-local",
+    deviceName: "Local iPhone",
+    platform: "iOS",
+    deviceType: "phone",
+    siteId: "site-phone",
+    dbVersion: 0,
+    connectedAt: "2026-04-22T00:00:00.000Z",
+    lastSeenAt: "2026-04-22T00:00:00.000Z",
+    lastAppliedAt: null,
+    remoteAddress: "192.168.1.30",
+    remotePort: 55000,
+    latencyMs: 8,
+    syncLag: 0,
+    isBrain: false,
+    isAuthenticated: true,
+    ...overrides,
+  } as SyncPeerConnectionState;
+}
+
+describe("useSyncConnections local scoping", () => {
+  const originalAde = (globalThis.window as any)?.ade;
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    if (originalAde === undefined) delete (globalThis.window as any).ade;
+    else (globalThis.window as any).ade = originalAde;
+  });
+
+  function installSyncMock(mock: {
+    getStatus: () => Promise<SyncRoleSnapshot>;
+    getLocalStatus: () => Promise<SyncRoleSnapshot>;
+    listDevices: () => Promise<SyncDeviceRuntimeState[]>;
+  }) {
+    (globalThis.window as any).ade = {
+      sync: {
+        getStatus: vi.fn(mock.getStatus),
+        getLocalStatus: vi.fn(mock.getLocalStatus),
+        listDevices: vi.fn(mock.listDevices),
+        onEvent: vi.fn(() => () => {}),
+      },
+    };
+  }
+
+  it("reports local scope when the routed and local machines match", async () => {
+    const local = makeStatus();
+    installSyncMock({
+      getStatus: async () => local,
+      getLocalStatus: async () => local,
+      listDevices: async () => [device()],
+    });
+
+    const { result } = renderHook(() => useSyncConnections());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(window.ade.sync.getLocalStatus).toHaveBeenCalled();
+    expect(result.current.isRemoteBound).toBe(false);
+    expect(result.current.boundMachineName).toBeNull();
+    expect(result.current.canManageDevices).toBe(true);
+    // Unbound: the routed device list is used as-is.
+    expect(result.current.devices.map((d) => d.deviceId)).toEqual(["phone-1"]);
+  });
+
+  it("uses the local snapshot and its own peers when remote-bound", async () => {
+    const localStatus = makeStatus({
+      localDevice: { ...makeStatus().localDevice, deviceId: "macbook", name: "MacBook Pro" },
+      runtimeName: "MacBook Pro",
+      connectedPeers: [peer()],
+    });
+    const remoteStatus = makeStatus({
+      localDevice: { ...makeStatus().localDevice, deviceId: "studio", name: "Mac Studio" },
+      runtimeName: "Mac Studio",
+    });
+    installSyncMock({
+      getStatus: async () => remoteStatus,
+      getLocalStatus: async () => localStatus,
+      // Routed list would describe the REMOTE machine's phones; the hook must not use it.
+      listDevices: async () => [device({ deviceId: "remote-phone", name: "Remote iPhone" })],
+    });
+
+    const { result } = renderHook(() => useSyncConnections());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // Card identity comes from the local machine.
+    expect(result.current.status?.localDevice.deviceId).toBe("macbook");
+    expect(result.current.isRemoteBound).toBe(true);
+    expect(result.current.boundMachineName).toBe("Mac Studio");
+    expect(result.current.localMachineName).toBe("MacBook Pro");
+    expect(result.current.canManageDevices).toBe(false);
+    // Devices are derived from the LOCAL machine's live peers, not the routed list.
+    expect(result.current.devices.map((d) => d.deviceId)).toEqual(["phone-local"]);
+    expect(result.current.devices.map((d) => d.name)).toEqual(["Local iPhone"]);
+  });
+
+  it("withholds routed data and mutations when local status fails while remote-bound", async () => {
+    const routed = makeStatus({
+      localDevice: { ...makeStatus().localDevice, deviceId: "studio", name: "Mac Studio" },
+      runtimeName: "Mac Studio",
+    });
+    installSyncMock({
+      getStatus: async () => routed,
+      getLocalStatus: async () => {
+        throw new Error("no local runtime");
+      },
+      listDevices: async () => [device({ deviceId: "remote-phone", name: "Remote iPhone" })],
+    });
+
+    const { result } = renderHook(() => useSyncConnections());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.status).toBeNull();
+    expect(result.current.devices).toEqual([]);
+    expect(result.current.error).toBe("no local runtime");
+    expect(result.current.canManageDevices).toBe(false);
+    expect(result.current.isRemoteBound).toBe(false);
+  });
+
+  it("does not let an older local refresh overwrite a newer degraded result", async () => {
+    const oldLocal = makeStatus({
+      localDevice: { ...makeStatus().localDevice, deviceId: "macbook", name: "MacBook Pro" },
+      runtimeName: "MacBook Pro",
+    });
+    const remote = makeStatus({
+      localDevice: { ...makeStatus().localDevice, deviceId: "studio", name: "Mac Studio" },
+      runtimeName: "Mac Studio",
+    });
+    let resolveOldLocal!: (status: SyncRoleSnapshot) => void;
+    const oldLocalResult = new Promise<SyncRoleSnapshot>((resolve) => {
+      resolveOldLocal = resolve;
+    });
+    let statusCalls = 0;
+    let localCalls = 0;
+    installSyncMock({
+      getStatus: async () => (++statusCalls === 1 ? oldLocal : remote),
+      getLocalStatus: async () => {
+        localCalls += 1;
+        if (localCalls === 1) return await oldLocalResult;
+        throw new Error("local status unavailable");
+      },
+      listDevices: async () => [device({ deviceId: "remote-phone", name: "Remote iPhone" })],
+    });
+
+    const { result } = renderHook(() => useSyncConnections());
+    await waitFor(() => expect(window.ade.sync.getLocalStatus).toHaveBeenCalledTimes(1));
+    window.dispatchEvent(new Event("focus"));
+    await waitFor(() => expect(result.current.error).toBe("local status unavailable"));
+
+    await act(async () => {
+      resolveOldLocal(oldLocal);
+      await oldLocalResult;
+    });
+
+    expect(result.current.status).toBeNull();
+    expect(result.current.devices).toEqual([]);
+    expect(result.current.canManageDevices).toBe(false);
   });
 });

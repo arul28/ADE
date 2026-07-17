@@ -1405,11 +1405,12 @@ export function createSyncService(args: SyncServiceArgs) {
           enabled: relayEnabled,
           relayControlConnected,
           relayBridgeValidated,
-          lastFailureAt: relayEnabled && relayReason
-            ? (tunnelStatus?.lastFailureAt ?? rawListenerValidation.lastFailureAt)
-            : null,
-          reason: relayReason,
-          lastSuccessAt: relayReason == null ? (tunnelStatus?.lastSuccessAt ?? null) : null,
+          lastFailureAt: tunnelStatus?.lastFailureAt
+            ?? (relayEnabled && relayReason ? rawListenerValidation.lastFailureAt : null),
+          skipReason: relayReason,
+          lastControlError: tunnelStatus?.lastControlError ?? null,
+          lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
+          lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
         },
         accountDirectory,
       };
@@ -1646,7 +1647,9 @@ export function createSyncService(args: SyncServiceArgs) {
         activeTunnels: accountSignedIn ? (tunnelStatus?.activeTunnels ?? 0) : 0,
         relayBridgeValidated: accountSignedIn && (tunnelStatus?.relayBridgeValidated ?? false),
         lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
-        lastSuccessAt: tunnelStatus?.lastSuccessAt ?? null,
+        lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
+        lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
+        lastControlError: tunnelStatus?.lastControlError ?? null,
         lastError: accountSignedIn
           ? tunnelStatus?.lastError ?? null
           : "Sign in to ADE to use ADE Relay.",

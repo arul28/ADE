@@ -199,6 +199,7 @@ export type AdeRuntimeSyncOptions = {
   personalChatScope?: Parameters<typeof createSyncService>[0]["personalChatScope"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
   getAccountDirectoryHealth?: Parameters<typeof createSyncService>[0]["getAccountDirectoryHealth"];
+  requestAccountMachinePublish?: () => void | Promise<void>;
   /**
    * Brain-level websocket listener shared by every project scope's sync host
    * so connected phones survive hosted-project switches. Owned (created and
@@ -1536,16 +1537,13 @@ export async function createAdeRuntime(args: {
         const status = accountAuthService.getStatus();
         const userId = status.signedIn ? status.userId?.trim() || null : null;
         if (!userId) return null;
-        try {
-          const token = (await accountAuthService.getAccessToken()).trim();
-          const refreshed = accountAuthService.getStatus();
-          return token && refreshed.signedIn && refreshed.userId?.trim() === userId
-            ? { userId }
-            : null;
-        } catch {
-          return null;
-        }
+        const token = (await accountAuthService.getAccessToken()).trim();
+        const refreshed = accountAuthService.getStatus();
+        return token && refreshed.signedIn && refreshed.userId?.trim() === userId
+          ? { userId, expiresAt: refreshed.expiresAt }
+          : null;
       },
+      onIdentityRotated: () => resolvedArgs.syncRuntime?.requestAccountMachinePublish?.(),
     });
     resolvedArgs.syncRuntime?.sharedSyncListener?.onLoopbackValidated(() => {
       void service.validateCurrentBridge().catch((error) => {

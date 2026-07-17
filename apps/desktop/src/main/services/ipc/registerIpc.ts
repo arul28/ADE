@@ -4617,6 +4617,26 @@ export function registerIpc({
     });
   });
 
+  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    const params = {
+      includeTransferReadiness: arg?.includeTransferReadiness === true,
+      forceTransferReadiness: arg?.forceTransferReadiness === true,
+    };
+    if (localRuntimeConnectionPool) {
+      try {
+        // Machine-level call: intentionally bypasses the window's local/remote
+        // project binding so Connections can always describe this physical Mac.
+        return await localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
+          "sync.getStatus",
+          params,
+        );
+      } catch (error) {
+        if (!isSyncServiceUnavailableError(error)) throw error;
+      }
+    }
+    return await (await requireSyncService()).getStatus(params);
+  });
+
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
     const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
       event,

@@ -1015,6 +1015,8 @@ declare global {
       };
       sync: {
         getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
+        /** Always reads this physical machine's local ADE brain, even in a remote-bound window. */
+        getLocalStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
         refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {

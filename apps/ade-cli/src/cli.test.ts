@@ -1062,7 +1062,7 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("formats account-directory publisher health in sync status text", () => {
+  it("formats relay observability and account-directory health in sync status text", () => {
     const plan = expectExecutePlan(buildCliPlan(["sync", "status"]));
     const output = formatOutput({
       mode: "brain",
@@ -1078,7 +1078,15 @@ describe("ADE CLI", () => {
           reason: null,
         },
         tailscale: { enabled: false, tailscaleReachable: false, reason: null },
-        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, reason: "Relay bridge is not validated." },
+        relay: {
+          enabled: true,
+          relayControlConnected: false,
+          relayBridgeValidated: false,
+          skipReason: null,
+          lastControlError: "Relay control closed (1011): upstream restart",
+          lastControlOpenAt: "2026-07-16T11:58:00.000Z",
+          lastBridgeValidationAt: "2026-07-16T11:57:30.000Z",
+        },
         accountDirectory: {
           state: "http_error",
           skipReason: "The account directory returned HTTP 401: invalid issuer",
@@ -1105,6 +1113,9 @@ describe("ADE CLI", () => {
     }, { text: true } as any, inferFormatter(plan));
 
     expect(output).toContain("ADE sync status");
+    expect(output).toContain("Relay control closed (1011): upstream restart");
+    expect(output).toContain("2026-07-16T11:58:00.000Z");
+    expect(output).toContain("2026-07-16T11:57:30.000Z");
     expect(output).toContain("account directory");
     expect(output).toContain("http_error · 2 reachable endpoints · HTTP 401");
     expect(output).toContain("The account directory returned HTTP 401: invalid issuer");
@@ -4576,9 +4587,10 @@ describe("ADE CLI", () => {
               },
               relay: {
                 enabled: true,
-                relayControlConnected: true,
+                relayControlConnected: false,
                 relayBridgeValidated: false,
-                reason: "Relay bridge refused the listener mismatch.",
+                skipReason: "Relay control upgrade failed with HTTP 401: token expired",
+                lastControlError: "Relay control closed (1006).",
               },
             },
           },
@@ -4593,9 +4605,10 @@ describe("ADE CLI", () => {
       expect(summary.sync.failingRoutes).toEqual([
         expect.stringContaining("listener"),
         expect.stringContaining("tailscale"),
-        expect.stringContaining("relay"),
+        "relay: Relay control upgrade failed with HTTP 401: token expired",
       ]);
       expect(summary.sync.message).toContain("404 Not Found");
+      expect(summary.sync.message).toContain("HTTP 401: token expired");
       const output = formatOutput(summary, {
         projectRoot,
         workspaceRoot: projectRoot,

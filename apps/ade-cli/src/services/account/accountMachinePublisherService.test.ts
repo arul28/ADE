@@ -46,8 +46,10 @@ function snapshot(
         relayControlConnected: false,
         relayBridgeValidated: false,
         lastFailureAt: null,
-        reason: null,
-        lastSuccessAt: null,
+        skipReason: null,
+        lastControlError: null,
+        lastControlOpenAt: null,
+        lastBridgeValidationAt: null,
       },
     },
     ...overrides,
@@ -82,8 +84,10 @@ function routeSnapshot(
     relayControlConnected: true,
     relayBridgeValidated: true,
     lastFailureAt: null,
-    reason: null,
-    lastSuccessAt: "2026-07-16T00:00:00.000Z",
+    skipReason: null,
+    lastControlError: null,
+    lastControlOpenAt: "2026-07-16T00:00:00.000Z",
+    lastBridgeValidationAt: "2026-07-16T00:00:00.000Z",
   };
   return value;
 }
@@ -93,6 +97,10 @@ afterEach(() => {
 });
 
 describe("account machine publisher health", () => {
+  it("defaults the account-directory heartbeat to 60 seconds", () => {
+    expect(ACCOUNT_MACHINE_HEARTBEAT_MS).toBe(60_000);
+  });
+
   it("records a successful publication with its endpoint count and timestamps", async () => {
     let clock = 100;
     const service = createAccountMachinePublisherService({
@@ -330,7 +338,7 @@ describe("account machine registration publisher", () => {
     const host = routeSnapshot();
     host.routeHealth.listener.loopbackAdeValidated = false;
     host.routeHealth.tailscale.tailscaleReachable = false;
-    host.routeHealth.relay.reason = "Relay route is unusable because loopback validation failed.";
+    host.routeHealth.relay.skipReason = "Relay route is unusable because loopback validation failed.";
     host.pairingConnectInfo!.addressCandidates = [
       { kind: "lan", host: "192.168.1.20" },
       { kind: "tailscale", host: "studio.tailnet.ts.net" },
@@ -471,6 +479,30 @@ describe("account machine registration publisher", () => {
     await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_HEARTBEAT_MS);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     resolveFetch!(new Response("{}", { status: 200 }));
+    service.dispose();
+  });
+
+  it("queues an identity-recovery publish after the current attempt", async () => {
+    let resolveFetch: ((response: Response) => void) | null = null;
+    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      fetchImpl,
+    });
+
+    const first = service.publishNow();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    service.requestPublishAfterCurrentAttempt();
+    resolveFetch!(new Response("{}", { status: 200 }));
+    await first;
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    const second = service.publishNow();
+    resolveFetch!(new Response("{}", { status: 200 }));
+    await second;
     service.dispose();
   });
 });

@@ -1,4 +1,9 @@
-import type { GitHubStatus, SyncRoleSnapshot } from "../../../shared/types";
+import {
+  peerToRuntimeDeviceState,
+  type GitHubStatus,
+  type SyncDeviceRuntimeState,
+  type SyncRoleSnapshot,
+} from "../../../shared/types";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
@@ -109,6 +114,75 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     } as unknown as SyncRoleSnapshot;
   }
 
+  function localSyncSnapshot(): SyncRoleSnapshot {
+    const routed = syncSnapshot();
+    const now = new Date().toISOString();
+    const localDevice = {
+      ...routed.localDevice,
+      deviceId: "ade-web",
+      siteId: "ade-web",
+      name: typeof navigator === "undefined" ? "ADE Web" : `ADE Web (${navigator.platform || "browser"})`,
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+      lastHost: null,
+      lastPort: null,
+    };
+    return {
+      ...routed,
+      mode: "standalone",
+      localDevice,
+      currentBrain: null,
+      currentRuntime: null,
+      runtimeName: "ADE Web",
+      connectedPeers: [],
+      tailnetDiscovery: {
+        ...routed.tailnetDiscovery,
+        state: "disabled",
+        servicePort: 0,
+        target: null,
+        error: null,
+      },
+      client: {
+        ...routed.client,
+        state: "disconnected",
+        host: null,
+        port: null,
+        connectedAt: null,
+        lastSeenAt: null,
+        brainDeviceId: null,
+        hostDeviceId: null,
+        hostName: null,
+        error: null,
+        message: null,
+      },
+    };
+  }
+
+  function syncDevices(): SyncDeviceRuntimeState[] {
+    const snapshot = syncSnapshot();
+    const local = snapshot.localDevice;
+    const localRuntime: SyncDeviceRuntimeState = {
+      ...local,
+      isLocal: true,
+      isBrain: false,
+      isHost: false,
+      connectionState: "self",
+      connectedAt: snapshot.client.connectedAt,
+      lastAppliedAt: null,
+      remoteAddress: snapshot.client.host,
+      remotePort: snapshot.client.port,
+      latencyMs: snapshot.client.latencyMs,
+      syncLag: snapshot.client.syncLag,
+    };
+    const peers = snapshot.connectedPeers.map((peer) => peerToRuntimeDeviceState(peer, {
+      appVersion: peer.appVersion,
+      appBuild: peer.appBuild,
+      bundleIdentifier: peer.bundleIdentifier,
+    }));
+    return [localRuntime, ...peers];
+  }
+
   infra.addDispose(
     client.onBrainStatus((payload) => {
       state.setBrainStatus(payload);
@@ -151,8 +225,9 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   const sync: Record<string, unknown> = {
     getStatus: async () => syncSnapshot(),
+    getLocalStatus: async () => localSyncSnapshot(),
     refreshDiscovery: async () => syncSnapshot(),
-    listDevices: async () => [],
+    listDevices: async () => syncDevices(),
     updateLocalDevice: async (args: unknown) => ({
       ...syncSnapshot().localDevice,
       ...asRecord(args),
@@ -181,7 +256,9 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       activeTunnels: 0,
       relayBridgeValidated: false,
       lastFailureAt: null,
-      lastSuccessAt: null,
+      lastControlOpenAt: null,
+      lastBridgeValidationAt: null,
+      lastControlError: "unsupported",
       lastError: "unsupported",
     }),
     onEvent: (listener: (event: unknown) => void) => events.on("syncStatus", listener as never),
@@ -262,8 +339,8 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     listRepoLabels: async () => [],
     listRepoCollaborators: async () => [],
     listMyRepos: async () => ({ repositories: [], nextCursor: null }),
-    // Not idempotent: publishing creates a repo + pushes, so never auto-retry it
-    // on a recoverable transport error (a retry could double-create/double-push).
+    // Publishing creates a repo + pushes, so keep it explicitly marked as a
+    // mutation and ineligible for adapter read caching.
     publishCurrentProject: (opts?: unknown) => call("github.publishCurrentProject", opts, { ok: false, error: "unsupported" }, false),
     onStatusChanged: (listener: (status: unknown) => void) => events.on("githubStatusChanged", listener as never),
   };

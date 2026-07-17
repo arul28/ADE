@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
 import { WebSocketServer } from "ws";
 import {
   computeBackoffMs,
@@ -16,13 +17,19 @@ import {
 // derivation, signature builders) is covered in syncCloudRelayStore.test.ts.
 
 function fakeStore(relayUrl = "https://relay.example.com"): SyncCloudRelayStore {
-  const identity = { machineKey: "a".repeat(32), secret: "b".repeat(48) };
+  let identity = { machineKey: "a".repeat(32), secret: "b".repeat(48) };
   return {
     getConfig: () => identity,
     getMachineIdentity: () => identity,
     getRelayUrl: () => relayUrl,
     setRelayUrl: () => identity,
     getRelayWssUrl: () => `wss://relay.example.com/connect/${identity.machineKey}`,
+    rotateMachineIdentity: (expectedMachineKey: string) => {
+      if (identity.machineKey === expectedMachineKey) {
+        identity = { machineKey: "c".repeat(32), secret: "d".repeat(48) };
+      }
+      return identity;
+    },
   } as unknown as SyncCloudRelayStore;
 }
 
@@ -145,8 +152,10 @@ describe("createSyncTunnelClientService", () => {
             relayControlConnected: tunnelStatus.connected,
             relayBridgeValidated: tunnelStatus.relayBridgeValidated,
             lastFailureAt: tunnelStatus.lastFailureAt,
-            reason: tunnelStatus.lastError,
-            lastSuccessAt: tunnelStatus.lastSuccessAt,
+            skipReason: tunnelStatus.lastError,
+            lastControlError: tunnelStatus.lastControlError,
+            lastControlOpenAt: tunnelStatus.lastControlOpenAt,
+            lastBridgeValidationAt: tunnelStatus.lastBridgeValidationAt,
           },
         },
       } satisfies AccountMachineRegistrationSnapshot;
@@ -250,6 +259,347 @@ describe("createSyncTunnelClientService", () => {
     } finally {
       await service.dispose();
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not let lease polling bypass the reconnect backoff", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => new Response(null, { status: 503 }));
+    globalThis.fetch = fetchMock;
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.999);
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getRelayBridgeProof: () => "e".repeat(43),
+      getAccountLease: async () => ({
+        userId: "relay-owner",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      }),
+      accountStatusPollMs: 5,
+      configStore: fakeStore(),
+    });
+
+    try {
+      await service.start();
+      expect(fetchMock).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(900);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not tear down a connecting control socket for a transient lease refresh failure", async () => {
+    const server = createServer((request, response) => {
+      if (request.method === "POST") {
+        response.writeHead(204).end();
+        return;
+      }
+      response.writeHead(404).end();
+    });
+    const relay = new WebSocketServer({ noServer: true });
+    await new Promise<void>((resolve, reject) => {
+      server.listen(0, "127.0.0.1", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    let upgradeCount = 0;
+    const pendingUpgrade: { release?: () => void } = {};
+    let markUpgradeStarted: (() => void) | null = null;
+    const upgradeStarted = new Promise<void>((resolve) => {
+      markUpgradeStarted = resolve;
+    });
+    server.on("upgrade", (request, socket, head) => {
+      upgradeCount += 1;
+      pendingUpgrade.release = () => {
+        relay.handleUpgrade(request, socket, head, (ws) => {
+          relay.emit("connection", ws, request);
+        });
+      };
+      markUpgradeStarted?.();
+    });
+    let leaseChecks = 0;
+    const leaseExpiresAt = new Date(Date.now() + 60_000).toISOString();
+    const logger = { warn: vi.fn() };
+    const service = createSyncTunnelClientService({
+      logger,
+      getSyncPort: () => 8787,
+      getRelayBridgeProof: () => "e".repeat(43),
+      getAccountLease: async () => {
+        leaseChecks += 1;
+        if (leaseChecks === 2) throw new Error("temporary refresh failure");
+        return { userId: "relay-owner", expiresAt: leaseExpiresAt };
+      },
+      accountStatusPollMs: 5,
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+    });
+
+    try {
+      await service.start();
+      await upgradeStarted;
+      await vi.waitFor(() => expect(leaseChecks).toBeGreaterThanOrEqual(3));
+      expect(upgradeCount).toBe(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_tunnel.account_lease_failed",
+        expect.objectContaining({ retained: true }),
+      );
+
+      pendingUpgrade.release?.();
+      await vi.waitFor(() => expect(service.getStatus().connected).toBe(true));
+      expect(upgradeCount).toBe(1);
+    } finally {
+      await service.dispose();
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("surfaces the real control close code and reason", async () => {
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const connectedControl: { socket?: import("ws").WebSocket } = {};
+    relay.on("connection", (socket) => {
+      connectedControl.socket = socket;
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.999);
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const service = createSyncTunnelClientService({
+      logger,
+      getSyncPort: () => 8787,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => expect(service.getStatus().connected).toBe(true));
+      connectedControl.socket?.close(4505, "replaced by newer host");
+      await vi.waitFor(() => {
+        expect(service.getStatus()).toMatchObject({
+          connected: false,
+          lastControlError: "Relay control closed (4505): replaced by newer host",
+        });
+      }, { timeout: 500 });
+      expect(logger.info).toHaveBeenCalledWith(
+        "sync_tunnel.control_close",
+        expect.objectContaining({
+          code: 4505,
+          reason: "replaced by newer host",
+          opened: true,
+        }),
+      );
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("captures a bounded unexpected-response status and body without replacing it with the ws error", async () => {
+    const responseBody = "x".repeat(700);
+    const server = createServer((request, response) => {
+      if (request.method === "POST") {
+        response.writeHead(204).end();
+        return;
+      }
+      response.writeHead(404).end();
+    });
+    server.on("upgrade", (_request, socket) => {
+      socket.end([
+        "HTTP/1.1 401 Unauthorized",
+        "Content-Type: text/plain",
+        `Content-Length: ${responseBody.length}`,
+        "Connection: close",
+        "",
+        responseBody,
+      ].join("\r\n"));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.listen(0, "127.0.0.1", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.999);
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const service = createSyncTunnelClientService({
+      logger,
+      getSyncPort: () => 8787,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().lastControlError).toContain(
+          "Relay control upgrade failed with HTTP 401",
+        );
+      });
+      expect(service.getStatus().lastControlError).not.toContain(
+        "WebSocket was closed before the connection was established",
+      );
+      const unexpectedLog = logger.warn.mock.calls.find(
+        ([event, data]) => event === "sync_tunnel.control_error" && data?.status === 401,
+      );
+      expect(unexpectedLog?.[1]?.body).toHaveLength(512);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("rotates and republishes a relay identity only after a confirmed claim conflict", async () => {
+    const server = createServer();
+    const relay = new WebSocketServer({ noServer: true });
+    await new Promise<void>((resolve, reject) => {
+      server.listen(0, "127.0.0.1", resolve);
+      server.once("error", reject);
+    });
+    const address = server.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const pendingUpgrade: { release?: () => void } = {};
+    let markUpgradeStarted: (() => void) | null = null;
+    const upgradeStarted = new Promise<void>((resolve) => {
+      markUpgradeStarted = resolve;
+    });
+    server.on("upgrade", (request, socket, head) => {
+      pendingUpgrade.release = () => {
+        relay.handleUpgrade(request, socket, head, (ws) => {
+          relay.emit("connection", ws, request);
+        });
+      };
+      markUpgradeStarted?.();
+    });
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 409 }))
+      .mockResolvedValueOnce(new Response(null, { status: 201 }));
+    globalThis.fetch = fetchMock;
+    const onIdentityRotated = vi.fn();
+    const store = fakeStore(`http://127.0.0.1:${relayPort}`);
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => "f".repeat(32),
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: store,
+      onIdentityRotated,
+      loopbackProbe: async (port, expectedNonce) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+    });
+
+    try {
+      await service.start();
+      await upgradeStarted;
+      await expect(service.validateCurrentBridge()).resolves.toBe(true);
+      expect(onIdentityRotated).not.toHaveBeenCalled();
+      pendingUpgrade.release?.();
+      delete pendingUpgrade.release;
+      await vi.waitFor(() => expect(service.getStatus().connected).toBe(true));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(store.getMachineIdentity().machineKey).toBe("c".repeat(32));
+      expect(service.getStatus().machineKey).toBe("c".repeat(32));
+      expect(onIdentityRotated).toHaveBeenCalledOnce();
+    } finally {
+      pendingUpgrade.release?.();
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("claims again when another process rotates the shared identity", async () => {
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const relayUrl = `http://127.0.0.1:${relayPort}`;
+    let identity = { machineKey: "a".repeat(32), secret: "b".repeat(48) };
+    const configStore = {
+      getConfig: () => ({ ...identity, relayUrl }),
+      getMachineIdentity: () => identity,
+      getRelayUrl: () => relayUrl,
+      setRelayUrl: () => ({ ...identity, relayUrl }),
+      getRelayWssUrl: () => `ws://127.0.0.1:${relayPort}/connect/${identity.machineKey}`,
+      rotateMachineIdentity: () => ({ ...identity, relayUrl }),
+    } as unknown as SyncCloudRelayStore;
+    const controlPaths: string[] = [];
+    relay.on("connection", (socket, request) => {
+      controlPaths.push(request.url ?? "");
+      if (controlPaths.length === 1) {
+        identity = { machineKey: "c".repeat(32), secret: "d".repeat(48) };
+        socket.close(1012, "External identity rotation");
+      }
+    });
+    const originalFetch = globalThis.fetch;
+    const claimUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      claimUrls.push(String(input));
+      return new Response(null, { status: 204 });
+    });
+    globalThis.fetch = fetchMock;
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => "f".repeat(32),
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore,
+      loopbackProbe: async (port, expectedNonce) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(controlPaths).toHaveLength(2);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
+      expect(claimUrls).toEqual([
+        `${relayUrl}/machines/${"a".repeat(32)}/claim`,
+        `${relayUrl}/machines/${"c".repeat(32)}/claim`,
+      ]);
+      expect(controlPaths).toEqual([
+        expect.stringContaining(`/host/${"a".repeat(32)}`),
+        expect.stringContaining(`/host/${"c".repeat(32)}`),
+      ]);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
     }
   });
 

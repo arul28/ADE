@@ -4060,6 +4060,8 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeSyncOr("sync.getStatus", args ?? {}, () =>
         ipcRenderer.invoke(IPC.syncGetStatus, args),
       ),
+    getLocalStatus: async (args?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> =>
+      ipcRenderer.invoke(IPC.syncGetLocalStatus, args),
     refreshDiscovery: async (): Promise<SyncRoleSnapshot> =>
       callProjectRuntimeSyncOr("sync.refreshDiscovery", {}, () =>
         ipcRenderer.invoke(IPC.syncRefreshDiscovery),

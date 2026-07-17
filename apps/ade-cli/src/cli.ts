@@ -12428,9 +12428,11 @@ function checkSyncReadiness(value: unknown): ReadinessCheck & {
   }
   if (
     relay?.enabled === true
-    && (relay?.relayControlConnected !== true || asString(relay?.reason) != null)
+    && (relay?.relayControlConnected !== true || asString(relay?.skipReason) != null)
   ) {
-    failures.push(`relay: ${asString(relay.reason) ?? "control channel is not connected"}`);
+    failures.push(`relay: ${asString(relay.skipReason)
+      ?? asString(relay.lastControlError)
+      ?? "control channel is not connected"}`);
   }
   const usable = failures.length === 0;
   return {
@@ -15251,6 +15253,8 @@ async function runServe(
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       phonePairingStateDir: layout.secretsDir,
       getAccountDirectoryHealth,
+      requestAccountMachinePublish: () =>
+        accountMachinePublisher?.requestPublishAfterCurrentAttempt(),
       projectCatalogProvider: machineProjectCatalogProvider,
       // All-projects chat roster (mobile hub). Closes over `scopeRegistry`,
       // which is assigned by this very `new ProjectScopeRegistry(...)` call —
@@ -16037,9 +16041,11 @@ function formatSyncStatus(value: unknown): string {
   const tailscaleState = tailscale.tailscaleReachable === true
     ? "reachable"
     : asString(tailscale.reason) ?? (tailscale.enabled === true ? "not reachable" : "disabled");
+  const relaySkipReason = asString(relay.skipReason)
+    ?? asString(relay.lastControlError);
   const relayState = relay.relayControlConnected === true && relay.relayBridgeValidated === true
     ? "reachable"
-    : asString(relay.reason) ?? (relay.enabled === true ? "not reachable" : "disabled");
+    : relaySkipReason ?? (relay.enabled === true ? "not reachable" : "disabled");
   const transferReadiness = isRecord(snapshot.transferReadiness)
     ? snapshot.transferReadiness
     : null;
@@ -16068,6 +16074,9 @@ function formatSyncStatus(value: unknown): string {
     ["listener", listenerState],
     ["tailscale", tailscaleState],
     ["relay", relayState],
+    ["relay control error", relay.lastControlError],
+    ["relay control opened", relay.lastControlOpenAt],
+    ["relay bridge validated", relay.lastBridgeValidationAt],
     ["account directory", accountParts.join(" · ")],
     ["directory reason", skipReason],
     ["directory attempt", lastAttempt],

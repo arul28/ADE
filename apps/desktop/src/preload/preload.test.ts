@@ -5581,6 +5581,9 @@ describe("preload remote project binding", () => {
       if (channel === IPC.remoteRuntimeCallSync) {
         return { ok: true };
       }
+      if (channel === IPC.syncGetLocalStatus) {
+        return { machine: "local" };
+      }
       if (channel === IPC.remoteRuntimeCallAction) {
         return { result: [{ id: "lane-b" }] };
       }
@@ -5622,6 +5625,11 @@ describe("preload remote project binding", () => {
       projectId: "project-b",
       method: "sync.getStatus",
       params: {},
+    });
+    await expect(bridge.sync.getLocalStatus({ includeTransferReadiness: true }))
+      .resolves.toEqual({ machine: "local" });
+    expect(invoke).toHaveBeenCalledWith(IPC.syncGetLocalStatus, {
+      includeTransferReadiness: true,
     });
   });
 

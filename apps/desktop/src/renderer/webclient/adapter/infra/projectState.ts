@@ -3,7 +3,7 @@ import type { SyncBrainStatusPayload, SyncMobileProjectSummary } from "../../../
 import type { AdeSyncClient } from "../../sync";
 
 export type AdapterProjectState = {
-  bindProject(project: ProjectInfo | null): void;
+  bindProject(project: ProjectInfo | null, projectId?: string | null): void;
   getProject(): ProjectInfo | null;
   getProjectId(): string | null;
   getCatalogProjects(): SyncMobileProjectSummary[];
@@ -24,6 +24,7 @@ export function projectInfoFromCatalog(project: SyncMobileProjectSummary): Proje
 
 export function createProjectState(client: AdeSyncClient): AdapterProjectState {
   let project: ProjectInfo | null = null;
+  let boundProjectId: string | null = null;
   let catalogProjects: SyncMobileProjectSummary[] = [];
   let brainStatus: SyncBrainStatusPayload | null = null;
   const disposers: Array<() => void> = [];
@@ -39,17 +40,27 @@ export function createProjectState(client: AdeSyncClient): AdapterProjectState {
   );
 
   return {
-    bindProject(nextProject: ProjectInfo | null): void {
+    bindProject(nextProject: ProjectInfo | null, projectId?: string | null): void {
       project = nextProject;
+      boundProjectId = nextProject ? projectId ?? null : null;
     },
     getProject(): ProjectInfo | null {
       return project;
     },
     getProjectId(): string | null {
-      const activeProjectId = client.getStatus().activeProjectId;
-      if (activeProjectId) return activeProjectId;
-      if (!project) return null;
-      return catalogProjects.find((entry) => entry.rootPath === project?.rootPath)?.id ?? null;
+      // The shell binds the selected project immediately after a switch. During
+      // reconnect, the sync client's persisted activeProjectId can briefly
+      // still name the prior project. Prefer the bound catalog entry so file
+      // requests and project commands cannot be stamped with that stale id.
+      if (project) {
+        if (boundProjectId) return boundProjectId;
+        const catalogProjectId = catalogProjects.find(
+          (entry) => entry.rootPath === project?.rootPath,
+        )?.id;
+        if (catalogProjectId) return catalogProjectId;
+        return null;
+      }
+      return client.getStatus().activeProjectId ?? null;
     },
     getCatalogProjects(): SyncMobileProjectSummary[] {
       return catalogProjects.slice();

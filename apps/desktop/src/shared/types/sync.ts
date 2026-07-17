@@ -201,6 +201,37 @@ export type SyncDeviceRuntimeState = SyncDeviceRecord & {
   syncLag: number | null;
 };
 
+export function peerToRuntimeDeviceState(
+  peer: SyncPeerConnectionState,
+  metadata: SyncDeviceRecord["metadata"] = {},
+): SyncDeviceRuntimeState {
+  return {
+    deviceId: peer.deviceId,
+    siteId: peer.siteId,
+    name: peer.deviceName,
+    platform: peer.platform,
+    deviceType: peer.deviceType,
+    createdAt: peer.connectedAt,
+    updatedAt: peer.lastSeenAt,
+    lastSeenAt: peer.lastSeenAt,
+    lastHost: peer.remoteAddress,
+    lastPort: peer.remotePort,
+    tailscaleIp: null,
+    ipAddresses: [],
+    metadata,
+    isLocal: false,
+    isBrain: peer.isBrain,
+    isHost: peer.isHost,
+    connectionState: "connected",
+    connectedAt: peer.connectedAt,
+    lastAppliedAt: peer.lastAppliedAt,
+    remoteAddress: peer.remoteAddress,
+    remotePort: peer.remotePort,
+    latencyMs: peer.latencyMs,
+    syncLag: peer.syncLag,
+  };
+}
+
 export type SyncTailnetDiscoveryState =
   | "disabled"
   | "publishing"
@@ -286,8 +317,10 @@ export type SyncRouteHealth = {
     relayControlConnected: boolean;
     relayBridgeValidated: boolean;
     lastFailureAt: string | null;
-    reason: string | null;
-    lastSuccessAt: string | null;
+    skipReason: string | null;
+    lastControlError: string | null;
+    lastControlOpenAt: string | null;
+    lastBridgeValidationAt: string | null;
   };
   accountDirectory: SyncAccountDirectoryHealth;
 };
@@ -680,7 +713,9 @@ export type SyncCloudRelayStatus = {
   activeTunnels: number;
   relayBridgeValidated: boolean;
   lastFailureAt: string | null;
-  lastSuccessAt: string | null;
+  lastControlOpenAt: string | null;
+  lastBridgeValidationAt: string | null;
+  lastControlError: string | null;
   lastError: string | null;
 };
 

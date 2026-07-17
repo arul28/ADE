@@ -3058,18 +3058,40 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: transientError, fallback: .connecting), .connecting)
   }
 
-  func testSyncClientHeartbeatUsesHalfServerIntervalWithBounds() {
+  func testSyncClientHeartbeatUsesTwoServerIntervalsAsSilenceFallback() {
+    let fallbackInterval = syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 30_000)
     XCTAssertEqual(
-      syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 30_000),
-      15_000_000_000
+      fallbackInterval,
+      60_000_000_000
     )
     XCTAssertEqual(
       syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 4_000),
-      5_000_000_000
+      10_000_000_000
     )
     XCTAssertEqual(
       syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 120_000),
-      25_000_000_000
+      240_000_000_000
+    )
+    XCTAssertFalse(
+      syncShouldSendClientHeartbeatFallback(
+        now: 159,
+        lastInboundMessageAt: 100,
+        intervalNanoseconds: fallbackInterval
+      )
+    )
+    XCTAssertTrue(
+      syncShouldSendClientHeartbeatFallback(
+        now: 160,
+        lastInboundMessageAt: 100,
+        intervalNanoseconds: fallbackInterval
+      )
+    )
+    XCTAssertTrue(
+      syncShouldSendClientHeartbeatFallback(
+        now: 100,
+        lastInboundMessageAt: nil,
+        intervalNanoseconds: fallbackInterval
+      )
     )
   }
 

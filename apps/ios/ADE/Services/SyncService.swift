@@ -1384,8 +1384,21 @@ func syncClientHeartbeatIntervalNanoseconds(serverIntervalMs rawValue: Any?) -> 
     return nil
   }()
   let serverMs = min(120_000, max(5_000, parsedMs ?? 30_000))
-  let clientMs = min(25_000, max(5_000, serverMs / 2))
-  return UInt64(clientMs) * 1_000_000
+  // The host already sends a heartbeat every advertised interval and the
+  // client responds with a pong. This task is only a silence fallback: waiting
+  // two host intervals avoids a second app-level ping/pong cycle on healthy
+  // relay connections while still probing well inside the host's mobile miss
+  // budget.
+  return UInt64(serverMs * 2) * 1_000_000
+}
+
+func syncShouldSendClientHeartbeatFallback(
+  now: TimeInterval,
+  lastInboundMessageAt: TimeInterval?,
+  intervalNanoseconds: UInt64
+) -> Bool {
+  guard let lastInboundMessageAt else { return true }
+  return now - lastInboundMessageAt >= TimeInterval(intervalNanoseconds) / 1_000_000_000
 }
 
 func syncShouldReconnectAfterRequestTimeout(
@@ -11300,9 +11313,20 @@ final class SyncService: ObservableObject {
         try? await Task.sleep(nanoseconds: intervalNanoseconds)
         guard let self, !Task.isCancelled else { return }
         guard self.isCurrentConnectionGeneration(connectionGeneration), self.canSendLiveRequests() else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if !syncShouldSendClientHeartbeatFallback(
+          now: now,
+          lastInboundMessageAt: self.lastInboundMessageAt,
+          intervalNanoseconds: intervalNanoseconds
+        ) {
+          // The host heartbeat (or useful application traffic) already proved
+          // the relay path. Coalesce this client fallback instead of waking the
+          // tunnel Durable Object for another ping/pong pair.
+          continue
+        }
         let path = self.lastNetworkPathSnapshot
         if syncShouldProbeTransportAfterHeartbeatSilence(
-          now: ProcessInfo.processInfo.systemUptime,
+          now: now,
           lastInboundMessageAt: self.lastInboundMessageAt,
           heartbeatIntervalNanoseconds: intervalNanoseconds,
           isExpensive: path?.isExpensive == true,

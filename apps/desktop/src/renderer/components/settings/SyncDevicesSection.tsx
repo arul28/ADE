@@ -35,6 +35,9 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import type { SyncConnections } from "./useSyncConnections";
+
+export { useSyncConnections, type SyncConnections } from "./useSyncConnections";
 
 const helperTextStyle: React.CSSProperties = {
   color: COLORS.textMuted,
@@ -103,138 +106,6 @@ function connectionLoadGuidance(error: string): string {
   return "Restart ADE, then try again.";
 }
 
-// ---------------------------------------------------------------------------
-// Shared data hook — one status + device subscription serving the This-Mac
-// card and the Phone / Web tabs. Actions surface a `busy` flag and a `notice`
-// so callers can render them wherever they choose.
-// ---------------------------------------------------------------------------
-
-export type SyncConnections = ReturnType<typeof useSyncConnections>;
-
-export function useSyncConnections() {
-  const [status, setStatus] = useState<SyncRoleSnapshot | null>(null);
-  const [devices, setDevices] = useState<SyncDeviceRuntimeState[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = useCallback(async () => {
-    const [nextStatus, nextDevices] = await Promise.all([
-      window.ade.sync.getStatus(),
-      window.ade.sync.listDevices(),
-    ]);
-    setStatus(nextStatus);
-    setDevices(nextDevices);
-    setError(null);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      try {
-        await refresh();
-      } catch (refreshError) {
-        if (!cancelled) {
-          setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    const dispose = window.ade.sync.onEvent((event) => {
-      if (event.type !== "sync-status" || cancelled) return;
-      setStatus(event.snapshot);
-      void window.ade.sync.listDevices().then((nextDevices) => {
-        if (!cancelled) setDevices(nextDevices);
-      }).catch(() => {});
-    });
-    const refreshWhenVisible = () => {
-      if (!cancelled) void refresh().catch(() => {});
-    };
-    const interval = window.setInterval(refreshWhenVisible, 5_000);
-    window.addEventListener("focus", refreshWhenVisible);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      window.removeEventListener("focus", refreshWhenVisible);
-      dispose();
-    };
-  }, [refresh]);
-
-  const runAction = useCallback(async (work: () => Promise<void>) => {
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      await work();
-      await refresh();
-    } catch (actionError) {
-      setError(actionError instanceof Error ? actionError.message : String(actionError));
-    } finally {
-      setBusy(false);
-    }
-  }, [refresh]);
-
-  // Throwing setter for the inline PIN editor so it can surface errors next to
-  // the control. Returns the authoritative snapshot rather than re-fetching.
-  const setPinValue = useCallback(async (pin: string) => {
-    const nextStatus = await window.ade.sync.setPin(pin);
-    setStatus(nextStatus);
-  }, []);
-
-  const generatePin = useCallback(() => runAction(async () => {
-    await window.ade.sync.generatePin();
-    setNotice("Pairing code generated.");
-  }), [runAction]);
-
-  const clearPin = useCallback(() => runAction(async () => {
-    await window.ade.sync.clearPin();
-    setNotice("Pairing code removed. New devices can no longer connect.");
-  }), [runAction]);
-
-  const saveRuntimeName = useCallback((name: string) => runAction(async () => {
-    const trimmed = name.trim();
-    if (trimmed) {
-      await window.ade.sync.setRuntimeName(trimmed);
-      setNotice("Machine name updated.");
-    } else {
-      await window.ade.sync.clearRuntimeName();
-      setNotice("Machine name cleared.");
-    }
-  }), [runAction]);
-
-  const forgetDevice = useCallback((device: SyncDeviceRuntimeState) => runAction(async () => {
-    await window.ade.sync.forgetDevice(device.deviceId);
-    setNotice(device.connectionState === "connected" ? "Device revoked." : "Device removed.");
-  }), [runAction]);
-
-  const retryInitialLoad = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    void refresh()
-      .catch((refreshError) => {
-        setError(refreshError instanceof Error ? refreshError.message : String(refreshError));
-      })
-      .finally(() => setLoading(false));
-  }, [refresh]);
-
-  return {
-    status,
-    devices,
-    loading,
-    busy,
-    notice,
-    error,
-    setPinValue,
-    generatePin,
-    clearPin,
-    saveRuntimeName,
-    forgetDevice,
-    retryInitialLoad,
-  };
-}
-
 export function isSyncHost(status: SyncRoleSnapshot): boolean {
   return status.runtimeRole === "host" || status.role === "brain";
 }
@@ -268,7 +139,7 @@ function reachableRouteLabels(status: SyncRoleSnapshot): string[] {
     routes.push("Tailscale");
   }
   if (
-    health?.relay?.reason == null &&
+    health?.relay?.skipReason == null &&
     health?.relay?.relayControlConnected &&
     health?.relay?.relayBridgeValidated
   ) {
@@ -304,7 +175,7 @@ export function ThisMacCard({
   sync: SyncConnections;
   accountSignedIn: boolean;
 }) {
-  const { status, busy, error, notice } = sync;
+  const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
 
   if (sync.loading) {
@@ -441,14 +312,22 @@ export function ThisMacCard({
       ) : null}
 
       {host ? (
-        <PinManager
-          pin={status.pairingPin}
-          pinConfigured={status.pairingPinConfigured}
-          busy={busy}
-          onSetPin={sync.setPinValue}
-          onGenerate={sync.generatePin}
-          onRemove={sync.clearPin}
-        />
+        isRemoteBound ? (
+          <PinManagerRemoteNote
+            pin={status.pairingPin}
+            pinConfigured={status.pairingPinConfigured}
+            boundMachineName={boundMachineName}
+          />
+        ) : (
+          <PinManager
+            pin={status.pairingPin}
+            pinConfigured={status.pairingPinConfigured}
+            busy={busy}
+            onSetPin={sync.setPinValue}
+            onGenerate={sync.generatePin}
+            onRemove={sync.clearPin}
+          />
+        )
       ) : null}
 
       {notice ? <div style={{ ...helperTextStyle, color: COLORS.success }}>{notice}</div> : null}
@@ -553,9 +432,55 @@ function PinManager({
   );
 }
 
+// Read-only pairing-code state shown while this window is remote-bound. Pin
+// mutations still route to the bound machine, so we surface this Mac's current
+// code (read from the local snapshot) without offering controls that would
+// silently change the wrong machine.
+function PinManagerRemoteNote({
+  pin,
+  pinConfigured,
+  boundMachineName,
+}: {
+  pin: string | null;
+  pinConfigured: boolean;
+  boundMachineName: string | null;
+}) {
+  const stateLine = !pinConfigured
+    ? "No pairing code set on this Mac yet."
+    : pin
+      ? `This Mac's pairing code is ${pin}.`
+      : "This Mac has a pairing code set.";
+  return (
+    <div style={{ ...panelStyle, gap: 8 }}>
+      <div style={LABEL_STYLE}>Pairing code</div>
+      <div style={{ ...helperTextStyle, marginTop: -2 }}>{stateLine}</div>
+      <div style={{ ...helperTextStyle, color: COLORS.textMuted }}>
+        Pairing changes aren&rsquo;t available while this window is connected to{" "}
+        {boundMachineName ?? "another Mac"}.
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Phone tab
 // ---------------------------------------------------------------------------
+
+// Section title that names which machine a device list belongs to. The list is
+// always scoped to this physical Mac; the "on {name}" line only appears when a
+// remote binding could otherwise make the reader assume it is the bound machine.
+function ScopedListTitle({ title, sync }: { title: string; sync: SyncConnections }) {
+  return (
+    <div style={{ display: "grid", gap: 2 }}>
+      <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
+        {title}
+      </div>
+      {sync.isRemoteBound ? (
+        <div style={{ ...helperTextStyle, fontSize: 11 }}>on {sync.localMachineName}</div>
+      ) : null}
+    </div>
+  );
+}
 
 export function PhoneConnectionsTab({
   sync,
@@ -574,15 +499,14 @@ export function PhoneConnectionsTab({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "grid", gap: 10 }}>
-        <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
-          Paired phones
-        </div>
+        <ScopedListTitle title="Paired phones" sync={sync} />
         <DeviceList
           devices={phones}
           busy={sync.busy}
           emptyLabel="No phones connected yet."
           confirmRevoke={confirmRevoke}
           onForget={sync.forgetDevice}
+          readOnly={!sync.canManageDevices}
         />
       </div>
 
@@ -715,15 +639,14 @@ export function WebConnectionsTab({
       </div>
 
       <div style={{ display: "grid", gap: 10 }}>
-        <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600 }}>
-          Connected browsers
-        </div>
+        <ScopedListTitle title="Connected browsers" sync={sync} />
         <DeviceList
           devices={browsers}
           busy={sync.busy}
           emptyLabel="No browsers connected yet."
           confirmRevoke={confirmRevoke}
           onForget={sync.forgetDevice}
+          readOnly={!sync.canManageDevices}
         />
       </div>
     </div>
@@ -1215,11 +1138,13 @@ function DeviceRow({
   busy,
   confirmRevoke,
   onForget,
+  readOnly = false,
 }: {
   device: SyncDeviceRuntimeState;
   busy: boolean;
   confirmRevoke: RevokeConfirm;
   onForget: (device: SyncDeviceRuntimeState) => void;
+  readOnly?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const connected = device.connectionState === "connected";
@@ -1269,14 +1194,16 @@ function DeviceRow({
         </div>
       </div>
 
-      <button
-        type="button"
-        style={{ ...dangerButton({ height: 30, padding: "0 12px", fontSize: 11 }), opacity: hovered ? 1 : 0.7 }}
-        disabled={busy}
-        onClick={() => void handleRevoke()}
-      >
-        Revoke
-      </button>
+      {readOnly ? null : (
+        <button
+          type="button"
+          style={{ ...dangerButton({ height: 30, padding: "0 12px", fontSize: 11 }), opacity: hovered ? 1 : 0.7 }}
+          disabled={busy}
+          onClick={() => void handleRevoke()}
+        >
+          Revoke
+        </button>
+      )}
     </div>
   );
 }
@@ -1287,12 +1214,14 @@ function DeviceList({
   emptyLabel,
   confirmRevoke,
   onForget,
+  readOnly = false,
 }: {
   devices: SyncDeviceRuntimeState[];
   busy: boolean;
   emptyLabel: string;
   confirmRevoke: RevokeConfirm;
   onForget: (device: SyncDeviceRuntimeState) => void;
+  readOnly?: boolean;
 }) {
   if (devices.length === 0) {
     return <div style={helperTextStyle}>{emptyLabel}</div>;
@@ -1306,6 +1235,7 @@ function DeviceList({
           busy={busy}
           confirmRevoke={confirmRevoke}
           onForget={onForget}
+          readOnly={readOnly}
         />
       ))}
     </div>

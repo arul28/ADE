@@ -1,20 +1,65 @@
-import type { PrSummary } from "../../../shared/types";
+import type {
+  PrMergeContext,
+  PrMobileSnapshot,
+  PrSummary,
+} from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
 export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
   const { commands, events } = infra;
 
+  const emptyMobileSnapshot = (): PrMobileSnapshot => ({
+    generatedAt: new Date().toISOString(),
+    prs: [],
+    stacks: [],
+    capabilities: {},
+    createCapabilities: { canCreateAny: false, defaultBaseBranch: null, lanes: [] },
+    workflowCards: [],
+    live: false,
+  });
+
+  async function mobileSnapshot(options: { surfaceErrors?: boolean } = {}): Promise<PrMobileSnapshot> {
+    const fallback = options.surfaceErrors
+      ? () => { throw new Error("The PR snapshot is temporarily unavailable."); }
+      : emptyMobileSnapshot;
+    if (commands.hasAction("prs.getMobileSnapshot")) {
+      return await commands.call("prs.getMobileSnapshot", {}, {
+        fallback,
+        idempotent: true,
+        cacheTtlMs: 3_000,
+      });
+    }
+    const prs = await commands.call<PrSummary[]>("prs.list", {}, {
+      fallback: options.surfaceErrors
+        ? () => { throw new Error("The PR list is temporarily unavailable."); }
+        : [],
+      idempotent: true,
+      cacheTtlMs: 3_000,
+    });
+    return { ...emptyMobileSnapshot(), prs };
+  }
+
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
   }
 
+  function read<T>(action: string, args: unknown, fallback: T): Promise<T> {
+    return commands.call<T>(action, asRecord(args), { fallback, cacheTtlMs: 3_000 });
+  }
+
   infra.addDispose(
     events.on("prsInvalidated", (event) => {
-      events.emit("prsEvent", {
-        type: "prs-updated",
-        polledAt: event.at,
-        prs: [],
-      });
+      commands.invalidateCache(["prs."]);
+      // `prs-updated` is authoritative in PrsContext; never represent a stale
+      // cache marker as an empty PR list. Hydrate one coalesced aggregate read
+      // and emit only when the host actually returned a snapshot.
+      void mobileSnapshot({ surfaceErrors: true }).then((snapshot) => {
+        events.emit("prsEvent", {
+          type: "prs-updated",
+          polledAt: event.at,
+          prs: snapshot.prs,
+        });
+      }).catch(() => {});
     })
   );
 
@@ -23,18 +68,20 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     linkToLane: (args: unknown) => call("prs.linkToLane", args, null, false),
     preflightCreateLaneFromPrBranch: (args: unknown) => call("prs.preflightCreateLaneFromPrBranch", args, null),
     createLaneFromPrBranch: (args: unknown) => call("prs.createLaneFromPrBranch", args, null, false),
-    getForLane: (laneId: string) => call("prs.getForLane", { laneId }, null),
-    listAll: () => call("prs.list", {}, []),
-    listOpenForRepo: () => call("prs.listOpenForRepo", {}, []),
+    getForLane: async (laneId: string) =>
+      (await mobileSnapshot()).prs.find((pr) => pr.laneId === laneId) ?? null,
+    listAll: async () => (await mobileSnapshot()).prs,
+    listOpenForRepo: () => read("prs.listOpenForRepo", {}, []),
     refresh: async (args?: unknown) => {
       const result = await call<unknown>("prs.refresh", args, [], false);
+      commands.invalidateCache(["prs."]);
       return arrayField<PrSummary>(result, "prs");
     },
-    getStatus: (prId: string) => call("prs.getStatus", { prId }, null),
-    getChecks: (prId: string) => call("prs.getChecks", { prId }, []),
-    getComments: (prId: string) => call("prs.getComments", { prId }, []),
-    getReviews: (prId: string) => call("prs.getReviews", { prId }, []),
-    getReviewThreads: (prId: string) => call("prs.getReviewThreads", { prId }, []),
+    getStatus: (prId: string) => read("prs.getStatus", { prId }, null),
+    getChecks: (prId: string) => read("prs.getChecks", { prId }, []),
+    getComments: (prId: string) => read("prs.getComments", { prId }, []),
+    getReviews: (prId: string) => read("prs.getReviews", { prId }, []),
+    getReviewThreads: (prId: string) => read("prs.getReviewThreads", { prId }, []),
     updateDescription: async (args: unknown) => {
       await call("prs.updateDescription", args, undefined, false);
     },
@@ -84,18 +131,30 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     getQueueState: (groupId: string) => call("prs.getQueueState", { groupId }, null),
     listQueueStates: (args?: unknown) => call("prs.listQueueStates", args, []),
     getConflictAnalysis: (prId: string) => call("prs.getConflictAnalysis", { prId }, null),
-    getMergeContext: (prId: string) => call("prs.getMergeContext", { prId }, null),
-    getMergeContexts: (prIds: string[]) => call("prs.getMergeContexts", { prIds }, {}),
-    listWithConflicts: (args?: unknown) => call("prs.listWithConflicts", args, []),
-    listSnapshots: (args?: unknown) => call("prs.listSnapshots", args, []),
-    getGitHubSnapshot: (args?: unknown) => call("prs.getGitHubSnapshot", args, null),
+    getMergeContext: (prId: string) => read("prs.getMergeContext", { prId }, null),
+    getMergeContexts: (prIds: string[]) => read(
+      "prs.getMergeContexts",
+      { prIds },
+      Object.fromEntries(prIds.map((prId) => [prId, emptyMergeContext(prId)])),
+    ),
+    listWithConflicts: async (args?: unknown) => {
+      if (asRecord(args).includeConflictAnalysis === true) {
+        return await read("prs.listWithConflicts", args, []);
+      }
+      return (await mobileSnapshot()).prs.map((pr) => ({
+        ...pr,
+        conflictAnalysis: null,
+      }));
+    },
+    listSnapshots: (args?: unknown) => read("prs.listSnapshots", args, []),
+    getGitHubSnapshot: (args?: unknown) => read("prs.getGitHubSnapshot", args, null),
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void) => events.on("prsEvent", listener as never),
-    getDetail: (prId: string) => call("prs.getDetail", { prId }, null),
-    getFiles: (prId: string) => call("prs.getFiles", { prId }, []),
-    getCommits: (prId: string) => call("prs.getCommits", { prId }, []),
-    getActionRuns: (prId: string) => call("prs.getActionRuns", { prId }, []),
-    getActivity: (prId: string) => call("prs.getActivity", { prId }, []),
+    getDetail: (prId: string) => read("prs.getDetail", { prId }, null),
+    getFiles: (prId: string) => read("prs.getFiles", { prId }, []),
+    getCommits: (prId: string) => read("prs.getCommits", { prId }, []),
+    getActionRuns: (prId: string) => read("prs.getActionRuns", { prId }, []),
+    getActivity: (prId: string) => read("prs.getActivity", { prId }, []),
     getDetailByGithub: (coords: unknown) => call("prs.getDetailByGithub", coords, null),
     getFilesByGithub: (coords: unknown) => call("prs.getFilesByGithub", coords, []),
     getCommitsByGithub: (coords: unknown) => call("prs.getCommitsByGithub", coords, []),
@@ -160,4 +219,16 @@ function arrayField<T>(result: unknown, key: string): T[] {
   if (!result || typeof result !== "object") return [];
   const value = (result as Record<string, unknown>)[key];
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function emptyMergeContext(prId: string): PrMergeContext {
+  return {
+    prId,
+    groupId: null,
+    groupType: null,
+    sourceLaneIds: [],
+    targetLaneId: null,
+    integrationLaneId: null,
+    members: [],
+  };
 }

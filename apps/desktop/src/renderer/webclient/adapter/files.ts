@@ -1,10 +1,27 @@
-import type { FileChangeEvent, FileContent, FilesReadFileRangeResult } from "../../../shared/types";
+import type { FileChangeEvent, FileContent, FilesReadFileRangeResult, FilesWorkspace } from "../../../shared/types";
 import type { SupportedFileAction } from "../sync";
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { stableCacheKey } from "./infra/cacheKey";
+import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { fileContentFromBlob, requestFileBlob } from "./infra/fileBlob";
 
 export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files"> {
   const { client, events, state } = infra;
+  const knownWorkspaceIdsByProject = new Map<string, Set<string>>();
+  const HOT_FILE_READ_TTL_MS = 3_000;
+  const readCache = createCoalescingReadCache(HOT_FILE_READ_TTL_MS);
+
+  function clearReadCache(): void {
+    readCache.clear();
+  }
+
+  function rememberWorkspaceId(workspaceId: string): void {
+    if (!workspaceId) return;
+    const projectKey = state.getProjectId() ?? "missing-project";
+    const known = knownWorkspaceIdsByProject.get(projectKey) ?? new Set<string>();
+    known.add(workspaceId);
+    knownWorkspaceIdsByProject.set(projectKey, known);
+  }
 
   // The host answers file_request with a structured `result`: an array/object for
   // listing/search/range actions, and a SyncFileBlob ONLY for readFile/readArtifact.
@@ -12,15 +29,31 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
   // it as-is. (The earlier code treated every result as a blob and JSON.parsed a
   // `content` field, which silently emptied listWorkspaces/listTree and crashed the
   // Files tab downstream on undefined paths.)
-  async function requestResult<T>(action: SupportedFileAction, args: unknown, fallback: T): Promise<T> {
-    try {
-      const result = await client.requestFile(action, asRecord(args) as never, {
-        projectId: state.getProjectId(),
-      });
-      return (result ?? fallback) as T;
-    } catch {
-      return fallback;
-    }
+  async function requestResult<T>(
+    action: SupportedFileAction,
+    args: unknown,
+    fallback: T,
+    options: { cache?: boolean; surfaceErrors?: boolean } = {},
+  ): Promise<T> {
+    const projectId = state.getProjectId();
+    const cacheKey = options.cache
+      ? `${projectId ?? "missing-project"}\u0000${action}\u0000${stableCacheKey(asRecord(args))}`
+      : null;
+    const fetchResult = async (): Promise<T> => {
+      try {
+        const result = await client.requestFile(action, asRecord(args) as never, {
+          projectId,
+        });
+        return (result ?? fallback) as T;
+      } catch (error) {
+        if (options.surfaceErrors) throw error;
+        return fallback;
+      }
+    };
+
+    return cacheKey
+      ? await readCache.coalesce(cacheKey, fetchResult)
+      : await fetchResult();
   }
 
   async function requestVoid(action: SupportedFileAction, args: unknown, event?: FileChangeEvent): Promise<void> {
@@ -29,17 +62,23 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     } catch {
       return;
     }
+    clearReadCache();
     if (event) events.emit("filesChanged", event);
   }
 
   infra.addDispose(
     events.on("filesInvalidated", (event) => {
-      events.emit("filesChanged", {
-        workspaceId: "*",
-        type: "modified",
-        path: "",
-        ts: event.at,
-      });
+      clearReadCache();
+      const projectKey = state.getProjectId() ?? "missing-project";
+      const workspaceIds = knownWorkspaceIdsByProject.get(projectKey) ?? new Set(["*"]);
+      for (const workspaceId of workspaceIds) {
+        events.emit("filesChanged", {
+          workspaceId,
+          type: "modified",
+          path: "",
+          ts: event.at,
+        });
+      }
     })
   );
 
@@ -47,17 +86,31 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     writeTextAtomic: async (args: unknown) => {
       await requestVoid("writeText", args, changeEvent(args, "modified"));
     },
-    listWorkspaces: (args?: unknown) => requestResult("listWorkspaces", args, []),
-    listTree: (args: unknown) => requestResult("listTree", args, []),
-    listTreeChildren: (args: unknown) =>
-      requestResult("listTreeChildren", args, {
+    listWorkspaces: async (args?: unknown) => {
+      const workspaces = await requestResult<FilesWorkspace[]>(
+        "listWorkspaces",
+        args,
+        [],
+        { cache: true, surfaceErrors: true },
+      );
+      for (const workspace of workspaces) rememberWorkspaceId(workspace.id);
+      return workspaces;
+    },
+    listTree: (args: unknown) => {
+      rememberWorkspaceId(stringField(asRecord(args), "workspaceId"));
+      return requestResult("listTree", args, [], { cache: true, surfaceErrors: true });
+    },
+    listTreeChildren: (args: unknown) => {
+      rememberWorkspaceId(stringField(asRecord(args), "workspaceId"));
+      return requestResult("listTreeChildren", args, {
         parentPath: stringField(asRecord(args), "parentPath"),
         children: [],
         offset: numberField(asRecord(args), "offset") ?? 0,
         limit: numberField(asRecord(args), "limit") ?? 500,
         total: 0,
         nextOffset: null,
-      }),
+      }, { cache: true, surfaceErrors: true });
+    },
     refreshGitDecorations: async (args: unknown) => {
       const result = await requestResult("refreshGitDecorations", args, {
         workspaceId: stringField(asRecord(args), "workspaceId"),

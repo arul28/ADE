@@ -11,6 +11,7 @@ import { createGitNamespaces } from "./git";
 import { CommandCaller } from "./infra/commandCaller";
 import { EventBus } from "./infra/eventBus";
 import { createInvalidationScheduler } from "./infra/invalidation";
+import type { InvalidationDomain } from "./infra/invalidation";
 import { createLocalState } from "./infra/localState";
 import { createProjectState } from "./infra/projectState";
 import { withFallbackProxy } from "./infra/proxy";
@@ -20,12 +21,13 @@ import { createMiscNamespaces } from "./misc";
 import { createProjectNamespace } from "./project";
 import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
+import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import type { AdapterEvents, AdapterInfra } from "./types";
 
 export type AdeWebAdapter = {
   ade: Window["ade"];
-  bindProject(project: ProjectInfo | null): void;
+  bindProject(project: ProjectInfo | null, projectId?: string | null): void;
   dispose(): void;
 };
 
@@ -45,6 +47,24 @@ export const WEB_HIDDEN_CAPABILITIES = {
   processes: false,
   automations: false,
 } as const;
+
+const DOMAIN_EVENTS = {
+  lanes: "lanesInvalidated",
+  sessions: "sessionsInvalidated",
+  chats: "chatsInvalidated",
+  prs: "prsInvalidated",
+  files: "filesInvalidated",
+  github: "githubInvalidated",
+  rebase: "rebaseInvalidated",
+} as const satisfies Record<InvalidationDomain,
+  | "lanesInvalidated"
+  | "sessionsInvalidated"
+  | "chatsInvalidated"
+  | "prsInvalidated"
+  | "filesInvalidated"
+  | "githubInvalidated"
+  | "rebaseInvalidated"
+>;
 
 export function createAdeWebAdapter(
   client: AdeSyncClient,
@@ -83,13 +103,7 @@ export function createAdeWebAdapter(
   addDispose(
     events.on("invalidation", (event) => {
       for (const domain of event.domains) {
-        if (domain === "lanes") events.emit("lanesInvalidated", event);
-        if (domain === "sessions") events.emit("sessionsInvalidated", event);
-        if (domain === "chats") events.emit("chatsInvalidated", event);
-        if (domain === "prs") events.emit("prsInvalidated", event);
-        if (domain === "files") events.emit("filesInvalidated", event);
-        if (domain === "github") events.emit("githubInvalidated", event);
-        if (domain === "rebase") events.emit("rebaseInvalidated", event);
+        events.emit(DOMAIN_EVENTS[domain], event);
       }
     })
   );
@@ -104,6 +118,7 @@ export function createAdeWebAdapter(
     account: createAccountNamespace(accountClient),
     analytics: createAnalyticsNamespace(infra),
     project: createProjectNamespace(infra),
+    remoteRuntime: createRemoteRuntimeNamespace(infra),
     lanes: createLanesNamespace(infra),
     sessions,
     agentChat: createAgentChatNamespace(infra),
@@ -168,8 +183,8 @@ export function createAdeWebAdapter(
 
   return {
     ade: withFallbackProxy(surface as unknown as Window["ade"]),
-    bindProject(project: ProjectInfo | null): void {
-      state.bindProject(project);
+    bindProject(project: ProjectInfo | null, projectId?: string | null): void {
+      state.bindProject(project, projectId);
       events.emit("projectChanged", project);
       events.emit("projectBindingChanged", null);
     },
