@@ -20,6 +20,7 @@ import {
   replaceComposerTriggerSpan,
   type ComposerTokenRange,
 } from "../../../desktop/src/shared/composerTriggers";
+import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
   AgentChatCodexRecoveryAction,
@@ -308,6 +309,11 @@ import {
 import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybindingsFile, readClaudeKeybindingsFile, type KeybindingDispatchState, type TuiKeybindingAction } from "./keybindings";
 import { buildDeeplinkForRow, buildWebClientUrlForRow, type DeeplinkRow } from "./deeplinkRow";
 import { copyToClipboard } from "../lib/clipboard";
+import {
+  deletePromptSmartLinkBackward,
+  deletePromptSmartLinkForward,
+  formatPromptSmartLinkStrip,
+} from "./promptSmartLinks";
 import {
   buildSubagentPaneRows,
   buildSubagentTranscriptEvents,
@@ -1901,6 +1907,10 @@ export function deletePromptBackward(
 ): PromptEditResult {
   const safeCursor = clampPromptCursor(value, cursor);
   if (safeCursor <= 0) return { value, cursor: safeCursor };
+  if (mode !== "line") {
+    const linkDeletion = deletePromptSmartLinkBackward(value, safeCursor);
+    if (linkDeletion) return linkDeletion;
+  }
   let start: number;
   if (mode === "word") start = previousPromptWordBoundary(value, safeCursor);
   else if (mode === "line") start = previousPromptLineBoundary(value, safeCursor);
@@ -1915,6 +1925,8 @@ export function deletePromptBackward(
 export function deletePromptForward(value: string, cursor: number): PromptEditResult {
   const safeCursor = clampPromptCursor(value, cursor);
   if (safeCursor >= value.length) return { value, cursor: safeCursor };
+  const linkDeletion = deletePromptSmartLinkForward(value, safeCursor);
+  if (linkDeletion) return linkDeletion;
   const end = nextPromptCharacterBoundary(value, safeCursor);
   return {
     value: `${value.slice(0, safeCursor)}${value.slice(end)}`,
@@ -2155,13 +2167,15 @@ function loginUnavailableHint(provider: AdeCodeProvider): string {
  * the renderer can style `@file` / `/command` chips. `rowStart` is the prompt
  * code-unit offset of `text[0]`; token ranges are in prompt coordinates.
  */
+type PromptRenderTokenRange = ComposerTokenRange | { kind: "link"; start: number; end: number };
+
 function segmentPromptLineText(
   text: string,
   rowStart: number,
-  tokens: ComposerTokenRange[],
-): Array<{ text: string; kind: "plain" | "file" | "command" }> {
+  tokens: PromptRenderTokenRange[],
+): Array<{ text: string; kind: "plain" | "file" | "command" | "link" }> {
   if (!tokens.length || !text) return text ? [{ text, kind: "plain" }] : [];
-  const segments: Array<{ text: string; kind: "plain" | "file" | "command" }> = [];
+  const segments: Array<{ text: string; kind: "plain" | "file" | "command" | "link" }> = [];
   let pos = 0;
   for (const token of tokens) {
     const start = Math.max(0, token.start - rowStart);
@@ -2592,6 +2606,7 @@ export function promptHitLine(args: {
   y: number | null;
   rows: number;
   promptRowCount: number;
+  extraPromptRows?: number;
   modelStatusRows?: number;
   footerRows?: number;
 }): boolean {
@@ -2599,9 +2614,10 @@ export function promptHitLine(args: {
   const rows = finiteFloor(args.rows, 0);
   if (rows <= 0) return false;
   const promptRows = Math.max(1, finiteFloor(args.promptRowCount, 1));
+  const extraPromptRows = Math.max(0, finiteFloor(args.extraPromptRows ?? 0, 0));
   const modelStatusRows = Math.max(0, finiteFloor(args.modelStatusRows ?? 0, 0));
   const footerRows = Math.max(1, finiteFloor(args.footerRows ?? 1, 1));
-  const promptBoxRows = promptRows + 2;
+  const promptBoxRows = promptRows + extraPromptRows + 2;
   const firstPromptLine = rows - footerRows - modelStatusRows - promptBoxRows + 1;
   return args.y >= firstPromptLine - 1 && args.y <= firstPromptLine + promptBoxRows - 1;
 }
@@ -4152,21 +4168,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // Confirmed chip tokens in the prompt: mentions that were actually inserted
   // from the picker and /commands matching the known catalog. Rendered as
   // colored tokens in the prompt rows below.
-  const promptTokenRanges = useMemo<ComposerTokenRange[]>(() => {
+  const promptSmartLinks = useMemo(() => findSmartLinks(prompt), [prompt]);
+  const promptTokenRanges = useMemo<PromptRenderTokenRange[]>(() => {
     if (!prompt) return [];
     const mentionTexts = new Set(selectedMentions.map((mention) => mention.insertText));
     const commandNames = new Set([
       ...BUILTIN_COMMANDS.map((command) => command.name.replace(/^\//, "").toLowerCase()),
       ...slashCommands.map((command) => command.name.replace(/^\//, "").toLowerCase()),
     ]);
-    return findConfirmedComposerTokens(prompt, {
-      isFile: (body) => mentionTexts.has(`@${body}`),
-      isCommand: (body) => commandNames.has(body.toLowerCase()),
-    });
-  }, [prompt, selectedMentions, slashCommands]);
+    return [
+      ...findConfirmedComposerTokens(prompt, {
+        isFile: (body) => mentionTexts.has(`@${body}`),
+        isCommand: (body) => commandNames.has(body.toLowerCase()),
+      }),
+      ...promptSmartLinks.map(({ start, end }) => ({ kind: "link" as const, start, end })),
+    ].sort((left, right) => left.start - right.start);
+  }, [prompt, promptSmartLinks, selectedMentions, slashCommands]);
   const promptDisplay = promptDisplayRowsWithCursor(prompt, Math.max(1, promptPaneWidth - 5), promptCursor, PROMPT_MAX_ROWS);
   const promptRows = promptDisplay.rows;
-  const chatRowBudget = Math.max(4, rows - 8 - (promptRows.length - 1) - statusRows - goalBannerRows - addModeRows - backgroundLaunchRows);
+  const smartLinkRows = promptSmartLinks.length > 0 ? 1 : 0;
+  const chatRowBudget = Math.max(4, rows - 8 - (promptRows.length - 1) - smartLinkRows - statusRows - goalBannerRows - addModeRows - backgroundLaunchRows);
   const chatWrapWidth = resolveChatWrapWidth(centerWidth, drawerOpen, rightPaneWidth);
   const terminalPaneWidth = resolveTerminalPaneWidth(centerWidth);
   const orderedDrawerLanes = useMemo(
@@ -12283,6 +12304,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           y: mouse.y,
           rows,
           promptRowCount: promptRows.length,
+          extraPromptRows: smartLinkRows,
           modelStatusRows: modelStatusOverlayRows,
           footerRows: 1,
         })) {
@@ -14521,6 +14543,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const errorRows = error ? (!connection ? 2 : 1) : 0;
   const paletteBottomRows = 5
     + (promptRows.length - 1)
+    + smartLinkRows
     + modelStatusOverlayRows
     + backgroundLaunchRows
     + (attachedImageChips.length ? 1 : 0)
@@ -14568,7 +14591,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
 
     const promptRowsCount = Math.max(1, promptRows.length);
-    const promptBoxRows = promptRowsCount + 2;
+    const promptBoxRows = promptRowsCount + smartLinkRows + 2;
     const firstPromptLine = rows - 1 - modelStatusOverlayRows - promptBoxRows + 1;
     addTarget({
       id: "header:context",
@@ -15510,6 +15533,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     showCommandPalette,
     showSlashPalette,
     slashRows,
+    smartLinkRows,
     startAddMode,
     subagentPaneCommandAvailable,
     terminalControlAvailable,
@@ -15867,6 +15891,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           flexDirection="column"
           width={promptPaneWidth}
         >
+          {promptSmartLinks.length > 0 ? (
+            <Text color={PURPLE} bold wrap="truncate-end">
+              {formatPromptSmartLinkStrip(promptSmartLinks)}
+            </Text>
+          ) : null}
           {promptRows.map((line, index) => {
             const last = index === promptRows.length - 1;
             const cursorColumn = promptFocused ? line.cursorColumn : null;
@@ -15879,7 +15908,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               segmentPromptLineText(text, rowStart, promptTokenRanges).map((segment, segmentIndex) => (
                 <Text
                   key={`${keyPrefix}${segmentIndex}`}
-                  color={segment.kind === "plain" ? undefined : segment.kind === "command" ? PURPLE : "cyan"}
+                  color={segment.kind === "plain" ? undefined : segment.kind === "command" || segment.kind === "link" ? PURPLE : "cyan"}
                   bold={segment.kind !== "plain"}
                 >
                   {segment.text}

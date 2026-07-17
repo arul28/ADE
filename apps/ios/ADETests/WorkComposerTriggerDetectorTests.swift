@@ -112,6 +112,38 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertNil(detect("/rev", cursor: -1))
   }
 
+  func testSmartLinkCataloguePreservesURLsAndCompactLabels() throws {
+    let text = "https://github.com/arul28/ADE/pull/835 https://linear.app/ade/issue/ADE-89/title https://evil.github.com/x/y https://example.com/foo(bar)." as NSString
+    let links = WorkSmartLinkDetector.links(in: text)
+
+    XCTAssertEqual(links.count, 4)
+    XCTAssertEqual(links[0].url, "https://github.com/arul28/ADE/pull/835")
+    XCTAssertEqual(links[0].compactLabel, "arul28/ADE#835")
+    XCTAssertEqual(links[1].provider, .linear)
+    XCTAssertEqual(links[1].compactLabel, "ADE-89")
+    XCTAssertEqual(links[2].provider, .web)
+    XCTAssertEqual(links[3].url, "https://example.com/foo(bar)")
+    XCTAssertTrue(WorkSmartLinkDetector.links(in: "broken http:// and ade://" as NSString).isEmpty)
+  }
+
+  func testSmartLinkDeletionExpandsSingleKeysAndBroaderSelections() throws {
+    let text = "before https://example.com/a after" as NSString
+    let link = try XCTUnwrap(WorkSmartLinkDetector.links(in: text).first)
+    let oneCharacter = NSRange(location: NSMaxRange(link.range) - 1, length: 1)
+    let broadSelection = NSRange(location: 3, length: NSMaxRange(link.range) - 3 - 1)
+
+    XCTAssertEqual(
+      WorkSmartLinkDetector.atomicDeletionRange(in: text, range: oneCharacter, replacementText: ""),
+      link.range
+    )
+    let expanded = try XCTUnwrap(
+      WorkSmartLinkDetector.atomicDeletionRange(in: text, range: broadSelection, replacementText: "")
+    )
+    XCTAssertEqual(expanded.location, broadSelection.location)
+    XCTAssertEqual(NSMaxRange(expanded), NSMaxRange(link.range))
+    XCTAssertNil(WorkSmartLinkDetector.atomicDeletionRange(in: text, range: oneCharacter, replacementText: "x"))
+  }
+
   @MainActor
   func testInputImageAttachmentNormalizesToJPEGDataURL() throws {
     let image = UIGraphicsImageRenderer(size: CGSize(width: 24, height: 12)).image { context in

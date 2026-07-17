@@ -17,6 +17,8 @@ import type { createLinearCredentialService } from "../../desktop/src/main/servi
 import type { createLinearIssueTracker } from "../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
 import type { ComputerUseArtifactBrokerService } from "../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
+import { resolveSmartLinkPreview } from "../../desktop/src/main/services/chat/smartLinkPreviewService";
+import type { SmartLinkPreview } from "../../desktop/src/shared/smartLinks";
 import {
   getModelById,
   getRuntimeModelRefForDescriptor,
@@ -136,6 +138,7 @@ type HeadlessLinearServices = {
   processService: ReturnType<typeof createProcessService>;
   prService: ReturnType<typeof createPrService>;
   agentChatService: {
+    resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
     listSessions: () => Promise<HeadlessAgentChatSession[]>;
     getSessionSummary: (
       sessionId: string,
@@ -1593,6 +1596,8 @@ function createHeadlessLinearCredentialService(args: {
 
 function createHeadlessAgentChatService(
   projectRoot: string,
+  githubService: HeadlessGitHubService,
+  linearIssueTracker: ReturnType<typeof createLinearIssueTracker>,
 ): HeadlessLinearServices["agentChatService"] {
   const sessions = new Map<string, HeadlessAgentChatSession>();
   const identitySessionIds = new Map<string, string>();
@@ -1761,6 +1766,11 @@ function createHeadlessAgentChatService(
   };
 
   return {
+    resolveSmartLinkPreview: ({ url }: { url: string }) => resolveSmartLinkPreview({
+      url,
+      githubService,
+      linearIssueTracker,
+    }),
     async listSessions() {
       return Array.from(sessions.values()).sort(
         (left, right) =>
@@ -1986,7 +1996,11 @@ export function createHeadlessLinearServices(
     conflictService: args.conflictService,
     openExternal: args.openExternal ?? (async () => {}),
   });
-  const agentChatService = createHeadlessAgentChatService(args.projectRoot);
+  const agentChatService = createHeadlessAgentChatService(
+    args.projectRoot,
+    githubService,
+    issueTracker,
+  );
 
   return {
     linearCredentialService,

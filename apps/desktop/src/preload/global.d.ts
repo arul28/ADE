@@ -1,3 +1,4 @@
+import type { SmartLinkPreview } from "../shared/smartLinks";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -1513,6 +1514,7 @@ declare global {
           filename: string;
         }) => Promise<{ path: string }>;
         getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
+        resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
         getEventHistory: (args: {
           sessionId: string;
           maxEvents?: number;

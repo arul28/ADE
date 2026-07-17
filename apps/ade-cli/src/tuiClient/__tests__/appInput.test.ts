@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { findSmartLinks } from "../../../../desktop/src/shared/smartLinks";
 import {
   CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS,
   clampChatScrollOffsetRows,
@@ -90,6 +91,7 @@ import {
   uploadClipboardImageAttachmentToRuntime,
   defaultPrTitleForLane,
 } from "../app";
+import { formatPromptSmartLinkStrip } from "../promptSmartLinks";
 import { isTerminalSessionResumable } from "../closedCliSessions";
 import {
   buildSetupRows,
@@ -983,6 +985,7 @@ describe("prompt mouse hit testing", () => {
     expect(promptHitLine({ y: 84, rows: 88, promptRowCount: 1 })).toBe(true);
     expect(promptHitLine({ y: 87, rows: 88, promptRowCount: 1 })).toBe(true);
     expect(promptHitLine({ y: 83, rows: 88, promptRowCount: 1 })).toBe(false);
+    expect(promptHitLine({ y: 83, rows: 88, promptRowCount: 1, extraPromptRows: 1 })).toBe(true);
     expect(promptHitLine({ y: 82, rows: 88, promptRowCount: 3 })).toBe(true);
     expect(promptHitLine({ y: null, rows: 88, promptRowCount: 1 })).toBe(false);
   });
@@ -1816,6 +1819,33 @@ describe("prompt editing helpers", () => {
     expect(deletePromptForward("hello world", 5)).toEqual({ value: "helloworld", cursor: 5 });
     expect(deletePromptForKey("hello world", 5, { backspace: true })).toEqual({ value: "hell world", cursor: 4 });
     expect(deletePromptForKey("hello world", 5, { delete: true })).toEqual({ value: "helloworld", cursor: 5 });
+  });
+
+  it("deletes pasted links as atomic prompt tokens", () => {
+    const url = "https://github.com/arul28/ADE/pull/835";
+    const prompt = `review ${url} please`;
+    const linkStart = "review ".length;
+    const linkEnd = linkStart + url.length;
+
+    expect(deletePromptBackward(prompt, linkEnd)).toEqual({ value: "review  please", cursor: linkStart });
+    expect(deletePromptForward(prompt, linkStart)).toEqual({ value: "review  please", cursor: linkStart });
+    expect(deletePromptBackward(prompt, linkStart + 10)).toEqual({ value: "review  please", cursor: linkStart });
+    expect(deletePromptBackward(prompt, linkEnd, "word")).toEqual({ value: "review  please", cursor: linkStart });
+    expect(deletePromptBackward(prompt, linkEnd, "line")).toEqual({ value: " please", cursor: 0 });
+    expect(deletePromptBackward(prompt, linkStart)).toEqual({ value: `review${url} please`, cursor: linkStart - 1 });
+    expect(deletePromptForward(prompt, linkEnd)).toEqual({ value: `review ${url}please`, cursor: linkEnd });
+  });
+
+  it("formats the badge strip without replacing canonical prompt URLs", () => {
+    const githubUrl = "https://github.com/arul28/ADE/pull/835";
+    const linearUrl = "https://linear.app/ade-linear/issue/ADE-89/live-release-secrets";
+    const prompt = `${githubUrl} ${linearUrl}`;
+
+    expect(formatPromptSmartLinkStrip(findSmartLinks(prompt))).toBe(
+      "links [GH arul28/ADE#835] [L ADE-89]",
+    );
+    expect(prompt).toContain(githubUrl);
+    expect(prompt).toContain(linearUrl);
   });
 
   it("does not split multi-byte characters when editing or wrapping", () => {

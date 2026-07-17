@@ -59,6 +59,7 @@ import {
   type ChatAttachmentPendingImage,
 } from "./ChatAttachmentTray";
 import { ChatComposerShell } from "./ChatComposerShell";
+import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { hasPendingInputOptions } from "./pendingInput";
@@ -68,6 +69,14 @@ import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
+import {
+  deriveSmartLinkPreview,
+  findSmartLinks,
+  smartLinkDisplayLabel,
+  smartLinkProviderGlyph,
+  shouldReconcileSmartLinkDraft,
+  type SmartLinkPreview,
+} from "../../../shared/smartLinks";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
@@ -1459,6 +1468,8 @@ export function AgentChatComposer({
   const [selectedIosContextId, setSelectedIosContextId] = useState<string | null>(null);
   const [selectedAppControlContextId, setSelectedAppControlContextId] = useState<string | null>(null);
   const [selectedBuiltInBrowserContextId, setSelectedBuiltInBrowserContextId] = useState<string | null>(null);
+  const [smartLinkEditorEnabled, setSmartLinkEditorEnabled] = useState(() => findSmartLinks(draft).length > 0);
+  const [selectedSmartLinkNode, setSelectedSmartLinkNode] = useState<HTMLElement | null>(null);
   const [activeTurnSendMode, setActiveTurnSendMode] = useState<ActiveTurnSendMode>("inline");
   const effectiveActiveTurnSendMode = activeTurnSendMode === "interrupt" && !onSendSteerInterrupt
     ? "inline"
@@ -1490,6 +1501,7 @@ export function AgentChatComposer({
   const previousImagePreviewUrlsRef = useRef<Record<string, string>>({});
   const previousPendingImageAttachmentsRef = useRef<ChatAttachmentPendingImage[]>([]);
   const previousAttachmentPathsRef = useRef<Set<string>>(new Set());
+  const smartLinkPreviewCacheRef = useRef<Map<string, Promise<SmartLinkPreview | null>>>(new Map());
   const clipboardImagePasteHandledRef = useRef(0);
   const clipboardImagePasteFallbackTimerRef = useRef<number | null>(null);
   // Set when the keydown-driven fallback path actually attaches a clipboard
@@ -1500,7 +1512,8 @@ export function AgentChatComposer({
   // freeze trigger/menu re-evaluation so half-composed text can't open or
   // retarget the command menu; detection re-runs once on compositionend.
   const imeComposingRef = useRef(false);
-  const useRichComposer = iosElementContextItems.length > 0
+  const useRichComposer = smartLinkEditorEnabled
+    || iosElementContextItems.length > 0
     || appControlContextItems.length > 0
     || builtInBrowserContextItems.length > 0;
   const externalInputLockMessage = normalizeComposerLabelText(inputLockMessage ?? "");
@@ -2034,11 +2047,185 @@ export function AgentChatComposer({
           || node.dataset.builtInBrowserContextId
         )
       ) return;
+      if (node instanceof HTMLElement && node.dataset.composerChipText != null) {
+        offset += node.dataset.composerChipText.length;
+        return;
+      }
       node.childNodes.forEach(visit);
     };
     editor.childNodes.forEach(visit);
     return offset;
   }, [serializeRichEditor]);
+
+  const updateSmartLinkChipNode = useCallback((chip: HTMLElement, preview: SmartLinkPreview) => {
+    const label = chip.querySelector<HTMLElement>("[data-smart-link-label]");
+    if (label) label.textContent = smartLinkDisplayLabel(preview);
+    chip.dataset.smartLinkTitle = preview.title ?? "";
+    chip.title = preview.title ? `${preview.title}\n${preview.url}` : preview.url;
+    chip.setAttribute("aria-label", `Link: ${smartLinkDisplayLabel(preview)}. ${preview.url}`);
+
+    const icon = chip.querySelector<HTMLElement>("[data-smart-link-icon]");
+    if (!icon) return;
+    icon.replaceChildren();
+    if (preview.iconDataUrl) {
+      const image = document.createElement("img");
+      image.src = preview.iconDataUrl;
+      image.alt = "";
+      image.draggable = false;
+      image.className = "h-3 w-3 rounded-[2px] object-contain";
+      icon.appendChild(image);
+      return;
+    }
+    icon.textContent = smartLinkProviderGlyph(preview.provider);
+  }, []);
+
+  const createSmartLinkChipNode = useCallback((initial: SmartLinkPreview): HTMLElement => {
+    const chip = document.createElement("span");
+    chip.contentEditable = "false";
+    chip.tabIndex = 0;
+    chip.role = "button";
+    chip.dataset.smartLinkUrl = initial.url;
+    chip.dataset.composerChip = "smart-link";
+    chip.dataset.composerChipText = initial.url;
+    chip.className = "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] cursor-default items-center gap-1.5 rounded-md border border-violet-300/24 bg-violet-500/13 px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium leading-5 text-violet-100/90 align-baseline outline-none transition-colors hover:border-violet-300/38 hover:bg-violet-500/18 focus:border-violet-200/45 focus:ring-1 focus:ring-violet-300/30";
+
+    const icon = document.createElement("span");
+    icon.dataset.smartLinkIcon = "true";
+    icon.className = "inline-flex h-3.5 min-w-3.5 shrink-0 items-center justify-center rounded-[3px] bg-violet-200/10 px-0.5 font-mono text-[7px] font-bold text-violet-100/80";
+    chip.appendChild(icon);
+
+    const label = document.createElement("span");
+    label.dataset.smartLinkLabel = "true";
+    label.className = "max-w-[238px] truncate";
+    chip.appendChild(label);
+    updateSmartLinkChipNode(chip, initial);
+
+    let request = smartLinkPreviewCacheRef.current.get(initial.url);
+    if (!request) {
+      request = window.ade.agentChat.resolveSmartLinkPreview({ url: initial.url }).catch(() => initial);
+      smartLinkPreviewCacheRef.current.set(initial.url, request);
+    }
+    void request.then((resolved) => {
+      if (!resolved || !chip.isConnected || chip.dataset.smartLinkUrl !== resolved.url) return;
+      updateSmartLinkChipNode(chip, resolved);
+    });
+    return chip;
+  }, [updateSmartLinkChipNode]);
+
+  const restoreRichCaretAtTextOffset = useCallback((editor: HTMLElement, requestedOffset: number) => {
+    const selection = window.getSelection();
+    if (!selection) return;
+    let remaining = Math.max(0, requestedOffset);
+    let placed = false;
+    const range = document.createRange();
+    const visit = (node: Node) => {
+      if (placed) return;
+      if (node.nodeType === Node.TEXT_NODE) {
+        const length = node.textContent?.length ?? 0;
+        if (remaining <= length) {
+          range.setStart(node, remaining);
+          range.collapse(true);
+          placed = true;
+          return;
+        }
+        remaining -= length;
+        return;
+      }
+      if (!(node instanceof HTMLElement)) return;
+      const chipText = node.dataset.composerChipText;
+      if (chipText != null) {
+        if (remaining <= chipText.length) {
+          if (remaining < chipText.length / 2) range.setStartBefore(node);
+          else range.setStartAfter(node);
+          range.collapse(true);
+          placed = true;
+          return;
+        }
+        remaining -= chipText.length;
+        return;
+      }
+      node.childNodes.forEach(visit);
+    };
+    editor.childNodes.forEach(visit);
+    if (!placed) {
+      range.selectNodeContents(editor);
+      range.collapse(false);
+    }
+    selection.removeAllRanges();
+    selection.addRange(range);
+    richSelectionRef.current = range.cloneRange();
+  }, []);
+
+  const tokenizeSmartLinksInEditor = useCallback(() => {
+    const editor = richEditorRef.current;
+    if (!editor || imeComposingRef.current) return false;
+    const cursorOffset = getRichCursorTextOffset();
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const parent = node.parentElement;
+        if (!parent || parent.closest("[data-composer-chip], [data-ios-context-id], [data-app-control-context-id], [data-built-in-browser-context-id]")) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return findSmartLinks(node.textContent ?? "").length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
+    const nodes: Text[] = [];
+    let current = walker.nextNode();
+    while (current) {
+      nodes.push(current as Text);
+      current = walker.nextNode();
+    }
+    if (!nodes.length) return false;
+    for (const node of nodes) {
+      const text = node.textContent ?? "";
+      const links = findSmartLinks(text);
+      if (!links.length) continue;
+      const fragment = document.createDocumentFragment();
+      let offset = 0;
+      for (const link of links) {
+        if (link.start > offset) fragment.append(document.createTextNode(text.slice(offset, link.start)));
+        fragment.append(createSmartLinkChipNode(link));
+        offset = link.end;
+      }
+      if (offset < text.length) fragment.append(document.createTextNode(text.slice(offset)));
+      node.replaceWith(fragment);
+    }
+    restoreRichCaretAtTextOffset(editor, cursorOffset);
+    syncRichDraft();
+    return true;
+  }, [createSmartLinkChipNode, getRichCursorTextOffset, restoreRichCaretAtTextOffset, syncRichDraft]);
+
+  const removeSmartLinkNode = useCallback((node: HTMLElement) => {
+    const editor = richEditorRef.current;
+    if (!editor || !editor.contains(node)) return;
+    const next = node.nextSibling;
+    node.remove();
+    if (next?.nodeType === Node.TEXT_NODE && next.textContent?.startsWith(" ")) {
+      next.textContent = next.textContent.slice(1);
+    }
+    setSelectedSmartLinkNode(null);
+    syncRichDraft();
+    editor.focus({ preventScroll: true });
+  }, [syncRichDraft]);
+
+  const removeAdjacentSmartLink = useCallback((direction: "backward" | "forward"): boolean => {
+    const editor = richEditorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection || !selection.rangeCount) return false;
+    const range = selection.getRangeAt(0);
+    if (!range.collapsed || !editor.contains(range.startContainer)) return false;
+    let candidate: Node | null = null;
+    if (range.startContainer.nodeType === Node.TEXT_NODE) {
+      const text = range.startContainer.textContent ?? "";
+      if (direction === "backward" && range.startOffset === 0) candidate = range.startContainer.previousSibling;
+      if (direction === "forward" && range.startOffset === text.length) candidate = range.startContainer.nextSibling;
+    } else {
+      candidate = range.startContainer.childNodes[direction === "backward" ? range.startOffset - 1 : range.startOffset] ?? null;
+    }
+    if (!(candidate instanceof HTMLElement) || !candidate.dataset.smartLinkUrl) return false;
+    removeSmartLinkNode(candidate);
+    return true;
+  }, [removeSmartLinkNode]);
 
   const setRichEditorText = useCallback((text: string) => {
     const editor = richEditorRef.current;
@@ -2404,6 +2591,14 @@ export function AgentChatComposer({
     if (!richInitializedRef.current) {
       editor.textContent = draft;
       richInitializedRef.current = true;
+    } else {
+      const currentText = serializeRichEditor();
+      const externalDraftChange = shouldReconcileSmartLinkDraft(draft, currentText, lastSerializedDraftRef.current);
+      if (externalDraftChange) {
+        editor.textContent = draft;
+        richSelectionRef.current = null;
+        setSelectedSmartLinkNode(null);
+      }
     }
 
     const isFocusedInsideEditor = document.activeElement === editor;
@@ -2477,11 +2672,13 @@ export function AgentChatComposer({
       existingBuiltInBrowserIds.add(item.id);
     }
 
+    tokenizeSmartLinksInEditor();
+
     const next = serializeRichEditor();
     if (next === lastSerializedDraftRef.current) return;
     lastSerializedDraftRef.current = next;
     onDraftChange(next);
-  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, useRichComposer]);
+  }, [appControlContextItems, builtInBrowserContextItems, createAppControlContextChipNode, createBuiltInBrowserContextChipNode, createIosContextChipNode, draft, insertNodeAtTextOffset, iosElementContextItems, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor, useRichComposer]);
 
   const handleSlashSelect = useCallback((cmd: SlashCommandEntry) => {
     // Local-only commands handled client-side
@@ -2896,6 +3093,32 @@ export function AgentChatComposer({
       }
       return;
     }
+
+    if (event.currentTarget instanceof HTMLDivElement) {
+      const focusedSmartLink = document.activeElement instanceof HTMLElement
+        ? document.activeElement.closest<HTMLElement>("[data-smart-link-url]")
+        : null;
+      if (focusedSmartLink && event.currentTarget.contains(focusedSmartLink)) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          setSelectedSmartLinkNode(focusedSmartLink);
+          return;
+        }
+        if (event.key === "Backspace" || event.key === "Delete") {
+          event.preventDefault();
+          removeSmartLinkNode(focusedSmartLink);
+          return;
+        }
+      }
+      if (event.key === "Backspace" && removeAdjacentSmartLink("backward")) {
+        event.preventDefault();
+        return;
+      }
+      if (event.key === "Delete" && removeAdjacentSmartLink("forward")) {
+        event.preventDefault();
+        return;
+      }
+    }
     if (isMacPasteShortcut(event)) {
       const handledPasteGeneration = clipboardImagePasteHandledRef.current;
       if (clipboardImagePasteFallbackTimerRef.current != null) {
@@ -3030,6 +3253,20 @@ export function AgentChatComposer({
       }
       if (addImageUrlFromTransfer(event.clipboardData, { showNotice: true })) {
         event.preventDefault();
+        return;
+      }
+      const pastedText = event.clipboardData.getData("text/plain");
+      if (pastedText && findSmartLinks(pastedText).length > 0) {
+        if (event.currentTarget instanceof HTMLTextAreaElement) {
+          event.preventDefault();
+          const node = event.currentTarget;
+          const start = node.selectionStart ?? draft.length;
+          const end = node.selectionEnd ?? start;
+          onDraftChange(`${draft.slice(0, start)}${pastedText}${draft.slice(end)}`);
+          setSmartLinkEditorEnabled(true);
+        } else {
+          window.requestAnimationFrame(() => tokenizeSmartLinksInEditor());
+        }
       }
       return;
     }
@@ -3109,9 +3346,13 @@ export function AgentChatComposer({
     setCommandMenuTrigger(null);
   }, [attachBlockedReason, canAttach, commandMenuTrigger, composerInputLocked, draft, effectiveSlashCommands, handleSlashSelect, insertTextIntoRichEditor, onDraftChange, onAddAttachment, replaceRichTriggerWith, restoreTextareaCaret, useRichComposer]);
 
-  const handleRichEditorInput = useCallback(() => {
+  const handleRichEditorInput = useCallback((event?: React.FormEvent<HTMLDivElement>) => {
     const editor = richEditorRef.current;
     if (!editor) return;
+    const inputType = (event?.nativeEvent as InputEvent | undefined)?.inputType ?? "";
+    if (!imeComposingRef.current && (inputType === "insertParagraph" || /\s$/.test(editor.textContent ?? ""))) {
+      if (tokenizeSmartLinksInEditor()) return;
+    }
     const val = serializeRichEditor();
     onDraftChange(val);
     if (imeComposingRef.current) {
@@ -3127,7 +3368,7 @@ export function AgentChatComposer({
       setCommandMenuTrigger(null);
     }
     captureRichSelection();
-  }, [captureRichSelection, getRichTriggerContext, onDraftChange, serializeRichEditor]);
+  }, [captureRichSelection, getRichTriggerContext, onDraftChange, serializeRichEditor, tokenizeSmartLinksInEditor]);
 
   const singleModelBlockedMessage = modelUnavailableMessage?.trim() ? modelUnavailableMessage : null;
   const singleModelReady = Boolean(modelId) && !singleModelBlockedMessage;
@@ -4520,6 +4761,13 @@ export function AgentChatComposer({
                 onBlur={captureRichSelection}
                 onClick={(event) => {
                   const target = event.target as HTMLElement | null;
+                  const smartLinkChip = target?.closest?.("[data-smart-link-url]") as HTMLElement | null;
+                  if (smartLinkChip?.dataset.smartLinkUrl) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setSelectedSmartLinkNode(smartLinkChip);
+                    return;
+                  }
                   const iosChip = target?.closest?.("[data-ios-context-id]") as HTMLElement | null;
                   if (iosChip?.dataset.iosContextId) {
                     event.preventDefault();
@@ -4588,6 +4836,9 @@ export function AgentChatComposer({
                 onChange={(event) => {
                   const val = event.target.value;
                   onDraftChange(val);
+                  if (/\s$/.test(val) && findSmartLinks(val).length > 0) {
+                    setSmartLinkEditorEnabled(true);
+                  }
                   const cursorPos = event.target.selectionStart ?? val.length;
                   lastPlainSelectionRef.current = cursorPos;
                   if (imeComposingRef.current) return;
@@ -4633,6 +4884,13 @@ export function AgentChatComposer({
               />
             </div>
           )}
+          {selectedSmartLinkNode?.isConnected ? (
+            <ComposerSmartLinkMenu
+              anchor={selectedSmartLinkNode}
+              onClose={() => setSelectedSmartLinkNode(null)}
+              onRemove={removeSmartLinkNode}
+            />
+          ) : null}
         </div>
       </div>
       </ChatComposerShell>

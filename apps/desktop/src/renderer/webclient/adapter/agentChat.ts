@@ -1,5 +1,6 @@
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import type { AgentChatSteerResult } from "../../../shared/types/chat";
+import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 
@@ -205,6 +206,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     getSessionCapabilities: (args: unknown) => call("chat.getSessionCapabilities", args, { capabilities: [] }),
     saveTempAttachment: (args: unknown) => call("chat.saveTempAttachment", args, { path: "" }, false),
     getImageDataUrl: async (path: string) => ({ dataUrl: (await requestDataUrl(client, infra.state, "readArtifact", { path })) ?? "" }),
+    resolveSmartLinkPreview: (args: unknown) => {
+      const record = asRecord(args);
+      const url = stringField(record, "url");
+      return call("chat.resolveSmartLinkPreview", record, deriveSmartLinkPreview(url));
+    },
     getEventHistory: async (args: unknown) => {
       const record = asRecord(args);
       ensureChatSubscription(stringField(record, "sessionId"));

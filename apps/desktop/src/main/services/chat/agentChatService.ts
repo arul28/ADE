@@ -95,6 +95,7 @@ import {
 } from "./codexMcpElicitation";
 import { discoverCursorSlashCommands } from "./cursorSlashCommandDiscovery";
 import { resolveProviderSlashCommandPrompt } from "./slashCommandPromptExpansion";
+import { resolveSmartLinkPreview } from "./smartLinkPreviewService";
 import { buildCanonicalAgentChatRuntimeEvent } from "./runtimeEvents";
 import { classifyAgentCliError } from "../../../../../ade-cli/src/services/agentRegistry";
 import type {
@@ -38126,6 +38127,7 @@ export function createAgentChatService(args: {
     warmupModel,
     listSubagents,
     getSessionCapabilities,
+    resolveSmartLinkPreview: ({ url }: { url: string }) => resolveSmartLinkPreview({ url }),
     previewSessionToolNames,
     cancelCursorCloudRun,
     cursorCloudFollowUp,

@@ -523,6 +523,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "acceptCrossMachineHandoff",
     "markCrossMachineHandoff",
     "respondToInput",
+    "resolveSmartLinkPreview",
     "reloadClaudePlugins",
     "rewindFiles",
     "saveTempAttachment",
@@ -920,6 +921,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Read the provider/model catalog, including reasoning tiers and fast service tiers.",
       input: "object { mode?: \"cached\" | \"refresh-stale\" | \"force\", refreshProvider?: string, cursorSource?: string }",
       example: "ade actions run chat.modelCatalog --input-json '{\"mode\":\"cached\"}' --json",
+    },
+    resolveSmartLinkPreview: {
+      description: "Resolve a safe, bounded title and favicon preview for a pasted chat URL.",
+      input: "object { url: string }",
+      example: "ade actions run chat.resolveSmartLinkPreview --input-json '{\"url\":\"https://github.com/owner/repo/pull/123\"}' --json",
     },
     recoverCodexTurn: {
       description: "Recover a stalled Codex turn by waiting, nudging it, retrying on the same thread, or restarting and resuming the thread.",
