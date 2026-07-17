@@ -251,6 +251,20 @@ describe("getSharedAccountAuthService resolves CLERK OAuth config as an atomic p
       clientId: "custom-client",
     });
   });
+
+  it("replaces a packaged development OAuth client id behind a custom issuer", () => {
+    expect(resolveAccountOAuthConfig({
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: "https://clerk.example.com",
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+      projectRoots: [],
+    })).toEqual({
+      issuer: DEFAULT_ADE_CLERK_ISSUER,
+      clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+    });
+  });
 });
 
 describe("getSharedAccountAttestationConfig", () => {
@@ -321,6 +335,16 @@ describe("getSharedAccountAttestationConfig", () => {
         ADE_RUNTIME_PACKAGED: "1",
         CLERK_ISSUER: DEVELOPMENT_ADE_CLERK_ISSUER,
         CLERK_JWKS_URL: `${DEVELOPMENT_ADE_CLERK_ISSUER}/.well-known/jwks.json`,
+        CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+      } as NodeJS.ProcessEnv,
+    })).toEqual(productionConfig);
+    expect(getSharedAccountAttestationConfig({
+      secretsDir: uniqueSecretsDir(),
+      projectRoots: () => [],
+      env: {
+        ADE_RUNTIME_PACKAGED: "1",
+        CLERK_ISSUER: "https://clerk.example.com",
+        CLERK_JWKS_URL: "https://clerk.example.com/.well-known/jwks.json",
         CLERK_OAUTH_CLIENT_ID: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
       } as NodeJS.ProcessEnv,
     })).toEqual(productionConfig);

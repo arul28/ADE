@@ -55,6 +55,12 @@ export function warnDevelopmentClerkIgnored(): void {
   console.warn(DEVELOPMENT_CLERK_IGNORED_WARNING);
 }
 
+export function isClerkDevelopmentOAuthClientId(
+  clientId: string | null | undefined,
+): boolean {
+  return clientId?.trim() === DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID;
+}
+
 export function isClerkDevelopmentIssuer(
   issuer: string | null | undefined,
 ): boolean {

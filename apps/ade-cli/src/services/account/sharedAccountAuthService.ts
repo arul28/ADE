@@ -5,6 +5,7 @@ import {
   DEFAULT_ADE_CLERK_JWKS_URL,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
   isClerkDevelopmentIssuer,
+  isClerkDevelopmentOAuthClientId,
   officialAccountDirectoryUrlForIssuer,
   shouldIgnoreDevelopmentAccountDirectoryUrl,
   shouldIgnoreDevelopmentClerkConfiguration,
@@ -78,7 +79,8 @@ function enforcePackagedOAuthConfig(
 ): AccountOAuthConfig {
   if (
     !shouldIgnoreDevelopmentClerkConfiguration(env)
-    || !isClerkDevelopmentIssuer(config.issuer)
+    || (!isClerkDevelopmentIssuer(config.issuer)
+      && !isClerkDevelopmentOAuthClientId(config.clientId))
   ) {
     return config;
   }
@@ -96,7 +98,8 @@ function enforcePackagedAttestationConfig(
   if (
     !shouldIgnoreDevelopmentClerkConfiguration(env)
     || (!isClerkDevelopmentIssuer(config.issuer)
-      && !isClerkDevelopmentIssuer(config.jwksUrl))
+      && !isClerkDevelopmentIssuer(config.jwksUrl)
+      && !isClerkDevelopmentOAuthClientId(config.oauthClientId))
   ) {
     return config;
   }
