@@ -288,6 +288,23 @@ Desktop connection UI:
   `window.ade.sync.getLocalStatus(...)` accessor is available for the card to
   consume so a window bound to another machine can still show the physical
   Mac's identity, pairing code, and Phone/Web device lists.
+- `apps/desktop/src/renderer/components/settings/useSyncConnections.ts` — the
+  hook that keeps the Connections panel local-vs-remote aware. It fetches the
+  binding-following `sync.getStatus` **and** the machine-level
+  `sync.getLocalStatus` on every refresh; the This Mac card always renders the
+  `getLocalStatus` snapshot, so it names the physical Mac even in a remote-bound
+  window, and never substitutes a routed (remote) snapshot when the local one is
+  unavailable. It derives `isRemoteBound` by comparing the two snapshots'
+  `localDevice.deviceId`, exposes the bound machine's display name for labeling,
+  and gates `canManageDevices` on `!isRemoteBound`. Because the mutation methods
+  (`setPin`, `generatePin`, `clearPin`, `forgetDevice`, name edits) still follow
+  the window binding, the panel renders the pairing code and device controls
+  read-only while remote-bound and labels the connected device list with the
+  local Mac's name so it can't be mistaken for the bound machine's. When
+  remote-bound it also scopes the shown devices to this Mac's live
+  `connectedPeers` (via `peerToRuntimeDeviceState`) instead of the routed
+  `listDevices()` result, which would describe the remote machine; offline-paired
+  rows are unavailable in that mode until a local-scoped device IPC exists.
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,
   preload routing, and the Connections recovery copy. Keep these predicates

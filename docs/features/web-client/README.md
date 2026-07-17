@@ -102,12 +102,49 @@ Browser `window.ade` adapter:
   mutations for that peer.
 - `apps/desktop/src/renderer/webclient/adapter/infra/commandCaller.ts` -
   remote-command dispatch through `SyncRemoteCommandDescriptor` scope/policy,
-  with fallback for unsupported hosts.
+  with fallback for unsupported hosts. Read commands that pass `cacheTtlMs`
+  (and are not marked `idempotent: false`) go through a per-caller coalescing
+  read cache: concurrent identical calls join a single in-flight relay request,
+  and the resolved value is reused for the TTL window (3 s). `invalidateCache`
+  clears the whole cache or a set of action prefixes so a mutation or a
+  `changeset_batch`-driven refresh drops stale reads.
+- `apps/desktop/src/renderer/webclient/adapter/infra/coalescingReadCache.ts`
+  and `infra/cacheKey.ts` - the shared coalescing/TTL cache primitive and a
+  deterministic argument-serializer used to key it. The cache keeps concurrent
+  callers joined even when the transport outlasts the TTL (the freshness window
+  starts at resolution) and never caches rejections.
+- `apps/desktop/src/renderer/webclient/adapter/infra/projectState.ts` - holds
+  the bound project and, critically, the `projectId` the shell passed at bind
+  time. `getProjectId()` prefers that bound id (then a catalog match by root
+  path) over the sync client's persisted `activeProjectId`, which can briefly
+  name the prior project during reconnect and would otherwise stamp file
+  requests and project commands with a stale id.
 - `apps/desktop/src/renderer/webclient/adapter/infra/invalidation.ts` -
   maps changed table names from `changeset_batch` envelopes to coarse
   renderer invalidation domains.
 - `apps/desktop/src/renderer/webclient/adapter/files.ts` - browser file API
-  over sync `file_request`; no local file watcher.
+  over sync `file_request`; no local file watcher. List reads
+  (`listWorkspaces` / `listTree` / `listTreeChildren`) are coalesced through a
+  3 s read cache and now **surface transport errors** instead of silently
+  returning an empty result — the earlier fallback-to-empty behavior masked a
+  failed request as a legitimately empty tree, which (combined with the stale
+  project-id above) produced the Files tab's spurious "no files" state. Writes
+  and `filesInvalidated` events clear the read cache and fan a change event out
+  to every workspace id seen for the project rather than a single `"*"` marker.
+- `apps/desktop/src/renderer/webclient/adapter/remoteRuntime.ts` - a
+  `window.ade.remoteRuntime` stub for the hosted client, which is already
+  attached to one paired machine and has no desktop-local target registry, SSH
+  discovery, or pairing host. Reads return empty collection-shaped results so
+  shared shell components still mount; machine-management mutations throw
+  "Desktop machine management is unavailable in ADE Web."
+- `apps/desktop/src/renderer/webclient/adapter/prs.ts` - PR namespace over
+  remote commands. List/detail reads go through the 3 s read cache, and a
+  `prsInvalidated` event no longer emits an empty PR list marker: it invalidates
+  the `prs.` cache, then hydrates one coalesced aggregate snapshot
+  (`prs.getMobileSnapshot`, falling back to `prs.list`) and emits `prs-updated`
+  only when the host actually returned a snapshot. `listAll`, `getForLane`, and
+  the non-conflict `listWithConflicts` are all derived from that one batched
+  snapshot instead of separate per-call round-trips.
 - `apps/desktop/src/renderer/webclient/adapter/sessionsPty.ts` - terminal and
   PTY APIs over `work.*`, `terminal_*`, and `terminal_history`.
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
@@ -138,8 +175,12 @@ Browser shell and routes:
   machine picker,
   30-second active-account lease monitor, project picker, adapter load, pending
   `/open` target stash, project binding, and projectless `/chats` routing before
-  a project is selected. Saved machines are shown first instead of reconnecting
-  automatically on page load.
+  a project is selected. Project binding now passes the selected `project.id`
+  (from the switch result when available) into `bindProject` so the adapter's
+  `getProjectId()` cannot fall back to a stale `activeProjectId` mid-reconnect,
+  and a failed `switchProject` surfaces its message instead of being swallowed.
+  Saved machines are shown first instead of reconnecting automatically on page
+  load.
 - `apps/desktop/src/renderer/webclient/shell/WebShell.tsx` - machine
   switcher, project switcher, forget machine, reconnect hint, and "Open in
   desktop" button.
@@ -475,6 +516,20 @@ for their non-Relay routes.
 The browser intentionally does not maintain a local replica of `.ade/ade.db`.
 `SyncConnection.sendHello` sends `dbVersion: 0` and `capabilities: []`, so the
 host does not treat it like a changeset-acknowledging CRDT peer.
+
+Because there is no local replica, every read is a live relay round-trip to the
+machine — where the desktop renderer would hit its in-process cr-sqlite. Two
+adapter-side measures keep that from turning routine UI into a burst of
+redundant relay traffic. First, read commands and file-list requests pass
+through a short (3 s) **coalescing read cache**: concurrent identical reads join
+one in-flight request and reuse its result for the TTL window, while any
+mutation or `changeset_batch`-driven invalidation drops the affected entries.
+Second, the PRs surface **batches** its reads: instead of separate `prs.list` /
+`prs.getForLane` / `listWithConflicts` round-trips it hydrates a single
+coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
+`prsInvalidated` event triggers exactly one aggregate refresh rather than an
+empty-list marker. These caches are freshness hints over the authoritative
+relay reads, not a persisted store.
 
 Incoming `changeset_batch` envelopes are reduced to a set of table names in
 `connection.ts`. `createInvalidationScheduler` maps those table names to
