@@ -234,12 +234,13 @@ export function createSyncCloudRelayStore(args: { filePath: string; lockWaitMs?:
       fs.closeSync(lease.fd);
     } finally {
       const current = readRotationLock();
-      if (current?.owner?.token !== lease.owner.token) return;
-      try {
-        fs.unlinkSync(rotationLockPath);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          // Cleanup is best effort; a later owner can reap this dead PID lock.
+      if (current?.owner?.token === lease.owner.token) {
+        try {
+          fs.unlinkSync(rotationLockPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+            // Cleanup is best effort; a later owner can reap this dead PID lock.
+          }
         }
       }
     }
