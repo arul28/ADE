@@ -543,6 +543,47 @@ git tag -a "ios-v${MARKETING_VERSION}-build${BUILD_NUMBER}" "$RELEASE_SHA" \
 git push origin "ios-v${MARKETING_VERSION}-build${BUILD_NUMBER}"
 ```
 
+## Phase 5.5: Cloudflare Deployables (web client + Workers)
+
+The GitHub desktop workflow and TestFlight do NOT deploy the hosted web
+surfaces. Every release must check these four, or production silently drifts
+(this bit v1.2.28 and v1.2.29: a rewritten web client and two changed Workers
+sat undeployed while the desktop shipped):
+
+```bash
+LAST_TAG=<previous desktop tag>
+for d in apps/account-directory apps/webhook-relay apps/tunnel-relay apps/push-relay; do
+  echo "$d: $(git log $LAST_TAG..origin/main --oneline -- $d | wc -l) commits"
+done
+# Web client: any change under apps/desktop/src/renderer/webclient/**,
+# vite.webclient.config.ts, or shared code the webclient imports counts.
+git log $LAST_TAG..origin/main --oneline -- apps/desktop/src/renderer/webclient
+```
+
+Deploy each changed surface from the release commit on main (never a lane):
+
+```bash
+# Hosted web client (Cloudflare Pages project ade-web-client)
+npm --prefix apps/desktop run build:webclient
+npx wrangler pages deploy apps/desktop/dist/web-client --project-name ade-web-client
+
+# Workers (npm install first if node_modules is stale in the checkout)
+(cd apps/account-directory && npx wrangler deploy --env production)
+(cd apps/webhook-relay && npx wrangler deploy)
+(cd apps/tunnel-relay && npx wrangler deploy)      # only when changed
+(cd apps/push-relay && npx wrangler deploy)        # only when changed
+```
+
+Verify after deploying:
+
+- `curl https://ade-account-directory-production.arulsharma1028.workers.dev/health` → `{"ok":true}`
+- `curl -s https://app.ade-app.dev | grep -oE 'index-[A-Za-z0-9]+\.js'` matches the
+  freshly built bundle hash in `apps/desktop/dist/web-client/assets/`.
+- Workers with Durable Object migrations (e.g. webhook-relay REPO_EVENTS) apply
+  them on deploy — read the wrangler output for migration errors.
+
+Credentials: `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` from ADE secrets.
+
 ## Phase 6: Recovery Rules
 
 Desktop:
