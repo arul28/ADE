@@ -522,6 +522,12 @@ private struct WorkUsageQuotaCompact: View {
               .foregroundStyle(ADEColor.textMuted)
           }
           .font(.system(.caption2, design: .monospaced))
+          if provider == "codex", snapshot.spendControlReached == true {
+            Text("Spending cap reached")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.warning)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
         }
       } else {
         Text("Connect to a machine to load live limits.")

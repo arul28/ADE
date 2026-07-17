@@ -364,6 +364,7 @@ export function UsageQuotaPanel({
               connection={providerConnection(providerConnections, provider)}
               status={snapshot?.providerStatus?.[provider] ?? null}
               messages={(snapshot?.providerMessages ?? []).filter((message) => message.provider === provider)}
+              spendControlReached={provider === "codex" && snapshot?.spendControlReached === true}
               dailyUsage7d={snapshot?.dailyUsage7d?.[provider] ?? null}
               nowMs={nowMs}
               reducedMotion={reducedMotion}
@@ -537,6 +538,7 @@ function ProviderUsageCard({
   connection,
   status,
   messages,
+  spendControlReached,
   dailyUsage7d,
   nowMs,
   reducedMotion,
@@ -548,6 +550,7 @@ function ProviderUsageCard({
   connection: AiProviderConnectionStatus | null;
   status: UsageProviderStatus | null;
   messages: NonNullable<UsageSnapshot["providerMessages"]>;
+  spendControlReached: boolean;
   dailyUsage7d: number[] | null;
   nowMs: number;
   reducedMotion: boolean;
@@ -601,6 +604,12 @@ function ProviderUsageCard({
           {providerSourceLabel(status)} · {providerUpdatedLabel(status, nowMs)}
         </span>
       </div>
+
+      {spendControlReached ? (
+        <div className="mb-3 rounded-lg border border-amber-300/10 bg-amber-300/[0.04] px-2.5 py-1.5">
+          <span className="text-[10.5px] font-medium text-amber-100/70">Spending cap reached</span>
+        </div>
+      ) : null}
 
       {status && status.state !== "ok" ? (
         <div className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-amber-300/10 bg-amber-300/[0.04] px-2.5 py-2">

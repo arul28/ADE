@@ -292,6 +292,7 @@ import type {
   CodexThreadTokenUsage,
   CodexTokenUsageBreakdown,
   CodexWebSearchAction,
+  CodexWebSearchResult,
   PendingInputQuestion,
   PendingInputKind,
   PendingInputRequest,
@@ -564,12 +565,26 @@ type JsonRpcEnvelope = {
   id?: string | number;
   method?: string;
   params?: unknown;
+  emittedAtMs?: number;
   result?: unknown;
   error?: {
     code?: number;
     message?: string;
     data?: unknown;
   };
+};
+
+export type CodexServerVersion = {
+  major: number;
+  minor: number;
+  patch: number;
+};
+
+type CodexRateLimits = {
+  remaining: number | null;
+  limit: number | null;
+  resetAt: string | null;
+  spendControlReached?: boolean;
 };
 
 type CodexDynamicToolSpec = {
@@ -828,6 +843,7 @@ type PendingClaudeApproval = {
 
 type CodexRuntime = {
   kind: "codex";
+  serverVersion: CodexServerVersion | null;
   process: ChildProcessWithoutNullStreams;
   reader: readline.Interface;
   killTimer: NodeJS.Timeout | null;
@@ -899,7 +915,7 @@ type CodexRuntime = {
   sendResponse: (id: string | number, result: unknown) => void;
   sendError: (id: string | number, message: string, code?: number) => void;
   slashCommands: Array<{ name: string; description: string; argumentHint?: string }>;
-  rateLimits: { remaining: number | null; limit: number | null; resetAt: string | null } | null;
+  rateLimits: CodexRateLimits | null;
   collaborationModes: Set<string> | null;
   collaborationModesReady: Promise<void> | null;
   planModeFallbackNotified: boolean;
@@ -2843,6 +2859,21 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim().length ? value.trim() : null;
 }
 
+export function parseCodexServerVersion(userAgent: unknown): CodexServerVersion | null {
+  if (typeof userAgent !== "string") return null;
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(userAgent);
+  if (!match) return null;
+  const [major, minor, patch] = match.slice(1).map(Number);
+  if (![major, minor, patch].every(Number.isSafeInteger)) return null;
+  return { major, minor, patch };
+}
+
+export function codexServerSupportsForkBeforeTurn(version: CodexServerVersion | null): boolean {
+  if (!version) return false;
+  if (version.major > 0) return true;
+  return version.minor >= 145;
+}
+
 function codexTimestampOrNull(value: unknown): string | null {
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
   return stringOrNull(value);
@@ -2854,13 +2885,15 @@ function normalizeCodexTokenBreakdown(value: unknown): CodexTokenUsageBreakdown 
   const inputTokens = numberOrNull(record.inputTokens ?? record.input_tokens ?? record.promptTokens ?? record.prompt_tokens);
   const outputTokens = numberOrNull(record.outputTokens ?? record.output_tokens ?? record.completionTokens ?? record.completion_tokens);
   const cacheReadTokens = numberOrNull(record.cacheReadTokens ?? record.cache_read_tokens ?? record.cachedInputTokens ?? record.cached_input_tokens);
-  const cacheWriteTokens = numberOrNull(record.cacheWriteTokens ?? record.cache_write_tokens ?? record.cacheCreationTokens ?? record.cache_creation_tokens);
+  const cacheWriteTokens = numberOrNull(record.cacheWriteTokens ?? record.cache_write_tokens ?? record.cacheWriteInputTokens ?? record.cache_write_input_tokens ?? record.cacheCreationTokens ?? record.cache_creation_tokens);
+  const reasoningTokens = numberOrNull(record.reasoningOutputTokens ?? record.reasoning_output_tokens);
   const totalTokens = numberOrNull(record.totalTokens ?? record.total_tokens ?? record.total);
   const normalized: CodexTokenUsageBreakdown = {};
   if (inputTokens != null) normalized.inputTokens = inputTokens;
   if (outputTokens != null) normalized.outputTokens = outputTokens;
   if (cacheReadTokens != null) normalized.cacheReadTokens = cacheReadTokens;
   if (cacheWriteTokens != null) normalized.cacheWriteTokens = cacheWriteTokens;
+  if (reasoningTokens != null) normalized.reasoningTokens = reasoningTokens;
   if (totalTokens != null) normalized.totalTokens = totalTokens;
   if (normalized.totalTokens == null) {
     const derivedTotal =
@@ -3082,6 +3115,41 @@ function normalizeCodexWebSearchActions(...values: unknown[]): CodexWebSearchAct
     .flatMap((value) => Array.isArray(value) ? value : value == null ? [] : [value])
     .map((value) => normalizeCodexWebSearchAction(value))
     .filter((action): action is CodexWebSearchAction => action != null);
+}
+
+function normalizeCodexWebSearchResults(value: unknown): { results: CodexWebSearchResult[]; total: number } | null {
+  const MAX = 8;
+  if (!Array.isArray(value)) return null;
+  const results: CodexWebSearchResult[] = [];
+  let total = 0;
+  for (const entry of value) {
+    const record = asRecord(entry);
+    if (!record) continue;
+    const url = stringOrNull(record.url ?? record.link);
+    const title = stringOrNull(record.title);
+    const snippet = stringOrNull(record.snippet ?? record.text ?? record.description);
+    if (!url && !title) continue;
+    total += 1;
+    if (results.length >= MAX) continue;
+    results.push({
+      ...(url ? { url } : {}),
+      ...(title ? { title } : {}),
+      ...(snippet ? { snippet } : {}),
+    });
+  }
+  return total > 0 ? { results, total } : null;
+}
+
+function normalizeCodexRateLimits(value: unknown): CodexRateLimits | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const spendControlReached = record.spendControlReached ?? record.spend_control_reached;
+  return {
+    remaining: numberOrNull(record.remaining),
+    limit: numberOrNull(record.limit),
+    resetAt: stringOrNull(record.resetAt ?? record.reset_at),
+    ...(typeof spendControlReached === "boolean" ? { spendControlReached } : {}),
+  };
 }
 
 function normalizeCodexMcpToolSource(item: Record<string, unknown>): AgentChatMcpToolSource {
@@ -21607,6 +21675,7 @@ export function createAgentChatService(args: {
         status = String(item.status ?? "completed") === "failed" ? "failed" : "completed";
       }
       const actions = normalizeCodexWebSearchActions(item.action, item.actions);
+      const normalizedResults = normalizeCodexWebSearchResults(item.results);
       if (actions.length) {
         runtime.webSearchActionsByItemId.set(itemId, actions);
         evictOldestEntries(runtime.webSearchActionsByItemId, MAX_SESSION_MAP_ENTRIES);
@@ -21616,6 +21685,10 @@ export function createAgentChatService(args: {
         query: String(item.query ?? ""),
         action: actions[0]?.type,
         ...(actions.length ? { actions } : {}),
+        ...(normalizedResults ? {
+          results: normalizedResults.results,
+          resultsTotal: normalizedResults.total,
+        } : {}),
         itemId,
         turnId,
         status,
@@ -22752,6 +22825,7 @@ export function createAgentChatService(args: {
       const query = pickCodexTurnId(params.query, params.searchQuery, params.input) ?? "";
       const itemId = typeof params.itemId === "string" ? params.itemId : randomUUID();
       const actions = normalizeCodexWebSearchActions(params.action, params.actions);
+      const normalizedResults = normalizeCodexWebSearchResults(params.results);
       if (actions.length) {
         runtime.webSearchActionsByItemId.set(itemId, actions);
         evictOldestEntries(runtime.webSearchActionsByItemId, MAX_SESSION_MAP_ENTRIES);
@@ -22768,6 +22842,10 @@ export function createAgentChatService(args: {
         itemId,
         turnId: turnIdFromParams ?? runtime.activeTurnId ?? undefined,
         ...(actions.length ? { actions } : {}),
+        ...(normalizedResults ? {
+          results: normalizedResults.results,
+          resultsTotal: normalizedResults.total,
+        } : {}),
         status: "running",
       });
       return;
@@ -22866,13 +22944,9 @@ export function createAgentChatService(args: {
     }
 
     if (method === "account/rateLimits/updated") {
-      const rateLimits = params.rateLimits as { remaining?: number; limit?: number; resetAt?: string } | undefined;
+      const rateLimits = normalizeCodexRateLimits(params.rateLimits);
       if (rateLimits) {
-        runtime.rateLimits = {
-          remaining: typeof rateLimits.remaining === "number" ? rateLimits.remaining : null,
-          limit: typeof rateLimits.limit === "number" ? rateLimits.limit : null,
-          resetAt: typeof rateLimits.resetAt === "string" ? rateLimits.resetAt : null,
-        };
+        runtime.rateLimits = rateLimits;
         const pct = rateLimits.limit && rateLimits.remaining != null
           ? Math.round((rateLimits.remaining / rateLimits.limit) * 100)
           : null;
@@ -23049,6 +23123,7 @@ export function createAgentChatService(args: {
 
     const runtime: CodexRuntime = {
       kind: "codex",
+      serverVersion: null,
       process: proc,
       reader,
       killTimer: null,
@@ -23288,7 +23363,7 @@ export function createAgentChatService(args: {
           "item/commandExecution/outputDelta",
         ]
       : [];
-    await runtime.request("initialize", {
+    const initializeResponse = await runtime.request<{ userAgent?: unknown }>("initialize", {
       clientInfo: {
         name: "ade_desktop",
         title: "ADE Desktop",
@@ -23299,6 +23374,7 @@ export function createAgentChatService(args: {
         optOutNotificationMethods,
       }
     });
+    runtime.serverVersion = parseCodexServerVersion(initializeResponse?.userAgent);
 
     const collaborationModesRequest = runtime.request<unknown>("collaborationMode/list", {})
       .then((res) => {
@@ -23466,15 +23542,10 @@ export function createAgentChatService(args: {
       .catch(() => { /* skills/list not supported — ignore */ });
 
     // Fetch initial rate limits.
-    runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
+    runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
       .then((res) => {
-        if (res?.rateLimits) {
-          runtime.rateLimits = {
-            remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
-            limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
-            resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
-          };
-        }
+        const rateLimits = normalizeCodexRateLimits(res?.rateLimits);
+        if (rateLimits) runtime.rateLimits = rateLimits;
       })
       .catch(() => { /* account/rateLimits/read not supported — ignore */ });
   };
@@ -31073,15 +31144,10 @@ export function createAgentChatService(args: {
                   }
                 })
                 .catch(() => { /* skills/list not supported — ignore */ });
-              runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
+              runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
                 .then((res) => {
-                  if (res?.rateLimits) {
-                    runtime.rateLimits = {
-                      remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
-                      limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
-                      resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
-                    };
-                  }
+                  const rateLimits = normalizeCodexRateLimits(res?.rateLimits);
+                  if (rateLimits) runtime.rateLimits = rateLimits;
                 })
                 .catch(() => { /* account/rateLimits/read not supported — ignore */ });
             }
@@ -32548,15 +32614,10 @@ export function createAgentChatService(args: {
                 }
               })
               .catch(() => { /* skills/list not supported — ignore */ });
-            runtime.request<{ rateLimits?: { remaining?: number; limit?: number; resetAt?: string } }>("account/rateLimits/read", {})
+            runtime.request<{ rateLimits?: unknown }>("account/rateLimits/read", {})
               .then((res) => {
-                if (res?.rateLimits) {
-                  runtime.rateLimits = {
-                    remaining: typeof res.rateLimits.remaining === "number" ? res.rateLimits.remaining : null,
-                    limit: typeof res.rateLimits.limit === "number" ? res.rateLimits.limit : null,
-                    resetAt: typeof res.rateLimits.resetAt === "string" ? res.rateLimits.resetAt : null,
-                  };
-                }
+                const rateLimits = normalizeCodexRateLimits(res?.rateLimits);
+                if (rateLimits) runtime.rateLimits = rateLimits;
               })
               .catch(() => { /* account/rateLimits/read not supported — ignore */ });
           }
@@ -36811,6 +36872,7 @@ export function createAgentChatService(args: {
     messageId: string,
   ): {
     targetFound: boolean;
+    targetTurnId: string | null;
     hasLaterUserMessage: boolean;
     filesChanged: string[];
     insertions: number;
@@ -36819,6 +36881,7 @@ export function createAgentChatService(args: {
   } => {
     const envelopes = readFullTranscriptEnvelopesForSessionId(managed.session.id);
     let sawTargetMessage = false;
+    let targetTurnId: string | null = null;
     let hasLaterUserMessage = false;
     const restoreByPath = new Map<string, CodexRewindFileRestore>();
     let insertions = 0;
@@ -36828,12 +36891,17 @@ export function createAgentChatService(args: {
       const event = envelope.event;
       if (event.type === "user_message" && event.messageId === messageId) {
         sawTargetMessage = true;
+        targetTurnId = event.turnId?.trim() || null;
         continue;
       }
 
       if (!sawTargetMessage) continue;
       if (event.type === "user_message") {
         hasLaterUserMessage = true;
+      } else if (!targetTurnId) {
+        targetTurnId = "turnId" in event && typeof event.turnId === "string"
+          ? event.turnId.trim() || null
+          : null;
       }
 
       if (event.type !== "turn_diff_summary") continue;
@@ -36851,6 +36919,7 @@ export function createAgentChatService(args: {
 
     return {
       targetFound: sawTargetMessage,
+      targetTurnId,
       hasLaterUserMessage,
       filesChanged: [...restoreByPath.keys()],
       insertions,
@@ -37158,14 +37227,21 @@ export function createAgentChatService(args: {
 
       const runtime = await ensureCodexSessionRuntime(managed);
       const threadId = await ensureCodexControlThread(managed, runtime, "rewind");
-      const rollbackResponse = await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
-        threadId,
-        numTurns: 1,
-      }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
-      applyCodexEffectiveThreadState(managed, rollbackResponse);
-      adoptRuntimeSessionTitle(managed, rollbackResponse, "codex_thread_rollback");
-      const rolledBackThreadId = typeof rollbackResponse.thread?.id === "string"
-        ? rollbackResponse.thread.id
+      const useForkBeforeTurn = codexServerSupportsForkBeforeTurn(runtime.serverVersion) && plan.targetTurnId != null;
+      // thread/rollback is deprecated upstream; retain it for <=0.144 servers and turns without a usable id.
+      const lifecycleResponse = useForkBeforeTurn
+        ? await runtime.request<CodexThreadLifecycleResponse>("thread/fork", {
+            threadId,
+            beforeTurnId: plan.targetTurnId,
+          }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS })
+        : await runtime.request<CodexThreadLifecycleResponse>("thread/rollback", {
+            threadId,
+            numTurns: 1,
+          }, { timeoutMs: CODEX_INLINE_COMMAND_TIMEOUT_MS });
+      applyCodexEffectiveThreadState(managed, lifecycleResponse);
+      adoptRuntimeSessionTitle(managed, lifecycleResponse, useForkBeforeTurn ? "codex_thread_fork_before_turn" : "codex_thread_rollback");
+      const rolledBackThreadId = typeof lifecycleResponse.thread?.id === "string"
+        ? lifecycleResponse.thread.id
         : threadId;
       managed.session.threadId = rolledBackThreadId;
       sessionService.setResumeCommand(managed.session.id, `chat:codex:${rolledBackThreadId}`);

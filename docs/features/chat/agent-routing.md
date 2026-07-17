@@ -31,7 +31,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.144.0 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.144.5 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: Anthropic/OpenAI/Google/Mistral/DeepSeek/xAI/Groq/Together AI API keys, OpenRouter, and local (Ollama, LM Studio, vLLM). | `agentChatService.ts` (OpenCode adapter); model discovery in `localModelDiscovery.ts` and `modelsDevService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -198,14 +198,60 @@ over a stale persisted pair. Turns use the Codex-native `effort` key
 (`turn/start({ threadId, input, effort?, serviceTier? })`) instead of
 the lifecycle `reasoningEffort` name.
 
-The 0.144.0 server-request surface is handled in the same adapter. ADE answers
+The 0.144.5 server-request surface is handled in the same adapter. ADE answers
 `currentTime/read` with `{ currentTimeAt: <whole Unix seconds> }`.
 `mcpServer/elicitation/request` becomes the unified pending-input UI for form
 and URL modes; primitive/enum/multiselect fields are coerced back into the
 requested schema. `serverRequest/resolved` clears a pending card when the
 server resolves it elsewhere. Elicitations are never silently approved by
 full-auto mode, and `Always allow` is sent only when the request `_meta`
-explicitly permits persistent consent.
+explicitly permits persistent consent. JSON-RPC envelope decoding tolerates the
+`emittedAtMs` field that 0.145 adds to notifications, so a newer server's
+timestamp envelope never fails a decode.
+
+The adapter records the server's version so behavior can be gated per build.
+The `initialize` response's `userAgent` is parsed by `parseCodexServerVersion`
+into `runtime.serverVersion` (`{ major, minor, patch }`, or `null` when the
+string is unrecognized). Two adapter helpers normalize the shapes that shifted
+across 0.144→0.145: `normalizeCodexTokenBreakdown` folds the upstream
+`cacheWriteInputTokens` / `reasoningOutputTokens` fields into ADE's
+`cacheWriteTokens` / `reasoningTokens` (older `cacheCreationTokens` aliases still
+resolve), and `normalizeCodexRateLimits` carries `spendControlReached` (the
+account-level spending-cap flag) alongside `remaining` / `limit` / `resetAt` on
+both the initial `account/rateLimits/read` and the streamed
+`account/rateLimits/updated` notification.
+
+#### Codex rewind and 0.145 readiness
+
+Chat file-rewind selects a user message, reconstructs its turn from the durable
+transcript, and asks the app-server to move the thread back. The rewind plan now
+also resolves the message's `targetTurnId` from the transcript envelopes so the
+adapter can pick the right server call:
+
+- **Servers ≥ 0.145.0 with a resolvable turn id** use `thread/fork` with
+  `{ threadId, beforeTurnId }`, forking the thread immediately before the target
+  turn.
+- **Older servers, or a target without a usable turn id,** fall back to the
+  deprecated `thread/rollback` with `{ threadId, numTurns: 1 }`, which only
+  rewinds the latest user message.
+
+`codexServerSupportsForkBeforeTurn(runtime.serverVersion)` (true for
+`major > 0` or `minor >= 145`) gates the choice. Invariant: `beforeTurnId` is
+never sent to a `< 0.145` server — the fork path is taken only when both the
+version check passes and a `targetTurnId` is present. Either response feeds
+`applyCodexEffectiveThreadState` and re-pins the resume command to the resulting
+thread id; ADE's git-backed per-file restore plan runs the same way in both
+cases.
+
+What is version-gated today is exactly this fork-before-turn rewind. `thread/rollback`
+is deprecated upstream but retained for `<= 0.144` servers and for turns without
+a usable id, so it is not removed. Separately, 0.145 removes `mcpToolCall`
+`appContext.templateId` from the upstream schema; ADE keeps the field optional
+so historical transcripts that recorded it still decode. Finally, 0.145's
+paginated resume (`thread/resume` with backwards cursors and a paginated
+`historyMode`) is a future opt-in worth evaluating for faster resume on large
+threads — it is not adopted today because it requires `excludeTurns` and gives
+up full-history resume, so the current adapter continues to resume whole threads.
 
 On macOS, an explicitly enabled Codex Computer Use plugin/config adds the
 verified standalone `SkyComputerUseClient` under

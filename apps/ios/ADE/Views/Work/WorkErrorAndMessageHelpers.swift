@@ -581,7 +581,7 @@ private func workEventItemAndParentIds(_ event: AgentChatEvent) -> (itemId: Stri
     return (normalizedWorkEventId(itemId), normalizedWorkEventId(parentItemId))
   case .command(_, _, _, let itemId, _, _, _, _, _),
        .fileChange(_, _, _, let itemId, _, _, _),
-       .webSearch(_, _, _, let itemId, _, _, _):
+       .webSearch(_, _, _, _, _, let itemId, _, _, _):
     return (normalizedWorkEventId(itemId), nil)
   case .approvalRequest(let itemId, let logicalItemId, _, _, _, _):
     return (normalizedWorkEventId(itemId) ?? normalizedWorkEventId(logicalItemId), nil)
@@ -1803,7 +1803,7 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["context_compact", compactionId ?? turnId ?? "", isInProgress ? "started" : "completed", postTokens.map(String.init) ?? "", summary].joined(separator: "|")
   case .autoApprovalReview(let summary, let turnId):
     return ["auto_approval_review", turnId ?? "", summary].joined(separator: "|")
-  case .webSearch(let query, let action, let actions, let status, let itemId, let turnId):
+  case .webSearch(let query, let action, let actions, _, let status, let itemId, let turnId):
     let actionKey = actions?.compactMap { $0.url ?? $0.title ?? $0.query ?? $0.queries?.first }.joined(separator: ",") ?? action ?? ""
     return ["web_search", turnId ?? "", itemId, query, actionKey, status.rawValue].joined(separator: "|")
   case .codexState(let title, let message, _, let turnId):

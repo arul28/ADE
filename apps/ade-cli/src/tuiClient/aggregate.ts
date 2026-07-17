@@ -23,12 +23,21 @@ import { appendStreamingText, shouldMergeAssistantText } from "./assistantTextId
 
 export type WorkToolStatus = "running" | "ok" | "failed";
 
+export type WebSearchResult = {
+  title?: string;
+  url?: string;
+};
+
 export type ToolCallEntry = {
   itemId: string;
   tool: string;
   arg: string;
   status: WorkToolStatus;
   durationMs?: number;
+  /** Codex web-search hits, threaded onto the aggregated `search` entry. */
+  results?: WebSearchResult[];
+  /** Total hit count before capping (Codex `resultsTotal`). */
+  resultsTotal?: number;
 };
 
 export type FileChangeEntry = {
@@ -265,13 +274,27 @@ function appendWebSearchEvent(
   const itemId = (event as { itemId?: string }).itemId ?? `web-search:${event.query}`;
   const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
   const arg = summarizeInlineText(event.query ?? "", 140);
+  const results = event.results?.length
+    ? event.results.slice(0, 3).map((result) => {
+      const entry: WebSearchResult = {};
+      if (result.title) entry.title = result.title;
+      if (result.url) entry.url = result.url;
+      return entry;
+    })
+    : undefined;
+  const resultsTotal = typeof event.resultsTotal === "number" ? event.resultsTotal : undefined;
   const existing = registry.get(itemId);
   if (existing) {
     existing.status = status;
     if (arg) existing.arg = arg;
+    if (results) existing.results = results;
+    if (resultsTotal !== undefined) existing.resultsTotal = resultsTotal;
     return;
   }
-  registry.add({ itemId, tool: "search", arg, status });
+  const entry: ToolCallEntry = { itemId, tool: "search", arg, status };
+  if (results) entry.results = results;
+  if (resultsTotal !== undefined) entry.resultsTotal = resultsTotal;
+  registry.add(entry);
 }
 
 function appendFileChangeEvent(

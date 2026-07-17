@@ -878,6 +878,10 @@ export function latestTokenStats(
     }
     return null;
   };
+  const readCacheWriteTokens = (bucket: Record<string, unknown> | null): number | null => {
+    if (!bucket) return null;
+    return typeof bucket.cacheWriteTokens === "number" ? bucket.cacheWriteTokens : null;
+  };
   for (const envelope of events) {
     const event = envelope.event as Record<string, unknown>;
     if (event.type === "status" && event.turnStatus === "started") {
@@ -914,6 +918,7 @@ export function latestTokenStats(
       // cachedInputTokens (snake-cased upstream variant aliased through). Prefer
       // last-turn reading over total.
       cacheReadTokens = readCacheReadTokens(last) ?? readCacheReadTokens(total) ?? cacheReadTokens;
+      cacheCreationTokens = readCacheWriteTokens(last) ?? readCacheWriteTokens(total) ?? cacheCreationTokens;
     }
     if (event.type === "context_usage") {
       const usage = event.usage && typeof event.usage === "object" ? event.usage as Record<string, unknown> : null;

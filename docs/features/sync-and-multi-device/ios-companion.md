@@ -369,16 +369,23 @@ tab grew from one ~3,000-line file to ~30 focused files.
 The Work model/activity parity path is concentrated in these files:
 
 - `ADE/Models/RemoteModels.swift` — tolerant chat-event decoding, MCP app/tool
-  source metadata, image events/omission metadata, Codex recovery DTOs, and
-  host model rows including `defaultReasoningEffort`.
+  source metadata, image events/omission metadata, Codex recovery DTOs, the
+  `web_search` event's structured `CodexWebSearchResult` hits (`results` decoded
+  through `ADELossyArray` so one malformed hit can't fail the event, plus
+  `resultsTotal`), `MobileUsageQuotaSnapshot.spendControlReached` (Codex spending
+  cap), and host model rows including `defaultReasoningEffort`.
 - `ADE/Views/Work/WorkModelCatalog.swift` and `WorkModelPickerSheet.swift` —
   host-first model catalog merge, GPT-5.6 ordering/defaults/visible tiers, Fast,
   and the Ultra usage warning.
 - `ADE/Views/Work/WorkEventMapping.swift`, `WorkTranscriptParser.swift`,
   `WorkModels.swift`, `WorkTimelineHelpers.swift`, and
   `WorkStatusAndFormattingHelpers.swift` — compact web/MCP/image mapping for
-  both live Codable events and persisted JSONL fallback, plus the Work context
-  meter's provider-neutral usage and compaction-boundary reduction.
+  both live Codable events and persisted JSONL fallback (including Codex
+  structured web-search `results`, threaded onto the tool card's `Sources` chips
+  and deduped against the action URLs), plus the Work context meter's
+  provider-neutral usage and compaction-boundary reduction. The Codex spending
+  cap surfaces as a "Spending cap reached" note under the Codex row in
+  `WorkUsageActivityCarousel`.
 - `ADE/Services/SyncService.swift`, `ADE/Views/Work/WorkSessionDestinationView.swift`,
   and `WorkSessionDestinationView+Actions.swift` — host-advertised chat action
   dispatch, including `chat.recoverCodexTurn` for stalled-turn buttons and the

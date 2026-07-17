@@ -15,6 +15,8 @@ export type UsageProviderPollContext = {
 
 export type UsageProviderPollResult = {
   windows: UsageWindow[];
+  /** Provider-level Codex spend control state, not tied to an individual quota window. */
+  spendControlReached?: boolean;
   source?: UsageProviderSource;
   errors: string[];
   errorKind?: UsageProviderErrorKind;

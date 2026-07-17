@@ -53,7 +53,9 @@ const {
   isTokenExpiredOrExpiring,
   parseClaudeWindows,
   parseClaudeCliUsage,
+  parseCodexRateLimitSnapshot,
   parseCodexRateLimitWindows,
+  isUsageSnapshot,
   calculatePacingByProvider,
   buildProviderWindows,
   fetchJsonWithRetry,
@@ -1176,6 +1178,15 @@ describe("parseCodexRateLimitWindows", () => {
     expect(result.find((window) => window.windowType === "weekly")?.percentUsed).toBe(64);
   });
 
+  it.each([
+    ["camel-case true", { rateLimits: { spendControlReached: true } }, true],
+    ["snake-case false", { rateLimits: { spend_control_reached: false } }, false],
+    ["null", { rateLimits: { spendControlReached: null } }, undefined],
+    ["absent", { rateLimits: {} }, undefined],
+  ])("parses provider-level spend control when %s", (_name, payload, expected) => {
+    expect(parseCodexRateLimitSnapshot(payload).spendControlReached).toBe(expected);
+  });
+
   it("preserves native Codex bucket durations", () => {
     const result = parseCodexRateLimitWindows({
       rateLimitsByLimitId: {
@@ -1224,6 +1235,7 @@ describe("pollCodexViaCliRpc", () => {
         id: 1,
         result: {
           rateLimits: {
+            spendControlReached: false,
             primary: { usedPercent: 17, resetsAt: 1773446952 },
             secondary: { usedPercent: 64, resetsAt: 1773853354 },
           },
@@ -1251,6 +1263,7 @@ describe("pollCodexViaCliRpc", () => {
     expect(fake.written[0]).not.toMatch(/\n\n$/);
     expect(result.errors).toEqual([]);
     expect(result.windows).toHaveLength(2);
+    expect(result.spendControlReached).toBe(false);
     expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
   });
 
@@ -1509,6 +1522,7 @@ describe("pollCodexViaCliRpc", () => {
       status: 200,
       json: async () => ({
         rate_limit: {
+          spend_control_reached: true,
           primary_window: { used_percent: 15, reset_at: 1773446952 },
           secondary_window: { used_percent: 63, reset_at: 1773853354 },
         },
@@ -1556,6 +1570,7 @@ describe("pollCodexViaCliRpc", () => {
       expect(result.errors).toEqual([]);
       expect(result.windows).toHaveLength(2);
       expect(result.source).toBe("http");
+      expect(result.spendControlReached).toBe(true);
       expect(result.dailyUsage7d).toBeUndefined();
       expect(result.providerMessages).toBeUndefined();
       expect(mockState.spawn).not.toHaveBeenCalled();
@@ -1599,6 +1614,36 @@ describe("createUsageTrackingService", () => {
     expect(snapshot.errors).toEqual([]);
     expect(snapshot.lastPolledAt).toBeTruthy();
 
+    service.dispose();
+  });
+
+  it("surfaces Codex spend control and accepts it after a cache JSON round-trip", async () => {
+    const logger = createLogger();
+    const dependencies = createFastDependencies();
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        ...dependencies,
+        pollCodexUsage: vi.fn(async () => ({
+          windows: [{
+            provider: "codex" as const,
+            windowType: "five_hour" as const,
+            percentUsed: 100,
+            resetsAt: new Date(Date.now() + 60_000).toISOString(),
+            resetsInMs: 60_000,
+          }],
+          spendControlReached: true,
+          errors: [],
+        })),
+      },
+    });
+
+    const snapshot = await service.poll({ reason: "user" });
+    expect(snapshot.spendControlReached).toBe(true);
+
+    const roundTripped = JSON.parse(JSON.stringify(snapshot));
+    expect(isUsageSnapshot(roundTripped)).toBe(true);
+    expect(roundTripped.spendControlReached).toBe(true);
     service.dispose();
   });
 

@@ -1019,9 +1019,14 @@ function formatTokenSummary(stats: ReturnType<typeof latestTokenStats>): string 
     const right = stats.outputTokens != null ? compactNumber(stats.outputTokens) : "0";
     parts.push(`${left}/${right}`);
   }
+  const cacheParts: string[] = [];
   if (stats.cacheReadTokens != null && stats.cacheReadTokens > 0) {
-    parts.push(`(${compactNumber(stats.cacheReadTokens)}✶)`);
+    cacheParts.push(`${compactNumber(stats.cacheReadTokens)}✶`);
   }
+  if (stats.cacheCreationTokens != null && stats.cacheCreationTokens > 0) {
+    cacheParts.push(`${compactNumber(stats.cacheCreationTokens)}✎`);
+  }
+  if (cacheParts.length) parts.push(`(${cacheParts.join(" ")})`);
   if (stats.costUsd != null) parts.push(`$${stats.costUsd.toFixed(2)}`);
   return parts.length ? parts.join(" ") : null;
 }
@@ -9211,7 +9216,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             resetAt: Math.floor(Date.parse(window.resetsAt) / 1000),
           };
         });
-        setRightPane({ kind: "usage", title: "Usage", providerStatuses, quotaWindows, session: sessionBlock });
+        setRightPane({ kind: "usage", title: "Usage", providerStatuses, quotaWindows, session: sessionBlock, spendControlReached: snapshot.spendControlReached === true });
       } catch (error) {
         setRightPane({
           kind: "usage",

@@ -461,4 +461,150 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       requestedCwd: nil
     )
   }
+
+  // MARK: - Codex web_search results contract (desktop chat.ts parity)
+
+  /// Newer host emits `results`/`resultsTotal` alongside `actions`; both must
+  /// decode and survive onto the event.
+  func testWebSearchEventDecodesResultsFromNewerHost() throws {
+    let json = """
+    {
+      "type": "web_search",
+      "query": "swift structured concurrency",
+      "action": "openPage",
+      "actions": [{ "type": "openPage", "url": "https://a.example", "title": "A" }],
+      "results": [
+        { "url": "https://b.example", "title": "B", "snippet": "hello" },
+        { "url": "https://c.example" }
+      ],
+      "resultsTotal": 2,
+      "itemId": "ws-1",
+      "logicalItemId": "logical-1",
+      "turnId": "turn-1",
+      "status": "completed"
+    }
+    """
+    let event = try JSONDecoder().decode(AgentChatEvent.self, from: Data(json.utf8))
+    guard case let .webSearch(query, _, actions, results, resultsTotal, itemId, _, _, status) = event else {
+      return XCTFail("expected .webSearch, got \(event)")
+    }
+    XCTAssertEqual(query, "swift structured concurrency")
+    XCTAssertEqual(actions?.count, 1)
+    XCTAssertEqual(results?.count, 2)
+    XCTAssertEqual(results?.first, CodexWebSearchResult(url: "https://b.example", title: "B", snippet: "hello"))
+    XCTAssertEqual(results?.last, CodexWebSearchResult(url: "https://c.example", title: nil, snippet: nil))
+    XCTAssertEqual(resultsTotal, 2)
+    XCTAssertEqual(itemId, "ws-1")
+    XCTAssertEqual(status, "completed")
+  }
+
+  /// A single malformed entry inside `results` (e.g. a non-object hit from a
+  /// future host shape) must be dropped by the ADELossyArray decode WITHOUT
+  /// failing the whole event — otherwise the tool card would vanish entirely.
+  func testWebSearchEventDropsMalformedResultEntryButKeepsEvent() throws {
+    let json = """
+    {
+      "type": "web_search",
+      "query": "q",
+      "results": [
+        { "url": "https://ok.example", "title": "OK" },
+        42,
+        "not-an-object"
+      ],
+      "itemId": "ws-2",
+      "status": "running"
+    }
+    """
+    let event = try JSONDecoder().decode(AgentChatEvent.self, from: Data(json.utf8))
+    guard case let .webSearch(_, _, _, results, resultsTotal, itemId, _, _, status) = event else {
+      return XCTFail("expected .webSearch, got \(event)")
+    }
+    XCTAssertEqual(results?.count, 1, "malformed entries must be dropped, valid hit retained")
+    XCTAssertEqual(results?.first?.url, "https://ok.example")
+    XCTAssertNil(resultsTotal)
+    XCTAssertEqual(itemId, "ws-2")
+    XCTAssertEqual(status, "running")
+  }
+
+  /// Older host omits `results`/`resultsTotal` entirely; decode must succeed
+  /// with both nil (fields are optional on the wire).
+  func testWebSearchEventDecodesFromOlderHostWithoutResults() throws {
+    let json = """
+    {
+      "type": "web_search",
+      "query": "q",
+      "actions": [{ "type": "openPage", "url": "https://a.example", "title": "A" }],
+      "itemId": "ws-3",
+      "status": "completed"
+    }
+    """
+    let event = try JSONDecoder().decode(AgentChatEvent.self, from: Data(json.utf8))
+    guard case let .webSearch(_, _, actions, results, resultsTotal, _, _, _, _) = event else {
+      return XCTFail("expected .webSearch, got \(event)")
+    }
+    XCTAssertEqual(actions?.count, 1)
+    XCTAssertNil(results)
+    XCTAssertNil(resultsTotal)
+  }
+
+  // MARK: - buildWorkToolCards web_search preservation (/quality regression)
+
+  /// Regression pin for the /quality Medium finding: a later same-itemId
+  /// web_search event that omits `results`/`actions` (e.g. a status-only
+  /// update) must NOT erase the sources merged from the earlier event.
+  func testBuildWorkToolCardsPreservesEarlierWebSearchResults() {
+    let action = CodexWebSearchAction(
+      type: "openPage", status: nil, query: nil, queries: nil,
+      url: "https://a.example", title: "A", snippet: nil
+    )
+    let result = CodexWebSearchResult(url: "https://b.example", title: "B", snippet: "hello")
+
+    let first = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: iso(now),
+      sequence: 1,
+      event: .webSearch(
+        query: "q", action: "openPage", actions: [action], results: [result],
+        status: .running, itemId: "ws-1", turnId: "turn-1"
+      )
+    )
+    // Later event for the SAME itemId omits actions/results (nil).
+    let second = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: iso(now.addingTimeInterval(1)),
+      sequence: 2,
+      event: .webSearch(
+        query: "q", action: nil, actions: nil, results: nil,
+        status: .completed, itemId: "ws-1", turnId: "turn-1"
+      )
+    )
+
+    let cards = buildWorkToolCards(from: [first, second])
+    XCTAssertEqual(cards.count, 1)
+    let card = cards.first
+    XCTAssertEqual(card?.status, WorkToolCardStatus.completed, "later status still applies")
+    XCTAssertEqual(card?.webSearchActions, [action], "earlier actions preserved through results-less update")
+    XCTAssertEqual(card?.webSearchResults, [result], "earlier results preserved through results-less update")
+  }
+
+  // MARK: - MobileUsageQuotaSnapshot.spendControlReached (desktop usage.ts parity)
+
+  /// Newer host reports the Codex spend-control flag; decode it as true.
+  func testMobileUsageQuotaSnapshotDecodesSpendControlReached() throws {
+    let json = """
+    { "windows": [], "lastPolledAt": "2026-07-16T00:00:00Z", "errors": [], "spendControlReached": true }
+    """
+    let snapshot = try JSONDecoder().decode(MobileUsageQuotaSnapshot.self, from: Data(json.utf8))
+    XCTAssertEqual(snapshot.spendControlReached, true)
+  }
+
+  /// Older host omits the flag (desktop only includes it when boolean); decode
+  /// must succeed with the field nil rather than throwing.
+  func testMobileUsageQuotaSnapshotDecodesWithoutSpendControlReached() throws {
+    let json = """
+    { "windows": [], "lastPolledAt": "2026-07-16T00:00:00Z", "errors": [] }
+    """
+    let snapshot = try JSONDecoder().decode(MobileUsageQuotaSnapshot.self, from: Data(json.utf8))
+    XCTAssertNil(snapshot.spendControlReached)
+  }
 }

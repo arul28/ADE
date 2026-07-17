@@ -454,8 +454,8 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   case .autoApprovalReview(_, let reviewStatus, let action, let review, let turnId):
     let summary = [reviewStatus.rawValue.capitalized, action, review].compactMap { $0 }.joined(separator: "\n")
     return .autoApprovalReview(summary: summary, turnId: turnId)
-  case .webSearch(let query, let action, let actions, let itemId, let logicalItemId, let turnId, let status):
-    return .webSearch(query: query, action: action, actions: actions, status: toolStatus(from: status), itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId), turnId: turnId)
+  case .webSearch(let query, let action, let actions, let results, _, let itemId, let logicalItemId, let turnId, let status):
+    return .webSearch(query: query, action: action, actions: actions, results: results, status: toolStatus(from: status), itemId: workStableTimelineItemId(itemId: itemId, logicalItemId: logicalItemId), turnId: turnId)
   case .codexImageGeneration(let itemId, let turnId, let prompt, let revisedPrompt, let result, let savedPath, let resultOriginalBytes, let resultOmittedBytes, let status):
     return workCodexImageGenerationEvent(
       itemId: itemId,

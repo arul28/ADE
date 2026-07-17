@@ -355,6 +355,46 @@ describe("codexTurnsToChatEvents", () => {
     ]);
   });
 
+  it("carries normalized structured web-search results into imported history", () => {
+    const events = codexTurnsToChatEvents([{
+      id: "turn-web-search",
+      items: [{
+        type: "webSearch",
+        id: "item-web-search",
+        query: "ADE releases",
+        status: "completed",
+        results: [
+          {
+            link: " https://example.com/releases ",
+            title: " Releases ",
+            description: " Latest ADE releases ",
+            unknownFutureField: true,
+          },
+          { title: "Title-only result", text: "Still valid" },
+          { snippet: "Missing both URL and title" },
+        ],
+      }],
+    }], {
+      ...baseOptions,
+      provider: "codex",
+      externalSessionId: "thread_web_search",
+    });
+
+    const webSearch = events.find((event) => event.event.type === "web_search")?.event;
+    expect(webSearch).toMatchObject({
+      type: "web_search",
+      resultsTotal: 2,
+      results: [
+        {
+          url: "https://example.com/releases",
+          title: "Releases",
+          snippet: "Latest ADE releases",
+        },
+        { title: "Title-only result", snippet: "Still valid" },
+      ],
+    });
+  });
+
   it("derives an imported chat title from the first user message", () => {
     const events = codexTurnsToChatEvents([
       { id: "turn-3", items: [{ type: "userMessage", id: "item-user", content: [{ type: "input_text", text: "Explain the lane status" }] }] },

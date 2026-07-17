@@ -6,6 +6,7 @@ import type { LocalNotice } from "../types";
 import {
   parseInlineRuns,
   compactPath,
+  webSearchResultPreviewLines,
   type AssistantMarkdownBlock,
   type HighlightedToken,
   type InlineRun,
@@ -755,6 +756,20 @@ function toolCallEntryRow(
   };
 }
 
+// Codex web-search hits render as dim `title — domain` sub-rows beneath the
+// expanded `search` entry (parity with the desktop work log's source chips).
+// Empty unless the entry carries results, so nothing renders without data.
+function webSearchResultRows(blockId: string, entry: ToolCallEntry): RenderedChatRow[] {
+  const lines = webSearchResultPreviewLines(entry.results, entry.resultsTotal, 3);
+  return lines.map((line, index) => ({
+    id: `${blockId}:${entry.itemId}:result-${index}`,
+    tone: "work",
+    text: `      ${truncateLongLine(line)}`,
+    color: theme.color.t4,
+    rail: null,
+  }));
+}
+
 // Tool calls collapse to ONE clickable header row by default — desktop/mobile
 // work-log parity: `▸ Tool calls (N)  ✓ shell <last command>`. The collapsed
 // preview shows the most recent call so live progress stays visible without the
@@ -796,6 +811,7 @@ function toolCallsGroupRows(
   if (!expanded) return out;
   for (const entry of block.entries) {
     out.push(toolCallEntryRow(block.id, entry, spinFrame));
+    out.push(...webSearchResultRows(block.id, entry));
   }
   return out;
 }

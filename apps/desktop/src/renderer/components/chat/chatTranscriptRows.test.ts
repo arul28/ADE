@@ -8,6 +8,7 @@ import {
   collapseChatTranscriptEventsIncrementalWithContext,
   collapseChatTranscriptEventsWithContext,
   deriveTurnDividerData,
+  deriveWebSearchResultDisplay,
   extractLocalhostUrlsFromText,
   eventHasPayload,
   formatStructuredValue,
@@ -1880,6 +1881,82 @@ describe("chatTranscriptRows edge cases", () => {
     if (rows[0]!.event.type !== "work_log_entry") throw new Error("Expected work_log_entry");
     expect(rows[0]!.event.entry.entryKind).toBe("web_search");
     expect(rows[0]!.event.entry.query).toBe("typescript patterns");
+  });
+
+  it("threads structured web_search results and total onto the work log entry", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "web_search",
+          query: "codex releases",
+          itemId: "web-1",
+          turnId: "turn-1",
+          status: "completed",
+          results: [
+            { url: "https://openai.com/index/codex", title: "Codex" },
+            { url: "https://platform.openai.com/docs/codex" },
+          ],
+          resultsTotal: 12,
+        },
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "work_log_entry") throw new Error("Expected work_log_entry");
+    expect(rows[0]!.event.entry.results).toHaveLength(2);
+    expect(rows[0]!.event.entry.resultsTotal).toBe(12);
+  });
+
+  it("preserves earlier web_search results when a later status event omits them", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "web_search",
+          query: "codex releases",
+          itemId: "web-1",
+          turnId: "turn-1",
+          status: "running",
+          results: [{ url: "https://openai.com/index/codex", title: "Codex" }],
+          resultsTotal: 4,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "web_search",
+          query: "codex releases",
+          itemId: "web-1",
+          turnId: "turn-1",
+          status: "completed",
+        },
+      },
+    ]);
+    expect(rows).toHaveLength(1);
+    if (rows[0]!.event.type !== "work_log_entry") throw new Error("Expected work_log_entry");
+    expect(rows[0]!.event.entry.status).toBe("completed");
+    expect(rows[0]!.event.entry.results).toHaveLength(1);
+    expect(rows[0]!.event.entry.resultsTotal).toBe(4);
+  });
+
+  describe("deriveWebSearchResultDisplay", () => {
+    it("prefers the title and shows a www-stripped domain beside it", () => {
+      expect(deriveWebSearchResultDisplay({ url: "https://www.openai.com/index/codex", title: "Codex" }))
+        .toEqual({ href: "https://www.openai.com/index/codex", title: "Codex", domain: "openai.com" });
+    });
+
+    it("falls back to the domain as the title and hides a duplicate domain", () => {
+      expect(deriveWebSearchResultDisplay({ url: "https://platform.openai.com/docs" }))
+        .toEqual({ href: "https://platform.openai.com/docs", title: "platform.openai.com", domain: null });
+    });
+
+    it("handles non-url text with no href", () => {
+      expect(deriveWebSearchResultDisplay({ title: "Just a note" }))
+        .toEqual({ href: null, title: "Just a note", domain: null });
+    });
   });
 
   it("removes assistant text rows superseded by transcript retractions", () => {

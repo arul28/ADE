@@ -830,6 +830,8 @@ import {
   buildOpenCodeStreamMessages,
   buildComputerUseDirective,
   buildLinearSessionDirective,
+  codexServerSupportsForkBeforeTurn,
+  parseCodexServerVersion,
   writeSessionLinearIssueContextFile,
   createAgentChatService,
 } from "./agentChatService";
@@ -1905,6 +1907,26 @@ afterEach(() => {
   try {
     fs.rmSync(tmpHomeRoot, { recursive: true, force: true });
   } catch { /* ignore */ }
+});
+
+describe("Codex server version gating", () => {
+  it.each([
+    ["codex/0.144.5 (Mac OS 15.0)", { major: 0, minor: 144, patch: 5 }],
+    ["codex/0.145.0-alpha.19", { major: 0, minor: 145, patch: 0 }],
+    ["garbage", null],
+    [undefined, null],
+  ])("parses %s", (userAgent, expected) => {
+    expect(parseCodexServerVersion(userAgent)).toEqual(expected);
+  });
+
+  it.each([
+    [{ major: 0, minor: 144, patch: 5 }, false],
+    [{ major: 0, minor: 145, patch: 0 }, true],
+    [{ major: 0, minor: 146, patch: 0 }, true],
+    [null, false],
+  ])("gates fork-before-turn support for %o", (version, expected) => {
+    expect(codexServerSupportsForkBeforeTurn(version)).toBe(expected);
+  });
 });
 
 // ============================================================================
@@ -4659,6 +4681,75 @@ describe("createAgentChatService", () => {
       const inputText = turnStartRequest?.params?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(inputText).toContain("Start by checking the current test failure, then continue.");
       expect(inputText).not.toContain("This message was injected automatically by ADE during a chat handoff.");
+    });
+
+    it.each([
+      {
+        name: "uses rollback on Codex 0.144.5",
+        userAgent: "codex/0.144.5 (Mac OS 15.0)",
+        targetTurnId: "turn-target",
+        expectedMethod: "thread/rollback",
+      },
+      {
+        name: "forks before the target turn on Codex 0.145.0",
+        userAgent: "codex/0.145.0-alpha.19",
+        targetTurnId: "turn-target",
+        expectedMethod: "thread/fork",
+      },
+      {
+        name: "falls back to rollback without a target turn id",
+        userAgent: "codex/0.145.0",
+        targetTurnId: undefined,
+        expectedMethod: "thread/rollback",
+      },
+    ])("$name", async ({ userAgent, targetTurnId, expectedMethod }) => {
+      mockState.codexResponseOverrides.set("initialize", { userAgent });
+      mockState.codexResponseOverrides.set("thread/rollback", { thread: { id: "rewound-thread" } });
+      mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-before-turn" } });
+      const { service, sessionService } = createService();
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-1";
+      source.status = "idle";
+      const transcriptPath = sessionService.get(source.id)?.transcriptPath;
+      expect(transcriptPath).toBeTruthy();
+      const rewindEnvelopes: AgentChatEventEnvelope[] = [{
+        sessionId: source.id,
+        timestamp: "2026-07-07T20:00:00.000Z",
+        event: {
+          type: "user_message",
+          messageId: "user-1",
+          text: "rewind this turn",
+          ...(targetTurnId ? { turnId: targetTurnId } : {}),
+        },
+      } as AgentChatEventEnvelope];
+      fs.writeFileSync(String(transcriptPath), `${JSON.stringify(rewindEnvelopes[0])}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(rewindEnvelopes);
+
+      await service.rewindFiles({
+        sessionId: source.id,
+        userMessageId: "user-1",
+      });
+
+      const lifecycleRequest = mockState.codexRequestPayloads.find((payload) => payload.method === expectedMethod);
+      expect(lifecycleRequest).toBeDefined();
+      if (expectedMethod === "thread/fork") {
+        expect(lifecycleRequest?.params).toEqual({
+          threadId: "source-thread-1",
+          beforeTurnId: "turn-target",
+        });
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/rollback")).toBe(false);
+      } else {
+        expect(lifecycleRequest?.params).toEqual({
+          threadId: "source-thread-1",
+          numTurns: 1,
+        });
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/fork")).toBe(false);
+      }
     });
 
     it("does not delete files during Codex rewind when git cannot prove the path was absent", async () => {
@@ -15574,6 +15665,98 @@ describe("createAgentChatService", () => {
       expect(toolResults).toHaveLength(1);
     });
 
+    it("normalizes and caps structured Codex web-search results", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Search the web.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const validResults = Array.from({ length: 10 }, (_, index) => index === 0
+        ? {
+            link: " https://example.com/0 ",
+            title: " Result 0 ",
+            description: " Description 0 ",
+            unknownFutureField: { nested: true },
+          }
+        : {
+            url: `https://example.com/${index}`,
+            title: `Result ${index}`,
+            snippet: `Snippet ${index}`,
+            resultType: "future",
+          });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "web-search-results",
+            type: "webSearch",
+            query: "ADE",
+            status: "completed",
+            results: [
+              ...validResults,
+              { snippet: "missing url and title" },
+              null,
+              "garbage",
+            ],
+          },
+        },
+      });
+
+      const resultsEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "web_search" }>;
+        } => event.event.type === "web_search" && event.event.itemId === "web-search-results",
+      );
+      expect(resultsEvent.event.results).toHaveLength(8);
+      expect(resultsEvent.event.resultsTotal).toBe(10);
+      expect(resultsEvent.event.results?.[0]).toEqual({
+        url: "https://example.com/0",
+        title: "Result 0",
+        snippet: "Description 0",
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "web-search-garbage-results",
+            type: "webSearch",
+            query: "ADE",
+            status: "completed",
+            results: { url: "https://example.com/not-an-array" },
+          },
+        },
+      });
+      const garbageEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "web_search" }>;
+        } => event.event.type === "web_search" && event.event.itemId === "web-search-garbage-results",
+      );
+      expect(garbageEvent.event.results).toBeUndefined();
+      expect(garbageEvent.event.resultsTotal).toBeUndefined();
+    });
+
     it("rejects attachments outside the project root before dispatch", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -18699,7 +18882,8 @@ describe("createAgentChatService", () => {
               inputTokens: 1_000,
               outputTokens: 250,
               cacheReadTokens: 700,
-              cacheWriteTokens: 50,
+              cacheWriteInputTokens: 50,
+              reasoningOutputTokens: 75,
             },
           },
         },
@@ -18716,6 +18900,7 @@ describe("createAgentChatService", () => {
         outputTokens: 250,
         cacheReadTokens: 700,
         cacheWriteTokens: 50,
+        reasoningTokens: 75,
         totalTokens: 1_250,
       }));
     });
@@ -23963,6 +24148,37 @@ describe("createAgentChatService", () => {
         .map((call) => call[0])
         .find((env: any) => env?.event?.type === "system_notice" && env.event.message.startsWith("⚙ config:"));
       expect(configNotice?.event.noticeKind).toBe("config");
+    });
+
+    it("dispatches Codex notifications with top-level emittedAtMs normally", async () => {
+      const { service, logger } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Start Codex." });
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+      });
+      logger.warn.mockClear();
+      logger.info.mockClear();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "account/updated",
+        params: {},
+        emittedAtMs: 1_783_891_200_000,
+      });
+
+      await vi.waitFor(() => {
+        expect(logger.info).toHaveBeenCalledWith("agent_chat.codex_account_updated", { sessionId: session.id });
+      });
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        "agent_chat.codex_unhandled_notification",
+        expect.anything(),
+      );
     });
 
     it("populates optOutNotificationMethods in initialize when runtimeMode is 'print'", async () => {

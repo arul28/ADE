@@ -33,7 +33,7 @@ subagents, computer use). The pane derives all visible state from the
 | `ChatTasksPanel.tsx` | Todo list rendered from `todo_update` events. |
 | `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; defines the shared Background/Schedule Earlier predicates (including fired one-shot wakeups); and formats next-fire labels. A parent turn's terminal event does not stop a background row, and background snapshots whose `sourceTaskId` belongs to a real subagent are omitted so native Agents do not appear twice. Shared by desktop, ADE Code, and mirrored by iOS. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
-| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex uses `thread/rollback` for the latest user message and restores files through ADE's git plan. |
+| `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex forks the thread before the selected turn (`thread/fork` + `beforeTurnId`) on app-server >= 0.145.0, or falls back to `thread/rollback` (latest user message only) on older servers, and restores files through ADE's git plan. |
 | `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. See [App Control](../computer-use/app-control.md). |
@@ -566,9 +566,13 @@ confirmation dialog then shows:
 - Lazy `AdeDiffViewer` previews via `ade.agentChat.getTurnFileDiff`.
 
 Confirming calls `rewindFiles` without `dryRun`. Claude leaves
-conversation history untouched and only restores files. Codex rolls back
-the upstream thread by one turn with `thread/rollback` and restores the
-matching files; for now it is limited to the latest user message.
+conversation history untouched and only restores files. Codex moves the
+upstream thread back and restores the matching files: on app-server
+>= 0.145.0 it forks the thread before the selected turn (`thread/fork`
+with `beforeTurnId`); on older servers, or when the turn id cannot be
+resolved, it falls back to the deprecated `thread/rollback` and is limited
+to the latest user message (see
+[agent-routing.md](./agent-routing.md#codex-rewind-and-0145-readiness)).
 
 ## Chat Info and subagents panel
 

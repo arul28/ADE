@@ -1819,6 +1819,12 @@ struct CodexWebSearchAction: Codable, Equatable {
   var snippet: String?
 }
 
+struct CodexWebSearchResult: Codable, Hashable {
+  var url: String?
+  var title: String?
+  var snippet: String?
+}
+
 struct AgentChatMcpAppContext: Codable, Equatable {
   var connectorId: String?
   var linkId: String?
@@ -2053,7 +2059,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case codexThreadDeleted(threadId: String, turnId: String?)
   case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
   case completionReport(report: ChatCompletionReport, turnId: String?)
-  case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
+  case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, results: [CodexWebSearchResult]?, resultsTotal: Int?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
   case codexImageGeneration(itemId: String, turnId: String?, prompt: String?, revisedPrompt: String?, result: String?, savedPath: String?, resultOriginalBytes: Int?, resultOmittedBytes: Int?, status: String)
   case codexImageView(itemId: String, turnId: String?, path: String?, url: String?, title: String?, urlOriginalBytes: Int?, urlOmittedBytes: Int?, status: String)
   case autoApprovalReview(targetItemId: String, reviewStatus: AgentChatAutoApprovalReviewStatus, action: String?, review: String?, turnId: String?)
@@ -2158,6 +2164,8 @@ extension AgentChatEvent {
     case query
     case action
     case actions
+    case results
+    case resultsTotal
     case reviewStatus
     case review
     case suggestion
@@ -2552,6 +2560,9 @@ extension AgentChatEvent {
         query: try container.decode(String.self, forKey: .query),
         action: try container.decodeIfPresent(String.self, forKey: .action),
         actions: try container.decodeIfPresent([CodexWebSearchAction].self, forKey: .actions),
+        // Lossy: one malformed hit must not fail the whole event (parity with ADELossyArray).
+        results: try container.decodeIfPresent(ADELossyArray<CodexWebSearchResult>.self, forKey: .results)?.wrappedValue,
+        resultsTotal: try container.decodeIfPresent(Int.self, forKey: .resultsTotal),
         itemId: try container.decode(String.self, forKey: .itemId),
         logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
@@ -4638,4 +4649,6 @@ struct MobileUsageQuotaSnapshot: Codable, Equatable {
   var providerStatus: [String: MobileUsageProviderStatus]?
   var lastPolledAt: String
   var errors: [String]
+  /// Codex spending cap hit — surfaced from the desktop UsageSnapshot.
+  var spendControlReached: Bool?
 }

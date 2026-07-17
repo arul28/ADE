@@ -128,7 +128,7 @@ struct WorkToolCardView: View {
             }
           }
 
-          let webSources = workWebSearchSources(from: toolCard.webSearchActions)
+          let webSources = workWebSearchSources(from: toolCard.webSearchActions, results: toolCard.webSearchResults)
           if !webSources.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
               Text("Sources")
@@ -276,37 +276,45 @@ struct WorkToolCardView: View {
   }
 }
 
-private func workWebSearchSources(from actions: [CodexWebSearchAction]?) -> [WorkWebSearchSource] {
+private func workWebSearchSources(
+  from actions: [CodexWebSearchAction]?,
+  results: [CodexWebSearchResult]? = nil
+) -> [WorkWebSearchSource] {
   var seen = Set<String>()
-  return (actions ?? []).compactMap { action -> WorkWebSearchSource? in
-    guard let rawURL = action.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+  var sources: [WorkWebSearchSource] = []
+  // Actions render first (existing order/appearance); result hits merge in
+  // afterwards, deduped by url so an openPage action and its result don't
+  // double up. Cap and chip styling are unchanged.
+  let fromActions = (actions ?? []).map { (url: $0.url, title: $0.title) }
+  let fromResults = (results ?? []).map { (url: $0.url, title: $0.title) }
+  for hit in fromActions + fromResults {
+    guard let rawURL = hit.url?.trimmingCharacters(in: .whitespacesAndNewlines),
           !rawURL.isEmpty,
           let url = URL(string: rawURL),
           let scheme = url.scheme?.lowercased(),
           scheme == "http" || scheme == "https",
           seen.insert(rawURL).inserted
     else {
-      return nil
+      continue
     }
-    return WorkWebSearchSource(
+    sources.append(WorkWebSearchSource(
       id: rawURL,
-      label: workWebSearchSourceLabel(for: url, action: action),
-      title: action.title,
+      label: workWebSearchSourceLabel(for: url, title: hit.title),
+      title: hit.title,
       url: url
-    )
+    ))
   }
-  .prefix(4)
-  .map { $0 }
+  return Array(sources.prefix(4))
 }
 
-private func workWebSearchSourceLabel(for url: URL, action: CodexWebSearchAction) -> String {
+private func workWebSearchSourceLabel(for url: URL, title: String?) -> String {
   if let host = url.host?.replacingOccurrences(of: #"^www\."#, with: "", options: .regularExpression),
      !host.isEmpty {
     return host
   }
-  let title = action.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  if !title.isEmpty {
-    return title
+  let trimmedTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !trimmedTitle.isEmpty {
+    return trimmedTitle
   }
   return "Open"
 }

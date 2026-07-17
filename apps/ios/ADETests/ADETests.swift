@@ -13582,7 +13582,7 @@ final class ADETests: XCTestCase {
 
     let transcript = parseWorkChatTranscript(raw)
     XCTAssertEqual(transcript.count, 1)
-    guard case .webSearch(let query, let action, let actions, let status, let itemId, let turnId) = transcript[0].event else {
+    guard case .webSearch(let query, let action, let actions, let results, let status, let itemId, let turnId) = transcript[0].event else {
       return XCTFail("Expected web_search event.")
     }
     XCTAssertEqual(query, "GPT-5.6 Sol")
@@ -13590,6 +13590,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(status, .completed)
     XCTAssertEqual(itemId, "search-1")
     XCTAssertEqual(turnId, "turn-1")
+    XCTAssertNil(results, "older-host payload without `results` decodes with results nil")
     XCTAssertEqual(actions?.count, 2)
     XCTAssertEqual(actions?.first?.queries, ["GPT-5.6 Sol", "GPT-5.6 Terra"])
     XCTAssertEqual(actions?.last?.url, "https://openai.com/index/previewing-gpt-5-6-sol/")

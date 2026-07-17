@@ -21,7 +21,7 @@ function ratioColor(ratio: number): string {
   return "#38bdf8"; // sky-400
 }
 
-function buildContent(usage: ContextUsageViewModel, modelLabel?: string): SmartTooltipContent {
+export function buildContent(usage: ContextUsageViewModel, modelLabel?: string): SmartTooltipContent {
   const percent = usage.ratio != null ? Math.round(usage.ratio * 100) : null;
   const windowLabel = formatContextTokens(usage.contextWindow);
   const usedLabel = formatContextTokens(usage.usedTokens);
@@ -38,10 +38,14 @@ function buildContent(usage: ContextUsageViewModel, modelLabel?: string): SmartT
   const inLabel = formatContextTokens(usage.inputTokens);
   const outLabel = formatContextTokens(usage.outputTokens);
   const cacheLabel = formatContextTokens(usage.cacheReadTokens);
+  const cacheWriteLabel = formatContextTokens(usage.cacheWriteTokens);
   const reasoningLabel = formatContextTokens(usage.reasoningTokens);
   if (inLabel) segments.push(`in ${inLabel}`);
   if (outLabel) segments.push(`out ${outLabel}`);
   if (cacheLabel) segments.push(`cached ${cacheLabel} ✶`);
+  if (usage.cacheWriteTokens != null && usage.cacheWriteTokens > 0 && cacheWriteLabel) {
+    segments.push(`cache write ${cacheWriteLabel}`);
+  }
   if (reasoningLabel) segments.push(`reasoning ${reasoningLabel}`);
 
   const content: SmartTooltipContent = {

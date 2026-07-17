@@ -36,6 +36,18 @@ minute fields) and uses position only when duration metadata is absent. This
 keeps the compact header and detailed Limits panel truthful when a provider
 omits one window or changes its ordering.
 
+Codex 0.145 also reports an account-level spending cap. `parseCodexRateLimitSnapshot`
+returns `{ windows, spendControlReached? }` (reading `spendControlReached` /
+`spend_control_reached` from any of the rate-limit envelope shapes), and both the
+HTTP and CLI-RPC poll paths carry the flag through `UsageProviderPollResult`.
+`parseCodexRateLimitWindows` is retained as a windows-only wrapper. The
+coordinator stores `spendControlReached` on the published `UsageSnapshot`; when
+Codex is skipped or returns no windows for a round, the last known value is
+carried forward rather than dropped. Surfaced state: the header warning line adds
+"Codex spending cap reached", the Codex card in the Limits panel shows a
+"Spending cap reached" banner, and the paired iOS `WorkUsageActivityCarousel`
+shows the same note under the Codex compact row (`MobileUsageQuotaSnapshot.spendControlReached`).
+
 ## Why Claude appeared to take forever
 
 The slow path was not only Anthropic's endpoint. An explicit refresh invalidated

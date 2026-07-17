@@ -288,7 +288,7 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
   case .autoApprovalReview(let summary, let turnId):
     combineLongTextSignature(summary, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .webSearch(let query, let action, let actions, let status, let itemId, let turnId):
+  case .webSearch(let query, let action, let actions, _, let status, let itemId, let turnId):
     combineLongTextSignature(query, into: &hasher)
     combineOptionalText(action, into: &hasher)
     actions?.forEach { combineOptionalText($0.url ?? $0.title ?? $0.query ?? $0.queries?.first, into: &hasher) }
@@ -3035,7 +3035,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .promptSuggestion(_, let turnId),
        .contextCompact(_, _, _, let turnId, _),
        .autoApprovalReview(_, let turnId),
-       .webSearch(_, _, _, _, _, let turnId),
+       .webSearch(_, _, _, _, _, _, let turnId),
        .codexState(_, _, _, let turnId),
        .codexTurnStalled(_, _, let turnId, _),
        .planText(_, let turnId),
