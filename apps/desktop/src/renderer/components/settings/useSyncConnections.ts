@@ -45,21 +45,30 @@ export function useSyncConnections() {
 
   const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current;
-    const result = await Promise.all([
-      window.ade.sync.getStatus(),
+    // Settle each read independently. The local snapshot is authoritative for
+    // the This-Mac card; the routed status/devices are best-effort context
+    // (remote-binding detection + the working machine's name). A remote-bound
+    // window whose routed runtime is offline must still render the physical Mac,
+    // so a routed failure never clears the local snapshot or surfaces an error.
+    const [routedResult, localResult, devicesResult] = await Promise.all([
+      window.ade.sync.getStatus().then(
+        (routed) => ({ status: routed }),
+        () => ({ status: null }),
+      ),
       window.ade.sync.getLocalStatus().then(
         (localStatus) => ({ status: localStatus, error: null }),
         (localError: unknown) => ({ status: null, error: localError }),
       ),
-      window.ade.sync.listDevices(),
-    ]).catch((refreshError: unknown) => {
-      if (generation !== refreshGeneration.current) return null;
-      throw refreshError;
-    });
-    if (!result || generation !== refreshGeneration.current) return;
-    const [routed, localResult, nextDevices] = result;
-    setRoutedStatus(routed);
-    setRoutedDevices(nextDevices);
+      window.ade.sync.listDevices().then(
+        (list) => ({ devices: list }),
+        () => ({ devices: null }),
+      ),
+    ]);
+    if (generation !== refreshGeneration.current) return;
+    // Keep the last known routed context on failure rather than flickering it
+    // away during a transient outage.
+    if (routedResult.status !== null) setRoutedStatus(routedResult.status);
+    if (devicesResult.devices !== null) setRoutedDevices(devicesResult.devices);
     if (!localResult.status) {
       // A routed status may describe another machine. Never substitute it for
       // an unavailable local snapshot or expose its device mutations as local.

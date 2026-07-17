@@ -138,7 +138,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       connectedPeers: [],
       tailnetDiscovery: {
         ...routed.tailnetDiscovery,
-        state: "idle",
+        state: "disabled",
         servicePort: 0,
         target: null,
         error: null,

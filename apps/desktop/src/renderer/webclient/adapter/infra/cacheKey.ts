@@ -51,6 +51,8 @@ export function stableCacheKey(value: unknown): string {
           ancestors.delete(entry);
         }
       }
+      default:
+        throw new TypeError(`Unsupported cache-key value: ${typeof entry}`);
     }
   };
 
