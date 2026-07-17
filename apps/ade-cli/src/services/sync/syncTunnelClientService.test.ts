@@ -531,6 +531,78 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
+  it("claims again when another process rotates the shared identity", async () => {
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    const relayUrl = `http://127.0.0.1:${relayPort}`;
+    let identity = { machineKey: "a".repeat(32), secret: "b".repeat(48) };
+    const configStore = {
+      getConfig: () => ({ ...identity, relayUrl }),
+      getMachineIdentity: () => identity,
+      getRelayUrl: () => relayUrl,
+      setRelayUrl: () => ({ ...identity, relayUrl }),
+      getRelayWssUrl: () => `ws://127.0.0.1:${relayPort}/connect/${identity.machineKey}`,
+      rotateMachineIdentity: () => ({ ...identity, relayUrl }),
+    } as unknown as SyncCloudRelayStore;
+    const controlPaths: string[] = [];
+    relay.on("connection", (socket, request) => {
+      controlPaths.push(request.url ?? "");
+      if (controlPaths.length === 1) {
+        identity = { machineKey: "c".repeat(32), secret: "d".repeat(48) };
+        socket.close(1012, "External identity rotation");
+      }
+    });
+    const originalFetch = globalThis.fetch;
+    const claimUrls: string[] = [];
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0]) => {
+      claimUrls.push(String(input));
+      return new Response(null, { status: 204 });
+    });
+    globalThis.fetch = fetchMock;
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => "f".repeat(32),
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore,
+      loopbackProbe: async (port, expectedNonce) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(controlPaths).toHaveLength(2);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
+      expect(claimUrls).toEqual([
+        `${relayUrl}/machines/${"a".repeat(32)}/claim`,
+        `${relayUrl}/machines/${"c".repeat(32)}/claim`,
+      ]);
+      expect(controlPaths).toEqual([
+        expect.stringContaining(`/host/${"a".repeat(32)}`),
+        expect.stringContaining(`/host/${"c".repeat(32)}`),
+      ]);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
   it("refuses a relay pipe before forwarding when loopback is not ADE", async () => {
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {

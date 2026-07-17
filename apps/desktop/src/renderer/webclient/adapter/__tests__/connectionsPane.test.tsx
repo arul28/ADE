@@ -54,25 +54,27 @@ describe("hosted Connections pane", () => {
     const adapter = createAdeWebAdapter(client, [], accountClient);
     const previousAde = window.ade;
     window.ade = adapter.ade;
+    let view: ReturnType<typeof render> | null = null;
+    try {
+      view = render(
+        <MemoryRouter initialEntries={["/work"]}>
+          <ConnectionsPanel onClose={vi.fn()} />
+        </MemoryRouter>,
+      );
 
-    const view = render(
-      <MemoryRouter initialEntries={["/work"]}>
-        <ConnectionsPanel onClose={vi.fn()} />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByText("No Macs yet. Choose Add machine to connect one.")).toBeTruthy();
-    await expect(window.ade.remoteRuntime.getConnectionSnapshot()).resolves.toEqual({
-      connections: [],
-      connectedCount: 0,
-      updatedAt: expect.any(Number),
-    });
-    await expect(window.ade.sync.listDevices()).resolves.toEqual([
-      expect.objectContaining({ isLocal: true, deviceType: "browser", connectionState: "self" }),
-    ]);
-
-    view.unmount();
-    adapter.dispose();
-    window.ade = previousAde;
+      expect(await screen.findByText("No Macs yet. Choose Add machine to connect one.")).toBeTruthy();
+      await expect(window.ade.remoteRuntime.getConnectionSnapshot()).resolves.toEqual({
+        connections: [],
+        connectedCount: 0,
+        updatedAt: expect.any(Number),
+      });
+      await expect(window.ade.sync.listDevices()).resolves.toEqual([
+        expect.objectContaining({ isLocal: true, deviceType: "browser", connectionState: "self" }),
+      ]);
+    } finally {
+      view?.unmount();
+      adapter.dispose();
+      window.ade = previousAde;
+    }
   });
 });

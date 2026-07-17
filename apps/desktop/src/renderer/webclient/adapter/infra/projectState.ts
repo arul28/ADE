@@ -58,6 +58,7 @@ export function createProjectState(client: AdeSyncClient): AdapterProjectState {
           (entry) => entry.rootPath === project?.rootPath,
         )?.id;
         if (catalogProjectId) return catalogProjectId;
+        return null;
       }
       return client.getStatus().activeProjectId ?? null;
     },

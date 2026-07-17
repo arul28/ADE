@@ -12,6 +12,9 @@ import type {
 import { createAdeWebAdapter } from "../index";
 import type { AdeSyncClient, ChatHandlers, TerminalHandlers } from "../../sync";
 import type { BrowserAccountClient, BrowserAccountSnapshot } from "../../account/client";
+import { stableCacheKey } from "../infra/cacheKey";
+import { createCoalescingReadCache } from "../infra/coalescingReadCache";
+import { createProjectState } from "../infra/projectState";
 
 const project: ProjectInfo = {
   rootPath: "/repo",
@@ -42,7 +45,7 @@ describe("createAdeWebAdapter", () => {
       binding: null,
     });
 
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.app.getProject()).resolves.toEqual(project);
     await expect(adapter.ade.app.getWindowSession()).resolves.toMatchObject({
@@ -51,6 +54,89 @@ describe("createAdeWebAdapter", () => {
       binding: null,
     });
 
+    adapter.dispose();
+  });
+
+  it("keeps distinct argument values in distinct stable cache keys", () => {
+    const sparse: unknown[] = [];
+    sparse.length = 1;
+    const distinct = [
+      undefined,
+      null,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.NEGATIVE_INFINITY,
+      0,
+      -0,
+      {},
+      { value: undefined },
+      [],
+      [undefined],
+      sparse,
+    ].map(stableCacheKey);
+
+    expect(new Set(distinct).size).toBe(distinct.length);
+    expect(stableCacheKey({ second: 2, first: 1 })).toBe(
+      stableCacheKey({ first: 1, second: 2 }),
+    );
+  });
+
+  it("evicts resolved read-cache entries at TTL without deleting replacements", async () => {
+    vi.useFakeTimers();
+    const cache = createCoalescingReadCache(10);
+    const first = Promise.resolve("first");
+    cache.set("expired", first);
+    await first;
+
+    await vi.advanceTimersByTimeAsync(11);
+    const remainingKeys: string[] = [];
+    cache.invalidate((key) => {
+      remainingKeys.push(key);
+      return false;
+    });
+    expect(remainingKeys).toEqual([]);
+
+    const old = Promise.resolve("old");
+    cache.set("replaced", old, { ttlMs: 10 });
+    await old;
+    await vi.advanceTimersByTimeAsync(5);
+    const replacement = Promise.resolve("replacement");
+    cache.set("replaced", replacement, { ttlMs: 100 });
+    await replacement;
+    await vi.advanceTimersByTimeAsync(6);
+    expect(cache.get("replaced")).toBe(replacement);
+  });
+
+  it("does not fall back to a stale active project while a bound project is unresolved", () => {
+    fake.activeProjectId = "project-old";
+    const state = createProjectState(fake.asClient());
+    const nextProject = { rootPath: "/repo-next", displayName: "Repo Next", baseRef: "main" };
+
+    state.bindProject(nextProject);
+    expect(state.getProjectId()).toBeNull();
+
+    state.updateCatalog([{ ...fake.projects[0]!, id: "project-next", rootPath: "/repo-next" }]);
+    expect(state.getProjectId()).toBe("project-next");
+
+    state.bindProject(null);
+    expect(state.getProjectId()).toBe("project-old");
+    state.dispose();
+  });
+
+  it("keeps the routed host status distinct from ADE Web local status", async () => {
+    const adapter = createAdeWebAdapter(fake.asClient());
+
+    const routed = await adapter.ade.sync.getStatus();
+    const local = await adapter.ade.sync.getLocalStatus();
+
+    expect(routed.localDevice.deviceId).toBe("env-1");
+    expect(local.localDevice).toMatchObject({
+      deviceId: "ade-web",
+      deviceType: "browser",
+    });
+    expect(local.localDevice.deviceId).not.toBe(routed.localDevice.deviceId);
+    expect(local.currentBrain).toBeNull();
+    expect(local.client.state).toBe("disconnected");
     adapter.dispose();
   });
 
@@ -131,7 +217,7 @@ describe("createAdeWebAdapter", () => {
     fake.fileResults.set("deletePath", fileBlob(""));
 
     const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-1" }]);
     await expect(adapter.ade.sessions.list()).resolves.toEqual([{ id: "session-1", ptyId: "pty-1" }]);
@@ -171,7 +257,7 @@ describe("createAdeWebAdapter", () => {
       Object.assign(new Error("host unavailable"), { code: "host_unavailable" }),
     );
     const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.lanes.list()).resolves.toEqual([]);
 
@@ -215,7 +301,7 @@ describe("createAdeWebAdapter", () => {
     });
 
     const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.agentChat.createScheduledWork({
       sessionId: "chat-1",
@@ -438,7 +524,7 @@ describe("createAdeWebAdapter", () => {
     });
 
     const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.lanes.listSnapshots({ includeStatus: true })).resolves.toEqual([laneSnapshot]);
     await expect(adapter.ade.prs.refresh({ prIds: ["pr-1"] })).resolves.toEqual([pr]);
@@ -467,7 +553,7 @@ describe("createAdeWebAdapter", () => {
     fake.fileResults.set("listTree", tree);
 
     const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.files.listWorkspaces()).resolves.toEqual(workspaces);
     await expect(adapter.ade.files.listTree({ workspaceId: "ws-1" } as never)).resolves.toEqual(tree);
@@ -614,7 +700,7 @@ describe("createAdeWebAdapter", () => {
     fake.commandResults.set("lanes.list", [{ id: "lane-1" }]);
 
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     const [list, lanePr, conflicts, statusA, statusB, checks, github, contextsA, contextsB, lanesA, lanesB] = await Promise.all([
       adapter.ade.prs.listAll(),
@@ -663,7 +749,7 @@ describe("createAdeWebAdapter", () => {
     fake.descriptors = descriptors(["work.listSessions"]);
     fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
     const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     const laneEvents: unknown[] = [];
     const sessionEvents: unknown[] = [];
@@ -736,7 +822,7 @@ describe("createAdeWebAdapter", () => {
       atStart: true,
     });
     const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     await adapter.ade.sessions.list();
     const ptyData: unknown[] = [];
@@ -813,7 +899,7 @@ describe("createAdeWebAdapter", () => {
     fake.descriptors = descriptors(["work.listSessions"]);
     fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1" }]);
     const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project);
+    adapter.bindProject(project, "project-1");
 
     await adapter.ade.sessions.list();
     await adapter.ade.pty.write({ ptyId: "pty-1", data: "echo ok\n" });

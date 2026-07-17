@@ -114,6 +114,51 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     } as unknown as SyncRoleSnapshot;
   }
 
+  function localSyncSnapshot(): SyncRoleSnapshot {
+    const routed = syncSnapshot();
+    const now = new Date().toISOString();
+    const localDevice = {
+      ...routed.localDevice,
+      deviceId: "ade-web",
+      siteId: "ade-web",
+      name: typeof navigator === "undefined" ? "ADE Web" : `ADE Web (${navigator.platform || "browser"})`,
+      createdAt: now,
+      updatedAt: now,
+      lastSeenAt: now,
+      lastHost: null,
+      lastPort: null,
+    };
+    return {
+      ...routed,
+      mode: "standalone",
+      localDevice,
+      currentBrain: null,
+      currentRuntime: null,
+      runtimeName: "ADE Web",
+      connectedPeers: [],
+      tailnetDiscovery: {
+        ...routed.tailnetDiscovery,
+        state: "idle",
+        servicePort: 0,
+        target: null,
+        error: null,
+      },
+      client: {
+        ...routed.client,
+        state: "disconnected",
+        host: null,
+        port: null,
+        connectedAt: null,
+        lastSeenAt: null,
+        brainDeviceId: null,
+        hostDeviceId: null,
+        hostName: null,
+        error: null,
+        message: null,
+      },
+    };
+  }
+
   function syncDevices(): SyncDeviceRuntimeState[] {
     const snapshot = syncSnapshot();
     const local = snapshot.localDevice;
@@ -180,7 +225,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   const sync: Record<string, unknown> = {
     getStatus: async () => syncSnapshot(),
-    getLocalStatus: async () => syncSnapshot(),
+    getLocalStatus: async () => localSyncSnapshot(),
     refreshDiscovery: async () => syncSnapshot(),
     listDevices: async () => syncDevices(),
     updateLocalDevice: async (args: unknown) => ({

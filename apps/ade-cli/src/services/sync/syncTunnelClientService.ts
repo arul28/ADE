@@ -156,7 +156,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let lastControlOpenAt: string | null = null;
   let lastBridgeValidationAt: string | null = null;
   let bridgeValidationInFlight: Promise<boolean> | null = null;
-  let claimed = false;
+  let claimedIdentity: { relayOrigin: string; machineKey: string } | null = null;
   let accountLeaseExpiresAtMs: number | null = null;
   let consecutiveAccountLeaseFailures = 0;
   let confirmedConflictRotations = 0;
@@ -210,8 +210,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const claimOnce = async (id: MachineIdentity): Promise<void> => {
-    if (claimed) return;
-    const url = `${relayHttpUrl().replace(/\/+$/, "")}/machines/${id.machineKey}/claim`;
+    const relayOrigin = relayHttpUrl().replace(/\/+$/, "");
+    if (
+      claimedIdentity?.relayOrigin === relayOrigin
+      && claimedIdentity.machineKey === id.machineKey
+    ) return;
+    const url = `${relayOrigin}/machines/${id.machineKey}/claim`;
     const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -223,7 +227,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       throw new RelayClaimError(response.status, id.machineKey);
     }
     await response.body?.cancel().catch(() => {});
-    claimed = true;
+    claimedIdentity = { relayOrigin, machineKey: id.machineKey };
     log.info?.("sync_tunnel.claimed", {
       machineKey: id.machineKey,
       status: response.status,
@@ -256,7 +260,6 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         throw error;
       }
       confirmedConflictRotations += 1;
-      claimed = false;
       identityRotationPendingPublish = true;
       log.info?.("sync_tunnel.identity_rotated", {
         previousMachineKey: initialIdentity.machineKey,

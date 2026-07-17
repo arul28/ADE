@@ -6,6 +6,9 @@ import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../../desktop/src/shared/acc
 
 const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
 const IDENTITY_ROTATION_LOCK_STALE_MS = 30_000;
+const IDENTITY_ROTATION_LOCK_VERSION = 1;
+const IDENTITY_CONFIG_LOCK_WAIT_MS = 2_000;
+const IDENTITY_CONFIG_LOCK_RETRY_MS = 10;
 
 export type SyncCloudRelayConfig = {
   /** Per-machine identifier phones dial through the relay (32 hex chars). */
@@ -20,6 +23,18 @@ type SyncCloudRelayFile = Partial<SyncCloudRelayConfig> & {
   /** Deprecated kill-switch fields are accepted only so old files are cleaned up. */
   enabled?: unknown;
   enabledSetByUser?: unknown;
+};
+
+type RotationLockOwner = {
+  version: typeof IDENTITY_ROTATION_LOCK_VERSION;
+  pid: number;
+  token: string;
+  createdAt: string;
+};
+
+type RotationLockLease = {
+  fd: number;
+  owner: RotationLockOwner;
 };
 
 /** Default relay base URL: env override wins, else the deployed worker. */
@@ -66,9 +81,11 @@ export type SyncCloudRelayStore = ReturnType<typeof createSyncCloudRelayStore>;
  * machineKey/secret are minted lazily on first read (matching the push-relay
  * store's randomBytes sizing) and the file is chmod 600.
  */
-export function createSyncCloudRelayStore(args: { filePath: string }) {
+export function createSyncCloudRelayStore(args: { filePath: string; lockWaitMs?: number }) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
   const rotationLockPath = `${args.filePath}.rotate.lock`;
+  const lockWaitMs = Math.max(0, args.lockWaitMs ?? IDENTITY_CONFIG_LOCK_WAIT_MS);
+  const lockWaiter = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
   const read = (): SyncCloudRelayFile => {
     if (!fs.existsSync(args.filePath)) return {};
@@ -96,36 +113,11 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
     ...(relayUrl ? { relayUrl } : {}),
   });
 
-  // First-run identity mint via exclusive create (O_EXCL). If a concurrent
-  // process already minted the identity, adopt the winner's rather than
-  // overwriting it with a divergent machineKey/secret pair.
-  const mintExclusive = (config: SyncCloudRelayConfig): SyncCloudRelayConfig => {
-    try {
-      fs.writeFileSync(args.filePath, `${JSON.stringify(config, null, 2)}\n`, { flag: "wx", mode: 0o600 });
-      return config;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        const raw = read();
-        if (
-          typeof raw.machineKey === "string" && /^[a-f0-9]{32,64}$/i.test(raw.machineKey)
-          && typeof raw.secret === "string" && raw.secret.length >= 32
-        ) {
-          return {
-            machineKey: raw.machineKey,
-            secret: raw.secret,
-            relayUrl: typeof raw.relayUrl === "string" && raw.relayUrl.trim() ? raw.relayUrl.trim() : undefined,
-          };
-        }
-      }
-      write(config);
-      return config;
-    }
-  };
-
-  // Reads the file and fills in a freshly generated identity when absent,
-  // persisting it so the machineKey stays stable across restarts.
-  const load = (): SyncCloudRelayConfig => {
-    const raw = read();
+  const normalize = (raw: SyncCloudRelayFile): {
+    config: SyncCloudRelayConfig;
+    needsIdentityWrite: boolean;
+    needsWrite: boolean;
+  } => {
     const validMachineKey = typeof raw.machineKey === "string"
       && /^[a-f0-9]{32,64}$/i.test(raw.machineKey)
       ? raw.machineKey
@@ -134,43 +126,165 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
       ? raw.secret
       : null;
     const generated = validMachineKey && validSecret ? null : mintIdentity();
-    const machineKey = validMachineKey ?? generated?.machineKey;
-    const secret = validSecret ?? generated?.secret;
+    // A machine key and secret are one relay credential. If either half is
+    // invalid, never combine the surviving half with a newly minted value.
+    const machineKey = generated?.machineKey ?? validMachineKey;
+    const secret = generated?.secret ?? validSecret;
     if (!machineKey || !secret) {
       throw new Error("Could not mint the ADE Relay machine identity.");
     }
-    const config: SyncCloudRelayConfig = {
-      machineKey,
-      secret,
-      relayUrl: typeof raw.relayUrl === "string" && raw.relayUrl.trim() ? raw.relayUrl.trim() : undefined,
-    };
+    const needsIdentityWrite = raw.machineKey !== machineKey || raw.secret !== secret;
     const hasDeprecatedKillSwitchFields = Object.prototype.hasOwnProperty.call(raw, "enabled")
       || Object.prototype.hasOwnProperty.call(raw, "enabledSetByUser");
-    if (raw.machineKey !== machineKey || raw.secret !== secret || hasDeprecatedKillSwitchFields) {
-      // Absent file → race-safe first mint; existing-but-repaired → plain write.
-      if (!fs.existsSync(args.filePath)) return mintExclusive(config);
-      write(config);
-    }
-    return config;
+    return {
+      config: {
+        machineKey,
+        secret,
+        relayUrl: typeof raw.relayUrl === "string" && raw.relayUrl.trim() ? raw.relayUrl.trim() : undefined,
+      },
+      needsIdentityWrite,
+      needsWrite: needsIdentityWrite || hasDeprecatedKillSwitchFields,
+    };
   };
 
-  const acquireRotationLock = (): number | null => {
+  const readRotationLock = (): { owner: RotationLockOwner | null; text: string; ageMs: number } | null => {
+    try {
+      const text = fs.readFileSync(rotationLockPath, "utf8");
+      const raw = safeJsonParse<Partial<RotationLockOwner>>(text, {});
+      const owner = raw.version === IDENTITY_ROTATION_LOCK_VERSION
+        && typeof raw.pid === "number" && Number.isInteger(raw.pid) && raw.pid > 0
+        && typeof raw.token === "string" && raw.token.length >= 16
+        && typeof raw.createdAt === "string"
+        ? raw as RotationLockOwner
+        : null;
+      return {
+        owner,
+        text,
+        ageMs: Math.max(0, Date.now() - fs.statSync(rotationLockPath).mtimeMs),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  const isPidAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  };
+
+  const acquireRotationLock = (): RotationLockLease | null => {
+    const owner: RotationLockOwner = {
+      version: IDENTITY_ROTATION_LOCK_VERSION,
+      pid: process.pid,
+      token: randomBytes(16).toString("hex"),
+      createdAt: new Date().toISOString(),
+    };
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        return fs.openSync(rotationLockPath, "wx", 0o600);
+        const fd = fs.openSync(rotationLockPath, "wx", 0o600);
+        try {
+          fs.writeFileSync(fd, `${JSON.stringify(owner)}\n`, "utf8");
+          fs.fsyncSync(fd);
+          return { fd, owner };
+        } catch (error) {
+          fs.closeSync(fd);
+          try {
+            fs.unlinkSync(rotationLockPath);
+          } catch {
+            // Preserve the original lock-write failure.
+          }
+          throw error;
+        }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         if (attempt > 0) return null;
+        const existing = readRotationLock();
+        if (!existing) continue;
+        if (existing.owner && isPidAlive(existing.owner.pid)) return null;
+        if (!existing.owner && existing.ageMs < IDENTITY_ROTATION_LOCK_STALE_MS) return null;
+        const latest = readRotationLock();
+        if (!latest || latest.text !== existing.text) return null;
         try {
-          const ageMs = Date.now() - fs.statSync(rotationLockPath).mtimeMs;
-          if (ageMs < IDENTITY_ROTATION_LOCK_STALE_MS) return null;
           fs.unlinkSync(rotationLockPath);
-        } catch (statError) {
-          if ((statError as NodeJS.ErrnoException).code !== "ENOENT") return null;
+        } catch (unlinkError) {
+          if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") return null;
         }
       }
     }
     return null;
+  };
+
+  const acquireRotationLockWithWait = (waitMs: number): RotationLockLease | null => {
+    const deadline = Date.now() + Math.max(0, waitMs);
+    while (true) {
+      const lease = acquireRotationLock();
+      if (lease) return lease;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) return null;
+      Atomics.wait(lockWaiter, 0, 0, Math.min(IDENTITY_CONFIG_LOCK_RETRY_MS, remainingMs));
+    }
+  };
+
+  const releaseRotationLock = (lease: RotationLockLease): void => {
+    try {
+      fs.closeSync(lease.fd);
+    } finally {
+      const current = readRotationLock();
+      if (current?.owner?.token !== lease.owner.token) return;
+      try {
+        fs.unlinkSync(rotationLockPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          // Cleanup is best effort; a later owner can reap this dead PID lock.
+        }
+      }
+    }
+  };
+
+  const busyError = (): Error =>
+    new Error("The ADE Relay configuration is being updated by another live ADE process.");
+
+  const configWhileLocked = (): SyncCloudRelayConfig => {
+    const latest = normalize(read());
+    if (latest.needsIdentityWrite) throw busyError();
+    return latest.config;
+  };
+
+  const updateConfig = (
+    update: (current: SyncCloudRelayConfig) => { config: SyncCloudRelayConfig; changed: boolean },
+    onLocked?: () => SyncCloudRelayConfig,
+    waitMs = lockWaitMs,
+  ): SyncCloudRelayConfig => {
+    const lease = acquireRotationLockWithWait(waitMs);
+    if (!lease) {
+      if (onLocked) return onLocked();
+      throw busyError();
+    }
+    try {
+      // Read only after acquiring the shared lock so every whole-file update
+      // is based on the latest identity and relay URL.
+      const current = normalize(read());
+      const result = update(current.config);
+      if (current.needsWrite || result.changed) write(result.config);
+      return result.config;
+    } finally {
+      releaseRotationLock(lease);
+    }
+  };
+
+  // Reads the file and fills in a freshly generated identity when absent,
+  // persisting it so the machineKey stays stable across restarts.
+  const load = (): SyncCloudRelayConfig => {
+    const current = normalize(read());
+    if (!current.needsWrite) return current.config;
+    return updateConfig(
+      (latest) => ({ config: latest, changed: false }),
+      configWhileLocked,
+    );
   };
 
   return {
@@ -188,9 +302,10 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
     },
 
     setRelayUrl(relayUrl: string | null): SyncCloudRelayConfig {
-      const next = { ...load(), relayUrl: relayUrl?.trim() || undefined };
-      write(next);
-      return next;
+      return updateConfig((current) => ({
+        config: { ...current, relayUrl: relayUrl?.trim() || undefined },
+        changed: true,
+      }));
     },
 
     /**
@@ -199,25 +314,13 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
      * processes so exactly one confirmed-conflict recovery wins.
      */
     rotateMachineIdentity(expectedMachineKey: string): SyncCloudRelayConfig {
-      const lockFd = acquireRotationLock();
-      if (lockFd == null) return load();
-      try {
-        const current = load();
-        if (current.machineKey !== expectedMachineKey) return current;
-        const next = mintIdentity(current.relayUrl);
-        write(next);
-        return next;
-      } finally {
-        try {
-          fs.closeSync(lockFd);
-        } finally {
-          try {
-            fs.unlinkSync(rotationLockPath);
-          } catch {
-            // Another process can observe the persisted winner even if cleanup fails.
-          }
+      return updateConfig((current) => {
+        if (current.machineKey !== expectedMachineKey) {
+          return { config: current, changed: false };
         }
-      }
+        const next = mintIdentity(current.relayUrl);
+        return { config: next, changed: true };
+      }, configWhileLocked, 0);
     },
 
     /** `wss://<host>/connect/<machineKey>` — the value the QR integration reads. */
