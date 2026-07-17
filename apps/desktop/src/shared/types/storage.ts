@@ -67,6 +67,9 @@ export type StorageSnapshot = {
   categories: StorageCategorySnapshot[];
   scanDurationMs: number;
   truncated: boolean;
+  // Optional so pre-overhaul snapshots (and the daemon-backed fallback
+  // instance) remain valid; renderer must treat absence as "not available".
+  extras?: StorageSnapshotExtras;
 };
 
 export type StorageCleanupTarget =
@@ -90,4 +93,85 @@ export type StorageCleanupResult = {
   removed: Array<{ path: string; bytes: number }>;
   failed: Array<{ path: string; reason: string }>;
   freedBytes: number;
+};
+
+export type StoragePolicyClass = "user_data" | "derived" | "operational";
+
+export type StorageLedgerPolicy = {
+  maxAgeDays?: number;
+  maxRows?: number;
+  maxBytes?: number;
+  compressAfterDays?: number;
+  keepLatest?: number;
+};
+
+export type StorageLedgerEntry = {
+  id: string;
+  kind: "table" | "directory" | "file_family";
+  description: string;
+  policyClass: StoragePolicyClass;
+  policy: StorageLedgerPolicy;
+  enforcement: "write_time" | "doctor" | "both" | "manual";
+};
+
+export type MaintenanceActionKind =
+  | "prune"
+  | "compress"
+  | "delete"
+  | "vacuum"
+  | "compact"
+  | "checkpoint";
+
+export type MaintenanceAction = {
+  ledgerId: string;
+  kind: MaintenanceActionKind;
+  itemsAffected: number;
+  bytesReclaimed: number;
+  durationMs: number;
+  skippedReason?: string | null;
+  error?: string | null;
+};
+
+export type MaintenanceTrigger = "daily" | "post_boot" | "manual" | "post_migration";
+
+export type MaintenanceRunReport = {
+  startedAt: string;
+  finishedAt: string;
+  trigger: MaintenanceTrigger;
+  actions: MaintenanceAction[];
+  reclaimedBytes: number;
+  dbSizeBytes: number | null;
+};
+
+export type DbBreakdownCategory =
+  | "webhooks"
+  | "sync_bookkeeping"
+  | "review_artifacts"
+  | "pr_cache"
+  | "core";
+
+export type DbBreakdownEntry = {
+  table: string;
+  label: string;
+  bytes: number;
+  category: DbBreakdownCategory;
+  action: "prunable" | "compactable" | "compaction_pending" | null;
+};
+
+export type StorageMaintenanceInfo = {
+  lastRun: MaintenanceRunReport | null;
+  journal: MaintenanceRunReport[];
+};
+
+export type StorageSnapshotExtras = {
+  dbBreakdown: DbBreakdownEntry[];
+  maintenance: StorageMaintenanceInfo;
+  safeReclaimableBytes: number;
+  policyChips: Partial<Record<StorageCategoryId, string>>;
+};
+
+export type RuntimeHealthSnapshot = {
+  slowActions24h: number;
+  slowActionP95Ms: number | null;
+  sampledAt: string;
 };

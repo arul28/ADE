@@ -354,9 +354,14 @@ type AutomationIngressEventRow = {
   summary: string | null;
   error_message: string | null;
   cursor: string | null;
-  raw_payload_json: string | null;
   received_at: string;
 };
+
+const INGRESS_EVENT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+const INGRESS_EVENT_MAX_ROWS_PER_PROJECT = 2_000;
+const INGRESS_PAYLOAD_RECLAIM_CHUNK_ROWS = 2_000;
+const REVIEW_ARTIFACT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
+const PR_SNAPSHOT_RETENTION_MS = 60 * 24 * 60 * 60 * 1_000;
 
 type AutomationPendingPublishRow = {
   id: string;
@@ -1121,6 +1126,93 @@ export function createAutomationService({
     }
   };
 
+  const tableExists = (tableName: string): boolean => Boolean(db.get(
+    "select 1 as present from sqlite_master where type = 'table' and name = ? limit 1",
+    [tableName],
+  ));
+
+  const pruneIngressEventsForProject = (targetProjectId: string, referenceTime = new Date()): void => {
+    const cutoff = new Date(referenceTime.getTime() - INGRESS_EVENT_RETENTION_MS).toISOString();
+    db.run(
+      "delete from automation_ingress_events where project_id = ? and received_at < ?",
+      [targetProjectId, cutoff],
+    );
+    db.run(
+      `delete from automation_ingress_events
+        where rowid in (
+          select rowid
+          from automation_ingress_events
+          where project_id = ?
+          order by received_at desc, rowid desc
+          limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
+        )`,
+      [targetProjectId],
+    );
+  };
+
+  const reclaimLegacyIngressPayloads = (): void => {
+    const hasPayloads = db.get<{ present: number }>(
+      "select 1 as present from automation_ingress_events where raw_payload_json is not null limit 1",
+    );
+    if (!hasPayloads) return;
+
+    const payloadStats = db.get<{ rows_cleared: number; bytes_cleared: number | null }>(
+      `select count(*) as rows_cleared, coalesce(sum(length(raw_payload_json)), 0) as bytes_cleared
+         from automation_ingress_events
+        where raw_payload_json is not null`,
+    );
+
+    while (db.get("select 1 as present from automation_ingress_events where raw_payload_json is not null limit 1")) {
+      db.run("begin immediate");
+      try {
+        db.run(
+          `update automation_ingress_events
+              set raw_payload_json = null
+            where rowid in (
+              select rowid
+              from automation_ingress_events
+              where raw_payload_json is not null
+              order by rowid
+              limit ${INGRESS_PAYLOAD_RECLAIM_CHUNK_ROWS}
+            )`,
+        );
+        db.run("commit");
+      } catch (error) {
+        try {
+          db.run("rollback");
+        } catch {
+          // Preserve the original reclaim failure.
+        }
+        throw error;
+      }
+    }
+
+    const referenceTime = new Date();
+    for (const row of db.all<{ project_id: string }>(
+      "select distinct project_id from automation_ingress_events",
+    )) {
+      pruneIngressEventsForProject(row.project_id, referenceTime);
+    }
+
+    if (tableExists("review_run_artifacts")) {
+      db.run(
+        "delete from review_run_artifacts where created_at < ?",
+        [new Date(referenceTime.getTime() - REVIEW_ARTIFACT_RETENTION_MS).toISOString()],
+      );
+    }
+    if (tableExists("pull_request_snapshots")) {
+      db.run(
+        "delete from pull_request_snapshots where updated_at < ?",
+        [new Date(referenceTime.getTime() - PR_SNAPSHOT_RETENTION_MS).toISOString()],
+      );
+    }
+
+    logger.info("automations.ingress_payload_reclaim", {
+      rowsCleared: Number(payloadStats?.rows_cleared ?? 0),
+      bytesCleared: Number(payloadStats?.bytes_cleared ?? 0),
+    });
+  };
+
   const ensureSchema = () => {
     const runColumns = [
       ["chat_session_id", "alter table automation_runs add column chat_session_id text"],
@@ -1270,6 +1362,8 @@ export function createAutomationService({
     // A crash may leave a claimed cleanup behind. Retrying is safe: if the
     // delete completed before the crash, the missing-lane path records success.
     db.run("update automation_scheduled_cleanups set status = 'scheduled' where status = 'executing' and project_id = ?", [projectId]);
+
+    reclaimLegacyIngressPayloads();
 
   };
 
@@ -1959,7 +2053,7 @@ export function createAutomationService({
     `
       select
         id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
-        cursor, raw_payload_json, received_at
+        cursor, received_at
       from automation_ingress_events
       where project_id = ? and id = ?
       limit 1
@@ -1983,7 +2077,7 @@ export function createAutomationService({
       `
         select
           id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
-          cursor, raw_payload_json, received_at
+          cursor, received_at
         from automation_ingress_events
         where project_id = ?
         order by received_at desc
@@ -3284,7 +3378,7 @@ export function createAutomationService({
       `
         select
           id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
-          cursor, raw_payload_json, received_at
+          cursor, received_at
         from automation_ingress_events
         where project_id = ? and source = ? and event_key = ?
         limit 1
@@ -3295,25 +3389,36 @@ export function createAutomationService({
 
     const eventId = randomUUID();
     const receivedAt = nowIso();
-    db.run(
-      `
-        insert into automation_ingress_events(
-          id, project_id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message, cursor, raw_payload_json, received_at
-        ) values (?, ?, ?, ?, '[]', ?, ?, 'received', ?, null, ?, ?, ?)
-      `,
-      [
-        eventId,
-        projectId,
-        args.source,
-        eventKey,
-        args.triggerType,
-        args.eventName ?? null,
-        args.summary ?? null,
-        args.cursor ?? null,
-        args.rawPayload ? JSON.stringify(args.rawPayload) : null,
-        receivedAt,
-      ]
-    );
+    db.run("begin immediate");
+    try {
+      db.run(
+        `
+          insert into automation_ingress_events(
+            id, project_id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message, cursor, raw_payload_json, received_at
+          ) values (?, ?, ?, ?, '[]', ?, ?, 'received', ?, null, ?, null, ?)
+        `,
+        [
+          eventId,
+          projectId,
+          args.source,
+          eventKey,
+          args.triggerType,
+          args.eventName ?? null,
+          args.summary ?? null,
+          args.cursor ?? null,
+          receivedAt,
+        ]
+      );
+      pruneIngressEventsForProject(projectId, new Date(receivedAt));
+      db.run("commit");
+    } catch (error) {
+      try {
+        db.run("rollback");
+      } catch {
+        // Preserve the original insert/prune failure.
+      }
+      throw error;
+    }
     if (args.cursor) upsertIngressCursor(args.source, args.cursor);
 
     const trigger: TriggerContext = {

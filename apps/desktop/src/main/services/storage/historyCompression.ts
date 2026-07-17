@@ -10,7 +10,11 @@ import type { DiskPressureMonitor } from "./diskPressure";
 import { readVolumeSpace } from "./volume";
 
 const DAY_MS = 24 * 60 * 60_000;
-const DEFAULT_MIN_AGE_DAYS = 30;
+// Inactive history older than this is compressed by the storage doctor. Lowered
+// from 30d to 14d: on the reference machine 62 files were >14d (280 MB) that the
+// 30d threshold left uncompressed. Compression is transparent (read-back
+// decompresses), so a shorter threshold reclaims more without user impact.
+const DEFAULT_MIN_AGE_DAYS = 14;
 export const COMPRESSION_MIN_AGE_MS = DEFAULT_MIN_AGE_DAYS * DAY_MS;
 const DEFAULT_MAX_FILES = 25;
 const BETWEEN_FILES_DELAY_MS = 250;

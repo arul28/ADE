@@ -1,11 +1,20 @@
 import type {
+  DbBreakdownCategory,
+  DbBreakdownEntry,
+  MaintenanceAction,
+  MaintenanceRunReport,
+  RuntimeHealthSnapshot,
   StorageCategoryId,
   StorageCategorySnapshot,
   StorageCleanupTarget,
   StorageItem,
   StorageSafety,
+  StorageSnapshotExtras,
 } from "../../../../shared/types/storage";
+import type { AppResourceUsageSnapshot } from "../../../../shared/types";
+import type { ResourcePressureLevel } from "../../../lib/resourcePressure";
 import { COLORS } from "../../lanes/laneDesignTokens";
+import { formatBytes } from "../../../lib/format";
 export { formatBytes } from "../../../lib/format";
 
 /**
@@ -173,4 +182,390 @@ export function groupLaneItems(items: StorageItem[]): {
     else active.push(item);
   }
   return { active, archived, orphaned };
+}
+
+// ===========================================================================
+// Diagnostics & maintenance view-model (overhaul)
+//
+// These pure helpers turn the optional `StorageSnapshotExtras` (dbBreakdown,
+// maintenance journal, policy chips, reclaimable total) and the machine-level
+// resource/health snapshots into display-ready shapes. Every helper degrades to
+// a sensible "not available" value when its source is missing, so the UI can be
+// rendered against an older daemon that never sends `extras`.
+// ===========================================================================
+
+/** Approximate size label, e.g. "~1.2 GB". Used for estimates the doctor will reclaim. */
+export function formatApproxBytes(bytes: number): string {
+  return `~${formatBytes(bytes)}`;
+}
+
+/** The daemon-provided safe reclaim estimate, clamped to a positive number. */
+export function safeReclaimableBytes(extras: StorageSnapshotExtras | undefined): number {
+  const n = extras?.safeReclaimableBytes;
+  return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/** The policy chip string for a category (e.g. "Auto-cleans · 7 days"), or undefined. */
+export function categoryPolicyChip(
+  extras: StorageSnapshotExtras | undefined,
+  categoryId: StorageCategoryId,
+): string | undefined {
+  const chip = extras?.policyChips?.[categoryId];
+  return typeof chip === "string" && chip.trim().length > 0 ? chip : undefined;
+}
+
+// ---- Project database breakdown -------------------------------------------
+
+/** Plain-language framing for each internal database category. No jargon. */
+export const DB_CATEGORY_HINT: Record<DbBreakdownCategory, string> = {
+  webhooks: "History of incoming events from your automations.",
+  sync_bookkeeping: "Records ADE keeps to sync your work across devices.",
+  review_artifacts: "Saved output from past code reviews.",
+  pr_cache: "A local copy of pull request details, refetched when needed.",
+  core: "Your project's live data — chats, lanes, and settings.",
+};
+
+export type DbBreakdownRow = {
+  table: string;
+  label: string;
+  bytes: number;
+  size: string;
+  category: DbBreakdownCategory;
+  hint: string;
+  /** Core data is framed as protected and never gets a destructive action. */
+  isProtected: boolean;
+  action: DbBreakdownEntry["action"];
+  /** Quiet inline action verb, or null when the row is protected/pending. */
+  actionLabel: string | null;
+  /** Waiting for a safe moment to compact (peers mid-sync); shows a tooltip, no action. */
+  isPending: boolean;
+};
+
+/** Largest-first, display-ready rows for the project database card. */
+export function dbBreakdownRows(entries: DbBreakdownEntry[] | undefined): DbBreakdownRow[] {
+  if (!entries || entries.length === 0) return [];
+  return [...entries]
+    .filter((entry) => entry.bytes > 0 || entry.category === "core")
+    .sort((a, b) => b.bytes - a.bytes)
+    .map((entry) => {
+      const isProtected = entry.category === "core";
+      const isPending = entry.action === "compaction_pending";
+      const actionLabel = isProtected || isPending
+        ? null
+        : entry.action === "prunable"
+          ? "Clean up"
+          : entry.action === "compactable"
+            ? "Compact now"
+            : null;
+      return {
+        table: entry.table,
+        label: entry.label,
+        bytes: entry.bytes,
+        size: formatBytes(entry.bytes),
+        category: entry.category,
+        hint: DB_CATEGORY_HINT[entry.category],
+        isProtected,
+        action: entry.action,
+        actionLabel,
+        isPending,
+      };
+    });
+}
+
+/** Copy shown in the "waiting to compact" tooltip. Never references sync internals. */
+export const DB_COMPACTION_PENDING_HINT =
+  "ADE will reclaim this automatically once none of your devices are mid-sync.";
+
+// ---- Maintenance journal ---------------------------------------------------
+
+/**
+ * Best-effort friendly name for a ledger id (e.g. "automation.ingress_events" →
+ * "Webhook history"). Falls back to a title-cased version of the last segment so
+ * an unknown ledger entry still reads cleanly and never leaks an identifier.
+ */
+const LEDGER_LABEL_RULES: Array<{ match: RegExp; label: string }> = [
+  { match: /ingress|webhook/i, label: "Webhook history" },
+  { match: /operation|tombstone|bookkeep|\bcrr\b|crsql/i, label: "Sync bookkeeping" },
+  { match: /review/i, label: "Review artifacts" },
+  { match: /pull_?request|pr[_.]?(cache|snapshot)|snapshot/i, label: "Pull request cache" },
+  { match: /transcript|chat|terminal|history/i, label: "Chat & terminal history" },
+  { match: /tmp|staging|temp/i, label: "Temporary files" },
+  { match: /backup|recovery/i, label: "Recovery backups" },
+  { match: /cache/i, label: "Caches" },
+  { match: /vacuum|freelist|database|\.db|\bdb\b/i, label: "Database file" },
+];
+
+export function ledgerLabel(ledgerId: string): string {
+  for (const rule of LEDGER_LABEL_RULES) {
+    if (rule.match.test(ledgerId)) return rule.label;
+  }
+  const segment = ledgerId.split(/[.:/]/).pop() ?? ledgerId;
+  const words = segment.replace(/[_-]+/g, " ").trim();
+  if (!words) return "Maintenance";
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** One humanized line per maintenance action, largest reclaim first. */
+export function maintenanceActionLines(
+  report: MaintenanceRunReport,
+): Array<{ ledgerId: string; label: string; detail: string; failed: boolean }> {
+  return [...report.actions]
+    .sort((a, b) => b.bytesReclaimed - a.bytesReclaimed)
+    .map((action) => ({
+      ledgerId: action.ledgerId,
+      label: ledgerLabel(action.ledgerId),
+      detail: maintenanceActionDetail(action),
+      failed: Boolean(action.error),
+    }));
+}
+
+function maintenanceActionDetail(action: MaintenanceAction): string {
+  if (action.error) return "couldn't finish";
+  if (action.skippedReason) return "nothing to do";
+  if (action.bytesReclaimed > 0) return `reclaimed ${formatBytes(action.bytesReclaimed)}`;
+  if (action.itemsAffected > 0) {
+    return `${action.itemsAffected} ${action.itemsAffected === 1 ? "item" : "items"}`;
+  }
+  return actionVerbPast(action.kind);
+}
+
+function actionVerbPast(kind: MaintenanceAction["kind"]): string {
+  switch (kind) {
+    case "compress":
+      return "compressed";
+    case "compact":
+      return "compacted";
+    case "prune":
+    case "delete":
+      return "cleaned up";
+    case "vacuum":
+      return "reclaimed space";
+    case "checkpoint":
+      return "tidied up";
+    default:
+      return "done";
+  }
+}
+
+/**
+ * A friendly clock label for a run timestamp: "Today 03:12", "Yesterday 03:12",
+ * a weekday within a week, else "Jul 12 03:12". `now` is injectable for tests.
+ */
+export function formatRunClock(iso: string, now: Date = new Date()): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDelta = Math.round((startOfDay(now) - startOfDay(date)) / 86_400_000);
+  if (dayDelta <= 0) return `Today ${time}`;
+  if (dayDelta === 1) return `Yesterday ${time}`;
+  if (dayDelta < 7) return `${date.toLocaleDateString([], { weekday: "short" })} ${time}`;
+  return `${date.toLocaleDateString([], { month: "short", day: "numeric" })} ${time}`;
+}
+
+/** Headline for a maintenance run, e.g. "Yesterday 03:12 · reclaimed 481 MB". */
+export function maintenanceHeadline(report: MaintenanceRunReport, now?: Date): string {
+  const when = formatRunClock(report.finishedAt || report.startedAt, now);
+  const reclaimed = report.reclaimedBytes > 0
+    ? `reclaimed ${formatBytes(report.reclaimedBytes)}`
+    : "nothing to reclaim";
+  return when ? `${when} · ${reclaimed}` : reclaimed;
+}
+
+/** Recent runs, newest first, capped for display. */
+export function journalEntries(
+  extras: StorageSnapshotExtras | undefined,
+  limit = 8,
+): MaintenanceRunReport[] {
+  const journal = extras?.maintenance?.journal ?? [];
+  return [...journal]
+    .sort((a, b) => runTime(b) - runTime(a))
+    .slice(0, Math.max(0, limit));
+}
+
+/** The most recent run (prefer the explicit lastRun, else the newest journal entry). */
+export function lastMaintenanceRun(
+  extras: StorageSnapshotExtras | undefined,
+): MaintenanceRunReport | null {
+  return extras?.maintenance?.lastRun ?? journalEntries(extras, 1)[0] ?? null;
+}
+
+function runTime(report: MaintenanceRunReport): number {
+  const ts = Date.parse(report.finishedAt || report.startedAt);
+  return Number.isNaN(ts) ? 0 : ts;
+}
+
+// ---- Database-size trend & sparkline --------------------------------------
+
+export type DbSizeSample = { ts: string; bytes: number };
+
+/** Database-size samples from doctor runs, chronological, positive-valued only. */
+export function dbSizeSamples(extras: StorageSnapshotExtras | undefined): DbSizeSample[] {
+  const journal = extras?.maintenance?.journal ?? [];
+  const out: DbSizeSample[] = [];
+  for (const run of journal) {
+    const bytes = run.dbSizeBytes;
+    const ts = run.finishedAt || run.startedAt;
+    if (typeof bytes === "number" && Number.isFinite(bytes) && bytes > 0 && ts && !Number.isNaN(Date.parse(ts))) {
+      out.push({ ts, bytes });
+    }
+  }
+  out.sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+  return out;
+}
+
+export type Trend = "down" | "up" | "flat";
+
+/** Trend of the last two database samples, or null when there aren't two. */
+export function dbSizeTrend(samples: DbSizeSample[]): Trend | null {
+  if (samples.length < 2) return null;
+  const prev = samples[samples.length - 2].bytes;
+  const last = samples[samples.length - 1].bytes;
+  if (prev <= 0) return null;
+  const ratio = last / prev;
+  if (ratio < 0.99) return "down";
+  if (ratio > 1.01) return "up";
+  return "flat";
+}
+
+/** Normalized polyline points (0..1 in both axes, y flipped for SVG) for a sparkline. */
+export function sparklinePoints(
+  samples: DbSizeSample[],
+  width: number,
+  height: number,
+): Array<{ x: number; y: number }> {
+  if (samples.length === 0) return [];
+  if (samples.length === 1) {
+    return [{ x: 0, y: height / 2 }, { x: width, y: height / 2 }];
+  }
+  const values = samples.map((s) => s.bytes);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const step = width / (samples.length - 1);
+  return samples.map((sample, index) => ({
+    x: index * step,
+    y: height - ((sample.bytes - min) / span) * height,
+  }));
+}
+
+// ---- Machine health --------------------------------------------------------
+
+/** Resident memory of the ADE background service (ade-runtime role), in bytes, or null. */
+export function daemonMemoryBytes(usage: AppResourceUsageSnapshot | null): number | null {
+  const roleUsage = usage?.roleUsage;
+  if (!roleUsage) return null;
+  let mb = 0;
+  let found = false;
+  for (const entry of roleUsage) {
+    if (entry.role !== "ade-runtime") continue;
+    if (typeof entry.memoryMB === "number" && Number.isFinite(entry.memoryMB)) {
+      mb += entry.memoryMB;
+      found = true;
+    }
+  }
+  return found ? mb * 1024 * 1024 : null;
+}
+
+export type HealthTone = "good" | "elevated" | "busy";
+
+/** Overall health chip derived from the resource-pressure level (0..4). */
+export function healthChip(level: ResourcePressureLevel): { label: string; tone: HealthTone } {
+  if (level >= 3) return { label: "Under load", tone: "busy" };
+  if (level === 2) return { label: "Busy", tone: "elevated" };
+  return { label: "Healthy", tone: "good" };
+}
+
+/** Plain sentence for the slow-actions tile. */
+export function formatSlowActions(health: RuntimeHealthSnapshot | null): string {
+  if (!health) return "Not available yet";
+  const n = health.slowActions24h;
+  if (!Number.isFinite(n) || n <= 0) return "None in the last 24h";
+  return `${n} slow ${n === 1 ? "response" : "responses"} in 24h`;
+}
+
+// ---- Safe-cleanup plan -----------------------------------------------------
+
+export type SafeCleanupGroup = {
+  heading: string;
+  rows: Array<{ label: string; size: string }>;
+};
+
+export type SafeCleanupPlan = {
+  /** Filesystem targets used only for the legacy fallback (cleanup-by-target). */
+  fsTargets: StorageCleanupTarget[];
+  /** Sum of the filesystem-safe targets' sizes (the legacy fallback reclaim). */
+  fsBytes: number;
+  /** Grouped, itemized preview of what the safe cleanup will reclaim. */
+  groups: SafeCleanupGroup[];
+  /** Just the filesystem group, for the legacy fallback preview. */
+  fsGroup: SafeCleanupGroup | null;
+  /** Plain-language "what happens" lines. */
+  whatHappens: string[];
+  /** Approximate total the doctor will reclaim. */
+  estimatedBytes: number;
+};
+
+/**
+ * Assemble the itemized "Clean up safely" plan from the snapshot's extras. Only
+ * meaningful when `extras.safeReclaimableBytes` is positive (the primary action
+ * is otherwise hidden). Groups the reclaimable database rows and compressible
+ * history, and collects the filesystem-safe targets for the legacy fallback path.
+ */
+export function buildSafeCleanupPlan(
+  snapshot: { categories: StorageCategorySnapshot[]; extras?: StorageSnapshotExtras },
+  laneIdByKey: Map<string, string>,
+): SafeCleanupPlan {
+  const extras = snapshot.extras;
+  const estimatedBytes = safeReclaimableBytes(extras);
+
+  const groups: SafeCleanupGroup[] = [];
+  const whatHappens: string[] = [];
+
+  // Compressible chat & terminal history.
+  const chats = snapshot.categories.find((c) => c.id === "chats_history");
+  const compressible = chats?.compressibleBytes ?? 0;
+  if (compressible > 0) {
+    groups.push({
+      heading: "Chats & terminal history",
+      rows: [{ label: "Older history, compressed in place", size: formatBytes(compressible) }],
+    });
+    whatHappens.push("Compress older chat and terminal history — nothing is lost.");
+  }
+
+  // Reclaimable database rows (prunable/compactable).
+  const dbRows = (extras?.dbBreakdown ?? [])
+    .filter((entry) => entry.action === "prunable" || entry.action === "compactable")
+    .sort((a, b) => b.bytes - a.bytes)
+    .map((entry) => ({ label: entry.label, size: formatBytes(entry.bytes) }));
+  if (dbRows.length > 0) {
+    groups.push({ heading: "Project database", rows: dbRows });
+    whatHappens.push("Clean up data ADE keeps but no longer needs.");
+  }
+
+  // Filesystem-safe targets (caches + build/release staging) for the fallback path.
+  const fsTargets: StorageCleanupTarget[] = [];
+  const fsRows: Array<{ label: string; size: string }> = [];
+  let fsBytes = 0;
+  for (const category of snapshot.categories) {
+    if (category.id !== "caches" && category.id !== "build_release") continue;
+    for (const entry of cleanableEntries(category.id, category, laneIdByKey)) {
+      fsTargets.push(entry.target);
+      fsRows.push({ label: entry.item.label, size: formatBytes(entry.item.bytes) });
+      fsBytes += entry.item.bytes;
+    }
+  }
+  const fsGroup: SafeCleanupGroup | null = fsRows.length > 0
+    ? { heading: "Temporary & rebuildable files", rows: fsRows }
+    : null;
+  if (fsGroup) {
+    groups.push(fsGroup);
+    whatHappens.push("Remove temporary and rebuildable files ADE recreates on demand.");
+  } else if (estimatedBytes > 0) {
+    whatHappens.push("Remove temporary and rebuildable files ADE recreates on demand.");
+  }
+
+  whatHappens.push("Your chats, projects, active lanes, and backups are never touched.");
+
+  return { fsTargets, fsBytes, groups, fsGroup, whatHappens, estimatedBytes };
 }

@@ -2445,3 +2445,148 @@ describe("buildLinearAutomationDispatches", () => {
     expect(dispatches.map((d) => d.triggerType)).toEqual(["linear.issue_updated"]);
   });
 });
+
+describe("automation ingress storage bounds", () => {
+  function createIngressService(
+    db: AdeDb,
+    logger = createLogger(),
+  ): ReturnType<typeof createAutomationService> {
+    return createAutomationService({
+      db: db as any,
+      logger,
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService: {
+        list: async () => [],
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: "/tmp" }),
+        getLaneWorktreePath: () => "/tmp",
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          trust: { requiresSharedTrust: false },
+          effective: { automations: [], providerMode: "guest" },
+        }),
+      } as any,
+    });
+  }
+
+  it("keeps only 2,000 slim rows during an insert storm and preserves the seven-day dedup window", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const service = createIngressService(db);
+
+    try {
+      for (let index = 0; index < 10_000; index += 1) {
+        await service.dispatchIngressTrigger({
+          source: "github-relay",
+          eventKey: `storm-${index}`,
+          triggerType: "github.issue_opened",
+          eventName: "github.issue_opened",
+          rawPayload: { index, body: "payload that must never reach disk" },
+        });
+      }
+
+      const count = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count ?? 0);
+      expect(count).toBe(2_000);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
+      ))[0]?.count).toBe(0);
+
+      const original = await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "storm-9999",
+        triggerType: "github.issue_opened",
+        rawPayload: { replay: "within-window" },
+      });
+      expect(original).not.toBeNull();
+      const storedOriginal = mapExecRows(raw.exec(
+        "select id from automation_ingress_events where event_key = 'storm-9999'",
+      ));
+      expect(storedOriginal).toHaveLength(1);
+      expect(original?.id).toBe(storedOriginal[0]?.id);
+
+      raw.run(
+        "update automation_ingress_events set received_at = ? where event_key = 'storm-9999'",
+        [new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString()],
+      );
+      await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "ttl-prune-trigger",
+        triggerType: "github.issue_opened",
+      });
+      const replayed = await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "storm-9999",
+        triggerType: "github.issue_opened",
+        rawPayload: { replay: "after-window" },
+      });
+      expect(replayed?.id).not.toBe(original?.id);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
+      ))[0]?.count).toBe(0);
+    } finally {
+      service.dispose();
+    }
+  }, 120_000);
+
+  it("reclaims legacy payloads and local caches once, in bounded chunks", () => {
+    const { db, raw } = createInMemoryAdeDb();
+    raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");
+    raw.run("create table pull_request_snapshots(pr_id text primary key, updated_at text not null)");
+
+    const recent = new Date().toISOString();
+    const oldIngress = new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString();
+    const oldReview = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
+    const oldSnapshot = new Date(Date.now() - 61 * 24 * 60 * 60 * 1_000).toISOString();
+    raw.run("begin");
+    const insert = raw.prepare(`
+      insert into automation_ingress_events(
+        id, project_id, source, event_key, automation_ids_json, trigger_type,
+        status, raw_payload_json, received_at
+      ) values (?, 'proj', 'github-relay', ?, '[]', 'github.issue_opened', ?, ?, ?)
+    `);
+    for (let index = 0; index < 2_205; index += 1) {
+      insert.run([
+        `legacy-${index}`,
+        `legacy-key-${index}`,
+        index < 2_202 ? "ignored" : "dispatched",
+        JSON.stringify({ index, body: "legacy payload" }),
+        index < 100 ? oldIngress : recent,
+      ]);
+    }
+    insert.free();
+    raw.run("commit");
+    raw.run("insert into review_run_artifacts values ('old-review', ?), ('new-review', ?)", [oldReview, recent]);
+    raw.run("insert into pull_request_snapshots values ('old-pr', ?), ('new-pr', ?)", [oldSnapshot, recent]);
+
+    const info = vi.fn();
+    const logger = { ...createLogger(), info } as any;
+    const first = createIngressService(db, logger);
+    try {
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
+      ))[0]?.count).toBe(0);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count).toBe(2_000);
+      expect(mapExecRows(raw.exec("select id from review_run_artifacts order by id"))).toEqual([{ id: "new-review" }]);
+      expect(mapExecRows(raw.exec("select pr_id from pull_request_snapshots order by pr_id"))).toEqual([{ pr_id: "new-pr" }]);
+      expect(info).toHaveBeenCalledWith("automations.ingress_payload_reclaim", {
+        rowsCleared: 2_205,
+        bytesCleared: expect.any(Number),
+      });
+      expect(Number(info.mock.calls[0]?.[1]?.bytesCleared ?? 0)).toBeGreaterThan(0);
+
+      const logCount = info.mock.calls.length;
+      const second = createIngressService(db, logger);
+      second.dispose();
+      expect(info).toHaveBeenCalledTimes(logCount);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count).toBe(2_000);
+    } finally {
+      first.dispose();
+    }
+  });
+});

@@ -13,6 +13,8 @@ import type {
 } from "../shared/types/productAnalytics";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
+  MaintenanceRunReport,
+  RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
@@ -3236,6 +3238,8 @@ contextBridge.exposeInMainWorld("ade", {
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getResourceUsage: async (): Promise<AppResourceUsageSnapshot> =>
       ipcRenderer.invoke(IPC.appGetResourceUsage),
+    getRuntimeHealth: async (): Promise<RuntimeHealthSnapshot> =>
+      ipcRenderer.invoke(IPC.appGetRuntimeHealth),
     getLatestRelease: async (): Promise<LatestReleaseInfo | null> =>
       ipcRenderer.invoke(IPC.appGetLatestRelease),
     getProject: async (): Promise<ProjectInfo | null> =>
@@ -3375,6 +3379,10 @@ contextBridge.exposeInMainWorld("ade", {
     compressNow: async (): Promise<StorageCompressionResult> =>
       callProjectRuntimeActionOr("storage", "compressNow", { args: {} }, () =>
         ipcRenderer.invoke(IPC.storageCompressNow),
+      ),
+    runMaintenanceNow: async (): Promise<MaintenanceRunReport> =>
+      callProjectRuntimeActionOr("storage", "runMaintenanceNow", {}, () =>
+        ipcRenderer.invoke(IPC.storageRunMaintenanceNow),
       ),
     cleanupPreview: async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> =>
       callProjectRuntimeActionOr("storage", "cleanupPreview", { args: { targets } }, () =>

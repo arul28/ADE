@@ -641,6 +641,8 @@ import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
 import type {
+  MaintenanceRunReport,
+  RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
@@ -3730,6 +3732,16 @@ export function registerIpc({
     );
   });
 
+  // Machine-level daemon health (slow-action window). Direct IPC like
+  // getResourceUsage: the connection pool lives in Electron main, so there is no
+  // action-domain routing and no runtime-backed null-service risk.
+  ipcMain.handle(IPC.appGetRuntimeHealth, async (): Promise<RuntimeHealthSnapshot> => {
+    return (
+      localRuntimeConnectionPool?.getRuntimeHealth?.()
+      ?? { slowActions24h: 0, slowActionP95Ms: null, sampledAt: new Date().toISOString() }
+    );
+  });
+
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
     const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
     return monitor.getSnapshot({ maxAgeMs: 1_000 });
@@ -3746,6 +3758,11 @@ export function registerIpc({
   ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.compressNow();
+  });
+
+  ipcMain.handle(IPC.storageRunMaintenanceNow, async (): Promise<MaintenanceRunReport> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.runMaintenanceNow();
   });
 
   ipcMain.handle(IPC.storageCleanupPreview, async (

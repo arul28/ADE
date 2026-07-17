@@ -5,11 +5,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { expectNoJargon } from "../../../test/jargonGuard";
 import { StorageSection } from "./StorageSection";
 import type {
+  MaintenanceRunReport,
+  RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
   StorageSnapshot,
+  StorageSnapshotExtras,
 } from "../../../shared/types/storage";
+import type { AppResourceUsageSnapshot } from "../../../shared/types";
 
 const originalAde = (globalThis.window as any)?.ade;
 
@@ -98,7 +102,89 @@ function makeSnapshot(): StorageSnapshot {
   };
 }
 
-function installAdeMock(options: { withCompress?: boolean } = {}) {
+const MB = 1024 ** 2;
+
+function makeExtras(): StorageSnapshotExtras {
+  const nowIso = new Date().toISOString();
+  const yesterdayIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  return {
+    dbBreakdown: [
+      { table: "automation_ingress_events", label: "Webhook history", bytes: 40 * MB, category: "webhooks", action: "prunable" },
+      { table: "operations", label: "Sync bookkeeping", bytes: 20 * MB, category: "sync_bookkeeping", action: "compactable" },
+      { table: "pull_request_snapshots", label: "Pull request cache", bytes: 4 * MB, category: "pr_cache", action: "compaction_pending" },
+      { table: "core", label: "Core data", bytes: 8 * MB, category: "core", action: null },
+    ],
+    maintenance: {
+      lastRun: {
+        startedAt: yesterdayIso,
+        finishedAt: yesterdayIso,
+        trigger: "daily",
+        actions: [
+          { ledgerId: "automation.ingress_events", kind: "prune", itemsAffected: 200, bytesReclaimed: 450 * MB, durationMs: 40 },
+          { ledgerId: "operations", kind: "compact", itemsAffected: 0, bytesReclaimed: 30 * MB, durationMs: 60 },
+        ],
+        reclaimedBytes: 480 * MB,
+        dbSizeBytes: 60 * MB,
+      },
+      journal: [
+        {
+          startedAt: yesterdayIso,
+          finishedAt: yesterdayIso,
+          trigger: "daily",
+          actions: [
+            { ledgerId: "automation.ingress_events", kind: "prune", itemsAffected: 200, bytesReclaimed: 450 * MB, durationMs: 40 },
+            { ledgerId: "operations", kind: "compact", itemsAffected: 0, bytesReclaimed: 30 * MB, durationMs: 60 },
+          ],
+          reclaimedBytes: 480 * MB,
+          dbSizeBytes: 60 * MB,
+        },
+        {
+          startedAt: nowIso,
+          finishedAt: nowIso,
+          trigger: "manual",
+          actions: [],
+          reclaimedBytes: 0,
+          dbSizeBytes: 32 * MB,
+        },
+      ],
+    },
+    safeReclaimableBytes: 460 * MB,
+    policyChips: {
+      chats_history: "Compressed after 14 days",
+      build_release: "Auto-cleans · 7 days",
+      caches: "Rebuilt on demand",
+    },
+  };
+}
+
+function makeSnapshotWithExtras(): StorageSnapshot {
+  return { ...makeSnapshot(), extras: makeExtras() };
+}
+
+function makeUsage(): AppResourceUsageSnapshot {
+  return {
+    sampledAt: new Date().toISOString(),
+    processCount: 4,
+    cpuPercent: 2,
+    mainCpuPercent: 1,
+    rendererCpuPercent: 1,
+    memoryMB: 500,
+    mainMemoryMB: 200,
+    rendererMemoryMB: 300,
+    activePtyCount: 0,
+    ptyProcessCount: 0,
+    ptyCpuPercent: null,
+    ptyMemoryMB: null,
+    freeMemoryMB: 8_000,
+    totalMemoryMB: 16_000,
+    roleUsage: [
+      { role: "ade-runtime", processCount: 1, cpuPercent: 2, memoryMB: 280 },
+      { role: "electron-main", processCount: 1, cpuPercent: 3, memoryMB: 500 },
+    ],
+  } as AppResourceUsageSnapshot;
+}
+
+function installAdeMock(options: { withCompress?: boolean; withExtras?: boolean; withApp?: boolean } = {}) {
   const cleanupPreview = vi.fn(
     async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> => ({
       items: targets.map((target) => ({ path: target.path, bytes: 1.5 * 1024 ** 3, label: "Old feature" })),
@@ -115,15 +201,33 @@ function installAdeMock(options: { withCompress?: boolean } = {}) {
     async (_targets: StorageCleanupTarget[], _opts: { preview: StorageCleanupPreview }) => cleanupResult,
   );
   const compressNow = vi.fn(async () => ({ filesCompressed: 12, savedBytes: 300 * 1024 ** 2 }));
+  const runMaintenanceNow = vi.fn(
+    async (): Promise<MaintenanceRunReport> => ({
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      trigger: "manual",
+      actions: [
+        { ledgerId: "automation.ingress_events", kind: "prune", itemsAffected: 200, bytesReclaimed: 450 * MB, durationMs: 40 },
+      ],
+      reclaimedBytes: 481 * MB,
+      dbSizeBytes: 30 * MB,
+    }),
+  );
+  const getRuntimeHealth = vi.fn(
+    async (): Promise<RuntimeHealthSnapshot> => ({ slowActions24h: 3, slowActionP95Ms: 5_200, sampledAt: new Date().toISOString() }),
+  );
+  const getResourceUsage = vi.fn(async () => makeUsage());
 
   const storage: Record<string, unknown> = {
-    getSnapshot: vi.fn(async () => makeSnapshot()),
+    getSnapshot: vi.fn(async () => (options.withExtras ? makeSnapshotWithExtras() : makeSnapshot())),
     getPressure: vi.fn(async () => ({ state: "normal", freeBytes: 40 * 1024 ** 3, totalBytes: 500 * 1024 ** 3, freeFraction: 0.08, perRoot: [], sampledAt: new Date().toISOString() })),
     cleanupPreview,
     cleanup: cleanupFn,
   };
   if (options.withCompress) storage.compressNow = compressNow;
+  if (options.withExtras) storage.runMaintenanceNow = runMaintenanceNow;
 
+  const includeApp = options.withApp ?? options.withExtras;
   (globalThis.window as any).ade = {
     storage,
     lanes: {
@@ -132,8 +236,9 @@ function installAdeMock(options: { withCompress?: boolean } = {}) {
         { id: "lane-main", name: "main-lane", worktreePath: ACTIVE_PATH, archivedAt: null, status: { dirty: false } },
       ]),
     },
+    ...(includeApp ? { app: { getResourceUsage, getRuntimeHealth } } : {}),
   };
-  return { cleanupPreview, cleanup: cleanupFn, compressNow };
+  return { cleanupPreview, cleanup: cleanupFn, compressNow, runMaintenanceNow, getRuntimeHealth, getResourceUsage };
 }
 
 describe("StorageSection", () => {
@@ -234,6 +339,71 @@ describe("StorageSection", () => {
     installAdeMock();
     const { container } = render(<StorageSection />);
     await screen.findByText(/ADE is using/);
+    expectNoJargon(container.textContent ?? "");
+  });
+
+  it("hides the safe-cleanup primary when the daemon reports no reclaimable space", async () => {
+    installAdeMock();
+    render(<StorageSection />);
+    await screen.findByText(/ADE is using/);
+    expect(screen.queryByRole("button", { name: /clean up safely/i })).toBeNull();
+  });
+
+  it("runs the doctor from the safe-cleanup primary and reports what it reclaimed", async () => {
+    const { runMaintenanceNow } = installAdeMock({ withExtras: true });
+    render(<StorageSection />);
+
+    const primary = await screen.findByRole("button", { name: /clean up safely/i });
+    fireEvent.click(primary);
+
+    const dialog = await screen.findByRole("dialog");
+    const confirm = await within(dialog).findByRole("button", { name: /clean up safely/i });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
+    expect(await within(dialog).findByText(/Freed 481 MB/)).toBeTruthy();
+  });
+
+  it("shows the database breakdown and runs maintenance from an inline action", async () => {
+    const { runMaintenanceNow } = installAdeMock({ withExtras: true });
+    render(<StorageSection />);
+
+    // Human-labeled breakdown rows replace the blanket "Protected" body.
+    expect(await screen.findByText("Webhook history")).toBeTruthy();
+    expect(screen.getByText("Sync bookkeeping")).toBeTruthy();
+    expect(screen.getByText("Core data")).toBeTruthy();
+    // Pending compaction is surfaced without jargon and without an action.
+    expect(screen.getByText(/Waiting to compact/)).toBeTruthy();
+
+    const compact = screen.getByRole("button", { name: /compact now/i });
+    fireEvent.click(compact);
+    await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
+  });
+
+  it("renders diagnostics from resource usage and the maintenance journal", async () => {
+    installAdeMock({ withExtras: true });
+    render(<StorageSection />);
+
+    expect(await screen.findByText(/Health & diagnostics/)).toBeTruthy();
+    // Daemon resident memory from the ade-runtime role.
+    expect(await screen.findByText("280 MB")).toBeTruthy();
+    // Overall health chip from the resource-pressure level.
+    expect(await screen.findByText("Healthy")).toBeTruthy();
+    // Slow-actions tile from getRuntimeHealth.
+    expect(screen.getByText(/3 slow responses in 24h/)).toBeTruthy();
+
+    // Journal expands to show a humanized run summary.
+    fireEvent.click(screen.getByRole("button", { name: /recent cleanups/i }));
+    expect(await screen.findByText(/reclaimed 450 MB/)).toBeTruthy();
+  });
+
+  it("keeps plain language across the diagnostics and database surfaces", async () => {
+    installAdeMock({ withExtras: true });
+    const { container } = render(<StorageSection />);
+    await screen.findByText("Webhook history");
+    fireEvent.click(screen.getByRole("button", { name: /recent cleanups/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /clean up safely/i }));
+    await screen.findByRole("dialog");
     expectNoJargon(container.textContent ?? "");
   });
 });

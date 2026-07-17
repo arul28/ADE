@@ -1504,6 +1504,12 @@ export async function createAdeRuntime(args: {
     isPathActive: (filePath) =>
       Boolean(agentChatService?.isTranscriptPathActive(filePath))
       || ptyService.isTranscriptPathActive(filePath),
+    projectId,
+    // One bounded `ade_feature_used` per completed maintenance run at the daemon
+    // boundary (deduped to 20 h by the service).
+    captureAnalytics: (input) => {
+      productAnalyticsService.capture(input);
+    },
   });
   const budgetCapService = createBudgetCapService({
     db,

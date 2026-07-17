@@ -136,6 +136,36 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("accepts the storage-doctor maintenance event with numeric aggregates and coarse outcome", () => {
+    const harness = makeHarness();
+    const result = harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "storage_doctor",
+        action: "maintenance_run",
+        outcome: "partial",
+        bytes_freed: 481_000_000,
+        files_compressed: 62,
+        secret_path: "/Users/alice/secret-project/.ade",
+      },
+    });
+
+    expect(result).toEqual({ accepted: true, reason: "accepted" });
+    const message = harness.messages[0] as { properties: Record<string, unknown> };
+    expect(message.properties).toMatchObject({
+      feature: "storage_doctor",
+      action: "maintenance_run",
+      outcome: "partial",
+      bytes_freed: 481_000_000,
+      files_compressed: 62,
+    });
+    // Non-allowlisted keys never cross the sanitizer.
+    expect(message.properties).not.toHaveProperty("secret_path");
+    expect(JSON.stringify(message)).not.toContain("secret-project");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("does not forward arbitrary build-controlled version text", () => {
     const harness = makeHarness({ appVersion: "../../private/project\nsecret" });
     expect(harness.service.capture({

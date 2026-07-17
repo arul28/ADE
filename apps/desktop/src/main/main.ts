@@ -3587,6 +3587,10 @@ app.whenReady().then(async () => {
       isPathActive: (filePath) =>
         agentChatService.isTranscriptPathActive(filePath)
         || ptyService.isTranscriptPathActive(filePath),
+      projectId,
+      captureAnalytics: (input) => {
+        productAnalyticsService.capture(input);
+      },
     });
 
     // Phone sync is owned by the per-machine ADE service. The desktop
@@ -4323,8 +4327,13 @@ app.whenReady().then(async () => {
       logger,
       // Daemon-backed mode: the brain owns activity tracking and runs the real compression sweep
       // (see apps/ade-cli/src/bootstrap.ts); this fallback instance deliberately refuses to compress
-      // because activity cannot be known here.
+      // because activity cannot be known here. It also never arms the maintenance timers (no
+      // diskPressure supplied), so it only runs maintenance if runMaintenanceNow is called directly.
       isPathActive: () => true,
+      projectId: runtimeProject.projectId,
+      captureAnalytics: (input) => {
+        productAnalyticsService.capture(input);
+      },
     });
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
