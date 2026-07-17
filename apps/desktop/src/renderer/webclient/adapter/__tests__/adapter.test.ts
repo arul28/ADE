@@ -458,6 +458,187 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("scopes Files reads to the bound catalog project and coalesces hot tree reads", async () => {
+    vi.useFakeTimers();
+    fake.activeProjectId = "project-old";
+    fake.projects = [
+      {
+        ...fake.projects[0]!,
+        id: "project-old",
+        rootPath: "/old-repo",
+        displayName: "Old Repo",
+        isOpen: false,
+      },
+      {
+        ...fake.projects[0]!,
+        id: "project-2",
+        rootPath: "/repo-2",
+        displayName: "Repo Two",
+      },
+    ];
+    const boundProject = { rootPath: "/repo-2", displayName: "Repo Two", baseRef: "main" };
+    const workspaces = [
+      { id: "primary", kind: "primary", laneId: null, name: "repo-2", rootPath: "/repo-2", isReadOnlyByDefault: false },
+    ];
+    const tree = [{ name: "README.md", path: "README.md", type: "file" }];
+    fake.fileResults.set("listWorkspaces", workspaces);
+    fake.fileResults.set("listTree", tree);
+
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(boundProject, "project-2");
+
+    await expect(adapter.ade.files.listWorkspaces()).resolves.toEqual(workspaces);
+    await expect(Promise.all([
+      adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never),
+      adapter.ade.files.listTree({ depth: 1, workspaceId: "primary" } as never),
+    ])).resolves.toEqual([tree, tree]);
+
+    expect(fake.fileCalls).toEqual([
+      { action: "listWorkspaces", args: {}, opts: { projectId: "project-2", timeoutMs: undefined } },
+      { action: "listTree", args: { workspaceId: "primary", depth: 1 }, opts: { projectId: "project-2", timeoutMs: undefined } },
+    ]);
+
+    const fileEvents: Array<{ workspaceId: string }> = [];
+    adapter.ade.files.onChange((event) => fileEvents.push(event));
+    fake.emitTables(["files"]);
+    await vi.advanceTimersByTimeAsync(260);
+    expect(fileEvents).toEqual([expect.objectContaining({ workspaceId: "primary" })]);
+    await adapter.ade.files.listTree({ workspaceId: "primary", depth: 1 } as never);
+    expect(fake.fileCalls.filter((call) => call.action === "listTree")).toHaveLength(2);
+
+    fake.fileErrors.set("listWorkspaces", new Error("wrong project scope"));
+    fake.emitTables(["files"]);
+    await vi.advanceTimersByTimeAsync(260);
+    await expect(adapter.ade.files.listWorkspaces()).rejects.toThrow("wrong project scope");
+
+    adapter.dispose();
+  });
+
+  it("keeps the current project binding when a remote project switch is rejected", async () => {
+    fake.projects.push({
+      ...fake.projects[0]!,
+      id: "project-2",
+      rootPath: "/repo-2",
+      displayName: "Repo Two",
+    });
+    fake.projectSwitchResult = { ok: false, message: "Project host unavailable" };
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.project.openRepo({ rootPath: "/repo-2" })).rejects.toThrow(
+      "Project host unavailable",
+    );
+    await expect(adapter.ade.project.openRepo()).resolves.toEqual(project);
+
+    adapter.dispose();
+  });
+
+  it("hydrates PR list reads from one cached mobile snapshot and coalesces invalidations", async () => {
+    vi.useFakeTimers();
+    fake.descriptors = descriptors([
+      "prs.getMobileSnapshot",
+      "prs.getStatus",
+      "prs.getChecks",
+      "prs.getGitHubSnapshot",
+      "prs.getMergeContexts",
+      "prs.getMergeContext",
+      "lanes.list",
+      "github.getStatus",
+    ]);
+    const pr = {
+      id: "pr-1",
+      laneId: "lane-1",
+      projectId: "project-1",
+      repoOwner: "ade",
+      repoName: "desktop",
+      githubPrNumber: 42,
+      githubUrl: "https://github.test/ade/desktop/pull/42",
+      githubNodeId: null,
+      title: "Fast hosted PRs",
+      state: "open",
+      baseBranch: "main",
+      headBranch: "web-fast",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      additions: 10,
+      deletions: 2,
+      mergeConflicts: false,
+      behindBaseBy: 0,
+      headSha: "abc123",
+      lastSyncedAt: "2026-07-17T00:00:00.000Z",
+      createdAt: "2026-07-16T00:00:00.000Z",
+      updatedAt: "2026-07-17T00:00:00.000Z",
+    };
+    fake.commandResults.set("prs.getMobileSnapshot", {
+      generatedAt: "2026-07-17T00:00:00.000Z",
+      prs: [pr],
+      stacks: [],
+      capabilities: {},
+      createCapabilities: { canCreateAny: false, defaultBaseBranch: "main", lanes: [] },
+      workflowCards: [],
+      live: true,
+    });
+    fake.commandResults.set("prs.getStatus", { prId: "pr-1", isMergeable: true });
+    fake.commandResults.set("prs.getChecks", [{ id: "check-1", status: "completed" }]);
+    fake.commandResults.set("prs.getGitHubSnapshot", { repoPullRequests: [{ linkedPrId: "pr-1" }] });
+    fake.commandResults.set("prs.getMergeContexts", {
+      "pr-1": {
+        prId: "pr-1",
+        groupId: null,
+        groupType: null,
+        sourceLaneIds: [],
+        targetLaneId: null,
+        integrationLaneId: null,
+        members: [],
+      },
+    });
+    fake.commandResults.set("lanes.list", [{ id: "lane-1" }]);
+
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project);
+
+    const [list, lanePr, conflicts, statusA, statusB, checks, github, contextsA, contextsB, lanesA, lanesB] = await Promise.all([
+      adapter.ade.prs.listAll(),
+      adapter.ade.prs.getForLane("lane-1"),
+      adapter.ade.prs.listWithConflicts({ includeConflictAnalysis: false }),
+      adapter.ade.prs.getStatus("pr-1"),
+      adapter.ade.prs.getStatus("pr-1"),
+      adapter.ade.prs.getChecks("pr-1"),
+      adapter.ade.prs.getGitHubSnapshot(),
+      adapter.ade.prs.getMergeContexts(["pr-1"]),
+      adapter.ade.prs.getMergeContexts(["pr-1"]),
+      adapter.ade.lanes.list({ includeStatus: false }),
+      adapter.ade.lanes.list({ includeStatus: false }),
+    ]);
+
+    expect(list).toEqual([pr]);
+    expect(lanePr).toEqual(pr);
+    expect(statusA).toEqual(statusB);
+    expect(checks).toEqual([{ id: "check-1", status: "completed" }]);
+    expect(conflicts).toEqual([{ ...pr, conflictAnalysis: null }]);
+    expect(github).toMatchObject({ repoPullRequests: [{ linkedPrId: "pr-1" }] });
+    expect(contextsA).toEqual(contextsB);
+    expect(lanesA).toEqual(lanesB);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.getMobileSnapshot")).toHaveLength(1);
+    expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(1);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.getStatus")).toHaveLength(1);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.getChecks")).toHaveLength(1);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.getGitHubSnapshot")).toHaveLength(1);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.getMergeContexts")).toHaveLength(1);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.getMergeContext")).toHaveLength(0);
+
+    fake.emitTables(["pull_requests", "pull_request_snapshots", "github_pr_projections"]);
+    fake.emitTables(["pull_requests"]);
+    await vi.advanceTimersByTimeAsync(260);
+    await adapter.ade.prs.listAll();
+
+    expect(fake.commandCalls.filter((call) => call.action === "prs.getMobileSnapshot")).toHaveLength(2);
+    expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(1);
+    expect(fake.commandCalls.filter((call) => call.action === "github.getStatus")).toHaveLength(0);
+
+    adapter.dispose();
+  });
+
   it("fans out table, chat, and terminal events and unsubscribes listeners", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors(["work.listSessions"]);
@@ -474,7 +655,9 @@ describe("createAdeWebAdapter", () => {
     await vi.advanceTimersByTimeAsync(260);
 
     expect(laneEvents).toHaveLength(1);
-    expect(sessionEvents).toHaveLength(1);
+    // Lane metadata does not imply session metadata changed. Keeping the
+    // domains isolated prevents every lane changeset from refetching Work.
+    expect(sessionEvents).toHaveLength(0);
 
     const chatEvents: unknown[] = [];
     const offChat = adapter.ade.agentChat.onEvent((event) => chatEvents.push(event));
@@ -661,6 +844,7 @@ class FakeAdeSyncClient {
   // for listWorkspaces/listTree/etc. Model that faithfully (unknown), not "always
   // a blob", so adapter mis-parsing is caught.
   fileResults = new Map<string, unknown>();
+  fileErrors = new Map<string, Error>();
   commandCalls: CommandCall[] = [];
   disconnectCalls = 0;
   fileCalls: Array<{ action: string; args: Record<string, unknown>; opts: { projectId?: string | null; timeoutMs?: number } }> = [];
@@ -685,6 +869,8 @@ class FakeAdeSyncClient {
       isOpen: true,
     },
   ];
+  activeProjectId: string | null = "project-1";
+  projectSwitchResult: unknown = null;
 
   private readonly tableListeners = new Set<(tables: Set<string>) => void>();
   private readonly chatListeners = new Set<(payload: SyncChatEventPayload) => void>();
@@ -708,7 +894,7 @@ class FakeAdeSyncClient {
       connectedAt: "2026-07-07T00:00:00.000Z",
       lastSeenAt: "2026-07-07T00:00:00.000Z",
       error: null,
-      activeProjectId: "project-1",
+      activeProjectId: this.activeProjectId,
       selectedEnvId: "env-1",
     };
   }
@@ -735,6 +921,8 @@ class FakeAdeSyncClient {
 
   async requestFile(action: string, args: Record<string, unknown>, opts: { projectId?: string | null; timeoutMs?: number } = {}): Promise<unknown> {
     this.fileCalls.push({ action, args, opts });
+    const error = this.fileErrors.get(action);
+    if (error) throw error;
     return this.fileResults.has(action) ? this.fileResults.get(action) : null;
   }
 
@@ -783,6 +971,7 @@ class FakeAdeSyncClient {
   }
 
   async switchProject(projectId: string): Promise<unknown> {
+    if (this.projectSwitchResult) return this.projectSwitchResult;
     const project = this.projects.find((entry) => entry.id === projectId);
     return { ok: Boolean(project), project };
   }

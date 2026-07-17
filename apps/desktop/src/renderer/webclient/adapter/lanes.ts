@@ -14,6 +14,7 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
 
   infra.addDispose(
     events.on("lanesInvalidated", (event) => {
+      commands.invalidateCache(["lanes.list", "lanes.refreshSnapshots"]);
       events.emit("lanesLifecycle", {
         type: "lane-archived",
         laneId: "__ade_web_invalidation__",
@@ -24,7 +25,11 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
   );
 
   const lanes: Record<string, unknown> = {
-    list: (args?: unknown) => call("lanes.list", args, []),
+    list: (args?: unknown) => commands.call("lanes.list", asRecord(args), {
+      fallback: [],
+      idempotent: true,
+      cacheTtlMs: 3_000,
+    }),
     listSnapshots: async (args?: unknown) => {
       const result = await call<unknown>("lanes.refreshSnapshots", args, []);
       return arrayField<LaneListSnapshot>(result, "snapshots");

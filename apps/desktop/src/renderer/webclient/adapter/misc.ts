@@ -1,4 +1,4 @@
-import type { GitHubStatus, SyncRoleSnapshot } from "../../../shared/types";
+import type { GitHubStatus, SyncDeviceRuntimeState, SyncRoleSnapshot } from "../../../shared/types";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
@@ -109,6 +109,54 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     } as unknown as SyncRoleSnapshot;
   }
 
+  function syncDevices(): SyncDeviceRuntimeState[] {
+    const snapshot = syncSnapshot();
+    const local = snapshot.localDevice;
+    const localRuntime: SyncDeviceRuntimeState = {
+      ...local,
+      isLocal: true,
+      isBrain: false,
+      isHost: false,
+      connectionState: "self",
+      connectedAt: snapshot.client.connectedAt,
+      lastAppliedAt: null,
+      remoteAddress: snapshot.client.host,
+      remotePort: snapshot.client.port,
+      latencyMs: snapshot.client.latencyMs,
+      syncLag: snapshot.client.syncLag,
+    };
+    const peers = snapshot.connectedPeers.map<SyncDeviceRuntimeState>((peer) => ({
+      deviceId: peer.deviceId,
+      siteId: peer.siteId,
+      name: peer.deviceName,
+      platform: peer.platform,
+      deviceType: peer.deviceType,
+      createdAt: peer.connectedAt,
+      updatedAt: peer.lastSeenAt,
+      lastSeenAt: peer.lastSeenAt,
+      lastHost: peer.remoteAddress,
+      lastPort: peer.remotePort,
+      tailscaleIp: null,
+      ipAddresses: [],
+      metadata: {
+        appVersion: peer.appVersion,
+        appBuild: peer.appBuild,
+        bundleIdentifier: peer.bundleIdentifier,
+      },
+      isLocal: false,
+      isBrain: peer.isBrain,
+      isHost: peer.isHost,
+      connectionState: "connected",
+      connectedAt: peer.connectedAt,
+      lastAppliedAt: peer.lastAppliedAt,
+      remoteAddress: peer.remoteAddress,
+      remotePort: peer.remotePort,
+      latencyMs: peer.latencyMs,
+      syncLag: peer.syncLag,
+    }));
+    return [localRuntime, ...peers];
+  }
+
   infra.addDispose(
     client.onBrainStatus((payload) => {
       state.setBrainStatus(payload);
@@ -151,8 +199,9 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   const sync: Record<string, unknown> = {
     getStatus: async () => syncSnapshot(),
+    getLocalStatus: async () => syncSnapshot(),
     refreshDiscovery: async () => syncSnapshot(),
-    listDevices: async () => [],
+    listDevices: async () => syncDevices(),
     updateLocalDevice: async (args: unknown) => ({
       ...syncSnapshot().localDevice,
       ...asRecord(args),
@@ -181,7 +230,9 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       activeTunnels: 0,
       relayBridgeValidated: false,
       lastFailureAt: null,
-      lastSuccessAt: null,
+      lastControlOpenAt: null,
+      lastBridgeValidationAt: null,
+      lastControlError: "unsupported",
       lastError: "unsupported",
     }),
     onEvent: (listener: (event: unknown) => void) => events.on("syncStatus", listener as never),
@@ -262,8 +313,8 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     listRepoLabels: async () => [],
     listRepoCollaborators: async () => [],
     listMyRepos: async () => ({ repositories: [], nextCursor: null }),
-    // Not idempotent: publishing creates a repo + pushes, so never auto-retry it
-    // on a recoverable transport error (a retry could double-create/double-push).
+    // Publishing creates a repo + pushes, so keep it explicitly marked as a
+    // mutation and ineligible for adapter read caching.
     publishCurrentProject: (opts?: unknown) => call("github.publishCurrentProject", opts, { ok: false, error: "unsupported" }, false),
     onStatusChanged: (listener: (status: unknown) => void) => events.on("githubStatusChanged", listener as never),
   };

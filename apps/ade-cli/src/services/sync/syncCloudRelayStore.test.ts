@@ -86,6 +86,34 @@ describe("syncCloudRelayStore", () => {
     const { machineKey } = store.getMachineIdentity();
     expect(store.getRelayWssUrl()).toBe(`ws://127.0.0.1:8787/connect/${machineKey}`);
   });
+
+  it("rotates the full identity only when the expected key still matches", () => {
+    const store = createSyncCloudRelayStore({ filePath });
+    store.setRelayUrl("https://relay.example.com");
+    const first = store.getMachineIdentity();
+
+    const rotated = store.rotateMachineIdentity(first.machineKey);
+    expect(rotated).toMatchObject({
+      machineKey: expect.stringMatching(/^[a-f0-9]{32}$/),
+      secret: expect.stringMatching(/^[a-f0-9]{48}$/),
+      relayUrl: "https://relay.example.com",
+    });
+    expect(rotated.machineKey).not.toBe(first.machineKey);
+    expect(rotated.secret).not.toBe(first.secret);
+    expect(store.rotateMachineIdentity(first.machineKey)).toEqual(rotated);
+    expect(createSyncCloudRelayStore({ filePath }).getConfig()).toEqual(rotated);
+  });
+
+  it("does not race an identity rotation while another process owns the lock", () => {
+    const store = createSyncCloudRelayStore({ filePath });
+    const first = store.getMachineIdentity();
+    const lockPath = `${filePath}.rotate.lock`;
+    fs.writeFileSync(lockPath, "", { flag: "wx", mode: 0o600 });
+
+    expect(store.rotateMachineIdentity(first.machineKey)).toMatchObject(first);
+    fs.unlinkSync(lockPath);
+    expect(store.rotateMachineIdentity(first.machineKey).machineKey).not.toBe(first.machineKey);
+  });
 });
 
 describe("url derivation", () => {

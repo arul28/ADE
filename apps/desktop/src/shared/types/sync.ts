@@ -286,8 +286,11 @@ export type SyncRouteHealth = {
     relayControlConnected: boolean;
     relayBridgeValidated: boolean;
     lastFailureAt: string | null;
+    skipReason: string | null;
+    lastControlError: string | null;
     reason: string | null;
-    lastSuccessAt: string | null;
+    lastControlOpenAt: string | null;
+    lastBridgeValidationAt: string | null;
   };
   accountDirectory: SyncAccountDirectoryHealth;
 };
@@ -680,7 +683,9 @@ export type SyncCloudRelayStatus = {
   activeTunnels: number;
   relayBridgeValidated: boolean;
   lastFailureAt: string | null;
-  lastSuccessAt: string | null;
+  lastControlOpenAt: string | null;
+  lastBridgeValidationAt: string | null;
+  lastControlError: string | null;
   lastError: string | null;
 };
 

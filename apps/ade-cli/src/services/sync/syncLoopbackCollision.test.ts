@@ -307,10 +307,12 @@ describe("sync loopback collision recovery", () => {
         connected: true,
         activeTunnels: 0,
         lastError: null,
+        lastControlError: null,
         relayBridgeValidated: false,
         validatedPort: null,
         lastFailureAt: null,
-        lastSuccessAt: null,
+        lastControlOpenAt: null,
+        lastBridgeValidationAt: null,
         relayUrl: "https://relay.test.ade",
         machineKey: "a".repeat(32),
       };

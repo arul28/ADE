@@ -20,12 +20,13 @@ import { createMiscNamespaces } from "./misc";
 import { createProjectNamespace } from "./project";
 import { createPrsNamespace } from "./prs";
 import { createPersonalChatsNamespace } from "./personalChats";
+import { createRemoteRuntimeNamespace } from "./remoteRuntime";
 import { createSessionsPtyNamespaces } from "./sessionsPty";
 import type { AdapterEvents, AdapterInfra } from "./types";
 
 export type AdeWebAdapter = {
   ade: Window["ade"];
-  bindProject(project: ProjectInfo | null): void;
+  bindProject(project: ProjectInfo | null, projectId?: string | null): void;
   dispose(): void;
 };
 
@@ -104,6 +105,7 @@ export function createAdeWebAdapter(
     account: createAccountNamespace(accountClient),
     analytics: createAnalyticsNamespace(infra),
     project: createProjectNamespace(infra),
+    remoteRuntime: createRemoteRuntimeNamespace(infra),
     lanes: createLanesNamespace(infra),
     sessions,
     agentChat: createAgentChatNamespace(infra),
@@ -168,8 +170,8 @@ export function createAdeWebAdapter(
 
   return {
     ade: withFallbackProxy(surface as unknown as Window["ade"]),
-    bindProject(project: ProjectInfo | null): void {
-      state.bindProject(project);
+    bindProject(project: ProjectInfo | null, projectId?: string | null): void {
+      state.bindProject(project, projectId);
       events.emit("projectChanged", project);
       events.emit("projectBindingChanged", null);
     },

@@ -7,6 +7,7 @@ import type {
   SyncCommandAckPayload,
   SyncCommandResultPayload,
   SyncDesktopConnectionDraft,
+  SyncHelloOkPayload,
   SyncRemoteCommandAction,
   SyncPeerMetadata,
   SyncRunQuickCommandArgs,
@@ -51,12 +52,18 @@ const MAX_OUTBOUND_CHANGESET_BATCH_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
 const MAX_OUTBOUND_CHANGESET_BATCH_ROWS = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
 // See syncHostService SYNC_EXPORT_VERSION_WINDOW.
 const OUTBOUND_EXPORT_VERSION_WINDOW = 250_000;
+const DEFAULT_PEER_HEARTBEAT_INTERVAL_MS = 60_000;
+
+export function peerHeartbeatFallbackDelayMs(intervalMs: number): number {
+  return Math.max(10_000, Math.max(5_000, Math.floor(intervalMs)) * 2);
+}
 
 export function createSyncPeerService(args: SyncPeerServiceArgs) {
   let ws: WebSocket | null = null;
   let disposed = false;
   let relayTimer: NodeJS.Timeout | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
+  let heartbeatIntervalMs = DEFAULT_PEER_HEARTBEAT_INTERVAL_MS;
   let connectionDraft: SyncDesktopConnectionDraft | null = null;
   let latestBrainStatus: SyncBrainStatusPayload | null = null;
   let outboundLocalDbVersion = args.db.sync.getDbVersion();
@@ -102,7 +109,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       relayTimer = null;
     }
     if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
+      clearTimeout(heartbeatTimer);
       heartbeatTimer = null;
     }
   };
@@ -259,8 +266,11 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     }, 400);
   };
 
-  const startHeartbeatFallback = () => {
-    heartbeatTimer = setInterval(() => {
+  const scheduleHeartbeatFallback = (nextIntervalMs = heartbeatIntervalMs) => {
+    heartbeatIntervalMs = Math.max(5_000, Math.floor(nextIntervalMs));
+    if (heartbeatTimer) clearTimeout(heartbeatTimer);
+    heartbeatTimer = setTimeout(() => {
+      heartbeatTimer = null;
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       ws.send(
         encodeSyncEnvelope({
@@ -272,7 +282,9 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
           },
         }),
       );
-    }, 30_000);
+      scheduleHeartbeatFallback();
+    }, peerHeartbeatFallbackDelayMs(heartbeatIntervalMs));
+    heartbeatTimer.unref?.();
   };
 
   const disconnectInternal = (state: SyncClientStatus["state"], message: string | null, error: string | null) => {
@@ -305,13 +317,10 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
   const handleMessage = (raw: RawData) => {
     const envelope = parseSyncEnvelope(wsDataToText(raw));
     status.lastSeenAt = nowIso();
+    if (status.state === "connected") scheduleHeartbeatFallback();
     switch (envelope.type) {
       case "hello_ok": {
-        const payload = envelope.payload as {
-          brain: SyncPeerMetadata;
-          host?: SyncPeerMetadata;
-          serverDbVersion: number;
-        };
+        const payload = envelope.payload as SyncHelloOkPayload & { host?: SyncPeerMetadata };
         const host = payload.host ?? payload.brain;
         latestRemoteDbVersion = Math.max(0, Math.floor(payload.serverDbVersion ?? 0));
         status.state = "connected";
@@ -327,7 +336,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         outboundLocalDbVersion = Math.max(outboundLocalDbVersion, args.db.sync.getDbVersion());
         emitStatus();
         startRelay();
-        startHeartbeatFallback();
+        scheduleHeartbeatFallback(payload.heartbeatIntervalMs);
         pendingConnect?.resolve();
         pendingConnect = null;
         break;

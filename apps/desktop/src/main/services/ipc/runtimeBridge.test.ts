@@ -1845,6 +1845,54 @@ describe("registerIpc sync bridge", () => {
     expect(resolveSyncService).not.toHaveBeenCalled();
   });
 
+  it("reads local sync status from the machine runtime when the window is remote-bound", async () => {
+    const localStatus = { mode: "standalone", role: "brain", machine: "local" };
+    const localRuntimeConnectionPool = {
+      callSync: vi.fn(async () => localStatus),
+      syncStatusForRoot: vi.fn(),
+    };
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        syncService: null,
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/remote/repo", displayName: "Remote Repo" } as any,
+        binding: {
+          kind: "remote",
+          key: "remote:target-1:project-1",
+          targetId: "target-1",
+          runtimeName: "Remote",
+          projectId: "project-1",
+          rootPath: "/remote/repo",
+          displayName: "Remote Repo",
+        },
+      }),
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncGetLocalStatus)?.(
+        eventForSender(),
+        { includeTransferReadiness: true },
+      ),
+    ).resolves.toBe(localStatus);
+
+    expect(localRuntimeConnectionPool.callSync).toHaveBeenCalledWith(
+      "sync.getStatus",
+      {
+        includeTransferReadiness: true,
+        forceTransferReadiness: false,
+      },
+    );
+    expect(localRuntimeConnectionPool.syncStatusForRoot).not.toHaveBeenCalled();
+  });
+
   it("falls back to machine runtime sync when project sync is unavailable", async () => {
     const status = { mode: "standalone", role: "brain" };
     const localRuntimeConnectionPool = {

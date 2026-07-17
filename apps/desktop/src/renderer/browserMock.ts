@@ -3774,6 +3774,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     sync: {
       getStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      getLocalStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       refreshDiscovery: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       listDevices: resolved([]),
       updateLocalDevice: resolvedArg(BROWSER_MOCK_LOCAL_DEVICE),

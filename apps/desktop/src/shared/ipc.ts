@@ -533,6 +533,7 @@ export const IPC = {
   aiCursorCloudDownloadArtifact: "ade.ai.cursorCloud.downloadArtifact",
   aiCursorCloudOpenChat: "ade.ai.cursorCloud.openChat",
   syncGetStatus: "ade.sync.getStatus",
+  syncGetLocalStatus: "ade.sync.getLocalStatus",
   syncRefreshDiscovery: "ade.sync.refreshDiscovery",
   syncListDevices: "ade.sync.listDevices",
   syncUpdateLocalDevice: "ade.sync.updateLocalDevice",

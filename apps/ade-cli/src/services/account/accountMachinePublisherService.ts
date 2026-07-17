@@ -19,7 +19,7 @@ import {
   resolveOfficialAccountDirectoryBaseUrl,
 } from "./sharedAccountAuthService";
 
-export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
+export const ACCOUNT_MACHINE_HEARTBEAT_MS = 60_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
 
 export type AccountMachineRegistration = {
@@ -479,13 +479,18 @@ export function createAccountMachinePublisherService(options: {
       started = true;
       unsubscribeSignIn = options.subscribeToSignIn?.(() => {
         // If sign-in races an older signed-out attempt, run once more after it
-        // settles instead of coalescing away the auth transition for 30s.
+        // settles instead of coalescing away the auth transition until the
+        // next scheduled heartbeat.
         publishAfterCurrentAttempt();
       }) ?? null;
       void publishNow().finally(schedule);
     },
 
     publishNow,
+
+    requestPublishAfterCurrentAttempt(): void {
+      publishAfterCurrentAttempt();
+    },
 
     getPublisherHealth(): SyncAccountDirectoryHealth {
       return { ...health };

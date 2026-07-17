@@ -28,7 +28,7 @@ import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 
 type AdeWebAdapter = {
   ade: Window["ade"];
-  bindProject: (project: ProjectInfo | null) => void;
+  bindProject: (project: ProjectInfo | null, projectId?: string | null) => void;
   dispose: () => void;
 };
 
@@ -186,13 +186,16 @@ export function WebClientRoot({
     // project without a redundant switch, so avoid the extra disconnect +
     // reconnect (and its startup latency) when we're already on this project.
     if (project.id !== client.getStatus().activeProjectId) {
-      await client.switchProject(project.id).catch(() => {});
+      const result = await client.switchProject(project.id);
+      if (!result.ok) {
+        throw new Error(result.message?.trim() || `Could not switch to ${project.displayName}.`);
+      }
     }
     if (!adapterRef.current) {
       adapterRef.current = await loadAdapter(client, accountClient, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
-    adapterRef.current.bindProject(toProjectInfo(project));
+    adapterRef.current.bindProject(toProjectInfo(project), project.id);
 
     // Point the address bar at the initial App route before mounting so the
     // App's BrowserRouter renders the right tab on first paint.
@@ -432,8 +435,9 @@ export function WebClientRoot({
   const onSwitchProject = useCallback((project: SyncMobileProjectSummary) => {
     void (async () => {
       try {
-        await client.switchProject(project.id);
-        adapterRef.current?.bindProject(toProjectInfo(project));
+        const result = await client.switchProject(project.id);
+        if (!result.ok) return;
+        adapterRef.current?.bindProject(toProjectInfo(project), result.project?.id ?? project.id);
       } catch {
         // switchProject surfaces its own failure via status; leave the app up.
       }

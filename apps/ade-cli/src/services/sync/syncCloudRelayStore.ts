@@ -5,6 +5,7 @@ import { safeJsonParse, writeTextAtomic } from "../../../../desktop/src/main/ser
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../../desktop/src/shared/accountDirectory";
 
 const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
+const IDENTITY_ROTATION_LOCK_STALE_MS = 30_000;
 
 export type SyncCloudRelayConfig = {
   /** Per-machine identifier phones dial through the relay (32 hex chars). */
@@ -67,6 +68,7 @@ export type SyncCloudRelayStore = ReturnType<typeof createSyncCloudRelayStore>;
  */
 export function createSyncCloudRelayStore(args: { filePath: string }) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
+  const rotationLockPath = `${args.filePath}.rotate.lock`;
 
   const read = (): SyncCloudRelayFile => {
     if (!fs.existsSync(args.filePath)) return {};
@@ -87,6 +89,12 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
       // ignore chmod failures on platforms that don't support it
     }
   };
+
+  const mintIdentity = (relayUrl?: string): SyncCloudRelayConfig => ({
+    machineKey: randomBytes(16).toString("hex"),
+    secret: randomBytes(24).toString("hex"),
+    ...(relayUrl ? { relayUrl } : {}),
+  });
 
   // First-run identity mint via exclusive create (O_EXCL). If a concurrent
   // process already minted the identity, adopt the winner's rather than
@@ -118,12 +126,19 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
   // persisting it so the machineKey stays stable across restarts.
   const load = (): SyncCloudRelayConfig => {
     const raw = read();
-    const machineKey = typeof raw.machineKey === "string" && /^[a-f0-9]{32,64}$/i.test(raw.machineKey)
+    const validMachineKey = typeof raw.machineKey === "string"
+      && /^[a-f0-9]{32,64}$/i.test(raw.machineKey)
       ? raw.machineKey
-      : randomBytes(16).toString("hex");
-    const secret = typeof raw.secret === "string" && raw.secret.length >= 32
+      : null;
+    const validSecret = typeof raw.secret === "string" && raw.secret.length >= 32
       ? raw.secret
-      : randomBytes(24).toString("hex");
+      : null;
+    const generated = validMachineKey && validSecret ? null : mintIdentity();
+    const machineKey = validMachineKey ?? generated?.machineKey;
+    const secret = validSecret ?? generated?.secret;
+    if (!machineKey || !secret) {
+      throw new Error("Could not mint the ADE Relay machine identity.");
+    }
     const config: SyncCloudRelayConfig = {
       machineKey,
       secret,
@@ -137,6 +152,25 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
       write(config);
     }
     return config;
+  };
+
+  const acquireRotationLock = (): number | null => {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return fs.openSync(rotationLockPath, "wx", 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if (attempt > 0) return null;
+        try {
+          const ageMs = Date.now() - fs.statSync(rotationLockPath).mtimeMs;
+          if (ageMs < IDENTITY_ROTATION_LOCK_STALE_MS) return null;
+          fs.unlinkSync(rotationLockPath);
+        } catch (statError) {
+          if ((statError as NodeJS.ErrnoException).code !== "ENOENT") return null;
+        }
+      }
+    }
+    return null;
   };
 
   return {
@@ -157,6 +191,33 @@ export function createSyncCloudRelayStore(args: { filePath: string }) {
       const next = { ...load(), relayUrl: relayUrl?.trim() || undefined };
       write(next);
       return next;
+    },
+
+    /**
+     * Replaces a relay identity only when the caller is still looking at the
+     * expected machine key. The exclusive sibling lock serializes brain
+     * processes so exactly one confirmed-conflict recovery wins.
+     */
+    rotateMachineIdentity(expectedMachineKey: string): SyncCloudRelayConfig {
+      const lockFd = acquireRotationLock();
+      if (lockFd == null) return load();
+      try {
+        const current = load();
+        if (current.machineKey !== expectedMachineKey) return current;
+        const next = mintIdentity(current.relayUrl);
+        write(next);
+        return next;
+      } finally {
+        try {
+          fs.closeSync(lockFd);
+        } finally {
+          try {
+            fs.unlinkSync(rotationLockPath);
+          } catch {
+            // Another process can observe the persisted winner even if cleanup fails.
+          }
+        }
+      }
     },
 
     /** `wss://<host>/connect/<machineKey>` — the value the QR integration reads. */
