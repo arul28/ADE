@@ -285,6 +285,46 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("Full thread: 2 files +16 -4")).toBeTruthy();
   });
 
+  it("suppresses automatic context-usage snapshots but renders the /context command card", () => {
+    const usage = {
+      categories: [
+        { name: "Input", tokens: 2, percentage: 0 },
+        { name: "Cache read", tokens: 96_500, percentage: 48 },
+        { name: "Output", tokens: 5, percentage: 0 },
+      ],
+      totalTokens: 96_507,
+      maxTokens: 1_000_000,
+      percentage: 9.7,
+      model: "claude-opus-4-8",
+    };
+    const { rerender } = renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "context_usage", origin: "live", usage, turnId: "turn-1" },
+      },
+    ]);
+    // The per-turn "live" snapshot only feeds the composer meter — no inline card.
+    expect(screen.queryByText("Context usage")).toBeNull();
+
+    // The user-requested `/context` command still renders its breakdown card.
+    rerender(
+      <MemoryRouter initialEntries={[{ pathname: "/" }]}>
+        <AgentChatMessageList
+          events={[
+            {
+              sessionId: "session-1",
+              timestamp: "2026-03-17T10:00:01.000Z",
+              event: { type: "context_usage", origin: "command", usage, turnId: "turn-1" },
+            },
+          ]}
+        />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText("Context usage")).toBeTruthy();
+  });
+
   it("renders Codex goal lifecycle rows in user-facing language", () => {
     renderMessageList([
       {

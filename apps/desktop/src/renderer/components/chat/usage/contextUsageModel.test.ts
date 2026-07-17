@@ -246,6 +246,50 @@ describe("latestContextUsageInput", () => {
     expect(viewModel?.contextWindow).toBe(200_000);
     expect(viewModel?.ratio).toBeCloseTo(0.85, 5);
   });
+
+  it("maps a live context_usage typed breakdown into the hover fields", () => {
+    const input = latestContextUsageInput([
+      envelope(1, {
+        type: "context_usage",
+        origin: "live",
+        usage: {
+          categories: [],
+          totalTokens: 103_007,
+          maxTokens: 1_000_000,
+          percentage: 10.3,
+          // Typed per-turn breakdown carried alongside the display categories.
+          inputTokens: 2,
+          outputTokens: 5,
+          cacheReadTokens: 96_500,
+          cacheCreationTokens: 6_500,
+        },
+      }),
+    ] as any, "claude");
+    const viewModel = toUsageViewModel(input);
+    // Ring % stays driven by the total occupancy, not the per-turn input.
+    expect(viewModel?.usedTokens).toBe(103_007);
+    expect(viewModel?.ratio).toBeCloseTo(0.103, 4);
+    // Breakdown line carries every field the inline card used to show.
+    expect(viewModel?.inputTokens).toBe(2);
+    expect(viewModel?.outputTokens).toBe(5);
+    expect(viewModel?.cacheReadTokens).toBe(96_500);
+    expect(viewModel?.cacheWriteTokens).toBe(6_500);
+  });
+
+  it("falls back to total-as-input when a context_usage snapshot has no typed breakdown", () => {
+    const input = latestContextUsageInput([
+      envelope(1, {
+        type: "context_usage",
+        origin: "command",
+        usage: { categories: [], totalTokens: 42_000, maxTokens: 200_000, percentage: 21 },
+      }),
+    ] as any, "claude");
+    const viewModel = toUsageViewModel(input);
+    expect(viewModel?.usedTokens).toBe(42_000);
+    expect(viewModel?.inputTokens).toBe(42_000);
+    expect(viewModel?.outputTokens).toBeNull();
+    expect(viewModel?.cacheReadTokens).toBeNull();
+  });
 });
 
 describe("formatContextTokens", () => {
