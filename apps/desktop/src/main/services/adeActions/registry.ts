@@ -2,6 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
+import {
+  addOpenCodeOAuthStatusListener,
+  cancelOAuth as cancelOpenCodeOAuth,
+  listAuthMethods as listOpenCodeAuthMethods,
+  setProviderKey as setOpenCodeProviderKey,
+  startOAuth as startOpenCodeOAuth,
+  type OpenCodeAuthDeps,
+} from "../opencode/openCodeAuthService";
+import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import type {
   AutomationManualTriggerRequest,
@@ -168,7 +177,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"],
-  ai: ["updateConfig", "storeApiKey", "deleteApiKey"],
+  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "refreshModelsDev"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
@@ -551,6 +560,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "deleteApiKey",
     "listApiKeys",
     "updateConfig",
+    "opencodeAuthMethods",
+    "opencodeOAuthStart",
+    "opencodeOAuthCancel",
+    "setOpencodeProviderKey",
+    "refreshModelsDev",
     "listCursorCloudRepositories",
     "listCursorCloudAgents",
     "listCursorCloudRuns",
@@ -2031,12 +2045,62 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
   };
 }
 
+// Bridge OpenCode OAuth status transitions onto each runtime's event buffer so
+// remote/web clients (which drain runtimeEvents over the sync/relay channel)
+// mirror them, exactly like desktop windows do over IPC. Registered once per
+// runtime; the listener lives for the runtime's lifetime.
+const oauthStatusBridgedRuntimes = new WeakSet<AdeRuntime>();
+function ensureOpenCodeOAuthStatusRelayBridge(runtime: AdeRuntime): void {
+  if (!runtime.eventBuffer || oauthStatusBridgedRuntimes.has(runtime)) return;
+  oauthStatusBridgedRuntimes.add(runtime);
+  addOpenCodeOAuthStatusListener((event) => {
+    try {
+      runtime.eventBuffer.push({
+        timestamp: new Date().toISOString(),
+        category: "runtime",
+        payload: { kind: "opencodeOAuthStatus", event },
+      });
+    } catch {
+      // A full/broken buffer must not break the OAuth flow.
+    }
+  });
+}
+
 function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
   const aiIntegrationService = runtime.aiIntegrationService;
   if (!aiIntegrationService) return null;
+  ensureOpenCodeOAuthStatusRelayBridge(runtime);
+  const buildOpenCodeAuthDeps = (): OpenCodeAuthDeps => ({
+    projectRoot: runtime.projectRoot,
+    projectConfig: runtime.projectConfigService.getEffective(),
+    logger: runtime.logger,
+  });
   return {
     getStatus: (args?: { force?: boolean; refreshOpenCodeInventory?: boolean }) =>
       buildAiSettingsStatus(aiIntegrationService, args),
+    opencodeAuthMethods: () => listOpenCodeAuthMethods(buildOpenCodeAuthDeps()),
+    opencodeOAuthStart: (args?: { providerId?: string; methodIndex?: number; inputs?: Record<string, string> }) =>
+      startOpenCodeOAuth(buildOpenCodeAuthDeps(), {
+        providerId: requireNonEmptyString(args?.providerId, "providerId"),
+        methodIndex: typeof args?.methodIndex === "number" ? args.methodIndex : 0,
+        inputs: args?.inputs,
+      }),
+    opencodeOAuthCancel: (args?: { providerId?: string }) => {
+      cancelOpenCodeOAuth({ providerId: requireNonEmptyString(args?.providerId, "providerId") });
+    },
+    setOpencodeProviderKey: (args?: { providerId?: string; key?: string }) =>
+      setOpenCodeProviderKey(buildOpenCodeAuthDeps(), {
+        providerId: requireNonEmptyString(args?.providerId, "providerId"),
+        key: requireNonEmptyString(args?.key, "key"),
+      }),
+    refreshModelsDev: async () => {
+      try {
+        await refreshModelsDevNow();
+      } catch {
+        // Surfaced via lastFetchedAt staleness; never throw from a refresh nudge.
+      }
+      return { lastFetchedAt: getModelsDevLastFetchedAt() };
+    },
     getOpenCodeRuntimeDiagnostics: async () => {
       const { getOpenCodeRuntimeSnapshot } = await import("../opencode/openCodeRuntime");
       return getOpenCodeRuntimeSnapshot();

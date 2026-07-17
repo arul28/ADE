@@ -44,6 +44,11 @@ export const PROVIDER_TOKEN_LABELS: Record<string, string> = {
   cursor: "Cursor",
   kimi: "Kimi",
   moonshot: "Kimi",
+  // Canonical opencode catalog ids for the Kimi/Moonshot brand. Keys are the
+  // normalizeProviderToken() form (lowercased, non-alphanumerics stripped), so
+  // "kimi-for-coding" resolves as "kimiforcoding".
+  moonshotai: "Kimi",
+  kimiforcoding: "Kimi",
   ollama: "Ollama",
   lmstudio: "LM Studio",
 };

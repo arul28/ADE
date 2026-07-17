@@ -20,6 +20,8 @@ const mockState = vi.hoisted(() => ({
   clearOpenCodeInventoryCache: vi.fn(),
   peekOpenCodeInventoryCache: vi.fn(),
   probeOpenCodeProviderInventory: vi.fn(),
+  loadPersistedOpenCodeInventory: vi.fn((..._args: unknown[]) => [] as unknown[]),
+  getModelsDevLastFetchedAt: vi.fn((..._args: unknown[]) => null as number | null),
   clearOpenCodeBinaryCache: vi.fn(),
   resolveOpenCodeBinary: vi.fn(),
 }));
@@ -53,6 +55,7 @@ vi.mock("./apiKeyStore", () => ({
 
 vi.mock("./modelsDevService", () => ({
   initialize: (...args: unknown[]) => mockState.initModelsDevService(...args),
+  getLastFetchedAt: (...args: unknown[]) => mockState.getModelsDevLastFetchedAt(...args),
 }));
 
 vi.mock("./claudeRuntimeProbe", () => ({
@@ -68,6 +71,7 @@ vi.mock("../opencode/openCodeInventory", () => ({
   clearOpenCodeInventoryCache: (...args: unknown[]) => mockState.clearOpenCodeInventoryCache(...args),
   peekOpenCodeInventoryCache: (...args: unknown[]) => mockState.peekOpenCodeInventoryCache(...args),
   probeOpenCodeProviderInventory: (...args: unknown[]) => mockState.probeOpenCodeProviderInventory(...args),
+  loadPersistedOpenCodeInventory: (...args: unknown[]) => mockState.loadPersistedOpenCodeInventory(...args),
 }));
 
 vi.mock("../opencode/openCodeBinaryManager", () => ({

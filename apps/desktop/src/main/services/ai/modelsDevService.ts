@@ -2,9 +2,11 @@
 // models.dev Integration — fetches dynamic model metadata from the open API
 // ---------------------------------------------------------------------------
 
-import { writeFile, readFile, mkdir } from "node:fs/promises";
+import { writeFile, readFile, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { updateModelPricing } from "../../../shared/modelProfiles";
+import { enrichModelRegistry } from "../../../shared/modelRegistry";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -80,6 +82,8 @@ const CACHE_FILE = join(CACHE_DIR, "models-dev-cache.json");
 let modelDataMap: Map<string, ModelsDevModelData> = new Map();
 let refreshTimer: ReturnType<typeof setInterval> | null = null;
 let initialized = false;
+/** Epoch ms of the last successful API fetch, or the cache file's mtime on fallback. Null until known. */
+let lastFetchedAt: number | null = null;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -204,10 +208,41 @@ async function loadFromCache(): Promise<Map<string, ModelsDevModelData>> {
   try {
     const raw = await readFile(CACHE_FILE, "utf-8");
     const parsed = JSON.parse(raw) as Record<string, ModelsDevModelData>;
+    // Fall back to the cache file's mtime as the effective freshness stamp.
+    try {
+      const stats = await stat(CACHE_FILE);
+      lastFetchedAt = stats.mtimeMs;
+    } catch {
+      // Non-critical — leave lastFetchedAt untouched.
+    }
     return new Map(Object.entries(parsed));
   } catch {
     return new Map();
   }
+}
+
+/**
+ * Apply the current models.dev metadata to the pricing table and model registry.
+ * Invoked after each successful fetch (init + 6h refresh) and on explicit refresh.
+ */
+function applyEnrichment(): { pricingCount: number; enrichCount: number } {
+  if (modelDataMap.size === 0) return { pricingCount: 0, enrichCount: 0 };
+  const pricingUpdates: Record<string, { input: number; output: number }> = {};
+  const enrichments = new Map<string, { contextWindow?: number; maxOutputTokens?: number }>();
+  for (const [modelId, data] of modelDataMap) {
+    if (data.cost) {
+      pricingUpdates[modelId] = data.cost;
+    }
+    if (data.contextWindow || data.maxOutputTokens) {
+      enrichments.set(modelId, {
+        contextWindow: data.contextWindow,
+        maxOutputTokens: data.maxOutputTokens,
+      });
+    }
+  }
+  const pricingCount = updateModelPricing(pricingUpdates);
+  const enrichCount = enrichModelRegistry(enrichments);
+  return { pricingCount, enrichCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +256,7 @@ async function loadFromCache(): Promise<Map<string, ModelsDevModelData>> {
 export async function initialize(): Promise<Map<string, ModelsDevModelData>> {
   try {
     modelDataMap = await fetchFromApi();
+    lastFetchedAt = Date.now();
     await persistToCache(modelDataMap);
     console.info(`[models.dev] Fetched metadata for ${modelDataMap.size} models`);
   } catch (err) {
@@ -233,13 +269,18 @@ export async function initialize(): Promise<Map<string, ModelsDevModelData>> {
     }
   }
 
+  const { pricingCount, enrichCount } = applyEnrichment();
+  console.info(`[models.dev] Enriched ${pricingCount} prices, ${enrichCount} registry entries`);
+
   // Schedule periodic refreshes (non-blocking)
   if (!refreshTimer) {
     refreshTimer = setInterval(async () => {
       try {
         const fresh = await fetchFromApi();
         modelDataMap = fresh;
+        lastFetchedAt = Date.now();
         await persistToCache(fresh);
+        applyEnrichment();
         console.info(`[models.dev] Refreshed metadata for ${fresh.size} models`);
       } catch (err) {
         console.warn(`[models.dev] Background refresh failed: ${err instanceof Error ? err.message : err}`);
@@ -252,6 +293,25 @@ export async function initialize(): Promise<Map<string, ModelsDevModelData>> {
 
   initialized = true;
   return modelDataMap;
+}
+
+/**
+ * Force an immediate models.dev fetch, re-persist, and re-apply enrichment.
+ * Throws if the fetch fails so callers can surface the error; on success the
+ * in-memory map, cache, pricing table, and registry are all updated.
+ */
+export async function refreshNow(): Promise<Map<string, ModelsDevModelData>> {
+  const fresh = await fetchFromApi();
+  modelDataMap = fresh;
+  lastFetchedAt = Date.now();
+  await persistToCache(fresh);
+  applyEnrichment();
+  return modelDataMap;
+}
+
+/** Epoch ms of the last successful fetch (or cache mtime on fallback); null if never. */
+export function getLastFetchedAt(): number | null {
+  return lastFetchedAt;
 }
 
 /** Get model data by providerModelId. Returns undefined if not found. */
@@ -275,4 +335,6 @@ export function shutdown(): void {
     clearInterval(refreshTimer);
     refreshTimer = null;
   }
+  initialized = false;
+  lastFetchedAt = null;
 }

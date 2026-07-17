@@ -770,6 +770,105 @@ describe("ModelPicker", () => {
     expect(screen.getByRole("button", { name: /Select model/i }).getAttribute("aria-expanded")).toBe("false");
   });
 
+  it("dims configuration-gated models and routes their click to sign-in even when the family is authed", async () => {
+    const user = userEvent.setup();
+    // Anthropic family is fully authed, so the family-ready shortcut would
+    // otherwise mark every Claude row available. The per-model
+    // requiresConfiguration annotation must still dim the gated row.
+    providerAuthStatusInternal = { anthropic: "ok" };
+    const onOpenSignIn = vi.fn();
+    const catalog = {
+      groups: [
+        {
+          key: "claude",
+          displayName: "Claude",
+          providers: [
+            {
+              key: "anthropic",
+              displayName: "Anthropic",
+              badgeColor: "#D97706",
+              modelCount: 2,
+              subsections: [
+                {
+                  key: "__default__",
+                  label: "",
+                  models: [
+                    {
+                      id: SONNET.id,
+                      runtimeModelId: SONNET.id,
+                      provider: "anthropic",
+                      providerKey: "anthropic",
+                      providerId: "anthropic",
+                      providerName: "Anthropic",
+                      groupKey: "claude",
+                      displayName: SONNET.displayName,
+                      isDefault: true,
+                      isAvailable: true,
+                      requiresConfiguration: false,
+                      supportsReasoning: true,
+                      supportsTools: true,
+                    },
+                    {
+                      id: OPUS.id,
+                      runtimeModelId: OPUS.id,
+                      provider: "anthropic",
+                      providerKey: "anthropic",
+                      providerId: "anthropic",
+                      providerName: "Anthropic",
+                      groupKey: "claude",
+                      displayName: OPUS.displayName,
+                      isDefault: false,
+                      isAvailable: false,
+                      requiresConfiguration: true,
+                      supportsReasoning: true,
+                      supportsTools: true,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      fetchedAt: "2026-05-18T00:00:00.000Z",
+      stale: false,
+    } as unknown as AgentChatModelCatalog;
+    const modelCatalog = vi.fn(async () => catalog);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { agentChat: { modelCatalog } },
+    });
+
+    const { onChange } = renderPicker({
+      value: SONNET.id,
+      models: [],
+      filter: (m: ModelDescriptor) => m.id === SONNET.id || m.id === OPUS.id,
+      onOpenSignIn,
+    });
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole("option").some((el) => el.getAttribute("data-model-id") === OPUS.id),
+      ).toBe(true);
+    });
+
+    const rows = screen.getAllByRole("option");
+    const opusRow = rows.find((el) => el.getAttribute("data-model-id") === OPUS.id)!;
+    const sonnetRow = rows.find((el) => el.getAttribute("data-model-id") === SONNET.id)!;
+
+    // Gated row is dimmed (aria-disabled); the available sibling is not.
+    expect(opusRow.getAttribute("aria-disabled")).toBe("true");
+    expect(sonnetRow.getAttribute("aria-disabled")).toBeNull();
+
+    // Clicking the gated row routes to the settings/connect affordance and does
+    // not select the model.
+    await user.click(opusRow);
+    expect(onOpenSignIn.mock.calls[0]?.[0]).toBe("anthropic");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("does not render the Set up banner when the active rail is authed", async () => {
     const user = userEvent.setup();
     providerAuthStatusInternal = { anthropic: "ok", openai: "unauthed" };

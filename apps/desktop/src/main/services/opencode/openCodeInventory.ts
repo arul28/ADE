@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import type { Logger } from "../logging/logger";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
@@ -43,6 +46,78 @@ type CacheEntry = {
 
 let inventoryCache: CacheEntry | null = null;
 const probeInFlightMap = new Map<string, Promise<OpenCodeInventoryResult>>();
+
+// ---------------------------------------------------------------------------
+// Cross-launch inventory persistence
+//
+// A cold settings read (no warm in-memory cache) would otherwise report zero
+// providers until the first probe completes, so the settings UI flashes empty
+// on every app start. We persist each successful probe's provider list, keyed
+// by project root, to Electron userData and reload it (flagged stale) on cold
+// reads so provider chips render immediately.
+// ---------------------------------------------------------------------------
+
+type PersistedInventoryFile = Record<string, { providers: OpenCodeProviderInfo[]; savedAt: number }>;
+
+type ElectronLikeApp = { app?: { getPath(name: string): string } };
+
+let persistPathOverride: string | null = null;
+let persistedInventoryMemo: PersistedInventoryFile | null = null;
+
+function resolvePersistedInventoryPath(): string {
+  if (persistPathOverride) return persistPathOverride;
+  const envOverride = process.env.ADE_OPENCODE_INVENTORY_CACHE_FILE?.trim();
+  if (envOverride) return path.resolve(envOverride);
+  try {
+    const electron = require("electron") as ElectronLikeApp;
+    const userDataPath = electron.app?.getPath?.("userData");
+    if (typeof userDataPath === "string" && userDataPath.trim().length > 0) {
+      return path.resolve(userDataPath, "opencode-inventory-cache.json");
+    }
+  } catch {
+    // Not running inside Electron (e.g. unit tests) — fall through.
+  }
+  const homeDir = os.homedir().trim();
+  const baseDir = homeDir.length > 0 ? path.resolve(homeDir, ".ade") : os.tmpdir();
+  return path.resolve(baseDir, "opencode-inventory-cache.json");
+}
+
+function readPersistedInventoryFile(): PersistedInventoryFile {
+  if (persistedInventoryMemo) return persistedInventoryMemo;
+  try {
+    const raw = fs.readFileSync(resolvePersistedInventoryPath(), "utf8");
+    const parsed = JSON.parse(raw) as PersistedInventoryFile;
+    persistedInventoryMemo = parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    persistedInventoryMemo = {};
+  }
+  return persistedInventoryMemo;
+}
+
+/** Persist a successful probe's provider list, keyed by project root. Best-effort. */
+export function persistOpenCodeInventory(projectRoot: string, providers: OpenCodeProviderInfo[]): void {
+  try {
+    const all = { ...readPersistedInventoryFile() };
+    all[projectRoot] = { providers, savedAt: Date.now() };
+    persistedInventoryMemo = all;
+    const filePath = resolvePersistedInventoryPath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(all), "utf8");
+  } catch {
+    // Non-critical — persistence failures must not break the probe.
+  }
+}
+
+/** Load the last persisted provider list for a project (empty when none). */
+export function loadPersistedOpenCodeInventory(projectRoot: string): OpenCodeProviderInfo[] {
+  return readPersistedInventoryFile()[projectRoot]?.providers ?? [];
+}
+
+/** Test hook: point persistence at a temp file and drop the in-memory memo. */
+export function __setOpenCodeInventoryPersistencePathForTests(filePath: string | null): void {
+  persistPathOverride = filePath;
+  persistedInventoryMemo = null;
+}
 
 export type OpenCodeInventoryResult = {
   /** Selectable model ids for connected providers only. */
@@ -450,6 +525,7 @@ export async function probeOpenCodeProviderInventory(args: {
           providers: providerInfos,
           error: null,
         };
+        persistOpenCodeInventory(args.projectRoot, providerInfos);
         return { modelIds, catalogModelIds, providers: providerInfos, error: null, descriptors };
       } finally {
         lease.release("handle_close");

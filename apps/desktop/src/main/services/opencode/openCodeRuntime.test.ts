@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => {
   let nextSessionId = 1;
@@ -91,6 +91,13 @@ vi.mock("@opencode-ai/sdk/v2/client", () => ({
   })),
 }));
 
+const apiKeyState = vi.hoisted(() => ({ keys: {} as Record<string, string> }));
+
+vi.mock("../ai/apiKeyStore", () => ({
+  getAllApiKeys: () => ({ ...apiKeyState.keys }),
+  getApiKey: (id: string) => apiKeyState.keys[id.trim().toLowerCase()] ?? null,
+}));
+
 vi.mock("./openCodeBinaryManager", () => ({
   resolveOpenCodeBinaryPath: vi.fn(() => "/Users/admin/.opencode/bin/opencode"),
 }));
@@ -107,6 +114,7 @@ vi.mock("./openCodeServerManager", () => ({
 
 import {
   __resetOpenCodeRuntimeDiagnosticsForTests,
+  buildOpenCodeConfig,
   getOpenCodeRuntimeSnapshot,
   runOpenCodeTextPrompt,
   startOpenCodeSession,
@@ -201,5 +209,100 @@ describe("openCodeRuntime", () => {
     expect(snapshot.sharedCount).toBe(1);
     expect(snapshot.dedicatedCount).toBe(0);
     expect(Object.keys(snapshot).sort()).toEqual(["dedicatedCount", "entries", "sharedCount"]);
+  });
+});
+
+describe("buildOpenCodeConfig provider injection", () => {
+  beforeEach(() => {
+    apiKeyState.keys = {};
+  });
+
+  const providerOf = (ai: Record<string, unknown>): Record<string, any> =>
+    (buildOpenCodeConfig({ projectConfig: { ai } as any }).provider ?? {}) as Record<string, any>;
+
+  it("emits a full provider block for each custom provider", () => {
+    const provider = providerOf({
+      customProviders: [
+        {
+          id: "acme",
+          name: "Acme AI",
+          baseURL: "https://acme.example/v1",
+          models: ["acme-large", "acme-small"],
+        },
+      ],
+    });
+
+    expect(provider.acme).toEqual({
+      npm: "@ai-sdk/openai-compatible",
+      name: "Acme AI",
+      options: { baseURL: "https://acme.example/v1" },
+      models: { "acme-large": {}, "acme-small": {} },
+    });
+  });
+
+  it("honors an explicit npm package and injects the configured api key", () => {
+    // Key injection is asserted through the project-config path: the encrypted
+    // key store resolves via a CJS require that vitest's ESM mocks can't
+    // intercept (it degrades to a no-op here by design), and both paths merge
+    // through the same provider options object.
+    const provider = providerOf({
+      apiKeys: { acme: "sk-acme" },
+      customProviders: [
+        {
+          id: "acme",
+          name: "Acme",
+          baseURL: "https://acme.example/v1",
+          npm: "@ai-sdk/anthropic",
+          models: ["m1"],
+        },
+      ],
+    });
+
+    expect(provider.acme.npm).toBe("@ai-sdk/anthropic");
+    expect(provider.acme.options).toEqual({
+      baseURL: "https://acme.example/v1",
+      apiKey: "sk-acme",
+    });
+  });
+
+  it("skips custom providers missing an id, baseURL, or models", () => {
+    const provider = providerOf({
+      customProviders: [
+        { id: "", name: "no id", baseURL: "https://x/v1", models: ["m"] },
+        { id: "nourl", name: "no url", baseURL: "  ", models: ["m"] },
+        { id: "nomodels", name: "no models", baseURL: "https://x/v1", models: [] },
+      ],
+    });
+
+    expect(provider[""]).toBeUndefined();
+    expect(provider.nourl).toBeUndefined();
+    expect(provider.nomodels).toBeUndefined();
+  });
+
+  it("merges a custom model slug into an existing custom provider", () => {
+    const provider = providerOf({
+      customProviders: [
+        { id: "acme", name: "Acme", baseURL: "https://acme.example/v1", models: ["m1"] },
+      ],
+      customModelSlugs: ["acme/m2"],
+    });
+
+    expect(Object.keys(provider.acme.models).sort()).toEqual(["m1", "m2"]);
+  });
+
+  it("materializes a bare block for a known-catalog provider slug", () => {
+    const provider = providerOf({ customModelSlugs: ["openai/o5-preview"] });
+    expect(provider.openai).toEqual({ models: { "o5-preview": {} } });
+  });
+
+  it("keeps model ids that contain slashes intact", () => {
+    const provider = providerOf({ customModelSlugs: ["openrouter/anthropic/claude-x"] });
+    expect(provider.openrouter).toEqual({ models: { "anthropic/claude-x": {} } });
+  });
+
+  it("drops malformed and unknown-provider slugs", () => {
+    const provider = providerOf({ customModelSlugs: ["noslash", "mysteryco/model"] });
+    expect(provider.noslash).toBeUndefined();
+    expect(provider.mysteryco).toBeUndefined();
   });
 });

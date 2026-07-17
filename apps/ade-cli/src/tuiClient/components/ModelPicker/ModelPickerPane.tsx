@@ -117,6 +117,8 @@ const PROVIDER_MARKS: Record<string, ProviderMark> = {
   cursor: { label: "Cursor", short: "CU", terminal: "⬢", color: "#0EA5E9", svg: CURSOR_SVG },
   kimi: { label: "Kimi", short: "Ki", terminal: "Ki", color: "#F0F0F2", svgPaths: KIMI_PATHS },
   moonshot: { label: "Kimi", short: "Ki", terminal: "Ki", color: "#F0F0F2", svgPaths: KIMI_PATHS },
+  moonshotai: { label: "Kimi", short: "Ki", terminal: "Ki", color: "#F0F0F2", svgPaths: KIMI_PATHS },
+  kimiforcoding: { label: "Kimi", short: "Ki", terminal: "Ki", color: "#F0F0F2", svgPaths: KIMI_PATHS },
   ollama: { label: "Ollama", short: "OL", terminal: "◕", color: "#F0F0F2", iconFill: "#000000", svgPath: OLLAMA_PATH },
   lmstudio: { label: "LM Studio", short: "LM", terminal: "≋", color: "#8B5CF6", svgPaths: LMSTUDIO_PATHS },
 };
@@ -135,6 +137,8 @@ const ROW_MARKS: Record<string, ProviderMark> = {
   groq: PROVIDER_MARKS.groq!,
   kimi: PROVIDER_MARKS.kimi!,
   moonshot: PROVIDER_MARKS.moonshot!,
+  moonshotai: PROVIDER_MARKS.moonshotai!,
+  kimiforcoding: PROVIDER_MARKS.kimiforcoding!,
   openrouter: PROVIDER_MARKS.openrouter!,
   opencode: PROVIDER_MARKS.opencode!,
   droid: PROVIDER_MARKS.droid!,

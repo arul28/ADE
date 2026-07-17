@@ -93,6 +93,9 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeOAuthStartResult,
+  OpenCodeOAuthStatusEvent,
+  OpenCodeProviderAuthMethods,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -3883,6 +3886,51 @@ contextBridge.exposeInMainWorld("ade", {
             () => ipcRenderer.invoke(IPC.aiUpdateConfig, config),
           ),
       ),
+    opencodeAuthMethods: async (): Promise<{ methods: OpenCodeProviderAuthMethods }> =>
+      callProjectRuntimeActionOr("ai", "opencodeAuthMethods", {}, () =>
+        ipcRenderer.invoke(IPC.aiOpencodeAuthMethods),
+      ),
+    opencodeOAuthStart: async (args: {
+      providerId: string;
+      methodIndex: number;
+      inputs?: Record<string, string>;
+    }): Promise<OpenCodeOAuthStartResult> =>
+      callProjectRuntimeActionOr("ai", "opencodeOAuthStart", { args }, () =>
+        ipcRenderer.invoke(IPC.aiOpencodeOAuthStart, args),
+      ),
+    opencodeOAuthCancel: async (args: { providerId: string }): Promise<void> =>
+      callProjectRuntimeActionOr("ai", "opencodeOAuthCancel", { args }, () =>
+        ipcRenderer.invoke(IPC.aiOpencodeOAuthCancel, args),
+      ),
+    setOpencodeProviderKey: async (args: {
+      providerId: string;
+      key: string;
+    }): Promise<{ ok: boolean; error?: string }> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "setOpencodeProviderKey", { args }, () =>
+            ipcRenderer.invoke(IPC.aiSetOpencodeProviderKey, args),
+          ),
+      ),
+    refreshModelsDev: async (): Promise<{ lastFetchedAt: number | null }> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "refreshModelsDev", {}, () =>
+            ipcRenderer.invoke(IPC.aiRefreshModelsDev),
+          ),
+      ),
+    onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: OpenCodeOAuthStatusEvent,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.aiOpencodeOAuthStatus, listener);
+      return () => {
+        ipcRenderer.removeListener(IPC.aiOpencodeOAuthStatus, listener);
+      };
+    },
     cursorCloudListRepositories: async (): Promise<CursorCloudRepository[]> =>
       callProjectRuntimeActionOr("ai", "listCursorCloudRepositories", {}, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudListRepositories),

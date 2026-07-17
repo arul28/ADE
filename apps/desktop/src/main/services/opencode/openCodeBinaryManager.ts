@@ -1,4 +1,5 @@
 // OpenCode binary resolution with bundled fallback
+import { execFileSync } from "node:child_process";
 import { accessSync, constants } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -169,4 +170,36 @@ export function resolveOpenCodeBinaryPath(): string | null {
 
 export function clearOpenCodeBinaryCache(): void {
   cachedInfo = null;
+}
+
+export type OpenCodeBinaryQuarantineState = "quarantined" | "clean" | "unknown";
+
+/**
+ * Best-effort probe for the macOS `com.apple.quarantine` extended attribute on
+ * the OpenCode binary. Used by launch diagnostics to distinguish a Gatekeeper
+ * quarantine (fixable via `xattr -d`) from a genuine bad signature. Returns
+ * `"unknown"` off darwin, without a path, or when `xattr` is unavailable / times
+ * out; `"clean"` when the attribute is absent; `"quarantined"` when present.
+ */
+export function probeOpenCodeBinaryQuarantine(binaryPath: string | null | undefined): OpenCodeBinaryQuarantineState {
+  if (process.platform !== "darwin") return "unknown";
+  const trimmed = binaryPath?.trim();
+  if (!trimmed) return "unknown";
+  try {
+    const output = execFileSync("xattr", ["-p", "com.apple.quarantine", trimmed], {
+      encoding: "utf8",
+      timeout: 1_000,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return output.trim().length > 0 ? "quarantined" : "clean";
+  } catch (error) {
+    // `xattr -p` exits non-zero when the attribute is absent — treat that as
+    // "clean". A missing `xattr` binary (ENOENT) or a timeout leaves `status`
+    // null, which we surface as "unknown" so callers don't over-claim.
+    const status = (error && typeof error === "object" && "status" in error)
+      ? (error as { status?: number | null }).status
+      : undefined;
+    return typeof status === "number" && status !== 0 ? "clean" : "unknown";
+  }
 }

@@ -65,7 +65,8 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/chat/droidSdkEventMapper.ts` | Per-session `DroidSdkEventMapperState` + `mapDroidSdkMessageToChatEvents` / `mapDroidSdkRunResultToDoneEvent`. Tracks streaming text/thinking/image item ids, maps tool calls and results, maps `mission_worker_started` / `mission_worker_completed` notifications to provider-neutral subagent lifecycle events keyed by worker session id, surfaces image content as compact generation rows, and reports token usage. Replaces the deleted `droidAcpPool.ts` + `droidAcpEventMapper` path. |
 | `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | SDK-driven model probe (`listDroidModelsFromSdk`) plus the `~/.factory/config.json` custom-proxy merge. Normalizes retired factory Claude ids (Sonnet 4.6 -> Sonnet 5, basic Opus 4.7 -> Opus 4.8) before descriptors reach desktop, mobile, or TUI model pickers. Exposes `discoverDroidSdkModelDescriptors` (alias for the legacy `discoverDroidCliModelDescriptors` while callers migrate). |
 | `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | Resolves the OpenCode CLI: PATH first, then the bundled `node_modules/.bin/opencode`. Cache entries are re-validated with `canRunBinaryCandidate` on every lookup so user installs after launch are picked up; missing-binary lookups are intentionally not cached. `clearOpenCodeBinaryCache()` is wired into the AI integration's full cache reset. |
-| `apps/desktop/src/main/services/opencode/openCodeInventory.ts` | OpenCode provider/model probe. Now classifies model variants into `reasoningTiers` + `serviceTiers` (alias map covering `minimal`/`mini`/`med`/`xhigh`/`extra-high`), reads `capabilities` (tools/vision/reasoning) into descriptor capabilities, and tracks both `modelIds` (connected providers only) and `catalogModelIds` (the full browseable catalog). Anthropic rows normalize retired Sonnet 4.6 / basic Opus 4.7 ids to Sonnet 5 / Opus 4.8 so runtime catalogs cannot reintroduce removed picker rows. `OpenCodeProviderInfo.availableModelCount` exposes the connected count separately from `modelCount`. |
+| `apps/desktop/src/main/services/opencode/openCodeInventory.ts` | OpenCode provider/model probe. Now classifies model variants into `reasoningTiers` + `serviceTiers` (alias map covering `minimal`/`mini`/`med`/`xhigh`/`extra-high`), reads `capabilities` (tools/vision/reasoning) into descriptor capabilities, and tracks both `modelIds` (connected providers only) and `catalogModelIds` (the full browseable catalog). Anthropic rows normalize retired Sonnet 4.6 / basic Opus 4.7 ids to Sonnet 5 / Opus 4.8 so runtime catalogs cannot reintroduce removed picker rows. `OpenCodeProviderInfo.availableModelCount` exposes the connected count separately from `modelCount`. **Cross-launch persistence:** `persistOpenCodeInventory(projectRoot, providers)` writes each successful probe's provider list (keyed by project root, with `savedAt`) to `opencode-inventory-cache.json` under Electron `userData` (override via `ADE_OPENCODE_INVENTORY_CACHE_FILE`); on a cold start the Settings page reloads that persisted list flagged stale (`opencodeProvidersStale`) so the ~160-provider chip cloud renders immediately instead of blanking until the first live probe (stale-while-revalidate). Writes are best-effort and never break the probe. |
+| `apps/desktop/src/main/services/opencode/openCodeAuthService.ts` | Drives the managed OpenCode server's auth API for subscription connect + API-key seeding, reusing the shared inventory server lease (never spawning its own process). `listAuthMethods` reads `GET /provider/auth`; `startOAuth` authorizes (`POST /provider/{id}/oauth/authorize`), opens the returned URL, and polls `provider.list().connected` every 2s until connected or a 5-min timeout, re-probing inventory on success; `cancelOAuth` stops the poller; `setProviderKey` does `PUT /auth/{id}` and mirrors the key into ADE's `apiKeyStore` so it is re-injected on future launches. One flow per `providerId` at a time (a new start supersedes the prior). Transitions are published through `addOpenCodeOAuthStatusListener` (`pending`/`connected`/`cancelled`/`timeout`/`failed`), a multi-sink fan-out so the same event reaches desktop windows and the remote/web runtime event buffer. Seeded credentials land in ADE's isolated managed OpenCode dir (XDG roots under `userData/opencode-runtime/xdg-v*`), never the user's `~/.local/share/opencode`. |
 | `apps/desktop/src/shared/chatTranscript.ts` | Pure JSON-lines parser for `AgentChatEventEnvelope` values. Used by both the main process and the renderer. |
 | `apps/desktop/src/shared/chatSubagents.ts` | Cross-target subagent helpers: `normalizeSubagentLifecycleEvent` (canonicalizes legacy `subagent_*` and dotted `subagent.*` envelopes), the stable `groupPaneSectionItems` partition and pane caps, `buildSubagentPaneRows`, tagged pane click targets, `buildSubagentTranscriptEvents`, `isLifecycleEventForSnapshot`, plus the `latestPlan` derivation. The partition keeps source order, forces pinned rows into the active cap, and excludes visually cleared Completed ids. It also owns the shared subagent-vs-background classification (`isBackgroundShellCommand`, `isRealSubagent`, `isNonAgentTaskRun`, `subagentAgentKey`) — `isNonAgentTaskRun` flags a `task_type` `other` run with no agent metadata (a plain Claude Code task, not a subagent) so both the idle-turn and foreground paths keep it out of the roster. Claude's raw `local_bash` kind is normalized only after explicit background evidence (`background_tasks_changed`, `is_backgrounded`, or `run_in_background`) because foreground Bash emits the same kind. The file also owns summary-quality helpers and `deriveSubagentTimelineRows` → `SubagentTimelineRow` (`spawn` / `result` / `background_chip`). Desktop consumes the partition directly; ADE Code consumes the expanded row model; iOS mirrors the same predicates and caps. |
 | `apps/desktop/src/shared/chatScheduledWork.ts` | Cross-target scheduled-work derivation. Folds `scheduled_work_update` envelopes into stable snapshots for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work, then merges the transcript projection with the KV-backed management snapshot from `AgentChatSessionSummary.scheduledWork`. The merge removes stale active durable transcript rows that no longer exist in the management store, preserves provider-only/non-durable activity for display, and marks only ADE-managed rows as cancellable. It also partitions rows by surface: `deriveScheduleItems` returns schedule kinds (`wakeup` / `cron` / `loop` / `remote_trigger`) while `deriveBackgroundItems` returns `background_task` rows that do not duplicate a real subagent with the same `sourceTaskId`. A parent turn's terminal event does not coerce surviving background work to stopped; only an explicit work terminal state or runtime teardown does. `isEarlierBackgroundItem`, `isFiredOneShotWakeup`, and `isEarlierScheduleItem` define the shared Earlier membership mirrored by ADE Code and iOS. |
@@ -980,6 +981,17 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.getTurnFileDiff` | invoke | Lazy diff expansion for a turn-file-summary row. |
 | `ade.agentChat.event` | push | Stream of `AgentChatEventEnvelope` into the renderer. |
 
+Provider connection management lives on the `ade.ai.*` surface (handled in `registerIpc.ts`, backed by `openCodeAuthService.ts` and `modelsDevService.ts`), consumed by `ProvidersSection.tsx`:
+
+| Channel | Direction | Purpose |
+|---|---|---|
+| `ade.ai.opencodeAuthMethods` | invoke | List the auth methods each OpenCode provider supports (`GET /provider/auth`). The Settings page derives its OAuth subscription rows from the providers whose methods include an `oauth` entry. Best-effort — rows stay hidden if unavailable. |
+| `ade.ai.opencodeOAuthStart` | invoke | Start a subscription OAuth flow for `{ providerId, methodIndex, inputs? }`; opens the browser and begins polling. Returns `{ url, method, instructions }`. |
+| `ade.ai.opencodeOAuthCancel` | invoke | Cancel the in-flight OAuth flow for `{ providerId }`. |
+| `ade.ai.setOpencodeProviderKey` | invoke | Seed a plain API key for a provider (`PUT /auth/{id}`) and mirror it into ADE's key store. Backs the Kimi for Coding membership key and the `alsoOpenCode` key-save path for API/More-Providers rows. Invalidates provider-readiness caches on success. |
+| `ade.ai.refreshModelsDev` | invoke | Force a models.dev metadata refresh now; returns `{ lastFetchedAt }` for the group-header "catalog synced" timestamp. `modelsDevService` also refreshes on boot and every 6h on its own timer. |
+| `ade.ai.opencodeOAuthStatus` | push | Stream of `OpenCodeOAuthStatusEvent` (`pending`/`connected`/`cancelled`/`timeout`/`failed`) so the connect modal updates without polling. |
+
 ## Fragile and tricky wiring
 
 - **Event emission ordering in `agentChatService.ts`.** The service emits
@@ -1187,6 +1199,37 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
   server runs at a time per project; switching provider config or
   between chats with different configs recycles the pool instead of
   stacking processes.
+- **OpenCode OAuth status has two independent fan-out paths.**
+  `openCodeAuthService.addOpenCodeOAuthStatusListener` is a multi-sink
+  emitter, and both sinks must be registered or one client class goes
+  dark. `registerIpc.ts` broadcasts every event to all `BrowserWindow`
+  renderers over `IPC.aiOpencodeOAuthStatus` (desktop). Separately,
+  `adeActions/registry.ts` `ensureOpenCodeOAuthStatusRelayBridge` pushes
+  the same event into the runtime event buffer as
+  `{ kind: "opencodeOAuthStatus", event }` for remote/web clients. The
+  poll timer is `unref`'d and the shared server lease is held only for
+  the flow's lifetime, released on connect/cancel/timeout/failure.
+- **OpenCode inventory persistence is stale-while-revalidate.** A cold
+  start would otherwise blank the ~160-provider chip cloud until the
+  first live probe. `persistOpenCodeInventory` writes each successful
+  probe (keyed by project root) to `opencode-inventory-cache.json` under
+  `userData`; `aiSettingsStatus` reloads it flagged `opencodeProvidersStale`
+  so Settings renders the last-known catalog immediately, then a real
+  probe replaces it and clears the flag. Persistence is best-effort and
+  must never throw into the probe path. The in-memory `persistedInventoryMemo`
+  and the `peekOpenCodeInventoryCache` passive-read cache are distinct;
+  clearing one does not clear the other.
+- **New `ai.*` config fields must be added to BOTH `coerceAiConfig` and
+  `mergeAiConfig`.** In `projectConfigService.ts`, `coerceAiConfig`
+  validates/parses a config field off disk and `mergeAiConfig` folds the
+  shared + local layers into the effective config. A field added to only
+  one is silently dropped — it either fails to load or fails to survive
+  the layer merge, with no error. This bit `ai.customProviders` and
+  `ai.customModelSlugs` during the OpenCode providers build (custom
+  providers/model slugs written by `ProvidersSection` never reaching the
+  managed OpenCode config). Both keys are now merged by id/set-union in
+  `mergeAiConfig` and coerced in `coerceAiConfig`; add any future `ai.*`
+  field to both, plus `AiConfig` in `shared/types/config.ts`.
 
 ## Configuration
 
@@ -1201,6 +1244,12 @@ config service):
   (`claudePermissionMode`, Codex approval/sandbox defaults, OpenCode
   permission).
 - `ai.taskRouting` -- provider/model selection per task type.
+- `ai.customProviders` -- Advanced custom OpenAI-/Anthropic-compatible
+  providers (`{ id, name, baseURL, npm, models[] }`) that flow into the
+  managed OpenCode config.
+- `ai.customModelSlugs` -- extra `providerId/modelId` slugs to surface in
+  the picker. Like every `ai.*` field, both keys must be handled in
+  `coerceAiConfig` and `mergeAiConfig` (see Fragile and tricky wiring).
 
 ## Related docs
 

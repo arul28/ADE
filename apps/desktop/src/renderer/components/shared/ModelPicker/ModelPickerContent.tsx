@@ -27,6 +27,7 @@ import { useProviderAuthStatus } from "./useProviderAuthStatus";
 import { scoreModelPickerSearch } from "./modelPickerSearch";
 import { sortModelItems } from "./modelOrdering";
 import { ProviderEmptyState, ProviderSetupBanner } from "./providerEmptyState";
+import type { RuntimeCatalogModelDescriptor } from "./modelCatalog";
 import type { AgentChatModelCatalogRefreshProvider } from "../../../../shared/types";
 
 const MODEL_ROW_ESTIMATED_HEIGHT = 44;
@@ -107,6 +108,15 @@ function providerIsReady(status: AuthStatus | undefined): boolean {
 function providerAuthEstablishesModelAvailability(model: ModelDescriptor): boolean {
   const provider = resolveCliProviderForModel(model);
   return provider === "claude" || provider === "codex" || provider === "droid";
+}
+
+// The runtime catalog flags a model as requiring configuration when it is
+// listed but not usable yet (an unconfigured OpenCode sub-provider, a missing
+// API key, etc.). This boolean is precomputed in modelCatalog.ts, so reading it
+// here costs nothing on the hot render path — it just makes the annotation
+// authoritative for the picker's dim + connect-routing decision.
+function modelRequiresConfiguration(model: ModelDescriptor): boolean {
+  return (model as RuntimeCatalogModelDescriptor).catalogRequiresConfiguration === true;
 }
 
 export type ModelPickerContentProps = {
@@ -452,6 +462,12 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   const isAvailableForUse = useCallback(
     (m: ModelDescriptor): boolean => {
       if (!matchesCursorAvailabilityMode(m)) return false;
+      // A configuration-gated model is never directly selectable — the row
+      // dims and its click routes to the connect affordance instead. This
+      // overrides the family-ready shortcut below, which would otherwise mark
+      // a gated Claude/Codex/Droid model available just because its provider
+      // family is authed.
+      if (modelRequiresConfiguration(m)) return false;
       if (cursorAvailabilityMode === "cli" && m.family === "cursor" && m.cursorAvailability?.cli === true) {
         return Object.keys(effectiveAuth).length > 0 ? familyIsReady(m.family) : true;
       }
