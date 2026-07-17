@@ -229,6 +229,16 @@ describe("createSyncRemoteCommandService", () => {
       scope: "runtime",
       policy: { viewerAllowed: true, queueable: false },
     });
+    expect(service.getDescriptor("personalChats.createScheduledWork")).toEqual({
+      action: "personalChats.createScheduledWork",
+      scope: "runtime",
+      policy: { viewerAllowed: false, queueable: false },
+    });
+    expect(service.getDescriptor("personalChats.setScheduledWorkPaused")).toEqual({
+      action: "personalChats.setScheduledWorkPaused",
+      scope: "runtime",
+      policy: { viewerAllowed: true, queueable: false },
+    });
     expect(service.getDescriptor("personalChats.streamEvents")).toEqual({
       action: "personalChats.streamEvents",
       scope: "runtime",
@@ -260,6 +270,30 @@ describe("createSyncRemoteCommandService", () => {
     expect(personalChatScope.call).toHaveBeenCalledWith("cancelScheduledWork", {
       sessionId: "personal-1",
       scheduleId: "cron-1",
+    });
+    await expect(service.execute(makePayload("personalChats.createScheduledWork", {
+      sessionId: "personal-1",
+      cron: "*/20 * * * *",
+      prompt: "Check PR CI",
+    }))).resolves.toEqual({
+      action: "createScheduledWork",
+      args: { sessionId: "personal-1", cron: "*/20 * * * *", prompt: "Check PR CI" },
+    });
+    expect(personalChatScope.call).toHaveBeenCalledWith("createScheduledWork", {
+      sessionId: "personal-1",
+      cron: "*/20 * * * *",
+      prompt: "Check PR CI",
+    });
+    await expect(service.execute(makePayload("personalChats.setScheduledWorkPaused", {
+      sessionId: "personal-1",
+      paused: true,
+    }))).resolves.toEqual({
+      action: "setScheduledWorkPaused",
+      args: { sessionId: "personal-1", paused: true },
+    });
+    expect(personalChatScope.call).toHaveBeenCalledWith("setScheduledWorkPaused", {
+      sessionId: "personal-1",
+      paused: true,
     });
   });
 
@@ -478,14 +512,15 @@ describe("createSyncRemoteCommandService", () => {
     expect(cancelScheduledWork).toHaveBeenCalledTimes(1);
   });
 
-  it("routes scheduled-work creation and pause control through owner-only mobile commands", async () => {
+  it("keeps scheduled-work creation owner-only while allowing mobile pause control", async () => {
     const createScheduledWork = vi.fn(async (args: Record<string, unknown>) => ({ item: args }));
+    const listScheduledWork = vi.fn(async (args: Record<string, unknown>) => [{ id: "cron-1", ...args }]);
     const setScheduledWorkPaused = vi.fn(async (args: { sessionId: string; paused: boolean }) => ({
       ...args,
       nextWakeAt: null,
     }));
     const { service } = createService({
-      agentChatService: { createScheduledWork, setScheduledWorkPaused },
+      agentChatService: { createScheduledWork, listScheduledWork, setScheduledWorkPaused },
     });
 
     expect(service.getDescriptor("chat.createScheduledWork")).toEqual({
@@ -493,10 +528,15 @@ describe("createSyncRemoteCommandService", () => {
       scope: "project",
       policy: { viewerAllowed: false, queueable: false },
     });
+    expect(service.getDescriptor("chat.listScheduledWork")).toEqual({
+      action: "chat.listScheduledWork",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
     expect(service.getDescriptor("chat.setScheduledWorkPaused")).toEqual({
       action: "chat.setScheduledWorkPaused",
       scope: "project",
-      policy: { viewerAllowed: false, queueable: false },
+      policy: { viewerAllowed: true, queueable: false },
     });
     await service.execute(makePayload("chat.createScheduledWork", {
       sessionId: "chat-1",
@@ -512,6 +552,10 @@ describe("createSyncRemoteCommandService", () => {
       recurring: false,
       reason: "CI watcher",
     });
+    await expect(service.execute(makePayload("chat.listScheduledWork", {
+      sessionId: "chat-1",
+    }))).resolves.toEqual([{ id: "cron-1", sessionId: "chat-1" }]);
+    expect(listScheduledWork).toHaveBeenCalledWith({ sessionId: "chat-1" });
     await service.execute(makePayload("chat.setScheduledWorkPaused", {
       sessionId: "chat-1",
       paused: true,
@@ -1158,6 +1202,7 @@ describe("createSyncRemoteCommandService", () => {
       "chat.getSlashCommands",
       "chat.resolveSmartLinkPreview",
       "chat.createScheduledWork",
+      "chat.listScheduledWork",
       "chat.cancelScheduledWork",
       "chat.setScheduledWorkPaused",
       "chat.getParallelLaunchState",

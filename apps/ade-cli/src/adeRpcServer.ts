@@ -2387,7 +2387,9 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "sendMessage",
   "createScheduledWork",
   "listScheduledWork",
+  "getScheduledWorkState",
   "cancelScheduledWork",
+  "setScheduledWorkPaused",
 ]);
 
 function scopeChatAdeActionArgs(

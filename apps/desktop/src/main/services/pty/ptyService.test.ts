@@ -5,6 +5,7 @@ import path from "node:path";
 import type { IPty } from "node-pty";
 import type * as TerminalSessionSignals from "../../utils/terminalSessionSignals";
 import { buildOpenCodeReplayResumeCommand as buildCanonicalOpenCodeReplayResumeCommand } from "../../../shared/cliLaunch";
+import { isPtySendPreDeliveryError } from "../../../shared/types";
 import { expectNoJargon } from "../../../test/jargonGuard";
 
 // ---------------------------------------------------------------------------
@@ -2318,6 +2319,41 @@ describe("ptyService", () => {
       expect(loadPty).not.toHaveBeenCalled();
     });
 
+    it("accepts scheduled CLI turns only at a visible provider composer boundary", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+        const created = await service.create({
+          sessionId: "session-scheduled-boundary",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          startupCommand: "codex",
+        });
+
+        expect(service.canAcceptScheduledTurn(created.sessionId)).toBe(false);
+        mockPty._emitter.emit("data", "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.4\n› ");
+        await vi.advanceTimersByTimeAsync(599);
+        expect(service.canAcceptScheduledTurn(created.sessionId)).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(service.canAcceptScheduledTurn(created.sessionId)).toBe(true);
+
+        // Output silence alone must not make an in-progress model turn safe.
+        mockPty._emitter.emit("data", "\x1b[2J\x1b[HWorking on the request…");
+        await vi.advanceTimersByTimeAsync(12_500);
+        expect(service.canAcceptScheduledTurn(created.sessionId)).toBe(false);
+
+        mockPty._emitter.emit("data", "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.4\n› ");
+        await vi.advanceTimersByTimeAsync(600);
+        expect(service.canAcceptScheduledTurn(created.sessionId)).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("sendToSession uses line-submit for Droid CLI sessions", async () => {
       const { service, mockPty } = createHarness();
       const created = await service.create({
@@ -2405,10 +2441,13 @@ describe("ptyService", () => {
       });
       sessionService.readTranscriptTail.mockResolvedValueOnce("normal transcript without updater text");
 
-      await expect(service.sendToSession({
+      const error = await service.sendToSession({
         sessionId: `session-${provider}-targetless`,
         text: "keep going",
-      })).rejects.toThrow(new RegExp(`${expectedName} exited before ADE could capture a concrete resume target`));
+      }).catch((cause: unknown) => cause);
+      expect(isPtySendPreDeliveryError(error)).toBe(true);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(new RegExp(`${expectedName} exited before ADE could capture a concrete resume target`));
       expect(loadPty).not.toHaveBeenCalled();
     });
 

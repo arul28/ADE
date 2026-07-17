@@ -4169,8 +4169,8 @@ describe("ADE CLI", () => {
     expect(inspect.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "chat",
-        action: "getSessionSummary",
-        argsList: ["chat-1"],
+        action: "getScheduledWorkState",
+        args: { sessionId: "chat-1" },
       },
     });
 
@@ -4253,6 +4253,13 @@ describe("ADE CLI", () => {
       "--prompt",
       "Missing cron",
     ])).toThrow(/cron is required/);
+    expect(() => buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--cron",
+      "0 * * * *",
+    ])).toThrow(/prompt is required/);
 
     for (const alias of ["schedule", "schedules"]) {
       expect(expectExecutePlan(buildCliPlan(["chat", alias, "list", "chat-1"])).steps[0]?.params)

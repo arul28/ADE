@@ -4915,9 +4915,16 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-legacy"))
+    XCTAssertFalse(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-legacy"))
     do {
       _ = try await service.cancelScheduledWork(sessionId: "chat-legacy", scheduleId: "cron-1")
       XCTFail("A legacy host must reject scheduled-work cancellation before transport")
+    } catch {
+      XCTAssertEqual((error as NSError).code, 15)
+    }
+    do {
+      _ = try await service.setScheduledWorkPaused(sessionId: "chat-legacy", paused: true)
+      XCTFail("A legacy host must reject scheduled-work pause before transport")
     } catch {
       XCTAssertEqual((error as NSError).code, 15)
     }
@@ -4953,6 +4960,20 @@ final class ADETests: XCTestCase {
                 "queueable": false,
               ],
             ],
+            [
+              "action": "chat.createScheduledWork",
+              "policy": [
+                "viewerAllowed": false,
+                "queueable": false,
+              ],
+            ],
+            [
+              "action": "chat.setScheduledWorkPaused",
+              "policy": [
+                "viewerAllowed": true,
+                "queueable": false,
+              ],
+            ],
           ],
         ],
         "mobileCompatibility": [
@@ -4969,6 +4990,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMissingActions, [])
     XCTAssertTrue(service.supportsRemoteAction("chat.send"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.createScheduledWork", sessionId: "chat-1"))
+    XCTAssertFalse(service.canInvokeChatRemoteAction("chat.createScheduledWork", sessionId: "chat-1"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-1"))
+    XCTAssertFalse(service.isChatRemoteActionQueueable("chat.setScheduledWorkPaused", sessionId: "chat-1"))
+    service.configureConnectedTransportForTesting()
+    XCTAssertTrue(service.canInvokeChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-1"))
+    service.disconnect()
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
     let analyticsOptInAcknowledged = await service.setProductAnalyticsClientEnabled(true)
@@ -8151,6 +8179,16 @@ final class ADETests: XCTestCase {
         scope: "runtime",
         policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
       ),
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.createScheduledWork",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: false, requiresApproval: nil, localOnly: nil, queueable: true)
+      ),
+      SyncRemoteCommandDescriptor(
+        action: "personalChats.setScheduledWorkPaused",
+        scope: "runtime",
+        policy: SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: false)
+      ),
     ]
     UserDefaults.standard.set(try JSONEncoder().encode(descriptors), forKey: remoteCommandDescriptorsKey)
     defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
@@ -8164,6 +8202,9 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.supportsChatRemoteAction("chat.getChatEventHistory", sessionId: "personal-history"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.getChatEventHistoryPage", sessionId: "personal-history"))
     XCTAssertTrue(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "personal-history"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.createScheduledWork", sessionId: "personal-history"))
+    XCTAssertTrue(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "personal-history"))
+    XCTAssertFalse(service.canInvokeRemoteAction("personalChats.createScheduledWork"))
   }
 
   @MainActor

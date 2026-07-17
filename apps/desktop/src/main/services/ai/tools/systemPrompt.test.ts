@@ -109,7 +109,7 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("## Runtime Environment");
       expect(result).toContain("Codex CLI");
       expect(result).toContain("chat.createScheduledWork");
-      expect(result).toContain("targets your own chat session automatically");
+      expect(result).toContain("targets your own tracked agent session automatically");
     });
 
     it("describes the Codex app-server runtime", () => {
@@ -127,13 +127,13 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("Claude Agent SDK stable `query()`");
       expect(result).toContain("ScheduleWakeup");
       expect(result).toContain("CronCreate");
-      expect(result).toContain("automatically backed by ADE's durable scheduler");
-      expect(result).toContain("the `durable` flag is not needed");
+      expect(result).toContain("automatically mirrored into ADE's durable scheduler");
+      expect(result).toContain("`durable: true` also persists Claude's provider copy");
       expect(result).toContain("next turn boundary even if the chat was busy");
       expect(result).toContain("`CronList` view is advisory; ADE state wins");
       expect(result).toContain("CronCreate` always creates a new job");
       expect(result).toContain("`CronList` + `CronDelete`");
-      expect(result).toContain("expire after seven days");
+      expect(result).toContain("expire seven days after creation");
       expect(result).toContain("project-wide in Settings");
       expect(result).not.toContain("unavailable in this ADE chat");
       expect(result).not.toContain("will not start a later turn by itself");

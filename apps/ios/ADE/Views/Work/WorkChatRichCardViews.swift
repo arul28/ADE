@@ -2629,7 +2629,7 @@ struct WorkChatInfoDetailsSheet: View {
                   .font(.caption2.weight(.bold))
               }
             }
-            .frame(width: 32, height: 32)
+            .frame(width: 44, height: 44)
           }
           .buttonStyle(.plain)
           .foregroundStyle(ADEColor.textMuted)

@@ -1641,7 +1641,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
-    $ ade chat schedules <session> --pause           Pause this chat's durable wakeups/cron/loops
+    $ ade chat schedules <session> --pause           Pause this agent session's durable wakeups/cron/loops
     $ ade chat schedules <session>                   Inspect pause state + next armed wake (--resume to re-arm)
     $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
     $ ade chat scheduled-work create --cron "<expr>" --prompt "<text>" [--once]
@@ -7341,9 +7341,8 @@ function buildChatPlan(args: string[]): CliPlan {
         ],
       };
     }
-    // Per-chat scheduled-work control: pause/resume this chat's durable
-    // wakeups/cron/loop schedules, or inspect (no flag) the current pause
-    // state + next armed wake via getSessionSummary.
+    // Per-session scheduled-work control. The state query works for both chat
+    // sessions and tracked provider CLI terminals.
     const targetSession = requireValue(sessionId, "sessionId");
     const pause = readFlag(args, ["--pause", "--pause-scheduled-work"]);
     const resume = readFlag(args, ["--resume", "--unpause"]);
@@ -7351,14 +7350,13 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("Use either --pause or --resume, not both.");
     }
     if (!pause && !resume) {
-      // Inspection mode: summary carries nextWakeAt + scheduledWorkPaused.
       return {
         kind: "execute",
         label: "chat schedules",
         steps: [
-          actionArgsListStep("result", "chat", "getSessionSummary", [
-            targetSession,
-          ]),
+          actionStep("result", "chat", "getScheduledWorkState", {
+            sessionId: targetSession,
+          }),
         ],
       };
     }

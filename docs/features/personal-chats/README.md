@@ -9,13 +9,13 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Lazy machine-owned chat runtime, hidden persistence/scratch roots, action allowlist, attachment confinement, terminal ownership, and event stream. |
+| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Lazy machine-owned chat runtime, hidden persistence/scratch roots, action allowlist (including scheduled-work create/cancel/pause), attachment confinement, terminal ownership, and event stream. |
 | `apps/ade-cli/src/services/imageAttachment.ts` | Shared image validation, MIME sniffing, and bounded temporary-attachment persistence used by project and personal chat ingress. |
 | `apps/ade-cli/src/services/projects/machineLayout.ts` | Resolves the channel-local `$ADE_HOME/personal-chats/{state,workspaces}` roots. |
 | `apps/ade-cli/src/multiProjectRpcServer.ts` | Project-independent `personalChats.call` and `personalChats.streamEvents` machine RPC methods plus capability advertisement. |
 | `apps/ade-cli/src/cli.ts` | Typed `ade chat ... --personal` commands; they require the machine brain and never fall back to a project/headless runtime. |
 | `apps/ade-cli/src/services/sync/` | Runtime-scoped personal-chat commands, feature advertisement, policy descriptors, and personal transcript subscriptions for controllers. Primary files: `syncService.ts`, `syncHostService.ts`, and `syncRemoteCommandService.ts`. |
-| `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts. |
+| `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts, including the scheduled-work create/cancel/pause actions shared with project chat. |
 | `apps/desktop/src/main/services/ipc/runtimeBridge.ts` | Routes a local/no-project window to the local brain and a remotely bound project window to that remote machine's personal-chat scope. |
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Durable `personal` chat surface and neutral provider guidance/environment. |
 | `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop projectless surface: conversation load/stream, the hero-vs-docked composer switch once a session is selected, transcript, and compact Browser/Terminal tool panels. |
@@ -71,18 +71,22 @@ action set. Clients must capability-gate the surface; an older runtime is an
 unsupported host, not an invitation to create a normal project chat.
 
 The action family covers list/create/read/send and interactive turn controls,
-session metadata/lifecycle, model inventory, paged event history, bounded image
-attachment ingress/readback, and a chat-owned shell PTY. Every action rechecks
-that a supplied session id belongs to `surface: "personal"`; terminal calls
-also check that the PTY was created by this personal scope. Attachment
-readback resolves real paths and refuses anything outside the hidden
-attachment store.
+session metadata/lifecycle, scheduled-work create/cancel/pause, model inventory,
+paged event history, bounded image attachment ingress/readback, and a chat-owned
+shell PTY. Scheduled-work mutations call the same chat service methods as
+project chat after rechecking that the supplied session belongs to
+`surface: "personal"`. Terminal calls also check that the PTY was created by
+this personal scope. Attachment readback resolves real paths and refuses
+anything outside the hidden attachment store.
 
 Over sync the same actions are registered as `personalChats.*` with
 `scope: "runtime"`, so command envelopes carry no active `projectId` or project
 root. Only `personalChats.send` is offline-queueable. Creating a conversation
 requires a live host because there is no stable optimistic session id and
 replaying a queued create could duplicate chats.
+Scheduled-work create/cancel/pause are also live-only; controllers must gate
+each control on the matching `personalChats.*` descriptor. Create remains
+owner-only; paired viewers may pause/resume or cancel as recovery actions.
 
 ## Client routing
 
@@ -142,7 +146,7 @@ domains into the hidden runtime.
 | Desktop | **Chats** sits above the profile control and stays enabled with no project selected. The welcome screen has a **Start a chat** action. Visiting `/chats` from the projectless shell opens a real machine-level **Chats** top tab (backed by `personalChatsTabOpen`) that stays present as a clickable tab across project open/switch/close. The "+" on `/chats` opens and activates Home/New Tab while the Chats tab stays as an inactive tab; closing New Tab returns to `/chats` when projectless; closing an inactive Chats tab does not navigate. The surface itself is a hero empty state — heading plus verb-first suggestion chips — whose composer docks to the bottom once a session is selected, alongside a stateful searchable recency-grouped conversation rail, shared model/reasoning/permission controls, provider-accent send button, transcript/approval handling, and compact Browser and Terminal buttons. |
 | ADE Browser | Personal chat uses the global authenticated browser profile and an explicit personal tab collection (`tabCollection: "personal"`). Cookies and site storage are shared across ADE, while personal visible tabs remain separate from project/window tabs. |
 | Hosted web | The project picker and shell can enter `/chats` without selecting a project. The adapter uses runtime-scoped commands and personal chat subscriptions; browser-native ADE Browser is absent, while terminal IO runs on the paired machine. |
-| iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Personal summaries are cached per paired host for offline list display; create requires a live host, while sends may queue. |
+| iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Chat Info uses the personal action descriptors for durable-schedule Cancel and per-chat Pause/Resume; schedule creation remains an API capability rather than a native control. Personal summaries are cached per paired host for offline list display; create and schedule mutations require a live host, while sends may queue. |
 | ADE CLI | `ade chat ... --personal` reaches the machine RPC directly. `--personal` is mutually exclusive with lane/Linear project context and requires a running brain. |
 | ADE Code TUI | Deliberately out of scope for the initial release. No personal-chat drawer or slash command is added. |
 

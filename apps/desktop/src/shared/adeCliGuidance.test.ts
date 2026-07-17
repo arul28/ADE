@@ -30,7 +30,7 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("ade help <command>");
     expect(bootstrap).toContain("ade actions list --text");
     expect(bootstrap).toContain("ade chat scheduled-work create");
-    expect(bootstrap).toContain("requires a bound chat");
+    expect(bootstrap).toContain("tracked provider CLIs");
     // The skill index is still advertised so the model knows what exists.
     for (const skillName of adeBundledAgentSkills) {
       expect(bootstrap).toContain(`\`${skillName}\``);

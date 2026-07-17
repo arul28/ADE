@@ -183,7 +183,11 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { isAdeUsageRangePreset, isAdeUsageScope } from "../../../../desktop/src/shared/types";
 import type { OrchestrationRunCreateRequest } from "../../../../desktop/src/shared/types/orchestration";
-import { PERSONAL_CHAT_ACTIONS, isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
+import {
+  PERSONAL_CHAT_ACTIONS,
+  isPersonalChatActionQueueable,
+  isPersonalChatActionViewerAllowed,
+} from "../../../../desktop/src/shared/types/personalChats";
 import {
   buildTrackedCliLaunchCommand,
   deriveTrackedCliInitialInputSessionMeta,
@@ -3829,12 +3833,19 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       ...(reason ? { reason } : {}),
     });
   });
+  register("chat.listScheduledWork", { viewerAllowed: true, queueable: false }, async (payload) => {
+    const sessionId = asTrimmedString(payload.sessionId);
+    return requireService(args.agentChatService, "Agent chat service not available.").listScheduledWork({
+      ...(sessionId ? { sessionId } : {}),
+      ...(payload.includeTerminal === true ? { includeTerminal: true } : {}),
+    });
+  });
   register("chat.cancelScheduledWork", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").cancelScheduledWork({
       sessionId: requireString(payload.sessionId, "chat.cancelScheduledWork requires sessionId."),
       scheduleId: requireString(payload.scheduleId, "chat.cancelScheduledWork requires scheduleId."),
     }));
-  register("chat.setScheduledWorkPaused", { viewerAllowed: false, queueable: false }, async (payload) => {
+  register("chat.setScheduledWorkPaused", { viewerAllowed: true, queueable: false }, async (payload) => {
     const paused = asOptionalBoolean(payload.paused);
     if (paused === undefined) throw new Error("chat.setScheduledWorkPaused requires paused.");
     return requireService(args.agentChatService, "Agent chat service not available.").setScheduledWorkPaused({
@@ -4003,7 +4014,10 @@ function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandReg
   for (const action of PERSONAL_CHAT_ACTIONS) {
     register(
       `personalChats.${action}`,
-      { viewerAllowed: true, queueable: isPersonalChatActionQueueable(action) },
+      {
+        viewerAllowed: isPersonalChatActionViewerAllowed(action),
+        queueable: isPersonalChatActionQueueable(action),
+      },
       async (payload) => (await scope.call(action, payload)).result,
       "runtime",
     );

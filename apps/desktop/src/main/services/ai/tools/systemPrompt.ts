@@ -17,14 +17,14 @@ export type AdeRuntimeKind =
   | "droid-sdk"
   | "opencode";
 
-const adeScheduledWorkGuidance = "**Wake-up semantics:** Autonomous wake is available via `ade actions run chat.createScheduledWork --input-json '{\"cron\":\"<5-field>\",\"prompt\":\"<task>\"}' --text`. Jobs recur by default; pass `{\"recurring\":false}` for a one-shot, and the action targets your own chat session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
+const adeScheduledWorkGuidance = "**Wake-up semantics:** Autonomous wake is available via `ade actions run chat.createScheduledWork --input-json '{\"cron\":\"<5-field>\",\"prompt\":\"<task>\"}' --text`. Jobs recur by default; pass `{\"recurring\":false}` for a one-shot, and the action targets your own tracked agent session automatically. List, cancel, or pause with `chat.listScheduledWork`, `chat.cancelScheduledWork`, and `chat.setScheduledWorkPaused`, or the typed `ade chat scheduled-work ...` / `ade chat schedules ...` commands. Delivery starts a new turn at the next turn boundary, resumes an ended tracked provider CLI when necessary, and survives brain restarts; recurring jobs expire after seven days. Keep shell `sleep` for short waits inside the current turn.";
 
 function describeRuntime(runtime: AdeRuntimeKind): string[] {
   switch (runtime) {
     case "claude-agent-sdk-query":
       return [
         "**Runtime:** ADE Work chat hosted on the Claude Agent SDK stable `query()` streaming-input API.",
-        "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically backed by ADE's durable scheduler; the `durable` flag is not needed. They survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire after seven days. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
+        "**Wake-up semantics:** Native `ScheduleWakeup`, `CronCreate`, and `/loop` are automatically mirrored into ADE's durable scheduler. `durable: true` also persists Claude's provider copy, while ADE's delivery guarantee does not depend on that flag. Jobs survive brain restarts and start a new turn at the next turn boundary even if the chat was busy when they became due. The SDK's own `CronList` view is advisory; ADE state wins. Pause schedules in Chat Info or project-wide in Settings. Recurring jobs expire seven days after creation. `CronCreate` always creates a new job, so replace one with `CronList` + `CronDelete` before creating another.",
         "**To wait:** For short bounded waits inside the current turn, a foreground command such as `sleep ... && <one-shot command>` is fine. For longer waits or autonomous follow-up, prefer `ScheduleWakeup`, `CronCreate`, or `/loop` and include a concise reason/prompt so ADE can show the pending work clearly.",
       ];
     case "codex-cli":

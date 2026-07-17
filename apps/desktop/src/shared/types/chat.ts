@@ -2169,6 +2169,17 @@ export type AgentChatSetScheduledWorkPausedResult = {
   nextWakeAt: string | null;
 };
 
+export type AgentChatGetScheduledWorkStateArgs = {
+  sessionId: string;
+};
+
+export type AgentChatScheduledWorkState = {
+  sessionId: string;
+  paused: boolean;
+  nextWakeAt: string | null;
+  items: AgentChatScheduledWorkItem[];
+};
+
 export type AgentChatScheduledWorkItem = {
   id: string;
   sessionId: string;

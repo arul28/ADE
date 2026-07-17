@@ -1,5 +1,11 @@
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
-import type { AgentChatSteerResult } from "../../../shared/types/chat";
+import type {
+  AgentChatCancelScheduledWorkResult,
+  AgentChatCreateScheduledWorkResult,
+  AgentChatScheduledWorkItem,
+  AgentChatSetScheduledWorkPausedResult,
+  AgentChatSteerResult,
+} from "../../../shared/types/chat";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
@@ -75,6 +81,15 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
 
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+  }
+
+  function callRequired<T>(action: string, args: unknown): Promise<T> {
+    return commands.call<T>(action, asRecord(args), {
+      fallback: () => {
+        throw new Error(`Scheduled work action '${action}' is unavailable on the connected ADE host.`);
+      },
+      idempotent: false,
+    });
   }
 
   const agentChat: Record<string, unknown> = {
@@ -162,6 +177,14 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       await call("chat.delete", args, undefined, false);
     },
     updateSession: (args: unknown) => call("chat.updateSession", args, null, false),
+    createScheduledWork: (args: unknown) =>
+      callRequired<AgentChatCreateScheduledWorkResult>("chat.createScheduledWork", args),
+    listScheduledWork: (args?: unknown) =>
+      call<AgentChatScheduledWorkItem[]>("chat.listScheduledWork", args, []),
+    cancelScheduledWork: (args: unknown) =>
+      callRequired<AgentChatCancelScheduledWorkResult>("chat.cancelScheduledWork", args),
+    setScheduledWorkPaused: (args: unknown) =>
+      callRequired<AgentChatSetScheduledWorkPausedResult>("chat.setScheduledWorkPaused", args),
     warmupModel: async (args: unknown) => {
       await call("chat.warmupModel", args, undefined, false);
     },

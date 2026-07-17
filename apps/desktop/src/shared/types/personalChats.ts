@@ -5,6 +5,8 @@ import type {
   AgentChatCancelScheduledWorkResult,
   AgentChatCancelSteerArgs,
   AgentChatCreateArgs,
+  AgentChatCreateScheduledWorkArgs,
+  AgentChatCreateScheduledWorkResult,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatInterruptArgs,
@@ -17,6 +19,8 @@ import type {
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSteerArgs,
+  AgentChatSetScheduledWorkPausedArgs,
+  AgentChatSetScheduledWorkPausedResult,
   AgentChatUpdateSessionArgs,
 } from "./chat";
 import type { RemoteRuntimeStreamEventsResult } from "./remoteRuntime";
@@ -36,7 +40,9 @@ export const PERSONAL_CHAT_ACTIONS = [
   "interrupt",
   "respondToInput",
   "approve",
+  "createScheduledWork",
   "cancelScheduledWork",
+  "setScheduledWorkPaused",
   "updateSession",
   "archive",
   "unarchive",
@@ -63,6 +69,12 @@ export function isPersonalChatActionQueueable(action: PersonalChatAction): boole
   // A queued create has no stable optimistic session id to return to clients,
   // so retrying after the host reconnects can create duplicate conversations.
   return action === "send";
+}
+
+export function isPersonalChatActionViewerAllowed(action: PersonalChatAction): boolean {
+  // Cancellation and pause/resume are explicit recovery affordances for
+  // paired viewers. Creating new unattended work remains owner-only.
+  return action !== "createScheduledWork";
 }
 
 export type PersonalChatCreateArgs = Omit<
@@ -96,7 +108,9 @@ export type PersonalChatCallArgs =
   | { action: "interrupt"; args: AgentChatInterruptArgs }
   | { action: "respondToInput"; args: AgentChatRespondToInputArgs }
   | { action: "approve"; args: AgentChatApproveArgs }
+  | { action: "createScheduledWork"; args: AgentChatCreateScheduledWorkArgs }
   | { action: "cancelScheduledWork"; args: AgentChatCancelScheduledWorkArgs }
+  | { action: "setScheduledWorkPaused"; args: AgentChatSetScheduledWorkPausedArgs }
   | { action: "updateSession"; args: AgentChatUpdateSessionArgs }
   | { action: "archive" | "unarchive" | "delete"; args: { sessionId: string } }
   | { action: "models"; args?: { provider?: string } }
@@ -126,7 +140,9 @@ export type PersonalChatCallResult =
   | AgentChatSessionSummary[]
   | AgentChatEventHistorySnapshot
   | AgentChatEventHistoryPage
+  | AgentChatCreateScheduledWorkResult
   | AgentChatCancelScheduledWorkResult
+  | AgentChatSetScheduledWorkPausedResult
   | AgentChatModelCatalog
   | PtyCreateResult
   | PtyDisposeResult

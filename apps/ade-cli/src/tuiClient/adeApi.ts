@@ -34,6 +34,7 @@ import type {
   AgentChatOpenCodePermissionMode,
   AgentChatPermissionMode,
   AgentChatProvider,
+  AgentChatScheduledWorkState,
   AgentChatSession,
   AgentChatSessionSummary,
   AgentChatSlashCommand,
@@ -133,6 +134,15 @@ export async function listChatSessions(
   return await connection.action<AgentChatSessionSummary[]>("chat", "listSessions", {
     ...(laneId ? { laneId } : {}),
     includeArchived: options.includeArchived ?? false,
+  });
+}
+
+export async function getScheduledWorkState(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<AgentChatScheduledWorkState> {
+  return await connection.action<AgentChatScheduledWorkState>("chat", "getScheduledWorkState", {
+    sessionId,
   });
 }
 

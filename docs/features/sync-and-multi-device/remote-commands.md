@@ -251,8 +251,9 @@ reason? }` and creates an ADE-owned durable schedule for any provider-backed
 chat. `recurring` defaults to true; false creates a one-shot at the next
 five-field cron match. `chat.setScheduledWorkPaused` takes `{ sessionId,
 paused }`, and `chat.cancelScheduledWork` takes `{ sessionId, scheduleId }`.
-Create and pause are controller mutations (`viewerAllowed: false`); cancel
-retains its viewer-allowed recovery policy. All three are deliberately
+Create is owner-only (`viewerAllowed: false`), so paired controller devices can
+discover the capability but cannot invoke it. Pause, resume, and cancel are
+viewer-allowed recovery controls. All three are deliberately
 non-queueable so an offline replay cannot create a duplicate schedule or apply
 stale management state. Controllers expose each control only when the brain's
 descriptor list advertises it.
@@ -291,6 +292,7 @@ original idempotent cancel behavior.
 - `list`, `create`, `getSummary`, `read`, `send`
 - `steer`, `cancelSteer`, `editSteer`, `dispatchSteer`,
   `cancelDispatchedSteer`, `interrupt`, `respondToInput`, `approve`
+- `createScheduledWork`, `cancelScheduledWork`, `setScheduledWorkPaused`
 - `updateSession`, `archive`, `unarchive`, `delete`
 - `models`, `modelCatalog`, `getEventHistory`, `getEventHistoryPage`
 - `terminalCreate`, `terminalWrite`, `terminalResize`, `terminalDispose`
@@ -302,6 +304,10 @@ All personal actions are `scope: "runtime"` and dispatch to the injected
 cannot return a stable session id and may duplicate the conversation. Every
 session-bound action revalidates `surface: "personal"`; terminal and attachment
 actions additionally enforce scope ownership/path confinement.
+Scheduled-work mutations are live-only too. They reuse the project chat
+argument/result contracts after personal-scope validation, which lets iOS map
+its shared Chat Info Cancel and Pause/Resume controls to `personalChats.*`
+without an active project.
 
 **Git** (`git.*`)
 - `getChanges`, `getFile`, `getFilePatch`, `getUserIdentity`

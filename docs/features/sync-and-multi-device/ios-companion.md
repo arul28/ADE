@@ -105,9 +105,12 @@ the selected chat's host advertises `chat.cancelScheduledWork`. The command is
 non-queueable: an offline phone or older brain leaves Chat Info view-only rather
 than recording a cancellation that could run after the job has already fired.
 The host registry also advertises non-queueable `chat.createScheduledWork` and
-`chat.setScheduledWorkPaused` mutations to mobile controllers. Those are remote
-transport capabilities; the current native Chat Info surface still implements
-only Cancel and must not infer create/pause UI from descriptor availability.
+`chat.setScheduledWorkPaused` descriptors. Native Chat Info implements per-chat
+Pause/Resume when the viewer-allowed pause descriptor is present; create remains
+owner-only and has no native creation control. For a Hub
+personal chat, `chatActionName` maps Cancel and Pause/Resume to the matching
+runtime-scoped `personalChats.*` descriptors, so the same UI works without a
+project binding.
 
 The Settings machine card mirrors this state through
 `SettingsConnectionHeader`: connected limited hosts show a compact "Machine
@@ -717,7 +720,7 @@ Implemented envelope types on iOS:
 | `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC boundary; `atStart: true` at beginning of transcript). Requires an active `terminal_subscribe` |
 | `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY. Mobile resizes are non-authoritative: the runtime records the last desktop-originated size and restores it when the last subscribed phone detaches |
 | `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly. On strained relay connections, the Work detail view stays subscribed to `chat_event` but skips heavyweight `chat.getChatEventHistory` and fallback transcript fetches while the turn is active; idle refresh reconciles the canonical transcript. When the host advertises `crossProjectChat`, `chat_subscribe` / `chat_unsubscribe` also carry an optional `projectId` / `projectRootPath` override so the Hub can open a chat in a **foreign** project read-only (transcript streamed straight off that project's `.ade` JSONL) without switching the phone's active project — see the Hub and Lane-data-projection sections. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
-| `chat_subscribe` with `chatScope: "personal"` | Phone → runtime / runtime → phone | Explicit projectless transcript/event subscription. `SyncService` marks the session personal, omits project id/root, routes send/steer/approval/update/lifecycle calls to `personalChats.*`, and loads image bytes through `personalChats.getImageDataUrl`. Missing project scope alone never selects this path. |
+| `chat_subscribe` with `chatScope: "personal"` | Phone → runtime / runtime → phone | Explicit projectless transcript/event subscription. `SyncService` marks the session personal, omits project id/root, routes send/steer/approval/update/lifecycle and scheduled-work Cancel/Pause calls to `personalChats.*`, and loads image bytes through `personalChats.getImageDataUrl`. Missing project scope alone never selects this path. |
 | `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended (`run-shell` infrastructure rows are excluded). Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
 | `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode. `SyncEnvelopeChunkAssembler` enforces a 32 MiB reassembly byte cap (`maxChunkedSyncEnvelopeBytes`) and drops chunk sets with inconsistent `total`s so a malformed or oversized stream cannot grow phone memory unbounded |
 | `heartbeat` | Bidirectional | Connection health (30s) |
@@ -1473,10 +1476,14 @@ reflected in the phone's UI on the next descriptor read.
 the cancellation callback, and `WorkScheduledWorkRow` additionally requires
 `durable == true` and an active status before rendering the control.
 `chat.createScheduledWork` and `chat.setScheduledWorkPaused` are also
-project-scoped and non-queueable, but require a controller role with mutation
-access (`viewerAllowed: false`). They are available to mobile clients through
-the host registry even though the current Swift UI does not render create or
-pause controls.
+project-scoped and non-queueable. Create requires mutation access
+(`viewerAllowed: false`); Pause/Resume is a viewer-allowed recovery control,
+matching Cancel. The Swift UI renders Pause/Resume when the pause descriptor is
+invokable; it does not render schedule creation. For a
+personal session, the same checks and calls map to runtime-scoped
+`personalChats.cancelScheduledWork` / `personalChats.setScheduledWorkPaused`.
+Those actions are in the personal allowlist and are non-queueable, so an older
+brain or offline phone keeps the corresponding control read-only.
 
 The usage commands are viewer-allowed project actions:
 
@@ -1514,7 +1521,7 @@ different machine's cached limits.
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |
 | Cloud relay (same-account `relay` transport, promoted when the phone has no Tailscale tunnel) | Implemented; fresh in-memory account proof on every Relay connection |
 | Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
-| Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, and project/lane actions suppressed |
+| Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, owner-only scheduled-work creation capability, controller Cancel/Pause actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, Chat Info Cancel/Pause controls, and project/lane actions suppressed |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
 | Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), external provider-session browse/import (`work.listExternalSessions` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, fixed cross-client activity carousel above the new-chat composer |
@@ -1703,10 +1710,12 @@ different machine's cached limits.
   the per-session Clear/Restore filter (persisted under
   `ade.chat.paneCleared.v1:<sessionId>`). An active durable scheduled row has a
   native Cancel button when the host supports `chat.cancelScheduledWork`;
-  provider-only/non-durable rows and older hosts remain read-only. The button
-  calls `SyncService.cancelScheduledWork`, then refreshes the session summary so
-  Claude's requested-vs-confirmed cancellation state comes back from the brain
-  rather than being guessed locally. A run of two or more
+  provider-only/non-durable rows and older hosts remain read-only. The Schedule
+  header also shows the next wake and exposes Pause/Resume when the current chat
+  scope advertises `setScheduledWorkPaused`. The actions call
+  `SyncService.cancelScheduledWork` / `setScheduledWorkPaused`, then refresh the
+  session summary so cancellation confirmation, pause state, and `nextWakeAt`
+  come back from the brain rather than being guessed locally. A run of two or more
   interrupt-stopped subagents folds into one `WorkSubagentStoppedGroupCardView`
   (`.subagentStoppedGroup`, mirroring the desktop `SubagentStoppedGroupCard`):
   a calm "N agents stopped when you interrupted" line that expands to a

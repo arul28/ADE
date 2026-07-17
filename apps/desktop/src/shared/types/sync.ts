@@ -1129,6 +1129,7 @@ export type SyncRemoteCommandAction =
   | "chat.listSessions"
   | "chat.getSummary"
   | "chat.createScheduledWork"
+  | "chat.listScheduledWork"
   | "chat.cancelScheduledWork"
   | "chat.setScheduledWorkPaused"
   | "chat.getTranscript"

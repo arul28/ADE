@@ -31,6 +31,11 @@ function requiredString(value: unknown, label: string): string {
   return normalized;
 }
 
+function requiredBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean.`);
+  return value;
+}
+
 function readSessionId(args: ObjectArgs): string {
   return requiredString(args.sessionId, "sessionId");
 }
@@ -174,12 +179,27 @@ export class PersonalChatScope {
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.approveToolUse(args as never);
         break;
+      case "createScheduledWork": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.createScheduledWork({ ...args, sessionId } as never);
+        break;
+      }
       case "cancelScheduledWork": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
         result = await service.cancelScheduledWork({
           sessionId,
           scheduleId: requiredString(args.scheduleId, "scheduleId"),
+        });
+        break;
+      }
+      case "setScheduledWorkPaused": {
+        const sessionId = readSessionId(args);
+        await this.requirePersonalSession(service, sessionId);
+        result = await service.setScheduledWorkPaused({
+          sessionId,
+          paused: requiredBoolean(args.paused, "paused"),
         });
         break;
       }

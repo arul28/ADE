@@ -323,7 +323,7 @@ describe("createChatScheduledWorkScheduler", () => {
     await scheduler.upsert(wakeup({ fireAt: START, provider: "claude" }));
 
     sessionState = "ended";
-    const claimed = scheduler.claimNativeFire("session-1", "native-turn-ended");
+    const claimed = scheduler.claimNativeFire("session-1", "native-turn-ended", "wake-1");
 
     expect(claimed).toBeNull();
     expect(scheduler.list("session-1")[0]).toEqual(expect.objectContaining({
@@ -660,7 +660,7 @@ describe("createChatScheduledWorkScheduler", () => {
     });
     await scheduler.upsert(wakeup({ fireAt: START + 500, provider: "claude" }));
 
-    const claimed = scheduler.claimNativeFire("session-1", "native-turn-1");
+    const claimed = scheduler.claimNativeFire("session-1", "native-turn-1", "wake-1");
     expect(claimed).toMatchObject({
       id: "wake-1",
       status: "fired",
@@ -697,7 +697,7 @@ describe("createChatScheduledWorkScheduler", () => {
 
     await vi.advanceTimersByTimeAsync(5_000);
     expect(fire).not.toHaveBeenCalled();
-    expect(scheduler.claimNativeFire("session-1", "native-turn-grace")).toMatchObject({
+    expect(scheduler.claimNativeFire("session-1", "native-turn-grace", "native-grace-claim")).toMatchObject({
       id: "wake-1",
       status: "fired",
       activeTurnId: "native-turn-grace",
@@ -788,6 +788,143 @@ describe("createChatScheduledWorkScheduler", () => {
     lateScheduler.dispose();
   });
 
+  it("defers a busy Claude cron without advancing it and late-fires exactly once", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    let delivered = 0;
+    let deferChecks = 0;
+    const shouldDefer = vi.fn(() => {
+      deferChecks += 1;
+      return deferChecks <= 2;
+    });
+    const fire = vi.fn(async (
+      _schedule: ChatScheduledWorkRecord,
+      _context: { late: boolean },
+    ) => { delivered += 1; });
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      shouldDefer,
+      fire,
+    });
+    await scheduler.upsert(wakeup({
+      id: "cron-deferred",
+      kind: "cron",
+      cron: "* * * * *",
+      fireAt: START,
+      lastFiredAt: START - 60_000,
+      lateFlag: true,
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "cron-deferred",
+    }));
+
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START,
+      lastFiredAt: START - 60_000,
+      lateFlag: true,
+    }));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START,
+      lastFiredAt: START - 60_000,
+      lateFlag: true,
+    }));
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(shouldDefer).toHaveBeenCalledTimes(3);
+    expect(fire).toHaveBeenCalledOnce();
+    expect(fire.mock.calls[0]?.[1]).toEqual({ late: true });
+    expect(delivered).toBe(1);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START + 180_000,
+      lastFiredAt: START + 130_000,
+      lateFlag: true,
+    }));
+    scheduler.dispose();
+  });
+
+  it("lets a native claim win during the busy-defer retry window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = vi.fn(async () => undefined);
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      shouldDefer: () => true,
+      fire,
+    });
+    await scheduler.upsert(wakeup({
+      fireAt: START,
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "native-defer-claim",
+    }));
+
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START,
+    }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(scheduler.claimNativeFire("session-1", "native-turn-after-defer", "native-defer-claim")).toMatchObject({
+      id: "wake-1",
+      status: "fired",
+      activeTurnId: "native-turn-after-defer",
+    });
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "fired",
+      activeTurnId: "native-turn-after-defer",
+    }));
+    scheduler.dispose();
+  });
+
+  it("expires a repeatedly deferred Claude wake without delivering it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = vi.fn(async () => undefined);
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      shouldDefer: () => true,
+      fire,
+    });
+    await scheduler.upsert(wakeup({
+      fireAt: START,
+      expiresAt: START + 105_000,
+      durable: true,
+      provider: "claude",
+      providerScheduleId: "native-defer-expiry",
+    }));
+
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(requireState(state).schedules[0]?.status).toBe("scheduled");
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(fire).not.toHaveBeenCalled();
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "cancelled",
+      terminalAt: START + 105_000,
+    }));
+    scheduler.dispose();
+  });
+
   it("fires non-Claude schedules at their exact fire time", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
@@ -811,6 +948,139 @@ describe("createChatScheduledWorkScheduler", () => {
     scheduler.dispose();
   });
 
+  it("completes a one-shot immediately when its delivery owns no tracked turn", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire: async () => ({ complete: true }),
+    });
+    await scheduler.upsert(wakeup({ fireAt: START }));
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "done",
+      lastFiredAt: START,
+      terminalAt: START,
+    }));
+    scheduler.dispose();
+  });
+
+  it("restores an occurrence when delivery proves it never started", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    let state: ChatScheduledWorkState | null = null;
+    const fire = vi.fn()
+      .mockResolvedValueOnce({ retry: true })
+      .mockResolvedValueOnce({ complete: true });
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: (next) => { state = structuredClone(next); },
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire,
+    });
+    await scheduler.upsert(wakeup({
+      fireAt: START,
+      lastFiredAt: START - 60_000,
+      lateFlag: true,
+    }));
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "scheduled",
+      fireAt: START,
+      lastFiredAt: START - 60_000,
+      lateFlag: true,
+    }));
+
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(fire).toHaveBeenCalledTimes(2);
+    expect(requireState(state).schedules[0]).toEqual(expect.objectContaining({
+      status: "done",
+      lastFiredAt: START + 20_000,
+    }));
+    scheduler.dispose();
+  });
+
+  it("claims only the provider schedule named by an explicit native signal", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: () => undefined,
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire: createFireMock(),
+    });
+    await scheduler.upsert(wakeup({
+      id: "cron-a",
+      kind: "cron",
+      cron: "* * * * *",
+      fireAt: START,
+      provider: "claude",
+      providerScheduleId: "provider-a",
+    }));
+    await scheduler.upsert(wakeup({
+      id: "cron-b",
+      kind: "cron",
+      cron: "* * * * *",
+      fireAt: START,
+      provider: "claude",
+      providerScheduleId: "provider-b",
+    }));
+
+    expect(scheduler.claimNativeFire("session-1", "unrelated-turn", "missing-provider")).toBeNull();
+    expect(scheduler.claimNativeFire("session-1", "native-turn-b", "provider-b")).toMatchObject({
+      id: "cron-b",
+      activeTurnId: "native-turn-b",
+    });
+    expect(scheduler.list().find((item) => item.id === "cron-a")?.status).toBe("scheduled");
+    scheduler.dispose();
+  });
+
+  it("limits an ambiguous native cron signal to CronCreate-owned schedules", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(START);
+    const scheduler = createChatScheduledWorkScheduler({
+      loadState: () => null,
+      saveState: () => undefined,
+      isGlobalPaused: () => false,
+      sessionState: () => "active",
+      fire: createFireMock(),
+    });
+    await scheduler.upsert(wakeup({
+      id: "native-wakeup",
+      kind: "wakeup",
+      fireAt: START - 500,
+      provider: "claude",
+    }));
+    await scheduler.upsert(wakeup({
+      id: "native-cron",
+      kind: "cron",
+      cron: "* * * * *",
+      fireAt: START,
+      provider: "claude",
+      providerScheduleId: "provider-cron",
+    }));
+
+    expect(scheduler.claimNativeFire("session-1", "ambiguous-cron-turn")).toMatchObject({
+      id: "native-cron",
+      activeTurnId: "ambiguous-cron-turn",
+    });
+    expect(scheduler.list().find((item) => item.id === "native-wakeup")?.status).toBe("scheduled");
+    expect(scheduler.claimNativeFire("session-1", "explicit-wakeup-turn", "native-wakeup")).toMatchObject({
+      id: "native-wakeup",
+      activeTurnId: "explicit-wakeup-turn",
+    });
+    scheduler.dispose();
+  });
+
   it("clears a native cron claim's active turn before re-arming", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(START);
@@ -830,6 +1100,7 @@ describe("createChatScheduledWorkScheduler", () => {
       cron: "* * * * *",
       fireAt: START + 500,
       provider: "claude",
+      providerScheduleId: "provider-cron-1",
     }));
 
     expect(scheduler.claimNativeFire("session-1", "native-turn-1")).toMatchObject({

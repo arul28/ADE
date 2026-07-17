@@ -424,7 +424,7 @@ export function AiFeaturesSection() {
                   {item.title}
                 </div>
                 <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 2, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                  {item.kind} · {item.status} · chat {item.sessionId.slice(0, 8)}{item.nextRunAt ? ` · ${new Date(item.nextRunAt).toLocaleString()}` : ""}
+                  {item.kind} · {item.status} · session {item.sessionId.slice(0, 8)}{item.nextRunAt ? ` · ${new Date(item.nextRunAt).toLocaleString()}` : ""}
                 </div>
               </div>
               <button

@@ -82,7 +82,11 @@ and in tests.
   back to a `<transcript>.gz` generation via `readHistoryFileSync`, and create
   reinflates a compressed transcript (`reinflateHistoryFileSync`) before
   reopening it for append. `isTranscriptPathActive(path)` lets the history
-  compressor skip transcripts a live PTY is still writing. ~4,450 lines.
+  compressor skip transcripts a live PTY is still writing.
+  `canAcceptScheduledTurn(sessionId)` is the scheduler's non-mutating delivery
+  boundary: ended tracked CLIs are resumable, while live CLIs require a
+  provider-specific visible composer marker plus the short quiet window before
+  a durable prompt may be submitted. ~4,450 lines.
 - `apps/desktop/src/main/services/pty/supervisedPtyHost.ts` and
   `ptyHostWorker.ts` — isolated node-pty worker host. Local runtimes fork the
   worker from the built desktop files; remote runtimes can receive

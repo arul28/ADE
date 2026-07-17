@@ -1,4 +1,4 @@
-import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
+import type { AgentChatScheduledWorkState, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { ChatTerminalSession } from "../../../desktop/src/shared/types/sessions";
 import { formatRelativePastTime } from "./relativeTime";
 import { theme } from "./theme";
@@ -54,7 +54,10 @@ function terminalSummaryProvider(session: ChatTerminalSession): AgentChatSession
     : "claude";
 }
 
-export function terminalSessionToChatSummary(session: ChatTerminalSession): ClosedCliSessionSummary {
+export function terminalSessionToChatSummary(
+  session: ChatTerminalSession,
+  scheduledWorkState?: AgentChatScheduledWorkState | null,
+): ClosedCliSessionSummary {
   const status: AgentChatSessionSummary["status"] = session.status === "running"
     ? session.runtimeState === "idle" ? "idle" : "active"
     : "ended";
@@ -73,7 +76,9 @@ export function terminalSessionToChatSummary(session: ChatTerminalSession): Clos
     lastActivityAt: session.endedAt ?? session.startedAt,
     lastOutputPreview: session.lastOutputPreview,
     summary: session.summary,
-    nextWakeAt: null,
+    nextWakeAt: scheduledWorkState?.nextWakeAt ?? null,
+    scheduledWorkPaused: scheduledWorkState?.paused === true,
+    scheduledWork: scheduledWorkState?.items ?? [],
     surface: "work",
     terminalStatus: session.status,
     terminalExitCode: session.exitCode,
@@ -89,11 +94,14 @@ export function sortSessionsByRecentActivity<T extends { startedAt: string; last
   });
 }
 
-export function deriveClosedCliSessions(terminalSessions: ChatTerminalSession[]): ClosedCliSessionSummary[] {
+export function deriveClosedCliSessions(
+  terminalSessions: ChatTerminalSession[],
+  scheduledWorkStateById: Record<string, AgentChatScheduledWorkState> = {},
+): ClosedCliSessionSummary[] {
   return sortSessionsByRecentActivity(
     terminalSessions
       .filter((session) => session.status !== "running" && terminalSessionProvider(session) != null)
-      .map(terminalSessionToChatSummary),
+      .map((session) => terminalSessionToChatSummary(session, scheduledWorkStateById[session.terminalId])),
   );
 }
 
