@@ -1301,8 +1301,12 @@ export async function createAdeRuntime(args: {
   // by pushPublisherService.start() (declared below), so it stays empty and inert
   // when push publishing is not running.
   const pushPrNotificationSubscribers = new Set<(notification: PushPrNotification) => void>();
+  let syncService: ReturnType<typeof createSyncService> | null = null;
   const emitPrEvent = (event: PrEventPayload): void => {
     pushEvent("runtime", { type: "pr_event", event });
+    if (event.type === "prs-updated") {
+      syncService?.notifyPrsUpdated();
+    }
     if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
       const notification: PushPrNotification = {
         kind: event.kind,
@@ -1571,7 +1575,6 @@ export async function createAdeRuntime(args: {
   }
 
   let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;
-  let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
     const { createSyncService } = await import("./services/sync/syncService");
     syncService = createSyncService({

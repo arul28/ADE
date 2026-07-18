@@ -310,9 +310,10 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("listDeleteProgress");
   });
 
-  it("exposes pr.listPrsByLane for runtime-backed drawer PR pills", () => {
+  it("exposes runtime-backed PR reads", () => {
     const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
     expect(actions).toContain("listPrsByLane");
+    expect(actions).toContain("getMobileGithubDetail");
   });
 
   it("exposes ade_project.clearLocalData for runtime-backed cleanup", () => {

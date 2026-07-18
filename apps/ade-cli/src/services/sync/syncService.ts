@@ -1715,6 +1715,10 @@ export function createSyncService(args: SyncServiceArgs) {
       hostService?.handlePtyExit(event);
     },
 
+    notifyPrsUpdated(): void {
+      hostService?.broadcastPrsUpdated();
+    },
+
     getHostService(): SyncHostService | null {
       return hostService;
     },

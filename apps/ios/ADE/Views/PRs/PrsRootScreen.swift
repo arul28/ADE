@@ -16,6 +16,7 @@ struct PRsTabView: View {
   @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var githubSnapshot: GitHubPrSnapshot?
   @State private var githubExternalHistoryLoaded = false
+  @State private var githubHistoryPageLimit = 2
   // Set synchronously on the @MainActor before any awaited fetch so concurrent
   // callers (the `onChange` filter handler and the projection-reload `task`)
   // do not both pass the `!githubExternalHistoryLoaded` guard and issue
@@ -38,16 +39,13 @@ struct PRsTabView: View {
   /// when the snapshot or a filter input changes — see `recomputeGitHubDerived`
   /// — instead of on every `body` pass.
   @State private var githubDerived: PrGitHubDerivedList = .empty
-  @State private var githubDetailRequest: PrGitHubLaneLinkRequest?
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
-  @State private var pendingLaneLinkRequest: PrGitHubLaneLinkRequest?
   @State private var autoMapRequest: PrAutoMapRequest?
   @State private var autoMapPreflight: PrAutoMapPreflight?
   @State private var autoMapPreflightLoading = false
   @State private var autoMapBlockingMessage: String?
   @SceneStorage("ade.prs.rootSurface") private var rootSurfaceRawValue = PrRootSurface.github.rawValue
   @SceneStorage("ade.prs.workflowFilter") private var workflowFilterRawValue = PrWorkflowKindFilter.all.rawValue
-  @SceneStorage("ade.prs.githubStatusFilter") private var githubStatusFilterRawValue = PrGitHubStatusFilter.open.rawValue
   /// Primary headline selector for the GitHub surface (desktop parity): three
   /// status categories — Open (folds draft), Merged, Closed.
   @SceneStorage("ade.prs.githubCategory") private var githubCategoryRawValue = PrGitHubCategory.open.rawValue
@@ -104,13 +102,6 @@ struct PRsTabView: View {
     )
   }
 
-  private var selectedGitHubStatusFilter: Binding<PrGitHubStatusFilter> {
-    Binding(
-      get: { PrGitHubStatusFilter(rawValue: githubStatusFilterRawValue) ?? .open },
-      set: { githubStatusFilterRawValue = $0.rawValue }
-    )
-  }
-
   /// Primary three-way category selector (Open / Merged / Closed). Folds draft
   /// into Open. Drives both the headline tabs and the list derivation.
   private var selectedGitHubCategory: Binding<PrGitHubCategory> {
@@ -134,21 +125,11 @@ struct PRsTabView: View {
     )
   }
 
-  private var filteredPrs: [PullRequestListItem] {
-    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let status = selectedGitHubStatusFilter.wrappedValue
-    let scope = selectedGitHubScopeFilter.wrappedValue
-    return prs.filter { item in
-      matchesCachedPrStatus(item, status: status)
-        && matchesCachedPrScope(item, scope: scope)
-        && matchesCachedPrSearch(item, query: query)
-    }
-  }
-
   /// Total repo-scoped GitHub PR count (pre-filter). Cheap pass-through; the
   /// expensive derivations are memoized in `githubDerived`.
   private var allGitHubPrsCount: Int {
-    githubDerived.allCount
+    let counts = githubCategoryCounts
+    return counts.open + counts.merged + counts.closed
   }
 
   private var githubSnapshotNeedsExternalHistory: Bool {
@@ -173,9 +154,12 @@ struct PRsTabView: View {
   /// the filter/sort/count cost.
   private func recomputeGitHubDerived() {
     let next = prComputeGitHubDerivedList(
-      items: repoScopedGitHubPullRequests(from: githubSnapshot),
+      items: prReconcileGitHubPullRequests(
+        snapshotItems: repoScopedGitHubPullRequests(from: githubSnapshot),
+        mappedPrs: prs
+      ),
       query: searchText,
-      status: selectedGitHubStatusFilter.wrappedValue,
+      status: .all,
       scope: selectedGitHubScopeFilter.wrappedValue,
       sort: selectedGitHubSort.wrappedValue,
       category: selectedGitHubCategory.wrappedValue
@@ -211,10 +195,20 @@ struct PRsTabView: View {
   }
 
   /// Per-category counts for the three headline tabs, scoped by the active
-  /// scope filter (ADE / External / All). Memoized in `githubDerived` so a
-  /// `body` pass never re-scans the snapshot.
+  /// scope filter (ADE / External / All). Host history counts are a cheap
+  /// projection floor; never let them undercount rows already visible on the
+  /// phone after local reconciliation.
   private var githubCategoryCounts: PrGitHubCategoryCounts {
-    githubDerived.categoryCounts
+    if selectedGitHubScopeFilter.wrappedValue == .all,
+      let counts = githubSnapshot?.history?.repoPullRequestCounts
+    {
+      return PrGitHubCategoryCounts(
+        open: max(counts.open, githubDerived.categoryCounts.open),
+        merged: max(counts.merged, githubDerived.categoryCounts.merged),
+        closed: max(counts.closed, githubDerived.categoryCounts.closed)
+      )
+    }
+    return githubDerived.categoryCounts
   }
 
   /// Prefer the unified `PrMobileSnapshot.workflowCards` payload when available; fall back to the
@@ -289,6 +283,10 @@ struct PRsTabView: View {
 
   private var prsProjectionReloadKey: Int? {
     isActive ? syncService.prsProjectionRevision : nil
+  }
+
+  private var prsRemoteReloadKey: Int? {
+    isActive ? syncService.prsRemoteRevision : nil
   }
 
   private var prNavigationRequestKey: String? {
@@ -447,6 +445,15 @@ struct PRsTabView: View {
         guard !Task.isCancelled, prsProjectionReloadKey == revision else { return }
         lastHandledPrsProjectionRevision = revision
       }
+      .task(id: prsRemoteReloadKey) {
+        guard let revision = prsRemoteReloadKey, revision > 0 else { return }
+        // Webhook bursts can contain several related deliveries. Coalesce them
+        // into one bounded snapshot read instead of turning each event into a
+        // GitHub request from the phone.
+        try? await Task.sleep(for: .milliseconds(300))
+        guard !Task.isCancelled, prsRemoteReloadKey == revision else { return }
+        await reloadGitHubProjection()
+      }
       .task(id: prNavigationRequestKey) {
         guard prNavigationRequestKey != nil else { return }
         await handleRequestedPrNavigation()
@@ -455,16 +462,12 @@ struct PRsTabView: View {
         guard selectedGitHubCategory.wrappedValue != .open else { return }
         Task { await loadGitHubExternalHistoryIfNeeded() }
       }
-      .onChange(of: githubStatusFilterRawValue) { _, _ in
-        guard selectedGitHubStatusFilter.wrappedValue != .open else { return }
-        Task { await loadGitHubExternalHistoryIfNeeded() }
-      }
       // Memoize the GitHub-list derivations: recompute only when the snapshot
       // or a filter/search input actually changes, never inside a body pass.
       .onChange(of: githubSnapshot) { _, _ in recomputeGitHubDerived() }
+      .onChange(of: prs) { _, _ in recomputeGitHubDerived() }
       .onChange(of: searchText) { _, _ in recomputeGitHubDerived() }
       .onChange(of: githubCategoryRawValue) { _, _ in recomputeGitHubDerived() }
-      .onChange(of: githubStatusFilterRawValue) { _, _ in recomputeGitHubDerived() }
       .onChange(of: githubScopeFilterRawValue) { _, _ in recomputeGitHubDerived() }
       .onChange(of: githubSortRawValue) { _, _ in recomputeGitHubDerived() }
       .onAppear { recomputeGitHubDerived() }
@@ -480,7 +483,8 @@ struct PRsTabView: View {
           prId: prId,
           transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
           requestedRepoOwner: routeScope?.repoOwner,
-          requestedRepoName: routeScope?.repoName
+          requestedRepoName: routeScope?.repoName,
+          availableLanes: lanes
         )
           .environmentObject(syncService)
       }
@@ -492,27 +496,6 @@ struct PRsTabView: View {
       .sheet(item: $stackPresentation) { presentation in
         PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
           .environmentObject(syncService)
-      }
-      .sheet(item: $githubDetailRequest, onDismiss: presentPendingLaneLinkRequest) { request in
-        PrGitHubReadDetailSheet(
-          item: request.item,
-          canLink: canLinkGitHubPullRequests,
-          canAutoMap: canAutoMapGitHubPullRequests,
-          onLink: {
-            pendingLaneLinkRequest = request
-            githubDetailRequest = nil
-          },
-          onAutoMap: {
-            let item = request.item
-            githubDetailRequest = nil
-            // Defer the auto-map sheet to after the read sheet dismisses so the
-            // two don't fight for the presentation slot.
-            DispatchQueue.main.async { presentAutoMap(for: item) }
-          },
-          onOpenGitHub: {
-            openGitHub(urlString: request.item.githubUrl)
-          }
-        )
       }
       .sheet(item: $laneLinkRequest) { request in
         PrLaneLinkSheet(
@@ -552,19 +535,13 @@ struct PRsTabView: View {
     }
   }
 
-  private func presentPendingLaneLinkRequest() {
-    guard let request = pendingLaneLinkRequest else { return }
-    pendingLaneLinkRequest = nil
-    laneLinkRequest = request
-  }
-
   /// Count shown in the hero-header chip — matches whichever surface the user
   /// is currently viewing, so we don't flash "GitHub 42" in the title while
   /// the workflows surface is showing 3 cards.
   private var heroCount: Int {
     switch selectedRootSurface.wrappedValue {
     case .github:
-      return githubSnapshot == nil ? filteredPrs.count : filteredGitHubPrs.count
+      return filteredGitHubPrs.count
     case .workflows:
       return groupedWorkflowCards.count
     }
@@ -838,7 +815,7 @@ struct PRsTabView: View {
       .prListRow()
     }
 
-    if prsStatus.phase == .ready && filteredPrs.isEmpty && filteredGitHubPrs.isEmpty {
+    if prsStatus.phase == .ready && filteredGitHubPrs.isEmpty {
       ADEEmptyStateView(
         symbol: searchText.isEmpty ? "arrow.triangle.pull" : "magnifyingglass",
         title: searchText.isEmpty ? "No pull requests for these filters" : "No PRs match this search",
@@ -849,28 +826,7 @@ struct PRsTabView: View {
       .prListRow()
     }
 
-    if githubSnapshot == nil, !filteredPrs.isEmpty {
-      ForEach(filteredPrs) { pr in
-        NavigationLink(value: pr.id) {
-          PrRowCard(
-            pr: pr,
-            transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
-            isSelectedTransitionSource: selectedPrTransitionId == pr.id
-          ) { groupId, groupName in
-            stackPresentation = PrStackPresentation(id: groupId, groupName: groupName)
-          }
-        }
-        .simultaneousGesture(TapGesture().onEnded {
-          selectedPrTransitionId = pr.id
-        })
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-          rowSwipeActions(for: pr)
-        }
-        .prListRowCard()
-      }
-    }
-
-    if githubSnapshot != nil {
+    if githubSnapshot != nil || !prs.isEmpty {
       let repoItems = githubDerived.repoItems
       let externalItems = githubDerived.externalItems
       if !repoItems.isEmpty {
@@ -899,6 +855,33 @@ struct PRsTabView: View {
           githubRowNavigation(for: item)
             .prListRowCard()
         }
+      }
+      if selectedGitHubCategory.wrappedValue != .open,
+        githubSnapshot?.history?.repoPullRequestsMayHaveMore == true,
+        githubHistoryPageLimit < 10
+      {
+        Button {
+          Task { await loadMoreGitHubHistory() }
+        } label: {
+          HStack(spacing: 8) {
+            if isLoadingExternalHistory {
+              ProgressView()
+                .controlSize(.small)
+            } else {
+              Image(systemName: "arrow.down.circle")
+            }
+            Text(isLoadingExternalHistory ? "Loading more pull requests…" : "Load more pull requests")
+              .font(.system(size: 13, weight: .semibold))
+            Spacer(minLength: 0)
+          }
+          .foregroundStyle(PrsGlass.textSecondary)
+          .padding(.horizontal, 14)
+          .padding(.vertical, 12)
+          .prGlassCard(cornerRadius: 12, shadow: false)
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoadingExternalHistory)
+        .prListRow()
       }
     }
   }
@@ -932,7 +915,7 @@ struct PRsTabView: View {
       }
     } else if item.scope == "external" {
       Button {
-        openGitHub(urlString: item.githubUrl)
+        openGitHubDetail(item)
       } label: {
         PrRowCard(item: item)
       }
@@ -943,21 +926,16 @@ struct PRsTabView: View {
       }
     } else {
       Button {
-        githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
+        openGitHubDetail(item)
       } label: {
         PrRowCard(
           item: item,
-          linkedPr: linkedPullRequest(for: item),
-          onLink: canLinkGitHubPullRequests
-            ? { laneLinkRequest = PrGitHubLaneLinkRequest(item: item) }
-            : nil
+          linkedPr: linkedPullRequest(for: item)
         )
       }
       .buttonStyle(.plain)
       .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-        Button("Review") {
-          githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
-        }
+        Button("Review") { openGitHubDetail(item) }
         .tint(ADEColor.warning)
         if canAutoMapGitHubPullRequests {
           Button("Create lane") {
@@ -975,6 +953,35 @@ struct PRsTabView: View {
           .tint(ADEColor.accent)
       }
     }
+  }
+
+  @MainActor
+  private func openGitHubDetail(_ item: GitHubPrListItem) {
+    let routeId = prSyntheticGitHubId(for: item)
+    if let routeScope = PrDetailRouteScope(repoOwner: item.repoOwner, repoName: item.repoName) {
+      prDetailRouteScopes[routeId] = routeScope
+    }
+    // Seed the title and identity for an instant transition. `distantPast`
+    // deliberately marks this entry stale so detail performs exactly one
+    // aggregate live fetch as soon as it appears.
+    syncService.storePrDetailWarmEntry(
+      PrDetailWarmEntry(
+        pr: nil,
+        githubItem: item,
+        snapshot: nil,
+        reviewThreads: [],
+        actionRuns: [],
+        activityEvents: [],
+        deployments: [],
+        aiSummary: nil,
+        groupMembers: [],
+        capabilities: nil,
+        unavailableParts: [],
+        loadedAt: .distantPast
+      ),
+      for: routeId
+    )
+    path.append(routeId)
   }
 
   @ViewBuilder
@@ -1148,49 +1155,6 @@ struct PRsTabView: View {
     return groups
   }
 
-  private func matchesCachedPrStatus(_ item: PullRequestListItem, status: PrGitHubStatusFilter) -> Bool {
-    switch status {
-    case .all:
-      return true
-    case .open:
-      return item.state == "open"
-    case .draft:
-      return item.state == "draft"
-    case .merged:
-      return item.state == "merged"
-    case .closed:
-      return item.state == "closed"
-    }
-  }
-
-  private func matchesCachedPrScope(_ item: PullRequestListItem, scope: PrGitHubScopeFilter) -> Bool {
-    switch scope {
-    case .all, .ade:
-      return true
-    case .external:
-      return false
-    }
-  }
-
-  private func matchesCachedPrSearch(_ item: PullRequestListItem, query: String) -> Bool {
-    guard !query.isEmpty else { return true }
-    let haystack = [
-      item.title,
-      item.headBranch,
-      item.baseBranch,
-      item.laneName,
-      item.repoOwner,
-      item.repoName,
-      item.adeKind,
-      item.workflowDisplayState,
-      "#\(item.githubPrNumber)",
-      "\(item.githubPrNumber)",
-    ]
-    .compactMap { $0?.lowercased() }
-    .joined(separator: " ")
-    return haystack.contains(query)
-  }
-
   private var laneContextNotice: ADENoticeCard? {
     guard let laneContextLaneId else { return nil }
     let laneName = lanes.first(where: { $0.id == laneContextLaneId })?.name ?? "lane context"
@@ -1219,9 +1183,10 @@ struct PRsTabView: View {
     do {
       var refreshError: Error?
       if refreshRemote {
+        async let refreshPrs: Void = syncService.refreshPullRequestSnapshots()
+        async let refreshLanes: Void = syncService.refreshLaneSnapshots()
         do {
-          try await syncService.refreshPullRequestSnapshots()
-          try await syncService.refreshLaneSnapshots()
+          _ = try await (refreshPrs, refreshLanes)
         } catch {
           refreshError = error
         }
@@ -1260,7 +1225,9 @@ struct PRsTabView: View {
         let githubSnapshotTask = Task {
           try? await syncService.fetchGitHubPullRequestSnapshot(
             force: refreshRemote,
-            includeExternalClosed: effectiveIncludeExternalClosed
+            includeExternalClosed: effectiveIncludeExternalClosed,
+            historyPageLimit: effectiveIncludeExternalClosed ? githubHistoryPageLimit : nil,
+            includeStateCounts: true
           )
         }
         nextMobileSnapshot = await mobileSnapshotTask.value
@@ -1338,11 +1305,49 @@ struct PRsTabView: View {
     if isLoadingExternalHistory { return }
     isLoadingExternalHistory = true
     defer { isLoadingExternalHistory = false }
-    if let nextGithubSnapshot = try? await syncService.fetchGitHubPullRequestSnapshot(includeExternalClosed: true) {
+    if let nextGithubSnapshot = try? await syncService.fetchGitHubPullRequestSnapshot(
+      includeExternalClosed: true,
+      historyPageLimit: githubHistoryPageLimit,
+      includeStateCounts: true
+    ) {
       githubExternalHistoryLoaded = true
       if githubSnapshot != nextGithubSnapshot {
         githubSnapshot = nextGithubSnapshot
       }
+    }
+  }
+
+  @MainActor
+  private func loadMoreGitHubHistory() async {
+    guard isLive, !isLoadingExternalHistory else { return }
+    let nextLimit = min(10, githubHistoryPageLimit + 2)
+    guard nextLimit > githubHistoryPageLimit else { return }
+    isLoadingExternalHistory = true
+    defer { isLoadingExternalHistory = false }
+    if let nextSnapshot = try? await syncService.fetchGitHubPullRequestSnapshot(
+      includeExternalClosed: true,
+      historyPageLimit: nextLimit,
+      includeStateCounts: true
+    ) {
+      githubHistoryPageLimit = nextSnapshot.history?.pageLimit ?? nextLimit
+      githubExternalHistoryLoaded = true
+      if githubSnapshot != nextSnapshot {
+        githubSnapshot = nextSnapshot
+      }
+    }
+  }
+
+  @MainActor
+  private func reloadGitHubProjection() async {
+    guard isLive else { return }
+    let includeHistory = githubSnapshotShouldIncludeExternalClosed
+    if let nextSnapshot = try? await syncService.fetchGitHubPullRequestSnapshot(
+      includeExternalClosed: includeHistory,
+      historyPageLimit: includeHistory ? githubHistoryPageLimit : nil,
+      revalidate: false,
+      includeStateCounts: true
+    ), githubSnapshot != nextSnapshot {
+      githubSnapshot = nextSnapshot
     }
   }
 
@@ -1393,11 +1398,7 @@ struct PRsTabView: View {
       }
       path.append(prId)
     case .github(let item):
-      if item.scope == "external" {
-        openGitHub(urlString: item.githubUrl)
-      } else {
-        githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
-      }
+      openGitHubDetail(item)
     case .unresolved:
       errorMessage = "That pull request is not available on this phone yet."
     }
@@ -1800,150 +1801,6 @@ struct PRsTabView: View {
   }
 }
 
-private struct PrGitHubReadDetailSheet: View {
-  @Environment(\.dismiss) private var dismiss
-  let item: GitHubPrListItem
-  let canLink: Bool
-  var canAutoMap: Bool = false
-  let onLink: () -> Void
-  var onAutoMap: (() -> Void)? = nil
-  let onOpenGitHub: () -> Void
-
-  private var stateLabel: String {
-    item.isDraft ? "draft" : item.state
-  }
-
-  private var headBranch: String {
-    item.headBranch?.isEmpty == false ? item.headBranch! : "unknown branch"
-  }
-
-  private var baseBranch: String {
-    item.baseBranch?.isEmpty == false ? item.baseBranch! : "unknown base"
-  }
-
-  var body: some View {
-    PrLiquidSheetShell(
-      title: "PR details",
-      trailingLabel: "Done",
-      onTrailing: { dismiss() }
-    ) {
-      VStack(alignment: .leading, spacing: 14) {
-        // Hero: number + state + EXTERNAL chip + title.
-        VStack(alignment: .leading, spacing: 12) {
-          HStack(spacing: 8) {
-            Text("#\(item.githubPrNumber)")
-              .font(.system(size: 22, weight: .bold, design: .monospaced))
-              .foregroundStyle(PrGlassPalette.success)
-              .shadow(color: PrGlassPalette.success.opacity(0.45), radius: 8)
-
-            PrTagChip(label: stateLabel, color: prStateTint(stateLabel))
-
-            if item.scope == "external" {
-              PrExternalInfoChip()
-            }
-
-            Spacer(minLength: 0)
-          }
-
-          Text(item.title)
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(PrsGlass.textPrimary)
-            .tracking(-0.2)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-
-        VStack(spacing: 8) {
-          PrGlassMonoRow(
-            eyebrow: "Repo",
-            value: "\(item.repoOwner)/\(item.repoName)",
-            icon: "chevron.left.slash.chevron.right"
-          )
-          PrGlassMonoRow(
-            eyebrow: "Branches",
-            value: "\(headBranch) → \(baseBranch)",
-            icon: "arrow.triangle.branch"
-          )
-          PrGlassMonoRow(
-            eyebrow: "Author",
-            value: (item.author?.isEmpty == false) ? "@\(item.author!)" : "unknown",
-            icon: "person.fill"
-          )
-          PrGlassMonoRow(
-            eyebrow: "Updated",
-            value: prRelativeTime(item.updatedAt),
-            icon: "clock"
-          )
-        }
-
-        // Unmapped / linked-lane CTA card.
-        HStack(alignment: .top, spacing: 12) {
-          ZStack {
-            Circle()
-              .fill(PrGlassPalette.purple.opacity(0.22))
-            Image(systemName: "link.badge.plus")
-              .font(.system(size: 15, weight: .semibold))
-              .foregroundStyle(PrGlassPalette.purpleBright)
-          }
-          .frame(width: 34, height: 34)
-
-          VStack(alignment: .leading, spacing: 4) {
-            Text("Not linked to an ADE lane")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(PrsGlass.textPrimary)
-            Text("Review the branch and author, then link this PR into a lane to track it inside ADE.")
-              .font(.system(size: 11))
-              .foregroundStyle(PrsGlass.textSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-
-          Spacer(minLength: 0)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .prGlassCard(cornerRadius: 14, tint: PrGlassPalette.purple.opacity(0.55), shadow: false)
-
-        VStack(spacing: 10) {
-          // Primary auto-map CTA: create a lane straight from the PR branch.
-          // Hidden entirely on hosts that don't expose the action so older
-          // machines fall back to the link flow with no dead control.
-          if canAutoMap, let onAutoMap {
-            Button {
-              onAutoMap()
-            } label: {
-              Label("Create lane from PR branch", systemImage: "arrow.triangle.branch")
-            }
-            .buttonStyle(PrGlassPrimaryButtonStyle())
-          }
-
-          // When the auto-map CTA is present it owns the primary slot, so the
-          // link flow renders as the secondary (outline) action; otherwise the
-          // link button stays primary (legacy behavior).
-          Group {
-            if canAutoMap, onAutoMap != nil {
-              Button { onLink() } label: { Label("Map to lane…", systemImage: "link") }
-                .buttonStyle(PrGlassOutlineButtonStyle())
-            } else {
-              Button { onLink() } label: { Label("Link to lane", systemImage: "link") }
-                .buttonStyle(PrGlassPrimaryButtonStyle())
-            }
-          }
-          .disabled(!canLink)
-
-          Button {
-            onOpenGitHub()
-          } label: {
-            Label("Open on GitHub", systemImage: "arrow.up.right.square")
-          }
-          .buttonStyle(PrGlassOutlineButtonStyle())
-        }
-        .padding(.top, 4)
-      }
-      .padding(16)
-    }
-  }
-}
-
 // MARK: - Auto-map confirmation sheet (create lane from PR branch)
 //
 // Mirrors desktop's `CreateLaneFromPrBranchDialog`: a compact summary of the
@@ -2045,7 +1902,7 @@ private struct PrAutoMapSheet: View {
   }
 }
 
-private struct PrLaneLinkSheet: View {
+struct PrLaneLinkSheet: View {
   @Environment(\.dismiss) private var dismiss
   let item: GitHubPrListItem
   let lanes: [LaneSummary]

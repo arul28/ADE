@@ -4646,6 +4646,11 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.getGithubSnapshot({
       force: payload.force === true,
       includeExternalClosed: payload.includeExternalClosed === true,
+      revalidate: payload.revalidate !== false,
+      includeStateCounts: payload.includeStateCounts === true,
+      ...(typeof payload.historyPageLimit === "number" && Number.isFinite(payload.historyPageLimit)
+        ? { historyPageLimit: Math.max(1, Math.floor(payload.historyPageLimit)) }
+        : {}),
     }));
   register("prs.getReviewThreads", { viewerAllowed: true }, async (payload) => args.prService.getReviewThreads(requirePrId(payload, "prs.getReviewThreads")));
   register("prs.getActionRuns", { viewerAllowed: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
@@ -4665,6 +4670,8 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getReviewsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getReviewsByGithub(requirePrGithubCoords(payload, "prs.getReviewsByGithub")));
   register("prs.getCommentsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getCommentsByGithub(requirePrGithubCoords(payload, "prs.getCommentsByGithub")));
   register("prs.getReviewThreadsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getReviewThreadsByGithub(requirePrGithubCoords(payload, "prs.getReviewThreadsByGithub")));
+  register("prs.getMobileGithubDetail", { viewerAllowed: true }, async (payload) =>
+    args.prService.getMobileGithubDetail(requirePrGithubCoords(payload, "prs.getMobileGithubDetail")));
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
   register("prs.createQueue", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createQueuePrs(parseCreateQueuePrsArgs(payload)));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));

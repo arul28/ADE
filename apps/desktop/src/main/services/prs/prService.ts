@@ -78,6 +78,7 @@ import type {
   PrCreateCapabilities,
   PrCreateLaneEligibility,
   PrMobileSnapshot,
+  PrMobileGithubDetailSnapshot,
   PrStackInfo,
   PrStackMember,
   PrStackMemberRole,
@@ -1990,7 +1991,10 @@ export function createPrService({
     cachedGithubSnapshotAt = 0;
     cachedGithubSnapshotIncludesClosed = false;
     cachedGithubSnapshotHistoryPageLimit = 0;
+    cachedGithubSnapshotIncludesStateCounts = false;
     githubSnapshotCacheEpoch += 1;
+    githubPrStateCountsByRepo.clear();
+    githubPrStateCountsInFlight.clear();
   };
 
   const pruneExpiredHotRefreshes = (nowMs = Date.now()): void => {
@@ -4062,6 +4066,57 @@ export function createPrService({
     return payload.data;
   };
 
+  const githubPrStateCountsByRepo = new Map<string, GitHubPrProjectionStateCounts>();
+  const githubPrStateCountsInFlight = new Map<string, Promise<GitHubPrProjectionStateCounts>>();
+  const githubPrStateCountsKey = (repo: GitHubRepoRef): string =>
+    repoRefKey(repo) ?? `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}`;
+
+  const fetchGithubPrStateCounts = async (repo: GitHubRepoRef): Promise<GitHubPrProjectionStateCounts> => {
+    const key = githubPrStateCountsKey(repo);
+    const existing = githubPrStateCountsInFlight.get(key);
+    if (existing) return await existing;
+    const requestEpoch = githubSnapshotCacheEpoch;
+
+    const request = (async () => {
+      const data = await graphqlRequest<{
+        repository?: {
+          open?: { totalCount?: number | null } | null;
+          merged?: { totalCount?: number | null } | null;
+          closed?: { totalCount?: number | null } | null;
+        } | null;
+      }>(
+        `query AdePullRequestStateCounts($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) {
+            open: pullRequests(states: OPEN) { totalCount }
+            merged: pullRequests(states: MERGED) { totalCount }
+            closed: pullRequests(states: CLOSED) { totalCount }
+          }
+        }`,
+        { owner: repo.owner, name: repo.name },
+      );
+      if (!data.repository) {
+        throw new Error(`GitHub repository not found: ${repo.owner}/${repo.name}`);
+      }
+      const counts = {
+        open: Math.max(0, Number(data.repository.open?.totalCount ?? 0)),
+        merged: Math.max(0, Number(data.repository.merged?.totalCount ?? 0)),
+        closed: Math.max(0, Number(data.repository.closed?.totalCount ?? 0)),
+      };
+      if (requestEpoch === githubSnapshotCacheEpoch) {
+        githubPrStateCountsByRepo.set(key, counts);
+      }
+      return counts;
+    })();
+    githubPrStateCountsInFlight.set(key, request);
+    try {
+      return await request;
+    } finally {
+      if (githubPrStateCountsInFlight.get(key) === request) {
+        githubPrStateCountsInFlight.delete(key);
+      }
+    }
+  };
+
   const fetchAllPages = async <T>(args: {
     path: string;
     query?: Record<string, string | number | boolean | undefined | null>;
@@ -4448,11 +4503,17 @@ export function createPrService({
     };
   };
 
-  const bestEffort = async <T>(label: string, task: Promise<T>, fallback: T): Promise<T> => {
+  const bestEffort = async <T>(
+    label: string,
+    task: Promise<T>,
+    fallback: T,
+    onError?: (error: unknown) => void,
+  ): Promise<T> => {
     try {
       return await task;
     } catch (error) {
       logger.warn("prs.best_effort_failed", { label, error: getErrorMessage(error) });
+      onError?.(error);
       return fallback;
     }
   };
@@ -4892,14 +4953,15 @@ export function createPrService({
     return await getReviewsByCoords(coordsFromRow(row));
   };
 
-  const getCommentsByCoords = async (coords: PrGithubCoords): Promise<PrComment[]> => {
+  const getCommentsByCoords = async (coords: PrGithubCoords, strict = false): Promise<PrComment[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const prNumber = Number(coords.githubPrNumber);
 
-    const [issueComments, reviewComments] = await Promise.all([
-      fetchIssueComments(repo, prNumber).catch(() => []),
-      fetchReviewComments(repo, prNumber).catch(() => [])
-    ]);
+    const [issueComments, reviewComments] = await Promise.all(
+      strict
+        ? [fetchIssueComments(repo, prNumber), fetchReviewComments(repo, prNumber)]
+        : [fetchIssueComments(repo, prNumber).catch(() => []), fetchReviewComments(repo, prNumber).catch(() => [])]
+    );
 
     return [...issueComments, ...reviewComments].sort((a, b) => {
       const aTs = a.createdAt ? Date.parse(a.createdAt) : Number.NaN;
@@ -4920,24 +4982,33 @@ export function createPrService({
    * uses to key the row in `PrDetail.prId` — it has no DB row. We never call
    * `requireRow` here so unmapped PRs can load.
    */
-  const getDetailSnapshotByCoords = async (coords: PrGithubCoords, prId: string): Promise<PrDetail> => {
+  const prDetailFromGithubPull = (data: any, prId: string): PrDetail => ({
+    prId,
+    body: normalizePrDetailBody(asString(data?.body)),
+    labels: Array.isArray(data?.labels) ? data.labels.map(toLabel) : [],
+    assignees: Array.isArray(data?.assignees) ? data.assignees.map(toUser) : [],
+    requestedReviewers: Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.map(toUser) : [],
+    requestedTeams: Array.isArray(data?.requested_teams) ? data.requested_teams.map(toTeam) : [],
+    author: toUser(data?.user),
+    isDraft: Boolean(data?.draft),
+    milestone: asString(data?.milestone?.title) || null,
+    linkedIssues: [],
+  });
+
+  const getGithubPullDetailByCoords = async (
+    coords: PrGithubCoords,
+    prId: string,
+  ): Promise<{ detail: PrDetail; rawPull: any }> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const { data } = await githubService.apiRequest<any>({
       method: "GET",
       path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(coords.githubPrNumber)}`
     });
-    return {
-      prId,
-      body: normalizePrDetailBody(asString(data?.body)),
-      labels: Array.isArray(data?.labels) ? data.labels.map(toLabel) : [],
-      assignees: Array.isArray(data?.assignees) ? data.assignees.map(toUser) : [],
-      requestedReviewers: Array.isArray(data?.requested_reviewers) ? data.requested_reviewers.map(toUser) : [],
-      requestedTeams: Array.isArray(data?.requested_teams) ? data.requested_teams.map(toTeam) : [],
-      author: toUser(data?.user),
-      isDraft: Boolean(data?.draft),
-      milestone: asString(data?.milestone?.title) || null,
-      linkedIssues: []
-    };
+    return { detail: prDetailFromGithubPull(data, prId), rawPull: data };
+  };
+
+  const getDetailSnapshotByCoords = async (coords: PrGithubCoords, prId: string): Promise<PrDetail> => {
+    return (await getGithubPullDetailByCoords(coords, prId)).detail;
   };
 
   const getDetailSnapshot = async (prId: string): Promise<PrDetail> => {
@@ -7991,24 +8062,28 @@ export function createPrService({
     force?: boolean;
     includeExternalClosed?: boolean;
     historyPageLimit?: number;
+    revalidate?: boolean;
+    includeStateCounts?: boolean;
   };
 
   const GITHUB_SNAPSHOT_TTL_MS = 120_000;
   const GITHUB_OPEN_SNAPSHOT_MAX_PAGES = 10;
   const GITHUB_HISTORY_INITIAL_PAGE_LIMIT = 2;
   const GITHUB_HISTORY_MAX_PAGE_LIMIT = 10;
-  const GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT = 300;
+  const GITHUB_PROJECTION_CLOSED_RETAIN_LIMIT = 1_000;
   const GITHUB_WEBHOOK_DELIVERY_RETAIN_LIMIT = 1_000;
   const GITHUB_WEBHOOK_ERROR_DELIVERY_RETAIN_LIMIT = 100;
   let cachedGithubSnapshot: GitHubPrSnapshot | null = null;
   let cachedGithubSnapshotAt = 0;
   let cachedGithubSnapshotIncludesClosed = false;
   let cachedGithubSnapshotHistoryPageLimit = 0;
+  let cachedGithubSnapshotIncludesStateCounts = false;
   let githubSnapshotCacheEpoch = 0;
   let githubSnapshotInFlight: {
     request: Promise<GitHubPrSnapshot>;
     includeExternalClosed: boolean;
     historyPageLimit: number;
+    includeStateCounts: boolean;
   } | null = null;
 
   const normalizeGithubHistoryPageLimit = (options: GithubSnapshotOptions = {}): number => {
@@ -8022,10 +8097,11 @@ export function createPrService({
   };
 
   const githubSnapshotRequestSatisfies = (
-    request: { includeExternalClosed: boolean; historyPageLimit: number } | null,
+    request: { includeExternalClosed: boolean; historyPageLimit: number; includeStateCounts: boolean } | null,
     options: GithubSnapshotOptions,
   ): boolean => {
     if (!request) return false;
+    if (options.includeStateCounts === true && !request.includeStateCounts) return false;
     if (options.includeExternalClosed !== true) return true;
     return request.includeExternalClosed
       && request.historyPageLimit >= normalizeGithubHistoryPageLimit(options);
@@ -8036,12 +8112,14 @@ export function createPrService({
     capturedAt = Date.now(),
     includeExternalClosed = false,
     historyPageLimit = 0,
+    includeStateCounts = false,
   ): void => {
     if (snapshot.repo) activeGithubRepo = snapshot.repo;
     cachedGithubSnapshot = snapshot;
     cachedGithubSnapshotAt = capturedAt;
     cachedGithubSnapshotIncludesClosed = includeExternalClosed;
     cachedGithubSnapshotHistoryPageLimit = includeExternalClosed ? historyPageLimit : 0;
+    cachedGithubSnapshotIncludesStateCounts = includeStateCounts;
   };
 
   const clearGithubSnapshotAuthCache = (): void => {
@@ -8174,6 +8252,58 @@ export function createPrService({
     };
   };
 
+  const gitHubItemFromRawPull = (
+    rawPr: any,
+    fallbackRepo: GitHubRepoRef,
+    metadata?: GithubSnapshotMetadata,
+    scope: "repo" | "external" = "repo",
+  ): GitHubPrListItem => {
+    const rawRepo = rawPullBaseRepo(rawPr, fallbackRepo) ?? fallbackRepo;
+    const repoOwner = rawRepo.owner;
+    const repoName = rawRepo.name;
+    const githubPrNumber = Number(rawPr?.number) || 0;
+    const linkedPrRow = metadata?.linkedPrByRepoKey.get(repoPrKey(repoOwner, repoName, githubPrNumber)) ?? null;
+    const workflowRow = linkedPrRow ? metadata?.workflowByPrId.get(linkedPrRow.id) ?? null : null;
+    const groupRow = linkedPrRow ? metadata?.groupByPrId.get(linkedPrRow.id) ?? null : null;
+
+    return {
+      id: asString(rawPr?.node_id) || syntheticGithubPrId({ repoOwner, repoName, githubPrNumber }),
+      scope,
+      repoOwner,
+      repoName,
+      githubPrNumber,
+      githubUrl: asString(rawPr?.html_url) || `https://github.com/${repoOwner}/${repoName}/pull/${githubPrNumber}`,
+      title: asString(rawPr?.title) || `PR #${githubPrNumber}`,
+      state: toGitHubState(rawPr),
+      isDraft: Boolean(rawPr?.draft),
+      baseBranch: asString(rawPr?.base?.ref) || null,
+      headBranch: asString(rawPr?.head?.ref) || null,
+      headRepoOwner: rawPullHeadOwner(rawPr) || null,
+      headRepoName: rawPullHeadRepoName(rawPr) || null,
+      author: asString(rawPr?.user?.login) || null,
+      createdAt: asString(rawPr?.created_at) || nowIso(),
+      updatedAt: asString(rawPr?.updated_at) || asString(rawPr?.created_at) || nowIso(),
+      linkedPrId: linkedPrRow?.id ?? null,
+      linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
+      linkedLaneId: linkedPrRow?.lane_id ?? null,
+      linkedLaneName: linkedPrRow ? (metadata?.laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
+      adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, linkedPrRow),
+      workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
+      cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
+      labels: Array.isArray(rawPr?.labels)
+        ? rawPr.labels
+            .filter((label: any) => label?.name)
+            .map((label: any) => ({
+              name: String(label.name),
+              color: String(label.color || "cccccc"),
+              description: label.description != null ? String(label.description) : null,
+            }))
+        : [],
+      isBot: asString(rawPr?.user?.type).toLowerCase() === "bot",
+      commentCount: Number(rawPr?.comments) || 0,
+    };
+  };
+
   const mergeGithubPrItems = (
     liveItems: GitHubPrListItem[],
     projectedItems: GitHubPrListItem[],
@@ -8204,7 +8334,14 @@ export function createPrService({
       projectionRows = listGithubPrProjectionRows(repo, options);
     }
     if (projectionRows.length === 0) return null;
-    const repoPullRequestCounts = countGithubPrProjectionRows(repo);
+    const projectionCounts = countGithubPrProjectionRows(repo);
+    const repoPullRequestCounts = options.includeStateCounts === true
+      ? await bestEffort(
+          "buildProjectedGithubSnapshot.fetchGithubPrStateCounts",
+          fetchGithubPrStateCounts(repo),
+          githubPrStateCountsByRepo.get(githubPrStateCountsKey(repo)) ?? projectionCounts,
+        )
+      : githubPrStateCountsByRepo.get(githubPrStateCountsKey(repo)) ?? projectionCounts;
     const historyPageLimit = normalizeGithubHistoryPageLimit(options);
     return {
       repo,
@@ -8250,49 +8387,13 @@ export function createPrService({
       ? historyPageLimit
       : GITHUB_OPEN_SNAPSHOT_MAX_PAGES;
 
-    const toGitHubItem = (rawPr: any, scope: "repo" | "external"): GitHubPrListItem => {
-      const rawRepo = rawPullBaseRepo(rawPr, repo) ?? repo;
-      const repoOwner = rawRepo.owner;
-      const repoName = rawRepo.name;
-      const githubPrNumber = Number(rawPr?.number) || 0;
-      const linkedPrRow = metadata.linkedPrByRepoKey.get(repoPrKey(repoOwner, repoName, githubPrNumber)) ?? null;
-      const workflowRow = linkedPrRow ? metadata.workflowByPrId.get(linkedPrRow.id) ?? null : null;
-      const groupRow = linkedPrRow ? metadata.groupByPrId.get(linkedPrRow.id) ?? null : null;
-
-      return {
-        id: asString(rawPr?.node_id) || `${scope}-${repoOwner}-${repoName}-${githubPrNumber}`,
-        scope,
-        repoOwner,
-        repoName,
-        githubPrNumber,
-        githubUrl: asString(rawPr?.html_url) || "",
-        title: asString(rawPr?.title) || `PR #${githubPrNumber}`,
-        state: toGitHubState(rawPr),
-        isDraft: Boolean(rawPr?.draft),
-        baseBranch: asString(rawPr?.base?.ref) || null,
-        headBranch: asString(rawPr?.head?.ref) || null,
-        headRepoOwner: rawPullHeadOwner(rawPr) || null,
-        headRepoName: rawPullHeadRepoName(rawPr) || null,
-        author: asString(rawPr?.user?.login) || null,
-        createdAt: asString(rawPr?.created_at) || nowIso(),
-        updatedAt: asString(rawPr?.updated_at) || asString(rawPr?.created_at) || nowIso(),
-        linkedPrId: linkedPrRow?.id ?? null,
-        linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
-        linkedLaneId: linkedPrRow?.lane_id ?? null,
-        linkedLaneName: linkedPrRow ? (metadata.laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
-        adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, linkedPrRow),
-        workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
-        cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
-        labels: Array.isArray(rawPr?.labels)
-          ? rawPr.labels
-              .filter((l: any) => l?.name)
-              .map((l: any) => ({ name: String(l.name), color: String(l.color || "cccccc"), description: l.description != null ? String(l.description) : null }))
-          : [],
-        isBot: asString(rawPr?.user?.type).toLowerCase() === "bot",
-        commentCount: Number(rawPr?.comments) || 0,
-      };
-    };
-
+    const stateCountsPromise = options.includeStateCounts === true
+      ? bestEffort(
+          "getGithubSnapshot.fetchGithubPrStateCounts",
+          fetchGithubPrStateCounts(repo),
+          null as GitHubPrProjectionStateCounts | null,
+        )
+      : Promise.resolve(null);
     let repoPullRequestsRaw = await fetchAllPages<any>({
       path: `/repos/${repo.owner}/${repo.name}/pulls`,
       query: {
@@ -8329,11 +8430,15 @@ export function createPrService({
     if (autoMappedCount > 0 || backfilled) {
       metadata = await loadGithubSnapshotMetadata();
     }
-    const liveRepoPullRequests = repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo"));
+    const liveRepoPullRequests = repoPullRequestsRaw.map((rawPr) =>
+      gitHubItemFromRawPull(rawPr, repo, metadata, "repo"));
     const projectedRepoPullRequests = listGithubPrProjectionRows(repo, options)
       .map((row) => gitHubItemFromProjection(row, metadata, "repo"));
     const repoPullRequests = mergeGithubPrItems(liveRepoPullRequests, projectedRepoPullRequests);
-    const repoPullRequestCounts = countGithubPrProjectionRows(repo);
+    const liveStateCounts = await stateCountsPromise;
+    const repoPullRequestCounts = liveStateCounts
+      ?? githubPrStateCountsByRepo.get(githubPrStateCountsKey(repo))
+      ?? countGithubPrProjectionRows(repo);
     const syncedAt = nowIso();
 
     return {
@@ -8367,10 +8472,14 @@ export function createPrService({
       const requestEpoch = githubSnapshotCacheEpoch;
       const includeExternalClosed = requestOptions.includeExternalClosed === true;
       const historyPageLimit = normalizeGithubHistoryPageLimit(requestOptions);
+      const includeStateCounts = requestOptions.includeStateCounts === true
+        || (precheckedGithubStatus.repo != null
+          && githubPrStateCountsByRepo.has(githubPrStateCountsKey(precheckedGithubStatus.repo)));
       let inFlight!: {
         request: Promise<GitHubPrSnapshot>;
         includeExternalClosed: boolean;
         historyPageLimit: number;
+        includeStateCounts: boolean;
       };
       const request = getGithubSnapshotUncached(precheckedGithubStatus, requestOptions)
         .then((snapshot) => {
@@ -8379,7 +8488,15 @@ export function createPrService({
             githubSnapshotInFlight === inFlight
             && requestEpoch === githubSnapshotCacheEpoch;
           if (canPublishSnapshot) {
-            publishGithubSnapshot(snapshot, capturedAt, includeExternalClosed, historyPageLimit);
+            const hasExactStateCounts = snapshot.repo != null
+              && githubPrStateCountsByRepo.has(githubPrStateCountsKey(snapshot.repo));
+            publishGithubSnapshot(
+              snapshot,
+              capturedAt,
+              includeExternalClosed,
+              historyPageLimit,
+              hasExactStateCounts,
+            );
           }
           return snapshot;
         })
@@ -8388,7 +8505,7 @@ export function createPrService({
             githubSnapshotInFlight = null;
           }
         });
-      inFlight = { request, includeExternalClosed, historyPageLimit };
+      inFlight = { request, includeExternalClosed, historyPageLimit, includeStateCounts };
       githubSnapshotInFlight = inFlight;
       return request;
     };
@@ -8397,6 +8514,7 @@ export function createPrService({
     const requestedHistoryPageLimit = normalizeGithubHistoryPageLimit(options);
     const cachedSnapshotSatisfiesRequest =
       cachedGithubSnapshot !== null
+      && (options.includeStateCounts !== true || cachedGithubSnapshotIncludesStateCounts)
       && (!needsClosedHistory || (
         cachedGithubSnapshotIncludesClosed
         && cachedGithubSnapshotHistoryPageLimit >= requestedHistoryPageLimit
@@ -8415,7 +8533,8 @@ export function createPrService({
               historyPageLimit: cachedGithubSnapshotHistoryPageLimit || GITHUB_HISTORY_INITIAL_PAGE_LIMIT,
             }
           : options;
-      if (!githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) {
+      if (options.revalidate !== false
+        && !githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) {
         void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
           logger.warn("prs.github_snapshot_revalidation_failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -8425,16 +8544,28 @@ export function createPrService({
       return cachedSnapshot;
     }
     if (!force) {
+      const projectedRequestEpoch = githubSnapshotCacheEpoch;
       const projectedSnapshot = await buildProjectedGithubSnapshot(githubStatus, options);
+      if (projectedRequestEpoch !== githubSnapshotCacheEpoch) {
+        return getGithubSnapshot(options);
+      }
       if (projectedSnapshot) {
         publishGithubSnapshot(
           projectedSnapshot,
           Date.now(),
           options.includeExternalClosed === true,
           requestedHistoryPageLimit,
+          projectedSnapshot.repo != null
+            && githubPrStateCountsByRepo.has(githubPrStateCountsKey(projectedSnapshot.repo)),
         );
-        if (!githubSnapshotRequestSatisfies(githubSnapshotInFlight, options)) {
-          void startSnapshotRequest(githubStatus, options).catch((error) => {
+        const revalidationOptions = options.includeStateCounts === true
+          && projectedSnapshot.repo != null
+          && githubPrStateCountsByRepo.has(githubPrStateCountsKey(projectedSnapshot.repo))
+          ? { ...options, includeStateCounts: false }
+          : options;
+        if (options.revalidate !== false
+          && !githubSnapshotRequestSatisfies(githubSnapshotInFlight, revalidationOptions)) {
+          void startSnapshotRequest(githubStatus, revalidationOptions).catch((error) => {
             logger.warn("prs.github_snapshot_revalidation_failed", {
               error: error instanceof Error ? error.message : String(error),
             });
@@ -10726,6 +10857,52 @@ export function createPrService({
 
     async getMobileSnapshot(): Promise<PrMobileSnapshot> {
       return await buildMobileSnapshot();
+    },
+
+    async getMobileGithubDetail(coords: PrGithubCoords): Promise<PrMobileGithubDetailSnapshot> {
+      const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+      const prNumber = Number(coords.githubPrNumber);
+      const unavailableParts = new Set<string>();
+      const mobilePart = <T>(part: string, request: Promise<T>, fallback: T): Promise<T> => {
+        return bestEffort(
+          `getMobileGithubDetail.${part}`,
+          request,
+          fallback,
+          () => unavailableParts.add(part),
+        );
+      };
+      const [anchor, status, checks, reviews, comments, files, commits, reviewThreads, actionRuns, timelineEvents] =
+        await Promise.all([
+          // The detail record is the identity anchor for the entire screen. A
+          // failed anchor must reject instead of returning a misleading blank
+          // success; sidecars remain independently best-effort.
+          getGithubPullDetailByCoords(coords, syntheticGithubPrId(coords)),
+          mobilePart("status", getStatusByCoords(coords), null),
+          mobilePart("checks", getChecksByCoords(coords), [] as PrCheck[]),
+          mobilePart("reviews", getReviewsByCoords(coords), [] as PrReview[]),
+          mobilePart("comments", getCommentsByCoords(coords, true), [] as PrComment[]),
+          mobilePart("files", getFilesSnapshotByCoords(coords), [] as PrFile[]),
+          mobilePart("commits", getCommitsSnapshotByCoords(coords), [] as PrCommit[]),
+          mobilePart("review_threads", fetchReviewThreads(repo, prNumber), [] as PrReviewThread[]),
+          mobilePart("action_runs", getActionRunsByCoords(coords), [] as PrActionRun[]),
+          mobilePart("timeline", fetchAllPages<any>({
+            path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/timeline`,
+          }), [] as any[]),
+        ]);
+      const rawPull = anchor.rawPull;
+      const item = gitHubItemFromRawPull(rawPull, repo);
+      if (["comments", "reviews", "checks", "timeline"].some((part) => unavailableParts.has(part))) {
+        unavailableParts.add("activity");
+      }
+
+      return {
+        item,
+        snapshot: { detail: anchor.detail, status, checks, reviews, comments, files, commits },
+        reviewThreads,
+        actionRuns,
+        activity: buildActivityEvents(comments, reviews, checks, timelineEvents),
+        unavailableParts: [...unavailableParts].sort(),
+      };
     }
   };
 
@@ -10736,7 +10913,10 @@ export function createPrService({
 
     let lanes: LaneSummary[] = [];
     try {
-      lanes = await laneService.list({ includeArchived: false, includeStatus: true });
+      // Mobile snapshot cards only need lane identity/topology. Full git status
+      // turns a single controller read into N worktree probes and was the main
+      // source of multi-second PR-tab loads on larger projects.
+      lanes = await laneService.list({ includeArchived: false, includeStatus: false });
     } catch (error) {
       logger.warn("prs.mobile_snapshot.lanes_failed", {
         error: error instanceof Error ? error.message : String(error),

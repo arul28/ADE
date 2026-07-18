@@ -371,7 +371,8 @@ ade search --status --text                                  # index doc counts, 
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
 ade prs list-open --text
-ade prs github-snapshot --include-external-closed
+ade prs github-snapshot --include-external-closed --history-page-limit 4
+ade prs github-snapshot --include-state-counts --no-revalidate
 ade prs checks pr-id --text
 ade prs comments pr-id --text
 ade run defs --text

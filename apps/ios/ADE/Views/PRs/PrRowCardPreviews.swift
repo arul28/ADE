@@ -134,8 +134,8 @@ private enum PrRowCardPreviewData {
     ScrollView {
       VStack(spacing: 0) {
         PrRowCard(item: github559, linkedPr: linkedPr559)
-        PrRowCard(item: github346, onLink: {})
-        PrRowCard(item: github425, onLink: {})
+        PrRowCard(item: github346)
+        PrRowCard(item: github425)
       }
       .padding(.horizontal, 16)
     }
@@ -163,8 +163,7 @@ private enum PrRowCardPreviewData {
 
 #Preview("Unmapped bot PR #346") {
   PrRowCard(
-    item: PrRowCardPreviewData.github346,
-    onLink: {}
+    item: PrRowCardPreviewData.github346
   )
   .padding(.horizontal, 16)
   .background(PrsLiquidBackdrop())

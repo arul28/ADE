@@ -5962,6 +5962,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       broadcastBrainStatus();
     },
 
+    /**
+     * Tell connected controllers that the host's cached GitHub projection has
+     * changed. The payload is intentionally tiny; clients fetch the newest
+     * projected snapshot once, while the normal CRR stream continues to carry
+     * mapped PR rows. This covers unmapped webhook updates without polling.
+     */
+    broadcastPrsUpdated(): void {
+      const payload = { updatedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+        send(peer.ws, "prs_updated", payload);
+      }
+    },
+
     async broadcastProjectCatalog(): Promise<void> {
       const payload = await buildProjectCatalogPayload();
       if (bonjourPort != null) {
