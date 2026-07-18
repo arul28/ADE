@@ -32,6 +32,7 @@ import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
 import { openKvDb } from "./services/state/kvDb";
+import { createRegisteredSyncPeerGate } from "./services/state/syncPeerCompactionGate";
 import { ensureAdeDirs } from "./services/state/projectState";
 import {
   persistableRemoteProjectIconDataUrl,
@@ -2171,14 +2172,14 @@ app.whenReady().then(async () => {
       }
     };
 
-    // Fail closed until the durable pairing registry is available. Offline
-    // paired devices still need their CRR history, so live connections alone
-    // are never sufficient evidence that compaction is safe.
-    let registeredSyncPeerCount: number | null = null;
     let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
+    const hasSyncPeers = createRegisteredSyncPeerGate({
+      syncEnabled: true,
+      getSyncService: () => syncServiceRef,
+    });
     const db = await measureProjectInitStep("db_open", () =>
       openKvDb(adePaths.dbPath, logger, {
-        hasSyncPeers: () => registeredSyncPeerCount !== 0,
+        hasSyncPeers,
       }),
     );
     const keybindingsService = createKeybindingsService({ db });
@@ -3662,7 +3663,6 @@ app.whenReady().then(async () => {
           projectScaffoldService.listMyGitHubRepos(input),
       },
       onStatusChanged: (snapshot) => {
-        registeredSyncPeerCount = syncServiceRef?.getRegisteredPeerCount() ?? null;
         const normalizedProjectRoot = normalizeProjectRoot(projectRoot);
         if (mobileSyncSelectedRoot == null && snapshot.connectedPeers.length > 0) {
           mobileSyncSelectedRoot = normalizedProjectRoot;
@@ -3700,7 +3700,6 @@ app.whenReady().then(async () => {
       },
     });
     syncServiceRef = syncService;
-    registeredSyncPeerCount = syncService.getRegisteredPeerCount();
     scheduleBackgroundProjectTask(
       "sync.initialize",
       () => measureProjectInitStep("sync.initialize", () => syncService.initialize()),

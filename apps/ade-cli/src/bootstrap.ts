@@ -7,6 +7,7 @@ import * as nodePty from "node-pty";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
 import {
   clearLastFailure,
   recordLastFailure,
@@ -504,14 +505,15 @@ export async function createAdeRuntime(args: {
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
   });
-  // A sync-enabled runtime must prove its durable pairing registry is empty
-  // before CRR compaction. Offline paired devices still require dedupe history.
-  // Runtimes without sync have no peer transport and can report zero now.
-  let registeredSyncPeerCount: number | null = resolvedArgs.syncRuntime?.enabled ? null : 0;
+  let syncService: ReturnType<typeof createSyncService> | null = null;
+  const hasSyncPeers = createRegisteredSyncPeerGate({
+    syncEnabled: resolvedArgs.syncRuntime?.enabled === true,
+    getSyncService: () => syncService,
+  });
   let db: AdeDb;
   try {
     db = await openKvDb(paths.dbPath, logger, {
-      hasSyncPeers: () => registeredSyncPeerCount !== 0,
+      hasSyncPeers,
     });
   } catch (error) {
     const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error));
@@ -1586,7 +1588,6 @@ export async function createAdeRuntime(args: {
   }
 
   let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;
-  let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
     const { createSyncService } = await import("./services/sync/syncService");
     syncService = createSyncService({
@@ -1646,18 +1647,17 @@ export async function createAdeRuntime(args: {
       cloudRelayStore,
       syncTunnelClientService,
       onStatusChanged: (snapshot) => {
-        registeredSyncPeerCount = syncService?.getRegisteredPeerCount() ?? null;
         pushEvent("runtime", { type: "sync-status", snapshot });
       },
     });
-    registeredSyncPeerCount = syncService.getRegisteredPeerCount();
     syncServiceForPtyEvents = syncService;
   }
 
   if (syncService) {
+    const currentSyncService = syncService;
     const initializeSyncService = async () => {
       try {
-        await syncService.initialize();
+        await currentSyncService.initialize();
       } catch (error) {
         logger.warn("sync.runtime_initialize_failed", {
           error: error instanceof Error ? error.message : String(error),
