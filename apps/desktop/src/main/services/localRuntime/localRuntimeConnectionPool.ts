@@ -79,6 +79,12 @@ const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["chat.suggestLaneNameFromPrompt", 120_000],
+  // Handoff = AI brief generation (bounded at 45s) + session creation +
+  // provider dispatch of the first message; the 30s default fired a false
+  // timeout while the daemon-side handoff kept running to a late "surprise"
+  // success (ADE-122).
+  ["chat.handoffSession", 120_000],
+  ["chat.prepareCrossMachineHandoff", 120_000],
 ]);
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;

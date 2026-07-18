@@ -155,7 +155,7 @@ describe("SessionListPane", () => {
           targetModelId: "openai/gpt-5.4-mini",
           targetModelLabel: "GPT-5.4-Mini",
           targetToolType: "codex-chat",
-          status: "creating-chat",
+          status: "preparing-summary",
           createdAtMs: Date.now(),
         },
       ],
@@ -163,8 +163,42 @@ describe("SessionListPane", () => {
 
     expect(screen.getByTestId("handoff-launch-placeholder")).toBeTruthy();
     expect(screen.getByText("Handoff to GPT-5.4-Mini")).toBeTruthy();
-    expect(screen.getByText("Creating chat...")).toBeTruthy();
+    expect(screen.getByText("Summarizing chat & creating handoff...")).toBeTruthy();
     expect(screen.getByText("First message: Chat handoff from previous session")).toBeTruthy();
+  });
+
+  // ADE-122 regression: while a handoff RPC was in flight, the placeholder and
+  // the real created session were both visible ("two new sessions", one
+  // vanishing later). Once a matching real row exists, the placeholder must go.
+  it("hides a handoff placeholder once the matching real session row is visible", () => {
+    const jobCreatedAtMs = Date.parse("2026-07-17T12:00:00.000Z");
+    const materialized = makeSession({
+      id: "session-handoff-target",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      toolType: "codex-chat",
+      startedAt: "2026-07-17T12:00:05.000Z",
+    });
+    renderPane({
+      runningFiltered: [materialized],
+      allSessionsUnfiltered: [materialized],
+      sessionsGroupedByLane: new Map([[materialized.laneId, [materialized]]]),
+      handoffJobs: [
+        {
+          id: "handoff-job-2",
+          sourceSessionId: "source-session",
+          laneId: "lane-known",
+          laneName: "Known Lane",
+          targetModelId: "openai/gpt-5.4-mini",
+          targetModelLabel: "GPT-5.4-Mini",
+          targetToolType: "codex-chat",
+          status: "preparing-summary",
+          createdAtMs: jobCreatedAtMs,
+        },
+      ],
+    });
+
+    expect(screen.queryByTestId("handoff-launch-placeholder")).toBeNull();
   });
 
   it("lets the user set the group organization from the filter panel", () => {

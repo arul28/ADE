@@ -222,9 +222,13 @@ and a footer that contains the composer.
   parallel-slot model fell off the allowlist — main and slot setters
   also no-op on out-of-list ids instead of silently bouncing.
   Handoffs create a root-store `HandoffLaunchJob` before the IPC call
-  starts, advance it through summary/chat/send labels while the old
-  surface closes, and remove it once the new chat is created or the
-  handoff fails. When the source provider is fork-capable
+  starts, label it by mode (`preparing-summary` for a brief,
+  `forking-history` for a fork) while the old surface closes, and remove
+  it once the new chat is created or the handoff fails — or hide it
+  earlier as soon as a matching real session row appears in the sidebar
+  (`handoffJobLikelyMaterialized`), so an in-flight handoff never reads
+  as two sessions with one vanishing (ADE-122). When the source provider
+  is fork-capable
   (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, or Droid) the
   local handoff surface exposes both **Brief** and **Fork** modes,
   defaulting to fork; Cursor is brief-only. Fork keeps the new chat in the

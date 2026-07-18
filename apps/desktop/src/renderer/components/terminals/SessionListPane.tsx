@@ -24,6 +24,7 @@ import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { relativeTimeCompact } from "../../lib/format";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import {
+  handoffJobLikelyMaterialized,
   handoffLaunchMatchesQuery,
   handoffLaunchStatusMessage,
   handoffLaunchTitle,
@@ -450,11 +451,17 @@ export const SessionListPane = React.memo(function SessionListPane({
   const [filterOpen, setFilterOpen] = useState(false);
   const filteredHandoffJobs = useMemo(() => {
     const filtered = handoffJobs.filter((job) => {
+      // Once the real session this job is creating is visible in the list, the
+      // placeholder must go — otherwise a handoff briefly reads as two new
+      // sessions with one vanishing when the RPC settles (ADE-122).
+      if (allSessionsUnfiltered.some((session) => handoffJobLikelyMaterialized(job, session))) {
+        return false;
+      }
       if (laneFilterActive && job.laneId !== normalizedFilterLaneId) return false;
       return handoffLaunchMatchesQuery(job, q);
     });
     return filtered.sort((a, b) => b.createdAtMs - a.createdAtMs);
-  }, [handoffJobs, laneFilterActive, normalizedFilterLaneId, q]);
+  }, [allSessionsUnfiltered, handoffJobs, laneFilterActive, normalizedFilterLaneId, q]);
 
   const hasAnySessions =
     runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length + filteredHandoffJobs.length > 0;

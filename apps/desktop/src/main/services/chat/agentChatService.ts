@@ -10934,24 +10934,29 @@ export function createAgentChatService(args: {
     }
   };
 
-  const writeTranscript = (managed: ManagedChatSession, envelope: AgentChatEventEnvelope): void => {
+  const writeTranscript = (
+    managed: ManagedChatSession,
+    envelope: AgentChatEventEnvelope,
+    options?: { deferFlush?: boolean },
+  ): void => {
     // The legacy transcript_path is byte-capped because it also backs
     // terminal-session storage. The dedicated chat transcript is the durable
     // replay source and must keep receiving events after that cap is reached.
-    writeChatTranscriptLine(managed.session.id, envelope);
+    writeChatTranscriptLine(managed.session.id, envelope, options);
     if (managed.transcriptLimitReached) return;
     try {
       fs.mkdirSync(path.dirname(managed.transcriptPath), { recursive: true });
       const warnTailHealed = (details: { path: string; priorSize: number }) => {
         logger.warn("agent_chat.transcript_tail_healed", details);
       };
+      const flushOnUserMessage = envelope.event.type === "user_message" && !options?.deferFlush;
       const rawLine = `${JSON.stringify(envelope)}\n`;
       const chunk = Buffer.from(rawLine, "utf8");
       const remaining = MAX_CHAT_TRANSCRIPT_BYTES - managed.transcriptBytesWritten;
       if (remaining <= 0) {
         managed.transcriptLimitReached = true;
         queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, warnTailHealed);
-        if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(managed.transcriptPath);
+        if (flushOnUserMessage) flushQueuedTranscriptWrite(managed.transcriptPath);
         return;
       }
       let toWrite = chunk;
@@ -10964,20 +10969,26 @@ export function createAgentChatService(args: {
       if (managed.transcriptLimitReached) {
         queueTranscriptWrite(managed.transcriptPath, CHAT_TRANSCRIPT_LIMIT_NOTICE, warnTailHealed);
       }
-      if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(managed.transcriptPath);
+      if (flushOnUserMessage) flushQueuedTranscriptWrite(managed.transcriptPath);
     } catch {
       // ignore transcript write failures
     }
   };
 
-  const writeChatTranscriptLine = (sessionId: string, envelope: AgentChatEventEnvelope): void => {
+  const writeChatTranscriptLine = (
+    sessionId: string,
+    envelope: AgentChatEventEnvelope,
+    options?: { deferFlush?: boolean },
+  ): void => {
     try {
       const transcriptFile = path.join(chatTranscriptsDir, `${sessionId}.jsonl`);
       const line = `${JSON.stringify(envelope)}\n`;
       queueTranscriptWrite(transcriptFile, line, (details) => {
         logger.warn("agent_chat.transcript_tail_healed", details);
       });
-      if (envelope.event.type === "user_message") flushQueuedTranscriptWrite(transcriptFile);
+      if (envelope.event.type === "user_message" && !options?.deferFlush) {
+        flushQueuedTranscriptWrite(transcriptFile);
+      }
     } catch {
       // ignore chat transcript write failures
     }
@@ -12988,50 +12999,76 @@ export function createAgentChatService(args: {
     }
   };
 
-  const appendImportedChatEvents = (
+  // Seeding a fork or import can carry thousands of historical envelopes;
+  // chunked processing with event-loop yields keeps the shared runtime
+  // responsive while they persist (ADE-122: fork handoff froze the app).
+  const IMPORTED_CHAT_EVENT_CHUNK_SIZE = 250;
+
+  const appendImportedChatEvents = async (
     managed: ManagedChatSession,
     envelopes: AgentChatEventEnvelope[],
-  ): void => {
+  ): Promise<void> => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
 
-    for (const envelope of envelopes) {
-      const liveEvent = envelope.event;
-      const storedEvent = compactChatEventForStorage(liveEvent);
-      trackSubagentEvent(managed, liveEvent);
-      appendRecentConversationEntry(managed, liveEvent);
+    // Imported envelopes are historical: no client can be viewing a session
+    // whose history is still being seeded, and every reader loads seeded
+    // events through the history/transcript APIs. They are therefore written
+    // and recorded but NOT published to live event subscribers — publishing
+    // re-streams the entire source chat over IPC/sync for nothing.
+    const storedEnvelopes: AgentChatEventEnvelope[] = [];
+    const chatTranscriptFile = path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`);
+    for (let start = 0; start < envelopes.length; start += IMPORTED_CHAT_EVENT_CHUNK_SIZE) {
+      const chunk = envelopes.slice(start, start + IMPORTED_CHAT_EVENT_CHUNK_SIZE);
+      for (const envelope of chunk) {
+        const liveEvent = envelope.event;
+        const storedEvent = compactChatEventForStorage(liveEvent);
+        trackSubagentEvent(managed, liveEvent);
+        appendRecentConversationEntry(managed, liveEvent);
 
-      if (storedEvent.type === "text") {
-        updatePreviewFromText(managed, storedEvent);
-      } else if (storedEvent.type === "command") {
-        setSessionPreview(managed, storedEvent.output);
-      } else if (storedEvent.type === "error") {
-        setSessionPreview(managed, storedEvent.message);
-      } else if (storedEvent.type === "completion_report") {
-        managed.session.completion = storedEvent.report;
-        if (storedEvent.report.summary.trim().length > 0) {
-          setSessionPreview(managed, storedEvent.report.summary);
+        if (storedEvent.type === "text") {
+          updatePreviewFromText(managed, storedEvent);
+        } else if (storedEvent.type === "command") {
+          setSessionPreview(managed, storedEvent.output);
+        } else if (storedEvent.type === "error") {
+          setSessionPreview(managed, storedEvent.message);
+        } else if (storedEvent.type === "completion_report") {
+          managed.session.completion = storedEvent.report;
+          if (storedEvent.report.summary.trim().length > 0) {
+            setSessionPreview(managed, storedEvent.report.summary);
+          }
         }
-      }
 
-      const timestamp = envelope.timestamp || nowIso();
-      const sequence = ++managed.eventSequence;
-      const storedEnvelope: AgentChatEventEnvelope = {
-        ...envelope,
-        sessionId: managed.session.id,
-        timestamp,
-        event: storedEvent,
-        sequence,
-      };
-      const liveEnvelope: AgentChatEventEnvelope = liveEvent === storedEvent
-        ? storedEnvelope
-        : {
-            ...storedEnvelope,
-            event: liveEvent,
-          };
-      writeTranscript(managed, storedEnvelope);
-      recordChatEventInHistory(storedEnvelope);
-      publishChatEnvelope(liveEnvelope);
+        const timestamp = envelope.timestamp || nowIso();
+        const sequence = ++managed.eventSequence;
+        const storedEnvelope: AgentChatEventEnvelope = {
+          ...envelope,
+          sessionId: managed.session.id,
+          timestamp,
+          event: storedEvent,
+          sequence,
+        };
+        writeTranscript(managed, storedEnvelope, { deferFlush: true });
+        storedEnvelopes.push(storedEnvelope);
+      }
+      // One append syscall per file per chunk (instead of one forced flush per
+      // seeded user message) bounds queued-write memory without the sync-write
+      // storm that stalled the runtime.
+      flushQueuedTranscriptWrite(chatTranscriptFile);
+      flushQueuedTranscriptWrite(managed.transcriptPath);
+      if (start + IMPORTED_CHAT_EVENT_CHUNK_SIZE < envelopes.length) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+
+    if (storedEnvelopes.length) {
+      // Single bulk ring update; the per-envelope recordChatEventInHistory
+      // re-bounds the whole buffer each call (O(n²) across a large import).
+      const current = eventHistoryBySession.get(managed.session.id) ?? [];
+      eventHistoryBySession.set(
+        managed.session.id,
+        boundRingEnvelopes([...current, ...storedEnvelopes]),
+      );
     }
 
     managed.session.lastActivityAt = nowIso();
@@ -26898,7 +26935,7 @@ export function createAgentChatService(args: {
           sourceSessionId: sourceId,
         },
       }));
-      if (sourceEnvelopes.length) appendImportedChatEvents(createdManaged, sourceEnvelopes);
+      if (sourceEnvelopes.length) await appendImportedChatEvents(createdManaged, sourceEnvelopes);
     }
 
     if (handoffMode === "brief" || handoffNote) {
@@ -28155,7 +28192,7 @@ export function createAgentChatService(args: {
               managed: destinationManaged,
             });
             const importedEnvelopes = parseCrossMachineTranscriptEnvelopes(capsule, session.id);
-            if (importedEnvelopes.length) appendImportedChatEvents(destinationManaged, importedEnvelopes);
+            if (importedEnvelopes.length) await appendImportedChatEvents(destinationManaged, importedEnvelopes);
             persistChatState(destinationManaged);
             record = { ...record, forkMaterializedAt: nowIso(), updatedAt: nowIso() };
             persistCrossMachineHandoffRecord(record);
@@ -28513,7 +28550,7 @@ export function createAgentChatService(args: {
       });
       applyImportedChatMetadata(managed, args, events, importedAt);
       persistChatState(managed);
-      appendImportedChatEvents(managed, events);
+      await appendImportedChatEvents(managed, events);
       persistChatState(managed);
       return persistedImportedChatResult(managed, "claude");
     } catch (error) {
@@ -28662,7 +28699,7 @@ export function createAgentChatService(args: {
       });
       applyImportedChatMetadata(managed, args, events, importedAt);
       persistChatState(managed);
-      appendImportedChatEvents(managed, events);
+      await appendImportedChatEvents(managed, events);
       persistChatState(managed);
       return persistedImportedChatResult(managed, "codex");
     } catch (error) {
