@@ -59,7 +59,7 @@ import {
   type LaunchProfile,
   type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
-import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../desktop/src/shared/types";
+import type { AgentChatPermissionMode, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import {
   recordUsageInteraction,
@@ -72,6 +72,7 @@ import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
+import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
@@ -337,6 +338,8 @@ const TOOL_SPECS: ToolSpec[] = [
         codexFastMode: { type: "boolean", deprecated: true },
         cwd: { type: "string" },
         chatSessionId: { type: "string" },
+        orchestrationParentSessionId: { type: "string", minLength: 1 },
+        spawnKind: { type: "string", enum: ["subagent", "peer", "none"] },
         tracked: { type: "boolean", default: true }
       }
     }
@@ -1705,6 +1708,18 @@ function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode 
   throw new JsonRpcError(
     JsonRpcErrorCode.invalidParams,
     "permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml",
+  );
+}
+
+function parseCliSessionSpawnKind(value: unknown): AgentChatSpawnKind | null {
+  if (value == null) return null;
+  const spawnKind = asTrimmedString(value).toLowerCase();
+  if (spawnKind === "subagent" || spawnKind === "peer" || spawnKind === "none") {
+    return spawnKind;
+  }
+  throw new JsonRpcError(
+    JsonRpcErrorCode.invalidParams,
+    "spawnKind must be one of subagent, peer, or none",
   );
 }
 
@@ -3589,6 +3604,10 @@ async function runTool(args: {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
     const provider = parseCliSessionProvider(toolArgs.provider);
     const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
+    const orchestrationParentSessionId = toolArgs.orchestrationParentSessionId == null
+      ? null
+      : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
+    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
     try {
       validateLaunchProfilePermissionMode(provider, permissionMode);
     } catch (err) {
@@ -3634,6 +3653,17 @@ async function runTool(args: {
         ...(provider === "codex" ? { codexComputerUse } : {}),
       });
     })();
+    const toolType = LAUNCH_PROFILE_TOOL_TYPE[provider];
+    const resumeMetadata: TerminalResumeMetadata | null = isCliProvider(provider)
+      ? {
+          provider,
+          targetKind: provider === "codex" ? "thread" : "session",
+          targetId: provider === "claude" ? preassignedSessionId ?? null : null,
+          launch: parseTrackedCliLaunchConfig(launchFields.startupCommand ?? "", toolType) ?? {},
+          ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+          ...(spawnKind ? { spawnKind } : {}),
+        }
+      : null;
 
     const created = await ptyService.create({
       ...(preassignedSessionId ? { sessionId: preassignedSessionId } : {}),
@@ -3643,7 +3673,11 @@ async function runTool(args: {
       rows,
       title,
       tracked: toolArgs.tracked !== false,
-      toolType: LAUNCH_PROFILE_TOOL_TYPE[provider],
+      toolType,
+      ...(resumeMetadata ? { resumeMetadata } : {}),
+      ...(isCliProvider(provider) && orchestrationParentSessionId
+        ? { spawnLineage: { parentChatSessionId: orchestrationParentSessionId, spawnKind } }
+        : {}),
       ...(asOptionalTrimmedString(toolArgs.cwd) ? { cwd: asOptionalTrimmedString(toolArgs.cwd)! } : {}),
       ...(asOptionalTrimmedString(toolArgs.chatSessionId) ? { chatSessionId: asOptionalTrimmedString(toolArgs.chatSessionId) } : {}),
       ...launchFields,

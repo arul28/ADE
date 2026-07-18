@@ -770,6 +770,117 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.getByRole("button", { name: "Completed (2)" })).toBeTruthy();
   });
 
+  // A spawned ADE child chat row navigates to that chat instead of taking over
+  // the transcript / opening the inline drawer. The click is gated on either a
+  // `chat:`-prefixed taskId OR a `spawnKind` (the latter survives the dot-twin
+  // that can strip the `chat:` prefix — see chatExecutionSummary preservation).
+  describe("spawned-chat row navigation", () => {
+    const spawnedChatSnapshot = (overrides: Partial<ChatSubagentSnapshot> = {}): ChatSubagentSnapshot => ({
+      taskId: "chat:child-1",
+      childSessionId: "child-1",
+      agentId: "child-1",
+      agentType: "codex",
+      description: "Codex Chat",
+      status: "running",
+      startedAt: "2026-07-18T04:10:54.789Z",
+      updatedAt: "2026-07-18T04:10:54.789Z",
+      summary: null,
+      spawnKind: "subagent",
+      ...overrides,
+    });
+
+    function withSelectSessionSpy(run: (selectSession: ReturnType<typeof vi.fn>) => void): void {
+      const selectSession = vi.fn();
+      const listener = (event: Event) => selectSession((event as CustomEvent).detail);
+      window.addEventListener("ade:work:select-session", listener);
+      try {
+        run(selectSession);
+      } finally {
+        window.removeEventListener("ade:work:select-session", listener);
+      }
+    }
+
+    it("navigates to the child chat (chat:-prefixed taskId) instead of drawer/takeover", () => {
+      withSelectSessionSpy((selectSession) => {
+        const onSelectSubagent = vi.fn<[SubagentSelection], void>();
+        const probeSubagentTranscript = vi.fn().mockResolvedValue(true);
+        render(
+          <ChatSubagentsPanel
+            sessionId="parent-1"
+            snapshots={[spawnedChatSnapshot()]}
+            events={[]}
+            variant="pane"
+            capability={CLAUDE_CAP}
+            onSelectSubagent={onSelectSubagent}
+            probeSubagentTranscript={probeSubagentTranscript}
+          />,
+        );
+
+        fireEvent.click(screen.getByTitle("Open the spawned chat"));
+
+        expect(selectSession).toHaveBeenCalledWith({ sessionId: "child-1", laneId: null });
+        expect(onSelectSubagent).not.toHaveBeenCalled();
+        expect(probeSubagentTranscript).not.toHaveBeenCalled();
+        expect(screen.queryByText(/Transcript not ready yet/)).toBeNull();
+      });
+    });
+
+    it("navigates when the taskId is bare but spawnKind is set (post-dot-twin corruption shape)", () => {
+      withSelectSessionSpy((selectSession) => {
+        const onSelectSubagent = vi.fn<[SubagentSelection], void>();
+        render(
+          <ChatSubagentsPanel
+            sessionId="parent-1"
+            snapshots={[spawnedChatSnapshot({ taskId: "child-1" })]}
+            events={[]}
+            variant="pane"
+            capability={CLAUDE_CAP}
+            onSelectSubagent={onSelectSubagent}
+          />,
+        );
+
+        fireEvent.click(screen.getByTitle("Open the spawned chat"));
+
+        expect(selectSession).toHaveBeenCalledWith({ sessionId: "child-1", laneId: null });
+        expect(onSelectSubagent).not.toHaveBeenCalled();
+        expect(screen.queryByText(/Transcript not ready yet/)).toBeNull();
+      });
+    });
+
+    it("shows the resolved live chat title instead of the runtime agentType", () => {
+      render(
+        <ChatSubagentsPanel
+          sessionId="parent-1"
+          snapshots={[spawnedChatSnapshot()]}
+          events={[]}
+          variant="pane"
+          capability={CLAUDE_CAP}
+          resolveSpawnedChatTitle={(id) => (id === "child-1" ? "Investigate flaky CI" : null)}
+        />,
+      );
+
+      // Resolved title is the row label; the runtime name stays as the small chip.
+      expect(screen.getByText("Investigate flaky CI")).toBeTruthy();
+      expect(screen.getByText("codex")).toBeTruthy();
+    });
+
+    it("falls back to the snapshot description when no live title resolves", () => {
+      render(
+        <ChatSubagentsPanel
+          sessionId="parent-1"
+          snapshots={[spawnedChatSnapshot()]}
+          events={[]}
+          variant="pane"
+          capability={CLAUDE_CAP}
+          resolveSpawnedChatTitle={() => null}
+        />,
+      );
+
+      expect(screen.getByText("Codex Chat")).toBeTruthy();
+      expect(screen.getByText("codex")).toBeTruthy();
+    });
+  });
+
   it("owns the pane scroller and uses sticky opaque section headers", () => {
     render(<ChatSubagentsPanel snapshots={[baseSnapshot]} events={[]} variant="pane" />);
 

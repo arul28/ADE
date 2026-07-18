@@ -36,7 +36,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; defines the shared Background/Schedule Earlier predicates (including fired one-shot wakeups); and formats next-fire labels. A parent turn's terminal event does not stop a background row, and background snapshots whose `sourceTaskId` belongs to a real subagent are omitted so native Agents do not appear twice. Shared by desktop, ADE Code, and mirrored by iOS. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
 | `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex forks the thread before the selected turn (`thread/fork` + `beforeTurnId`) on app-server >= 0.145.0, or falls back to `thread/rollback` (latest user message only) on older servers, and restores files through ADE's git plan. |
-| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
+| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. Spawned-chat rows are identified by `childSessionId`, show the live child title supplied by `AgentChatPane` / `WorkViewArea`, keep the runtime as a small kind chip, and navigate to the child rather than opening the provider-subagent drawer. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. See [App Control](../computer-use/app-control.md). |
 | `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer. Two mount points: under the chat composer and inside the Work right-edge sidebar. Tool-readiness checklist, device + target pickers, three-backend live preview, `interact` vs `inspect` mode, hit-test overlay, and selection emission as `IosElementContextItem`. Accepts an optional `laneId` prop, forwarded into `iosSimulator.launch` so the resulting `IosSimulatorSession` records its launching lane. Simulator controls are not blocked when another chat session owns the simulator — ownership only affects which session receives context insertions, not whether the user can interact with the device. See [iOS Simulator feature](../ios-simulator/README.md). |
@@ -664,12 +664,17 @@ the same panel with zero new chrome: `claudeWorkflowProgress.ts` normalizes
 the undocumented `workflow_progress` snapshot and fans each workflow agent
 out as its own subagent row (phase in the summary line, tokens/duration
 from the snapshot, `workflowName` chip), while the parent workflow task row
-falls back to a phase/count rollup summary. Child chat sessions spawned
-with a parent lineage (`ade chat create` from a tracked agent shell,
-`--parent`) also list here via synthetic `subagent_*` events keyed
-`chat:<childSessionId>`; the parent transcript additionally shows a quiet
-"Subagent spawned" chip (a `status:"subagent_spawned"` system_notice) that
-deep-links to the child chat.
+falls back to a phase/count rollup summary. Child chat sessions spawned with
+a parent lineage (`ade chat create` from a tracked agent shell, `--parent`)
+also list here via synthetic `subagent_*` events keyed
+`chat:<childSessionId>`. `deriveChatSubagentSnapshots` preserves that prefixed
+task id and the underscore event's `spawnKind` when the canonical dot-form
+`subagent.started` twin merges into the same snapshot, then derives an explicit
+`childSessionId`. The panel uses that field for routing, labels the row with
+the live child-session title when available, and shows the runtime as the small
+kind chip. The parent transcript additionally shows a quiet "Subagent spawned"
+chip (a `status:"subagent_spawned"` system notice) that deep-links to the child
+chat.
 
 Codex parallel-agent lifecycle comes from both legacy `collabAgentToolCall`
 items and newer app-server `subAgentActivity` items. The service registers

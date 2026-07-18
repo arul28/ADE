@@ -541,6 +541,86 @@ describe("deriveChatSubagentSnapshots", () => {
     }));
   });
 
+  // A spawned ADE child chat emits BOTH the underscore `subagent_started`
+  // (taskId `chat:<id>`, spawnKind) AND a canonical dot-form `subagent.started`
+  // twin that normalizes to a BARE taskId (= agentId). Both share the identity
+  // key, so a naive last-write lets the twin strip the `chat:` prefix — which is
+  // exactly what breaks spawned-chat navigation. The derivation must keep the
+  // `chat:` taskId and the spawnKind regardless of which event lands last.
+  describe("spawned-chat dual-event (underscore + dot twin) preservation", () => {
+    const underscoreStarted: AgentChatEventEnvelope = {
+      sessionId: "parent-1",
+      timestamp: "2026-07-18T04:10:54.789Z",
+      event: {
+        type: "subagent_started",
+        taskId: "chat:child-1",
+        agentId: "child-1",
+        agentType: "codex",
+        description: "Codex Chat",
+        spawnKind: "subagent",
+      },
+    };
+    // The dot twin as it arrives on the wire (normalizeSubagentLifecycleEvent
+    // maps this to { type: "subagent_started", taskId: "child-1", agentId: "child-1" }).
+    const dotTwin: AgentChatEventEnvelope = {
+      sessionId: "parent-1",
+      timestamp: "2026-07-18T04:10:54.900Z",
+      event: {
+        type: "subagent.started",
+        agentId: "child-1",
+        agentType: "codex",
+        description: "Codex Chat",
+      },
+    };
+
+    it("keeps the chat: taskId and spawnKind when the dot twin lands after the underscore event", () => {
+      const snapshots = deriveChatSubagentSnapshots([underscoreStarted, dotTwin]);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toEqual(expect.objectContaining({
+        taskId: "chat:child-1",
+        childSessionId: "child-1",
+        agentId: "child-1",
+        spawnKind: "subagent",
+      }));
+    });
+
+    it("keeps the chat: taskId and spawnKind when the dot twin lands before the underscore event", () => {
+      const snapshots = deriveChatSubagentSnapshots([dotTwin, underscoreStarted]);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toEqual(expect.objectContaining({
+        taskId: "chat:child-1",
+        childSessionId: "child-1",
+        agentId: "child-1",
+        spawnKind: "subagent",
+      }));
+    });
+
+    it("preserves the chat: taskId and spawnKind across a later progress/result merge", () => {
+      const snapshots = deriveChatSubagentSnapshots([
+        underscoreStarted,
+        dotTwin,
+        {
+          sessionId: "parent-1",
+          timestamp: "2026-07-18T04:11:00.000Z",
+          event: {
+            type: "subagent_result",
+            taskId: "child-1",
+            agentId: "child-1",
+            status: "completed",
+            summary: "Done",
+          },
+        },
+      ]);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toEqual(expect.objectContaining({
+        taskId: "chat:child-1",
+        childSessionId: "child-1",
+        spawnKind: "subagent",
+        status: "completed",
+      }));
+    });
+  });
+
   it("keys Claude snapshots by SDK agent id and preserves background state", () => {
     const events: AgentChatEventEnvelope[] = [
       {

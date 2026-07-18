@@ -1,5 +1,6 @@
 import type {
   AgentChatEventEnvelope,
+  AgentChatSpawnKind,
   TurnDiffSummary,
 } from "../../../shared/types";
 import {
@@ -26,6 +27,8 @@ export function derivePlan(events: AgentChatEventEnvelope[]): ChatInfoPlan {
 
 export type ChatSubagentSnapshot = {
   taskId: string;
+  /** ADE child-chat session id when this row represents a spawned chat. */
+  childSessionId?: string;
   agentId?: string;
   agentType?: string;
   label?: string | null;
@@ -44,6 +47,15 @@ export type ChatSubagentSnapshot = {
   lastToolName?: string;
   background?: boolean;
   taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
+  /**
+   * Spawn lineage kind for a spawned ADE child chat (`subagent`/`peer`); absent
+   * for runtime-native subagents. Only the underscore `subagent_started` event
+   * carries it — the canonical dot-form (`subagent.started`) twin does NOT — so
+   * it must be preserved across the twin's overwrite and later progress/result
+   * merges. Used (alongside a `chat:`-prefixed taskId) to route a row click to
+   * the child chat instead of a transcript takeover/drawer.
+   */
+  spawnKind?: AgentChatSpawnKind;
   workflowName?: string;
   usage?: {
     totalTokens?: number;
@@ -167,6 +179,33 @@ function resolveSubagentSnapshot(
   };
 }
 
+function mergeSubagentTaskId(
+  existingTaskId: string | undefined,
+  eventTaskId: string,
+  adoptedPlaceholder: boolean,
+): string {
+  if (existingTaskId?.startsWith("chat:")) return existingTaskId;
+  return adoptedPlaceholder ? eventTaskId : existingTaskId ?? eventTaskId;
+}
+
+function mergeSubagentChildSessionId(args: {
+  existing: ChatSubagentSnapshot | undefined;
+  taskId: string;
+  agentId: string | undefined;
+  spawnKind: AgentChatSpawnKind | undefined;
+}): string | undefined {
+  const preserved = args.existing?.childSessionId?.trim();
+  if (preserved) return preserved;
+  const spawnedChat = args.taskId.startsWith("chat:")
+    || args.spawnKind != null
+    || args.existing?.taskId.startsWith("chat:")
+    || args.existing?.spawnKind != null;
+  if (!spawnedChat) return undefined;
+  const agentId = args.agentId?.trim();
+  if (agentId) return agentId;
+  return args.taskId.startsWith("chat:") ? args.taskId.slice("chat:".length) : args.taskId;
+}
+
 export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): ChatSubagentSnapshot[] {
   const snapshots = new Map<string, ChatSubagentSnapshot>();
   const resolvedKeysByParent = buildResolvedSubagentKeysByParent(events);
@@ -176,9 +215,13 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
     if (!event) continue;
     if (event.type === "subagent_started") {
       const { key, existing } = resolveSubagentSnapshot(snapshots, event, resolvedKeysByParent);
+      const taskId = mergeSubagentTaskId(existing?.taskId, event.taskId, true);
+      const agentId = event.agentId ?? existing?.agentId;
+      const spawnKind = event.spawnKind ?? existing?.spawnKind;
       snapshots.set(key, {
-        taskId: event.taskId,
-        agentId: event.agentId ?? existing?.agentId,
+        taskId,
+        childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
+        agentId,
         agentType: event.agentType ?? existing?.agentType,
         label: event.label?.trim() || existing?.label,
         model: event.model?.trim() || existing?.model,
@@ -195,6 +238,9 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         lastToolName: existing?.lastToolName,
         background: event.background ?? existing?.background ?? false,
         taskType: event.taskType ?? existing?.taskType,
+        // Only the underscore event carries spawnKind; the dot twin does not, so
+        // fall back to the existing snapshot to survive the twin's overwrite.
+        spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
         usage: existing?.usage,
       });
@@ -203,9 +249,13 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
 
     if (event.type === "subagent_progress") {
       const { key, existing, adoptedPlaceholder } = resolveSubagentSnapshot(snapshots, event, resolvedKeysByParent);
+      const taskId = mergeSubagentTaskId(existing?.taskId, event.taskId, adoptedPlaceholder);
+      const agentId = event.agentId ?? existing?.agentId;
+      const spawnKind = existing?.spawnKind;
       snapshots.set(key, {
-        taskId: adoptedPlaceholder ? event.taskId : existing?.taskId ?? event.taskId,
-        agentId: event.agentId ?? existing?.agentId,
+        taskId,
+        childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
+        agentId,
         agentType: event.agentType ?? existing?.agentType,
         label: event.label?.trim() || existing?.label,
         model: event.model?.trim() || existing?.model,
@@ -222,6 +272,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         lastToolName: event.lastToolName ?? existing?.lastToolName,
         background: existing?.background ?? false,
         taskType: event.taskType ?? existing?.taskType,
+        spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });
@@ -230,9 +281,13 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
 
     if (event.type === "subagent_result") {
       const { key, existing, adoptedPlaceholder } = resolveSubagentSnapshot(snapshots, event, resolvedKeysByParent);
+      const taskId = mergeSubagentTaskId(existing?.taskId, event.taskId, adoptedPlaceholder);
+      const agentId = event.agentId ?? existing?.agentId;
+      const spawnKind = existing?.spawnKind;
       snapshots.set(key, {
-        taskId: adoptedPlaceholder ? event.taskId : existing?.taskId ?? event.taskId,
-        agentId: event.agentId ?? existing?.agentId,
+        taskId,
+        childSessionId: mergeSubagentChildSessionId({ existing, taskId, agentId, spawnKind }),
+        agentId,
         agentType: event.agentType ?? existing?.agentType,
         label: event.label?.trim() || existing?.label,
         model: event.model?.trim() || existing?.model,
@@ -249,6 +304,7 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
         lastToolName: existing?.lastToolName,
         background: existing?.background ?? false,
         taskType: event.taskType ?? existing?.taskType,
+        spawnKind,
         workflowName: event.workflowName ?? existing?.workflowName,
         usage: event.usage ? { ...(existing?.usage ?? {}), ...event.usage } : existing?.usage,
       });

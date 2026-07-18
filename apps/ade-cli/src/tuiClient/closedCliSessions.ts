@@ -80,6 +80,12 @@ export function terminalSessionToChatSummary(
     scheduledWorkPaused: scheduledWorkState?.paused === true,
     scheduledWork: scheduledWorkState?.items ?? [],
     surface: "work",
+    ...(session.resumeMetadata?.orchestrationParentSessionId
+      ? { orchestrationParentSessionId: session.resumeMetadata.orchestrationParentSessionId }
+      : {}),
+    ...(session.resumeMetadata?.spawnKind
+      ? { spawnKind: session.resumeMetadata.spawnKind }
+      : {}),
     terminalStatus: session.status,
     terminalExitCode: session.exitCode,
     terminalRuntimeState: session.runtimeState,
