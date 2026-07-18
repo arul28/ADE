@@ -1635,6 +1635,7 @@ export async function createAdeRuntime(args: {
       ctoStateService,
       ctoMemoryService,
       linearCredentialService: headlessLinearServices.linearCredentialService,
+      linearOAuthService,
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
       processService,

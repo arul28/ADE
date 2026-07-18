@@ -35,6 +35,9 @@ function createService(options?: {
   getPairingConnectInfo?: () => SyncPairingConnectInfo | null;
   issueRuntimeHostPairingGrant?: () => string;
   isCloudRelayEnabled?: () => boolean;
+  linearCredentialService?: Record<string, unknown>;
+  linearOAuthService?: Record<string, unknown>;
+  getLinearIssueTracker?: () => Record<string, unknown> | null;
   usageTrackingService?: Record<string, unknown>;
   productAnalyticsService?: Record<string, unknown>;
   personalChatScope?: {
@@ -87,6 +90,9 @@ function createService(options?: {
       ? { issueRuntimeHostPairingGrant: options.issueRuntimeHostPairingGrant }
       : {}),
     ...(options?.isCloudRelayEnabled ? { isCloudRelayEnabled: options.isCloudRelayEnabled } : {}),
+    ...(options?.linearCredentialService ? { linearCredentialService: options.linearCredentialService } : {}),
+    ...(options?.linearOAuthService ? { linearOAuthService: options.linearOAuthService } : {}),
+    ...(options?.getLinearIssueTracker ? { getLinearIssueTracker: options.getLinearIssueTracker } : {}),
     ...(options?.usageTrackingService ? { usageTrackingService: options.usageTrackingService } : {}),
     ...(options?.productAnalyticsService ? { productAnalyticsService: options.productAnalyticsService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
@@ -239,6 +245,198 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("usage.getAdeStats", { until: "not-a-date" }))).rejects.toThrow(
       "usage.getAdeStats until must be an ISO timestamp.",
     );
+  });
+
+  it("registers CTO-gated Linear credential commands and refreshes status after each mutation", async () => {
+    let token: string | null = null;
+    let authMode: "manual" | "oauth" | null = null;
+    let tokenExpiresAt: string | null = null;
+    const linearCredentialService = {
+      getStatus: vi.fn(() => ({
+        tokenStored: token != null,
+        authMode,
+        tokenExpiresAt,
+        oauthConfigured: true,
+      })),
+      setToken: vi.fn((nextToken: string) => {
+        token = nextToken;
+        authMode = "manual";
+        tokenExpiresAt = null;
+      }),
+      setOAuthToken: vi.fn((next: { accessToken: string; expiresAt?: string | null }) => {
+        token = next.accessToken;
+        authMode = "oauth";
+        tokenExpiresAt = next.expiresAt ?? null;
+      }),
+      clearToken: vi.fn(() => {
+        token = null;
+        authMode = null;
+        tokenExpiresAt = null;
+      }),
+    };
+    const getConnectionStatus = vi.fn(async () => token === "invalid-token"
+      ? {
+          connected: false,
+          viewerId: null,
+          viewerName: null,
+          organizationId: null,
+          organizationName: null,
+          organizationUrlKey: null,
+          organizationLogoUrl: null,
+          message: "Linear rejected the API key.",
+        }
+      : {
+          connected: true,
+          viewerId: "viewer-1",
+          viewerName: "Ada",
+          organizationId: "org-1",
+          organizationName: "Acme",
+          organizationUrlKey: "acme",
+          organizationLogoUrl: "https://example.com/acme.png",
+          message: null,
+        });
+    const startExternalSession = vi.fn(async () => ({
+      sessionId: "linear-oauth-mobile-1",
+      authorizeUrl: "https://linear.app/oauth/authorize?state=state-1",
+      expiresAt: "2026-07-18T12:05:00.000Z",
+    }));
+    const completeExternalSession = vi.fn(async () => {
+      linearCredentialService.setOAuthToken({
+        accessToken: "oauth-access-token",
+        expiresAt: "2026-07-18T14:00:00.000Z",
+      });
+      return { ok: true as const };
+    });
+    const { service } = createService({
+      linearCredentialService,
+      linearOAuthService: { startExternalSession, completeExternalSession },
+      getLinearIssueTracker: () => ({ getConnectionStatus }),
+    });
+    const mutationActions = [
+      "cto.startLinearMobileOAuth",
+      "cto.completeLinearMobileOAuth",
+      "cto.setLinearToken",
+      "cto.clearLinearToken",
+    ] as const;
+
+    for (const action of mutationActions) {
+      expect(service.getDescriptor(action)).toEqual({
+        action,
+        scope: "project",
+        policy: { viewerAllowed: true },
+      });
+    }
+
+    await expect(service.execute(makePayload("cto.startLinearMobileOAuth"))).resolves.toEqual({
+      sessionId: "linear-oauth-mobile-1",
+      authorizeUrl: "https://linear.app/oauth/authorize?state=state-1",
+      expiresAt: "2026-07-18T12:05:00.000Z",
+    });
+    expect(startExternalSession).toHaveBeenCalledWith({
+      redirectUri: "https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/oauth/callback",
+    });
+
+    await expect(service.execute(makePayload("cto.completeLinearMobileOAuth", {
+      sessionId: "linear-oauth-mobile-1",
+      code: "authorization-code",
+      state: "state-1",
+    }))).resolves.toMatchObject({
+      tokenStored: true,
+      connected: true,
+      authMode: "oauth",
+      viewerName: "Ada",
+      organizationName: "Acme",
+    });
+    expect(completeExternalSession).toHaveBeenCalledWith({
+      sessionId: "linear-oauth-mobile-1",
+      code: "authorization-code",
+      state: "state-1",
+    });
+
+    await expect(service.execute(makePayload("cto.setLinearToken", {
+      token: "manual-token",
+    }))).resolves.toMatchObject({
+      tokenStored: true,
+      connected: true,
+      authMode: "manual",
+    });
+    expect(linearCredentialService.setToken).toHaveBeenLastCalledWith("manual-token");
+
+    await expect(service.execute(makePayload("cto.setLinearToken", {
+      token: "invalid-token",
+    }))).resolves.toMatchObject({
+      tokenStored: true,
+      connected: false,
+      authMode: "manual",
+      message: "Linear rejected the API key.",
+    });
+
+    await expect(service.execute(makePayload("cto.clearLinearToken"))).resolves.toMatchObject({
+      tokenStored: false,
+      connected: false,
+      authMode: null,
+      message: "Linear token not configured.",
+    });
+    expect(linearCredentialService.clearToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the existing Linear connection when a mobile OAuth reconnect fails", async () => {
+    // Regression for the /quality F4 finding: an already-connected user taps
+    // Reconnect and the fresh exchange fails (state mismatch / transient). The
+    // stored token is untouched, so the command must report the ACTUAL status
+    // (still connected) with the failure reason attached — never a false
+    // disconnected status that wipes the connected UI.
+    const linearCredentialService = {
+      getStatus: vi.fn(() => ({
+        tokenStored: true,
+        authMode: "oauth" as const,
+        tokenExpiresAt: "2026-07-18T14:00:00.000Z",
+        oauthConfigured: true,
+      })),
+      setToken: vi.fn(),
+      setOAuthToken: vi.fn(),
+      clearToken: vi.fn(),
+    };
+    const getConnectionStatus = vi.fn(async () => ({
+      connected: true,
+      viewerId: "viewer-1",
+      viewerName: "Ada",
+      organizationId: "org-1",
+      organizationName: "Acme",
+      organizationUrlKey: "acme",
+      organizationLogoUrl: "https://example.com/acme.png",
+      message: null,
+    }));
+    const startExternalSession = vi.fn(async () => ({
+      sessionId: "linear-oauth-mobile-2",
+      authorizeUrl: "https://linear.app/oauth/authorize?state=state-2",
+      expiresAt: "2026-07-18T12:05:00.000Z",
+    }));
+    const completeExternalSession = vi.fn(async () => ({
+      ok: false as const,
+      message: "Linear OAuth state did not match the active sign-in. Start a new sign-in and try again.",
+    }));
+    const { service } = createService({
+      linearCredentialService,
+      linearOAuthService: { startExternalSession, completeExternalSession },
+      getLinearIssueTracker: () => ({ getConnectionStatus }),
+    });
+
+    const result = await service.execute(makePayload("cto.completeLinearMobileOAuth", {
+      sessionId: "linear-oauth-mobile-2",
+      code: "authorization-code",
+      state: "stale-state",
+    }));
+
+    expect(result).toMatchObject({
+      tokenStored: true,
+      connected: true,
+      authMode: "oauth",
+      viewerName: "Ada",
+      organizationName: "Acme",
+      message: "Linear OAuth state did not match the active sign-in. Start a new sign-in and try again.",
+    });
+    expect(linearCredentialService.clearToken).not.toHaveBeenCalled();
   });
 
   it("advertises and executes machine personal chats as runtime commands", async () => {

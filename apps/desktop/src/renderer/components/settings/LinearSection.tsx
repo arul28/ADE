@@ -18,6 +18,51 @@ import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
 const LINEAR_BRAND = "#5E6AD2";
 const LINEAR_API_SETTINGS_URL = "https://linear.app/settings/api";
+
+function LinearWorkspaceAvatar({
+  organizationName,
+  logoUrl,
+}: {
+  organizationName: string | null | undefined;
+  logoUrl: string | null | undefined;
+}) {
+  const normalizedLogoUrl = logoUrl?.trim() || null;
+  const [failedLogoUrl, setFailedLogoUrl] = useState<string | null>(null);
+  const showLogo = normalizedLogoUrl != null && failedLogoUrl !== normalizedLogoUrl;
+  const monogram = organizationName?.trim().charAt(0).toUpperCase() || "L";
+
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width: 24,
+        height: 24,
+        flex: "0 0 24px",
+        overflow: "hidden",
+        borderRadius: 7,
+        border: `1px solid color-mix(in srgb, ${LINEAR_BRAND} 28%, transparent)`,
+        background: `color-mix(in srgb, ${LINEAR_BRAND} 14%, transparent)`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        color: COLORS.textPrimary,
+        fontFamily: SANS_FONT,
+        fontSize: 11,
+        fontWeight: 700,
+      }}
+    >
+      {showLogo ? (
+        <img
+          src={normalizedLogoUrl}
+          alt=""
+          onError={() => setFailedLogoUrl(normalizedLogoUrl)}
+          style={{ width: "100%", height: "100%", objectFit: "cover" }}
+        />
+      ) : monogram}
+    </div>
+  );
+}
+
 type GitHubAutolinkCandidate = {
   id: string;
   title: string;
@@ -479,12 +524,18 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
               background: "color-mix(in srgb, var(--color-fg) 4%, transparent)",
               border: `1px solid ${COLORS.border}`,
             }}>
-              <div>
-                <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, marginBottom: 2 }}>
-                  Workspace
-                </div>
-                <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                  {workspaceLabel}
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <LinearWorkspaceAvatar
+                  organizationName={connection?.organizationName}
+                  logoUrl={connection?.organizationLogoUrl}
+                />
+                <div>
+                  <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, marginBottom: 2 }}>
+                    Workspace
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                    {workspaceLabel}
+                  </div>
                 </div>
               </div>
               {connection?.organizationUrlKey ? (

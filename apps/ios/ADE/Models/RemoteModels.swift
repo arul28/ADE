@@ -1402,6 +1402,16 @@ struct LinearIssueComment: Codable, Hashable, Identifiable {
   var userDisplayName: String?
 }
 
+/// Response of `cto.startLinearMobileOAuth`: the pending desktop OAuth session
+/// plus the Linear authorize URL the phone opens in `ASWebAuthenticationSession`.
+/// The `code_verifier` never leaves the desktop; the phone only forwards the
+/// authorization `code` back over sync for the desktop to exchange.
+struct LinearMobileOAuthSession: Codable, Hashable {
+  var sessionId: String
+  var authorizeUrl: String
+  var expiresAt: String
+}
+
 
 struct AgentChatSession: Codable, Identifiable, Equatable {
   var id: String { sessionId }

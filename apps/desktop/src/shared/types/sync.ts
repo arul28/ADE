@@ -16,6 +16,7 @@ import type {
 } from "./externalSessions";
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
+import type { LinearConnectionStatus } from "./linearSync";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -1081,6 +1082,32 @@ export type SyncSendToSessionArgs = {
 
 export type SyncSendToSessionResult = PtySendToSessionResult;
 
+export type CtoStartLinearMobileOAuthArgs = Record<string, never>;
+
+export type CtoStartLinearMobileOAuthResult = {
+  sessionId: string;
+  authorizeUrl: string;
+  expiresAt: string;
+};
+
+export type CtoCompleteLinearMobileOAuthArgs = {
+  sessionId: string;
+  code: string;
+  state: string;
+};
+
+export type CtoCompleteLinearMobileOAuthResult = LinearConnectionStatus;
+
+export type CtoSetLinearTokenSyncArgs = {
+  token: string;
+};
+
+export type CtoSetLinearTokenResult = LinearConnectionStatus;
+
+export type CtoClearLinearTokenArgs = Record<string, never>;
+
+export type CtoClearLinearTokenResult = LinearConnectionStatus;
+
 export type SyncRemoteCommandAction =
   | "analytics.capture"
   | "analytics.flush"
@@ -1200,6 +1227,10 @@ export type SyncRemoteCommandAction =
   | "cto.getState"
   | "cto.getMemory"
   | "cto.getLinearConnectionStatus"
+  | "cto.startLinearMobileOAuth"
+  | "cto.completeLinearMobileOAuth"
+  | "cto.setLinearToken"
+  | "cto.clearLinearToken"
   | "cto.getLinearQuickView"
   | "cto.getLinearIssuePickerData"
   | "cto.searchLinearIssues"

@@ -104,6 +104,17 @@ queueing/sending them, and shows update guidance from the host state. When a new
 mobile release adds required host behavior, update the shared contract and the
 iOS compatibility tests in the same branch.
 
+Alongside the required set the file keeps an **optional** list
+(`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`) for additive commands newer
+phones feature-detect but that older mobile builds never call — so their absence
+must not put a host in `limited`. The four Linear connection commands
+(`cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`,
+`cto.setLinearToken`, `cto.clearLinearToken`) that let the phone connect,
+reconnect, and disconnect Linear are optional: a brain that predates them simply
+doesn't advertise them, and the iOS Linear pane hides those affordances locally
+instead of erroring. See `remote-commands.md` and
+`../linear-integration/README.md`.
+
 ## What syncs, what does not
 
 | Data category | Sync mechanism | Devices |

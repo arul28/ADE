@@ -1983,6 +1983,15 @@ func performAuthorizedAccountPairingCommit<Hello, Prepared, Committed>(
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
   @Published private(set) var hostName: String?
+
+  /// Human-facing name of the connected machine, or a neutral "your Mac"
+  /// fallback. Shared by Linear connect/status copy (and available to other
+  /// surfaces that otherwise re-derive the same fallback).
+  var machineDisplayName: String {
+    let trimmed = hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let trimmed, !trimmed.isEmpty { return trimmed }
+    return "your Mac"
+  }
   /// Whether this phone currently holds a Tailscale-assigned address on a
   /// tunnel interface. Drives the "iPhone isn't on Tailscale" connection hint.
   @Published private(set) var phoneHasTailnetInterface = false
@@ -5543,6 +5552,63 @@ final class SyncService: ObservableObject {
       args: ["issueId": issueId],
       as: [LinearIssueComment].self
     )
+  }
+
+  // MARK: - Linear credential mutations (mobile connect / manage)
+  //
+  // These four commands are CTO-only credential mutations gated on the host
+  // (a read-only/viewer controller cannot invoke them — see Unit A). The token
+  // itself never crosses the wire: OAuth exchange and storage happen on the
+  // desktop; the phone only starts a PKCE-bound session and forwards the
+  // authorization code back. Each command that returns a fresh
+  // `LinearConnectionStatus` also updates the published property so the Work
+  // top-bar entry point and any open pane reflect the change immediately.
+
+  /// Begins a worker-bounce OAuth session on the connected desktop and returns
+  /// the Linear authorize URL to open in `ASWebAuthenticationSession`.
+  func startLinearMobileOAuth() async throws -> LinearMobileOAuthSession {
+    try await sendDecodableCommand(
+      action: "cto.startLinearMobileOAuth",
+      as: LinearMobileOAuthSession.self
+    )
+  }
+
+  /// Forwards the captured authorization `code` + `state` to the desktop, which
+  /// exchanges them (with its stored PKCE verifier) and stores the OAuth token.
+  @MainActor
+  func completeLinearMobileOAuth(sessionId: String, code: String, state: String) async throws -> LinearConnectionStatus {
+    let status = try await sendDecodableCommand(
+      action: "cto.completeLinearMobileOAuth",
+      args: ["sessionId": sessionId, "code": code, "state": state],
+      as: LinearConnectionStatus.self
+    )
+    linearConnectionStatus = status
+    return status
+  }
+
+  /// Stores a manually-entered Linear API key on the desktop (authMode `manual`)
+  /// and returns the recomputed, viewer-validated connection status.
+  @MainActor
+  func setLinearToken(_ token: String) async throws -> LinearConnectionStatus {
+    let status = try await sendDecodableCommand(
+      action: "cto.setLinearToken",
+      args: ["token": token],
+      as: LinearConnectionStatus.self
+    )
+    linearConnectionStatus = status
+    return status
+  }
+
+  /// Clears the stored Linear credential on the desktop (affects the whole
+  /// machine) and returns the resulting disconnected status.
+  @MainActor
+  func clearLinearToken() async throws -> LinearConnectionStatus {
+    let status = try await sendDecodableCommand(
+      action: "cto.clearLinearToken",
+      as: LinearConnectionStatus.self
+    )
+    linearConnectionStatus = status
+    return status
   }
 
   func updateCtoIdentity(patch: CtoIdentityPatch) async throws -> CtoSnapshot {

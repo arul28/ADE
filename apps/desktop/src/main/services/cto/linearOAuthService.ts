@@ -14,7 +14,11 @@ const LINEAR_TOKEN_URL = "https://api.linear.app/oauth/token";
 const CALLBACK_PATH = "/oauth/callback";
 const OAUTH_HOST = "127.0.0.1";
 const OAUTH_PORT = 19836;
-const SESSION_TTL_MS = 10 * 60 * 1000;
+const LOOPBACK_SESSION_TTL_MS = 10 * 60 * 1000;
+const EXTERNAL_SESSION_TTL_MS = 5 * 60 * 1000;
+
+export const LINEAR_MOBILE_OAUTH_REDIRECT_URI =
+  "https://ade-github-webhook-relay.arulsharma1028.workers.dev/linear/oauth/callback";
 
 type LinearOAuthSessionState = {
   id: string;
@@ -27,6 +31,26 @@ type LinearOAuthSessionState = {
   error: string | null;
   server: http.Server;
 };
+
+type LinearExternalOAuthSessionState = {
+  id: string;
+  state: string;
+  redirectUri: string;
+  authorizeUrl: string;
+  codeVerifier: string;
+  createdAt: number;
+  expiresAt: string;
+};
+
+export type LinearExternalOAuthStartResult = {
+  sessionId: string;
+  authorizeUrl: string;
+  expiresAt: string;
+};
+
+export type LinearExternalOAuthCompleteResult =
+  | { ok: true }
+  | { ok: false; message: string };
 
 function isAddressInUseError(error: unknown): boolean {
   if (!error || typeof error !== "object") return false;
@@ -53,6 +77,7 @@ export function createLinearOAuthService(args: {
 }) {
   const fetchImpl = args.fetchImpl ?? fetch;
   const sessions = new Map<string, LinearOAuthSessionState>();
+  const externalSessions = new Map<string, LinearExternalOAuthSessionState>();
 
   const finalizeSession = (session: LinearOAuthSessionState, patch: {
     status: LinearOAuthSessionState["status"];
@@ -70,19 +95,62 @@ export function createLinearOAuthService(args: {
   const pruneExpiredSessions = () => {
     const now = Date.now();
     for (const session of sessions.values()) {
-      if (session.status === "pending" && now - session.createdAt > SESSION_TTL_MS) {
+      if (session.status === "pending" && now - session.createdAt > LOOPBACK_SESSION_TTL_MS) {
         finalizeSession(session, {
           status: "expired",
           error: "Linear OAuth session expired before the callback completed.",
         });
       }
-      if (session.status !== "pending" && now - session.createdAt > SESSION_TTL_MS * 2) {
+      if (session.status !== "pending" && now - session.createdAt > LOOPBACK_SESSION_TTL_MS * 2) {
         sessions.delete(session.id);
       }
     }
   };
 
-  const exchangeCode = async (session: LinearOAuthSessionState, code: string): Promise<void> => {
+  const pruneExpiredExternalSessions = () => {
+    const now = Date.now();
+    for (const session of externalSessions.values()) {
+      if (now - session.createdAt >= EXTERNAL_SESSION_TTL_MS) {
+        externalSessions.delete(session.id);
+      }
+    }
+  };
+
+  const buildAuthorizeUrl = (input: {
+    clientId: string;
+    redirectUri: string;
+    state: string;
+    codeChallenge?: string | null;
+  }): string => {
+    const authorizeUrl = new URL(LINEAR_AUTHORIZE_URL);
+    authorizeUrl.searchParams.set("client_id", input.clientId);
+    authorizeUrl.searchParams.set("redirect_uri", input.redirectUri);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("state", input.state);
+    // The ADE app's data-change webhooks only deliver for a workspace whose
+    // authorization carries the admin scope (Linear's OAuth-app webhook rule).
+    // Custom OAuth clients keep the narrower grant.
+    authorizeUrl.searchParams.set(
+      "scope",
+      args.credentials.getOAuthClientSource() === "ade-app" ? "read,write,admin" : "read,write",
+    );
+    // Keep authorization user-scoped. This is Linear's default, but making it
+    // explicit keeps the desktop and mobile authorize URLs byte-for-byte aligned.
+    authorizeUrl.searchParams.set("actor", "user");
+    // Ask Linear for a consent screen; Linear still resolves the workspace
+    // from the user's active browser session/workspace switcher.
+    authorizeUrl.searchParams.set("prompt", "consent");
+    if (input.codeChallenge) {
+      authorizeUrl.searchParams.set("code_challenge_method", "S256");
+      authorizeUrl.searchParams.set("code_challenge", input.codeChallenge);
+    }
+    return authorizeUrl.toString();
+  };
+
+  const exchangeCode = async (
+    session: Pick<LinearOAuthSessionState, "redirectUri" | "codeVerifier">,
+    code: string,
+  ): Promise<void> => {
     const oauthClient = args.credentials.getOAuthClientCredentials();
     if (!oauthClient) {
       throw new Error("Linear OAuth is not configured. Configure it in Settings > Linear.");
@@ -245,31 +313,18 @@ export function createLinearOAuthService(args: {
     }
 
     const redirectUri = `http://127.0.0.1:${address.port}${CALLBACK_PATH}`;
-    const authUrl = new URL(LINEAR_AUTHORIZE_URL);
-    authUrl.searchParams.set("client_id", oauthClient.clientId);
-    authUrl.searchParams.set("redirect_uri", redirectUri);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("state", state);
-    // The ADE app's data-change webhooks only deliver for a workspace whose
-    // authorization carries the admin scope (Linear's OAuth-app webhook rule).
-    // Custom OAuth clients keep the narrower grant.
-    authUrl.searchParams.set(
-      "scope",
-      args.credentials.getOAuthClientSource() === "ade-app" ? "read,write,admin" : "read,write",
-    );
-    // Ask Linear for a consent screen; Linear still resolves the workspace
-    // from the user's active browser session/workspace switcher.
-    authUrl.searchParams.set("prompt", "consent");
-    if (pkce) {
-      authUrl.searchParams.set("code_challenge_method", "S256");
-      authUrl.searchParams.set("code_challenge", pkce.challenge);
-    }
+    const authUrl = buildAuthorizeUrl({
+      clientId: oauthClient.clientId,
+      redirectUri,
+      state,
+      codeChallenge: pkce?.challenge,
+    });
 
     session = {
       id: sessionId,
       state,
       redirectUri,
-      authUrl: authUrl.toString(),
+      authUrl,
       codeVerifier: pkce?.verifier ?? null,
       createdAt: Date.now(),
       status: "pending",
@@ -300,9 +355,85 @@ export function createLinearOAuthService(args: {
     };
   };
 
+  const startExternalSession = async (input: {
+    redirectUri: string;
+  }): Promise<LinearExternalOAuthStartResult> => {
+    pruneExpiredExternalSessions();
+    const oauthClient = args.credentials.getOAuthClientCredentials();
+    if (!oauthClient) {
+      throw new Error("Linear OAuth is not configured. Configure it in Settings > Linear.");
+    }
+
+    const sessionId = `linear-oauth-${randomUUID()}`;
+    const state = randomUUID();
+    const pkce = createPkcePair();
+    const createdAt = Date.now();
+    const expiresAt = new Date(createdAt + EXTERNAL_SESSION_TTL_MS).toISOString();
+    const authorizeUrl = buildAuthorizeUrl({
+      clientId: oauthClient.clientId,
+      redirectUri: input.redirectUri,
+      state,
+      codeChallenge: pkce.challenge,
+    });
+
+    externalSessions.set(sessionId, {
+      id: sessionId,
+      state,
+      redirectUri: input.redirectUri,
+      authorizeUrl,
+      codeVerifier: pkce.verifier,
+      createdAt,
+      expiresAt,
+    });
+
+    return { sessionId, authorizeUrl, expiresAt };
+  };
+
+  const completeExternalSession = async (input: {
+    sessionId: string;
+    code: string;
+    state: string;
+  }): Promise<LinearExternalOAuthCompleteResult> => {
+    pruneExpiredExternalSessions();
+    const session = externalSessions.get(input.sessionId);
+    if (!session) {
+      return {
+        ok: false,
+        message: "Linear OAuth session was not found or has expired. Start a new sign-in and try again.",
+      };
+    }
+    if (input.state !== session.state) {
+      args.logger?.warn("linear_sync.external_oauth_state_mismatch", {
+        sessionId: session.id,
+        hasReturnedState: input.state.length > 0,
+      });
+      return {
+        ok: false,
+        message: "Linear OAuth state did not match the active sign-in. Start a new sign-in and try again.",
+      };
+    }
+
+    try {
+      await exchangeCode(session, input.code);
+      externalSessions.delete(session.id);
+      return { ok: true };
+    } catch (error) {
+      const message = error instanceof Error && error.message
+        ? error.message
+        : "Linear OAuth token exchange failed.";
+      args.logger?.warn("linear_sync.external_oauth_exchange_failed", {
+        sessionId: session.id,
+        error: message,
+      });
+      return { ok: false, message };
+    }
+  };
+
   return {
     startSession,
     getSession,
+    startExternalSession,
+    completeExternalSession,
     dispose() {
       for (const session of sessions.values()) {
         try {
@@ -312,6 +443,7 @@ export function createLinearOAuthService(args: {
         }
       }
       sessions.clear();
+      externalSessions.clear();
     },
   };
 }
