@@ -547,9 +547,12 @@ modelPicker.*                # cross-surface model favorites/recents backed by
                              # per-project CRR tables (`model_picker_favorites`,
                              # `model_picker_recents`) and shared by desktop,
                              # TUI, and iOS sync commands.
-ade.ai.*                     # AI integration status + provider auth (storeApiKey/deleteApiKey/getStatus/...).
+ade.ai.*                     # AI integration status + provider auth (storeApiKey/deleteApiKey/getStatus/updateConfig/...).
                              # ade.ai.isOpenCodeInstalled is a cheap probe (no runtime spin-up)
                              # used to gate the ModelPicker OpenCode rail + Settings install CTA.
+                             # OpenCode subscription auth + catalog: opencodeAuthMethods, opencodeOAuthStart /
+                             # opencodeOAuthCancel / opencodeOAuthStatus (push), setOpencodeProviderKey, refreshModelsDev.
+                             # See features/chat/README.md for the channel table + fan-out wiring.
 ade.ai.cursorCloud.*         # Cursor background-agents bridge: listRepositories, listAgents, listRuns, getAgent, createRun, followUp, streamRun, cancelRun, archiveAgent / unarchiveAgent / deleteAgent, listArtifacts / downloadArtifact, openChat (mirror an existing cloud agent into an ADE chat session)
 ade.automations.*
 ade.orchestration.*          # work-tab orchestration: runCreate, bundleRead, manifestReadSection,

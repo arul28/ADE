@@ -1175,6 +1175,38 @@ export type AiClaudeAvailability = {
   };
 };
 
+export interface OpenCodeProviderAuthPrompt {
+  type: "text" | "select";
+  key: string;
+  message: string;
+  placeholder?: string;
+  options?: Array<{ label: string; value: string; hint?: string }>;
+  when?: { key: string; op: "eq" | "neq"; value: string };
+}
+export interface OpenCodeProviderAuthMethod {
+  type: "oauth" | "api";
+  label: string;
+  prompts?: OpenCodeProviderAuthPrompt[];
+}
+export type OpenCodeProviderAuthMethods = Record<string, OpenCodeProviderAuthMethod[]>;
+export interface OpenCodeOAuthStartResult {
+  url: string;
+  method: "auto" | "code";
+  instructions: string;
+}
+export interface OpenCodeOAuthStatusEvent {
+  providerId: string;
+  state: "pending" | "connected" | "failed" | "cancelled" | "timeout";
+  error?: string;
+}
+export interface AiCustomProviderConfig {
+  id: string;
+  name: string;
+  baseURL: string;
+  npm?: "@ai-sdk/openai-compatible" | "@ai-sdk/openai" | "@ai-sdk/anthropic";
+  models: string[];
+}
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -1198,6 +1230,12 @@ export type AiSettingsStatus = {
   opencodeBinarySource?: "user-installed" | "bundled" | "missing";
   opencodeInventoryError?: string | null;
   opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
+  /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */
+  opencodeProvidersStale?: boolean;
+  customProviders?: AiCustomProviderConfig[];
+  customModelSlugs?: string[];
+  /** Epoch ms of the last successful models.dev fetch (or cache mtime on fallback); null if never fetched. */
+  modelsDevLastFetchedAt?: number | null;
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     macosKeychainAvailable?: boolean;
@@ -1359,6 +1397,10 @@ export type AiConfig = {
   defaultModel?: ModelId;
   apiKeys?: Record<string, string>;
   localProviders?: AiLocalProviderConfigs;
+  /** User-defined OpenAI-compatible providers injected into the OpenCode server config. */
+  customProviders?: AiCustomProviderConfig[];
+  /** Extra model slugs (provider/model) the user pinned as selectable beyond probed inventory. */
+  customModelSlugs?: string[];
   workerSafety?: WorkerSafetyPolicy;
   /** Per-feature model overrides, e.g. { pr_descriptions: "claude-sonnet-5" } */
   featureModelOverrides?: Partial<Record<AiFeatureKey, string | null>>;

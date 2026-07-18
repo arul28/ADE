@@ -907,6 +907,168 @@ describe("createAdeWebAdapter", () => {
     expect(fake.terminalInputs).toEqual([{ sessionId: "session-1", data: "echo ok\n" }]);
     adapter.dispose();
   });
+
+  it("routes the OpenCode AI methods to their host actions and bridges the OAuth status event", async () => {
+    fake.descriptors = descriptors([
+      "ai.opencodeAuthMethods",
+      "ai.opencodeOAuthStart",
+      "ai.opencodeOAuthCancel",
+      "ai.setOpencodeProviderKey",
+      "ai.clearOpencodeProviderKey",
+      "ai.refreshModelsDev",
+    ]);
+    fake.commandResults.set("ai.opencodeAuthMethods", {
+      methods: { anthropic: [{ type: "oauth", label: "Claude" }] },
+    });
+    fake.commandResults.set("ai.opencodeOAuthStart", {
+      url: "https://opencode.example/oauth",
+      method: "auto",
+      instructions: "Open the link to finish signing in.",
+    });
+    fake.commandResults.set("ai.setOpencodeProviderKey", { ok: true });
+    fake.commandResults.set("ai.clearOpencodeProviderKey", { ok: true });
+    fake.commandResults.set("ai.refreshModelsDev", {
+      lastFetchedAt: Date.parse("2026-07-17T00:00:00.000Z"),
+    });
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    // The web adapter builds `ai` as a Record and casts it, so type the surface
+    // locally instead of depending on the preload global contract landing first.
+    const ai = adapter.ade.ai as unknown as {
+      opencodeAuthMethods: () => Promise<{ methods: Record<string, Array<{ type: string; label: string }>> }>;
+      opencodeOAuthStart: (args: unknown) => Promise<{ url: string; method: string; instructions: string }>;
+      opencodeOAuthCancel: (args: unknown) => Promise<unknown>;
+      setOpencodeProviderKey: (args: unknown) => Promise<{ ok: boolean; error?: string }>;
+      clearOpencodeProviderKey: (args: unknown) => Promise<{ ok: boolean; error?: string }>;
+      refreshModelsDev: () => Promise<{ lastFetchedAt: number | null }>;
+      onOpencodeOAuthStatus: (cb: (status: unknown) => void) => () => void;
+    };
+
+    await expect(ai.opencodeAuthMethods()).resolves.toEqual({
+      methods: { anthropic: [{ type: "oauth", label: "Claude" }] },
+    });
+    await expect(ai.opencodeOAuthStart({ providerId: "anthropic" })).resolves.toMatchObject({
+      url: "https://opencode.example/oauth",
+      method: "auto",
+    });
+    await ai.opencodeOAuthCancel({ providerId: "anthropic" });
+    await expect(ai.setOpencodeProviderKey({ providerId: "anthropic", key: "sk-test" })).resolves.toEqual({ ok: true });
+    await expect(ai.clearOpencodeProviderKey({ providerId: "anthropic" })).resolves.toEqual({ ok: true });
+    await expect(ai.refreshModelsDev()).resolves.toEqual({
+      lastFetchedAt: Date.parse("2026-07-17T00:00:00.000Z"),
+    });
+
+    const statusEvents: unknown[] = [];
+    const unsubscribe = ai.onOpencodeOAuthStatus((status) => statusEvents.push(status));
+    expect(typeof unsubscribe).toBe("function");
+    unsubscribe();
+
+    expect(fake.commandCalls.map((call) => call.action)).toEqual([
+      "ai.opencodeAuthMethods",
+      "ai.opencodeOAuthStart",
+      "ai.opencodeOAuthCancel",
+      "ai.setOpencodeProviderKey",
+      "ai.clearOpencodeProviderKey",
+      "ai.refreshModelsDev",
+    ]);
+
+    adapter.dispose();
+  });
+
+  it("passes custom provider and model slug config patches directly to the host action", async () => {
+    fake.descriptors = descriptors(["ai.updateConfig"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const patch = {
+      customProviders: [
+        {
+          id: "acme",
+          name: "Acme",
+          baseURL: "https://acme.example/v1",
+          models: ["deep-think"],
+        },
+      ],
+      customModelSlugs: ["acme/deep-think", "openai/gpt-5"],
+    };
+
+    await adapter.ade.ai.updateConfig(patch);
+
+    expect(fake.commandCalls).toContainEqual({
+      action: "ai.updateConfig",
+      args: patch,
+      opts: { projectId: "project-1", timeoutMs: undefined },
+    });
+    adapter.dispose();
+  });
+
+  it("rejects OpenCode sign-in offline instead of resolving a fabricated result", async () => {
+    // No descriptor registered = host unreachable. opencodeOAuthStart has no
+    // meaningful fallback shape, so it must reject rather than resolve.
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const ai = adapter.ade.ai as unknown as {
+      opencodeOAuthStart: (args: unknown) => Promise<unknown>;
+      opencodeAuthMethods: () => Promise<{ methods: Record<string, unknown> }>;
+    };
+
+    await expect(ai.opencodeOAuthStart({ providerId: "anthropic" })).rejects.toThrow(/unavailable/i);
+    // Reads still degrade to their typed fallback.
+    await expect(ai.opencodeAuthMethods()).resolves.toEqual({ methods: {} });
+
+    adapter.dispose();
+  });
+
+  it("makes onOpencodeOAuthStatus live by draining OAuth status from the runtime buffer", async () => {
+    vi.useFakeTimers();
+    fake.descriptors = descriptors(["ai.opencodeOAuthStart", "personalChats.streamEvents"]);
+    fake.commandResults.set("ai.opencodeOAuthStart", {
+      url: "https://opencode.example/oauth",
+      method: "auto",
+      instructions: "Finish signing in.",
+    });
+    // The web adapter pulls the shared runtime event buffer; the OAuth status
+    // transition arrives as a category:"runtime" buffered event keyed by kind.
+    fake.commandResults.set("personalChats.streamEvents", {
+      events: [
+        {
+          id: 5,
+          timestamp: "2026-07-17T00:00:00.000Z",
+          category: "runtime",
+          payload: { kind: "opencodeOAuthStatus", event: { providerId: "anthropic", state: "connected" } },
+        },
+      ],
+      nextCursor: 5,
+      hasMore: false,
+    });
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const ai = adapter.ade.ai as unknown as {
+      opencodeOAuthStart: (args: unknown) => Promise<unknown>;
+      onOpencodeOAuthStatus: (cb: (status: { providerId: string; state: string }) => void) => () => void;
+    };
+
+    const statusEvents: Array<{ providerId: string; state: string }> = [];
+    const unsubscribe = ai.onOpencodeOAuthStatus((status) => statusEvents.push(status));
+
+    await ai.opencodeOAuthStart({ providerId: "anthropic" });
+    // The status transition is drained on the next poll tick and re-emitted onto
+    // the adapter bus, reaching the live subscription.
+    await vi.advanceTimersByTimeAsync(1_100);
+
+    expect(statusEvents).toEqual([{ providerId: "anthropic", state: "connected" }]);
+    // A terminal state stops the scoped drain; no further polling is scheduled.
+    const streamCallsAfter = fake.commandCalls.filter((call) => call.action === "personalChats.streamEvents").length;
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(
+      fake.commandCalls.filter((call) => call.action === "personalChats.streamEvents").length,
+    ).toBe(streamCallsAfter);
+
+    unsubscribe();
+    adapter.dispose();
+  });
 });
 
 function descriptors(actions: string[]): SyncRemoteCommandDescriptor[] {

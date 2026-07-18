@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockState = vi.hoisted(() => ({
   acquireSharedOpenCodeServer: vi.fn(async () => ({
@@ -57,10 +60,14 @@ vi.mock("./openCodeServerManager", () => ({
 }));
 
 import {
+  __setOpenCodeInventoryPersistencePathForTests,
   clearOpenCodeInventoryCache,
+  loadPersistedOpenCodeInventory,
   peekOpenCodeInventoryCache,
+  persistOpenCodeInventory,
   probeOpenCodeProviderInventory,
   shutdownInventoryServer,
+  type OpenCodeProviderInfo,
 } from "./openCodeInventory";
 
 describe("openCodeInventory", () => {
@@ -89,6 +96,60 @@ describe("openCodeInventory", () => {
   it("only clears cache when shutting down inventory state", () => {
     shutdownInventoryServer();
     expect(mockState.shutdownOpenCodeServers).toHaveBeenCalledWith({ leaseKind: "shared", ownerKind: "inventory" });
+  });
+
+  it("invalidates cached inventory when custom provider config changes", async () => {
+    const logger = { warn: vi.fn() } as any;
+
+    await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: {
+        ai: {
+          customProviders: [{
+            id: "acme",
+            name: "Acme",
+            baseURL: "https://old.example.test/v1",
+            models: ["old-model"],
+          }],
+        },
+      },
+      logger,
+      force: true,
+    });
+    await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: {
+        ai: {
+          customProviders: [{
+            id: "acme",
+            name: "Acme",
+            baseURL: "https://new.example.test/v1",
+            models: ["new-model"],
+          }],
+        },
+      },
+      logger,
+    });
+
+    expect(mockState.providerList).toHaveBeenCalledTimes(2);
+  });
+
+  it("invalidates cached inventory when custom model slugs change", async () => {
+    const logger = { warn: vi.fn() } as any;
+
+    await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: { customModelSlugs: ["acme/old-model"] } },
+      logger,
+      force: true,
+    });
+    await probeOpenCodeProviderInventory({
+      projectRoot: "/repo",
+      projectConfig: { ai: { customModelSlugs: ["acme/new-model"] } },
+      logger,
+    });
+
+    expect(mockState.providerList).toHaveBeenCalledTimes(2);
   });
 
   it("filters local providers when discovery data is absent", async () => {
@@ -319,7 +380,7 @@ describe("openCodeInventory", () => {
     expect(opusDescriptor?.serviceTiers).toEqual(["fast"]);
   });
 
-  it("normalizes retired-only Anthropic OpenCode rows to canonical launch ids", async () => {
+  it("normalizes retired-only Anthropic display ids while routing through advertised aliases", async () => {
     const logger = { warn: vi.fn() } as any;
     mockState.providerList.mockResolvedValueOnce({
       data: {
@@ -364,8 +425,8 @@ describe("openCodeInventory", () => {
     expect(result.modelIds).not.toContain("opencode/anthropic/opus");
     expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
       displayName: "Claude Sonnet 5",
-      openCodeModelId: "claude-sonnet-5",
-      providerModelId: "anthropic/claude-sonnet-5",
+      openCodeModelId: "claude-sonnet-4-6",
+      providerModelId: "anthropic/claude-sonnet-4-6",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: expect.objectContaining({
@@ -377,8 +438,8 @@ describe("openCodeInventory", () => {
     });
     expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toMatchObject({
       displayName: "Claude Opus 4.8 1M",
-      openCodeModelId: "claude-opus-4-8",
-      providerModelId: "anthropic/claude-opus-4-8",
+      openCodeModelId: "opus",
+      providerModelId: "anthropic/opus",
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: expect.objectContaining({
@@ -533,5 +594,66 @@ describe("openCodeInventory", () => {
         "opencode/ollama/llama-3.1",
       ]),
     }));
+  });
+});
+
+describe("openCode inventory persistence", () => {
+  let cacheFile: string;
+
+  const providers: OpenCodeProviderInfo[] = [
+    { id: "openai", name: "OpenAI", connected: true, modelCount: 12 },
+    { id: "moonshotai", name: "Moonshot", connected: false, modelCount: 4 },
+  ];
+
+  beforeEach(() => {
+    cacheFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ade-oc-inv-")), "inventory.json");
+    __setOpenCodeInventoryPersistencePathForTests(cacheFile);
+  });
+
+  afterEach(() => {
+    __setOpenCodeInventoryPersistencePathForTests(null);
+    try {
+      fs.rmSync(path.dirname(cacheFile), { recursive: true, force: true });
+    } catch {
+      // ignore cleanup failures
+    }
+  });
+
+  it("persists a probe's provider list and reloads it from disk on a cold read", () => {
+    persistOpenCodeInventory("/repo", providers);
+
+    // Drop the in-memory memo so the read comes straight from disk (cold path).
+    __setOpenCodeInventoryPersistencePathForTests(cacheFile);
+
+    expect(loadPersistedOpenCodeInventory("/repo")).toEqual(providers);
+  });
+
+  it("keeps provider lists isolated per project root", () => {
+    persistOpenCodeInventory("/repo", providers);
+    __setOpenCodeInventoryPersistencePathForTests(cacheFile);
+
+    expect(loadPersistedOpenCodeInventory("/other")).toEqual([]);
+  });
+
+  it("returns an empty list when nothing has been persisted", () => {
+    expect(loadPersistedOpenCodeInventory("/repo")).toEqual([]);
+  });
+
+  it("discards malformed persisted entries while preserving valid projects", () => {
+    fs.writeFileSync(cacheFile, JSON.stringify({
+      "/valid": { providers, savedAt: Date.now() },
+      "/providers-not-array": { providers: "invalid", savedAt: Date.now() },
+      "/invalid-provider": {
+        providers: [{ id: "openai", name: "OpenAI", connected: "yes", modelCount: 12 }],
+        savedAt: Date.now(),
+      },
+      "/invalid-timestamp": { providers, savedAt: "yesterday" },
+    }), "utf8");
+    __setOpenCodeInventoryPersistencePathForTests(cacheFile);
+
+    expect(loadPersistedOpenCodeInventory("/valid")).toEqual(providers);
+    expect(loadPersistedOpenCodeInventory("/providers-not-array")).toEqual([]);
+    expect(loadPersistedOpenCodeInventory("/invalid-provider")).toEqual([]);
+    expect(loadPersistedOpenCodeInventory("/invalid-timestamp")).toEqual([]);
   });
 });

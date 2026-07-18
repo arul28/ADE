@@ -1,6 +1,8 @@
 import {
   peerToRuntimeDeviceState,
+  type AiConfig,
   type GitHubStatus,
+  type PersonalChatStreamEventsResult,
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
@@ -41,10 +43,23 @@ export type MiscNamespaces = {
   automations: AdeNamespace<"automations">;
 };
 
+import type {
+  OpenCodeOAuthStartResult,
+  OpenCodeOAuthStatusEvent,
+  OpenCodeProviderAuthMethods,
+} from "../../../shared/types";
+
 export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const { client, commands, events, localState, state } = infra;
 
-  function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
+  function call<T>(
+    action: string,
+    args: unknown,
+    // Mirror CommandCaller's Fallback<T>: an eager value, or a lazy resolver
+    // that may throw/reject (used by must-succeed calls with no offline shape).
+    fallback: T | (() => T | Promise<T>),
+    idempotent = true,
+  ): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
   }
 
@@ -306,6 +321,91 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     },
   };
 
+  // Desktop delivers ai.opencodeOAuthStatus over IPC. The web sync protocol has
+  // no push channel for runtime-buffered events, but OAuth status transitions land
+  // in the shared runtime event buffer, which we can pull (unfiltered and
+  // non-destructively — the cursor is client-driven, so this never starves the
+  // personal-chats drain) via personalChats.streamEvents. Drain it only while an
+  // OAuth flow is active and re-emit each opencodeOAuthStatus payload onto the
+  // adapter bus, so the onOpencodeOAuthStatus subscription becomes live instead of
+  // inert. Scoped to active flows to avoid a perpetual background poll.
+  const OAUTH_STATUS_POLL_MS = 1_000;
+  const OAUTH_STATUS_MAX_MS = 5 * 60_000;
+  const OAUTH_TERMINAL_STATES = new Set(["connected", "failed", "cancelled", "timeout"]);
+  const oauthActiveProviders = new Set<string>();
+  let oauthDrainCursor: number | null = null;
+  let oauthDrainTimer: ReturnType<typeof setTimeout> | null = null;
+  let oauthDrainDeadline = 0;
+
+  const streamRuntimeEvents = (cursor: number, limit: number): Promise<PersonalChatStreamEventsResult> =>
+    commands.call<PersonalChatStreamEventsResult>(
+      "personalChats.streamEvents",
+      { cursor, limit },
+      { fallback: { events: [], nextCursor: cursor, hasMore: false }, idempotent: true, requireProject: false },
+    );
+
+  const stopOAuthDrain = (): void => {
+    if (oauthDrainTimer != null) {
+      clearTimeout(oauthDrainTimer);
+      oauthDrainTimer = null;
+    }
+    oauthDrainCursor = null;
+    oauthActiveProviders.clear();
+  };
+
+  const scheduleOAuthPoll = (): void => {
+    if (oauthDrainTimer != null) return;
+    oauthDrainTimer = setTimeout(() => {
+      void pollOAuthStatus();
+    }, OAUTH_STATUS_POLL_MS);
+  };
+
+  async function pollOAuthStatus(): Promise<void> {
+    oauthDrainTimer = null;
+    if (oauthDrainCursor == null) return;
+    let page: PersonalChatStreamEventsResult;
+    try {
+      page = await streamRuntimeEvents(oauthDrainCursor, 200);
+    } catch {
+      if (oauthActiveProviders.size > 0 && Date.now() <= oauthDrainDeadline) scheduleOAuthPoll();
+      else stopOAuthDrain();
+      return;
+    }
+    if (oauthDrainCursor == null) return; // torn down mid-poll
+    oauthDrainCursor = page.nextCursor;
+    for (const event of page.events) {
+      if (event.category !== "runtime") continue;
+      const payload = event.payload as { kind?: unknown; event?: unknown };
+      if (payload?.kind !== "opencodeOAuthStatus" || !payload.event || typeof payload.event !== "object") continue;
+      const statusEvent = payload.event as OpenCodeOAuthStatusEvent;
+      events.emit("opencodeOAuthStatus" as never, statusEvent as never);
+      if (typeof statusEvent.providerId === "string" && OAUTH_TERMINAL_STATES.has(statusEvent.state)) {
+        oauthActiveProviders.delete(statusEvent.providerId);
+      }
+    }
+    if (oauthActiveProviders.size === 0 || Date.now() > oauthDrainDeadline) stopOAuthDrain();
+    else scheduleOAuthPoll();
+  }
+
+  const startOAuthDrain = async (providerId: string): Promise<void> => {
+    if (providerId) oauthActiveProviders.add(providerId);
+    oauthDrainDeadline = Date.now() + OAUTH_STATUS_MAX_MS;
+    if (oauthDrainCursor == null && oauthDrainTimer == null) {
+      // Advance to the buffer tail before the flow emits, so we skip stale
+      // statuses left by a prior flow instead of replaying them.
+      let cursor = 0;
+      for (let i = 0; i < 64; i++) {
+        const page = await streamRuntimeEvents(cursor, 1_000);
+        cursor = page.nextCursor;
+        if (!page.hasMore) break;
+      }
+      if (oauthDrainCursor == null) oauthDrainCursor = cursor;
+    }
+    scheduleOAuthPoll();
+  };
+
+  infra.addDispose(stopOAuthDrain);
+
   const ai: Record<string, unknown> = {
     getStatus: (args?: unknown) => call("ai.getStatus", args, aiStatus()),
     getOpenCodeRuntimeDiagnostics: async () => ({ installed: false, available: false, diagnostics: [] }),
@@ -318,9 +418,47 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     },
     listApiKeys: async () => [],
     verifyApiKey: async () => ({ ok: false, error: "unsupported" }),
-    updateConfig: async (config: unknown) => {
-      await call("ai.updateConfig", { config }, undefined, false);
+    updateConfig: async (config: Partial<AiConfig>) => {
+      await call("ai.updateConfig", config, undefined, false);
     },
+    opencodeAuthMethods: () =>
+      call<{ methods: OpenCodeProviderAuthMethods }>("ai.opencodeAuthMethods", undefined, { methods: {} }),
+    // Starting an OAuth flow has no meaningful offline fallback shape, so let it
+    // reject when the host is unreachable rather than resolving to a fake result.
+    // Begin draining the runtime buffer for status transitions before issuing the
+    // start so the flow's own events aren't missed.
+    opencodeOAuthStart: async (args: unknown) => {
+      const providerId = oauthProviderId(args);
+      await startOAuthDrain(providerId);
+      try {
+        return await call<OpenCodeOAuthStartResult>("ai.opencodeOAuthStart", args, () => {
+          throw new Error("OpenCode sign-in is unavailable in the web client while offline");
+        }, false);
+      } catch (error) {
+        if (providerId) oauthActiveProviders.delete(providerId);
+        if (oauthActiveProviders.size === 0) stopOAuthDrain();
+        throw error;
+      }
+    },
+    opencodeOAuthCancel: (args: unknown) => call<void>("ai.opencodeOAuthCancel", args, undefined, false),
+    setOpencodeProviderKey: (args: unknown) =>
+      call<{ ok: boolean; error?: string }>(
+        "ai.setOpencodeProviderKey",
+        args,
+        { ok: false, error: "OpenCode provider keys are unavailable in the web client while offline" },
+        false,
+      ),
+    clearOpencodeProviderKey: (args: unknown) =>
+      call<{ ok: boolean; error?: string }>(
+        "ai.clearOpencodeProviderKey",
+        args,
+        { ok: false, error: "OpenCode provider keys are unavailable in the web client while offline" },
+        false,
+      ),
+    refreshModelsDev: () =>
+      call<{ lastFetchedAt: number | null }>("ai.refreshModelsDev", undefined, { lastFetchedAt: null }),
+    onOpencodeOAuthStatus: (cb: (status: OpenCodeOAuthStatusEvent) => void) =>
+      events.on("opencodeOAuthStatus" as never, cb as never),
   };
 
   const github: Record<string, unknown> = {
@@ -607,6 +745,9 @@ function aiStatus(): Record<string, unknown> {
     models: { claude: [], codex: [], cursor: [], droid: [] },
     features: [],
     availableModelIds: [],
+    opencodeProviders: [],
+    opencodeProvidersStale: true,
+    modelsDevLastFetchedAt: null,
   };
 }
 
@@ -647,6 +788,11 @@ function projectConfigSnapshot(rootPath: string): Record<string, unknown> {
 
 function asRecord(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+}
+
+function oauthProviderId(args: unknown): string {
+  const providerId = asRecord(args).providerId;
+  return typeof providerId === "string" ? providerId : "";
 }
 
 function zoomFactor(level: number): number {

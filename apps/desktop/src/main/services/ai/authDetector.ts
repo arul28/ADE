@@ -479,6 +479,7 @@ const ENV_KEY_MAP: Record<string, string> = {
   GROQ_API_KEY: "groq",
   TOGETHER_API_KEY: "together",
   CURSOR_API_KEY: "cursor",
+  MOONSHOT_API_KEY: "moonshotai",
 };
 
 const LOCAL_ENDPOINT_CHECK_TIMEOUT_MS = 500;
@@ -723,6 +724,16 @@ function buildApiVerificationRequest(provider: string, key: string): {
     case "openrouter":
       return {
         url: "https://openrouter.ai/api/v1/auth/key",
+        init: {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+          },
+        },
+      };
+    case "moonshotai":
+      return {
+        url: "https://api.moonshot.ai/v1/models",
         init: {
           method: "GET",
           headers: {

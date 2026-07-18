@@ -3817,6 +3817,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         verifiedAt: now,
       } as any),
       updateConfig: resolvedArg(undefined),
+      opencodeAuthMethods: resolved({ methods: {} }),
+      opencodeOAuthStart: resolvedArg({ url: "", method: "auto", instructions: "" } as any),
+      opencodeOAuthCancel: resolvedArg(undefined),
+      setOpencodeProviderKey: resolvedArg({ ok: false, error: "browser" } as any),
+      clearOpencodeProviderKey: resolvedArg({ ok: false, error: "browser" } as any),
+      refreshModelsDev: resolved({ lastFetchedAt: null }),
+      onOpencodeOAuthStatus: () => () => {},
     },
     agentTools: {
       detect: resolved([]),

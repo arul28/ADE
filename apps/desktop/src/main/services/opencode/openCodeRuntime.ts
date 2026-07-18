@@ -21,6 +21,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import type {
+  AiCustomProviderConfig,
   AiLocalProviderConfigs,
   EffectiveProjectConfig,
   OpenCodeRuntimeSnapshot,
@@ -246,6 +247,50 @@ export function buildOpenCodeMergedConfig(args: BuildOpenCodeConfigArgs): OpenCo
   return buildOpenCodeConfig(args);
 }
 
+type OpenCodeProviderMap = NonNullable<OpenCodeConfig["provider"]>;
+type OpenCodeProviderEntry = OpenCodeProviderMap[string];
+type OpenCodeModelsMap = NonNullable<OpenCodeProviderEntry["models"]>;
+type OpenCodeModelEntry = OpenCodeModelsMap[string];
+
+/**
+ * Provider ids OpenCode ships with in its built-in models.dev catalog. A custom
+ * model slug (`providerId/modelId`) whose provider is not otherwise present in
+ * the generated config may still be materialised as a bare provider block for
+ * these — OpenCode already knows their npm package + base URL, so an empty
+ * `models` entry is enough to surface the model in `provider.list()`. Slugs for
+ * providers outside this set (and not user-configured) are dropped, since a
+ * bare block would leave OpenCode unable to load the provider. Keep this list in
+ * sync with OpenCode's catalog as new mainstream providers are added.
+ */
+const KNOWN_OPENCODE_CATALOG_PROVIDER_IDS: ReadonlySet<string> = new Set([
+  "openai",
+  "anthropic",
+  "google",
+  "google-vertex",
+  "google-vertex-anthropic",
+  "azure",
+  "amazon-bedrock",
+  "openrouter",
+  "groq",
+  "mistral",
+  "deepseek",
+  "xai",
+  "togetherai",
+  "fireworks-ai",
+  "cerebras",
+  "cohere",
+  "perplexity",
+  "deepinfra",
+  "github-copilot",
+  "github-models",
+  "huggingface",
+  "moonshotai",
+  "zhipuai",
+  "opencode",
+  "ollama",
+  "lmstudio",
+]);
+
 function buildProviderConfig(
   projectConfig: ProjectConfigFile | EffectiveProjectConfig,
   discoveredLocalModels?: DiscoveredLocalModelEntry[],
@@ -253,7 +298,7 @@ function buildProviderConfig(
   const ai = projectConfig.ai ?? {};
   const apiKeys = ai.apiKeys ?? {};
   const localProviders = ai.localProviders ?? {};
-  const provider: NonNullable<OpenCodeConfig["provider"]> = {};
+  const provider: OpenCodeProviderMap = {};
 
   const addApiProvider = (
     id: string,
@@ -270,13 +315,21 @@ function buildProviderConfig(
     };
   };
 
+  // Resolve a stored API key for a specific provider id. Defaults to a no-op so
+  // the config still builds when the key store is unavailable (e.g. unit tests).
+  let resolveStoredApiKey: (id: string) => string | null = () => null;
+
   // Merge keys from the encrypted local store first (lower priority).
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { getAllApiKeys } = require("../ai/apiKeyStore") as { getAllApiKeys: () => Record<string, string> };
-    for (const [providerId, key] of Object.entries(getAllApiKeys())) {
+    const store = require("../ai/apiKeyStore") as {
+      getAllApiKeys: () => Record<string, string>;
+      getApiKey: (id: string) => string | null;
+    };
+    for (const [providerId, key] of Object.entries(store.getAllApiKeys())) {
       addApiProvider(providerId.trim().toLowerCase(), key);
     }
+    resolveStoredApiKey = (id: string) => store.getApiKey(id);
   } catch {
     // Key store may not be available (e.g. unit tests).
   }
@@ -324,7 +377,96 @@ function buildProviderConfig(
   addLocalProvider("ollama", localProviders.ollama);
   addLocalProvider("lmstudio", localProviders.lmstudio);
 
+  // User-defined custom providers: emit a full OpenCode provider block each.
+  addCustomProviders(provider, ai.customProviders, resolveStoredApiKey);
+
+  // Custom model slugs (`providerId/modelId`): surface extra models on providers
+  // OpenCode already knows about so its `provider.list()` includes them.
+  mergeCustomModelSlugs(provider, ai.customModelSlugs);
+
   return Object.keys(provider).length > 0 ? provider : undefined;
+}
+
+function addCustomProviders(
+  provider: OpenCodeProviderMap,
+  customProviders: AiCustomProviderConfig[] | undefined,
+  resolveStoredApiKey: (id: string) => string | null,
+): void {
+  if (!customProviders?.length) return;
+  for (const entry of customProviders) {
+    const id = entry?.id?.trim();
+    const baseURL = entry?.baseURL?.trim();
+    const models = (entry?.models ?? [])
+      .map((model) => model?.trim())
+      .filter((model): model is string => Boolean(model));
+    if (!id || !baseURL || models.length === 0) {
+      console.warn("opencode.custom_provider_skipped", {
+        id: entry?.id,
+        reason: !id ? "missing-id" : !baseURL ? "missing-baseURL" : "no-models",
+      });
+      continue;
+    }
+    const modelsMap: OpenCodeModelsMap = {};
+    for (const modelId of models) {
+      modelsMap[modelId] = {} as OpenCodeModelEntry;
+    }
+    const apiKey = trimToUndefined(resolveStoredApiKey(id));
+    const existing = provider[id];
+    provider[id] = {
+      ...(existing ?? {}),
+      npm: entry.npm ?? "@ai-sdk/openai-compatible",
+      name: trimToUndefined(entry.name) ?? id,
+      options: {
+        ...(existing?.options ?? {}),
+        baseURL,
+        ...(apiKey ? { apiKey } : {}),
+      },
+      models: {
+        ...(existing?.models ?? {}),
+        ...modelsMap,
+      },
+    };
+  }
+}
+
+function mergeCustomModelSlugs(
+  provider: OpenCodeProviderMap,
+  customModelSlugs: string[] | undefined,
+): void {
+  if (!customModelSlugs?.length) return;
+  for (const raw of customModelSlugs) {
+    const slug = raw?.trim();
+    if (!slug) continue;
+    const slashIndex = slug.indexOf("/");
+    if (slashIndex <= 0 || slashIndex >= slug.length - 1) {
+      console.warn("opencode.custom_model_slug_skipped", { slug: raw, reason: "malformed" });
+      continue;
+    }
+    const providerId = slug.slice(0, slashIndex).trim();
+    const modelId = slug.slice(slashIndex + 1).trim();
+    if (!providerId || !modelId) {
+      console.warn("opencode.custom_model_slug_skipped", { slug: raw, reason: "malformed" });
+      continue;
+    }
+    const existing = provider[providerId];
+    if (existing) {
+      provider[providerId] = {
+        ...existing,
+        models: {
+          ...(existing.models ?? {}),
+          [modelId]: existing.models?.[modelId] ?? ({} as OpenCodeModelEntry),
+        },
+      };
+      continue;
+    }
+    if (KNOWN_OPENCODE_CATALOG_PROVIDER_IDS.has(providerId.toLowerCase())) {
+      provider[providerId] = {
+        models: { [modelId]: {} as OpenCodeModelEntry },
+      };
+      continue;
+    }
+    console.warn("opencode.custom_model_slug_skipped", { slug: raw, reason: "unknown-provider" });
+  }
 }
 
 export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeConfig {

@@ -93,6 +93,9 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeOAuthStartResult,
+  OpenCodeOAuthStatusEvent,
+  OpenCodeProviderAuthMethods,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -1606,6 +1609,9 @@ const remoteLaneProxyEventCallbacks = new Set<
 const remoteLaneOAuthEventCallbacks = new Set<
   (payload: OAuthRedirectEvent) => void
 >();
+const remoteOpenCodeOAuthStatusCallbacks = new Set<
+  (payload: OpenCodeOAuthStatusEvent) => void
+>();
 const remoteLaneDiagnosticsEventCallbacks = new Set<
   (payload: RuntimeDiagnosticsEvent) => void
 >();
@@ -1722,6 +1728,11 @@ const subscribeLocalFeedbackEvents =
     IPC.feedbackOnUpdate,
     "feedback event",
   );
+const subscribeLocalOpenCodeOAuthStatusEvents =
+  createLocalIpcEventSubscription<OpenCodeOAuthStatusEvent>(
+    IPC.aiOpencodeOAuthStatus,
+    "OpenCode OAuth status",
+  );
 
 let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
@@ -1788,6 +1799,7 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteLanePortEventCallbacks.size > 0 ||
     remoteLaneProxyEventCallbacks.size > 0 ||
     remoteLaneOAuthEventCallbacks.size > 0 ||
+    remoteOpenCodeOAuthStatusCallbacks.size > 0 ||
     remoteLaneDiagnosticsEventCallbacks.size > 0 ||
     remotePtyDataEventCallbacks.size > 0 ||
     remotePtyExitEventCallbacks.size > 0 ||
@@ -2100,6 +2112,19 @@ ipcRenderer.on(IPC.runtimeEvent, (_event, payload: unknown) => {
 function dispatchRemoteRuntimeEventPayload(
   payload: Record<string, unknown>,
 ): void {
+  if (payload.kind === "opencodeOAuthStatus" && isRecord(payload.event)) {
+    const event = payload.event;
+    if (typeof event.providerId === "string" && typeof event.state === "string") {
+      for (const cb of [...remoteOpenCodeOAuthStatusCallbacks]) {
+        try {
+          cb(event as unknown as OpenCodeOAuthStatusEvent);
+        } catch (error) {
+          console.error("preload remote OpenCode OAuth status listener failed", error);
+        }
+      }
+    }
+  }
+
   if (payload.type === "sync-status" && isRecord(payload.snapshot)) {
     for (const cb of [...remoteSyncStatusEventCallbacks]) {
       try {
@@ -2645,6 +2670,16 @@ function subscribeRemoteLaneOAuthEvents(
   ensureRemoteRuntimeEventPump();
   return () => {
     remoteLaneOAuthEventCallbacks.delete(cb);
+  };
+}
+
+function subscribeRemoteOpenCodeOAuthStatusEvents(
+  cb: (payload: OpenCodeOAuthStatusEvent) => void,
+): () => void {
+  remoteOpenCodeOAuthStatusCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteOpenCodeOAuthStatusCallbacks.delete(cb);
   };
 }
 
@@ -3887,6 +3922,59 @@ contextBridge.exposeInMainWorld("ade", {
             () => ipcRenderer.invoke(IPC.aiUpdateConfig, config),
           ),
       ),
+    opencodeAuthMethods: async (): Promise<{ methods: OpenCodeProviderAuthMethods }> =>
+      callProjectRuntimeActionOr("ai", "opencodeAuthMethods", {}, () =>
+        ipcRenderer.invoke(IPC.aiOpencodeAuthMethods),
+      ),
+    opencodeOAuthStart: async (args: {
+      providerId: string;
+      methodIndex: number;
+      inputs?: Record<string, string>;
+    }): Promise<OpenCodeOAuthStartResult> =>
+      callProjectRuntimeActionOr("ai", "opencodeOAuthStart", { args }, () =>
+        ipcRenderer.invoke(IPC.aiOpencodeOAuthStart, args),
+      ),
+    opencodeOAuthCancel: async (args: { providerId: string }): Promise<void> =>
+      callProjectRuntimeActionOr("ai", "opencodeOAuthCancel", { args }, () =>
+        ipcRenderer.invoke(IPC.aiOpencodeOAuthCancel, args),
+      ),
+    setOpencodeProviderKey: async (args: {
+      providerId: string;
+      key: string;
+    }): Promise<{ ok: boolean; error?: string }> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "setOpencodeProviderKey", { args }, () =>
+            ipcRenderer.invoke(IPC.aiSetOpencodeProviderKey, args),
+          ),
+      ),
+    clearOpencodeProviderKey: async (args: {
+      providerId: string;
+    }): Promise<{ ok: boolean; error?: string }> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "clearOpencodeProviderKey", { args }, () =>
+            ipcRenderer.invoke(IPC.aiClearOpencodeProviderKey, args),
+          ),
+      ),
+    refreshModelsDev: async (): Promise<{ lastFetchedAt: number | null }> =>
+      clearAround(
+        () => aiStatusCache.clear(),
+        () =>
+          callProjectRuntimeActionOr("ai", "refreshModelsDev", {}, () =>
+            ipcRenderer.invoke(IPC.aiRefreshModelsDev),
+          ),
+      ),
+    onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void) => {
+      const removeLocal = subscribeLocalOpenCodeOAuthStatusEvents(cb);
+      const removeRemote = subscribeRemoteOpenCodeOAuthStatusEvents(cb);
+      return () => {
+        removeRemote();
+        removeLocal();
+      };
+    },
     cursorCloudListRepositories: async (): Promise<CursorCloudRepository[]> =>
       callProjectRuntimeActionOr("ai", "listCursorCloudRepositories", {}, () =>
         ipcRenderer.invoke(IPC.aiCursorCloudListRepositories),

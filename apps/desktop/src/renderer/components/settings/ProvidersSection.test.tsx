@@ -49,6 +49,10 @@ function buildStatus(
     localRuntimeAvailable?: boolean;
     localRuntimeHealth?: "ready" | "reachable" | "reachable_no_models" | "not_configured" | "unreachable";
     localRuntimeBlocker?: string | null;
+    opencodeBinaryInstalled?: boolean;
+    opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
+    opencodeProvidersStale?: boolean;
+    modelsDevLastFetchedAt?: number | null;
   },
 ): AiSettingsStatus {
   const claudeBinaryPresent = options?.claudeBinaryPresent ?? claudeRuntimeAvailable;
@@ -177,7 +181,12 @@ function buildStatus(
       legacyPlaintextDetected: false,
       decryptionFailed: false,
     },
-  };
+    opencodeBinaryInstalled: options?.opencodeBinaryInstalled ?? true,
+    opencodeBinarySource: (options?.opencodeBinaryInstalled ?? true) ? "bundled" : "missing",
+    opencodeProviders: options?.opencodeProviders ?? [],
+    ...(options?.opencodeProvidersStale != null ? { opencodeProvidersStale: options.opencodeProvidersStale } : {}),
+    ...(options?.modelsDevLastFetchedAt !== undefined ? { modelsDevLastFetchedAt: options.modelsDevLastFetchedAt } : {}),
+  } as AiSettingsStatus;
 }
 
 function renderProvidersSection() {
@@ -191,9 +200,11 @@ function renderProvidersSection() {
 describe("ProvidersSection", () => {
   const originalAde = globalThis.window.ade;
   let emitChatEvent: ((envelope: AgentChatEventEnvelope) => void) | null = null;
+  let emitOAuthStatus: ((event: { providerId: string; state: string; error?: string }) => void) | null = null;
 
   beforeEach(() => {
     emitChatEvent = null;
+    emitOAuthStatus = null;
 
     globalThis.window.ade = {
       ai: {
@@ -214,6 +225,22 @@ describe("ProvidersSection", () => {
           verifiedAt: "2026-03-17T19:00:00.000Z",
         }),
         updateConfig: vi.fn().mockResolvedValue(undefined),
+        opencodeAuthMethods: vi.fn().mockResolvedValue({ methods: {} }),
+        opencodeOAuthStart: vi.fn().mockResolvedValue({
+          url: "https://auth.openai.com/device",
+          method: "auto",
+          instructions: "Open the page and enter code ABCD-1234 to continue.",
+        }),
+        opencodeOAuthCancel: vi.fn().mockResolvedValue(undefined),
+        setOpencodeProviderKey: vi.fn().mockResolvedValue({ ok: true }),
+        clearOpencodeProviderKey: vi.fn().mockResolvedValue({ ok: true }),
+        refreshModelsDev: vi.fn().mockResolvedValue({ lastFetchedAt: Date.now() }),
+        onOpencodeOAuthStatus: vi.fn((cb: (event: { providerId: string; state: string; error?: string }) => void) => {
+          emitOAuthStatus = cb;
+          return () => {
+            if (emitOAuthStatus === cb) emitOAuthStatus = null;
+          };
+        }),
       },
       projectConfig: {
         get: vi.fn().mockResolvedValue({
@@ -231,6 +258,9 @@ describe("ProvidersSection", () => {
             }
           };
         }),
+      },
+      builtInBrowser: {
+        navigate: vi.fn().mockResolvedValue(undefined),
       },
     } as any;
   });
@@ -250,7 +280,7 @@ describe("ProvidersSection", () => {
     });
     expect(ade.ai.getStatus).toHaveBeenNthCalledWith(1, {
       force: false,
-      refreshOpenCodeInventory: false,
+      refreshOpenCodeInventory: true,
     });
 
     expect((await screen.findAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude")).length).toBeGreaterThan(0);
@@ -285,7 +315,7 @@ describe("ProvidersSection", () => {
     });
 
     expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
-    expect(screen.getByText("Bundled Claude Agent SDK runtime")).toBeTruthy();
+    expect(screen.getByText("Uses your claude login — Claude Pro/Max subscription or ANTHROPIC_API_KEY.")).toBeTruthy();
     expect(screen.getAllByText("/Users/arul/ADE/apps/desktop/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude").length).toBeGreaterThan(0);
   });
 
@@ -455,6 +485,173 @@ describe("ProvidersSection", () => {
         force: true,
         refreshOpenCodeInventory: true,
       });
+    });
+  });
+
+  it("renders the Coding Agents section and the OpenCode group with the Moonshot key row", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+
+    renderProvidersSection();
+
+    expect(await screen.findByText("Coding Agents")).toBeTruthy();
+    expect(screen.getByText("OpenCode — Universal Model Access")).toBeTruthy();
+    expect(screen.getByText("API Provider Keys")).toBeTruthy();
+    // Moonshot AI was added to the API key grid.
+    expect(screen.getByText("Moonshot AI")).toBeTruthy();
+    expect(screen.getByText("MOONSHOT_API_KEY")).toBeTruthy();
+    // Kimi for Coding is always surfaced as a subscription/membership row.
+    expect(screen.getByLabelText("Connect Kimi for Coding")).toBeTruthy();
+  });
+
+  it("collapses the OpenCode group to an install card when the binary is missing", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], { opencodeBinaryInstalled: false }));
+
+    renderProvidersSection();
+
+    expect(await screen.findByText("npm i -g opencode-ai")).toBeTruthy();
+    expect(screen.getByText("brew install anomalyco/tap/opencode")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Re-check/ })).toBeTruthy();
+    // The group body (API keys, subscriptions) must be hidden while uninstalled.
+    expect(screen.queryByText("API Provider Keys")).toBeNull();
+  });
+
+  it("renders subscription connect rows and keeps chips visible while the provider catalog is stale", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProvidersStale: true,
+      opencodeProviders: [
+        { id: "openai", name: "OpenAI", connected: false, modelCount: 12 },
+        { id: "fireworks", name: "Fireworks", connected: false, modelCount: 7 },
+      ],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockResolvedValue({
+      methods: {
+        openai: [{ type: "oauth", label: "Sign in with ChatGPT" }],
+      },
+    });
+
+    renderProvidersSection();
+
+    // OAuth subscription row built dynamically from auth methods.
+    expect(await screen.findByLabelText("Connect OpenAI")).toBeTruthy();
+    // Stale label surfaces without blocking the catalog chips.
+    expect(screen.getByText("updating…")).toBeTruthy();
+    // Fireworks is not an API_KEY_PROVIDER, so it appears as a "More providers" chip.
+    expect(screen.getByText(/Fireworks/)).toBeTruthy();
+  });
+
+  it("keeps an OpenCode key editor open when provider registration fails", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    const setProviderKeyMock = window.ade.ai.setOpencodeProviderKey as ReturnType<typeof vi.fn>;
+    setProviderKeyMock.mockResolvedValue({ ok: false, error: "OpenCode rejected this key." });
+
+    renderProvidersSection();
+
+    const addButton = await screen.findByLabelText("Add OpenAI key");
+    await act(async () => {
+      addButton.click();
+    });
+    fireEvent.change(screen.getByLabelText("OpenAI API key"), {
+      target: { value: "sk-test" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Save" }).click();
+    });
+
+    expect(await screen.findByText("OpenCode rejected this key.")).toBeTruthy();
+    expect(setProviderKeyMock).toHaveBeenCalledWith({ providerId: "openai", key: "sk-test" });
+    expect(window.ade.ai.storeApiKey).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("OpenAI API key")).toBeTruthy();
+    expect(screen.queryByText("openai key saved.")).toBeNull();
+  });
+
+  it("clears an OpenCode provider credential before deleting its stored key", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+    listApiKeysMock.mockReset();
+    listApiKeysMock.mockResolvedValue(["openai"]);
+
+    renderProvidersSection();
+
+    const menuButton = await screen.findByLabelText("More actions for OpenAI");
+    await act(async () => {
+      menuButton.click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Delete" }).click();
+    });
+
+    await waitFor(() => {
+      expect(window.ade.ai.clearOpencodeProviderKey).toHaveBeenCalledWith({ providerId: "openai" });
+      expect(window.ade.ai.deleteApiKey).toHaveBeenCalledWith("openai");
+    });
+    const clearCall = (window.ade.ai.clearOpencodeProviderKey as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const deleteCall = (window.ade.ai.deleteApiKey as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(clearCall).toBeLessThan(deleteCall);
+    expect(await screen.findByText("openai key removed.")).toBeTruthy();
+  });
+
+  it("drives the OAuth connect modal happy path", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      opencodeProviders: [{ id: "openai", name: "OpenAI", connected: false, modelCount: 12 }],
+    }));
+    const authMethodsMock = window.ade.ai.opencodeAuthMethods as ReturnType<typeof vi.fn>;
+    authMethodsMock.mockReset();
+    authMethodsMock.mockResolvedValue({
+      methods: {
+        openai: [{ type: "oauth", label: "Sign in with ChatGPT" }],
+      },
+    });
+
+    renderProvidersSection();
+
+    const connectButton = await screen.findByLabelText("Connect OpenAI");
+    await act(async () => {
+      connectButton.click();
+    });
+
+    // Modal opened.
+    expect(screen.getByRole("dialog", { name: "Connect OpenAI" })).toBeTruthy();
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Connect" }).click();
+    });
+
+    await waitFor(() => {
+      expect(window.ade.ai.opencodeOAuthStart).toHaveBeenCalledWith({
+        providerId: "openai",
+        methodIndex: 0,
+        inputs: undefined,
+      });
+      expect(window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
+        url: "https://auth.openai.com/device",
+        newTab: true,
+      });
+    });
+
+    // Waiting state renders the extracted device code.
+    expect(await screen.findByText("ABCD-1234")).toBeTruthy();
+
+    // Backend reports success → modal closes.
+    await act(async () => {
+      emitOAuthStatus?.({ providerId: "openai", state: "connected" });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Connect OpenAI" })).toBeNull();
     });
   });
 });

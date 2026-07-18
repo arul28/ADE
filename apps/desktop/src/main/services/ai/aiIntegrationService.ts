@@ -6,6 +6,7 @@ import type { AgentModelDescriptor, AgentProvider, ExecutorOpts } from "./agentE
 import type {
   AiApiKeyVerificationResult,
   AiClaudeAvailability,
+  AiCustomProviderConfig,
   AiLocalProviderConfigs,
   AiProviderConnections,
   AiRuntimeConnections,
@@ -29,7 +30,6 @@ import {
   LOCAL_PROVIDER_LABELS,
   replaceDynamicOpenCodeModelDescriptors,
   resolveModelAlias,
-  enrichModelRegistry,
   resolveProviderGroupForModel,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
@@ -43,6 +43,7 @@ import {
 } from "./authDetector";
 import {
   clearOpenCodeInventoryCache,
+  loadPersistedOpenCodeInventory,
   peekOpenCodeInventoryCache,
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
@@ -52,8 +53,10 @@ import {
   resolveOpenCodeBinary,
   type OpenCodeBinarySource,
 } from "../opencode/openCodeBinaryManager";
-import { initialize as initModelsDevService } from "./modelsDevService";
-import { updateModelPricing } from "../../../shared/modelProfiles";
+import {
+  initialize as initModelsDevService,
+  getLastFetchedAt as getModelsDevLastFetchedAt,
+} from "./modelsDevService";
 import { isRecord } from "../shared/utils";
 import { parseStructuredOutput } from "./utils";
 import {
@@ -143,6 +146,14 @@ export type AiIntegrationStatus = {
   opencodeInventoryError?: string | null;
   /** All providers reported by OpenCode's provider.list() — used to dynamically populate the settings UI and model picker. */
   opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number; availableModelCount?: number }>;
+  /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */
+  opencodeProvidersStale?: boolean;
+  /** Epoch ms of the last successful models.dev fetch (or cache mtime on fallback); null if never fetched. */
+  modelsDevLastFetchedAt?: number | null;
+  /** Effective ai.customProviders — surfaced so the settings UI can do authoritative full-list writes. */
+  customProviders?: AiCustomProviderConfig[];
+  /** Effective ai.customModelSlugs — surfaced so the settings UI can do authoritative full-list writes. */
+  customModelSlugs?: string[];
   apiKeyStore?: {
     secureStorageAvailable: boolean;
     macosKeychainAvailable?: boolean;
@@ -894,32 +905,12 @@ export function createAiIntegrationService(args: {
 }) {
   const { db, logger, projectConfigService, projectRoot } = args;
 
-  // Non-blocking: fetch models.dev data and enrich pricing + registry.
-  // Headless CLI readiness commands disable this so default doctor/auth runs
-  // remain local-only and do not touch provider/model networks.
-  if (args.enableDynamicModelMetadata !== false) initModelsDevService().then((modelData) => {
-    if (modelData.size === 0) return;
-
-    // Update MODEL_PRICING with fresh cost data
-    const pricingUpdates: Record<string, { input: number; output: number }> = {};
-    const enrichments = new Map<string, { contextWindow?: number; maxOutputTokens?: number }>();
-
-    for (const [modelId, data] of modelData) {
-      if (data.cost) {
-        pricingUpdates[modelId] = data.cost;
-      }
-      if (data.contextWindow || data.maxOutputTokens) {
-        enrichments.set(modelId, {
-          contextWindow: data.contextWindow,
-          maxOutputTokens: data.maxOutputTokens,
-        });
-      }
-    }
-
-    const pricingCount = updateModelPricing(pricingUpdates);
-    const enrichCount = enrichModelRegistry(enrichments);
-    logger.info("ai.modelsdev.enriched", { pricingCount, enrichCount });
-  }).catch((err) => {
+  // Non-blocking: fetch models.dev data and enrich pricing + registry. The
+  // enrichment step lives inside modelsDevService.initialize() so the periodic
+  // 6h refresh and explicit refreshNow() re-apply it too. Headless CLI readiness
+  // commands disable this so default doctor/auth runs remain local-only and do
+  // not touch provider/model networks.
+  if (args.enableDynamicModelMetadata !== false) initModelsDevService().catch((err) => {
     logger.warn("ai.modelsdev.init_failed", { error: err instanceof Error ? err.message : String(err) });
   });
 
@@ -1799,30 +1790,43 @@ export function createAiIntegrationService(args: {
                 modelIds: [] as string[],
                 catalogModelIds: [] as string[],
                 providers: [] as NonNullable<AiIntegrationStatus["opencodeProviders"]>,
+                stale: false,
               };
             }
             if (options?.refreshOpenCodeInventory === true) {
-              return await probeOpenCodeProviderInventory({
+              const probed = await probeOpenCodeProviderInventory({
                 projectRoot,
                 projectConfig: effectiveConfig,
                 logger,
                 force: true,
                 discoveredLocalModels,
               });
+              // A transient probe failure (e.g. server launch hiccup) must not
+              // collapse the settings chips to empty when we have a persisted
+              // list — serve it flagged stale, keeping the error visible.
+              if (probed.error && !probed.providers.length) {
+                const persisted = loadPersistedOpenCodeInventory(projectRoot);
+                if (persisted.length) {
+                  return { ...probed, providers: persisted, stale: true };
+                }
+              }
+              return { ...probed, stale: false };
             }
             const peeked = peekOpenCodeInventoryCache({
               projectRoot,
               projectConfig: effectiveConfig,
             });
-            if (peeked) return peeked;
+            if (peeked) return { ...peeked, stale: false };
             // Cold status reads stay cheap. Runtime catalog refreshes are owned
             // by agentChatService.getModelCatalog() and only run when a client
-            // opens a dynamic runtime rail.
+            // opens a dynamic runtime rail. Surface the last persisted provider
+            // list (flagged stale) so chips render before the first warm probe.
             return {
               error: null as string | null,
               modelIds: [] as string[],
               catalogModelIds: [] as string[],
-              providers: [] as NonNullable<AiIntegrationStatus["opencodeProviders"]>,
+              providers: loadPersistedOpenCodeInventory(projectRoot),
+              stale: true,
             };
           });
 
@@ -1855,6 +1859,10 @@ export function createAiIntegrationService(args: {
             opencodeBinarySource,
             opencodeInventoryError: opencodeInventory.error,
             opencodeProviders: opencodeInventory.providers,
+            opencodeProvidersStale: opencodeInventory.stale,
+            modelsDevLastFetchedAt: getModelsDevLastFetchedAt(),
+            customProviders: effectiveConfig?.ai?.customProviders,
+            customModelSlugs: effectiveConfig?.ai?.customModelSlugs,
             apiKeyStore: timeSyncPhase("api_key_store_status", () => getApiKeyStoreStatus()),
           };
           if (requestGeneration === providerReadinessCacheGeneration) {

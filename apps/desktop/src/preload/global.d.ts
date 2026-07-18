@@ -219,6 +219,9 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeOAuthStartResult,
+  OpenCodeOAuthStatusEvent,
+  OpenCodeProviderAuthMethods,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -935,6 +938,22 @@ declare global {
         listApiKeys: () => Promise<string[]>;
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
+        opencodeAuthMethods: () => Promise<{ methods: OpenCodeProviderAuthMethods }>;
+        opencodeOAuthStart: (args: {
+          providerId: string;
+          methodIndex: number;
+          inputs?: Record<string, string>;
+        }) => Promise<OpenCodeOAuthStartResult>;
+        opencodeOAuthCancel: (args: { providerId: string }) => Promise<void>;
+        setOpencodeProviderKey: (args: {
+          providerId: string;
+          key: string;
+        }) => Promise<{ ok: boolean; error?: string }>;
+        clearOpencodeProviderKey: (args: {
+          providerId: string;
+        }) => Promise<{ ok: boolean; error?: string }>;
+        refreshModelsDev: () => Promise<{ lastFetchedAt: number | null }>;
+        onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void) => () => void;
         cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;

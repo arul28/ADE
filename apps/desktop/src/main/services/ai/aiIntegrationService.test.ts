@@ -20,6 +20,8 @@ const mockState = vi.hoisted(() => ({
   clearOpenCodeInventoryCache: vi.fn(),
   peekOpenCodeInventoryCache: vi.fn(),
   probeOpenCodeProviderInventory: vi.fn(),
+  loadPersistedOpenCodeInventory: vi.fn((..._args: unknown[]) => [] as unknown[]),
+  getModelsDevLastFetchedAt: vi.fn((..._args: unknown[]) => null as number | null),
   clearOpenCodeBinaryCache: vi.fn(),
   resolveOpenCodeBinary: vi.fn(),
 }));
@@ -53,6 +55,7 @@ vi.mock("./apiKeyStore", () => ({
 
 vi.mock("./modelsDevService", () => ({
   initialize: (...args: unknown[]) => mockState.initModelsDevService(...args),
+  getLastFetchedAt: (...args: unknown[]) => mockState.getModelsDevLastFetchedAt(...args),
 }));
 
 vi.mock("./claudeRuntimeProbe", () => ({
@@ -68,6 +71,7 @@ vi.mock("../opencode/openCodeInventory", () => ({
   clearOpenCodeInventoryCache: (...args: unknown[]) => mockState.clearOpenCodeInventoryCache(...args),
   peekOpenCodeInventoryCache: (...args: unknown[]) => mockState.peekOpenCodeInventoryCache(...args),
   probeOpenCodeProviderInventory: (...args: unknown[]) => mockState.probeOpenCodeProviderInventory(...args),
+  loadPersistedOpenCodeInventory: (...args: unknown[]) => mockState.loadPersistedOpenCodeInventory(...args),
 }));
 
 vi.mock("../opencode/openCodeBinaryManager", () => ({
@@ -448,6 +452,28 @@ describe("aiIntegrationService", () => {
     }));
     expect(status.runtimeConnections?.lmstudio?.loadedModelIds).toContain(`lmstudio/${modelId}`);
     expect(status.availableModelIds).toContain(`opencode/lmstudio/${modelId}`);
+  });
+
+  // Regression pin (quality gate): a transient probe failure on a forced
+  // refresh must serve the persisted provider list flagged stale — not
+  // collapse the settings chips to empty while keeping the error visible.
+  it("serves the persisted provider list as stale when a forced probe fails", async () => {
+    const { service } = makeService();
+    const persisted = [{ id: "moonshotai", name: "Moonshot AI", connected: false, modelCount: 10 }];
+    mockState.probeOpenCodeProviderInventory.mockResolvedValue({
+      modelIds: [],
+      catalogModelIds: [],
+      providers: [],
+      error: "OpenCode: launch-timeout: OpenCode server did not become ready in time.",
+      descriptors: [],
+    });
+    mockState.loadPersistedOpenCodeInventory.mockReturnValueOnce(persisted);
+
+    const status = await service.getStatus({ refreshOpenCodeInventory: true });
+
+    expect(status.opencodeProviders).toEqual(persisted);
+    expect(status.opencodeProvidersStale).toBe(true);
+    expect(status.opencodeInventoryError).toContain("launch-timeout");
   });
 
   it("coalesces concurrent getStatus calls for the same request shape", async () => {
