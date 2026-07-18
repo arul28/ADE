@@ -30,6 +30,34 @@ describe("OAuthConnectModal", () => {
     globalThis.window.ade = originalAde;
   });
 
+  it("opens a safe OAuth URL once in the ADE browser", async () => {
+    window.ade.ai.opencodeOAuthStart = vi.fn().mockResolvedValue({
+      url: "https://example.com/oauth",
+      method: "auto",
+      instructions: "Sign in to continue.",
+    });
+
+    render(
+      <OAuthConnectModal
+        providerId="openai"
+        providerName="OpenAI"
+        methods={[{ type: "oauth", label: "Sign in with ChatGPT" }]}
+        onClose={vi.fn()}
+        onConnected={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Connect" }).click();
+    });
+
+    expect(window.ade.builtInBrowser.navigate).toHaveBeenCalledTimes(1);
+    expect(window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
+      url: "https://example.com/oauth",
+      newTab: true,
+    });
+  });
+
   it("rejects an unsafe OAuth URL before opening it in the ADE browser", async () => {
     render(
       <OAuthConnectModal

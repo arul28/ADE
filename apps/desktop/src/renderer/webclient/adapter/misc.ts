@@ -1,5 +1,6 @@
 import {
   peerToRuntimeDeviceState,
+  type AiConfig,
   type GitHubStatus,
   type PersonalChatStreamEventsResult,
   type SyncDeviceRuntimeState,
@@ -417,8 +418,8 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     },
     listApiKeys: async () => [],
     verifyApiKey: async () => ({ ok: false, error: "unsupported" }),
-    updateConfig: async (config: unknown) => {
-      await call("ai.updateConfig", { config }, undefined, false);
+    updateConfig: async (config: Partial<AiConfig>) => {
+      await call("ai.updateConfig", config, undefined, false);
     },
     opencodeAuthMethods: () =>
       call<{ methods: OpenCodeProviderAuthMethods }>("ai.opencodeAuthMethods", undefined, { methods: {} }),

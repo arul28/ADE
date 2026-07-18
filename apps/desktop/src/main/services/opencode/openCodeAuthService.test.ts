@@ -59,11 +59,10 @@ describe("openCodeAuthService", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it("runs an auto OAuth flow: authorize, open browser, poll to connected, refresh inventory", async () => {
+  it("runs an auto OAuth flow: authorize, return the URL, poll to connected, refresh inventory", async () => {
     vi.useFakeTimers();
     const events = collectEvents();
     const release = vi.fn();
-    const openExternal = vi.fn(async () => {});
     const probeInventory = vi.fn(async () => {});
     let connected: string[] = [];
     __setOpenCodeAuthHooksForTests({
@@ -77,7 +76,6 @@ describe("openCodeAuthService", () => {
         };
       },
       listConnectedProviders: async () => connected,
-      openExternal,
       probeInventory,
     });
 
@@ -87,7 +85,6 @@ describe("openCodeAuthService", () => {
       method: "auto",
       instructions: "Enter code: ABCD-1234",
     });
-    expect(openExternal).toHaveBeenCalledWith("https://github.com/login/device");
     expect(events).toEqual([{ providerId: "github-copilot", state: "pending" }]);
     expect(__getActiveOAuthProviderIdsForTests()).toEqual(["github-copilot"]);
 
@@ -127,7 +124,6 @@ describe("openCodeAuthService", () => {
       acquireLease: async () => ({ url: "http://127.0.0.1:4200", release: vi.fn() }),
       httpJson: async () => ({ ok: true, status: 200, body: { url: "https://x", method: "auto", instructions: "" } }),
       listConnectedProviders,
-      openExternal: async () => {},
       probeInventory: async () => {},
     });
 
@@ -154,6 +150,30 @@ describe("openCodeAuthService", () => {
     expect(__isAllowedOAuthExternalUrlForTests("custom-protocol://oauth")).toBe(false);
   });
 
+  it("rejects an unsafe OAuth URL before starting a flow", async () => {
+    const events = collectEvents();
+    const release = vi.fn();
+    __setOpenCodeAuthHooksForTests({
+      acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
+      httpJson: async () => ({
+        ok: true,
+        status: 200,
+        body: { url: "http://example.com/oauth", method: "auto", instructions: "" },
+      }),
+    });
+
+    await expect(startOAuth(deps, { providerId: "openai", methodIndex: 0 })).rejects.toThrow(
+      "OpenCode returned an unsafe OAuth URL.",
+    );
+    expect(events).toEqual([{
+      providerId: "openai",
+      state: "failed",
+      error: "OpenCode returned an unsafe OAuth URL.",
+    }]);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(__getActiveOAuthProviderIdsForTests()).toEqual([]);
+  });
+
   it("emits timeout and releases the lease when the provider never connects", async () => {
     vi.useFakeTimers();
     const events = collectEvents();
@@ -162,7 +182,6 @@ describe("openCodeAuthService", () => {
       acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
       httpJson: async () => ({ ok: true, status: 200, body: { url: "https://x", method: "auto", instructions: "" } }),
       listConnectedProviders: async () => [],
-      openExternal: async () => {},
       probeInventory: async () => {},
     });
 
@@ -183,7 +202,6 @@ describe("openCodeAuthService", () => {
       acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
       httpJson: async () => ({ ok: true, status: 200, body: { url: "https://x", method: "auto", instructions: "" } }),
       listConnectedProviders: async () => [],
-      openExternal: async () => {},
       probeInventory: async () => {},
     });
 
@@ -202,7 +220,6 @@ describe("openCodeAuthService", () => {
       acquireLease: async () => ({ url: "http://127.0.0.1:4200", release: vi.fn() }),
       httpJson: async () => ({ ok: true, status: 200, body: { url: "https://x", method: "auto", instructions: "" } }),
       listConnectedProviders: async () => [],
-      openExternal: async () => {},
       probeInventory: async () => {},
     });
 

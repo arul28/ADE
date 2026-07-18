@@ -977,6 +977,32 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("passes custom provider and model slug config patches directly to the host action", async () => {
+    fake.descriptors = descriptors(["ai.updateConfig"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const patch = {
+      customProviders: [
+        {
+          id: "acme",
+          name: "Acme",
+          baseURL: "https://acme.example/v1",
+          models: ["deep-think"],
+        },
+      ],
+      customModelSlugs: ["acme/deep-think", "openai/gpt-5"],
+    };
+
+    await adapter.ade.ai.updateConfig(patch);
+
+    expect(fake.commandCalls).toContainEqual({
+      action: "ai.updateConfig",
+      args: patch,
+      opts: { projectId: "project-1", timeoutMs: undefined },
+    });
+    adapter.dispose();
+  });
+
   it("rejects OpenCode sign-in offline instead of resolving a fabricated result", async () => {
     // No descriptor registered = host unreachable. opencodeOAuthStart has no
     // meaningful fallback shape, so it must reject rather than resolve.

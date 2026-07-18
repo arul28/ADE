@@ -694,12 +694,13 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     setError(null);
     setNotice(null);
     try {
-      await window.ade.ai.storeApiKey(provider, trimmed);
       if (options?.alsoOpenCode) {
         const result = await window.ade.ai.setOpencodeProviderKey({ providerId: provider, key: trimmed });
         if (!result.ok) {
           throw new Error(result.error || "OpenCode rejected the provider key.");
         }
+      } else {
+        await window.ade.ai.storeApiKey(provider, trimmed);
       }
       invalidateAiDiscoveryCache();
       setVerificationByProvider((prev) => {

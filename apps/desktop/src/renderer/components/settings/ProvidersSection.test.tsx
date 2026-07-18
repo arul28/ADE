@@ -568,6 +568,8 @@ describe("ProvidersSection", () => {
     });
 
     expect(await screen.findByText("OpenCode rejected this key.")).toBeTruthy();
+    expect(setProviderKeyMock).toHaveBeenCalledWith({ providerId: "openai", key: "sk-test" });
+    expect(window.ade.ai.storeApiKey).not.toHaveBeenCalled();
     expect(screen.getByLabelText("OpenAI API key")).toBeTruthy();
     expect(screen.queryByText("openai key saved.")).toBeNull();
   });

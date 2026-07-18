@@ -2,7 +2,7 @@
 // OpenCode subscription/OAuth auth service
 //
 // Drives the OpenCode server's auth API to (a) enumerate the auth methods each
-// provider supports, (b) run a subscription OAuth flow (open the browser, then
+// provider supports, (b) run a subscription OAuth flow (return the URL, then
 // poll provider.list() until the provider reports connected), and (c) seed a
 // plain API key (PUT /auth) while mirroring it into ADE's key store so the key
 // is re-injected on future server launches.
@@ -51,7 +51,6 @@ type OpenCodeAuthHooks = {
   acquireLease(deps: OpenCodeAuthDeps): Promise<SharedLease>;
   httpJson(url: string, init?: RequestInit): Promise<HttpJsonResult>;
   listConnectedProviders(baseUrl: string, directory: string, signal?: AbortSignal): Promise<string[]>;
-  openExternal(url: string): Promise<void>;
   probeInventory(deps: OpenCodeAuthDeps): Promise<void>;
   storeApiKey(providerId: string, key: string): void;
   deleteApiKey(providerId: string): void;
@@ -90,21 +89,6 @@ const defaultHooks: OpenCodeAuthHooks = {
     const listed = await client.provider.list({ query: { directory }, throwOnError: true, signal });
     const data = listed.data as { connected?: string[] } | undefined;
     return Array.isArray(data?.connected) ? data.connected : [];
-  },
-  async openExternal(url) {
-    if (!isAllowedOpenCodeOAuthUrl(url)) {
-      throw new Error("OpenCode returned an unsafe OAuth URL.");
-    }
-    // try/catch keeps esbuild treating this as a runtime-optional require so
-    // the ade-cli static runtime (no electron) can bundle this module; there
-    // the OAuth URL is still surfaced to the caller, just not auto-opened.
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { shell } = require("electron") as { shell: { openExternal(u: string): Promise<void> } };
-      await shell.openExternal(url);
-    } catch {
-      // Not running inside Electron — caller shows the URL instead.
-    }
   },
   async probeInventory(deps) {
     await probeOpenCodeProviderInventory({
@@ -185,9 +169,9 @@ export async function listAuthMethods(deps: OpenCodeAuthDeps): Promise<{ methods
 }
 
 /**
- * Start an OAuth flow: authorize, open the returned URL, then poll until the
- * provider reports connected (or timeout). Only one flow per providerId is
- * active at a time — starting a new one cancels the prior flow.
+ * Start an OAuth flow: authorize, return the safe URL to the caller, then poll
+ * until the provider reports connected (or timeout). Only one flow per
+ * providerId is active at a time — starting a new one cancels the prior flow.
  */
 export async function startOAuth(
   deps: OpenCodeAuthDeps,
@@ -216,10 +200,8 @@ export async function startOAuth(
     const method: OpenCodeOAuthStartResult["method"] = body.method === "code" ? "code" : "auto";
     const instructions = typeof body.instructions === "string" ? body.instructions : "";
 
-    if (url) {
-      void hooks.openExternal(url).catch((err) => {
-        deps.logger.warn("opencode.oauth_open_external_failed", { providerId, error: errorMessage(err) });
-      });
+    if (url && !isAllowedOpenCodeOAuthUrl(url)) {
+      throw new Error("OpenCode returned an unsafe OAuth URL.");
     }
 
     emit({ providerId, state: "pending" });
