@@ -3586,7 +3586,8 @@ app.whenReady().then(async () => {
       diskPressure: diskPressureMonitor,
       isPathActive: (filePath) =>
         agentChatService.isTranscriptPathActive(filePath)
-        || ptyService.isTranscriptPathActive(filePath),
+        || ptyService.isTranscriptPathActive(filePath)
+        || iosSimulatorService.isBuildPathActive(filePath),
       projectId,
       captureAnalytics: (input) => {
         productAnalyticsService.capture(input);

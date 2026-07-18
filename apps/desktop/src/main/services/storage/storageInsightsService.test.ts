@@ -410,6 +410,67 @@ describe("storageInsightsService", () => {
     expect(fs.existsSync(staging)).toBe(false);
   });
 
+  it("blocks active iOS DerivedData at execution time and removes stale data once inactive", async () => {
+    const derivedData = path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData");
+    const objectFile = path.join(derivedData, "module.o");
+    writeSized(objectFile, 37);
+    let buildActive = false;
+    const service = createStorageInsightsService({
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      isPathActive: (candidatePath) => buildActive && path.resolve(candidatePath) === derivedData,
+      stagingTmpDir: path.join(adeHome, "no-real-staging"),
+    });
+    const target = { kind: "rebuildable_cache" as const, path: derivedData };
+
+    const recentSnapshot = await service.getSnapshot({ forceRefresh: true });
+    expect(recentSnapshot.categories.find((category) => category.id === "build_release")?.items)
+      .toContainEqual(expect.objectContaining({ path: derivedData, safety: "review_first" }));
+
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    fs.utimesSync(objectFile, eightDaysAgo, eightDaysAgo);
+    fs.utimesSync(derivedData, eightDaysAgo, eightDaysAgo);
+    buildActive = true;
+    const activeSnapshot = await service.getSnapshot({ forceRefresh: true });
+    expect(activeSnapshot.categories.find((category) => category.id === "build_release")?.items)
+      .toContainEqual(expect.objectContaining({ path: derivedData, safety: "review_first" }));
+    expect((await service.cleanupPreview([target])).blocked).toEqual([
+      { path: derivedData, reason: "An iOS build is currently using this data." },
+    ]);
+    const iosCacheRoot = path.dirname(derivedData);
+    expect((await service.cleanupPreview([{ kind: "rebuildable_cache", path: iosCacheRoot }])).blocked)
+      .toEqual([{ path: iosCacheRoot, reason: "An iOS build is currently using this data." }]);
+
+    buildActive = false;
+    const inactiveSnapshot = await service.getSnapshot({ forceRefresh: true });
+    expect(inactiveSnapshot.categories.find((category) => category.id === "build_release")?.items)
+      .toContainEqual(expect.objectContaining({ path: derivedData, safety: "safe_to_remove" }));
+    const preview = await service.cleanupPreview([target]);
+    expect(preview.items).toHaveLength(1);
+
+    // A build that starts after confirmation is caught by the execution-time
+    // activity check, so a valid stale preview cannot delete its DerivedData.
+    buildActive = true;
+    const blocked = await service.cleanup([target], { preview });
+    expect(blocked.removed).toEqual([]);
+    expect(blocked.failed).toEqual([
+      { path: derivedData, reason: "An iOS build is currently using this data." },
+    ]);
+    expect(fs.existsSync(derivedData)).toBe(true);
+
+    buildActive = false;
+    const inactivePreview = await service.cleanupPreview([target]);
+    const removed = await service.cleanup([target], { preview: inactivePreview });
+    expect(removed).toEqual({
+      removed: [{ path: derivedData, bytes: 37 }],
+      failed: [],
+      freedBytes: 37,
+    });
+    expect(fs.existsSync(derivedData)).toBe(false);
+  });
+
   const normalDiskPressure = {
     getSnapshot: () => ({
       state: "normal" as const,
@@ -458,7 +519,10 @@ describe("storageInsightsService", () => {
 
     // iOS DerivedData build cache.
     const derived = path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData");
-    writeSized(path.join(derived, "module.o"), 70);
+    const derivedObject = path.join(derived, "module.o");
+    writeSized(derivedObject, 70);
+    fs.utimesSync(derivedObject, eightDaysAgo, eightDaysAgo);
+    fs.utimesSync(derived, eightDaysAgo, eightDaysAgo);
 
     const service = createStorageInsightsService({
       projectRoot, adeHome, db, logger,
@@ -586,17 +650,26 @@ describe("storageInsightsService", () => {
 
   it("adds presented filesystem cleanup to prunable db bytes without counting recovery backups", async () => {
     writeSized(path.join(projectRoot, ".ade", "cache", "browser-observations", "c.bin"), 100);
-    writeSized(path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData", "m.o"), 200);
+    const derivedData = path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData");
+    const derivedObject = path.join(derivedData, "m.o");
+    writeSized(derivedObject, 200);
     const newerBackup = path.join(projectRoot, ".ade", "ade.db.recovery-newer.bak");
     const obsoleteBackup = path.join(projectRoot, ".ade", "ade.db.recovery-obsolete.bak");
     writeSized(newerBackup, 400);
     writeSized(obsoleteBackup, 500);
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000);
     const nineDaysAgo = new Date(Date.now() - 9 * 24 * 60 * 60_000);
+    fs.utimesSync(derivedObject, eightDaysAgo, eightDaysAgo);
+    fs.utimesSync(derivedData, eightDaysAgo, eightDaysAgo);
     fs.utimesSync(newerBackup, eightDaysAgo, eightDaysAgo);
     fs.utimesSync(obsoleteBackup, nineDaysAgo, nineDaysAgo);
     const snapshot = await createStorageInsightsService({
-      projectRoot, adeHome, db, logger, stagingTmpDir: path.join(adeHome, "no-real-staging"),
+      projectRoot,
+      adeHome,
+      db,
+      logger,
+      isPathActive: () => false,
+      stagingTmpDir: path.join(adeHome, "no-real-staging"),
     }).getSnapshot();
     const extras = snapshot.extras!;
     expect(Array.isArray(extras.dbBreakdown)).toBe(true);

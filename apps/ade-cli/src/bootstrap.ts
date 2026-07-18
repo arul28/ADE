@@ -1503,7 +1503,8 @@ export async function createAdeRuntime(args: {
     diskPressure: diskPressureMonitor,
     isPathActive: (filePath) =>
       Boolean(agentChatService?.isTranscriptPathActive(filePath))
-      || ptyService.isTranscriptPathActive(filePath),
+      || ptyService.isTranscriptPathActive(filePath)
+      || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
     projectId,
     // One bounded `ade_feature_used` per completed maintenance run at the daemon
     // boundary (deduped to 20 h by the service).

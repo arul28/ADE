@@ -438,6 +438,57 @@ describe("iosSimulatorService Simulator.app launch visibility", () => {
     }
   });
 
+  it("reports the managed DerivedData path active only while xcodebuild owns it", async () => {
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-build-activity-`);
+    writeMinimalXcodeProject(projectRoot, "Prox");
+    let markBuildStarted!: () => void;
+    const buildStarted = new Promise<void>((resolve) => { markBuildStarted = resolve; });
+    let releaseBuild!: () => void;
+    const buildRelease = new Promise<void>((resolve) => { releaseBuild = resolve; });
+    const runMock = vi.fn(async (command: string, commandArgs: string[]) => {
+      if (command === "ps") return { stdout: "", stderr: "" };
+      if (command === "/usr/bin/xcode-select") return { stdout: "", stderr: "" };
+      if (command === "xcodebuild" && commandArgs[0] === "-version") {
+        return { stdout: "Xcode 26.3\nBuild version 17C52\n", stderr: "" };
+      }
+      if (command === "xcodebuild") {
+        markBuildStarted();
+        await buildRelease;
+        throw new Error("test build stopped");
+      }
+      if (command === "xcrun" && commandArgs.join(" ") === "simctl list devices available --json") {
+        return { stdout: simulatorDevicesJson, stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[1] === "bootstatus") return { stdout: "", stderr: "" };
+      if (command === "xcrun" && commandArgs[1] === "listapps") return { stdout: "", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const restoreHooks = __testSetIosSimulatorProcessHooks({
+      run: runMock,
+      commandExists: () => true,
+    });
+    const service = createIosSimulatorService({ projectRoot, logger: noopLogger });
+    const derivedDataPath = path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData");
+
+    try {
+      const launchPromise = service.launch({ projectRoot, build: true });
+      await buildStarted;
+      expect(service.isBuildPathActive(derivedDataPath)).toBe(true);
+      expect(service.isBuildPathActive(path.join(projectRoot, ".ade", "cache", "other"))).toBe(false);
+
+      releaseBuild();
+      await expect(launchPromise).rejects.toThrow(/test build stopped/);
+      expect(service.isBuildPathActive(derivedDataPath)).toBe(false);
+    } finally {
+      releaseBuild();
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      restoreHooks();
+      platformSpy.mockRestore();
+    }
+  });
+
   it("opens Simulator.app by default during launch", async () => {
     const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
     const runMock = vi.fn(async (command: string, commandArgs: string[]) => {

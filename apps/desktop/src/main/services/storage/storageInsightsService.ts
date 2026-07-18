@@ -278,6 +278,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const scanEntryLimit = options.scanEntryLimit ?? DEFAULT_SCAN_ENTRY_LIMIT;
   const scanBudgetMs = options.scanBudgetMs ?? DEFAULT_SCAN_BUDGET_MS;
+  const isPathActive = options.isPathActive ?? (() => true);
   let cachedSnapshot: { value: StorageSnapshot; createdAt: number } | null = null;
   const compressionRoots: CompressionRoots = [
     { path: layout.chatTranscriptsDir, kind: "chat_transcript" },
@@ -289,7 +290,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     logger: options.logger,
     diskPressure: options.diskPressure,
     // Without the runtime's in-memory ownership signal, compression is unsafe.
-    isPathActive: options.isPathActive ?? (() => true),
+    isPathActive,
   });
   // `.ade/tmp` is a project-relative release-staging root (distinct from the
   // `.ade/cache/tmp` layout dir) written by the /release skill and never cleaned
@@ -302,6 +303,17 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   let maintenanceFlight: Promise<MaintenanceRunReport> | null = null;
   let firstSweepTimer: ReturnType<typeof setTimeout> | null = null;
   let dailySweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  const overlapsIosDerivedData = (targetPath: string): boolean =>
+    isSameOrWithin(targetPath, iosDerivedDataDir) || isSameOrWithin(iosDerivedDataDir, targetPath);
+
+  const iosDerivedDataBlockReason = (lastModifiedMs: number | null): string | null => {
+    if (isPathActive(iosDerivedDataDir)) return "An iOS build is currently using this data.";
+    if (lastModifiedMs != null && Date.now() - lastModifiedMs <= STALE_AGE_MS) {
+      return "This iOS build data was used recently and may still be in use.";
+    }
+    return null;
+  };
 
   const runCompressionSweep = (opts?: { maxFiles?: number }): Promise<CompressionSweepSummary> => {
     if (sweepFlight) return sweepFlight;
@@ -503,15 +515,23 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       add("build_release", entry?.item);
     }
     const derivedData = iosDerivedDataDir;
-    add("build_release", (await makeItem({
+    const derivedDataEntry = await makeItem({
       category: "build_release",
       base: layout.adeDir,
       path: derivedData,
       label: "iOS build data",
-      safety: "safe_to_remove",
+      safety: "review_first",
       state,
-      detail: "Recreated the next time you build",
-    }))?.item);
+    });
+    if (derivedDataEntry) {
+      const lastModifiedMs = derivedDataEntry.item.lastModifiedAt
+        ? Date.parse(derivedDataEntry.item.lastModifiedAt)
+        : null;
+      const blockedReason = iosDerivedDataBlockReason(lastModifiedMs);
+      derivedDataEntry.item.safety = blockedReason ? "review_first" : "safe_to_remove";
+      derivedDataEntry.item.detail = blockedReason ?? "Recreated the next time you build";
+      add("build_release", derivedDataEntry.item);
+    }
 
     const cacheNames = await readdirOrEmpty(layout.cacheDir);
     for (const name of cacheNames) {
@@ -713,6 +733,15 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
 
     const size = await walkPath(targetPath, null);
+    if (
+      target.kind === "rebuildable_cache"
+      && overlapsIosDerivedData(targetPath)
+      && await lstatOrNull(iosDerivedDataDir)
+    ) {
+      const derivedDataSize = await walkPath(iosDerivedDataDir, null);
+      const blockedReason = iosDerivedDataBlockReason(derivedDataSize.lastModifiedMs);
+      if (blockedReason) return { valid: null, reason: blockedReason };
+    }
     const identity = [stat.dev, stat.ino, stat.size, stat.mtimeMs, size.bytes, size.lastModifiedMs ?? 0].join(":");
     return { valid: { target, path: targetPath, bytes: size.bytes, label, identity } };
   };
@@ -786,6 +815,19 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       if (!previewItem.identity || previewItem.identity !== checked.valid.identity) {
         failed.push({ path: rawPath, reason: "This item changed after the preview. Preview it again before removing it." });
         continue;
+      }
+      if (
+        target.kind === "rebuildable_cache"
+        && overlapsIosDerivedData(checked.valid.path)
+        && await lstatOrNull(iosDerivedDataDir)
+      ) {
+        const blockedReason = iosDerivedDataBlockReason(
+          (await walkPath(iosDerivedDataDir, null)).lastModifiedMs,
+        );
+        if (blockedReason) {
+          failed.push({ path: rawPath, reason: blockedReason });
+          continue;
+        }
       }
       try {
         if (target.kind === "orphaned_worktree" || target.kind === "archived_lane_worktree") {

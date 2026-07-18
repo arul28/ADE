@@ -1749,6 +1749,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
   let controlQueue: Promise<void> = Promise.resolve();
   let activeLaunchId: string | null = null;
+  const activeBuildDataPaths = new Map<string, number>();
   let disposed = false;
   let xcodeMcpBridge: XcodeMcpBridge | null = null;
   const tempFiles = new Set<string>();
@@ -2920,7 +2921,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const buildProjectApp = async (target: ResolvedLaunchTarget, device: IosSimulatorDevice, projectRoot: string): Promise<string | null> => {
-    const derivedDataPath = path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData");
+    const derivedDataPath = path.resolve(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData");
     if (!target.projectPath || !target.scheme) {
       return target.appBundlePath;
     }
@@ -2935,21 +2936,28 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         derivedDataPath,
       });
       try {
-        await run("xcodebuild", [
-          "-project",
-          relativeProjectPath,
-          "-scheme",
-          target.scheme,
-          "-configuration",
-          "Debug",
-          "-sdk",
-          "iphonesimulator",
-          "-destination",
-          `platform=iOS Simulator,id=${device.udid}`,
-          "-derivedDataPath",
-          derivedDataPath,
-          "build",
-        ], { cwd: projectRoot, timeoutMs: 10 * 60_000 });
+        activeBuildDataPaths.set(derivedDataPath, (activeBuildDataPaths.get(derivedDataPath) ?? 0) + 1);
+        try {
+          await run("xcodebuild", [
+            "-project",
+            relativeProjectPath,
+            "-scheme",
+            target.scheme,
+            "-configuration",
+            "Debug",
+            "-sdk",
+            "iphonesimulator",
+            "-destination",
+            `platform=iOS Simulator,id=${device.udid}`,
+            "-derivedDataPath",
+            derivedDataPath,
+            "build",
+          ], { cwd: projectRoot, timeoutMs: 10 * 60_000 });
+        } finally {
+          const remaining = (activeBuildDataPaths.get(derivedDataPath) ?? 1) - 1;
+          if (remaining > 0) activeBuildDataPaths.set(derivedDataPath, remaining);
+          else activeBuildDataPaths.delete(derivedDataPath);
+        }
       } catch (error) {
         const formatted = formatXcodeBuildFailure(error, {
           projectPath: relativeProjectPath,
@@ -3742,12 +3750,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     swipe: drag,
     selectPoint,
     getLastSelectedItem: () => lastSelectedItem,
+    isBuildPathActive: (candidatePath: string) => activeBuildDataPaths.has(path.resolve(candidatePath)),
     dispose: () => {
       disposed = true;
       stopCompanion();
       setStreamStopped(null);
       activeSession = null;
       activeLaunchId = null;
+      activeBuildDataPaths.clear();
       cleanupTempFiles();
       toolAvailabilityCache.clear();
       if (xcodeMcpBridge) {
