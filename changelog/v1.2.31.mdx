@@ -1,0 +1,23 @@
+---
+title: "v1.2.31"
+description: "Release notes for ADE v1.2.31 - July 18, 2026"
+---
+
+v1.2.31 brings Linear connection management to your phone, rebuilds the Providers settings, and makes iOS PRs and chat noticeably more reliable.
+
+---
+
+## Desktop and CLI
+
+- **Providers settings, rebuilt.** The Providers panel is now runtime cards with fully-managed OpenCode subscriptions, Kimi, and custom providers, alongside fixes to live provider usage.
+- **Storage health at a glance.** A new Storage doctor and Storage tab surface database health and cut ingress-payload bloat.
+- **Handoff is smooth again.** Fixed the glitchy fork and brief handoff — seeding lag, phantom duplicate sessions, and a false 30-second timeout are gone (ADE-122).
+- **Chat polish.** The Claude context-usage card no longer spams the thread, smart-link chips show real brand logos, and paste centering is fixed.
+- **Account hardening.** Packaged builds now ignore development Clerk configuration.
+- **Linear workspace logo.** The Linear connection card in Settings now shows your workspace's real logo.
+
+## iOS
+
+- **Connect and manage Linear from your phone.** The Linear pane has a settings gear to sign in, reconnect, and disconnect your Linear workspace — the same setup you get on the Mac. Sign-in runs a native OAuth flow (or an API key), the workspace logo and status are shown, and the controls degrade gracefully when your Mac is on an older build.
+- **PRs, overhauled.** A reliability, performance, and UI pass across the iOS pull-requests experience.
+- **Mobile settings and usage.** Fixed mobile settings and live provider usage on the phone.
