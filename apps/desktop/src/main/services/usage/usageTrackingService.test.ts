@@ -3829,6 +3829,55 @@ describe("usage reliability: non-destructive merge", () => {
     service.dispose();
   });
 
+  it("downgrades a preserved provider after its final carried window expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T12:00:00.000Z"));
+    const pollClaudeUsage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        windows: [{
+          provider: "claude" as const,
+          windowType: "weekly" as const,
+          percentUsed: 37,
+          resetsAt: "2026-07-17T12:01:00.000Z",
+          resetsInMs: 60_000,
+        }],
+        errors: [],
+        source: "oauth" as const,
+      })
+      .mockResolvedValueOnce({
+        disposition: "preserve_previous" as const,
+        windows: [],
+        errors: [],
+        source: "oauth" as const,
+      });
+    const service = createUsageTrackingService({
+      logger: createLogger(),
+      dependencies: {
+        pollClaudeUsage,
+        pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+      },
+    });
+
+    try {
+      const first = await service.poll({ reason: "user" });
+      expect(first.providerStatus?.claude?.state).toBe("ok");
+
+      vi.advanceTimersByTime(60_000);
+      const expired = await service.poll({ reason: "remote" });
+
+      expect(expired.windows.filter((window) => window.provider === "claude")).toEqual([]);
+      expect(expired.providerStatus?.claude).toMatchObject({
+        state: "stale",
+        lastSuccessAt: first.lastPolledAt,
+      });
+      expect(expired.providerStatus?.claude?.message).toMatch(/expired/i);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("clears a sticky Claude auth error when a remote refresh cannot verify credentials", async () => {
     const logger = createLogger();
     const weeklyMs = 3 * 24 * 60 * 60 * 1000;

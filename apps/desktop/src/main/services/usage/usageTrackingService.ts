@@ -2678,14 +2678,21 @@ export function createUsageTrackingService({
             mergedRaw.push(...carriedWindows);
             const hasLegacyNonInteractiveCredentialError = provider === "claude"
               && lastSnapshot?.errors.includes("claude: no non-interactive credentials found") === true;
-            if (previousStatus && !hasLegacyNonInteractiveCredentialError) {
+            if (
+              previousStatus
+              && !hasLegacyNonInteractiveCredentialError
+              && (previousStatus.state !== "ok" || carriedWindows.length > 0)
+            ) {
               providerStatus[provider] = previousStatus;
-            } else if (previousStatus?.lastSuccessAt && carriedWindows.length > 0) {
+            } else if (previousStatus?.lastSuccessAt) {
               providerStatus[provider] = {
                 state: "stale",
                 lastSuccessAt: previousStatus.lastSuccessAt,
                 updatedAt: previousStatus.updatedAt ?? previousStatus.lastSuccessAt,
                 ...(previousStatus.source ? { source: previousStatus.source } : {}),
+                ...(carriedWindows.length === 0
+                  ? { message: `${PROVIDER_DISPLAY_NAME[provider]} usage window expired` }
+                  : {}),
               };
             }
             continue;

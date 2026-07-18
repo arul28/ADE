@@ -151,6 +151,7 @@ export function HeaderUsageControl({
   const [bindingRevision, setBindingRevision] = useState(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const snapshotRef = useRef<UsageSnapshot | null>(null);
+  const bindingGenerationRef = useRef(0);
 
   const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -171,10 +172,11 @@ export function HeaderUsageControl({
 
   const handleRefresh = useCallback(async () => {
     if (!window.ade?.usage?.refresh) return;
+    const requestedGeneration = bindingGenerationRef.current;
     setRefreshing(true);
     try {
       const next = await window.ade.usage.refresh();
-      if (next) applySnapshot(next);
+      if (next && requestedGeneration === bindingGenerationRef.current) applySnapshot(next);
     } catch {
       // swallow
     } finally {
@@ -186,7 +188,6 @@ export function HeaderUsageControl({
     if (!window.ade?.usage) return;
     const usageBridge = window.ade.usage;
     let cancelled = false;
-    let bindingGeneration = 0;
     const readSnapshot = async () => {
       try {
         const nextSnapshot = await usageBridge.getSnapshot();
@@ -200,16 +201,16 @@ export function HeaderUsageControl({
     });
     const readCachedSnapshot = () => {
       if (cancelled) return;
-      const requestedGeneration = bindingGeneration;
+      const requestedGeneration = bindingGenerationRef.current;
       void readSnapshot().then(({ failed, snapshot: nextSnapshot }) => {
-        if (cancelled || requestedGeneration !== bindingGeneration) return;
+        if (cancelled || requestedGeneration !== bindingGenerationRef.current) return;
         const currentSnapshot = snapshotRef.current;
         if (failed && currentSnapshot) return;
         applySnapshot(nextSnapshot);
       });
     };
     const unsubscribeBinding = window.ade.app.onProjectBindingChanged?.(() => {
-      bindingGeneration += 1;
+      bindingGenerationRef.current += 1;
       snapshotRef.current = null;
       setSnapshot(null);
       setProviderConnections(undefined);

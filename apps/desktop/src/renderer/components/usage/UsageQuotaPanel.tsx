@@ -220,6 +220,7 @@ export function UsageQuotaPanel({
   const [refreshing, setRefreshing] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
   const snapshotRef = useRef<UsageSnapshot | null>(null);
+  const bindingGenerationRef = useRef(0);
 
   const onSnapshotChangeRef = useRef(onSnapshotChange);
   useEffect(() => {
@@ -243,32 +244,31 @@ export function UsageQuotaPanel({
     }
     const bridge = window.ade.usage;
     let cancelled = false;
-    let bindingGeneration = 0;
     const unsubscribe = bridge.onUpdate?.((next) => {
       if (!cancelled) applySnapshot(next);
     });
 
     const loadSnapshot = async () => {
-      const requestedGeneration = bindingGeneration;
+      const requestedGeneration = bindingGenerationRef.current;
       let current: UsageSnapshot | null = null;
       try {
         current = await bridge.getSnapshot();
       } catch {
         current = null;
       }
-      if (cancelled || requestedGeneration !== bindingGeneration) return;
+      if (cancelled || requestedGeneration !== bindingGenerationRef.current) return;
       if (current) applySnapshot(current);
 
       try {
         const demanded = await bridge.noteDemand?.();
-        if (!cancelled && requestedGeneration === bindingGeneration && demanded) applySnapshot(demanded);
+        if (!cancelled && requestedGeneration === bindingGenerationRef.current && demanded) applySnapshot(demanded);
       } catch {
         // Quiet — demand only schedules a non-interactive provider refresh.
       }
     };
     void loadSnapshot();
     const unsubscribeBinding = window.ade.app.onProjectBindingChanged?.(() => {
-      bindingGeneration += 1;
+      bindingGenerationRef.current += 1;
       snapshotRef.current = null;
       setSnapshot(null);
       setProviderConnections(null);
@@ -286,10 +286,11 @@ export function UsageQuotaPanel({
 
   const refreshNow = useCallback(async () => {
     if (!window.ade?.usage?.refresh || refreshing) return;
+    const requestedGeneration = bindingGenerationRef.current;
     setRefreshing(true);
     try {
       const next = await window.ade.usage.refresh();
-      if (next) applySnapshot(next);
+      if (next && requestedGeneration === bindingGenerationRef.current) applySnapshot(next);
     } catch {
       // The service preserves last-good data and records the provider state.
     } finally {
