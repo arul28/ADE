@@ -1805,6 +1805,10 @@ describe("adeRpcServer", () => {
         orchestrationParentSessionId: "parent-session-1",
         spawnKind: "peer",
       }),
+      spawnLineage: {
+        parentChatSessionId: "parent-session-1",
+        spawnKind: "peer",
+      },
     }));
     expect(createCall).not.toHaveProperty("chatSessionId");
     expect(response.structuredContent.session).toEqual(expect.objectContaining({

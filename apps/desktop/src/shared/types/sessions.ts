@@ -196,6 +196,8 @@ export type PtyCreateArgs = {
   allowExternalCwd?: boolean;
   /** Session that owns this attached terminal, when launched from chat/CLI UI or App Control. */
   chatSessionId?: string | null;
+  /** Parent chat lineage to export to a spawned agent CLI process. */
+  spawnLineage?: { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null } | null;
   laneId: string;
   cwd?: string;
   cols: number;

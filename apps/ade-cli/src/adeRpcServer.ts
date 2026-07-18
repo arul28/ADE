@@ -3675,6 +3675,9 @@ async function runTool(args: {
       tracked: toolArgs.tracked !== false,
       toolType,
       ...(resumeMetadata ? { resumeMetadata } : {}),
+      ...(isCliProvider(provider) && orchestrationParentSessionId
+        ? { spawnLineage: { parentChatSessionId: orchestrationParentSessionId, spawnKind } }
+        : {}),
       ...(asOptionalTrimmedString(toolArgs.cwd) ? { cwd: asOptionalTrimmedString(toolArgs.cwd)! } : {}),
       ...(asOptionalTrimmedString(toolArgs.chatSessionId) ? { chatSessionId: asOptionalTrimmedString(toolArgs.chatSessionId) } : {}),
       ...launchFields,

@@ -371,6 +371,7 @@ function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   laneId: string;
   chatSessionId: string | null;
   ownerSessionId?: string | null;
+  spawnLineage?: PtyCreateArgs["spawnLineage"];
 }): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {
     ...env,
@@ -389,6 +390,10 @@ function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   } else {
     delete next.ADE_CHAT_SESSION_ID;
     delete next.ADE_BROWSER_ACTOR_TOKEN;
+  }
+  if (args.spawnLineage) {
+    next.ADE_PARENT_CHAT_SESSION_ID = args.spawnLineage.parentChatSessionId;
+    next.ADE_SPAWN_KIND = args.spawnLineage.spawnKind ?? "";
   }
   return next;
 }
@@ -3650,6 +3655,7 @@ export function createPtyService({
         laneId,
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
+        spawnLineage: args.spawnLineage,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,

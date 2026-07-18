@@ -886,6 +886,33 @@ describe("ptyService", () => {
       expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
 
+    it("exports spawn lineage without replacing the tracked CLI session identity", async () => {
+      const { service, loadPty } = createHarness();
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "Codex child",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+        spawnLineage: {
+          parentChatSessionId: "parent-session-1",
+          spawnKind: null,
+        },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+      const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        ADE_CHAT_SESSION_ID: result.sessionId,
+        ADE_PARENT_CHAT_SESSION_ID: "parent-session-1",
+        ADE_SPAWN_KIND: "",
+      }));
+      expect(opts?.env?.ADE_CHAT_SESSION_ID).not.toBe("parent-session-1");
+    });
+
     it("refuses only new tracked CLI launches when storage is exhausted", async () => {
       let exhausted = false;
       const canPerform = vi.fn(() => exhausted
