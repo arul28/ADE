@@ -598,15 +598,23 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       buildCategory("recovery_backups", categoryItems.get("recovery_backups") ?? [], "review_first", state),
       buildCategory("database", categoryItems.get("database") ?? [], "protected", state),
     ];
-    let safeReclaimableBytes = compressibleBytes;
+    const journal = readMaintenanceJournal(journalPath);
+    const dbBreakdown = computeDbBreakdown(deriveSyncBookkeepingAction(journal));
+    // Database storage is represented only by protected filesystem items above,
+    // so adding the prunable logical categories here cannot double-count it.
+    // Deliberately exclude sync bookkeeping: even when its display state is
+    // "compactable", the maintenance hook can still be peer-gated at run time.
+    let safeReclaimableBytes = compressibleBytes + dbBreakdown.reduce(
+      (sum, entry) => sum + (entry.action === "prunable" ? entry.bytes : 0),
+      0,
+    );
     for (const items of categoryItems.values()) {
       for (const item of items) {
         if (item.safety === "safe_to_remove") safeReclaimableBytes += item.bytes;
       }
     }
-    const journal = readMaintenanceJournal(journalPath);
     const extras: StorageSnapshotExtras = {
-      dbBreakdown: computeDbBreakdown(deriveSyncBookkeepingAction(journal)),
+      dbBreakdown,
       maintenance: { lastRun: journal[0] ?? null, journal },
       safeReclaimableBytes,
       policyChips: deriveCategoryPolicyChips(),

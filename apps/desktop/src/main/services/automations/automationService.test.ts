@@ -2493,35 +2493,30 @@ describe("automation ingress storage bounds", () => {
         "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
       ))[0]?.count).toBe(0);
 
-      const original = await service.dispatchIngressTrigger({
+      const unexpiredReplay = await service.dispatchIngressTrigger({
         source: "github-relay",
         eventKey: "storm-9999",
         triggerType: "github.issue_opened",
         rawPayload: { replay: "within-window" },
       });
-      expect(original).not.toBeNull();
+      expect(unexpiredReplay).not.toBeNull();
       const storedOriginal = mapExecRows(raw.exec(
         "select id from automation_ingress_events where event_key = 'storm-9999'",
       ));
       expect(storedOriginal).toHaveLength(1);
-      expect(original?.id).toBe(storedOriginal[0]?.id);
+      expect(unexpiredReplay?.id).toBe(storedOriginal[0]?.id);
 
       raw.run(
         "update automation_ingress_events set received_at = ? where event_key = 'storm-9999'",
         [new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString()],
       );
-      await service.dispatchIngressTrigger({
-        source: "github-relay",
-        eventKey: "ttl-prune-trigger",
-        triggerType: "github.issue_opened",
-      });
       const replayed = await service.dispatchIngressTrigger({
         source: "github-relay",
         eventKey: "storm-9999",
         triggerType: "github.issue_opened",
         rawPayload: { replay: "after-window" },
       });
-      expect(replayed?.id).not.toBe(original?.id);
+      expect(replayed?.id).not.toBe(unexpiredReplay?.id);
       expect(mapExecRows(raw.exec(
         "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
       ))[0]?.count).toBe(0);

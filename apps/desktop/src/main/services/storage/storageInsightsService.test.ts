@@ -570,7 +570,21 @@ describe("storageInsightsService", () => {
     service.dispose();
   });
 
-  it("populates snapshot extras with db breakdown, policy chips, and safe-reclaimable bytes", async () => {
+  it("keeps database-only cleanup actionable by counting prunable db bytes", async () => {
+    const snapshot = await createStorageInsightsService({
+      projectRoot, adeHome, db, logger, stagingTmpDir: path.join(adeHome, "no-real-staging"),
+    }).getSnapshot();
+    const extras = snapshot.extras!;
+    const prunableDbBytes = extras.dbBreakdown.reduce(
+      (sum, entry) => sum + (entry.action === "prunable" ? entry.bytes : 0),
+      0,
+    );
+
+    expect(prunableDbBytes).toBeGreaterThan(0);
+    expect(extras.safeReclaimableBytes).toBe(prunableDbBytes);
+  });
+
+  it("adds prunable db bytes to filesystem cleanup without double-counting", async () => {
     writeSized(path.join(projectRoot, ".ade", "cache", "browser-observations", "c.bin"), 100);
     writeSized(path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData", "m.o"), 200);
     const snapshot = await createStorageInsightsService({
@@ -581,8 +595,19 @@ describe("storageInsightsService", () => {
     expect(extras.maintenance.journal).toEqual([]);
     expect(extras.maintenance.lastRun).toBeNull();
     expect(extras.policyChips.chats_history).toBe("Compressed after 14 days");
-    // safe_to_remove caches (browser-observations 100 + DerivedData 200) are counted.
-    expect(extras.safeReclaimableBytes).toBeGreaterThanOrEqual(300);
+    const prunableDbBytes = extras.dbBreakdown.reduce(
+      (sum, entry) => sum + (entry.action === "prunable" ? entry.bytes : 0),
+      0,
+    );
+    const safeFilesystemBytes = snapshot.categories.reduce(
+      (categorySum, category) => categorySum + category.items.reduce(
+        (itemSum, item) => itemSum + (item.safety === "safe_to_remove" ? item.bytes : 0),
+        0,
+      ),
+      0,
+    );
+    expect(safeFilesystemBytes).toBe(300);
+    expect(extras.safeReclaimableBytes).toBe(prunableDbBytes + safeFilesystemBytes);
     if (extras.dbBreakdown.length > 0) {
       expect(extras.dbBreakdown.some((entry) => entry.category === "core")).toBe(true);
     }

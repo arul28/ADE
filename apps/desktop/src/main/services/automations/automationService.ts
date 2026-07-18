@@ -1137,14 +1137,17 @@ export function createAutomationService({
     [tableName],
   ));
 
-  const pruneIngressEventsForProject = (targetProjectId: string, referenceTime = new Date()): void => {
+  const pruneExpiredIngressEventsForProject = (targetProjectId: string, referenceTime = new Date()): void => {
     const cutoff = new Date(referenceTime.getTime() - INGRESS_EVENT_RETENTION_MS).toISOString();
     db.run(
       "delete from automation_ingress_events where project_id = ? and received_at < ?",
       [targetProjectId, cutoff],
     );
+  };
+
+  const pruneIngressEventOverflowForProject = (targetProjectId: string): void => {
     // Dispatched events are exempt from the count cap (they may still be read
-    // by run detail / the UI); they remain subject to the age prune above, so
+    // by run detail / the UI); they remain subject to the age prune, so
     // they still expire at the retention horizon.
     db.run(
       `delete from automation_ingress_events
@@ -1157,6 +1160,11 @@ export function createAutomationService({
         )`,
       [targetProjectId],
     );
+  };
+
+  const pruneIngressEventsForProject = (targetProjectId: string, referenceTime = new Date()): void => {
+    pruneExpiredIngressEventsForProject(targetProjectId, referenceTime);
+    pruneIngressEventOverflowForProject(targetProjectId);
   };
 
   const reclaimLegacyIngressPayloads = (): void => {
@@ -3392,42 +3400,47 @@ export function createAutomationService({
   }): Promise<AutomationIngressEventRecord | null> => {
     const eventKey = args.eventKey.trim();
     if (!eventKey.length) return null;
-    const existing = db.get<AutomationIngressEventRow>(
-      `
-        select
-          id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
-          cursor, received_at
-        from automation_ingress_events
-        where project_id = ? and source = ? and event_key = ?
-        limit 1
-      `,
-      [projectId, args.source, eventKey]
-    );
-    if (existing) return toIngressEvent(existing);
-
     const eventId = randomUUID();
     const receivedAt = nowIso();
+    let existing: AutomationIngressEventRow | null = null;
     db.run("begin immediate");
     try {
-      db.run(
+      // Prune before dedupe so an event can be replayed after the retention
+      // window. Keeping both operations in this write transaction also avoids
+      // racing the unique (project, source, event_key) index.
+      pruneExpiredIngressEventsForProject(projectId, new Date(receivedAt));
+      existing = db.get<AutomationIngressEventRow>(
         `
-          insert into automation_ingress_events(
-            id, project_id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message, cursor, raw_payload_json, received_at
-          ) values (?, ?, ?, ?, '[]', ?, ?, 'received', ?, null, ?, null, ?)
+          select
+            id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message,
+            cursor, received_at
+          from automation_ingress_events
+          where project_id = ? and source = ? and event_key = ?
+          limit 1
         `,
-        [
-          eventId,
-          projectId,
-          args.source,
-          eventKey,
-          args.triggerType,
-          args.eventName ?? null,
-          args.summary ?? null,
-          args.cursor ?? null,
-          receivedAt,
-        ]
+        [projectId, args.source, eventKey]
       );
-      pruneIngressEventsForProject(projectId, new Date(receivedAt));
+      if (!existing) {
+        db.run(
+          `
+            insert into automation_ingress_events(
+              id, project_id, source, event_key, automation_ids_json, trigger_type, event_name, status, summary, error_message, cursor, raw_payload_json, received_at
+            ) values (?, ?, ?, ?, '[]', ?, ?, 'received', ?, null, ?, null, ?)
+          `,
+          [
+            eventId,
+            projectId,
+            args.source,
+            eventKey,
+            args.triggerType,
+            args.eventName ?? null,
+            args.summary ?? null,
+            args.cursor ?? null,
+            receivedAt,
+          ]
+        );
+        pruneIngressEventOverflowForProject(projectId);
+      }
       db.run("commit");
     } catch (error) {
       try {
@@ -3437,6 +3450,7 @@ export function createAutomationService({
       }
       throw error;
     }
+    if (existing) return toIngressEvent(existing);
     if (args.cursor) upsertIngressCursor(args.source, args.cursor);
 
     const trigger: TriggerContext = {
