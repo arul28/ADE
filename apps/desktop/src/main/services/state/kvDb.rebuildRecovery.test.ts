@@ -13,6 +13,10 @@ import {
   recoverInterruptedTableRebuilds,
   type TableRebuildPlan,
 } from "./kvDb";
+import {
+  PR_SNAPSHOT_RETENTION_DAYS,
+  REVIEW_ARTIFACT_RETENTION_DAYS,
+} from "./dbMaintenanceApi";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as {
@@ -405,7 +409,7 @@ describe("kvDb storage maintenance", () => {
     expect(db.get<{ synchronous: number }>("pragma synchronous")?.synchronous).toBe(1);
   });
 
-  it("caps eligible ingress rows without deleting dispatched history", async () => {
+  it("caps never-dispatched ingress rows without deleting dispatched or failed history", async () => {
     const dbPath = makeDbPath();
     const db = await openKvDb(dbPath, createLogger());
     closeLater(db);
@@ -422,6 +426,10 @@ describe("kvDb storage maintenance", () => {
     db.run(
       "insert into automation_ingress_events(id, project_id, status, received_at) values (?, ?, ?, ?)",
       ["dispatched-oldest", "project-1", "dispatched", receivedAt],
+    );
+    db.run(
+      "insert into automation_ingress_events(id, project_id, status, received_at) values (?, ?, ?, ?)",
+      ["failed-oldest", "project-1", "failed", receivedAt],
     );
     db.run("begin immediate");
     for (let index = 0; index < 2_001; index += 1) {
@@ -443,6 +451,36 @@ describe("kvDb storage maintenance", () => {
     expect(db.get<{ count: number }>(
       "select count(*) as count from automation_ingress_events where id = 'dispatched-oldest'",
     )?.count).toBe(1);
+    expect(db.get<{ count: number }>(
+      "select count(*) as count from automation_ingress_events where id = 'failed-oldest'",
+    )?.count).toBe(1);
+  });
+
+  it("applies the shared review-artifact and PR-snapshot retention windows", async () => {
+    const db = await openKvDb(makeDbPath(), createLogger());
+    closeLater(db);
+    db.run("pragma foreign_keys = off");
+    const now = Date.now();
+    const reviewOld = new Date(now - (REVIEW_ARTIFACT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1_000).toISOString();
+    const reviewRecent = new Date(now - (REVIEW_ARTIFACT_RETENTION_DAYS - 1) * 24 * 60 * 60 * 1_000).toISOString();
+    const prOld = new Date(now - (PR_SNAPSHOT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1_000).toISOString();
+    const prRecent = new Date(now - (PR_SNAPSHOT_RETENTION_DAYS - 1) * 24 * 60 * 60 * 1_000).toISOString();
+    db.run(
+      `insert into review_run_artifacts(id, run_id, artifact_type, title, mime_type, created_at)
+       values ('review-old', 'missing-run', 'summary', 'Old', 'text/plain', ?),
+              ('review-recent', 'missing-run', 'summary', 'Recent', 'text/plain', ?)`,
+      [reviewOld, reviewRecent],
+    );
+    db.run(
+      `insert into pull_request_snapshots(pr_id, updated_at)
+       values ('pr-old', ?), ('pr-recent', ?)`,
+      [prOld, prRecent],
+    );
+
+    expect(db.maintenance?.pruneReviewArtifacts().itemsAffected).toBe(1);
+    expect(db.maintenance?.prunePrSnapshots().itemsAffected).toBe(1);
+    expect(db.all<{ id: string }>("select id from review_run_artifacts order by id")).toEqual([{ id: "review-recent" }]);
+    expect(db.all<{ pr_id: string }>("select pr_id from pull_request_snapshots order by pr_id")).toEqual([{ pr_id: "pr-recent" }]);
   });
 
   it("reclaims a fragmented file, activates incremental auto-vacuum, and skips a healthy file", async () => {
@@ -537,13 +575,16 @@ describe("kvDb storage maintenance", () => {
 
   it("gates CRR tombstone compaction on peer state", async () => {
     const pairedPath = makeDbPath();
-    const paired = await openKvDb(pairedPath, createLogger(), { hasSyncPeers: () => true });
+    let hasSyncPeers = true;
+    const paired = await openKvDb(pairedPath, createLogger(), { hasSyncPeers: () => hasSyncPeers });
     closeLater(paired);
     expect(paired.maintenance?.compactCrsqlTombstones()).toEqual({
       itemsAffected: 0,
       bytesReclaimed: 0,
       skippedReason: "has_peers",
     });
+    hasSyncPeers = false;
+    expect(paired.maintenance?.compactCrsqlTombstones()?.skippedReason).not.toBe("has_peers");
   });
 
   it.skipIf(process.platform === "linux")("compacts CRR tombstones with no peers and preserves operations byte-for-byte", async () => {

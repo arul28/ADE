@@ -25,6 +25,7 @@ import {
   ledgerLabel,
   maintenanceActionLines,
   maintenanceHeadline,
+  maintenanceOutcome,
   safeReclaimableBytes,
   sparklinePoints,
 } from "./storageView";
@@ -131,6 +132,19 @@ describe("maintenanceActionLines", () => {
     const failed = lines.find((l) => l.label === "Review artifacts")!;
     expect(failed.failed).toBe(true);
     expect(failed.detail).toBe("couldn't finish");
+  });
+
+  it("reports partial failures instead of calling a zero-byte run tidy", () => {
+    const report = run({
+      reclaimedBytes: 0,
+      actions: [
+        { ledgerId: "fs.tmp", kind: "delete", itemsAffected: 0, bytesReclaimed: 0, durationMs: 4, error: "busy" },
+      ],
+    });
+    expect(maintenanceOutcome(report)).toEqual({
+      message: "Some cleanup steps couldn't finish",
+      failed: true,
+    });
   });
 });
 
@@ -254,9 +268,28 @@ describe("buildSafeCleanupPlan", () => {
         { id: "c1", label: "npm", path: "/proj/.ade/cache/npm", bytes: 300 * MB, fileCount: 5, lastModifiedAt: null, safety: "safe_to_remove" },
       ],
     },
+    {
+      id: "build_release",
+      bytes: 200 * MB,
+      fileCount: 2,
+      safety: "safe_to_remove",
+      items: [
+        { id: "b1", label: "iOS build data", path: "/proj/.ade/cache/ios-simulator/DerivedData", bytes: 200 * MB, fileCount: 2, lastModifiedAt: null, safety: "safe_to_remove" },
+      ],
+    },
+    {
+      id: "recovery_backups",
+      bytes: 140 * MB,
+      fileCount: 2,
+      safety: "review_first",
+      items: [
+        { id: "r-old", label: "Obsolete recovery backup", path: "/proj/.ade/ade.db.recovery-old.bak", bytes: 60 * MB, fileCount: 1, lastModifiedAt: null, safety: "safe_to_remove" },
+        { id: "r-new", label: "Newest recovery backup", path: "/proj/.ade/ade.db.recovery-new.bak", bytes: 80 * MB, fileCount: 1, lastModifiedAt: null, safety: "review_first" },
+      ],
+    },
   ];
   const extras = {
-    safeReclaimableBytes: 460 * MB,
+    safeReclaimableBytes: 660 * MB,
     dbBreakdown: [
       { table: "automation_ingress_events", label: "Webhook history", bytes: 40 * MB, category: "webhooks", action: "prunable" },
       { table: "core", label: "Core data", bytes: 8 * MB, category: "core", action: null },
@@ -265,15 +298,21 @@ describe("buildSafeCleanupPlan", () => {
 
   it("groups compressible history, database rows, and filesystem targets", () => {
     const plan = buildSafeCleanupPlan({ categories, extras }, new Map());
-    expect(plan.estimatedBytes).toBe(460 * MB);
+    expect(plan.estimatedBytes).toBe(420 * MB);
     expect(plan.groups.map((g) => g.heading)).toEqual([
       "Chats & terminal history",
       "Project database",
       "Temporary & rebuildable files",
+      "Obsolete recovery backups",
     ]);
-    expect(plan.fsTargets).toHaveLength(1);
-    expect(plan.fsBytes).toBe(300 * MB);
-    expect(plan.fsGroup?.rows).toHaveLength(1);
+    expect(plan.fsTargets).toHaveLength(2);
+    expect(plan.fsBytes).toBe(500 * MB);
+    expect(plan.fsGroup?.rows).toHaveLength(2);
+    expect(plan.groups.find((group) => group.heading === "Temporary & rebuildable files")?.rows)
+      .toEqual([{ label: "iOS build data", size: "200 MB" }]);
+    expect(plan.groups.find((group) => group.heading === "Obsolete recovery backups")?.rows)
+      .toEqual([{ label: "Obsolete recovery backup", size: "60.0 MB" }]);
+    expect(plan.groups.flatMap((group) => group.rows).some((row) => row.label === "Newest recovery backup")).toBe(false);
     expect(plan.whatHappens.at(-1)).toContain("never touched");
     expect(plan.whatHappens.at(-1)).toContain("newest backup is always kept");
   });

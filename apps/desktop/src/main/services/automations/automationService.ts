@@ -1146,15 +1146,15 @@ export function createAutomationService({
   };
 
   const pruneIngressEventOverflowForProject = (targetProjectId: string): void => {
-    // Dispatched events are exempt from the count cap (they may still be read
-    // by run detail / the UI); they remain subject to the age prune, so
-    // they still expire at the retention horizon.
+    // Rows that reached dispatch are exempt from the count cap. A failed row
+    // was previously dispatched and must keep deduping webhook redelivery even
+    // when a later action failed; both statuses remain subject to the age prune.
     db.run(
       `delete from automation_ingress_events
         where rowid in (
           select rowid
           from automation_ingress_events
-          where project_id = ? and status != 'dispatched'
+          where project_id = ? and status not in ('dispatched', 'failed')
           order by received_at desc, rowid desc
           limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
         )`,
@@ -1171,15 +1171,15 @@ export function createAutomationService({
     const hasPayloads = db.get<{ present: number }>(
       "select 1 as present from automation_ingress_events where raw_payload_json is not null limit 1",
     );
-    if (!hasPayloads) return;
+    const payloadStats = hasPayloads
+      ? db.get<{ rows_cleared: number; bytes_cleared: number | null }>(
+          `select count(*) as rows_cleared, coalesce(sum(length(raw_payload_json)), 0) as bytes_cleared
+             from automation_ingress_events
+            where raw_payload_json is not null`,
+        )
+      : null;
 
-    const payloadStats = db.get<{ rows_cleared: number; bytes_cleared: number | null }>(
-      `select count(*) as rows_cleared, coalesce(sum(length(raw_payload_json)), 0) as bytes_cleared
-         from automation_ingress_events
-        where raw_payload_json is not null`,
-    );
-
-    while (db.get("select 1 as present from automation_ingress_events where raw_payload_json is not null limit 1")) {
+    while (hasPayloads && db.get("select 1 as present from automation_ingress_events where raw_payload_json is not null limit 1")) {
       db.run("begin immediate");
       try {
         db.run(
@@ -1224,10 +1224,12 @@ export function createAutomationService({
       );
     }
 
-    logger.info("automations.ingress_payload_reclaim", {
-      rowsCleared: Number(payloadStats?.rows_cleared ?? 0),
-      bytesCleared: Number(payloadStats?.bytes_cleared ?? 0),
-    });
+    if (hasPayloads) {
+      logger.info("automations.ingress_payload_reclaim", {
+        rowsCleared: Number(payloadStats?.rows_cleared ?? 0),
+        bytesCleared: Number(payloadStats?.bytes_cleared ?? 0),
+      });
+    }
   };
 
   const ensureSchema = () => {

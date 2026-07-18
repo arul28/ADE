@@ -60,16 +60,18 @@ export function mapDbBreakdown(
 /**
  * Sync-bookkeeping compaction state, derived without any new seam. We only
  * surface an actionable "Compact now" ("compactable") once the journal proves
- * the most recent run's cr-sqlite compaction actually executed without a
- * has_peers skip. With no journal yet — or no compact record in the latest run
- * — there is no positive evidence that compaction is safe, so we default to
- * "compaction_pending" ("Waiting to compact") rather than offer an action that
- * might turn out to be peer-blocked. A latest run peer-blocked stays pending.
+ * the most recent run's cr-sqlite compaction actually completed successfully.
+ * With no journal yet, no compact record, an error, or any skip reason, there
+ * is no positive evidence that the action can run, so we stay pending.
  */
 export function deriveSyncBookkeepingAction(
   journal: readonly MaintenanceRunReport[],
 ): DbBreakdownEntry["action"] {
-  const lastCompact = journal[0]?.actions.find((action) => action.ledgerId === "db.operations_crsql");
+  const lastCompact = journal[0]?.actions.find(
+    (action) => action.ledgerId === "db.operations_crsql" && action.kind === "compact",
+  );
   if (!lastCompact) return "compaction_pending";
-  return lastCompact.skippedReason === "has_peers" ? "compaction_pending" : "compactable";
+  return !lastCompact.error && lastCompact.skippedReason == null
+    ? "compactable"
+    : "compaction_pending";
 }

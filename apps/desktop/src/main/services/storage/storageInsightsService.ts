@@ -620,23 +620,36 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     ];
     const journal = readMaintenanceJournal(journalPath);
     const dbBreakdown = computeDbBreakdown(deriveSyncBookkeepingAction(journal));
-    // Database storage is represented only by protected filesystem items above,
-    // so adding the prunable logical categories here cannot double-count it.
-    // Deliberately exclude sync bookkeeping: even when its display state is
-    // "compactable", the maintenance hook can still be peer-gated at run time.
-    let safeReclaimableBytes = compressibleBytes + dbBreakdown.reduce(
-      (sum, entry) => sum + (entry.action === "prunable" ? entry.bytes : 0),
-      0,
-    );
-    // The primary cleanup dialog only itemizes rebuildable caches and
-    // build/release staging. Recovery backups remain an independent,
-    // review-first surface even when the doctor can safely reap obsolete copies,
-    // so they must not inflate the amount this CTA promises to reclaim.
-    for (const categoryId of ["build_release", "caches"] as const) {
-      const items = categoryItems.get(categoryId) ?? [];
-      for (const item of items) {
-        if (item.safety === "safe_to_remove") safeReclaimableBytes += item.bytes;
+    // Estimate only work the same backend validator will authorize. Raw
+    // compressible bytes are not predicted savings, and dbstat table totals do
+    // not identify the expired rows (or the bytes a later vacuum can return),
+    // so neither is defensible enough for the primary cleanup promise.
+    const candidateTargets = new Map<string, StorageCleanupTarget>();
+    for (const category of categories) {
+      if (category.id !== "build_release" && category.id !== "caches") continue;
+      for (const item of category.items) {
+        if (item.safety !== "safe_to_remove") continue;
+        const itemPath = path.resolve(item.path);
+        if (
+          (isDirectChild(stagingTmpRoot, itemPath) && /^ade-/.test(path.basename(itemPath)))
+          || isDirectChild(adeTmpDir, itemPath)
+        ) {
+          candidateTargets.set(itemPath, { kind: "stale_tmp_staging", path: itemPath });
+        } else if (isWithin(layout.cacheDir, itemPath)) {
+          candidateTargets.set(itemPath, { kind: "rebuildable_cache", path: itemPath });
+        }
       }
+    }
+    // Prefer an accepted ancestor over descendants so nested cache entries can
+    // never inflate the estimate by counting the same bytes twice.
+    const acceptedPaths: string[] = [];
+    let safeReclaimableBytes = 0;
+    for (const target of [...candidateTargets.values()].sort((left, right) => left.path.length - right.path.length)) {
+      if (acceptedPaths.some((acceptedPath) => isSameOrWithin(acceptedPath, target.path))) continue;
+      const checked = await validateTarget(target);
+      if (!checked.valid) continue;
+      acceptedPaths.push(checked.valid.path);
+      safeReclaimableBytes += checked.valid.bytes;
     }
     const extras: StorageSnapshotExtras = {
       dbBreakdown,

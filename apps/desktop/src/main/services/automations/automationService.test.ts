@@ -2470,7 +2470,7 @@ describe("automation ingress storage bounds", () => {
     });
   }
 
-  it("keeps only 2,000 slim rows during an insert storm and preserves the seven-day dedup window", async () => {
+  it("caps never-dispatched rows during an insert storm and preserves dispatched dedupe history", async () => {
     const { db, raw } = createInMemoryAdeDb();
     const service = createIngressService(db);
 
@@ -2521,13 +2521,18 @@ describe("automation ingress storage bounds", () => {
         "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
       ))[0]?.count).toBe(0);
 
-      // Dispatched rows are exempt from the count cap; an equally-old ignored
-      // row beyond the newest 2,000 is not. Both are within the 7-day window so
-      // the age prune leaves them; only the count cap acts.
+      // Dispatched and failed-after-dispatch rows are exempt from the count cap;
+      // an equally-old ignored row beyond the newest 2,000 is not. All are
+      // within the 7-day window so only the count cap acts.
       const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1_000).toISOString();
       raw.run(
         `insert into automation_ingress_events(id, project_id, source, event_key, automation_ids_json, trigger_type, status, raw_payload_json, received_at)
          values ('keep-dispatched', 'proj', 'github-relay', 'keep-dispatched', '[]', 'github.issue_opened', 'dispatched', null, ?)`,
+        [fiveDaysAgo],
+      );
+      raw.run(
+        `insert into automation_ingress_events(id, project_id, source, event_key, automation_ids_json, trigger_type, status, raw_payload_json, received_at)
+         values ('keep-failed', 'proj', 'github-relay', 'keep-failed', '[]', 'github.issue_opened', 'failed', null, ?)`,
         [fiveDaysAgo],
       );
       raw.run(
@@ -2545,12 +2550,42 @@ describe("automation ingress storage bounds", () => {
         "select count(*) as count from automation_ingress_events where event_key = 'keep-dispatched'",
       ))[0]?.count).toBe(1);
       expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where event_key = 'keep-failed'",
+      ))[0]?.count).toBe(1);
+      expect(mapExecRows(raw.exec(
         "select count(*) as count from automation_ingress_events where event_key = 'drop-ignored'",
       ))[0]?.count).toBe(0);
     } finally {
       service.dispose();
     }
   }, 120_000);
+
+  it("runs startup retention even when no legacy ingress payloads remain", () => {
+    const { db, raw } = createInMemoryAdeDb();
+    raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");
+    raw.run("create table pull_request_snapshots(pr_id text primary key, updated_at text not null)");
+    const oldIngress = new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString();
+    const oldReview = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
+    const oldSnapshot = new Date(Date.now() - 61 * 24 * 60 * 60 * 1_000).toISOString();
+    raw.run(
+      `insert into automation_ingress_events(
+        id, project_id, source, event_key, automation_ids_json, trigger_type,
+        status, raw_payload_json, received_at
+      ) values ('stale-ingress', 'proj', 'github-relay', 'stale-ingress', '[]', 'github.issue_opened', 'ignored', null, ?)`,
+      [oldIngress],
+    );
+    raw.run("insert into review_run_artifacts values ('stale-review', ?)", [oldReview]);
+    raw.run("insert into pull_request_snapshots values ('stale-pr', ?)", [oldSnapshot]);
+
+    const service = createIngressService(db);
+    try {
+      expect(mapExecRows(raw.exec("select id from automation_ingress_events"))).toEqual([]);
+      expect(mapExecRows(raw.exec("select id from review_run_artifacts"))).toEqual([]);
+      expect(mapExecRows(raw.exec("select pr_id from pull_request_snapshots"))).toEqual([]);
+    } finally {
+      service.dispose();
+    }
+  });
 
   it("reclaims legacy payloads and local caches once, in bounded chunks", () => {
     const { db, raw } = createInMemoryAdeDb();

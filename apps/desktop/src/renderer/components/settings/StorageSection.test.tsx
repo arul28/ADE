@@ -82,11 +82,12 @@ function makeSnapshot(): StorageSnapshot {
       },
       {
         id: "recovery_backups",
-        bytes: 80 * 1024 ** 2,
+        bytes: 140 * 1024 ** 2,
         fileCount: 2,
         safety: "review_first",
         items: [
-          { id: "r1", label: "Recovery backup", path: `${PROJECT}/.ade/ade.db.bak-2026-07-01`, bytes: 80 * 1024 ** 2, fileCount: 1, lastModifiedAt: new Date().toISOString(), safety: "review_first" },
+          { id: "r-old", label: "Obsolete recovery backup", path: `${PROJECT}/.ade/ade.db.bak-2026-06-01`, bytes: 60 * 1024 ** 2, fileCount: 1, lastModifiedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), safety: "safe_to_remove" },
+          { id: "r-new", label: "Newest recovery backup", path: `${PROJECT}/.ade/ade.db.bak-2026-07-01`, bytes: 80 * 1024 ** 2, fileCount: 1, lastModifiedAt: new Date().toISOString(), safety: "review_first" },
         ],
       },
       {
@@ -184,7 +185,13 @@ function makeUsage(): AppResourceUsageSnapshot {
   } as AppResourceUsageSnapshot;
 }
 
-function installAdeMock(options: { withCompress?: boolean; withExtras?: boolean; withApp?: boolean } = {}) {
+function installAdeMock(options: {
+  withCompress?: boolean;
+  withExtras?: boolean;
+  withApp?: boolean;
+  maintenanceReport?: MaintenanceRunReport;
+  resourceUsage?: AppResourceUsageSnapshot;
+} = {}) {
   const cleanupPreview = vi.fn(
     async (targets: StorageCleanupTarget[]): Promise<StorageCleanupPreview> => ({
       items: targets.map((target) => ({ path: target.path, bytes: 1.5 * 1024 ** 3, label: "Old feature" })),
@@ -202,7 +209,7 @@ function installAdeMock(options: { withCompress?: boolean; withExtras?: boolean;
   );
   const compressNow = vi.fn(async () => ({ filesCompressed: 12, savedBytes: 300 * 1024 ** 2 }));
   const runMaintenanceNow = vi.fn(
-    async (): Promise<MaintenanceRunReport> => ({
+    async (): Promise<MaintenanceRunReport> => options.maintenanceReport ?? ({
       startedAt: new Date().toISOString(),
       finishedAt: new Date().toISOString(),
       trigger: "manual",
@@ -216,7 +223,7 @@ function installAdeMock(options: { withCompress?: boolean; withExtras?: boolean;
   const getRuntimeHealth = vi.fn(
     async (): Promise<RuntimeHealthSnapshot> => ({ slowActions24h: 3, slowActionP95Ms: 5_200, sampledAt: new Date().toISOString() }),
   );
-  const getResourceUsage = vi.fn(async () => makeUsage());
+  const getResourceUsage = vi.fn(async () => options.resourceUsage ?? makeUsage());
 
   const storage: Record<string, unknown> = {
     getSnapshot: vi.fn(async () => (options.withExtras ? makeSnapshotWithExtras() : makeSnapshot())),
@@ -357,11 +364,16 @@ describe("StorageSection", () => {
     fireEvent.click(primary);
 
     const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("iOS build data")).toBeTruthy();
+    expect(within(dialog).queryByText("npm")).toBeNull();
+    expect(within(dialog).getByText("Obsolete recovery backup")).toBeTruthy();
+    expect(within(dialog).queryByText("Newest recovery backup")).toBeNull();
+    expect(within(dialog).getAllByText(/newest (recovery )?backup/i).length).toBeGreaterThan(0);
     const confirm = await within(dialog).findByRole("button", { name: /clean up safely/i });
     fireEvent.click(confirm);
 
     await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
-    expect(await within(dialog).findByText(/Freed 481 MB/)).toBeTruthy();
+    expect(await within(dialog).findByText(/Reclaimed 481 MB/)).toBeTruthy();
   });
 
   it("shows the database breakdown and runs maintenance from an inline action", async () => {
@@ -380,6 +392,47 @@ describe("StorageSection", () => {
     await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
   });
 
+  it("reports a zero-byte partial maintenance failure instead of calling storage tidy", async () => {
+    const failedReport: MaintenanceRunReport = {
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      trigger: "manual",
+      actions: [
+        { ledgerId: "db.operations_crsql", kind: "compact", itemsAffected: 0, bytesReclaimed: 0, durationMs: 3, error: "database busy" },
+      ],
+      reclaimedBytes: 0,
+      dbSizeBytes: 30 * MB,
+    };
+    const { runMaintenanceNow } = installAdeMock({ withExtras: true, maintenanceReport: failedReport });
+    render(<StorageSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /compact now/i }));
+    await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Some cleanup steps couldn't finish")).toBeTruthy();
+    expect(screen.queryByText("Storage is already tidy")).toBeNull();
+  });
+
+  it("shows a partial maintenance failure in the safe-cleanup dialog", async () => {
+    const failedReport: MaintenanceRunReport = {
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      trigger: "manual",
+      actions: [
+        { ledgerId: "fs.tmp", kind: "delete", itemsAffected: 0, bytesReclaimed: 0, durationMs: 3, error: "files in use" },
+      ],
+      reclaimedBytes: 0,
+      dbSizeBytes: 30 * MB,
+    };
+    installAdeMock({ withExtras: true, maintenanceReport: failedReport });
+    render(<StorageSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /clean up safely/i }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(await within(dialog).findByRole("button", { name: /clean up safely/i }));
+    expect(await within(dialog).findByText("Some cleanup steps couldn't finish.")).toBeTruthy();
+    expect(within(dialog).queryByText("Storage is already tidy.")).toBeNull();
+  });
+
   it("renders diagnostics from resource usage and the maintenance journal", async () => {
     installAdeMock({ withExtras: true });
     render(<StorageSection />);
@@ -395,6 +448,24 @@ describe("StorageSection", () => {
     // Journal expands to show a humanized run summary.
     fireEvent.click(screen.getByRole("button", { name: /recent cleanups/i }));
     expect(await screen.findByText(/reclaimed 450 MB/)).toBeTruthy();
+  });
+
+  it("does not label unavailable resource-pressure data as healthy", async () => {
+    const unavailableUsage = {
+      ...makeUsage(),
+      cpuPercent: null,
+      mainCpuPercent: null,
+      rendererCpuPercent: null,
+      ptyCpuPercent: null,
+      memoryMB: null,
+      freeMemoryMB: null,
+    } as AppResourceUsageSnapshot;
+    const { getResourceUsage } = installAdeMock({ withExtras: true, resourceUsage: unavailableUsage });
+    render(<StorageSection />);
+
+    await waitFor(() => expect(getResourceUsage).toHaveBeenCalledTimes(1));
+    await screen.findByText("Health & diagnostics");
+    expect(screen.queryByText("Healthy")).toBeNull();
   });
 
   it("keeps plain language across the diagnostics and database surfaces", async () => {

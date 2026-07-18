@@ -130,6 +130,21 @@ export function DiagnosticsStrip({
   const lastRun = lastMaintenanceRun(extras);
   const level = usage ? appResourcePressureLevel(usage) : 0;
   const health = healthChip(level);
+  const hasCpuSignal = Boolean(usage && [
+    usage.cpuPercent,
+    usage.mainCpuPercent,
+    usage.rendererCpuPercent,
+    usage.ptyCpuPercent,
+  ].some((value) => typeof value === "number" && Number.isFinite(value)));
+  const hasMemorySignal = Boolean(
+    usage
+      && typeof usage.totalMemoryMB === "number"
+      && Number.isFinite(usage.totalMemoryMB)
+      && usage.totalMemoryMB > 0
+      && [usage.memoryMB, usage.freeMemoryMB]
+        .some((value) => typeof value === "number" && Number.isFinite(value)),
+  );
+  const hasPressureSignal = hasCpuSignal || hasMemorySignal;
   const healthColor = health.tone === "busy" ? COLORS.danger : health.tone === "elevated" ? COLORS.warning : COLORS.success;
 
   const notAvailable = <span style={{ color: COLORS.textMuted, fontWeight: 500, fontSize: 13 }}>Not available yet</span>;
@@ -148,7 +163,7 @@ export function DiagnosticsStrip({
             How the background service is doing on this Mac.
           </div>
         </div>
-        {usageReady && usage ? (
+        {usageReady && hasPressureSignal ? (
           <span style={{ ...inlineBadge(healthColor, { fontSize: 11, gap: 5 }), display: "inline-flex", alignItems: "center" }}>
             <Gauge size={13} weight="fill" /> {health.label}
           </span>

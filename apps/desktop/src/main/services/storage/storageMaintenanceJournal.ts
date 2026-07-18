@@ -10,14 +10,44 @@ import type { MaintenanceRunReport } from "../../../shared/types/storage";
 
 export const MAINTENANCE_JOURNAL_MAX_RUNS = 30;
 
+const MAINTENANCE_TRIGGERS = new Set(["daily", "post_boot", "manual", "post_migration"]);
+const MAINTENANCE_ACTION_KINDS = new Set(["prune", "compress", "delete", "vacuum", "compact", "checkpoint"]);
+
+function isFiniteNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isNullableString(value: unknown): value is string | null | undefined {
+  return value == null || typeof value === "string";
+}
+
+function isMaintenanceAction(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const action = value as Record<string, unknown>;
+  return typeof action.ledgerId === "string"
+    && action.ledgerId.length > 0
+    && typeof action.kind === "string"
+    && MAINTENANCE_ACTION_KINDS.has(action.kind)
+    && isFiniteNonNegativeNumber(action.itemsAffected)
+    && isFiniteNonNegativeNumber(action.bytesReclaimed)
+    && isFiniteNonNegativeNumber(action.durationMs)
+    && isNullableString(action.skippedReason)
+    && isNullableString(action.error);
+}
+
 export function isMaintenanceReport(value: unknown): value is MaintenanceRunReport {
   if (!value || typeof value !== "object") return false;
   const report = value as Record<string, unknown>;
   return typeof report.startedAt === "string"
+    && report.startedAt.length > 0
     && typeof report.finishedAt === "string"
+    && report.finishedAt.length > 0
     && typeof report.trigger === "string"
+    && MAINTENANCE_TRIGGERS.has(report.trigger)
     && Array.isArray(report.actions)
-    && typeof report.reclaimedBytes === "number";
+    && report.actions.every(isMaintenanceAction)
+    && isFiniteNonNegativeNumber(report.reclaimedBytes)
+    && (report.dbSizeBytes === null || isFiniteNonNegativeNumber(report.dbSizeBytes));
 }
 
 export function readMaintenanceJournal(journalPath: string): MaintenanceRunReport[] {

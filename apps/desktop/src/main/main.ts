@@ -2171,8 +2171,14 @@ app.whenReady().then(async () => {
       }
     };
 
+    // Fail closed until sync publishes its first status, then keep the DB
+    // compaction gate synchronized with the live connected-peer count.
+    let liveSyncPeerCount: number | null = null;
+    let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
     const db = await measureProjectInitStep("db_open", () =>
-      openKvDb(adePaths.dbPath, logger),
+      openKvDb(adePaths.dbPath, logger, {
+        hasSyncPeers: () => liveSyncPeerCount !== 0,
+      }),
     );
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
@@ -2906,7 +2912,6 @@ app.whenReady().then(async () => {
       });
     };
 
-    let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
     const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
       ? null
       : createSupervisedPtyLoader({ logger });
@@ -3656,6 +3661,7 @@ app.whenReady().then(async () => {
           projectScaffoldService.listMyGitHubRepos(input),
       },
       onStatusChanged: (snapshot) => {
+        liveSyncPeerCount = snapshot.connectedPeers.length;
         const normalizedProjectRoot = normalizeProjectRoot(projectRoot);
         if (mobileSyncSelectedRoot == null && snapshot.connectedPeers.length > 0) {
           mobileSyncSelectedRoot = normalizedProjectRoot;
@@ -4319,7 +4325,11 @@ app.whenReady().then(async () => {
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
-    const db = await openKvDb(adePaths.dbPath, logger);
+    const db = await openKvDb(adePaths.dbPath, logger, {
+      // The machine runtime owns sync and the real storage doctor in this mode;
+      // this dormant fallback has no authoritative local peer signal.
+      hasSyncPeers: () => true,
+    });
     const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
     const storageInsightsService = createStorageInsightsService({
       projectRoot,

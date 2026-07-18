@@ -504,9 +504,15 @@ export async function createAdeRuntime(args: {
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
   });
+  // A sync-enabled runtime must prove zero connected peers before CRR
+  // compaction. Runtimes without sync have no peer transport and can safely
+  // report zero immediately.
+  let liveSyncPeerCount: number | null = resolvedArgs.syncRuntime?.enabled ? null : 0;
   let db: AdeDb;
   try {
-    db = await openKvDb(paths.dbPath, logger);
+    db = await openKvDb(paths.dbPath, logger, {
+      hasSyncPeers: () => liveSyncPeerCount !== 0,
+    });
   } catch (error) {
     const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error));
     const detail = error instanceof Error ? error.message : String(error);
@@ -1639,7 +1645,10 @@ export async function createAdeRuntime(args: {
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,
       syncTunnelClientService,
-      onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
+      onStatusChanged: (snapshot) => {
+        liveSyncPeerCount = snapshot.connectedPeers.length;
+        pushEvent("runtime", { type: "sync-status", snapshot });
+      },
     });
     syncServiceForPtyEvents = syncService;
   }

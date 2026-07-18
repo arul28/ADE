@@ -6,6 +6,7 @@ import type { MaintenanceRunReport, StorageCleanupPreview, StorageCleanupTarget 
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import { createStorageInsightsService } from "./storageInsightsService";
 import { classifyDbTable, deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdown";
+import { isMaintenanceReport, readMaintenanceJournal } from "./storageMaintenanceJournal";
 import { ADE_LAYOUT_DEFINITIONS } from "../../../shared/adeLayout";
 import {
   deriveCategoryPolicyChips,
@@ -634,7 +635,7 @@ describe("storageInsightsService", () => {
     service.dispose();
   });
 
-  it("keeps database-only cleanup actionable by counting prunable db bytes", async () => {
+  it("does not promise dbstat table totals as reclaimable bytes", async () => {
     const snapshot = await createStorageInsightsService({
       projectRoot, adeHome, db, logger, stagingTmpDir: path.join(adeHome, "no-real-staging"),
     }).getSnapshot();
@@ -645,24 +646,27 @@ describe("storageInsightsService", () => {
     );
 
     expect(prunableDbBytes).toBeGreaterThan(0);
-    expect(extras.safeReclaimableBytes).toBe(prunableDbBytes);
+    expect(extras.safeReclaimableBytes).toBe(0);
   });
 
-  it("adds presented filesystem cleanup to prunable db bytes without counting recovery backups", async () => {
+  it("counts only filesystem targets accepted by the cleanup validator", async () => {
     writeSized(path.join(projectRoot, ".ade", "cache", "browser-observations", "c.bin"), 100);
     const derivedData = path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData");
     const derivedObject = path.join(derivedData, "m.o");
     writeSized(derivedObject, 200);
     const newerBackup = path.join(projectRoot, ".ade", "ade.db.recovery-newer.bak");
     const obsoleteBackup = path.join(projectRoot, ".ade", "ade.db.recovery-obsolete.bak");
+    const appUpdateStaging = path.join(adeHome, "runtime", "updates", "stale-update.zip");
     writeSized(newerBackup, 400);
     writeSized(obsoleteBackup, 500);
+    writeSized(appUpdateStaging, 600);
     const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000);
     const nineDaysAgo = new Date(Date.now() - 9 * 24 * 60 * 60_000);
     fs.utimesSync(derivedObject, eightDaysAgo, eightDaysAgo);
     fs.utimesSync(derivedData, eightDaysAgo, eightDaysAgo);
     fs.utimesSync(newerBackup, eightDaysAgo, eightDaysAgo);
     fs.utimesSync(obsoleteBackup, nineDaysAgo, nineDaysAgo);
+    fs.utimesSync(appUpdateStaging, nineDaysAgo, nineDaysAgo);
     const snapshot = await createStorageInsightsService({
       projectRoot,
       adeHome,
@@ -693,8 +697,13 @@ describe("storageInsightsService", () => {
       bytes: 500,
       safety: "safe_to_remove",
     });
-    expect(presentedFilesystemBytes).toBe(300);
-    expect(extras.safeReclaimableBytes).toBe(prunableDbBytes + presentedFilesystemBytes);
+    expect(presentedFilesystemBytes).toBe(900);
+    expect(snapshot.categories.find((category) => category.id === "caches")?.items).toContainEqual(
+      expect.objectContaining({ path: appUpdateStaging, safety: "safe_to_remove" }),
+    );
+    // Project cache + stale DerivedData are valid targets (300 bytes). App
+    // update staging is outside the project cache validator and is omitted.
+    expect(extras.safeReclaimableBytes).toBe(300);
     if (extras.dbBreakdown.length > 0) {
       expect(extras.dbBreakdown.some((entry) => entry.category === "core")).toBe(true);
     }
@@ -751,15 +760,62 @@ describe("storageInsightsService", () => {
     expect(deriveSyncBookkeepingAction([
       run({ ledgerId: "db.operations_crsql", kind: "compact", skippedReason: null, itemsAffected: 3 }),
     ])).toBe("compactable");
-    // Hook absent last run (unsupported) → still compactable, never lies "pending".
+    // Unsupported or failed work is not evidence that compaction can run.
     expect(deriveSyncBookkeepingAction([
       run({ ledgerId: "db.operations_crsql", kind: "compact", skippedReason: "unsupported" }),
-    ])).toBe("compactable");
+    ])).toBe("compaction_pending");
+    expect(deriveSyncBookkeepingAction([
+      run({ ledgerId: "db.operations_crsql", kind: "compact", error: "compaction failed" }),
+    ])).toBe("compaction_pending");
+    expect(deriveSyncBookkeepingAction([
+      run({ ledgerId: "db.operations_crsql", kind: "vacuum", skippedReason: null }),
+    ])).toBe("compaction_pending");
     // Newest run wins even if an older run was peer-blocked.
     expect(deriveSyncBookkeepingAction([
       run({ ledgerId: "db.operations_crsql", kind: "compact", skippedReason: null }),
       run({ ledgerId: "db.operations_crsql", kind: "compact", skippedReason: "has_peers" }),
     ])).toBe("compactable");
+  });
+});
+
+describe("storageMaintenanceJournal", () => {
+  const validReport: MaintenanceRunReport = {
+    startedAt: "2026-07-17T00:00:00.000Z",
+    finishedAt: "2026-07-17T00:00:01.000Z",
+    trigger: "manual",
+    actions: [{
+      ledgerId: "db.operations_crsql",
+      kind: "compact",
+      itemsAffected: 2,
+      bytesReclaimed: 64,
+      durationMs: 8,
+      skippedReason: null,
+      error: null,
+    }],
+    reclaimedBytes: 64,
+    dbSizeBytes: null,
+  };
+
+  it("accepts complete reports and rejects malformed nested fields", () => {
+    expect(isMaintenanceReport(validReport)).toBe(true);
+    expect(isMaintenanceReport({ ...validReport, trigger: "sometimes" })).toBe(false);
+    expect(isMaintenanceReport({ ...validReport, actions: [null] })).toBe(false);
+    expect(isMaintenanceReport({ ...validReport, actions: [{ ...validReport.actions[0], durationMs: -1 }] })).toBe(false);
+    expect(isMaintenanceReport({ ...validReport, dbSizeBytes: undefined })).toBe(false);
+  });
+
+  it("filters malformed entries before downstream journal consumers see them", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-storage-journal-"));
+    const journalPath = path.join(root, "journal.json");
+    try {
+      fs.writeFileSync(journalPath, JSON.stringify([
+        { ...validReport, actions: [null] },
+        validReport,
+      ]));
+      expect(readMaintenanceJournal(journalPath)).toEqual([validReport]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

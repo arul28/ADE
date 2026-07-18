@@ -3775,7 +3775,7 @@ export async function openKvDb(
             where rowid in (
               select rowid
               from automation_ingress_events
-              where project_id = ? and status != 'dispatched'
+              where project_id = ? and status not in ('dispatched', 'failed')
               order by received_at desc, rowid desc
               limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
             )`,
@@ -3786,7 +3786,9 @@ export async function openKvDb(
     }),
     pruneReviewArtifacts: () => runMaintenanceSafely("pruneReviewArtifacts", () => {
       if (!rawHasTable(db, "review_run_artifacts")) return unsupportedMaintenanceResult();
-      const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1_000).toISOString();
+      const cutoff = new Date(
+        Date.now() - REVIEW_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
+      ).toISOString();
       const itemsAffected = runStatement(
         db,
         "delete from review_run_artifacts where created_at < ?",
@@ -3796,7 +3798,9 @@ export async function openKvDb(
     }),
     prunePrSnapshots: () => runMaintenanceSafely("prunePrSnapshots", () => {
       if (!rawHasTable(db, "pull_request_snapshots")) return unsupportedMaintenanceResult();
-      const cutoff = new Date(Date.now() - 60 * 24 * 60 * 60 * 1_000).toISOString();
+      const cutoff = new Date(
+        Date.now() - PR_SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
+      ).toISOString();
       const itemsAffected = runStatement(
         db,
         "delete from pull_request_snapshots where updated_at < ?",

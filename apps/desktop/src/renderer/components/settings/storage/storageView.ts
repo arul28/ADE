@@ -331,6 +331,26 @@ export function maintenanceActionLines(
     }));
 }
 
+/** Honest one-line outcome for a maintenance report, including partial failures. */
+export function maintenanceOutcome(report: MaintenanceRunReport): { message: string; failed: boolean } {
+  const reclaimed = typeof report.reclaimedBytes === "number" && Number.isFinite(report.reclaimedBytes)
+    ? Math.max(0, report.reclaimedBytes)
+    : 0;
+  const failed = report.actions.some((action) => Boolean(action.error));
+  if (failed) {
+    return {
+      message: reclaimed > 0
+        ? `Reclaimed ${formatBytes(reclaimed)}, but some cleanup steps couldn't finish`
+        : "Some cleanup steps couldn't finish",
+      failed: true,
+    };
+  }
+  return {
+    message: reclaimed > 0 ? `Reclaimed ${formatBytes(reclaimed)}` : "Storage is already tidy",
+    failed: false,
+  };
+}
+
 function maintenanceActionDetail(action: MaintenanceAction): string {
   if (action.error) return "couldn't finish";
   if (action.skippedReason) return "nothing to do";
@@ -529,7 +549,7 @@ export function buildSafeCleanupPlan(
   laneIdByKey: Map<string, string>,
 ): SafeCleanupPlan {
   const extras = snapshot.extras;
-  const estimatedBytes = safeReclaimableBytes(extras);
+  const daemonEstimatedBytes = safeReclaimableBytes(extras);
 
   const groups: SafeCleanupGroup[] = [];
   const whatHappens: string[] = [];
@@ -555,27 +575,59 @@ export function buildSafeCleanupPlan(
     whatHappens.push("Clean up data ADE keeps but no longer needs.");
   }
 
-  // Filesystem-safe targets (caches + build/release staging) for the fallback path.
+  // Filesystem-safe targets for the legacy fallback. The doctor has a narrower
+  // filesystem policy, so only targets it actually reaps are shown in its plan.
   const fsTargets: StorageCleanupTarget[] = [];
   const fsRows: Array<{ label: string; size: string }> = [];
+  const maintenanceFsRows: Array<{ label: string; size: string }> = [];
   let fsBytes = 0;
+  let maintenanceFsBytes = 0;
   for (const category of snapshot.categories) {
     if (category.id !== "caches" && category.id !== "build_release") continue;
     for (const entry of cleanableEntries(category.id, category, laneIdByKey)) {
       fsTargets.push(entry.target);
       fsRows.push({ label: entry.item.label, size: formatBytes(entry.item.bytes) });
       fsBytes += entry.item.bytes;
+      const doctorDeletesTarget = entry.target.kind === "stale_tmp_staging"
+        || (entry.target.kind === "rebuildable_cache"
+          && /[\\/]\.ade[\\/]cache[\\/]ios-simulator[\\/]DerivedData[\\/]?$/.test(entry.target.path));
+      if (doctorDeletesTarget) {
+        maintenanceFsRows.push({ label: entry.item.label, size: formatBytes(entry.item.bytes) });
+        maintenanceFsBytes += entry.item.bytes;
+      }
     }
   }
   const fsGroup: SafeCleanupGroup | null = fsRows.length > 0
     ? { heading: "Temporary & rebuildable files", rows: fsRows }
     : null;
-  if (fsGroup) groups.push(fsGroup);
-  if (fsGroup || estimatedBytes > 0) {
+  if (maintenanceFsRows.length > 0) {
+    groups.push({ heading: "Temporary & rebuildable files", rows: maintenanceFsRows });
     whatHappens.push("Remove temporary and rebuildable files ADE recreates on demand.");
   }
 
+  // The doctor removes only backups already classified as obsolete, and its
+  // keepLatest policy always spares the newest copy.
+  const obsoleteBackups = snapshot.categories
+    .find((category) => category.id === "recovery_backups")
+    ?.items.filter((item) => item.safety === "safe_to_remove") ?? [];
+  const obsoleteBackupBytes = obsoleteBackups.reduce((sum, item) => sum + item.bytes, 0);
+  if (obsoleteBackups.length > 0) {
+    groups.push({
+      heading: "Obsolete recovery backups",
+      rows: obsoleteBackups.map((item) => ({ label: item.label, size: formatBytes(item.bytes) })),
+    });
+    whatHappens.push("Remove obsolete recovery backups while keeping the newest backup.");
+  }
+
   whatHappens.push("Your chats, projects, and active lanes are never touched, and your newest backup is always kept.");
+
+  // The daemon estimate includes every filesystem target offered by the legacy
+  // cleanup API. Remove targets the doctor will not touch, then add disclosed
+  // obsolete backups (which the daemon intentionally excludes from its CTA sum).
+  const estimatedBytes = Math.max(
+    0,
+    daemonEstimatedBytes - fsBytes + maintenanceFsBytes + obsoleteBackupBytes,
+  );
 
   return { fsTargets, fsBytes, groups, fsGroup, whatHappens, estimatedBytes };
 }

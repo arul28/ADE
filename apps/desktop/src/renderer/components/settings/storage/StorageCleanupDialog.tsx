@@ -13,7 +13,7 @@ import {
   dangerButton,
   primaryButton,
 } from "../../lanes/laneDesignTokens";
-import { baseName, formatBytes, type SafeCleanupGroup } from "./storageView";
+import { baseName, formatBytes, maintenanceOutcome, type SafeCleanupGroup } from "./storageView";
 
 /**
  * Optional "safe cleanup" plan. When present the dialog runs the broad
@@ -251,6 +251,7 @@ export function StorageCleanupDialog({
     (skipPreview ? false : removableCount === 0);
   const confirmLabel = plan?.confirmLabel
     ?? (removableCount > 0 ? `Remove ${removableCount === 1 ? "1 item" : `${removableCount} items`}` : "Remove");
+  const reportOutcome = report ? maintenanceOutcome(report) : null;
 
   return (
     <div
@@ -433,18 +434,20 @@ export function StorageCleanupDialog({
 
           {stage === "done" && result ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ fontFamily: SANS_FONT, fontSize: 14, fontWeight: 650, color: COLORS.success }}>
-                {result.freedBytes > 0
-                  ? `Freed ${formatBytes(result.freedBytes)}.`
-                  : maintenanceMode
-                    ? "Storage is already tidy."
+              <div
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: 14,
+                  fontWeight: 650,
+                  color: reportOutcome?.failed ? COLORS.danger : COLORS.success,
+                }}
+              >
+                {maintenanceMode && reportOutcome
+                  ? `${reportOutcome.message}.`
+                  : result.freedBytes > 0
+                    ? `Freed ${formatBytes(result.freedBytes)}.`
                     : "Nothing needed removing."}
               </div>
-              {maintenanceMode && report && report.actions.some((a) => a.error) ? (
-                <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted }}>
-                  Some steps couldn't finish. You can try again later.
-                </div>
-              ) : null}
               {result.removed.length > 0 ? (
                 <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
                   Removed {result.removed.length === 1 ? "1 item" : `${result.removed.length} items`}.

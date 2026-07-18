@@ -56,6 +56,7 @@ import {
   formatApproxBytes,
   formatBytes,
   groupLaneItems,
+  maintenanceOutcome,
   safeReclaimableBytes,
   type Trend,
 } from "./storage/storageView";
@@ -738,8 +739,7 @@ export function StorageSection() {
     setMaintenanceBusy(true);
     try {
       const report = await runMaintenanceNow();
-      const reclaimed = typeof report?.reclaimedBytes === "number" && Number.isFinite(report.reclaimedBytes) ? report.reclaimedBytes : 0;
-      showToast(reclaimed > 0 ? `Reclaimed ${formatBytes(reclaimed)}` : "Storage is already tidy");
+      showToast(maintenanceOutcome(report).message);
       void load({ force: true, silent: true });
       void loadDiagnostics();
     } catch (err) {
@@ -778,8 +778,7 @@ export function StorageSection() {
           confirmLabel: "Clean up safely",
           runMaintenance: runMaintenanceNow,
           onMaintenanceDone: (report) => {
-            const reclaimed = typeof report?.reclaimedBytes === "number" && Number.isFinite(report.reclaimedBytes) ? report.reclaimedBytes : 0;
-            showToast(reclaimed > 0 ? `Reclaimed ${formatBytes(reclaimed)}` : "Storage is already tidy");
+            showToast(maintenanceOutcome(report).message);
           },
         },
       };
@@ -820,7 +819,7 @@ export function StorageSection() {
               snapshot={snapshot}
               pressureState={pressureState}
               refreshing={refreshing}
-              reclaimableBytes={reclaimable}
+              reclaimableBytes={runMaintenanceNow ? (safeConfig?.plan.estimatedBytes ?? 0) : reclaimable}
               onRescan={() => void load({ force: true })}
               onCleanSafely={safeConfig ? () => setSafeOpen(true) : null}
             />
@@ -923,7 +922,7 @@ export function StorageSection() {
           <StorageCleanupDialog
             open={safeOpen}
             title="Clean up safely"
-            intro="ADE will reclaim space it can rebuild or no longer needs. Your chats, projects, active lanes, and backups stay untouched."
+            intro="ADE will reclaim space it can rebuild or no longer needs. Your chats, projects, and active lanes stay untouched, and the newest recovery backup is always kept."
             targets={safeConfig.targets}
             plan={safeConfig.plan}
             onClose={() => setSafeOpen(false)}
