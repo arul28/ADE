@@ -477,7 +477,10 @@ struct WorkRootScreen: View {
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.hidden, for: .navigationBar)
       .safeAreaInset(edge: .top, spacing: 0) {
-        ADERootTopBar(title: isSelecting ? "\(selectedSessionIds.count) selected" : "Work") {
+        ADERootTopBar(
+          title: isSelecting ? "\(selectedSessionIds.count) selected" : "Work",
+          showsSettings: !isSelecting
+        ) {
           if isSelecting {
             Button("Cancel") {
               exitSelectionMode()

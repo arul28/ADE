@@ -3776,6 +3776,197 @@ describe("usage reliability: non-destructive merge", () => {
     service.dispose();
   });
 
+  it("keeps a valid Claude status when a mobile refresh cannot read interactive credentials", async () => {
+    const logger = createLogger();
+    const weeklyMs = 3 * 24 * 60 * 60 * 1000;
+    const claudeWindow = {
+      provider: "claude" as const,
+      windowType: "weekly" as const,
+      percentUsed: 37,
+      resetsAt: futureIso(weeklyMs),
+      resetsInMs: weeklyMs,
+    };
+    const claudeExtraUsage = {
+      provider: "claude" as const,
+      isEnabled: true,
+      usedCreditsUsd: 9,
+      monthlyLimitUsd: 100,
+      utilization: 9,
+      currency: "usd",
+    };
+    const pollClaudeUsage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        windows: [claudeWindow],
+        errors: [],
+        source: "oauth" as const,
+        extraUsage: claudeExtraUsage,
+      })
+      .mockResolvedValueOnce({
+        disposition: "preserve_previous" as const,
+        windows: [],
+        errors: [],
+        source: "oauth" as const,
+      });
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage,
+        pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+      },
+    });
+
+    const first = await service.poll({ reason: "user" });
+    const refreshed = await service.poll({ reason: "remote" });
+
+    expect(first.providerStatus?.claude?.state).toBe("ok");
+    expect(refreshed.providerStatus?.claude).toEqual(first.providerStatus?.claude);
+    expect(refreshed.windows.filter((window) => window.provider === "claude")).toHaveLength(1);
+    expect(refreshed.windows.find((window) => window.provider === "claude")).toMatchObject(claudeWindow);
+    expect(refreshed.extraUsage).toEqual([claudeExtraUsage]);
+    expect(refreshed.errors).toEqual([]);
+
+    service.dispose();
+  });
+
+  it("downgrades a preserved provider after its final carried window expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T12:00:00.000Z"));
+    const pollClaudeUsage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        windows: [{
+          provider: "claude" as const,
+          windowType: "weekly" as const,
+          percentUsed: 37,
+          resetsAt: "2026-07-17T12:01:00.000Z",
+          resetsInMs: 60_000,
+        }],
+        errors: [],
+        source: "oauth" as const,
+      })
+      .mockResolvedValueOnce({
+        disposition: "preserve_previous" as const,
+        windows: [],
+        errors: [],
+        source: "oauth" as const,
+      });
+    const service = createUsageTrackingService({
+      logger: createLogger(),
+      dependencies: {
+        pollClaudeUsage,
+        pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+      },
+    });
+
+    try {
+      const first = await service.poll({ reason: "user" });
+      expect(first.providerStatus?.claude?.state).toBe("ok");
+
+      vi.advanceTimersByTime(60_000);
+      const expired = await service.poll({ reason: "remote" });
+
+      expect(expired.windows.filter((window) => window.provider === "claude")).toEqual([]);
+      expect(expired.providerStatus?.claude).toMatchObject({
+        state: "stale",
+        lastSuccessAt: first.lastPolledAt,
+      });
+      expect(expired.providerStatus?.claude?.message).toMatch(/expired/i);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears a sticky Claude auth error when a remote refresh cannot verify credentials", async () => {
+    const logger = createLogger();
+    const weeklyMs = 3 * 24 * 60 * 60 * 1000;
+    const claudeWindow = {
+      provider: "claude" as const,
+      windowType: "weekly" as const,
+      percentUsed: 37,
+      resetsAt: futureIso(weeklyMs),
+      resetsInMs: weeklyMs,
+    };
+    const pollClaudeUsage = vi
+      .fn()
+      .mockResolvedValueOnce({ windows: [claudeWindow], errors: [], source: "oauth" as const })
+      .mockResolvedValueOnce({
+        windows: [],
+        errors: ["claude: no non-interactive credentials found"],
+        errorKind: "auth" as const,
+        source: "oauth" as const,
+      })
+      .mockResolvedValueOnce({
+        disposition: "preserve_previous" as const,
+        windows: [],
+        errors: [],
+        source: "oauth" as const,
+      });
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage,
+        pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+      },
+    });
+
+    await service.poll({ reason: "user" });
+    const staleError = await service.poll({ reason: "remote" });
+    const refreshed = await service.poll({ reason: "remote" });
+
+    expect(staleError.providerStatus?.claude?.state).toBe("unauthed");
+    expect(refreshed.providerStatus?.claude).toMatchObject({
+      state: "stale",
+      lastSuccessAt: expect.any(String),
+    });
+    expect(refreshed.providerStatus?.claude?.message).toBeUndefined();
+    expect(refreshed.windows.filter((window) => window.provider === "claude")).toHaveLength(1);
+    expect(refreshed.errors).toEqual([]);
+
+    service.dispose();
+  });
+
+  it("preserves a genuine Claude auth error while automatic polling is backed off", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-17T12:00:00.000Z"));
+    const logger = createLogger();
+    const pollClaudeUsage = vi
+      .fn()
+      .mockResolvedValueOnce({
+        windows: [],
+        errors: ["claude: API returned 401"],
+        errorKind: "auth" as const,
+        source: "oauth" as const,
+      })
+      .mockResolvedValueOnce({
+        disposition: "preserve_previous" as const,
+        windows: [],
+        errors: [],
+        source: "oauth" as const,
+      });
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage,
+        pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+      },
+    });
+
+    const failed = await service.poll({ reason: "user" });
+    const backedOff = await service.poll({ reason: "automatic" });
+    vi.advanceTimersByTime(61_000);
+    const nonInteractive = await service.poll({ reason: "automatic" });
+
+    expect(failed.providerStatus?.claude?.state).toBe("unauthed");
+    expect(backedOff.providerStatus?.claude).toEqual(failed.providerStatus?.claude);
+    expect(nonInteractive.providerStatus?.claude).toEqual(failed.providerStatus?.claude);
+    expect(pollClaudeUsage).toHaveBeenCalledTimes(2);
+
+    service.dispose();
+    vi.useRealTimers();
+  });
+
   it("attaches per-window pacing for both the 5-hour and weekly windows", async () => {
     const logger = createLogger();
     const fiveHourMs = 2 * 60 * 60 * 1000; // 60% of the 5h window elapsed

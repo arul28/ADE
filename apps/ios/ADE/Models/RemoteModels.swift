@@ -4694,6 +4694,7 @@ extension MobileAdeUsageStats {
 
 struct MobileUsageQuotaWindow: Codable, Equatable, Identifiable {
   var id: String { "\(provider):\(windowType):\(resetsAt):\(percentUsed)" }
+  var clampedPercentUsed: Double { max(0, min(100, percentUsed)) }
   var provider: String
   var windowType: String
   var percentUsed: Double

@@ -35,9 +35,9 @@ struct ConnectionSettingsView: View {
 
               SettingsConnectionHeader(
                 snapshot: presentationModel.connectionSnapshot,
-                onDisconnect: { syncService.disconnect() },
+                onDisconnect: { syncService.disconnectForUserConnectionChange() },
                 onReconnect: {
-                  Task { await syncService.reconnectIfPossible(userInitiated: true) }
+                  Task { await syncService.reconnectForUserConnectionChange() }
                 }
               )
 
@@ -63,9 +63,9 @@ struct ConnectionSettingsView: View {
 
               SettingsConnectionHeader(
                 snapshot: presentationModel.connectionSnapshot,
-                onDisconnect: { syncService.disconnect() },
+                onDisconnect: { syncService.disconnectForUserConnectionChange() },
                 onReconnect: {
-                  Task { await syncService.reconnectIfPossible(userInitiated: true) }
+                  Task { await syncService.reconnectForUserConnectionChange() }
                 }
               )
             }
@@ -455,7 +455,8 @@ private struct SettingsUsageQuotaSection: View {
             SettingsUsageProviderCard(
               provider: provider,
               windows: snapshot.windows.filter { $0.provider == provider },
-              status: snapshot.providerStatus?[provider]
+              status: snapshot.providerStatus?[provider],
+              spendControlReached: provider == "codex" && snapshot.spendControlReached == true
             )
             if provider == "claude" { Divider().opacity(0.14) }
           }
@@ -486,41 +487,82 @@ private struct SettingsUsageProviderCard: View {
   let provider: String
   let windows: [MobileUsageQuotaWindow]
   let status: MobileUsageProviderStatus?
+  let spendControlReached: Bool
+
+  private var displayName: String { providerLabel(provider) }
+  private var providerTint: Color { ADEColor.providerBrand(for: provider) }
+  private var usageURL: URL {
+    if provider == "claude" {
+      return URL(string: "https://claude.ai/new#settings/usage")!
+    }
+    return URL(string: "https://chatgpt.com/codex/cloud/settings/analytics#usage")!
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
-        Text(provider == "claude" ? "Claude" : "Codex")
+        if let assetName = providerAssetName(provider) {
+          Image(assetName)
+            .resizable()
+            .scaledToFit()
+            .frame(width: 18, height: 18)
+            .accessibilityHidden(true)
+        }
+
+        Text(displayName)
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
+
+        Link(destination: usageURL) {
+          Image(systemName: "arrow.up.right")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Open \(displayName) usage in browser")
+
         Spacer()
-        Text("\((status?.source ?? "waiting").uppercased()) · \(mobileUsageSettingsRelativeTime(status?.updatedAt ?? status?.lastSuccessAt))")
-          .font(.system(.caption2, design: .monospaced))
+        Text("\(mobileUsageProviderSource(status)) · \(mobileUsageSettingsRelativeTime(status?.updatedAt ?? status?.lastSuccessAt))")
+          .font(.caption2)
           .foregroundStyle(ADEColor.textMuted)
       }
 
+      if spendControlReached {
+        Text("Spending cap reached")
+          .font(.caption.weight(.medium))
+          .foregroundStyle(ADEColor.warning)
+      }
+
       ForEach(windows) { window in
+        let percentUsed = window.clampedPercentUsed
         VStack(alignment: .leading, spacing: 5) {
           HStack {
-            Text(mobileUsageWindowLabel(window.windowType))
+            Text(mobileUsageWindowLabel(window))
             Spacer()
-            Text("\(Int(max(0, 100 - window.percentUsed)))% left")
+            Text(String(format: "%.1f%% used", percentUsed))
               .fontWeight(.semibold)
           }
           .font(.caption)
           .foregroundStyle(ADEColor.textSecondary)
 
-          ProgressView(value: max(0, min(100, 100 - window.percentUsed)), total: 100)
-            .tint(provider == "claude" ? ADEColor.warning : ADEColor.purpleAccent)
+          ProgressView(value: percentUsed, total: 100)
+            .tint(percentUsed > 90 ? ADEColor.danger : percentUsed > 70 ? ADEColor.warning : providerTint)
 
-          Text("Resets \(mobileUsageSettingsResetLabel(window.resetsAt))")
+          Text(mobileUsageSettingsResetLabel(window.resetsAt))
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)
         }
       }
 
-      if let message = status?.message, status?.state != "ok" {
-        Text(message)
+      if windows.isEmpty, status?.state == "ok" {
+        Text("Waiting for the next usage reading")
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+      }
+
+      if let statusMessage = mobileUsageStatusMessage(status) {
+        Text(statusMessage)
           .font(.caption2)
           .foregroundStyle(ADEColor.warning)
       }
@@ -530,15 +572,41 @@ private struct SettingsUsageProviderCard: View {
   }
 }
 
-private func mobileUsageWindowLabel(_ value: String) -> String {
-  switch value {
+private func mobileUsageProviderSource(_ status: MobileUsageProviderStatus?) -> String {
+  switch status?.source {
+  case "oauth": return "OAuth"
+  case "http": return "HTTP"
+  case "cli": return "CLI"
+  default: return "Waiting"
+  }
+}
+
+private func mobileUsageWindowLabel(_ window: MobileUsageQuotaWindow) -> String {
+  if window.windowType == "five_hour",
+     let durationMs = window.windowDurationMs,
+     durationMs > 0 {
+    let minutes = Int((durationMs / 60_000).rounded())
+    if minutes < 60 { return "\(minutes)-min" }
+    let hours = Double(minutes) / 60
+    if hours.rounded() == hours { return "\(Int(hours))-hour" }
+    return String(format: "%.1f-hour", hours)
+  }
+  switch window.windowType {
   case "five_hour": return "5-hour"
   case "weekly": return "Weekly"
   case "monthly": return "Monthly"
   case "weekly_oauth_apps": return "OAuth apps"
   case "weekly_cowork": return "Cowork"
-  default: return value.replacingOccurrences(of: "_", with: " ").capitalized
+  default: return window.windowType.replacingOccurrences(of: "_", with: " ").capitalized
   }
+}
+
+private func mobileUsageStatusMessage(_ status: MobileUsageProviderStatus?) -> String? {
+  guard let status, status.state != "ok" else { return nil }
+  if let message = status.message?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty {
+    return message
+  }
+  return status.state == "stale" ? "Showing last known quota" : "Quota is unavailable"
 }
 
 private func mobileUsageSettingsDate(_ iso: String?) -> Date? {
@@ -558,8 +626,15 @@ private func mobileUsageSettingsRelativeTime(_ iso: String?) -> String {
 }
 
 private func mobileUsageSettingsResetLabel(_ iso: String) -> String {
-  guard let date = mobileUsageSettingsDate(iso) else { return "soon" }
-  return date.formatted(date: .abbreviated, time: .shortened)
+  guard let date = mobileUsageSettingsDate(iso) else { return "Resetting soon" }
+  let seconds = max(0, Int(date.timeIntervalSinceNow))
+  if seconds == 0 { return "Resetting now" }
+  let days = seconds / 86_400
+  let hours = (seconds % 86_400) / 3_600
+  let minutes = (seconds % 3_600) / 60
+  if days > 0 { return "Resets in \(days)d \(hours)h" }
+  if hours > 0 { return "Resets in \(hours)h \(minutes)m" }
+  return "Resets in \(minutes)m"
 }
 
 // MARK: - Machines section (M5 / M14)

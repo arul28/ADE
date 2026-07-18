@@ -1376,6 +1376,26 @@ final class ADETests: XCTestCase {
     )
   }
 
+  @MainActor
+  func testUserDisconnectReturnsToHubBeforeTransportChanges() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.projectHomePresented = false
+
+    service.disconnectForUserConnectionChange()
+
+    XCTAssertTrue(service.projectHomePresented)
+  }
+
+  @MainActor
+  func testOrdinaryReconnectDoesNotOverrideProjectPresentation() async {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.projectHomePresented = false
+
+    await service.reconnectIfPossible(userInitiated: true)
+
+    XCTAssertFalse(service.projectHomePresented)
+  }
+
   func testSyncReconnectStateUsesBackoffAndResetsAfterSuccess() {
     var state = SyncReconnectState()
 
@@ -5181,6 +5201,22 @@ final class ADETests: XCTestCase {
     XCTAssertGreaterThan(workUsageDayActivityScore(tokensOnly), 0)
     XCTAssertGreaterThan(workUsageDayActivityScore(legacyTotalOnly), 0)
     XCTAssertEqual(workUsageDayActivityScore(empty), 0)
+  }
+
+  func testMobileUsagePercentUsesProviderPercentWithoutInvertingIt() {
+    var window = MobileUsageQuotaWindow(
+      provider: "claude",
+      windowType: "weekly",
+      percentUsed: 63,
+      resetsAt: "2026-07-20T12:00:00Z",
+      resetsInMs: 1_000,
+      windowDurationMs: nil
+    )
+    XCTAssertEqual(window.clampedPercentUsed, 63)
+    window.percentUsed = -4
+    XCTAssertEqual(window.clampedPercentUsed, 0)
+    window.percentUsed = 140
+    XCTAssertEqual(window.clampedPercentUsed, 100)
   }
 
   func testMobileUsageQuotaSnapshotDecodesSourceFreshnessAndUnknownFields() throws {

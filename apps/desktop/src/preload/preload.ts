@@ -2857,8 +2857,12 @@ function subscribePtyExitEvents(
 function subscribeUsageUpdateEvents(
   cb: (payload: UsageSnapshot) => void,
 ): () => void {
-  const removeLocal = subscribeLocalUsageUpdateEvents(cb);
-  const removeRemote = subscribeRemoteUsageUpdateEvents(cb);
+  const removeLocal = subscribeLocalUsageUpdateEvents((payload) => {
+    if (!currentProjectBinding) cb(payload);
+  });
+  const removeRemote = subscribeRemoteUsageUpdateEvents((payload) => {
+    if (currentProjectBinding) cb(payload);
+  });
   return () => {
     removeRemote();
     removeLocal();
