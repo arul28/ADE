@@ -2853,6 +2853,7 @@ export function AgentChatPane({
   initialSessionId,
   initialSessionSummary,
   lockSessionId,
+  sessionTitleById,
   hideSessionTabs = false,
   hideNativeControls = false,
   hideModelControls = false,
@@ -2899,6 +2900,8 @@ export function AgentChatPane({
   initialSessionId?: string | null;
   initialSessionSummary?: AgentChatSessionSummary | null;
   lockSessionId?: string | null;
+  /** Full host-surface title index for locked single-session embeddings. */
+  sessionTitleById?: ReadonlyMap<string, string>;
   hideSessionTabs?: boolean;
   hideNativeControls?: boolean;
   /** Hide model/reasoning/fast controls when the embedding surface owns them. */
@@ -4857,6 +4860,15 @@ export function AgentChatPane({
     const parentTitle = sessions.find((s) => s.sessionId === parentId)?.title?.trim() || null;
     return { parentId, parentTitle, spawnKind: selectedSession?.spawnKind ?? null };
   }, [selectedSession?.orchestrationParentSessionId, selectedSession?.sessionId, selectedSession?.spawnKind, sessions]);
+
+  // Resolve a spawned child chat's live title so the Subagents pane's spawned-chat
+  // rows read as the chat they open, not the bare runtime name.
+  const resolveSpawnedChatTitle = useCallback(
+    (id: string): string | null => sessionTitleById?.get(id)?.trim()
+      || sessions.find((s) => s.sessionId === id)?.title?.trim()
+      || null,
+    [sessionTitleById, sessions],
+  );
 
   // Keep configured models selectable unless a caller explicitly constrains
   // this surface. Unconstrained sessions keep their active model visible even
@@ -9765,6 +9777,7 @@ export function AgentChatPane({
       }}
       onClearSelectedSubagent={() => setSubagentView(null)}
       probeSubagentTranscript={probeSubagentTranscript}
+      resolveSpawnedChatTitle={resolveSpawnedChatTitle}
       capability={selectedSubagentCapability}
       selectedTaskId={subagentView?.taskId ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
@@ -10266,10 +10279,10 @@ export function AgentChatPane({
               ? "border-slate-400/18 bg-slate-400/[0.06] text-slate-300/75 hover:border-slate-300/30 hover:text-slate-100/90"
               : "border-violet-400/20 bg-violet-400/[0.06] text-violet-200/80 hover:border-violet-300/32 hover:text-violet-100",
           )}
-          title={spawnLineage.parentTitle ? `Open spawner: ${spawnLineage.parentTitle}` : "Open spawner"}
+          title={spawnLineage.parentTitle ? `Parent thread: "${spawnLineage.parentTitle}"` : "View parent thread"}
         >
           <span aria-hidden className="shrink-0">↳</span>
-          <span className="min-w-0 truncate">from {spawnLineage.parentTitle ? `"${spawnLineage.parentTitle}"` : "spawner"}</span>
+          <span className="min-w-0 truncate">View parent thread</span>
         </button>
       ) : null}
       {chatTerminalVisible && selectedSessionId ? (

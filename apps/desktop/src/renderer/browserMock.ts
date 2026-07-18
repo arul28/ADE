@@ -1244,6 +1244,7 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
     orchestrationRunId: session.orchestrationRunId ?? undefined,
     orchestrationRole: session.orchestrationRole ?? undefined,
     orchestrationParentSessionId: session.orchestrationParentSessionId ?? undefined,
+    spawnKind: session.spawnKind ?? undefined,
     orchestrationTag: session.orchestrationTag ?? undefined,
     orchestrationStepId: session.orchestrationStepId ?? undefined,
     orchestrationBundlePath: session.orchestrationBundlePath ?? undefined,
@@ -4517,6 +4518,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       updateAppearance: resolvedArg(undefined),
       archive: resolvedArg(undefined),
       delete: resolvedArg(undefined),
+      listDeleteProgress: resolved([]),
       cancelDelete: resolvedArg({
         cancelled: false,
         reason: "no active delete",

@@ -635,9 +635,18 @@ function ChatRow({
   // the title truncates ahead of it instead of colliding.
   const tag = session.claudeTag?.trim() ? `#${truncate(session.claudeTag.trim(), 16)}` : null;
   const tagReserve = tag ? tag.length + 1 : 0;
+  // Spawn lineage shares the established trailing-marker slot with chat tags
+  // and durable wakes. Keep the labels compact in the narrow drawer while
+  // still distinguishing subagents from peers; untyped (`none`) work stays
+  // visually quiet, matching the desktop session card.
+  const spawnKind = session.spawnKind === "subagent" || session.spawnKind === "peer"
+    ? session.spawnKind
+    : null;
+  const spawnLabel = spawnKind === "subagent" ? "sub" : spawnKind;
+  const spawnReserve = spawnLabel ? spawnLabel.length + 1 : 0;
   // The age used to reserve trailing room; without it the title can run wider,
   // keeping just a little space for the spinner + active dot.
-  const label = truncate(formatSessionLabel(session), drawerChatLabelWidth(max, wakeReserve + tagReserve));
+  const label = truncate(formatSessionLabel(session), drawerChatLabelWidth(max, wakeReserve + tagReserve + spawnReserve));
   // Selection/hover wins with violet; awaiting-input tints amber as a calm
   // "needs you" signal; otherwise the title sits a touch dimmer under a
   // non-selected lane (dimTitle) than under the focused one.
@@ -652,6 +661,9 @@ function ChatRow({
         {running ? <Text>{"  "}</Text> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
         <Text color={exec.color}>{exec.glyph} </Text>
         <Text color={titleColor}>{label}</Text>
+        {spawnLabel ? (
+          <Text color={spawnKind === "subagent" ? theme.color.violet : theme.color.t4}>{` ${spawnLabel}`}</Text>
+        ) : null}
         {tag ? <Text color={theme.color.t4}>{` ${tag}`}</Text> : null}
         {wake ? <Text color={theme.color.t4}>{` ⏰${wake}`}</Text> : null}
         {running ? <Text> <ActiveChatSpin /></Text> : null}

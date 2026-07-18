@@ -26,6 +26,8 @@ import { ToolLogo } from "./ToolLogos";
 import { readImportedFrom, providerDisplayName } from "./importSessions/contract";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
+import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
+import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 
 const DELTA_CHIP_STYLE: React.CSSProperties = {
   fontSize: 10,
@@ -259,6 +261,7 @@ export const SessionCard = React.memo(function SessionCard({
   compact = false,
   gridBadge = null,
   liveChildrenCount = 0,
+  parentSessionTitle = null,
   disabledReason = null,
 }: {
   session: TerminalSessionSummary;
@@ -272,6 +275,8 @@ export const SessionCard = React.memo(function SessionCard({
   gridBadge?: "active" | "inactive" | null;
   /** Count of this session's still-running spawned children (drives the `▸N` badge). */
   liveChildrenCount?: number;
+  /** Title of the parent chat that spawned this session (drives the lineage glyph tooltip). */
+  parentSessionTitle?: string | null;
   /** When present, blocks interaction while the owning lane is being removed. */
   disabledReason?: string | null;
 }) {
@@ -515,6 +520,33 @@ export const SessionCard = React.memo(function SessionCard({
                   </span>
                 ) : null}
                 <NextWakeChip nextWakeAt={session.nextWakeAt} compact={compact} />
+                {session.orchestrationParentSessionId ? (
+                  // Plain span, no role/tabIndex: the whole card is already a
+                  // <button>, and a nested interactive control is invalid HTML
+                  // that assistive tech may flatten into the outer button. The
+                  // mouse shortcut stays (stopPropagation keeps the card's
+                  // onSelect from firing); keyboard/AT users reach the parent
+                  // via the child chat's "View parent thread" header button.
+                  <span
+                    data-testid="session-spawn-lineage"
+                    className="inline-flex shrink-0 cursor-pointer items-center opacity-70 transition-opacity hover:opacity-100"
+                    title={
+                      parentSessionTitle
+                        ? `Spawned by "${parentSessionTitle}" — click to open parent thread`
+                        : "Spawned by another chat — click to open parent thread"
+                    }
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      navigateToSpawnedChat(session.orchestrationParentSessionId, null);
+                    }}
+                  >
+                    <ChatSubagentGlyph
+                      id={session.id}
+                      color={chatSubagentColor(session.id)}
+                      size={compact ? 10 : 12}
+                    />
+                  </span>
+                ) : null}
                 <span
                   title={dot.label}
                   className={cn(

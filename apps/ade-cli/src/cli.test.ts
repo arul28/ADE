@@ -2442,6 +2442,56 @@ describe("ADE CLI", () => {
       expect((staticPlan.value as { launch: Record<string, unknown> }).launch.orchestrationParentSessionId)
         .toBe("parent-session-1");
     });
+
+    it("ade new chat --mode cli records the env parent as spawn lineage without terminal ownership", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "cli",
+        "--lane", "lane-1",
+        "--provider", "codex",
+        "--type", "peer",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const launch = (staticPlan.value as { launch: Record<string, unknown> }).launch;
+      expect(launch.orchestrationParentSessionId).toBe("parent-session-1");
+      expect(launch.spawnKind).toBe("peer");
+      expect(launch).not.toHaveProperty("chatSessionId");
+    });
+
+    it("ade new chat --mode cli --no-parent leaves the terminal unlinked", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "cli",
+        "--lane", "lane-1",
+        "--provider", "codex",
+        "--no-parent",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const launch = (staticPlan.value as { launch: Record<string, unknown> }).launch;
+      expect(launch).not.toHaveProperty("orchestrationParentSessionId");
+      expect(launch).not.toHaveProperty("chatSessionId");
+    });
+
+    it("does not record spawn lineage for plain shell terminals", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "cli",
+        "--lane", "lane-1",
+        "--provider", "shell",
+        "--type", "peer",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const launch = (staticPlan.value as { launch: Record<string, unknown> }).launch;
+      expect(launch.provider).toBe("shell");
+      expect(launch).not.toHaveProperty("orchestrationParentSessionId");
+      expect(launch).not.toHaveProperty("spawnKind");
+    });
   });
 
   it("prints chat create --prompt dry-run with the follow-up send", () => {
@@ -5680,6 +5730,15 @@ describe("ADE CLI", () => {
     expect(newChatHelp.kind).toBe("help");
     if (newChatHelp.kind !== "help") return;
     expect(newChatHelp.text).toContain("--type <subagent|peer|none>");
+    expect(newChatHelp.text).toContain("Override with --parent <sessionId>");
+    expect(newChatHelp.text).toContain("plain shell terminals don't record lineage");
+
+    const newHelp = buildCliPlan(["new", "--help"]);
+    expect(newHelp.kind).toBe("help");
+    if (newHelp.kind !== "help") return;
+    expect(newHelp.text).toContain("--type <subagent|peer|none>");
+    expect(newHelp.text).toContain("--parent <sessionId>");
+    expect(newHelp.text).toContain("Plain shell terminals do not record lineage");
 
     const laneCommandHelp = buildCliPlan(["help", "lanes"]);
     expect(laneCommandHelp.kind).toBe("help");

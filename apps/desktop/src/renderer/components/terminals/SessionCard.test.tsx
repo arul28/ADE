@@ -168,6 +168,74 @@ describe("SessionCard spawn type + live children", () => {
     expect(screen.queryByText("PEER")).toBeNull();
   });
 
+  it("renders the lineage glyph for a spawned session and not for a top-level one", () => {
+    const { rerender } = render(
+      <SessionCard
+        session={makeSession({ orchestrationParentSessionId: "parent-1" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("session-spawn-lineage")).toBeTruthy();
+
+    rerender(
+      <SessionCard
+        session={makeSession({ orchestrationParentSessionId: undefined })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("session-spawn-lineage")).toBeNull();
+  });
+
+  it("navigates to the parent chat on glyph click without triggering card selection", () => {
+    const onSelect = vi.fn();
+    const dispatched: CustomEvent[] = [];
+    const handler = (event: Event) => dispatched.push(event as CustomEvent);
+    window.addEventListener("ade:work:select-session", handler);
+    try {
+      render(
+        <SessionCard
+          session={makeSession({ orchestrationParentSessionId: "parent-9" })}
+          lane={lane}
+          isSelected={false}
+          onSelect={onSelect}
+          onContextMenu={vi.fn()}
+        />,
+      );
+
+      act(() => {
+        screen.getByTestId("session-spawn-lineage").click();
+      });
+
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]?.detail).toMatchObject({ sessionId: "parent-9" });
+      expect(onSelect).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("ade:work:select-session", handler);
+    }
+  });
+
+  it("shows the parent title in the lineage glyph tooltip when provided", () => {
+    render(
+      <SessionCard
+        session={makeSession({ orchestrationParentSessionId: "parent-1" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+        parentSessionTitle="Lead orchestrator"
+      />,
+    );
+    expect(
+      screen.getByTestId("session-spawn-lineage").getAttribute("title"),
+    ).toBe('Spawned by "Lead orchestrator" — click to open parent thread');
+  });
+
   it("shows the live-children badge when children are running", () => {
     render(
       <SessionCard

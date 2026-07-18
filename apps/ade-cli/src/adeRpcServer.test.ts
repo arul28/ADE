@@ -1763,6 +1763,57 @@ describe("adeRpcServer", () => {
     });
   });
 
+  it("persists CLI spawn lineage in resume metadata without assigning terminal ownership", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "session-1",
+      laneId: "lane-1",
+      ptyId: "pty-1",
+      tracked: true,
+      toolType: "codex",
+      title: "Codex",
+      status: "running",
+      resumeCommand: null,
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: null,
+        launch: { permissionMode: "default" },
+        orchestrationParentSessionId: "parent-session-1",
+        spawnKind: "peer",
+      },
+      chatSessionId: null,
+      orchestrationParentSessionId: "parent-session-1",
+      spawnKind: "peer",
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "orchestrator" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      orchestrationParentSessionId: "  parent-session-1  ",
+      spawnKind: "peer",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall).toEqual(expect.objectContaining({
+      resumeMetadata: expect.objectContaining({
+        provider: "codex",
+        targetKind: "thread",
+        orchestrationParentSessionId: "parent-session-1",
+        spawnKind: "peer",
+      }),
+    }));
+    expect(createCall).not.toHaveProperty("chatSessionId");
+    expect(response.structuredContent.session).toEqual(expect.objectContaining({
+      orchestrationParentSessionId: "parent-session-1",
+      spawnKind: "peer",
+      chatSessionId: null,
+    }));
+  });
+
   it("preserves wide start_cli_session terminal dimensions", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockReturnValue({

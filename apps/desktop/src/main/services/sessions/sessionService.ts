@@ -11,8 +11,9 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
   ListSessionsArgs,
-  UpdateSessionMetaArgs
+  UpdateSessionMetaArgs,
 } from "../../../shared/types";
+import { isTrackedAgentCliToolType } from "../../../shared/types";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import {
@@ -152,6 +153,12 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const importedFromAt = typeof importedFromRecord?.importedAt === "string" && importedFromRecord.importedAt.trim().length
     ? importedFromRecord.importedAt.trim()
     : null;
+  const orchestrationParentSessionId = typeof record.orchestrationParentSessionId === "string"
+    ? record.orchestrationParentSessionId.trim()
+    : "";
+  const spawnKind = record.spawnKind === "subagent" || record.spawnKind === "peer" || record.spawnKind === "none"
+    ? record.spawnKind
+    : null;
   if (!provider || !targetKind) return null;
   return {
     provider,
@@ -178,6 +185,8 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       : {}),
     ...(legacyTarget ? { target: legacyTarget } : {}),
     ...(permissionMode ? { permissionMode } : {}),
+    ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+    ...(spawnKind ? { spawnKind } : {}),
   };
 }
 
@@ -363,6 +372,12 @@ export function createSessionService({ db }: { db: AdeDb }) {
       chatSessionId: row.chatSessionId ?? null,
       ownerPid: normalizeOwnerPid(row.ownerPid),
       ownerProcessStartedAt: normalizeOwnerProcessStartedAt(row.ownerProcessStartedAt),
+      ...(isTrackedAgentCliToolType(toolType) && resumeMetadata?.orchestrationParentSessionId
+        ? { orchestrationParentSessionId: resumeMetadata.orchestrationParentSessionId }
+        : {}),
+      ...(isTrackedAgentCliToolType(toolType) && resumeMetadata?.spawnKind
+        ? { spawnKind: resumeMetadata.spawnKind }
+        : {}),
     };
   };
 
@@ -1059,6 +1074,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
         : null;
       const nextMetadata = parsed
         ? {
+            ...currentMetadata,
             provider: parsed.provider,
             targetKind: parsed.provider === "codex" ? "thread" : "session",
             targetId: parsed.targetId ?? currentMetadata?.targetId ?? null,

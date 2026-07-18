@@ -19,7 +19,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { laneSurfaceTint } from "../lanes/laneDesignTokens";
-import { canBulkDeleteSession, canBulkStopSession } from "../../lib/sessions";
+import { canBulkDeleteSession, canBulkStopSession, primarySessionLabel } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { relativeTimeCompact } from "../../lib/format";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
@@ -515,6 +515,16 @@ export const SessionListPane = React.memo(function SessionListPane({
     }
     return map;
   }, [allSessionsUnfiltered]);
+  // Parent-title lookup for the sidebar lineage glyph tooltip. Keyed off the
+  // UNFILTERED list so a spawned child can still name its parent even when the
+  // parent is hidden by the current search/lane filter.
+  const sessionTitleById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const session of allSessionsUnfiltered) {
+      map.set(session.id, primarySessionLabel(session));
+    }
+    return map;
+  }, [allSessionsUnfiltered]);
   const isChildSectionCollapsed = useCallback(
     (parentId: string) => workCollapsedSectionIds.includes(`chat:${parentId}`),
     [workCollapsedSectionIds],
@@ -661,6 +671,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         session={session}
         lane={laneById.get(session.laneId) ?? null}
         liveChildrenCount={liveChildrenByParentId.get(session.id) ?? 0}
+        parentSessionTitle={
+          session.orchestrationParentSessionId
+            ? sessionTitleById.get(session.orchestrationParentSessionId) ?? null
+            : null
+        }
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
         onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}

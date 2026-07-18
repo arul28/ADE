@@ -1378,6 +1378,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
 
+  Spawn lineage:
+    In tracked agent shells, chat mode and agent-provider CLI mode default
+    their parent to $ADE_CHAT_SESSION_ID. Use --parent <sessionId> to override
+    it or --no-parent to opt out. CLI terminals record lineage without taking
+    attached-terminal ownership. Plain shell terminals do not record lineage.
+
   Compatibility:
     ade chat create still creates persistent Work chats.
     ade shell start-cli still starts tracked provider CLI sessions.
@@ -1397,6 +1403,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
   --type <subagent|peer|none> sets only the cosmetic relationship and completion-report policy; a typed agent is a full agent. subagent wakes the parent, peer leaves a quiet note, and none (default) sends no report.
+
+  Spawn lineage: when run from a tracked agent shell (ADE_CHAT_SESSION_ID set),
+  the new session links back to the spawning chat. In CLI mode, the terminal
+  shows that spawn lineage on its own sidebar card and links back to the chat
+  (agent providers only — plain shell terminals don't record lineage).
+  Override with --parent <sessionId>; opt out with --no-parent.
 `,
   lanes: `${ADE_BANNER}
   Lanes
@@ -2535,12 +2547,12 @@ function readLaneId(args: string[]): string | null {
 }
 
 /**
- * Parent chat-session lineage for spawned chat sessions. Defaults to the
- * spawning agent's own session — ADE injects ADE_CHAT_SESSION_ID into every
- * tracked agent shell (chat runtimes and tracked CLI/PTY sessions) — so a
- * child created via `ade chat create` links back to the chat that spawned it
- * instead of becoming an orphan. `--parent <sessionId>` overrides the
- * default; `--no-parent` opts out entirely.
+ * Parent chat-session lineage for spawned chat and agent-provider CLI
+ * sessions. Defaults to the spawning agent's own session — ADE injects
+ * ADE_CHAT_SESSION_ID into every tracked agent shell (chat runtimes and
+ * tracked CLI/PTY sessions). `--parent <sessionId>` overrides the default;
+ * `--no-parent` opts out entirely. CLI callers keep chatSessionId separate
+ * because that field represents attached-terminal ownership, not lineage.
  */
 function readParentSessionId(args: string[]): string | undefined {
   const override = readValue(args, ["--parent", "--parent-session", "--parent-session-id"]);
@@ -4184,7 +4196,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
   const spawnTypeArg = readValue(args, ["--type", "--spawn-type"]);
-  const spawnKind = mode === "chat" ? spawnTypeArg?.trim().toLowerCase() : undefined;
+  const spawnKind = spawnTypeArg?.trim().toLowerCase();
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
@@ -4218,10 +4230,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   };
 
   // Consume the flags in both modes so they never leak into the generic arg
-  // bag; lineage only applies to chat mode (a PTY session is not a chat
-  // record, so there is nothing to link).
+  // bag. Both chat and CLI modes record the same spawn lineage fields; CLI
+  // sessions keep chatSessionId free for true attached-terminal ownership.
   const parentSessionId = readParentSessionId(args);
-  const orchestrationParentSessionId = mode === "chat" ? parentSessionId : undefined;
+  const orchestrationParentSessionId = parentSessionId;
   const launchArgs = mode === "chat"
     ? collectGenericObjectArgs(args, {
         provider,
@@ -4249,6 +4261,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         modelId: modelArg,
         reasoningEffort,
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+        // Spawn lineage rides on resume metadata, which only agent providers
+        // have — plain shell terminals can't persist it, so don't pretend.
+        ...(provider !== "shell" && orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+        ...(provider !== "shell" && spawnKind ? { spawnKind } : {}),
         cols: readIntOption(args, ["--cols"], 120),
         rows: readIntOption(args, ["--rows"], 36),
         cwd: readValue(args, ["--cwd"]),

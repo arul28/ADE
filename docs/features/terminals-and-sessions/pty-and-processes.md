@@ -57,9 +57,12 @@ filesystem outside `readTranscriptTail`.
 
 `mapRow()` converts the row into `TerminalSessionSummary` /
 `TerminalSessionDetail`. It parses `resumeMetadata` through
-`normalizeResumeMetadata` (handles legacy `target` vs modern `targetId`),
-then derives `resumeCommand` via `deriveResumeMetadataCommand` so
-downstream code always sees a normalized command even for old rows.
+`normalizeResumeMetadata` (handles legacy `target` vs modern `targetId` and
+retains optional `orchestrationParentSessionId` / `spawnKind`), then derives
+`resumeCommand` via `deriveResumeMetadataCommand` so downstream code always
+sees a normalized command even for old rows. For tracked agent CLI tool types,
+`mapRow()` also projects those lineage fields onto the session summary; shell
+and other terminal rows do not acquire lineage from resume metadata.
 
 ### Exported methods
 
@@ -114,7 +117,10 @@ downstream code always sees a normalized command even for old rows.
   refuses to overwrite when it is set.
 - Continuation metadata is stored as a JSON blob. `normalizeResumeMetadata`
   accepts both the current `{ provider, targetKind, targetId, launch }`
-  shape and legacy fields (`target`, `permissionMode` at the top level).
+  shape (plus optional `orchestrationParentSessionId` / `spawnKind`) and legacy
+  fields (`target`, `permissionMode` at the top level). `setResumeCommand`
+  merges parsed target data into the existing metadata so the two lineage
+  fields survive a resume-target refresh.
 - `runtime_processes` is machine-local bookkeeping, not replicated
   project state. It is excluded from CRR setup; synced terminal rows may
   describe sessions owned by another machine, and local reconcile must
