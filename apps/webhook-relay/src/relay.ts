@@ -2036,9 +2036,14 @@ function handleLinearOAuthCallback(request: Request): Response {
     callback.set("code", params.get("code") ?? "");
   }
   callback.set("state", params.get("state") ?? "");
+  // URLSearchParams serializes spaces as "+", but the iOS callback parser reads
+  // the custom-scheme URL with URLComponents, which does NOT turn "+" back into
+  // a space — so an error like "User declined" would render as "User+declined".
+  // Emit %20 for spaces to keep Linear's user-facing error text readable.
+  const query = callback.toString().replace(/\+/g, "%20");
   return new Response(null, {
     status: 302,
-    headers: { location: `ade://linear-oauth?${callback.toString()}` },
+    headers: { location: `ade://linear-oauth?${query}` },
   });
 }
 

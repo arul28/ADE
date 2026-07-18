@@ -72,10 +72,19 @@ final class LinearOAuthRunner: NSObject, ObservableObject, ASWebAuthenticationPr
         code: code,
         state: state
       )
+      // A failed exchange can still come back `connected: true` when a prior
+      // token survives (the desktop preserves it rather than wiping the UI) —
+      // but with the failure reason in `message`. Treat any non-empty message
+      // as a failure so a reconnect that didn't actually re-auth never shows a
+      // success confirmation. A genuine success carries no message.
+      let failureMessage = status.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let failureMessage, !failureMessage.isEmpty {
+        return .failed(failureMessage)
+      }
       if status.connected {
         return .connected(status)
       }
-      return .failed(status.message ?? "Couldn\u{2019}t finish connecting to Linear.")
+      return .failed("Couldn\u{2019}t finish connecting to Linear.")
     } catch {
       return .failed(SyncUserFacingError.message(for: error))
     }

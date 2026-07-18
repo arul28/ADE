@@ -20,7 +20,21 @@ describe("GET /linear/oauth/callback", () => {
       env,
     );
     expect(response.status).toBe(302);
-    expect(response.headers.get("location")).toBe("ade://linear-oauth?code=a%2Fb+c&state=s%2Bt");
+    expect(response.headers.get("location")).toBe("ade://linear-oauth?code=a%2Fb%20c&state=s%2Bt");
+  });
+
+  it("emits %20 (not +) for spaces so iOS URLComponents renders readable text", async () => {
+    const response = await handleRequest(
+      new Request(
+        "https://relay.example/linear/oauth/callback?error=access_denied&error_description=User%20declined%20access&state=s1",
+      ),
+      env,
+    );
+    const location = response.headers.get("location") ?? "";
+    // iOS reads this with URLComponents, which leaves "+" intact, so spaces must
+    // be %20 or the connect screen would show "User+declined+access".
+    expect(location).toContain("error_description=User%20declined%20access");
+    expect(location).not.toContain("+");
   });
 
   it("bounces an error through without a code", async () => {
