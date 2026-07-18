@@ -405,6 +405,46 @@ describe("kvDb storage maintenance", () => {
     expect(db.get<{ synchronous: number }>("pragma synchronous")?.synchronous).toBe(1);
   });
 
+  it("caps eligible ingress rows without deleting dispatched history", async () => {
+    const dbPath = makeDbPath();
+    const db = await openKvDb(dbPath, createLogger());
+    closeLater(db);
+    db.run(`
+      create table automation_ingress_events (
+        id text primary key,
+        project_id text not null,
+        status text not null,
+        received_at text not null
+      )
+    `);
+
+    const receivedAt = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+    db.run(
+      "insert into automation_ingress_events(id, project_id, status, received_at) values (?, ?, ?, ?)",
+      ["dispatched-oldest", "project-1", "dispatched", receivedAt],
+    );
+    db.run("begin immediate");
+    for (let index = 0; index < 2_001; index += 1) {
+      db.run(
+        "insert into automation_ingress_events(id, project_id, status, received_at) values (?, ?, ?, ?)",
+        [`ignored-${index}`, "project-1", "ignored", receivedAt],
+      );
+    }
+    db.run("commit");
+
+    expect(db.maintenance?.pruneIngressEvents()).toEqual({
+      itemsAffected: 1,
+      bytesReclaimed: 0,
+      skippedReason: null,
+    });
+    expect(db.get<{ count: number }>(
+      "select count(*) as count from automation_ingress_events where status = 'ignored'",
+    )?.count).toBe(2_000);
+    expect(db.get<{ count: number }>(
+      "select count(*) as count from automation_ingress_events where id = 'dispatched-oldest'",
+    )?.count).toBe(1);
+  });
+
   it("reclaims a fragmented file, activates incremental auto-vacuum, and skips a healthy file", async () => {
     const dbPath = makeDbPath();
     const logs: LogEntry[] = [];

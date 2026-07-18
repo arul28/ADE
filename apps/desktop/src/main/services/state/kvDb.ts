@@ -3758,7 +3758,7 @@ export async function openKvDb(
   const maintenance: DbMaintenanceApi = {
     pruneIngressEvents: () => runMaintenanceSafely("pruneIngressEvents", () => {
       if (!rawHasTable(db, "automation_ingress_events")) return unsupportedMaintenanceResult();
-      const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000).toISOString();
+      const cutoff = new Date(Date.now() - INGRESS_EVENT_RETENTION_MS).toISOString();
       let itemsAffected = runStatement(
         db,
         "delete from automation_ingress_events where received_at < ?",
@@ -3775,9 +3775,9 @@ export async function openKvDb(
             where rowid in (
               select rowid
               from automation_ingress_events
-              where project_id = ?
+              where project_id = ? and status != 'dispatched'
               order by received_at desc, rowid desc
-              limit -1 offset 2000
+              limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
             )`,
           [project.project_id],
         ).changes;

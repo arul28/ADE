@@ -10,7 +10,7 @@
 const DAY_MS = 24 * 60 * 60 * 1_000;
 /** Automation ingress events older than this are pruned (write-time + doctor). */
 export const INGRESS_EVENT_RETENTION_MS = 7 * DAY_MS;
-/** Newest ingress rows kept per project regardless of age (count cap). */
+/** Newest non-dispatched ingress rows kept per project after age pruning. */
 export const INGRESS_EVENT_MAX_ROWS_PER_PROJECT = 2_000;
 /** Review artifacts older than this (in days) are deleted. */
 export const REVIEW_ARTIFACT_RETENTION_DAYS = 30;
@@ -24,7 +24,7 @@ export type DbMaintenanceResult = {
 };
 
 export interface DbMaintenanceApi {
-  /** Age+count prune of automation_ingress_events (7d / 2,000 per project). */
+  /** Age-prune all ingress rows, then cap non-dispatched rows at 2,000 per project. */
   pruneIngressEvents(): DbMaintenanceResult;
   /** Delete review_run_artifacts rows older than 30 days. */
   pruneReviewArtifacts(): DbMaintenanceResult;
