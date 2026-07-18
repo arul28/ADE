@@ -3655,12 +3655,25 @@ export function createPtyService({
       if (explicitNoColor && !explicitForceColor) {
         delete baseLaunchEnv.FORCE_COLOR;
       }
+      // Resume launches re-enter create() without args.spawnLineage — recover
+      // it from the persisted resume metadata so a resumed spawned CLI keeps
+      // its parent env (self-reporting + nested lineage).
+      const persistedParentSessionId = isTrackedAgentCliToolType(toolTypeHint)
+        ? existingSession?.resumeMetadata?.orchestrationParentSessionId?.trim() || null
+        : null;
+      const effectiveSpawnLineage = args.spawnLineage
+        ?? (persistedParentSessionId
+          ? {
+              parentChatSessionId: persistedParentSessionId,
+              spawnKind: existingSession?.resumeMetadata?.spawnKind ?? null,
+            }
+          : null);
       const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
         projectRoot,
         laneId,
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
-        spawnLineage: args.spawnLineage,
+        spawnLineage: effectiveSpawnLineage,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,

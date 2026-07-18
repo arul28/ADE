@@ -2120,6 +2120,53 @@ describe("ptyService", () => {
       expect(sessionService.create).toHaveBeenCalledTimes(createCallsBeforeResume);
     });
 
+    it("restores spawn-lineage env from persisted resume metadata on resume", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-spawned",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-spawned.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen resume thread-spawned",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-spawned",
+          launch: { permissionMode: "config-toml" },
+          orchestrationParentSessionId: "parent-session-1",
+          spawnKind: "subagent",
+        },
+      });
+      sessionService.end({
+        sessionId: "session-spawned",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await service.create({
+        sessionId: "session-spawned",
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-spawned",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        ADE_PARENT_CHAT_SESSION_ID: "parent-session-1",
+        ADE_SPAWN_KIND: "subagent",
+      }));
+      expect(opts?.env?.ADE_CHAT_SESSION_ID).toBe("session-spawned");
+    });
+
     it("backfills a targetless Claude resume command before launching the resumed PTY", async () => {
       (mocks.extractResumeCommandFromOutput as any).mockReturnValueOnce("claude --resume claude-session-123");
       const { service, sessionService, mockPty } = createHarness();
