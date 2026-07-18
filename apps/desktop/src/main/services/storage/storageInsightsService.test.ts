@@ -584,9 +584,17 @@ describe("storageInsightsService", () => {
     expect(extras.safeReclaimableBytes).toBe(prunableDbBytes);
   });
 
-  it("adds prunable db bytes to filesystem cleanup without double-counting", async () => {
+  it("adds presented filesystem cleanup to prunable db bytes without counting recovery backups", async () => {
     writeSized(path.join(projectRoot, ".ade", "cache", "browser-observations", "c.bin"), 100);
     writeSized(path.join(projectRoot, ".ade", "cache", "ios-simulator", "DerivedData", "m.o"), 200);
+    const newerBackup = path.join(projectRoot, ".ade", "ade.db.recovery-newer.bak");
+    const obsoleteBackup = path.join(projectRoot, ".ade", "ade.db.recovery-obsolete.bak");
+    writeSized(newerBackup, 400);
+    writeSized(obsoleteBackup, 500);
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    const nineDaysAgo = new Date(Date.now() - 9 * 24 * 60 * 60_000);
+    fs.utimesSync(newerBackup, eightDaysAgo, eightDaysAgo);
+    fs.utimesSync(obsoleteBackup, nineDaysAgo, nineDaysAgo);
     const snapshot = await createStorageInsightsService({
       projectRoot, adeHome, db, logger, stagingTmpDir: path.join(adeHome, "no-real-staging"),
     }).getSnapshot();
@@ -599,15 +607,21 @@ describe("storageInsightsService", () => {
       (sum, entry) => sum + (entry.action === "prunable" ? entry.bytes : 0),
       0,
     );
-    const safeFilesystemBytes = snapshot.categories.reduce(
-      (categorySum, category) => categorySum + category.items.reduce(
+    const presentedFilesystemBytes = snapshot.categories
+      .filter((category) => category.id === "caches" || category.id === "build_release")
+      .reduce((categorySum, category) => categorySum + category.items.reduce(
         (itemSum, item) => itemSum + (item.safety === "safe_to_remove" ? item.bytes : 0),
         0,
       ),
       0,
     );
-    expect(safeFilesystemBytes).toBe(300);
-    expect(extras.safeReclaimableBytes).toBe(prunableDbBytes + safeFilesystemBytes);
+    const recoveryBackups = snapshot.categories.find((category) => category.id === "recovery_backups")!;
+    expect(recoveryBackups.items.find((item) => item.path === obsoleteBackup)).toMatchObject({
+      bytes: 500,
+      safety: "safe_to_remove",
+    });
+    expect(presentedFilesystemBytes).toBe(300);
+    expect(extras.safeReclaimableBytes).toBe(prunableDbBytes + presentedFilesystemBytes);
     if (extras.dbBreakdown.length > 0) {
       expect(extras.dbBreakdown.some((entry) => entry.category === "core")).toBe(true);
     }

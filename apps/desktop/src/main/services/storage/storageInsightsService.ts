@@ -608,7 +608,12 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       (sum, entry) => sum + (entry.action === "prunable" ? entry.bytes : 0),
       0,
     );
-    for (const items of categoryItems.values()) {
+    // The primary cleanup dialog only itemizes rebuildable caches and
+    // build/release staging. Recovery backups remain an independent,
+    // review-first surface even when the doctor can safely reap obsolete copies,
+    // so they must not inflate the amount this CTA promises to reclaim.
+    for (const categoryId of ["build_release", "caches"] as const) {
+      const items = categoryItems.get(categoryId) ?? [];
       for (const item of items) {
         if (item.safety === "safe_to_remove") safeReclaimableBytes += item.bytes;
       }
