@@ -6,6 +6,9 @@ enum LinearRoute: Hashable {
   /// Push the launch config. `laneOnly` = "Link to new lane" (create a lane
   /// attached to the issue, no agent); otherwise = "Launch in new lane" (chat/CLI).
   case launch(issue: NormalizedLinearIssue, laneOnly: Bool)
+  /// Push the Linear connection management screen (connect / reconnect /
+  /// disconnect), reached from the pane's gear button.
+  case connection
 }
 
 /// The Linear pane's root screen: a grouped-by-state, searchable, filterable
@@ -56,16 +59,27 @@ struct LinearIssueListScreen: View {
     .onChange(of: store.priority) { _, _ in store.scheduleReload() }
     .navigationTitle(store.workspaceTitle)
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ToolbarItem(placement: .topBarLeading) {
-        Button { onClose() } label: {
-          Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
-        }
-        .accessibilityLabel("Close Linear")
+    .toolbar { linearToolbar }
+  }
+
+  // Extracted from `body` to keep the SwiftUI type-checker under its budget
+  // (the List + searchable + onChange chain + toolbar together tip it over).
+  @ToolbarContentBuilder
+  private var linearToolbar: some ToolbarContent {
+    ToolbarItem(placement: .topBarLeading) {
+      Button { onClose() } label: {
+        Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
       }
-      ToolbarItem(placement: .topBarTrailing) {
-        LinearFiltersMenu(store: store)
+      .accessibilityLabel("Close Linear")
+    }
+    ToolbarItem(placement: .topBarTrailing) {
+      NavigationLink(value: LinearRoute.connection) {
+        Image(systemName: "gearshape")
       }
+      .accessibilityLabel("Linear connection settings")
+    }
+    ToolbarItem(placement: .topBarTrailing) {
+      LinearFiltersMenu(store: store)
     }
   }
 

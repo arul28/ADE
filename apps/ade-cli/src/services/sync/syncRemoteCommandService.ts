@@ -108,6 +108,7 @@ import type {
   ImportBranchLaneArgs,
   LandPrArgs,
   LandQueueNextArgs,
+  LinearConnectionStatus,
   PauseQueueAutomationArgs,
   PersonalChatScopeContract,
   PrGithubCoords,
@@ -229,6 +230,10 @@ import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/u
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
+import {
+  LINEAR_MOBILE_OAUTH_REDIRECT_URI,
+  type createLinearOAuthService,
+} from "../../../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import { matchLaneOverlayPolicies } from "../../../../desktop/src/main/services/config/laneOverlayMatcher";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
@@ -310,6 +315,7 @@ type SyncRemoteCommandServiceArgs = {
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   /**
    * Resolvers for services created after createSyncService in main.ts.
    * Router handlers read them lazily so init order is not load-bearing.
@@ -482,6 +488,77 @@ async function getConnectedLinearIssueTracker(
   if (!linearIssueTracker) return null;
   const status = await linearIssueTracker.getConnectionStatus().catch(() => null);
   return status?.connected ? linearIssueTracker : null;
+}
+
+function buildDisconnectedLinearConnectionStatus(
+  args: SyncRemoteCommandServiceArgs,
+  message: string,
+): LinearConnectionStatus {
+  const credentialStatus = args.linearCredentialService?.getStatus() ?? {
+    tokenStored: false,
+    authMode: null,
+    tokenExpiresAt: null,
+    oauthConfigured: false,
+  };
+  return {
+    tokenStored: Boolean(credentialStatus.tokenStored),
+    connected: false,
+    viewerId: null,
+    viewerName: null,
+    organizationId: null,
+    organizationName: null,
+    organizationUrlKey: null,
+    organizationLogoUrl: null,
+    checkedAt: new Date().toISOString(),
+    authMode: credentialStatus.authMode,
+    oauthAvailable: credentialStatus.oauthConfigured,
+    tokenExpiresAt: credentialStatus.tokenExpiresAt,
+    message,
+  };
+}
+
+async function buildLinearConnectionStatus(
+  args: SyncRemoteCommandServiceArgs,
+  messageOverride?: string,
+): Promise<LinearConnectionStatus> {
+  const credentialStatus = args.linearCredentialService?.getStatus() ?? {
+    tokenStored: false,
+    authMode: null,
+    tokenExpiresAt: null,
+    oauthConfigured: false,
+  };
+  const tokenStored = Boolean(credentialStatus.tokenStored);
+  const checkedAt = new Date().toISOString();
+  const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
+  if (!linearIssueTracker || !tokenStored) {
+    return {
+      tokenStored,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt,
+      authMode: credentialStatus.authMode,
+      oauthAvailable: credentialStatus.oauthConfigured,
+      tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      message: messageOverride ?? (tokenStored ? "Linear tracker service unavailable." : "Linear token not configured."),
+    };
+  }
+  const status = await linearIssueTracker.getConnectionStatus();
+  return {
+    tokenStored,
+    connected: status.connected,
+    viewerId: status.viewerId,
+    viewerName: status.viewerName,
+    organizationId: status.organizationId,
+    organizationName: status.organizationName,
+    organizationUrlKey: status.organizationUrlKey,
+    organizationLogoUrl: status.organizationLogoUrl,
+    checkedAt,
+    authMode: credentialStatus.authMode,
+    oauthAvailable: credentialStatus.oauthConfigured,
+    tokenExpiresAt: credentialStatus.tokenExpiresAt,
+    message: messageOverride ?? status.message,
+  };
 }
 
 function asStringRecord(value: unknown): Record<string, string> | undefined {
@@ -4237,45 +4314,54 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     // { memory, threadState, dailyLog, dailyLogDate, updatedAt }.
     return ctoMemoryService.getSnapshot();
   });
-  register("cto.getLinearConnectionStatus", { viewerAllowed: true }, async () => {
-    const credentialStatus = args.linearCredentialService?.getStatus() ?? {
-      tokenStored: false,
-      authMode: null,
-      tokenExpiresAt: null,
-      oauthConfigured: false,
-    };
-    const tokenStored = Boolean(credentialStatus.tokenStored);
-    const checkedAt = new Date().toISOString();
-    const linearIssueTracker = args.getLinearIssueTracker?.() ?? null;
-    if (!linearIssueTracker || !tokenStored) {
-      return {
-        tokenStored,
-        connected: false,
-        viewerId: null,
-        viewerName: null,
-        checkedAt,
-        authMode: credentialStatus.authMode,
-        oauthAvailable: credentialStatus.oauthConfigured,
-        tokenExpiresAt: credentialStatus.tokenExpiresAt,
-        message: tokenStored ? "Linear tracker service unavailable." : "Linear token not configured.",
-      };
-    }
-    const status = await linearIssueTracker.getConnectionStatus();
-    return {
-      tokenStored,
-      connected: status.connected,
-      viewerId: status.viewerId,
-      viewerName: status.viewerName,
-      organizationId: status.organizationId,
-      organizationName: status.organizationName,
-      organizationUrlKey: status.organizationUrlKey,
-      organizationLogoUrl: status.organizationLogoUrl,
-      checkedAt,
-      authMode: credentialStatus.authMode,
-      oauthAvailable: credentialStatus.oauthConfigured,
-      tokenExpiresAt: credentialStatus.tokenExpiresAt,
-      message: status.message,
-    };
+  register("cto.getLinearConnectionStatus", { viewerAllowed: true }, async () =>
+    buildLinearConnectionStatus(args));
+  register("cto.startLinearMobileOAuth", { viewerAllowed: true }, async () => {
+    const linearOAuthService = requireService(
+      args.linearOAuthService,
+      "Linear OAuth service not available.",
+    );
+    return linearOAuthService.startExternalSession({
+      redirectUri: LINEAR_MOBILE_OAUTH_REDIRECT_URI,
+    });
+  });
+  register("cto.completeLinearMobileOAuth", { viewerAllowed: true }, async (payload) => {
+    const linearOAuthService = requireService(
+      args.linearOAuthService,
+      "Linear OAuth service not available.",
+    );
+    const result = await linearOAuthService.completeExternalSession({
+      sessionId: requireString(
+        payload.sessionId,
+        "cto.completeLinearMobileOAuth requires sessionId.",
+      ),
+      code: requireString(payload.code, "cto.completeLinearMobileOAuth requires code."),
+      state: requireString(payload.state, "cto.completeLinearMobileOAuth requires state."),
+    });
+    // On failure, report the ACTUAL current status (the prior token may still
+    // be valid — e.g. a reconnect whose fresh exchange failed) with the failure
+    // reason attached, instead of forcing an unconditional disconnected status.
+    return result.ok
+      ? buildLinearConnectionStatus(args)
+      : buildLinearConnectionStatus(args, result.message);
+  });
+  register("cto.setLinearToken", { viewerAllowed: true }, async (payload) => {
+    const linearCredentialService = requireService(
+      args.linearCredentialService,
+      "Linear credential service not available.",
+    );
+    linearCredentialService.setToken(
+      requireString(payload.token, "cto.setLinearToken requires token."),
+    );
+    return buildLinearConnectionStatus(args);
+  });
+  register("cto.clearLinearToken", { viewerAllowed: true }, async () => {
+    const linearCredentialService = requireService(
+      args.linearCredentialService,
+      "Linear credential service not available.",
+    );
+    linearCredentialService.clearToken();
+    return buildDisconnectedLinearConnectionStatus(args, "Linear token not configured.");
   });
   register("cto.getLinearQuickView", { viewerAllowed: true }, async () => {
     const credentialStatus = args.linearCredentialService?.getStatus() ?? {

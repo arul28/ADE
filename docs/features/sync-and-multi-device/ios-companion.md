@@ -323,6 +323,13 @@ apps/ios/
 │   │   │                            # launch config, brand/logo paths, pane store
 │   │   │                            # and toolbar button. Uses existing cto.* read
 │   │   │                            # RPCs plus lane/chat/CLI launch primitives.
+│   │   │                            # LinearConnectionScreen (gear → connect via
+│   │   │                            #   OAuth/API key, reconnect, disconnect;
+│   │   │                            #   shared LinearConnectActions on the
+│   │   │                            #   disconnected pane) +
+│   │   │                            # LinearOAuthRunner (worker-bounce OAuth via
+│   │   │                            #   ASWebAuthenticationSession, ade:// capture),
+│   │   │                            #   all gated on supportsRemoteAction.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
 │   │   │                            #   (PrDetailView — Overview emitted as
 │   │   │                            #   sibling List rows, not a monolith),

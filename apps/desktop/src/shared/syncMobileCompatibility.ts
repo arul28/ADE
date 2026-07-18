@@ -2,6 +2,16 @@ import type { SyncFileRequest, SyncRemoteCommandAction } from "./types";
 
 export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
 
+// Additive capabilities that newer mobile clients may feature-detect from
+// hello_ok.features.commandRouting.actions. They must not become part of the
+// required set below, because older mobile builds do not implement them.
+export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
+  "cto.startLinearMobileOAuth",
+  "cto.completeLinearMobileOAuth",
+  "cto.setLinearToken",
+  "cto.clearLinearToken",
+] as const satisfies readonly SyncRemoteCommandAction[];
+
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "lanes.presence.announce",
   "lanes.presence.release",

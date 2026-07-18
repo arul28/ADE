@@ -26,6 +26,7 @@ import type { createAiIntegrationService } from "../../../../desktop/src/main/se
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
+import type { createLinearOAuthService } from "../../../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
@@ -143,6 +144,7 @@ type SyncServiceArgs = {
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   /**
    * Resolvers for services that are constructed AFTER createSyncService in
    * main.ts. Using lazy getters lets the sync router forward remote commands
@@ -741,6 +743,7 @@ export function createSyncService(args: SyncServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
+    linearOAuthService: args.linearOAuthService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     getExternalSessionsService: args.getExternalSessionsService,
     projectConfigService: args.projectConfigService,

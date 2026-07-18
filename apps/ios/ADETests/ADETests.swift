@@ -4999,6 +4999,83 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testLegacyHostWithoutLinearCommandsGatesMobileLinearActions() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.send",
+            "policy": ["viewerAllowed": true, "queueable": true],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .limited)
+    XCTAssertFalse(service.supportsRemoteAction("cto.startLinearMobileOAuth"))
+    XCTAssertFalse(service.supportsRemoteAction("cto.setLinearToken"))
+    XCTAssertFalse(service.supportsRemoteAction("cto.clearLinearToken"))
+  }
+
+  @MainActor
+  func testHostAdvertisingLinearCommandsEnablesMobileLinearActions() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    let linearActions = [
+      "cto.startLinearMobileOAuth",
+      "cto.completeLinearMobileOAuth",
+      "cto.setLinearToken",
+      "cto.clearLinearToken",
+    ]
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": linearActions.map { action in
+            [
+              "action": action,
+              "policy": ["viewerAllowed": true, "queueable": false],
+            ]
+          },
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "full",
+          "requiredActions": [],
+          "missingActions": [],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .full)
+    XCTAssertTrue(service.supportsRemoteAction("cto.startLinearMobileOAuth"))
+    XCTAssertTrue(service.supportsRemoteAction("cto.completeLinearMobileOAuth"))
+    XCTAssertTrue(service.supportsRemoteAction("cto.setLinearToken"))
+    XCTAssertTrue(service.supportsRemoteAction("cto.clearLinearToken"))
+  }
+
+  @MainActor
   func testSyncServiceReadsExplicitFullMobileCompatibilityFromHello() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 

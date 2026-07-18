@@ -8,6 +8,9 @@ struct LinearPaneSheet: View {
   @StateObject private var store: LinearPaneStore
   @State private var path: [LinearRoute] = []
   @State private var started = false
+  /// Brief "Connected to <org>" confirmation shown on the empty state before the
+  /// store reload flips the pane into the issue list.
+  @State private var justConnectedOrg: String?
 
   init(syncService: SyncService) {
     _store = StateObject(wrappedValue: LinearPaneStore(sync: syncService))
@@ -32,6 +35,8 @@ struct LinearPaneSheet: View {
           LinearIssueDetailScreen(issue: issue, hasLane: store.attachedIssueIds.contains(issue.id))
         case let .launch(issue, laneOnly):
           LinearLaunchScreen(issue: issue, laneOnly: laneOnly)
+        case .connection:
+          LinearConnectionScreen(store: store)
         }
       }
     }
@@ -48,18 +53,47 @@ struct LinearPaneSheet: View {
     }
   }
 
+  /// Machine name for connect copy — the connected host's display name when
+  /// known, else a neutral "your Mac".
+  private var machineName: String { syncService.machineDisplayName }
+
   private var connectPrompt: some View {
-    ADEEmptyStateView(
-      symbol: "link.badge.plus",
-      title: "Linear isn\u{2019}t connected",
-      message: "Connect Linear from ADE on your machine (Settings \u{203A} Integrations) to browse and launch issues here."
-    ) {
-      Button("Close", action: close)
-        .buttonStyle(.glassProminent)
-        .tint(LinearBrand.primary)
+    ScrollView {
+      VStack(spacing: 20) {
+        VStack(spacing: 12) {
+          LinearMark(size: 40)
+            .foregroundStyle(LinearBrand.primaryBright)
+          VStack(spacing: 6) {
+            Text("Connect Linear")
+              .font(.title3.weight(.semibold))
+              .foregroundStyle(ADEColor.textPrimary)
+            Text("Sign in to browse and launch Linear issues from \(machineName). The token stays on your machine.")
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textSecondary)
+              .multilineTextAlignment(.center)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        .frame(maxWidth: .infinity)
+
+        LinearConnectActions(store: store) { status in
+          ADEHaptics.success()
+          justConnectedOrg = status.organizationName
+        }
+        .adeGlassCard(cornerRadius: 20, padding: 20)
+
+        if let justConnectedOrg {
+          Label("Connected to \(justConnectedOrg)", systemImage: "checkmark.circle.fill")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.success)
+            .transition(.opacity)
+        }
+      }
+      .padding(24)
+      .frame(maxWidth: .infinity)
     }
-    .padding(24)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .scrollContentBackground(.hidden)
+    .background(ADEColor.pageBackground)
     .navigationTitle("Linear")
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
@@ -68,6 +102,12 @@ struct LinearPaneSheet: View {
           Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
         }
         .accessibilityLabel("Close Linear")
+      }
+      ToolbarItem(placement: .topBarTrailing) {
+        NavigationLink(value: LinearRoute.connection) {
+          Image(systemName: "gearshape")
+        }
+        .accessibilityLabel("Linear connection settings")
       }
     }
   }

@@ -16,6 +16,8 @@
 		E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000097 /* LinearLaunchScreen.swift */; };
 		E20000000000000000000098 /* LinearPaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000098 /* LinearPaneSheet.swift */; };
 		E20000000000000000000099 /* LinearPaneToolbarButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000099 /* LinearPaneToolbarButton.swift */; };
+		E2000000000000000000009A /* LinearOAuthRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009A /* LinearOAuthRunner.swift */; };
+		E2000000000000000000009B /* LinearConnectionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000009B /* LinearConnectionScreen.swift */; };
 		AA1100000000000000000001 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
 		AA1100000000000000000002 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
 		AA1100000000000000000003 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
@@ -294,6 +296,8 @@
 		D20000000000000000000097 /* LinearLaunchScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearLaunchScreen.swift; path = ADE/Views/Linear/LinearLaunchScreen.swift; sourceTree = "<group>"; };
 		D20000000000000000000098 /* LinearPaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneSheet.swift; path = ADE/Views/Linear/LinearPaneSheet.swift; sourceTree = "<group>"; };
 		D20000000000000000000099 /* LinearPaneToolbarButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearPaneToolbarButton.swift; path = ADE/Views/Linear/LinearPaneToolbarButton.swift; sourceTree = "<group>"; };
+		D2000000000000000000009A /* LinearOAuthRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearOAuthRunner.swift; path = ADE/Views/Linear/LinearOAuthRunner.swift; sourceTree = "<group>"; };
+		D2000000000000000000009B /* LinearConnectionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LinearConnectionScreen.swift; path = ADE/Views/Linear/LinearConnectionScreen.swift; sourceTree = "<group>"; };
 		AA1000000000000000000001 /* ADESharedContainer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedContainer.swift; path = ADE/Shared/ADESharedContainer.swift; sourceTree = "<group>"; };
 		AA1000000000000000000002 /* ADESharedModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedModels.swift; path = ADE/Shared/ADESharedModels.swift; sourceTree = "<group>"; };
 		AA1000000000000000000003 /* ADESharedTheme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedTheme.swift; path = ADE/Shared/ADESharedTheme.swift; sourceTree = "<group>"; };
@@ -582,6 +586,8 @@
 				D20000000000000000000097 /* LinearLaunchScreen.swift */,
 				D20000000000000000000098 /* LinearPaneSheet.swift */,
 				D20000000000000000000099 /* LinearPaneToolbarButton.swift */,
+				D2000000000000000000009A /* LinearOAuthRunner.swift */,
+				D2000000000000000000009B /* LinearConnectionScreen.swift */,
 			);
 			name = Linear;
 			sourceTree = "<group>";
@@ -1305,6 +1311,8 @@
 				E20000000000000000000097 /* LinearLaunchScreen.swift in Sources */,
 				E20000000000000000000098 /* LinearPaneSheet.swift in Sources */,
 				E20000000000000000000099 /* LinearPaneToolbarButton.swift in Sources */,
+				E2000000000000000000009A /* LinearOAuthRunner.swift in Sources */,
+				E2000000000000000000009B /* LinearConnectionScreen.swift in Sources */,
 				AA1100000000000000000001 /* ADESharedContainer.swift in Sources */,
 				AA1100000000000000000002 /* ADESharedModels.swift in Sources */,
 				AA1100000000000000000003 /* ADESharedTheme.swift in Sources */,
