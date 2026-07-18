@@ -233,6 +233,7 @@ type FormatterId =
   | "external-sessions"
   | "storage-snapshot"
   | "storage-compress"
+  | "storage-maintenance"
   | "sync-status"
   | "sync-web";
 
@@ -2087,12 +2088,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
   build output, caches, proof attachments, recovery backups, database) and the
   volume's free space, mirroring the desktop Settings storage dashboard. The
-  snapshot is read-only; compression is lossless and safe. Target-scoped cleanup
+  snapshot is read-only; compression is lossless and safe. Maintenance runs the
+  policy-driven ledger sweep (prune/compress/vacuum). Target-scoped cleanup
   (which deletes files) is intentionally left to the action bridge.
 
     $ ade storage snapshot --text                   Categorized ADE disk usage + free-space summary
     $ ade storage snapshot --refresh --text         Force a fresh scan (skip the cached snapshot)
     $ ade storage compress --text                   Losslessly compress old chat/terminal history
+    $ ade --role cto storage maintenance --text     Run the policy-driven maintenance sweep now (CTO)
     $ ade storage actions --text                    List raw storage service actions
     $ ade storage action cleanupPreview --input-json '{"targets":[...]}'   Preview a target-scoped cleanup
     $ ade --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'   Delete previewed targets (CTO)
@@ -10221,8 +10224,19 @@ function buildStoragePlan(args: string[]): CliPlan {
       steps: [actionStep("result", "storage", "compressNow", {})],
     };
   }
+  if (sub === "maintenance" || sub === "maintain" || sub === "run-maintenance") {
+    // Runs the same policy-driven maintenance sweep as the desktop Settings
+    // "Run maintenance now" button (prune/compress/vacuum per the storage
+    // ledger). CTO-only at the action bridge, so agents must pass --role cto.
+    return {
+      kind: "execute",
+      label: "storage maintenance",
+      formatter: "storage-maintenance",
+      steps: [actionStep("result", "storage", "runMaintenanceNow", {})],
+    };
+  }
   throw new CliUsageError(
-    "storage supports snapshot, compress, actions, or action <name>. Use 'ade actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
+    "storage supports snapshot, compress, maintenance, actions, or action <name>. Use 'ade actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
   );
 }
 
@@ -16327,6 +16341,38 @@ function formatStorageCompression(value: unknown): string {
   ]);
 }
 
+function formatStorageMaintenance(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const header = renderKeyValues("ADE storage maintenance", [
+    ["trigger", value.trigger],
+    ["reclaimed", formatBytes(value.reclaimedBytes)],
+    ["db size", typeof value.dbSizeBytes === "number" ? formatBytes(value.dbSizeBytes) : undefined],
+    ["started", value.startedAt],
+    ["finished", value.finishedAt],
+  ]);
+  const actions = Array.isArray(value.actions) ? value.actions.filter(isRecord) : [];
+  const rows = actions.map((action) => {
+    const note = typeof action.error === "string" && action.error
+      ? `error: ${action.error}`
+      : typeof action.skippedReason === "string" && action.skippedReason
+        ? `skipped: ${action.skippedReason}`
+        : "";
+    return [
+      cell(action.ledgerId, 32),
+      cell(action.kind, 12),
+      typeof action.itemsAffected === "number" ? String(action.itemsAffected) : "-",
+      formatBytes(action.bytesReclaimed),
+      note,
+    ];
+  });
+  const table = renderTable(
+    ["LEDGER", "KIND", "ITEMS", "RECLAIMED", "NOTE"],
+    rows,
+    "No maintenance actions were applied.",
+  );
+  return `${header}\n\n${table}`;
+}
+
 function formatLastFailureLine(report: AdeLastFailureReport): string {
   const repeat = report.count > 1 ? ` x${report.count}` : "";
   const scope = report.projectRoot ? ` [${report.projectRoot}]` : "";
@@ -17884,6 +17930,8 @@ function formatTextOutput(
       return formatStorageSnapshot(value);
     case "storage-compress":
       return formatStorageCompression(value);
+    case "storage-maintenance":
+      return formatStorageMaintenance(value);
     case "action-result":
     default:
       if (isRecord(value))

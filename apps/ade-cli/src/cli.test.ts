@@ -1590,6 +1590,15 @@ describe("ADE CLI", () => {
       arguments: { domain: "storage", action: "compressNow", args: {} },
     });
 
+    const maintenancePlan = expectExecutePlan(
+      buildCliPlan(["storage", "maintenance"]),
+    );
+    expect(inferFormatter(maintenancePlan)).toBe("storage-maintenance");
+    expect(maintenancePlan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "storage", action: "runMaintenanceNow", args: {} },
+    });
+
     expect(
       expectExecutePlan(buildCliPlan(["storage", "actions"])).steps[0]?.params,
     ).toEqual({ name: "list_ade_actions", arguments: { domain: "storage" } });
@@ -1639,6 +1648,37 @@ describe("ADE CLI", () => {
     expect(snapshotText).toContain("ADE storage");
     expect(snapshotText).toContain("GB free of");
     expect(snapshotText).toContain("chats_history");
+
+    const maintenanceText = formatOutput(
+      {
+        startedAt: "2026-07-12T00:00:00.000Z",
+        finishedAt: "2026-07-12T00:00:01.000Z",
+        trigger: "manual",
+        reclaimedBytes: 3 * 1024 ** 2,
+        dbSizeBytes: 45 * 1024 ** 2,
+        actions: [
+          {
+            ledgerId: "automation_ingress_events",
+            kind: "prune",
+            itemsAffected: 120,
+            bytesReclaimed: 2 * 1024 ** 2,
+          },
+          {
+            ledgerId: "pull_request_snapshots",
+            kind: "vacuum",
+            itemsAffected: 0,
+            bytesReclaimed: 0,
+            skippedReason: "not due",
+          },
+        ],
+      },
+      { text: true } as never,
+      inferFormatter(maintenancePlan),
+    );
+    expect(maintenanceText).toContain("ADE storage maintenance");
+    expect(maintenanceText).toContain("manual");
+    expect(maintenanceText).toContain("automation_ingress_events");
+    expect(maintenanceText).toContain("skipped: not due");
   });
 
   it("formats external session action results as text", () => {

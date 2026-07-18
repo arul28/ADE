@@ -294,15 +294,22 @@ Renderer — settings:
   and `LaneBehaviorSection.tsx` — lane initialization recipes and
   lifecycle policies.
 - `apps/desktop/src/renderer/components/settings/StorageSection.tsx` plus
-  `settings/storage/StorageCleanupDialog.tsx` and `settings/storage/storageView.ts`
+  `settings/storage/StorageCleanupDialog.tsx`, `StorageDiagnostics.tsx`,
+  `StorageMaintenanceJournal.tsx`, `storageView.ts`, and `storageUiConstants.ts`
   — Settings > Storage. Renders the current volume-pressure state, a category
-  breakdown of ADE's on-disk footprint, and per-category removable items;
-  offers preview-confirmed cleanup and a manual history-compression action.
-  `storageView.ts` holds the pure snapshot→cleanup-target mapping and category
-  presentation metadata (unit-tested without a DOM); the dashboard reads
-  `window.ade.storage.*`. The domain lives in
+  breakdown of ADE's on-disk footprint with per-category policy chips, and
+  per-category removable items; a "Clean up safely" primary action that runs the
+  storage doctor (`runMaintenanceNow`, falling back to preview-confirmed
+  cleanup-by-target on older daemons); a project-database breakdown card with
+  per-row prune/compact actions; the "Health & diagnostics" strip
+  (`StorageDiagnostics`, anchored `#diagnostics`); and the collapsible recent-cleanups
+  journal (`StorageMaintenanceJournal`). `storageView.ts` holds the pure
+  snapshot→cleanup-target mapping plus the diagnostics/maintenance view-model
+  (unit-tested without a DOM); the dashboard reads `window.ade.storage.*` and
+  `window.ade.app.getRuntimeHealth`. The domain lives in
   [Storage and recovery](../storage-and-recovery/README.md), which owns the
-  disk-pressure monitor and `storageInsightsService` behind those IPCs.
+  disk-pressure monitor, `storageInsightsService`, and the storage doctor behind
+  those IPCs.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx`
   — shared multi-device sync management used by the focused
   **Connections > Phone** and **Connections > Web** tabs beneath a shared
@@ -614,7 +621,7 @@ changing rather than which service backs it:
 | AI Connections | `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
 | Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus project-wide scheduled-work recovery. **Pause all scheduled work** keeps Claude wakeups, cron tasks, and loops armed while suppressing `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. **Active scheduled work** lists KV-backed durable jobs from every chat with per-job Cancel and an explicit unavailable/error state. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
-| Storage | `StorageSection.tsx`, `storage/StorageCleanupDialog.tsx`, `storage/storageView.ts` | Disk-usage dashboard: current volume pressure, ADE storage broken down by category (lanes/worktrees, chats & terminal history, caches, build & release, proof & attachments, recovery backups, database), preview-confirmed cleanup of the removable subset, and a manual "compress old history" action. Reads `window.ade.storage.getPressure` / `getSnapshot` and mutates through `compressNow` / `cleanupPreview` / `cleanup`. Deep links from `?tab=storage` and `?tab=disk` (via `TAB_ALIASES`). See [Storage and recovery](../storage-and-recovery/README.md). |
+| Storage | `StorageSection.tsx`, `storage/StorageCleanupDialog.tsx`, `storage/StorageDiagnostics.tsx`, `storage/StorageMaintenanceJournal.tsx`, `storage/storageView.ts` | Disk-usage dashboard: current volume pressure, ADE storage broken down by category (lanes/worktrees, chats & terminal history, caches, build & release, proof & attachments, recovery backups, database) with policy chips, a project-database breakdown, a "Clean up safely" action that runs the storage doctor, a Health & diagnostics strip, and the recent-cleanups journal — plus preview-confirmed cleanup and a manual "compress old history" action. Reads `window.ade.storage.getPressure` / `getSnapshot` and `window.ade.app.getRuntimeHealth`, and mutates through `runMaintenanceNow` / `compressNow` / `cleanupPreview` / `cleanup`. Deep links from `?tab=storage` and `?tab=disk` (via `TAB_ALIASES`); the top-bar load pill deep-links to `?tab=storage#diagnostics` (`?tab=diagnostics` also aliases here). See [Storage and recovery](../storage-and-recovery/README.md). |
 | Stats | `AdeUsageSection.tsx`, `ActivityModule.tsx`, `providerColors.ts` | Usage page with live Limits plus a sectioned Activity dashboard: overview stat tiles, an activity/tokens/code/clients module, and split AI-usage and GitHub-vs-local Code & PRs panels, with project/machine scope and day/week/month/year/all ranges. Fast cached local-provider, project-DB, GitHub, and cross-client activity. Deep links from `?tab=usage` and `?tab=stats` land here. |
 
 > Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`) and Settings > Usage > Limits. The Activity tab is the retrospective cross-client dashboard.
