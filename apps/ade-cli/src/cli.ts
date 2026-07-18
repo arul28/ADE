@@ -4175,7 +4175,11 @@ function resolveNewChatLaneArgs(args: string[], prompt: string | null): {
   maybePut(createLaneArgs, "description", readValue(args, ["--description", "--desc"]));
   maybePut(createLaneArgs, "baseBranch", readValue(args, ["--base", "--base-branch"]));
   maybePut(createLaneArgs, "branchName", readValue(args, ["--branch-name"]));
-  maybePut(createLaneArgs, "parentLaneId", readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]));
+  // No bare `--parent` alias here: in `ade new chat` that flag is documented as
+  // the spawn-lineage parent SESSION (readParentSessionId), and this resolver
+  // runs first — consuming it would silently eat the lineage flag whenever
+  // --auto-create-lane is used. Lane parentage keeps the explicit aliases.
+  maybePut(createLaneArgs, "parentLaneId", readValue(args, ["--parent-lane", "--parent-lane-id"]));
   return { laneId: null, autoCreateLane: true, createLaneArgs };
 }
 

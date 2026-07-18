@@ -2476,6 +2476,40 @@ describe("ADE CLI", () => {
       expect(launch).not.toHaveProperty("chatSessionId");
     });
 
+    it("--auto-create-lane keeps --parent as the spawn-lineage session, not the lane parent", () => {
+      delete process.env.ADE_CHAT_SESSION_ID;
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "chat",
+        "--auto-create-lane",
+        "--lane-name", "spawn-target",
+        "--provider", "codex",
+        "--parent", "parent-session-1",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const value = staticPlan.value as { launch: Record<string, unknown>; createLane?: Record<string, unknown> };
+      expect(value.launch.orchestrationParentSessionId).toBe("parent-session-1");
+      expect(value.createLane ?? {}).not.toHaveProperty("parentLaneId");
+    });
+
+    it("--auto-create-lane --parent-lane still sets the lane parent without touching lineage", () => {
+      delete process.env.ADE_CHAT_SESSION_ID;
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "chat",
+        "--auto-create-lane",
+        "--lane-name", "spawn-target",
+        "--provider", "codex",
+        "--parent-lane", "lane-parent-1",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const value = staticPlan.value as { launch: Record<string, unknown>; createLane?: Record<string, unknown> };
+      expect(value.createLane?.parentLaneId).toBe("lane-parent-1");
+      expect(value.launch).not.toHaveProperty("orchestrationParentSessionId");
+    });
+
     it("does not record spawn lineage for plain shell terminals", () => {
       process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
       const plan = buildCliPlan([
