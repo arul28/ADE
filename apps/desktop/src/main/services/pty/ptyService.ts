@@ -394,6 +394,11 @@ function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   if (args.spawnLineage) {
     next.ADE_PARENT_CHAT_SESSION_ID = args.spawnLineage.parentChatSessionId;
     next.ADE_SPAWN_KIND = args.spawnLineage.spawnKind ?? "";
+  } else {
+    // The daemon itself may run inside a spawned agent shell that inherited
+    // these; without lineage they must not leak into unrelated terminals.
+    delete next.ADE_PARENT_CHAT_SESSION_ID;
+    delete next.ADE_SPAWN_KIND;
   }
   return next;
 }

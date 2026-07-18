@@ -913,6 +913,36 @@ describe("ptyService", () => {
       expect(opts?.env?.ADE_CHAT_SESSION_ID).not.toBe("parent-session-1");
     });
 
+    it("strips inherited parent lineage env when the launch has no spawn lineage", async () => {
+      const previousParent = process.env.ADE_PARENT_CHAT_SESSION_ID;
+      const previousKind = process.env.ADE_SPAWN_KIND;
+      // The daemon can itself run inside a spawned agent shell; those inherited
+      // vars must not leak into terminals created without lineage.
+      process.env.ADE_PARENT_CHAT_SESSION_ID = "inherited-parent";
+      process.env.ADE_SPAWN_KIND = "subagent";
+      try {
+        const { service, loadPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex plain",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+        });
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        expect(opts?.env).toBeDefined();
+        expect(opts?.env).not.toHaveProperty("ADE_PARENT_CHAT_SESSION_ID");
+        expect(opts?.env).not.toHaveProperty("ADE_SPAWN_KIND");
+      } finally {
+        if (previousParent === undefined) delete process.env.ADE_PARENT_CHAT_SESSION_ID;
+        else process.env.ADE_PARENT_CHAT_SESSION_ID = previousParent;
+        if (previousKind === undefined) delete process.env.ADE_SPAWN_KIND;
+        else process.env.ADE_SPAWN_KIND = previousKind;
+      }
+    });
+
     it("refuses only new tracked CLI launches when storage is exhausted", async () => {
       let exhausted = false;
       const canPerform = vi.fn(() => exhausted
