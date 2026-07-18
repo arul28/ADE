@@ -283,8 +283,8 @@ describe("buildSafeCleanupPlan", () => {
       fileCount: 2,
       safety: "review_first",
       items: [
-        { id: "r-old", label: "Obsolete recovery backup", path: "/proj/.ade/ade.db.recovery-old.bak", bytes: 60 * MB, fileCount: 1, lastModifiedAt: null, safety: "safe_to_remove" },
-        { id: "r-new", label: "Newest recovery backup", path: "/proj/.ade/ade.db.recovery-new.bak", bytes: 80 * MB, fileCount: 1, lastModifiedAt: null, safety: "review_first" },
+        { id: "r-old", label: "Obsolete recovery backup", path: "/proj/.ade/ade.db.recovery-old.bak", bytes: 60 * MB, fileCount: 1, lastModifiedAt: "2026-06-01T00:00:00.000Z", safety: "safe_to_remove" },
+        { id: "r-new", label: "Newest recovery backup", path: "/proj/.ade/ade.db.recovery-new.bak", bytes: 80 * MB, fileCount: 1, lastModifiedAt: "2026-07-01T00:00:00.000Z", safety: "safe_to_remove" },
       ],
     },
   ];
@@ -313,6 +313,7 @@ describe("buildSafeCleanupPlan", () => {
     expect(plan.groups.find((group) => group.heading === "Obsolete recovery backups")?.rows)
       .toEqual([{ label: "Obsolete recovery backup", size: "60.0 MB" }]);
     expect(plan.groups.flatMap((group) => group.rows).some((row) => row.label === "Newest recovery backup")).toBe(false);
+    expect(plan.estimatedBytes).not.toBe(500 * MB);
     expect(plan.whatHappens.at(-1)).toContain("never touched");
     expect(plan.whatHappens.at(-1)).toContain("newest backup is always kept");
   });

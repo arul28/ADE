@@ -801,6 +801,18 @@ describe("storageMaintenanceJournal", () => {
     expect(isMaintenanceReport({ ...validReport, trigger: "sometimes" })).toBe(false);
     expect(isMaintenanceReport({ ...validReport, actions: [null] })).toBe(false);
     expect(isMaintenanceReport({ ...validReport, actions: [{ ...validReport.actions[0], durationMs: -1 }] })).toBe(false);
+    const { skippedReason: _skippedReason, ...withoutSkippedReason } = validReport.actions[0]!;
+    const { error: _error, ...withoutError } = validReport.actions[0]!;
+    expect(isMaintenanceReport({ ...validReport, actions: [withoutSkippedReason] })).toBe(false);
+    expect(isMaintenanceReport({ ...validReport, actions: [withoutError] })).toBe(false);
+    expect(isMaintenanceReport({
+      ...validReport,
+      actions: [{ ...validReport.actions[0], skippedReason: undefined }],
+    })).toBe(false);
+    expect(isMaintenanceReport({
+      ...validReport,
+      actions: [{ ...validReport.actions[0], error: undefined }],
+    })).toBe(false);
     expect(isMaintenanceReport({ ...validReport, dbSizeBytes: undefined })).toBe(false);
   });
 

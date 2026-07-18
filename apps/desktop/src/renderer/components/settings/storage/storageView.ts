@@ -605,11 +605,23 @@ export function buildSafeCleanupPlan(
     whatHappens.push("Remove temporary and rebuildable files ADE recreates on demand.");
   }
 
-  // The doctor removes only backups already classified as obsolete, and its
-  // keepLatest policy always spares the newest copy.
-  const obsoleteBackups = snapshot.categories
+  // Independently enforce the doctor's keepLatest: 1 policy instead of
+  // trusting the snapshot's safety classification. A stale snapshot may still
+  // label the newest backup safe-to-remove; the doctor will spare it, so the
+  // plan must not show or estimate it. Snapshot order is the deterministic
+  // fallback when modification times are unavailable.
+  const recoveryBackups = snapshot.categories
     .find((category) => category.id === "recovery_backups")
-    ?.items.filter((item) => item.safety === "safe_to_remove") ?? [];
+    ?.items ?? [];
+  const newestBackup = recoveryBackups.reduce<StorageItem | null>((newest, item) => {
+    if (!newest) return item;
+    const newestModifiedAt = newest.lastModifiedAt ? Date.parse(newest.lastModifiedAt) : Number.NEGATIVE_INFINITY;
+    const itemModifiedAt = item.lastModifiedAt ? Date.parse(item.lastModifiedAt) : Number.NEGATIVE_INFINITY;
+    return itemModifiedAt > newestModifiedAt ? item : newest;
+  }, null);
+  const obsoleteBackups = recoveryBackups.filter(
+    (item) => item !== newestBackup && item.safety === "safe_to_remove",
+  );
   const obsoleteBackupBytes = obsoleteBackups.reduce((sum, item) => sum + item.bytes, 0);
   if (obsoleteBackups.length > 0) {
     groups.push({

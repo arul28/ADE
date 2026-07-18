@@ -17,8 +17,8 @@ function isFiniteNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
-function isNullableString(value: unknown): value is string | null | undefined {
-  return value == null || typeof value === "string";
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
 }
 
 function isMaintenanceAction(value: unknown): boolean {
@@ -31,7 +31,9 @@ function isMaintenanceAction(value: unknown): boolean {
     && isFiniteNonNegativeNumber(action.itemsAffected)
     && isFiniteNonNegativeNumber(action.bytesReclaimed)
     && isFiniteNonNegativeNumber(action.durationMs)
+    && Object.hasOwn(action, "skippedReason")
     && isNullableString(action.skippedReason)
+    && Object.hasOwn(action, "error")
     && isNullableString(action.error);
 }
 

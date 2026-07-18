@@ -188,6 +188,7 @@ function makeUsage(): AppResourceUsageSnapshot {
 function installAdeMock(options: {
   withCompress?: boolean;
   withExtras?: boolean;
+  extras?: StorageSnapshotExtras;
   withApp?: boolean;
   maintenanceReport?: MaintenanceRunReport;
   resourceUsage?: AppResourceUsageSnapshot;
@@ -226,15 +227,17 @@ function installAdeMock(options: {
   const getResourceUsage = vi.fn(async () => options.resourceUsage ?? makeUsage());
 
   const storage: Record<string, unknown> = {
-    getSnapshot: vi.fn(async () => (options.withExtras ? makeSnapshotWithExtras() : makeSnapshot())),
+    getSnapshot: vi.fn(async () => options.extras
+      ? { ...makeSnapshot(), extras: options.extras }
+      : options.withExtras ? makeSnapshotWithExtras() : makeSnapshot()),
     getPressure: vi.fn(async () => ({ state: "normal", freeBytes: 40 * 1024 ** 3, totalBytes: 500 * 1024 ** 3, freeFraction: 0.08, perRoot: [], sampledAt: new Date().toISOString() })),
     cleanupPreview,
     cleanup: cleanupFn,
   };
   if (options.withCompress) storage.compressNow = compressNow;
-  if (options.withExtras) storage.runMaintenanceNow = runMaintenanceNow;
+  if (options.withExtras || options.extras) storage.runMaintenanceNow = runMaintenanceNow;
 
-  const includeApp = options.withApp ?? options.withExtras;
+  const includeApp = options.withApp ?? (options.withExtras || options.extras != null);
   (globalThis.window as any).ade = {
     storage,
     lanes: {
@@ -350,7 +353,7 @@ describe("StorageSection", () => {
   });
 
   it("hides the safe-cleanup primary when the daemon reports no reclaimable space", async () => {
-    installAdeMock();
+    installAdeMock({ extras: { ...makeExtras(), safeReclaimableBytes: 0 } });
     render(<StorageSection />);
     await screen.findByText(/ADE is using/);
     expect(screen.queryByRole("button", { name: /clean up safely/i })).toBeNull();

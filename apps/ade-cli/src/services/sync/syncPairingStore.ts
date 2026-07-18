@@ -311,6 +311,18 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       return readRecords()[normalized] != null;
     },
 
+    countPairingRecords(): number | null {
+      if (!fs.existsSync(args.filePath)) return 0;
+      try {
+        const parsed: unknown = JSON.parse(fs.readFileSync(args.filePath, "utf8"));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+        return Object.keys(parsed).length;
+      } catch {
+        // A damaged registry is not evidence that there are no paired peers.
+        return null;
+      }
+    },
+
     revoke(deviceId: string): void {
       const normalized = deviceId.trim();
       if (!normalized) return;

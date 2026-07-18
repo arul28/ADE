@@ -504,14 +504,14 @@ export async function createAdeRuntime(args: {
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
   });
-  // A sync-enabled runtime must prove zero connected peers before CRR
-  // compaction. Runtimes without sync have no peer transport and can safely
-  // report zero immediately.
-  let liveSyncPeerCount: number | null = resolvedArgs.syncRuntime?.enabled ? null : 0;
+  // A sync-enabled runtime must prove its durable pairing registry is empty
+  // before CRR compaction. Offline paired devices still require dedupe history.
+  // Runtimes without sync have no peer transport and can report zero now.
+  let registeredSyncPeerCount: number | null = resolvedArgs.syncRuntime?.enabled ? null : 0;
   let db: AdeDb;
   try {
     db = await openKvDb(paths.dbPath, logger, {
-      hasSyncPeers: () => liveSyncPeerCount !== 0,
+      hasSyncPeers: () => registeredSyncPeerCount !== 0,
     });
   } catch (error) {
     const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error));
@@ -1646,10 +1646,11 @@ export async function createAdeRuntime(args: {
       cloudRelayStore,
       syncTunnelClientService,
       onStatusChanged: (snapshot) => {
-        liveSyncPeerCount = snapshot.connectedPeers.length;
+        registeredSyncPeerCount = syncService?.getRegisteredPeerCount() ?? null;
         pushEvent("runtime", { type: "sync-status", snapshot });
       },
     });
+    registeredSyncPeerCount = syncService.getRegisteredPeerCount();
     syncServiceForPtyEvents = syncService;
   }
 

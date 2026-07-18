@@ -2171,13 +2171,14 @@ app.whenReady().then(async () => {
       }
     };
 
-    // Fail closed until sync publishes its first status, then keep the DB
-    // compaction gate synchronized with the live connected-peer count.
-    let liveSyncPeerCount: number | null = null;
+    // Fail closed until the durable pairing registry is available. Offline
+    // paired devices still need their CRR history, so live connections alone
+    // are never sufficient evidence that compaction is safe.
+    let registeredSyncPeerCount: number | null = null;
     let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
     const db = await measureProjectInitStep("db_open", () =>
       openKvDb(adePaths.dbPath, logger, {
-        hasSyncPeers: () => liveSyncPeerCount !== 0,
+        hasSyncPeers: () => registeredSyncPeerCount !== 0,
       }),
     );
     const keybindingsService = createKeybindingsService({ db });
@@ -3661,7 +3662,7 @@ app.whenReady().then(async () => {
           projectScaffoldService.listMyGitHubRepos(input),
       },
       onStatusChanged: (snapshot) => {
-        liveSyncPeerCount = snapshot.connectedPeers.length;
+        registeredSyncPeerCount = syncServiceRef?.getRegisteredPeerCount() ?? null;
         const normalizedProjectRoot = normalizeProjectRoot(projectRoot);
         if (mobileSyncSelectedRoot == null && snapshot.connectedPeers.length > 0) {
           mobileSyncSelectedRoot = normalizedProjectRoot;
@@ -3699,6 +3700,7 @@ app.whenReady().then(async () => {
       },
     });
     syncServiceRef = syncService;
+    registeredSyncPeerCount = syncService.getRegisteredPeerCount();
     scheduleBackgroundProjectTask(
       "sync.initialize",
       () => measureProjectInitStep("sync.initialize", () => syncService.initialize()),
