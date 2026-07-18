@@ -183,7 +183,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
   analytics: ["setEnabled", "flush"],
-  storage: ["cleanup"],
+  storage: ["cleanup", "runMaintenanceNow"],
   search: ["rebuildIndex"],
   project_secret: ["exportEnv"],
 };
@@ -676,7 +676,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "stop",
   ],
   analytics: ["capture", "getStatus", "setEnabled", "flush"],
-  storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot"],
+  storage: ["cleanup", "cleanupPreview", "compressNow", "getSnapshot", "runMaintenanceNow"],
   budget: ["checkBudget", "getConfig", "getCumulativeUsage", "recordUsage", "updateConfig"],
   update: ["checkForUpdates", "dismissInstalledNotice", "getSnapshot", "quitAndInstall"],
   file: [
@@ -3279,6 +3279,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   return {
     getSnapshot: (args?: { forceRefresh?: boolean }) => storageInsightsService.getSnapshot(args),
     compressNow: () => storageInsightsService.compressNow(),
+    runMaintenanceNow: () => storageInsightsService.runMaintenanceNow(),
     cleanupPreview: (args?: { targets?: Parameters<typeof storageInsightsService.cleanupPreview>[0] }) =>
       storageInsightsService.cleanupPreview(args?.targets ?? []),
     cleanup: (args?: {

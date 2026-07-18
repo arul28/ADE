@@ -8,10 +8,15 @@ import { constrainSqliteMaxPages } from "../../../test/faultInjection";
 import {
   classifySqliteOpenError,
   openKvDb,
+  openReadonlyDatabase,
   rebuildTableInTransaction,
   recoverInterruptedTableRebuilds,
   type TableRebuildPlan,
 } from "./kvDb";
+import {
+  PR_SNAPSHOT_RETENTION_DAYS,
+  REVIEW_ARTIFACT_RETENTION_DAYS,
+} from "./dbMaintenanceApi";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as {
@@ -384,5 +389,246 @@ describe("kvDb migration backup", () => {
     expect(classifySqliteOpenError(new Error("SQLITE_FULL: database or disk is full"))).toBe("disk_full");
     expect(classifySqliteOpenError(new Error("database disk image is malformed"))).toBe("db_integrity");
     expect(classifySqliteOpenError(new Error("surprise"))).toBe("unknown");
+  });
+});
+
+describe("kvDb storage maintenance", () => {
+  it("switches a delete-journal database to WAL with NORMAL synchronous writes", async () => {
+    const dbPath = makeDbPath();
+    const raw = new DatabaseSync(dbPath);
+    raw.exec("pragma journal_mode = delete; create table seed(id integer primary key, value text)");
+    raw.close();
+
+    const readonly = openReadonlyDatabase(dbPath);
+    expect((readonly.prepare("pragma journal_mode").get() as { journal_mode: string }).journal_mode).toBe("delete");
+    readonly.close();
+
+    const db = await openKvDb(dbPath, createLogger());
+    closeLater(db);
+    expect(db.get<{ journal_mode: string }>("pragma journal_mode")?.journal_mode).toBe("wal");
+    expect(db.get<{ synchronous: number }>("pragma synchronous")?.synchronous).toBe(1);
+  });
+
+  it("caps never-dispatched ingress rows without deleting dispatched or failed history", async () => {
+    const dbPath = makeDbPath();
+    const db = await openKvDb(dbPath, createLogger());
+    closeLater(db);
+    db.run(`
+      create table automation_ingress_events (
+        id text primary key,
+        project_id text not null,
+        status text not null,
+        received_at text not null
+      )
+    `);
+
+    const receivedAt = new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString();
+    db.run(
+      "insert into automation_ingress_events(id, project_id, status, received_at) values (?, ?, ?, ?)",
+      ["dispatched-oldest", "project-1", "dispatched", receivedAt],
+    );
+    db.run(
+      "insert into automation_ingress_events(id, project_id, status, received_at) values (?, ?, ?, ?)",
+      ["failed-oldest", "project-1", "failed", receivedAt],
+    );
+    db.run("begin immediate");
+    for (let index = 0; index < 2_001; index += 1) {
+      db.run(
+        "insert into automation_ingress_events(id, project_id, status, received_at) values (?, ?, ?, ?)",
+        [`ignored-${index}`, "project-1", "ignored", receivedAt],
+      );
+    }
+    db.run("commit");
+
+    expect(db.maintenance?.pruneIngressEvents()).toEqual({
+      itemsAffected: 1,
+      bytesReclaimed: 0,
+      skippedReason: null,
+    });
+    expect(db.get<{ count: number }>(
+      "select count(*) as count from automation_ingress_events where status = 'ignored'",
+    )?.count).toBe(2_000);
+    expect(db.get<{ count: number }>(
+      "select count(*) as count from automation_ingress_events where id = 'dispatched-oldest'",
+    )?.count).toBe(1);
+    expect(db.get<{ count: number }>(
+      "select count(*) as count from automation_ingress_events where id = 'failed-oldest'",
+    )?.count).toBe(1);
+  });
+
+  it("applies the shared review-artifact and PR-snapshot retention windows", async () => {
+    const db = await openKvDb(makeDbPath(), createLogger());
+    closeLater(db);
+    db.run("pragma foreign_keys = off");
+    const now = Date.now();
+    const reviewOld = new Date(now - (REVIEW_ARTIFACT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1_000).toISOString();
+    const reviewRecent = new Date(now - (REVIEW_ARTIFACT_RETENTION_DAYS - 1) * 24 * 60 * 60 * 1_000).toISOString();
+    const prOld = new Date(now - (PR_SNAPSHOT_RETENTION_DAYS + 1) * 24 * 60 * 60 * 1_000).toISOString();
+    const prRecent = new Date(now - (PR_SNAPSHOT_RETENTION_DAYS - 1) * 24 * 60 * 60 * 1_000).toISOString();
+    db.run(
+      `insert into review_run_artifacts(id, run_id, artifact_type, title, mime_type, created_at)
+       values ('review-old', 'missing-run', 'summary', 'Old', 'text/plain', ?),
+              ('review-recent', 'missing-run', 'summary', 'Recent', 'text/plain', ?)`,
+      [reviewOld, reviewRecent],
+    );
+    db.run(
+      `insert into pull_request_snapshots(pr_id, updated_at)
+       values ('pr-old', ?), ('pr-recent', ?)`,
+      [prOld, prRecent],
+    );
+
+    expect(db.maintenance?.pruneReviewArtifacts().itemsAffected).toBe(1);
+    expect(db.maintenance?.prunePrSnapshots().itemsAffected).toBe(1);
+    expect(db.all<{ id: string }>("select id from review_run_artifacts order by id")).toEqual([{ id: "review-recent" }]);
+    expect(db.all<{ pr_id: string }>("select pr_id from pull_request_snapshots order by pr_id")).toEqual([{ pr_id: "pr-recent" }]);
+  });
+
+  it("reclaims a fragmented file, activates incremental auto-vacuum, and skips a healthy file", async () => {
+    const dbPath = makeDbPath();
+    const logs: LogEntry[] = [];
+    const db = await openKvDb(dbPath, createLogger(logs));
+    closeLater(db);
+    db.run("create table maintenance_fragmentation(id integer primary key, payload text not null)");
+    db.run("begin immediate");
+    for (let index = 0; index < 2_000; index += 1) {
+      db.run(
+        "insert into maintenance_fragmentation(id, payload) values (?, ?)",
+        [index, `${index}-${"x".repeat(4_000)}`],
+      );
+    }
+    db.run("commit");
+    db.flushNow();
+    db.run("delete from maintenance_fragmentation");
+    db.flushNow();
+
+    const beforeBytes = fs.statSync(dbPath).size;
+    const pageCount = Number(db.get<{ page_count: number }>("pragma page_count")?.page_count ?? 0);
+    const freePages = Number(db.get<{ freelist_count: number }>("pragma freelist_count")?.freelist_count ?? 0);
+    expect(freePages / pageCount).toBeGreaterThan(0.2);
+
+    const result = db.maintenance?.vacuumIfFragmented(0.2);
+    expect(result?.skippedReason).toBeNull();
+    expect(result?.itemsAffected).toBeGreaterThan(0);
+    expect(result?.bytesReclaimed).toBeGreaterThan(0);
+    expect(fs.statSync(dbPath).size).toBeLessThan(beforeBytes);
+    expect(db.get<{ auto_vacuum: number }>("pragma auto_vacuum")?.auto_vacuum).toBe(2);
+
+    // The first fragmented pass ran a one-time full VACUUM.
+    const vacuumModes = () => logs
+      .filter((entry) => entry.event === "db.maintenance_vacuum")
+      .map((entry) => entry.fields.mode);
+    expect(vacuumModes().at(-1)).toBe("full");
+
+    // Re-fragment above the threshold. With incremental auto-vacuum now active,
+    // a second fragmented pass must use the bounded incremental path, never a
+    // second blocking full VACUUM.
+    db.run("begin immediate");
+    for (let index = 0; index < 2_000; index += 1) {
+      db.run(
+        "insert into maintenance_fragmentation(id, payload) values (?, ?)",
+        [index, `${index}-${"z".repeat(4_000)}`],
+      );
+    }
+    db.run("commit");
+    db.flushNow();
+    db.run("delete from maintenance_fragmentation");
+    db.flushNow();
+    const refragPages = Number(db.get<{ freelist_count: number }>("pragma freelist_count")?.freelist_count ?? 0);
+    const refragTotal = Number(db.get<{ page_count: number }>("pragma page_count")?.page_count ?? 0);
+    expect(refragPages / refragTotal).toBeGreaterThan(0.2);
+    const secondFragmented = db.maintenance?.vacuumIfFragmented(0.2);
+    expect(secondFragmented?.skippedReason).toBeNull();
+    expect(secondFragmented?.itemsAffected).toBeGreaterThan(0);
+    expect(vacuumModes().at(-1)).toBe("incremental");
+    expect(vacuumModes().filter((mode) => mode === "full")).toHaveLength(1);
+
+    db.run("begin immediate");
+    for (let index = 0; index < 256; index += 1) {
+      db.run(
+        "insert into maintenance_fragmentation(id, payload) values (?, ?)",
+        [index, `${index}-${"y".repeat(4_000)}`],
+      );
+    }
+    db.run("commit");
+    db.run("delete from maintenance_fragmentation");
+    const incrementalFreePages = Number(db.get<{ freelist_count: number }>("pragma freelist_count")?.freelist_count ?? 0);
+    expect(incrementalFreePages).toBeGreaterThan(0);
+    const incrementalResult = db.maintenance?.vacuumIfFragmented(1);
+    expect(incrementalResult?.skippedReason).toBeNull();
+    expect(incrementalResult?.itemsAffected).toBeGreaterThan(0);
+
+    const healthyPath = makeDbPath();
+    const healthy = await openKvDb(healthyPath, createLogger());
+    closeLater(healthy);
+    const healthyResult = healthy.maintenance?.vacuumIfFragmented(0.9);
+    expect(healthyResult).toMatchObject({
+      itemsAffected: 0,
+      skippedReason: "below_threshold",
+    });
+    expect(healthy.get<{ auto_vacuum: number }>("pragma auto_vacuum")?.auto_vacuum).toBe(0);
+    expect(healthy.maintenance?.vacuumIfFragmented(Number.NaN)).toEqual({
+      itemsAffected: 0,
+      bytesReclaimed: 0,
+      skippedReason: "unsupported",
+    });
+  });
+
+  it("gates CRR tombstone compaction on peer state", async () => {
+    const pairedPath = makeDbPath();
+    let hasSyncPeers = true;
+    const paired = await openKvDb(pairedPath, createLogger(), { hasSyncPeers: () => hasSyncPeers });
+    closeLater(paired);
+    expect(paired.maintenance?.compactCrsqlTombstones()).toEqual({
+      itemsAffected: 0,
+      bytesReclaimed: 0,
+      skippedReason: "has_peers",
+    });
+    hasSyncPeers = false;
+    expect(paired.maintenance?.compactCrsqlTombstones()?.skippedReason).not.toBe("has_peers");
+  });
+
+  it.skipIf(process.platform === "linux")("compacts CRR tombstones with no peers and preserves operations byte-for-byte", async () => {
+    const dbPath = makeDbPath();
+    const db = await openKvDb(dbPath, createLogger(), { hasSyncPeers: () => false });
+    closeLater(db);
+    expect(db.sync.isAvailable?.(), "cr-sqlite must be available for the compaction contract test").toBe(true);
+
+    const now = "2026-07-17T12:00:00.000Z";
+    db.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-maintenance", "/repo/maintenance", "Maintenance", "main", now, now],
+    );
+    db.run("begin immediate");
+    for (let index = 0; index < 250; index += 1) {
+      db.run(
+        `insert into operations(
+          id, project_id, lane_id, kind, started_at, ended_at, status,
+          pre_head_sha, post_head_sha, metadata_json
+        ) values (?, 'project-maintenance', null, 'test', ?, ?, 'succeeded', null, null, ?)`,
+        [`operation-${index}`, now, now, JSON.stringify({ index, payload: "x".repeat(1_000) })],
+      );
+    }
+    db.run("commit");
+    db.run("delete from operations where id not in (select id from operations order by id desc limit 10)");
+
+    const before = db.all<Record<string, unknown>>("select * from operations order by id");
+    const shadowRowsBefore = Number(db.get<{ count: number }>(
+      `select
+         (select count(*) from operations__crsql_pks)
+         + (select count(*) from operations__crsql_clock) as count`,
+    )?.count ?? 0);
+    expect(shadowRowsBefore).toBeGreaterThan(before.length);
+
+    const result = db.maintenance?.compactCrsqlTombstones();
+    expect(result?.skippedReason).toBeNull();
+    expect(result?.itemsAffected).toBeGreaterThan(0);
+    expect(db.all<Record<string, unknown>>("select * from operations order by id")).toEqual(before);
+    const shadowRowsAfter = Number(db.get<{ count: number }>(
+      `select
+         (select count(*) from operations__crsql_pks)
+         + (select count(*) from operations__crsql_clock) as count`,
+    )?.count ?? 0);
+    expect(shadowRowsAfter).toBeLessThan(shadowRowsBefore);
   });
 });

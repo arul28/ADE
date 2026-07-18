@@ -172,6 +172,35 @@ async function shutdownRuntime(socketPath: string): Promise<void> {
 }
 
 describe("local runtime connection pool", () => {
+  it("aggregates slow actions into a bounded 24h runtime-health window", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never) as unknown as {
+      recordSlowAction: (atMs: number, totalMs: number) => void;
+      getRuntimeHealth: (nowMs?: number) => {
+        slowActions24h: number;
+        slowActionP95Ms: number | null;
+        sampledAt: string;
+      };
+      dispose: () => void;
+    };
+    const now = Date.parse("2026-07-17T12:00:00.000Z");
+
+    // An empty window reports zero slow actions and a null p95.
+    expect(pool.getRuntimeHealth(now)).toMatchObject({ slowActions24h: 0, slowActionP95Ms: null });
+
+    // One sample 25h old (out of window) plus 100 in-window samples 501..600 ms.
+    pool.recordSlowAction(now - 25 * 60 * 60_000, 9_000);
+    for (let index = 0; index < 100; index += 1) {
+      pool.recordSlowAction(now - index * 60_000, 501 + index);
+    }
+    const health = pool.getRuntimeHealth(now);
+    expect(health.slowActions24h).toBe(100); // the 25h-old sample is pruned
+    // Nearest-rank p95 of 501..600 → index ceil(0.95*100)-1 = 94 → 595.
+    expect(health.slowActionP95Ms).toBe(595);
+    expect(health.sampledAt).toBe(new Date(now).toISOString());
+    pool.dispose();
+  });
+
   it("compares ADE runtime versions without requiring exact tag formatting", () => {
     expect(compareRuntimeVersionStrings("v1.2.14", "1.2.13")).toBe(1);
     expect(compareRuntimeVersionStrings("1.2.12", "v1.2.13")).toBe(-1);

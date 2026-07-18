@@ -3335,8 +3335,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         ptyProcessCount: 0,
         ptyCpuPercent: 0,
         ptyMemoryMB: 0,
-        freeMemoryMB: null,
-        totalMemoryMB: null,
+        freeMemoryMB: 8_000,
+        totalMemoryMB: 16_000,
+        roleUsage: [
+          { role: "ade-runtime", processCount: 1, cpuPercent: 2, memoryMB: 280 },
+        ],
+      }),
+      getRuntimeHealth: resolved({
+        slowActions24h: 0,
+        slowActionP95Ms: null,
+        sampledAt: now,
       }),
       getLatestRelease: resolved({
         version: "1.0.0",
@@ -3412,10 +3420,51 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         categories: [],
         scanDurationMs: 0,
         truncated: false,
+        extras: {
+          dbBreakdown: [
+            { table: "automation_ingress_events", label: "Webhook history", bytes: 12 * 1024 ** 2, category: "webhooks", action: "prunable" },
+            { table: "operations", label: "Sync bookkeeping", bytes: 6 * 1024 ** 2, category: "sync_bookkeeping", action: "compactable" },
+            { table: "core", label: "Core data", bytes: 8 * 1024 ** 2, category: "core", action: null },
+          ],
+          maintenance: {
+            lastRun: {
+              startedAt: now,
+              finishedAt: now,
+              trigger: "daily",
+              actions: [],
+              reclaimedBytes: 0,
+              dbSizeBytes: 26 * 1024 ** 2,
+            },
+            journal: [
+              {
+                startedAt: now,
+                finishedAt: now,
+                trigger: "daily",
+                actions: [],
+                reclaimedBytes: 0,
+                dbSizeBytes: 26 * 1024 ** 2,
+              },
+            ],
+          },
+          safeReclaimableBytes: 18 * 1024 ** 2,
+          policyChips: {
+            chats_history: "Compressed after 14 days",
+            build_release: "Auto-cleans · 7 days",
+            caches: "Rebuilt on demand",
+          },
+        },
       }),
       cleanupPreview: resolvedArg({ items: [], totalBytes: 0, blocked: [] }),
       compressNow: resolvedArg({ filesCompressed: 0, savedBytes: 0 }),
       cleanup: resolvedArg({ removed: [], failed: [], freedBytes: 0 }),
+      runMaintenanceNow: resolved({
+        startedAt: now,
+        finishedAt: now,
+        trigger: "manual" as const,
+        actions: [],
+        reclaimedBytes: 18 * 1024 ** 2,
+        dbSizeBytes: 20 * 1024 ** 2,
+      }),
     },
     project: {
       openRepo: resolved(MOCK_PROJECT),

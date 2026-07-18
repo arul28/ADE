@@ -1738,6 +1738,10 @@ export function createSyncService(args: SyncServiceArgs) {
       return deviceRegistryService;
     },
 
+    getRegisteredPeerCount(): number | null {
+      return pairingStore.countPairingRecords();
+    },
+
     async dispose(): Promise<void> {
       disposed = true;
       syncPeerService.disconnect();

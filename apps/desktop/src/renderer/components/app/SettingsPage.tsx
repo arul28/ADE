@@ -54,6 +54,7 @@ const TAB_ALIASES: Record<string, SectionId> = {
 
 const HASH_TARGET_SECTIONS: Partial<Record<string, SectionId>> = {
   "ai-providers": "ai",
+  diagnostics: "storage",
   secrets: "secrets",
   "chat-launch-clipboard": "general",
   "agent-completion-sound": "general",

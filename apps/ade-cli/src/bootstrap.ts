@@ -7,6 +7,7 @@ import * as nodePty from "node-pty";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
 import {
   clearLastFailure,
   recordLastFailure,
@@ -504,9 +505,16 @@ export async function createAdeRuntime(args: {
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
   });
+  let syncService: ReturnType<typeof createSyncService> | null = null;
+  const hasSyncPeers = createRegisteredSyncPeerGate({
+    syncEnabled: resolvedArgs.syncRuntime?.enabled === true,
+    getSyncService: () => syncService,
+  });
   let db: AdeDb;
   try {
-    db = await openKvDb(paths.dbPath, logger);
+    db = await openKvDb(paths.dbPath, logger, {
+      hasSyncPeers,
+    });
   } catch (error) {
     const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error));
     const detail = error instanceof Error ? error.message : String(error);
@@ -1507,7 +1515,14 @@ export async function createAdeRuntime(args: {
     diskPressure: diskPressureMonitor,
     isPathActive: (filePath) =>
       Boolean(agentChatService?.isTranscriptPathActive(filePath))
-      || ptyService.isTranscriptPathActive(filePath),
+      || ptyService.isTranscriptPathActive(filePath)
+      || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
+    projectId,
+    // One bounded `ade_feature_used` per completed maintenance run at the daemon
+    // boundary (deduped to 20 h by the service).
+    captureAnalytics: (input) => {
+      productAnalyticsService.capture(input);
+    },
   });
   const budgetCapService = createBudgetCapService({
     db,
@@ -1635,15 +1650,18 @@ export async function createAdeRuntime(args: {
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,
       syncTunnelClientService,
-      onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
+      onStatusChanged: (snapshot) => {
+        pushEvent("runtime", { type: "sync-status", snapshot });
+      },
     });
     syncServiceForPtyEvents = syncService;
   }
 
   if (syncService) {
+    const currentSyncService = syncService;
     const initializeSyncService = async () => {
       try {
-        await syncService.initialize();
+        await currentSyncService.initialize();
       } catch (error) {
         logger.warn("sync.runtime_initialize_failed", {
           error: error instanceof Error ? error.message : String(error),

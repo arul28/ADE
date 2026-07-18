@@ -3,6 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type {
+  DbBreakdownEntry,
+  MaintenanceAction,
+  MaintenanceActionKind,
+  MaintenanceRunReport,
+  MaintenanceTrigger,
   StorageCategoryId,
   StorageCategorySnapshot,
   StorageCleanupPreview,
@@ -12,7 +17,12 @@ import type {
   StorageItem,
   StorageSafety,
   StorageSnapshot,
+  StorageSnapshotExtras,
 } from "../../../shared/types/storage";
+import type {
+  ProductAnalyticsCapture,
+  ProductAnalyticsCaptureResult,
+} from "../../../shared/types/productAnalytics";
 import { runGit } from "../git/git";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -26,6 +36,9 @@ import {
   type CompressionRoots,
   type CompressionSweepSummary,
 } from "./historyCompression";
+import { deriveSyncBookkeepingAction, mapDbBreakdown } from "./storageDbBreakdown";
+import { appendMaintenanceJournal, readMaintenanceJournal } from "./storageMaintenanceJournal";
+import { deriveCategoryPolicyChips } from "./storageLedger";
 import { readVolumeSpace } from "./volume";
 
 const DEFAULT_CACHE_TTL_MS = 5 * 60_000;
@@ -38,6 +51,17 @@ const COMPRESSIBLE_AGE_MS = COMPRESSION_MIN_AGE_MS;
 const RECOVERY_BACKUP_PATTERN = /(?:\.pre-crsqlite-w1\.bak|\.recovery-.*\.bak)$/;
 const HISTORY_SWEEP_START_DELAY_MS = 10 * 60_000;
 const HISTORY_SWEEP_INTERVAL_MS = 24 * 60 * 60_000;
+const MAINTENANCE_JOURNAL_FILENAME = "storage-doctor-journal.json";
+// One completed maintenance run per project per 20 h reaches PostHog; the
+// storage doctor runs daily, so the dedupe interval collapses repeat runs
+// (e.g. daily + a manual "Clean up now") into a single analytics event.
+const MAINTENANCE_ANALYTICS_MIN_INTERVAL_MS = 20 * 60 * 60_000;
+const VACUUM_FREELIST_THRESHOLD = 0.2;
+
+/** Injected product-analytics capture. Structurally matches the shared service. */
+export type StorageDoctorAnalyticsCapture = (
+  input: ProductAnalyticsCapture,
+) => ProductAnalyticsCaptureResult | void;
 
 type LaneRow = {
   id: string;
@@ -80,6 +104,15 @@ export type StorageInsightsServiceOptions = {
   scanBudgetMs?: number;
   diskPressure?: DiskPressureMonitor | null;
   isPathActive?: (path: string) => boolean;
+  /** Salted before send; used only to scope the maintenance analytics dedupe. */
+  projectId?: string | null;
+  /** Emits the per-run `ade_feature_used` maintenance event at the daemon boundary. */
+  captureAnalytics?: StorageDoctorAnalyticsCapture | null;
+  /**
+   * Root scanned for `ade-*` build/release staging directories. Defaults to
+   * `os.tmpdir()`; overridable so tests never touch the real system temp dir.
+   */
+  stagingTmpDir?: string;
 };
 
 export function isObsoleteRecoveryBackup(
@@ -245,6 +278,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
   const cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
   const scanEntryLimit = options.scanEntryLimit ?? DEFAULT_SCAN_ENTRY_LIMIT;
   const scanBudgetMs = options.scanBudgetMs ?? DEFAULT_SCAN_BUDGET_MS;
+  const isPathActive = options.isPathActive ?? (() => true);
   let cachedSnapshot: { value: StorageSnapshot; createdAt: number } | null = null;
   const compressionRoots: CompressionRoots = [
     { path: layout.chatTranscriptsDir, kind: "chat_transcript" },
@@ -256,11 +290,30 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     logger: options.logger,
     diskPressure: options.diskPressure,
     // Without the runtime's in-memory ownership signal, compression is unsafe.
-    isPathActive: options.isPathActive ?? (() => true),
+    isPathActive,
   });
+  // `.ade/tmp` is a project-relative release-staging root (distinct from the
+  // `.ade/cache/tmp` layout dir) written by the /release skill and never cleaned
+  // by app code. `stagingTmpRoot` holds the `ade-*` system-temp staging dirs.
+  const adeTmpDir = path.join(layout.adeDir, "tmp");
+  const stagingTmpRoot = options.stagingTmpDir ? path.resolve(options.stagingTmpDir) : os.tmpdir();
+  const iosDerivedDataDir = path.join(layout.cacheDir, "ios-simulator", "DerivedData");
+  const journalPath = path.join(layout.cacheDir, MAINTENANCE_JOURNAL_FILENAME);
   let sweepFlight: Promise<CompressionSweepSummary> | null = null;
+  let maintenanceFlight: Promise<MaintenanceRunReport> | null = null;
   let firstSweepTimer: ReturnType<typeof setTimeout> | null = null;
   let dailySweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  const overlapsIosDerivedData = (targetPath: string): boolean =>
+    isSameOrWithin(targetPath, iosDerivedDataDir) || isSameOrWithin(iosDerivedDataDir, targetPath);
+
+  const iosDerivedDataBlockReason = (lastModifiedMs: number | null): string | null => {
+    if (isPathActive(iosDerivedDataDir)) return "An iOS build is currently using this data.";
+    if (lastModifiedMs != null && Date.now() - lastModifiedMs <= STALE_AGE_MS) {
+      return "This iOS build data was used recently and may still be in use.";
+    }
+    return null;
+  };
 
   const runCompressionSweep = (opts?: { maxFiles?: number }): Promise<CompressionSweepSummary> => {
     if (sweepFlight) return sweepFlight;
@@ -271,27 +324,30 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return sweepFlight;
   };
 
-  if (options.isPathActive && options.diskPressure) {
-    firstSweepTimer = setTimeout(() => {
-      firstSweepTimer = null;
-      void runCompressionSweep().catch((error) => {
-        options.logger.warn("storage.history_sweep_failed", {
-          projectRoot,
-          error: error instanceof Error ? error.message : String(error),
-        });
+  const statSizeOrNull = (targetPath: string): number | null => {
+    try {
+      return fs.statSync(targetPath).size;
+    } catch {
+      return null;
+    }
+  };
+
+  const computeDbBreakdown = (syncBookkeepingAction: DbBreakdownEntry["action"]): DbBreakdownEntry[] => {
+    // dbstat is a compile-time-optional virtual table; degrade to no breakdown
+    // (empty list) when the SQLite build lacks it rather than failing the scan.
+    try {
+      const rows = options.db.all<{ name: string; bytes: number }>(
+        "select name, sum(pgsize) as bytes from dbstat group by name",
+      );
+      return mapDbBreakdown(rows, { syncBookkeeping: syncBookkeepingAction });
+    } catch (error) {
+      options.logger.debug("storage.db_breakdown_unavailable", {
+        projectRoot,
+        error: error instanceof Error ? error.message : String(error),
       });
-      dailySweepTimer = setInterval(() => {
-        void runCompressionSweep().catch((error) => {
-          options.logger.warn("storage.history_sweep_failed", {
-            projectRoot,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }, HISTORY_SWEEP_INTERVAL_MS);
-      dailySweepTimer.unref?.();
-    }, HISTORY_SWEEP_START_DELAY_MS);
-    firstSweepTimer.unref?.();
-  }
+      return [];
+    }
+  };
 
   const listLaneRows = (): LaneRow[] => options.db.all<LaneRow>(
     "select id, name, worktree_path, archived_at from lanes",
@@ -420,16 +476,18 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       add("lanes_worktrees", entry?.item);
     }
 
-    const tempNames = await readdirOrEmpty(os.tmpdir());
+    const tempNames = await readdirOrEmpty(stagingTmpRoot);
     for (const name of tempNames.filter((value) => /^ade-/.test(value))) {
-      const tempPath = path.join(os.tmpdir(), name);
+      const tempPath = path.join(stagingTmpRoot, name);
       if (path.resolve(tempPath) === projectRoot || path.resolve(tempPath) === adeHome) continue;
       const stat = await lstatOrNull(tempPath);
-      if (!stat) continue;
+      // Skip symlinked staging dirs: the reaper's collectors refuse them, so
+      // showing one here would be an item cleanup could never act on.
+      if (!stat || stat.isSymbolicLink()) continue;
       const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
       const entry = await makeItem({
         category: "build_release",
-        base: os.tmpdir(),
+        base: stagingTmpRoot,
         path: tempPath,
         label: "Release and build staging",
         safety: stale ? "safe_to_remove" : "review_first",
@@ -438,16 +496,42 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       });
       add("build_release", entry?.item);
     }
-    const derivedData = path.join(layout.cacheDir, "ios-simulator", "DerivedData");
-    add("build_release", (await makeItem({
+    // `.ade/tmp` direct children: /release-skill staging that nothing else reaps.
+    const adeTmpNames = await readdirOrEmpty(adeTmpDir);
+    for (const name of adeTmpNames) {
+      const adeTmpPath = path.join(adeTmpDir, name);
+      const stat = await lstatOrNull(adeTmpPath);
+      if (!stat || stat.isSymbolicLink()) continue;
+      const stale = Date.now() - stat.mtimeMs > STALE_AGE_MS;
+      const entry = await makeItem({
+        category: "build_release",
+        base: adeTmpDir,
+        path: adeTmpPath,
+        label: "Release staging",
+        safety: stale ? "safe_to_remove" : "review_first",
+        state,
+        detail: stale ? "Old release staging is no longer in use" : "A current release may still be using these files",
+      });
+      add("build_release", entry?.item);
+    }
+    const derivedData = iosDerivedDataDir;
+    const derivedDataEntry = await makeItem({
       category: "build_release",
       base: layout.adeDir,
       path: derivedData,
       label: "iOS build data",
-      safety: "safe_to_remove",
+      safety: "review_first",
       state,
-      detail: "Recreated the next time you build",
-    }))?.item);
+    });
+    if (derivedDataEntry) {
+      const lastModifiedMs = derivedDataEntry.item.lastModifiedAt
+        ? Date.parse(derivedDataEntry.item.lastModifiedAt)
+        : null;
+      const blockedReason = iosDerivedDataBlockReason(lastModifiedMs);
+      derivedDataEntry.item.safety = blockedReason ? "review_first" : "safe_to_remove";
+      derivedDataEntry.item.detail = blockedReason ?? "Recreated the next time you build";
+      add("build_release", derivedDataEntry.item);
+    }
 
     const cacheNames = await readdirOrEmpty(layout.cacheDir);
     for (const name of cacheNames) {
@@ -534,6 +618,45 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       buildCategory("recovery_backups", categoryItems.get("recovery_backups") ?? [], "review_first", state),
       buildCategory("database", categoryItems.get("database") ?? [], "protected", state),
     ];
+    const journal = readMaintenanceJournal(journalPath);
+    const dbBreakdown = computeDbBreakdown(deriveSyncBookkeepingAction(journal));
+    // Estimate only work the same backend validator will authorize. Raw
+    // compressible bytes are not predicted savings, and dbstat table totals do
+    // not identify the expired rows (or the bytes a later vacuum can return),
+    // so neither is defensible enough for the primary cleanup promise.
+    const candidateTargets = new Map<string, StorageCleanupTarget>();
+    for (const category of categories) {
+      if (category.id !== "build_release" && category.id !== "caches") continue;
+      for (const item of category.items) {
+        if (item.safety !== "safe_to_remove") continue;
+        const itemPath = path.resolve(item.path);
+        if (
+          (isDirectChild(stagingTmpRoot, itemPath) && /^ade-/.test(path.basename(itemPath)))
+          || isDirectChild(adeTmpDir, itemPath)
+        ) {
+          candidateTargets.set(itemPath, { kind: "stale_tmp_staging", path: itemPath });
+        } else if (isWithin(layout.cacheDir, itemPath)) {
+          candidateTargets.set(itemPath, { kind: "rebuildable_cache", path: itemPath });
+        }
+      }
+    }
+    // Prefer an accepted ancestor over descendants so nested cache entries can
+    // never inflate the estimate by counting the same bytes twice.
+    const acceptedPaths: string[] = [];
+    let safeReclaimableBytes = 0;
+    for (const target of [...candidateTargets.values()].sort((left, right) => left.path.length - right.path.length)) {
+      if (acceptedPaths.some((acceptedPath) => isSameOrWithin(acceptedPath, target.path))) continue;
+      const checked = await validateTarget(target);
+      if (!checked.valid) continue;
+      acceptedPaths.push(checked.valid.path);
+      safeReclaimableBytes += checked.valid.bytes;
+    }
+    const extras: StorageSnapshotExtras = {
+      dbBreakdown,
+      maintenance: { lastRun: journal[0] ?? null, journal },
+      safeReclaimableBytes,
+      policyChips: deriveCategoryPolicyChips(),
+    };
     const snapshot: StorageSnapshot = {
       generatedAt: new Date().toISOString(),
       projectRoot,
@@ -542,6 +665,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       categories,
       scanDurationMs: Date.now() - startedAt,
       truncated: state.truncated,
+      extras,
     };
     if (state.truncated) {
       options.logger.warn("storage.scan_truncated", { projectRoot, entries: state.entries, entryLimit: state.entryLimit, budgetMs: state.budgetMs });
@@ -576,8 +700,16 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
       }
       label = lane?.name ?? path.basename(targetPath);
     } else if (target.kind === "stale_tmp_staging") {
-      if (!isDirectChild(os.tmpdir(), targetPath) || !/^ade-/.test(path.basename(targetPath))) {
+      // Two staging roots share this kind: `ade-*` dirs in the system temp root,
+      // and any direct child of the project-relative `.ade/tmp` release-staging
+      // dir. Direct-child containment is the safety boundary for both.
+      const inSystemStaging = isDirectChild(stagingTmpRoot, targetPath) && /^ade-/.test(path.basename(targetPath));
+      const inProjectStaging = isDirectChild(adeTmpDir, targetPath);
+      if (!inSystemStaging && !inProjectStaging) {
         return { valid: null, reason: "This path is not ADE staging data." };
+      }
+      if (inProjectStaging && await hasSymlinkAncestor(projectRoot, targetPath)) {
+        return { valid: null, reason: "Links cannot be used in a cleanup path." };
       }
       if (targetPath === projectRoot || targetPath === adeHome) {
         return { valid: null, reason: "Project data is protected." };
@@ -614,6 +746,15 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     }
 
     const size = await walkPath(targetPath, null);
+    if (
+      target.kind === "rebuildable_cache"
+      && overlapsIosDerivedData(targetPath)
+      && await lstatOrNull(iosDerivedDataDir)
+    ) {
+      const derivedDataSize = await walkPath(iosDerivedDataDir, null);
+      const blockedReason = iosDerivedDataBlockReason(derivedDataSize.lastModifiedMs);
+      if (blockedReason) return { valid: null, reason: blockedReason };
+    }
     const identity = [stat.dev, stat.ino, stat.size, stat.mtimeMs, size.bytes, size.lastModifiedMs ?? 0].join(":");
     return { valid: { target, path: targetPath, bytes: size.bytes, label, identity } };
   };
@@ -688,6 +829,19 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         failed.push({ path: rawPath, reason: "This item changed after the preview. Preview it again before removing it." });
         continue;
       }
+      if (
+        target.kind === "rebuildable_cache"
+        && overlapsIosDerivedData(checked.valid.path)
+        && await lstatOrNull(iosDerivedDataDir)
+      ) {
+        const blockedReason = iosDerivedDataBlockReason(
+          (await walkPath(iosDerivedDataDir, null)).lastModifiedMs,
+        );
+        if (blockedReason) {
+          failed.push({ path: rawPath, reason: blockedReason });
+          continue;
+        }
+      }
       try {
         if (target.kind === "orphaned_worktree" || target.kind === "archived_lane_worktree") {
           await removeWorktree(checked.valid.path);
@@ -720,6 +874,242 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     return { filesCompressed: result.filesCompressed, savedBytes: result.savedBytes };
   };
 
+  // Reap a set of candidate targets through the same validate/preview/cleanup
+  // pipeline the manual flow uses. Only targets the validator lets into the
+  // preview are removed, so protected/review_first/fresh items are never touched.
+  const reapTargets = async (
+    targets: StorageCleanupTarget[],
+  ): Promise<{ itemsAffected: number; bytesReclaimed: number }> => {
+    if (targets.length === 0) return { itemsAffected: 0, bytesReclaimed: 0 };
+    const preview = await cleanupPreview(targets);
+    if (preview.items.length === 0) return { itemsAffected: 0, bytesReclaimed: 0 };
+    const previewed = new Set(preview.items.map((item) => path.resolve(item.path)));
+    const removable = targets.filter((target) => previewed.has(path.resolve(target.path)));
+    const result = await cleanup(removable, { preview });
+    return { itemsAffected: result.removed.length, bytesReclaimed: result.freedBytes };
+  };
+
+  const collectSystemStaging = async (): Promise<StorageCleanupTarget[]> => {
+    const names = await readdirOrEmpty(stagingTmpRoot);
+    const targets: StorageCleanupTarget[] = [];
+    for (const name of names.filter((value) => /^ade-/.test(value))) {
+      const tempPath = path.join(stagingTmpRoot, name);
+      if (path.resolve(tempPath) === projectRoot || path.resolve(tempPath) === adeHome) continue;
+      const stat = await lstatOrNull(tempPath);
+      if (!stat || stat.isSymbolicLink()) continue;
+      if (Date.now() - stat.mtimeMs <= STALE_AGE_MS) continue;
+      targets.push({ kind: "stale_tmp_staging", path: tempPath });
+    }
+    return targets;
+  };
+
+  const collectProjectStaging = async (): Promise<StorageCleanupTarget[]> => {
+    const names = await readdirOrEmpty(adeTmpDir);
+    const targets: StorageCleanupTarget[] = [];
+    for (const name of names) {
+      const tempPath = path.join(adeTmpDir, name);
+      const stat = await lstatOrNull(tempPath);
+      if (!stat || stat.isSymbolicLink()) continue;
+      if (Date.now() - stat.mtimeMs <= STALE_AGE_MS) continue;
+      targets.push({ kind: "stale_tmp_staging", path: tempPath });
+    }
+    return targets;
+  };
+
+  const collectObsoleteBackups = async (): Promise<StorageCleanupTarget[]> => {
+    const names = await readdirOrEmpty(layout.adeDir);
+    // Stat every recovery backup so we can always spare the newest one — the
+    // ledger's keepLatest: 1 guarantee. Only strictly-older backups are reap
+    // candidates, and only when they classify obsolete.
+    const backups: Array<{ path: string; mtimeMs: number }> = [];
+    for (const name of names.filter((value) => RECOVERY_BACKUP_PATTERN.test(value))) {
+      const backupPath = path.join(layout.adeDir, name);
+      const stat = await lstatOrNull(backupPath);
+      if (!stat || !stat.isFile()) continue;
+      backups.push({ path: backupPath, mtimeMs: stat.mtimeMs });
+    }
+    if (backups.length <= 1) return [];
+    // Newest first; backups[0] is kept no matter what.
+    backups.sort((left, right) => right.mtimeMs - left.mtimeMs);
+    const targets: StorageCleanupTarget[] = [];
+    for (const backup of backups.slice(1)) {
+      if (isObsoleteRecoveryBackup(backup.path, { projectRoot, db: options.db })) {
+        targets.push({ kind: "recovery_backup", path: backup.path });
+      }
+    }
+    return targets;
+  };
+
+  const collectIosDerivedData = async (): Promise<StorageCleanupTarget[]> => {
+    const stat = await lstatOrNull(iosDerivedDataDir);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return [];
+    return [{ kind: "rebuildable_cache", path: iosDerivedDataDir }];
+  };
+
+  // Every step is independently try/caught so one failure never aborts the run.
+  const runStep = async (
+    actions: MaintenanceAction[],
+    ledgerId: string,
+    kind: MaintenanceActionKind,
+    fn: () => Promise<{ itemsAffected: number; bytesReclaimed: number; skippedReason?: string | null }>,
+  ): Promise<void> => {
+    const start = Date.now();
+    try {
+      const result = await fn();
+      actions.push({
+        ledgerId,
+        kind,
+        itemsAffected: result.itemsAffected,
+        bytesReclaimed: result.bytesReclaimed,
+        durationMs: Date.now() - start,
+        skippedReason: result.skippedReason ?? null,
+        error: null,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      actions.push({
+        ledgerId,
+        kind,
+        itemsAffected: 0,
+        bytesReclaimed: 0,
+        durationMs: Date.now() - start,
+        skippedReason: null,
+        error: message,
+      });
+      options.logger.warn("storage.maintenance_step_failed", { projectRoot, ledgerId, kind, error: message });
+    }
+  };
+
+  const runMaintenanceSweep = (trigger: MaintenanceTrigger): Promise<MaintenanceRunReport> => {
+    if (maintenanceFlight) return maintenanceFlight;
+    const start = async (): Promise<MaintenanceRunReport> => {
+      const startedAt = new Date().toISOString();
+      const actions: MaintenanceAction[] = [];
+
+      // a. Compress inactive chat/terminal history (existing safe mechanics).
+      await runStep(actions, "fs.transcripts", "compress", async () => {
+        const summary = await runCompressionSweep();
+        return { itemsAffected: summary.filesCompressed, bytesReclaimed: summary.savedBytes };
+      });
+
+      // b/c. Auto-reap safe_to_remove staging, obsolete backups, and iOS build data.
+      await runStep(actions, "fs.tmp_staging", "delete", async () => reapTargets(await collectSystemStaging()));
+      await runStep(actions, "fs.tmp", "delete", async () => reapTargets(await collectProjectStaging()));
+      await runStep(actions, "fs.recovery_backups", "delete", async () => reapTargets(await collectObsoleteBackups()));
+      await runStep(actions, "fs.ios_derived_data", "delete", async () => reapTargets(await collectIosDerivedData()));
+
+      // d. DB retention hooks. `maintenance` is attached by WS-A's kvDb; until it
+      // lands the hooks are undefined and each records an "unsupported" skip.
+      const maintenance = options.db.maintenance;
+      const runDbStep = (
+        ledgerId: string,
+        kind: MaintenanceActionKind,
+        fn: (() => { itemsAffected: number; bytesReclaimed: number; skippedReason?: string | null }) | undefined,
+      ): Promise<void> =>
+        runStep(actions, ledgerId, kind, async () => {
+          if (!fn) return { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "unsupported" };
+          const result = fn();
+          return {
+            itemsAffected: result.itemsAffected,
+            bytesReclaimed: result.bytesReclaimed,
+            skippedReason: result.skippedReason ?? null,
+          };
+        });
+      await runDbStep("db.automation_ingress_events", "prune", maintenance?.pruneIngressEvents.bind(maintenance));
+      await runDbStep("db.review_run_artifacts", "prune", maintenance?.pruneReviewArtifacts.bind(maintenance));
+      await runDbStep("db.pull_request_snapshots", "prune", maintenance?.prunePrSnapshots.bind(maintenance));
+      await runDbStep("db.operations_crsql", "compact", maintenance?.compactCrsqlTombstones.bind(maintenance));
+      await runDbStep(
+        "db.core",
+        "vacuum",
+        maintenance ? () => maintenance.vacuumIfFragmented(VACUUM_FREELIST_THRESHOLD) : undefined,
+      );
+
+      const finishedAt = new Date().toISOString();
+      const reclaimedBytes = actions.reduce((sum, action) => sum + Math.max(0, action.bytesReclaimed), 0);
+      const report: MaintenanceRunReport = {
+        startedAt,
+        finishedAt,
+        trigger,
+        actions,
+        reclaimedBytes,
+        dbSizeBytes: statSizeOrNull(layout.dbPath),
+      };
+      appendMaintenanceJournal(journalPath, report, { logger: options.logger, projectRoot });
+      cachedSnapshot = null;
+
+      const failedCount = actions.filter((action) => action.error).length;
+      const outcome = failedCount === 0 ? "completed" : failedCount >= actions.length ? "failed" : "partial";
+      const filesCompressed = actions.find((action) => action.ledgerId === "fs.transcripts")?.itemsAffected ?? 0;
+      options.logger.info("storage.maintenance_completed", {
+        projectRoot,
+        trigger,
+        outcome,
+        reclaimedBytes,
+        filesCompressed,
+        failedSteps: failedCount,
+        durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
+      });
+      try {
+        options.captureAnalytics?.({
+          event: "ade_feature_used",
+          surface: "desktop",
+          properties: {
+            feature: "storage_doctor",
+            action: "maintenance_run",
+            outcome,
+            bytes_freed: reclaimedBytes,
+            files_compressed: filesCompressed,
+          },
+          projectId: options.projectId ?? null,
+          // Local-only dedupe fingerprint (hashed before send): collapses repeat
+          // runs within 20 h into one PostHog event.
+          dedupeKey: `storage_doctor_run:${options.projectId ?? projectRoot}`,
+          minimumIntervalMs: MAINTENANCE_ANALYTICS_MIN_INTERVAL_MS,
+        });
+      } catch (error) {
+        options.logger.debug("storage.maintenance_analytics_failed", {
+          projectRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return report;
+    };
+    maintenanceFlight = start().finally(() => {
+      maintenanceFlight = null;
+    });
+    return maintenanceFlight;
+  };
+
+  const runMaintenanceNow = (): Promise<MaintenanceRunReport> => runMaintenanceSweep("manual");
+
+  // The daemon-backed fallback instance (isPathActive without diskPressure) must
+  // never schedule automatic maintenance; only the real daemon instance, which
+  // supplies both signals, arms the doctor's post-boot + daily timers.
+  if (options.isPathActive && options.diskPressure) {
+    firstSweepTimer = setTimeout(() => {
+      firstSweepTimer = null;
+      void runMaintenanceSweep("post_boot").catch((error) => {
+        options.logger.warn("storage.maintenance_failed", {
+          projectRoot,
+          trigger: "post_boot",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      dailySweepTimer = setInterval(() => {
+        void runMaintenanceSweep("daily").catch((error) => {
+          options.logger.warn("storage.maintenance_failed", {
+            projectRoot,
+            trigger: "daily",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, HISTORY_SWEEP_INTERVAL_MS);
+      dailySweepTimer.unref?.();
+    }, HISTORY_SWEEP_START_DELAY_MS);
+    firstSweepTimer.unref?.();
+  }
+
   const dispose = (): void => {
     if (firstSweepTimer) clearTimeout(firstSweepTimer);
     if (dailySweepTimer) clearInterval(dailySweepTimer);
@@ -727,5 +1117,5 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
     dailySweepTimer = null;
   };
 
-  return { getSnapshot, cleanupPreview, cleanup, compressNow, dispose };
+  return { getSnapshot, cleanupPreview, cleanup, compressNow, runMaintenanceNow, dispose };
 }

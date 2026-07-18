@@ -672,6 +672,8 @@ import type {
 } from "../shared/types";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
+  MaintenanceRunReport,
+  RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
@@ -701,6 +703,7 @@ declare global {
         ping: () => Promise<"pong">;
         getInfo: () => Promise<AppInfo>;
         getResourceUsage: () => Promise<AppResourceUsageSnapshot>;
+        getRuntimeHealth: () => Promise<RuntimeHealthSnapshot>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{
@@ -762,6 +765,7 @@ declare global {
         getPressure: () => Promise<DiskPressureSnapshot>;
         getSnapshot: (args?: { forceRefresh?: boolean }) => Promise<StorageSnapshot>;
         compressNow: () => Promise<StorageCompressionResult>;
+        runMaintenanceNow: () => Promise<MaintenanceRunReport>;
         cleanupPreview: (targets: StorageCleanupTarget[]) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],

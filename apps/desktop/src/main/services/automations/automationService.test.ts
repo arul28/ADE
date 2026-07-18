@@ -2445,3 +2445,238 @@ describe("buildLinearAutomationDispatches", () => {
     expect(dispatches.map((d) => d.triggerType)).toEqual(["linear.issue_updated"]);
   });
 });
+
+describe("automation ingress storage bounds", () => {
+  function createIngressService(
+    db: AdeDb,
+    logger = createLogger(),
+  ): ReturnType<typeof createAutomationService> {
+    return createAutomationService({
+      db: db as any,
+      logger,
+      projectId: "proj",
+      projectRoot: "/tmp",
+      laneService: {
+        list: async () => [],
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: "/tmp" }),
+        getLaneWorktreePath: () => "/tmp",
+      } as any,
+      projectConfigService: {
+        get: () => ({
+          trust: { requiresSharedTrust: false },
+          effective: { automations: [], providerMode: "guest" },
+        }),
+      } as any,
+    });
+  }
+
+  it("caps never-dispatched rows during an insert storm and preserves dispatched dedupe history", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const service = createIngressService(db);
+
+    try {
+      for (let index = 0; index < 10_000; index += 1) {
+        await service.dispatchIngressTrigger({
+          source: "github-relay",
+          eventKey: `storm-${index}`,
+          triggerType: "github.issue_opened",
+          eventName: "github.issue_opened",
+          rawPayload: { index, body: "payload that must never reach disk" },
+        });
+      }
+
+      const count = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count ?? 0);
+      expect(count).toBe(2_000);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
+      ))[0]?.count).toBe(0);
+
+      const unexpiredReplay = await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "storm-9999",
+        triggerType: "github.issue_opened",
+        rawPayload: { replay: "within-window" },
+      });
+      expect(unexpiredReplay).not.toBeNull();
+      const storedOriginal = mapExecRows(raw.exec(
+        "select id from automation_ingress_events where event_key = 'storm-9999'",
+      ));
+      expect(storedOriginal).toHaveLength(1);
+      expect(unexpiredReplay?.id).toBe(storedOriginal[0]?.id);
+
+      raw.run(
+        "update automation_ingress_events set received_at = ? where event_key = 'storm-9999'",
+        [new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString()],
+      );
+      const replayed = await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "storm-9999",
+        triggerType: "github.issue_opened",
+        rawPayload: { replay: "after-window" },
+      });
+      expect(replayed?.id).not.toBe(unexpiredReplay?.id);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
+      ))[0]?.count).toBe(0);
+
+      // Dispatched and failed-after-dispatch rows are exempt from the count cap;
+      // an equally-old ignored row beyond the newest 2,000 is not. All are
+      // within the 7-day window so only the count cap acts.
+      const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1_000).toISOString();
+      raw.run(
+        `insert into automation_ingress_events(id, project_id, source, event_key, automation_ids_json, trigger_type, status, raw_payload_json, received_at)
+         values ('keep-dispatched', 'proj', 'github-relay', 'keep-dispatched', '[]', 'github.issue_opened', 'dispatched', null, ?)`,
+        [fiveDaysAgo],
+      );
+      raw.run(
+        `insert into automation_ingress_events(id, project_id, source, event_key, automation_ids_json, trigger_type, status, raw_payload_json, received_at)
+         values ('keep-failed', 'proj', 'github-relay', 'keep-failed', '[]', 'github.issue_opened', 'failed', null, ?)`,
+        [fiveDaysAgo],
+      );
+      raw.run(
+        `insert into automation_ingress_events(id, project_id, source, event_key, automation_ids_json, trigger_type, status, raw_payload_json, received_at)
+         values ('drop-ignored', 'proj', 'github-relay', 'drop-ignored', '[]', 'github.issue_opened', 'ignored', null, ?)`,
+        [fiveDaysAgo],
+      );
+      // A fresh dispatch runs prune-on-insert.
+      await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "count-cap-trigger",
+        triggerType: "github.issue_opened",
+      });
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where event_key = 'keep-dispatched'",
+      ))[0]?.count).toBe(1);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where event_key = 'keep-failed'",
+      ))[0]?.count).toBe(1);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where event_key = 'drop-ignored'",
+      ))[0]?.count).toBe(0);
+    } finally {
+      service.dispose();
+    }
+  }, 120_000);
+
+  it("runs startup retention even when no legacy ingress payloads remain", () => {
+    const { db, raw } = createInMemoryAdeDb();
+    raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");
+    raw.run("create table pull_request_snapshots(pr_id text primary key, updated_at text not null)");
+    const oldIngress = new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString();
+    const oldReview = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
+    const oldSnapshot = new Date(Date.now() - 61 * 24 * 60 * 60 * 1_000).toISOString();
+    raw.run(
+      `insert into automation_ingress_events(
+        id, project_id, source, event_key, automation_ids_json, trigger_type,
+        status, raw_payload_json, received_at
+      ) values ('stale-ingress', 'proj', 'github-relay', 'stale-ingress', '[]', 'github.issue_opened', 'ignored', null, ?)`,
+      [oldIngress],
+    );
+    raw.run("insert into review_run_artifacts values ('stale-review', ?)", [oldReview]);
+    raw.run("insert into pull_request_snapshots values ('stale-pr', ?)", [oldSnapshot]);
+
+    const service = createIngressService(db);
+    try {
+      expect(mapExecRows(raw.exec("select id from automation_ingress_events"))).toEqual([]);
+      expect(mapExecRows(raw.exec("select id from review_run_artifacts"))).toEqual([]);
+      expect(mapExecRows(raw.exec("select pr_id from pull_request_snapshots"))).toEqual([]);
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("reclaims legacy payloads and local caches once, in bounded chunks", () => {
+    const { db, raw } = createInMemoryAdeDb();
+    raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");
+    raw.run("create table pull_request_snapshots(pr_id text primary key, updated_at text not null)");
+
+    const recent = new Date().toISOString();
+    const oldIngress = new Date(Date.now() - 8 * 24 * 60 * 60 * 1_000).toISOString();
+    const oldReview = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000).toISOString();
+    const oldSnapshot = new Date(Date.now() - 61 * 24 * 60 * 60 * 1_000).toISOString();
+    raw.run("begin");
+    const insert = raw.prepare(`
+      insert into automation_ingress_events(
+        id, project_id, source, event_key, automation_ids_json, trigger_type,
+        status, raw_payload_json, received_at
+      ) values (?, 'proj', 'github-relay', ?, '[]', 'github.issue_opened', ?, ?, ?)
+    `);
+    for (let index = 0; index < 2_205; index += 1) {
+      insert.run([
+        `legacy-${index}`,
+        `legacy-key-${index}`,
+        index < 2_202 ? "ignored" : "dispatched",
+        JSON.stringify({ index, body: "legacy payload" }),
+        index < 100 ? oldIngress : recent,
+      ]);
+    }
+    insert.free();
+    raw.run("commit");
+    raw.run("insert into review_run_artifacts values ('old-review', ?), ('new-review', ?)", [oldReview, recent]);
+    raw.run("insert into pull_request_snapshots values ('old-pr', ?), ('new-pr', ?)", [oldSnapshot, recent]);
+
+    const info = vi.fn();
+    const logger = { ...createLogger(), info } as any;
+    const first = createIngressService(db, logger);
+    try {
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
+      ))[0]?.count).toBe(0);
+      // 2,000 newest non-dispatched rows + the 3 dispatched rows (exempt from
+      // the count cap) survive; the 100 aged-out rows are pruned by age.
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count).toBe(2_003);
+      expect(mapExecRows(raw.exec("select id from review_run_artifacts order by id"))).toEqual([{ id: "new-review" }]);
+      expect(mapExecRows(raw.exec("select pr_id from pull_request_snapshots order by pr_id"))).toEqual([{ pr_id: "new-pr" }]);
+      expect(info).toHaveBeenCalledWith("automations.ingress_payload_reclaim", {
+        rowsCleared: 2_205,
+        bytesCleared: expect.any(Number),
+      });
+      expect(Number(info.mock.calls[0]?.[1]?.bytesCleared ?? 0)).toBeGreaterThan(0);
+
+      const logCount = info.mock.calls.length;
+      const second = createIngressService(db, logger);
+      second.dispose();
+      expect(info).toHaveBeenCalledTimes(logCount);
+      expect(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count).toBe(2_003);
+    } finally {
+      first.dispose();
+    }
+  });
+
+  it("survives a failure while reclaiming legacy ingress payloads", () => {
+    const { db, raw } = createInMemoryAdeDb();
+    raw.run(
+      `insert into automation_ingress_events(id, project_id, source, event_key, automation_ids_json, trigger_type, status, raw_payload_json, received_at)
+       values ('legacy-1', 'proj', 'github-relay', 'legacy-key-1', '[]', 'github.issue_opened', 'ignored', ?, ?)`,
+      [JSON.stringify({ body: "legacy" }), new Date().toISOString()],
+    );
+    const warn = vi.fn();
+    const logger = { ...createLogger(), warn } as any;
+    // Force the reclaim UPDATE to throw; every other statement runs normally.
+    const failingDb: AdeDb = {
+      ...db,
+      run: (sql: string, params?: SqlValue[]) => {
+        if (typeof sql === "string" && sql.includes("set raw_payload_json = null")) {
+          throw new Error("reclaim boom");
+        }
+        return db.run(sql, params);
+      },
+    };
+    const service = createIngressService(failingDb, logger);
+    service.dispose();
+    expect(warn).toHaveBeenCalledWith(
+      "automations.ingress_payload_reclaim_failed",
+      expect.objectContaining({ error: expect.stringContaining("reclaim boom") }),
+    );
+    // Construction still succeeded and the legacy row is left in place to retry.
+    expect(mapExecRows(raw.exec(
+      "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
+    ))[0]?.count).toBe(1);
+  });
+});

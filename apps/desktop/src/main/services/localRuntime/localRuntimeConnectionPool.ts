@@ -38,12 +38,21 @@ import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } fro
 import { readLastFailure } from "../runtime/lastFailureStore";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runtimeErrors";
+import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
+
+const SLOW_ACTION_THRESHOLD_MS = 500;
+const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
+// Ring-cap the in-memory slow-action window so a sustained slow-call storm can
+// never grow this array without bound (the very failure mode we are surfacing).
+const RUNTIME_HEALTH_MAX_SAMPLES = 5_000;
 
 type LocalRuntimeConnection = {
   client: RuntimeRpcClient;
   child: ChildProcess | null;
   socketPath: string;
 };
+
+type SlowActionSample = { at: number; totalMs: number };
 
 type RuntimeEventNotification = {
   subscriptionId: string;
@@ -691,6 +700,9 @@ export class LocalRuntimeConnectionPool {
   };
   private serviceHealthCheckedAtMs = 0;
   private serviceInstallPromise: Promise<void> | null = null;
+  // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
+  // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
+  private slowActionSamples: SlowActionSample[] = [];
 
   constructor(
     private readonly appVersion: string,
@@ -726,6 +738,37 @@ export class LocalRuntimeConnectionPool {
       typeof pid === "number" && Number.isFinite(pid) && pid > 0 && pid !== process.pid
     ));
     return Array.from(new Set(pids));
+  }
+
+  private recordSlowAction(atMs: number, totalMs: number): void {
+    this.slowActionSamples.push({ at: atMs, totalMs });
+    // Keep the window bounded on both age and count.
+    const horizon = atMs - RUNTIME_HEALTH_WINDOW_MS;
+    if (this.slowActionSamples.length > RUNTIME_HEALTH_MAX_SAMPLES || this.slowActionSamples[0]!.at < horizon) {
+      this.slowActionSamples = this.slowActionSamples.filter((sample) => sample.at >= horizon);
+      if (this.slowActionSamples.length > RUNTIME_HEALTH_MAX_SAMPLES) {
+        this.slowActionSamples = this.slowActionSamples.slice(-RUNTIME_HEALTH_MAX_SAMPLES);
+      }
+    }
+  }
+
+  getRuntimeHealth(nowMs: number = Date.now()): RuntimeHealthSnapshot {
+    const horizon = nowMs - RUNTIME_HEALTH_WINDOW_MS;
+    const recent = this.slowActionSamples.filter((sample) => sample.at >= horizon);
+    // Prune while we are here so idle pools do not retain a stale window.
+    this.slowActionSamples = recent;
+    let p95: number | null = null;
+    if (recent.length > 0) {
+      const sorted = recent.map((sample) => sample.totalMs).sort((left, right) => left - right);
+      // Nearest-rank p95: index ceil(0.95*n)-1, clamped into range.
+      const rank = Math.min(sorted.length - 1, Math.max(0, Math.ceil(0.95 * sorted.length) - 1));
+      p95 = sorted[rank]!;
+    }
+    return {
+      slowActions24h: recent.length,
+      slowActionP95Ms: p95,
+      sampledAt: new Date(nowMs).toISOString(),
+    };
   }
 
   noteServiceInstallSkipped(message: string): void {
@@ -1199,7 +1242,8 @@ export class LocalRuntimeConnectionPool {
       } finally {
         const tCall = Date.now();
         const totalMs = tCall - tStart;
-        if (totalMs > 500 || callError) {
+        if (totalMs > SLOW_ACTION_THRESHOLD_MS || callError) {
+          this.recordSlowAction(tCall, totalMs);
           this.logger.warn("local_runtime.action_slow", {
             domain: request.domain,
             action: request.action,
