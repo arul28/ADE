@@ -1,6 +1,6 @@
 import type { OpenProjectBinding, TerminalToolType } from "../../shared/types";
 
-export type HandoffLaunchJobStatus = "preparing-summary" | "forking-history" | "creating-chat" | "sending-handoff";
+export type HandoffLaunchJobStatus = "preparing-summary" | "forking-history";
 
 export type HandoffLaunchJob = {
   id: string;
@@ -35,10 +35,8 @@ export function buildHandoffLaunchJobsScopeKey(args: {
 }
 
 export function handoffLaunchStatusMessage(status: HandoffLaunchJobStatus): string {
-  if (status === "preparing-summary") return "Summarizing chat & creating handoff...";
   if (status === "forking-history") return "Forking chat history...";
-  if (status === "creating-chat") return "Creating chat...";
-  return "Sending handoff...";
+  return "Summarizing chat & creating handoff...";
 }
 
 /**

@@ -74,10 +74,8 @@ describe("handoffJobLikelyMaterialized", () => {
 });
 
 describe("handoffLaunchStatusMessage", () => {
-  it("labels each stage, including the fork-mode status", () => {
+  it("labels the brief and fork statuses", () => {
     expect(handoffLaunchStatusMessage("preparing-summary")).toBe("Summarizing chat & creating handoff...");
     expect(handoffLaunchStatusMessage("forking-history")).toBe("Forking chat history...");
-    expect(handoffLaunchStatusMessage("creating-chat")).toBe("Creating chat...");
-    expect(handoffLaunchStatusMessage("sending-handoff")).toBe("Sending handoff...");
   });
 });

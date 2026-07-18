@@ -8389,8 +8389,11 @@ export function AgentChatPane({
       // A transport timeout abandons the RPC but does not cancel the
       // daemon-side handoff, which usually still completes. Say so instead of
       // reporting a hard failure, and re-poll the session list so a late
-      // success surfaces as the expected new chat, not a surprise.
-      const isTransportTimeout = /timed out (?:after \d+\s*ms|waiting for method)/i.test(rawMessage);
+      // success surfaces as the expected new chat, not a surprise. Match ONLY
+      // the two transport wrappers (registerIpc invoke timeout, RuntimeRpcClient
+      // request timeout) — daemon-internal errors also say "timed out after Nms"
+      // but those are real failures that must surface as errors.
+      const isTransportTimeout = /IPC handler for .+ timed out after \d+ms|Remote ADE service timed out waiting for method/i.test(rawMessage);
       const message = isTransportTimeout
         ? "The handoff is taking longer than expected. ADE is still finishing it in the background — if it completes, the new chat will appear in the session list."
         : rawMessage;
