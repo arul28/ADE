@@ -15,6 +15,7 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { providerChatAccent } from "../chat/chatSurfaceTheme";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import { cn } from "../ui/cn";
+import { shouldApplyUsageSnapshot } from "./usageSnapshotOrdering";
 
 const PROVIDER_ORDER: UsageProvider[] = ["claude", "codex"];
 
@@ -213,10 +214,12 @@ export function UsageQuotaPanel({
 }) {
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [providerConnections, setProviderConnections] = useState<AiProviderConnections | null>(null);
+  const [bindingRevision, setBindingRevision] = useState(0);
   const [bridgeMissing, setBridgeMissing] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [refreshing, setRefreshing] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
+  const snapshotRef = useRef<UsageSnapshot | null>(null);
 
   const onSnapshotChangeRef = useRef(onSnapshotChange);
   useEffect(() => {
@@ -224,6 +227,8 @@ export function UsageQuotaPanel({
   }, [onSnapshotChange]);
 
   const applySnapshot = useCallback((nextSnapshot: UsageSnapshot | null) => {
+    if (!shouldApplyUsageSnapshot(nextSnapshot, snapshotRef.current)) return;
+    snapshotRef.current = nextSnapshot;
     setSnapshot(nextSnapshot);
     onSnapshotChangeRef.current?.(nextSnapshot);
   }, []);
@@ -238,31 +243,44 @@ export function UsageQuotaPanel({
     }
     const bridge = window.ade.usage;
     let cancelled = false;
+    let bindingGeneration = 0;
     const unsubscribe = bridge.onUpdate?.((next) => {
       if (!cancelled) applySnapshot(next);
     });
 
-    void (async () => {
+    const loadSnapshot = async () => {
+      const requestedGeneration = bindingGeneration;
       let current: UsageSnapshot | null = null;
       try {
         current = await bridge.getSnapshot();
       } catch {
         current = null;
       }
-      if (cancelled) return;
+      if (cancelled || requestedGeneration !== bindingGeneration) return;
       if (current) applySnapshot(current);
 
       try {
         const demanded = await bridge.noteDemand?.();
-        if (!cancelled && demanded) applySnapshot(demanded);
+        if (!cancelled && requestedGeneration === bindingGeneration && demanded) applySnapshot(demanded);
       } catch {
         // Quiet — demand only schedules a non-interactive provider refresh.
       }
-    })();
+    };
+    void loadSnapshot();
+    const unsubscribeBinding = window.ade.app.onProjectBindingChanged?.(() => {
+      bindingGeneration += 1;
+      snapshotRef.current = null;
+      setSnapshot(null);
+      setProviderConnections(null);
+      setBindingRevision((revision) => revision + 1);
+      onSnapshotChangeRef.current?.(null);
+      void loadSnapshot();
+    });
 
     return () => {
       cancelled = true;
       unsubscribe?.();
+      unsubscribeBinding?.();
     };
   }, [applySnapshot]);
 
@@ -293,7 +311,7 @@ export function UsageQuotaPanel({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bindingRevision]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 15_000);

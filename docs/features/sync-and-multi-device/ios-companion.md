@@ -450,6 +450,10 @@ older `ADEConnectionPill` and the per-tab "connection notice" banner
 cards — controllers no longer ship duplicate offline / reconnect /
 hydrating cards inside each screen body.
 
+The Work root top bar also places a Settings gear immediately to the right of
+the notification bell. It opens the same `ConnectionSettingsView` sheet as the
+Hub connection affordance and is hidden while Work is in multi-select mode.
+
 The Hub is the exception: with the navigation bar hidden, its
 no-machine / connection-error state renders `HubNoMachineState` instead
 of project cards, using the same `SyncConnectionHealth` mapping as
@@ -683,10 +687,14 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    later therefore reconnects without navigation or a user tap. A successful
    hello restores the active project, chat and terminal subscriptions, tracked
    lane presence, and pending safe operations without rebuilding the current
-   navigation stack. User-initiated disconnects from Settings (including the
-   connecting-state Cancel button) cancel scheduled reconnect work and leave
-   the phone in the disconnected state until the user reconnects or pairs
-   again.
+   navigation stack. A user-initiated machine transition from Settings first
+   presents the Hub, then disconnects, reconnects, pairs, or adopts the selected
+   machine. The cached active project can remain available for recovery, but no
+   in-project screen keeps rendering state owned by the previous machine.
+   Disconnects (including the connecting-state Cancel button) also cancel
+   scheduled reconnect work and leave the phone disconnected until the user
+   reconnects or pairs again. Ordinary transport recovery does not force Hub
+   navigation.
 8. After pairing completes, the phone announces currently-open lanes
    via `lanes.presence.announce` so the runtime decorates
    `LaneSummary.devicesOpen` for other controllers; the phone calls
@@ -1490,13 +1498,16 @@ The usage commands are viewer-allowed project actions:
 - `usage.getQuotaSnapshot` reads the host's cached Claude/Codex quota windows
   without doing provider or ledger work. `usage.refreshQuota` runs a bounded
   quota-only refresh with interactive host authentication disabled. Work shows
-  a compact Limits summary and Settings shows the full windows, source,
-  freshness, stale/error state, reset times, and explicit refresh control.
+  a compact provider-icon summary using the host's percent-used values directly.
+  Settings mirrors the desktop cards with provider icons, usage-threshold
+  colors, reset countdowns, source/freshness/error state, explicit refresh, and
+  external links to the Claude and Codex usage pages.
 - `usage.getAdeStats` returns the same stale-while-revalidate activity snapshot
   used by desktop Stats, including daily points and `desktop` / `mobile` /
   `tui` / `web` client attribution. The phone uses it for the Activity mode of
   the Work new-chat carousel rather than duplicating the full desktop Stats
-  page.
+  page. Pull-to-refresh on the new-chat screen refreshes both quota and the
+  currently selected activity range.
 
 `MobileUsageQuotaStore` persists snapshots by host identity, rebinds on machine
 changes, ignores an older in-flight response after a host switch, and clears

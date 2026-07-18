@@ -87,6 +87,7 @@ import {
   type AdeDatabaseUsageStats,
 } from "./usageStatsStore";
 import type {
+  FreshUsageProviderPollResult,
   UsageProviderPollContext,
   UsageProviderPollResult,
   UsageProviderStrategy,
@@ -497,7 +498,7 @@ async function captureClaudeCliUsage(logger: Logger): Promise<string> {
   });
 }
 
-async function pollClaudeViaCli(logger: Logger): Promise<UsageProviderPollResult> {
+async function pollClaudeViaCli(logger: Logger): Promise<FreshUsageProviderPollResult> {
   try {
     const output = await captureClaudeCliUsage(logger);
     const windows = parseClaudeCliUsage(output);
@@ -544,11 +545,10 @@ async function pollClaudeUsage(
       );
     }
     return {
+      disposition: "preserve_previous",
       windows: [],
+      errors: [],
       source: "oauth",
-      extraUsage: null,
-      errors: ["claude: no non-interactive credentials found"],
-      errorKind: "auth",
     };
   }
 
@@ -654,7 +654,7 @@ async function pollClaudeUsage(
 async function pollCodexUsage(
   logger: Logger,
   context: UsageProviderPollContext = { reason: "user" },
-): Promise<UsageProviderPollResult> {
+): Promise<FreshUsageProviderPollResult> {
   const creds = await measureUsagePhase(
     logger,
     { provider: "codex", phase: "credentials", reason: context.reason },
@@ -730,7 +730,7 @@ async function pollCodexUsage(
   }
 }
 
-async function pollCodexViaCliRpc(logger: Logger): Promise<UsageProviderPollResult> {
+async function pollCodexViaCliRpc(logger: Logger): Promise<FreshUsageProviderPollResult> {
   const windows: UsageWindow[] = [];
   const errors: string[] = [];
   let spendControlReached: boolean | undefined;
@@ -2612,6 +2612,13 @@ export function createUsageTrackingService({
           }
           try {
             const result = await strategy.poll({ reason });
+            if (result.disposition === "preserve_previous") {
+              return {
+                provider: strategy.provider,
+                skipped: true as const,
+                result,
+              };
+            }
             if (result.windows.length > 0) {
               providerFailureCount[strategy.provider] = 0;
               providerNextRetryAtMs[strategy.provider] = 0;
@@ -2641,10 +2648,18 @@ export function createUsageTrackingService({
         });
         const providerResults = await Promise.all(providerTasks);
         const resultsByProvider = new Map(providerResults.map((entry) => [entry.provider, entry]));
-        const emptyPollResult: UsageProviderPollResult = { windows: [], errors: [] };
-        const claudeResult: UsageProviderPollResult = resultsByProvider.get("claude")?.result ?? emptyPollResult;
-        const codexResult: UsageProviderPollResult = resultsByProvider.get("codex")?.result ?? emptyPollResult;
-        for (const entry of providerResults) errors.push(...entry.result.errors);
+        const emptyPollResult: FreshUsageProviderPollResult = { windows: [], errors: [] };
+        const claudePollEntry = resultsByProvider.get("claude");
+        const codexPollEntry = resultsByProvider.get("codex");
+        const claudeResult = claudePollEntry && !claudePollEntry.skipped
+          ? claudePollEntry.result
+          : emptyPollResult;
+        const codexResult = codexPollEntry && !codexPollEntry.skipped
+          ? codexPollEntry.result
+          : emptyPollResult;
+        for (const entry of providerResults) {
+          if (!entry.skipped) errors.push(...entry.result.errors);
+        }
 
         // Reconcile each provider against the last snapshot so a transient
         // failure (409/timeout) carries forward good data instead of wiping it.
@@ -2652,14 +2667,27 @@ export function createUsageTrackingService({
         const prevWindows = lastSnapshot?.windows ?? [];
         const providerStatus: UsageProviderStatusMap = {};
         const mergedRaw: UsageWindow[] = [];
-        for (const { provider, result, skipped } of providerResults) {
+        for (const entry of providerResults) {
+          const { provider, result, skipped } = entry;
           const previousStatus = lastSnapshot?.providerStatus?.[provider] ?? null;
-          if (skipped && previousStatus) {
-            providerStatus[provider] = previousStatus;
-            mergedRaw.push(...filterUnexpiredCarriedWindows(
+          if (skipped) {
+            const carriedWindows = filterUnexpiredCarriedWindows(
               prevWindows.filter((window) => window.provider === provider),
               polledAt,
-            ));
+            );
+            mergedRaw.push(...carriedWindows);
+            const hasLegacyNonInteractiveCredentialError = provider === "claude"
+              && lastSnapshot?.errors.includes("claude: no non-interactive credentials found") === true;
+            if (previousStatus && !hasLegacyNonInteractiveCredentialError) {
+              providerStatus[provider] = previousStatus;
+            } else if (previousStatus?.lastSuccessAt && carriedWindows.length > 0) {
+              providerStatus[provider] = {
+                state: "stale",
+                lastSuccessAt: previousStatus.lastSuccessAt,
+                updatedAt: previousStatus.updatedAt ?? previousStatus.lastSuccessAt,
+                ...(previousStatus.source ? { source: previousStatus.source } : {}),
+              };
+            }
             continue;
           }
           const nextRetryMs = providerNextRetryAtMs[provider] ?? 0;
@@ -2692,7 +2720,7 @@ export function createUsageTrackingService({
         const pacingByProvider = calculatePacingByProvider(allWindows);
         const extraUsage: ExtraUsage[] = [];
         if (claudeResult.extraUsage) extraUsage.push(claudeResult.extraUsage);
-        else if (providerStatus.claude?.state === "stale" || providerStatus.claude?.state === "unauthed") {
+        else if (claudePollEntry?.skipped || providerStatus.claude?.state === "stale" || providerStatus.claude?.state === "unauthed") {
           const previousClaudeExtra = lastSnapshot?.extraUsage.find((extra) => extra.provider === "claude");
           if (previousClaudeExtra) extraUsage.push(previousClaudeExtra);
         }
@@ -2706,7 +2734,6 @@ export function createUsageTrackingService({
           ...(lastSnapshot?.providerMessages ?? []).filter((message) => message.provider !== "codex"),
           ...(codexResult.providerMessages ?? []),
         ];
-        const codexPollEntry = resultsByProvider.get("codex");
         let spendControlReached = codexResult.spendControlReached;
         if (typeof spendControlReached !== "boolean" && (codexPollEntry?.skipped || codexResult.windows.length === 0)) {
           // Codex wasn't polled this round — retain the last known spend-control state.

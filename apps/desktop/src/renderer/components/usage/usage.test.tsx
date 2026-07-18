@@ -22,7 +22,7 @@ import {
 } from "../../lib/workSidebarBrowserResize";
 
 type UsageComponentTestBridge = {
-  app: Pick<Window["ade"]["app"], "openExternal">;
+  app: Pick<Window["ade"]["app"], "openExternal" | "onProjectBindingChanged">;
   usage: Pick<
     Window["ade"]["usage"],
     "getSnapshot" | "refresh" | "refreshHistory" | "noteDemand" | "getBudgetConfig" | "saveBudgetConfig" | "onUpdate"
@@ -265,6 +265,7 @@ describe("usage components", () => {
     const bridge = {
       app: {
         openExternal: vi.fn<[url: string], Promise<void>>(async () => {}),
+        onProjectBindingChanged: vi.fn(() => () => {}),
       },
       usage: {
         getSnapshot: vi.fn<[], Promise<UsageSnapshot | null>>(async () => snapshot),
@@ -604,6 +605,66 @@ describe("usage components", () => {
 
       expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
+    });
+
+    it("ignores an older usage event after a newer machine snapshot", async () => {
+      let onUpdate: ((snapshot: UsageSnapshot) => void) | null = null;
+      vi.mocked(window.ade.usage.onUpdate).mockImplementation((cb) => {
+        onUpdate = cb;
+        return () => {};
+      });
+      const newer = makeHeaderUsageSnapshot();
+      newer.lastPolledAt = "2026-05-21T19:22:00.000Z";
+      const older = makeHeaderUsageSnapshot();
+      older.lastPolledAt = "2026-05-21T19:21:00.000Z";
+      older.windows = older.windows.map((window) => ({ ...window, percentUsed: 77 }));
+
+      render(<HeaderUsageControl />);
+
+      await act(async () => {
+        onUpdate?.(newer);
+        onUpdate?.(older);
+      });
+
+      expect(window.ade.usage.onUpdate).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: /Codex wk 19%, 5h 9%/ })).toBeTruthy();
+      expect(screen.queryByText("77%")).toBeNull();
+    });
+
+    it("accepts an older authoritative snapshot after the project binding changes", async () => {
+      let onBindingChanged: Parameters<Window["ade"]["app"]["onProjectBindingChanged"]>[0] | null = null;
+      vi.mocked(window.ade.app.onProjectBindingChanged).mockImplementation((cb) => {
+        onBindingChanged = cb;
+        return () => {};
+      });
+      const newer = makeHeaderUsageSnapshot();
+      newer.lastPolledAt = "2026-05-21T19:22:00.000Z";
+      const olderMachine = makeHeaderUsageSnapshot();
+      olderMachine.lastPolledAt = "2026-05-21T18:00:00.000Z";
+      olderMachine.windows = olderMachine.windows.map((window) => ({ ...window, percentUsed: 42 }));
+      vi.mocked(window.ade.ai.getStatus)
+        .mockResolvedValueOnce(makeAiStatus({
+          claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: true }),
+          codex: makeProviderConnection("codex"),
+        }))
+        .mockResolvedValueOnce(makeAiStatus({
+          claude: makeProviderConnection("claude"),
+          codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true }),
+        }));
+      vi.mocked(window.ade.usage.getSnapshot)
+        .mockResolvedValueOnce(newer)
+        .mockResolvedValueOnce(olderMachine);
+
+      render(<HeaderUsageControl />);
+      expect(await screen.findByRole("button", { name: /Claude wk …, 5h …/ })).toBeTruthy();
+
+      await act(async () => {
+        onBindingChanged?.(null);
+      });
+
+      expect(await screen.findByText("42%")).toBeTruthy();
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(2);
+      expect(screen.queryByRole("button", { name: /Claude wk/ })).toBeNull();
     });
 
     it("does not poll usage while the drawer stays closed", async () => {

@@ -852,9 +852,11 @@ struct ADERootToolbarControls: View {
   /// this control (e.g. the active and incoming root tab during a transition)
   /// don't emit colliding element ids. Callers typically pass the screen title.
   let scopeKey: String?
+  let showsSettings: Bool
 
-  init(scopeKey: String? = nil) {
+  init(scopeKey: String? = nil, showsSettings: Bool = false) {
     self.scopeKey = scopeKey
+    self.showsSettings = showsSettings
   }
 
   private var hasUnread: Bool { drawer.unreadCount > 0 }
@@ -902,9 +904,19 @@ struct ADERootToolbarControls: View {
   }
 
   private var toolbarBody: some View {
-    ZStack(alignment: .topTrailing) {
-      attentionButton
-      unreadBadge
+    HStack(spacing: 0) {
+      ZStack(alignment: .topTrailing) {
+        attentionButton
+        unreadBadge
+      }
+
+      if showsSettings {
+        Rectangle()
+          .fill(Color.white.opacity(0.08))
+          .frame(width: 1, height: 18)
+
+        settingsButton
+      }
     }
   }
 
@@ -915,6 +927,16 @@ struct ADERootToolbarControls: View {
       isAlive: hasUnread,
       accessibilityLabel: "Attention items: \(drawer.unreadCount)",
       action: { syncService.attentionDrawerPresented = true }
+    )
+  }
+
+  private var settingsButton: some View {
+    toolbarIconButton(
+      icon: "gearshape",
+      tint: PrsGlass.textSecondary,
+      isAlive: false,
+      accessibilityLabel: "Settings",
+      action: { syncService.settingsPresented = true }
     )
   }
 
@@ -961,7 +983,7 @@ struct ADERootToolbarControls: View {
             .shadow(color: isAlive ? tint.opacity(0.28) : .clear, radius: 2, x: 0, y: 0)
         }
       }
-      .frame(width: 38, height: 34)
+      .frame(width: 44, height: 36)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -996,17 +1018,20 @@ struct ADERootTopBar<Actions: View>: View {
   let title: String
   let showsGlobalControls: Bool
   let showsHubBackButton: Bool
+  let showsSettings: Bool
   let actions: Actions
 
   init(
     title: String,
     showsGlobalControls: Bool = true,
     showsHubBackButton: Bool = true,
+    showsSettings: Bool = false,
     @ViewBuilder actions: () -> Actions
   ) {
     self.title = title
     self.showsGlobalControls = showsGlobalControls
     self.showsHubBackButton = showsHubBackButton
+    self.showsSettings = showsSettings
     self.actions = actions()
   }
 
@@ -1030,7 +1055,7 @@ struct ADERootTopBar<Actions: View>: View {
       Spacer(minLength: 8)
       actions
       if showsGlobalControls {
-        ADERootToolbarControls(scopeKey: title)
+        ADERootToolbarControls(scopeKey: title, showsSettings: showsSettings)
       }
     }
     .padding(.horizontal, 16)
@@ -1055,10 +1080,16 @@ struct ADERootTopBar<Actions: View>: View {
 
 @available(iOS 17.0, *)
 extension ADERootTopBar where Actions == EmptyView {
-  init(title: String, showsGlobalControls: Bool = true, showsHubBackButton: Bool = true) {
+  init(
+    title: String,
+    showsGlobalControls: Bool = true,
+    showsHubBackButton: Bool = true,
+    showsSettings: Bool = false
+  ) {
     self.title = title
     self.showsGlobalControls = showsGlobalControls
     self.showsHubBackButton = showsHubBackButton
+    self.showsSettings = showsSettings
     self.actions = EmptyView()
   }
 }

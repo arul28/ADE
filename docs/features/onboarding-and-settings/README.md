@@ -332,19 +332,30 @@ Renderer — settings:
   Provider detection comes from `ade.ai.getStatus` on mount and every
   5 min; CLIs not detected on the machine are hidden from the header,
   while installed-but-unauthenticated providers stay visible in the
-  panel as "Not signed in". The panel subscribes to usage `onUpdate`, and
-  drills down into 5-hour, weekly, monthly, and other reset windows with
+  panel as "Not signed in". The header and panel subscribe to usage `onUpdate`,
+  reject an older snapshot within the same project binding, and clear then
+  reload both quota and provider-connection state when the binding changes.
+  This keeps the compact percentages and the open panel on the same live
+  machine-brain snapshot even across fast project or machine switches. The
+  panel drills down into 5-hour, weekly, monthly, and other reset windows with
   explicit source, updated time, stale state, and inline provider errors.
   Claude background polling never prompts Keychain and explicit local refresh
-  can fall back from OAuth to a bounded CLI probe. Codex returns directly when
-  HTTP supplies complete windows and uses a bounded app-server RPC only for
-  auth recovery or a successful but unrecognized response schema.
+  can fall back from OAuth to a bounded CLI probe. When a non-interactive
+  caller cannot authoritatively read Claude credentials, the service preserves
+  the previous unexpired windows, provider state, and extra-usage values rather
+  than replacing them with a false authentication error. Codex returns
+  directly when HTTP supplies complete windows and uses a bounded app-server
+  RPC only for auth recovery or a successful but unrecognized response schema.
   Cursor usage polling was removed (it required a team-admin API key that
   desktop users almost never have); only `claude` and `codex` are tracked
   in `TRACKED_PROVIDERS`. Budget
   caps round-trip through `ade.usage.getBudgetConfig` /
   `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
   `UsageThresholdEvent`s for local usage handling.
+- `apps/desktop/src/renderer/components/usage/usageSnapshotOrdering.ts` —
+  shared ordering guard for the compact header and full quota panel. It accepts
+  the first snapshot for a binding and newer/equal poll timestamps, while each
+  component explicitly resets the guard when the project binding changes.
 - `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
   — Settings > Usage, split into **Limits** and **Activity** tabs. Limits
   renders the same live quota contract as the header without starting a local
@@ -376,7 +387,10 @@ Renderer — settings:
   local activity are reported as separate labeled groups (never max-merged).
   Live quota polling is adaptive and coalesced, retains unexpired last-good
   provider windows with source/freshness metadata, and stays independent from
-  the expensive provider-ledger and GitHub history scans.
+  the expensive provider-ledger and GitHub history scans. Runtime-backed
+  projects use the machine brain as the single quota owner; the desktop does
+  not create a second project-context tracker that could race the runtime event
+  stream.
   It returns cached provider/GitHub results and current DB aggregates without
   awaiting expensive scans, exposes freshness metadata (`fresh` / `refreshing`),
   and coalesces stale provider/GitHub revalidation in the background

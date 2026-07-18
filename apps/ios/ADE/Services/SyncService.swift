@@ -2411,6 +2411,23 @@ final class SyncService: ObservableObject {
     projectHomePresented = false
   }
 
+  /// A user-requested machine transition always returns the UI to the Hub
+  /// before the socket changes. The active project remains cached, but no
+  /// in-project screen can keep rendering state owned by the previous machine.
+  func prepareForUserConnectionChange() {
+    projectHomePresented = true
+  }
+
+  func disconnectForUserConnectionChange() {
+    prepareForUserConnectionChange()
+    disconnect()
+  }
+
+  func reconnectForUserConnectionChange() async {
+    prepareForUserConnectionChange()
+    await reconnectIfPossible(userInitiated: true)
+  }
+
   func selectProject(_ project: MobileProjectSummary) {
     let selectionGeneration = beginProjectSelection()
     unhideProject(project)
@@ -4064,6 +4081,7 @@ final class SyncService: ObservableObject {
   }
 
   func reconnect(toSavedHost host: DiscoveredSyncHost) async {
+    prepareForUserConnectionChange()
     ProductAnalytics.shared.captureQuickConnect(.pairedMachine)
     let profiles = loadSavedProfiles()
     let candidates = profiles.values.filter { profile in
@@ -4109,6 +4127,7 @@ final class SyncService: ObservableObject {
     relayCandidates: [String]
   ) async -> Bool {
     guard var profile = savedProfileForPairingQr(hostIdentity: hostIdentity) else { return false }
+    prepareForUserConnectionChange()
     let directHosts = directCandidates.compactMap { syncEndpointHost($0) }
     let relayHosts = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
     profile.savedAddressCandidates = deduplicatedAddresses(profile.savedAddressCandidates + directHosts)
@@ -4145,6 +4164,7 @@ final class SyncService: ObservableObject {
     accountToken: String,
     authorization: AccountPairingAuthorization
   ) async -> Bool {
+    prepareForUserConnectionChange()
     ProductAnalytics.shared.captureQuickConnect(.accountMachine)
     let token = accountToken.trimmingCharacters(in: .whitespacesAndNewlines)
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4452,6 +4472,7 @@ final class SyncService: ObservableObject {
         .compactMap { syncEndpointHost($0) }
     )
     guard let preferredAddress = directHosts.first else { return false }
+    prepareForUserConnectionChange()
     var profile = HostConnectionProfile(
       hostIdentity: handoff.hostIdentity,
       hostName: handoff.hostName,
@@ -4496,6 +4517,7 @@ final class SyncService: ObservableObject {
         .compactMap(syncEndpointHost)
     )
     guard let preferredAddress = directHosts.first else { return false }
+    prepareForUserConnectionChange()
     var profile = HostConnectionProfile(
       hostIdentity: response.machine.deviceId,
       hostName: response.machine.name,
@@ -4856,6 +4878,7 @@ final class SyncService: ObservableObject {
     tailscaleAddress: String? = nil,
     relayCandidates: [String] = []
   ) async {
+    prepareForUserConnectionChange()
     lastPairingErrorCode = nil
     lastPairingFailure = nil
     relayAuthorizationRequirement = nil

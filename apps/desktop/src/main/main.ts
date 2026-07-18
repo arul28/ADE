@@ -4311,15 +4311,6 @@ app.whenReady().then(async () => {
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
     const db = await openKvDb(adePaths.dbPath, logger);
     const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
-    const usageTrackingService = createUsageTrackingService({
-      logger,
-      db,
-      pollIntervalMs: 120_000,
-      onUpdate: (snapshot) => {
-        emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
-      },
-      projectRoot,
-    });
     const storageInsightsService = createStorageInsightsService({
       projectRoot,
       adeHome: machineAdeLayout.adeDir,
@@ -4330,7 +4321,6 @@ app.whenReady().then(async () => {
       // because activity cannot be known here.
       isPathActive: () => true,
     });
-    usageTrackingService.start();
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
       logger,
@@ -4352,7 +4342,10 @@ app.whenReady().then(async () => {
       adeCliService: shellContext.adeCliService,
       builtInBrowserService,
       diskPressureMonitor,
-      usageTrackingService,
+      // The machine brain owns quota polling and streams its snapshots through
+      // the runtime event pump. A second renderer-side tracker races those
+      // events and can make the compact header disagree with the open panel.
+      usageTrackingService: null,
       storageInsightsService,
     };
   };

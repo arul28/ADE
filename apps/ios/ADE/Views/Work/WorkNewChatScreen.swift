@@ -566,6 +566,7 @@ struct WorkNewChatScreen: View {
   @State private var sessionMode: WorkNewSessionMode = .chat
   @State private var shellLaunchBusy: Bool = false
   @State private var queuedShellLaneIds = Set<String>()
+  @State private var usageRefreshRevision = 0
   /// Status banner shown above the composer while an auto-created lane is being
   /// minted before the chat/CLI session starts.
   @State private var autoCreateStatus: String?
@@ -690,7 +691,7 @@ struct WorkNewChatScreen: View {
           // Keep activity in the scrollable content instead of pinning it
           // above the composer. When the keyboard appears, the composer can
           // expand into this space without lifting the activity card with it.
-          WorkUsageActivityCarousel()
+          WorkUsageActivityCarousel(refreshRevision: usageRefreshRevision)
             .environmentObject(syncService)
             .padding(.top, 2)
             .fixedSize(horizontal: false, vertical: true)
@@ -702,6 +703,7 @@ struct WorkNewChatScreen: View {
       .scrollDismissesKeyboard(.interactively)
       .refreshable {
         await MobileUsageQuotaStore.shared.load(using: syncService, refresh: true)
+        usageRefreshRevision &+= 1
       }
 
       if let autoCreateStatus, busy {
