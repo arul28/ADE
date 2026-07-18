@@ -2946,6 +2946,53 @@ async function connectPeer(
   return { ws, ...tracked };
 }
 
+describe("PR snapshot invalidation push", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  it("broadcasts one lightweight prs_updated envelope to an authenticated peer", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-pr-invalidation");
+      const envelopeCount = peer.envelopes.length;
+
+      host.broadcastPrsUpdated();
+
+      const envelope = await waitForValue(
+        () => peer?.envelopes.slice(envelopeCount).find((entry) => entry.type === "prs_updated"),
+        "prs_updated push",
+      );
+      const payload = envelope.payload as { updatedAt?: string };
+      expect(envelope.type).toBe("prs_updated");
+      expect(payload).toEqual({ updatedAt: expect.any(String) });
+      expect(Number.isNaN(Date.parse(payload.updatedAt ?? ""))).toBe(false);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
 describe("outbound changeset ack retries", () => {
   beforeEach(() => {
     publishMock.mockReset();

@@ -11,6 +11,7 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "lanes.getDetail",
   "work.updateSessionMeta",
   "prs.getMobileSnapshot",
+  "prs.getMobileGithubDetail",
   "work.runQuickCommand",
   "work.startCliSession",
   "work.sendToSession",

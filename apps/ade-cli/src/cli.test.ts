@@ -4996,14 +4996,19 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("forwards PR GitHub snapshot full-history flag to the runtime action", () => {
+  it("forwards bounded PR GitHub snapshot options to the runtime action", () => {
     const snapshot = buildCliPlan([
       "prs",
       "github-snapshot",
       "--include-external-closed",
+      "--history-page-limit",
+      "4",
+      "--include-state-counts",
+      "--no-revalidate",
     ]);
     expect(snapshot.kind).toBe("execute");
     if (snapshot.kind !== "execute") return;
+    expect(snapshot.label).toBe("PR GitHub snapshot");
     expect(snapshot.steps[0]?.params).toEqual({
       name: "run_ade_action",
       arguments: {
@@ -5012,9 +5017,19 @@ describe("ADE CLI", () => {
         args: {
           force: false,
           includeExternalClosed: true,
+          historyPageLimit: 4,
+          includeStateCounts: true,
+          revalidate: false,
         },
       },
     });
+
+    expect(() => buildCliPlan([
+      "prs",
+      "github-snapshot",
+      "--history-page-limit",
+      "0",
+    ])).toThrow("--history-page-limit must be a positive integer.");
   });
 
   it("maps discoverable git status, sync, and conflict helpers to existing actions", () => {

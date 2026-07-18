@@ -1526,8 +1526,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
     $ ade prs comments <pr> --text                  Show unresolved review work
-    $ ade prs github-snapshot --include-external-closed
-                                                    Include closed external PR history in the GitHub snapshot
+    $ ade prs github-snapshot --include-external-closed --history-page-limit 4
+                                                    Include bounded closed PR history in the GitHub snapshot
+    $ ade prs github-snapshot --include-state-counts --no-revalidate
+                                                    Include exact state totals without a background refresh
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -5776,6 +5778,19 @@ function buildPrPlan(args: string[]): CliPlan {
     };
     if (readFlag(args, ["--include-external-closed", "--include-closed-external"])) {
       snapshotArgs.includeExternalClosed = true;
+    }
+    const historyPageLimit = readIntOption(args, ["--history-page-limit", "--history-pages"]);
+    if (historyPageLimit !== undefined) {
+      if (historyPageLimit <= 0) {
+        throw new CliUsageError("--history-page-limit must be a positive integer.");
+      }
+      snapshotArgs.historyPageLimit = historyPageLimit;
+    }
+    if (readFlag(args, ["--include-state-counts", "--state-counts"])) {
+      snapshotArgs.includeStateCounts = true;
+    }
+    if (readFlag(args, ["--no-revalidate"])) {
+      snapshotArgs.revalidate = false;
     }
     return {
       kind: "execute",

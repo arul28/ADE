@@ -112,6 +112,43 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("forwards bounded GitHub history pagination for mobile PR lists", async () => {
+    const getGithubSnapshot = vi.fn().mockResolvedValue({ repoPullRequests: [] });
+    const { service } = createService({ prService: { getGithubSnapshot } });
+
+    await service.execute(makePayload("prs.getGitHubSnapshot", {
+      includeExternalClosed: true,
+      historyPageLimit: 4.8,
+      revalidate: false,
+      includeStateCounts: true,
+    }));
+
+    expect(getGithubSnapshot).toHaveBeenCalledWith({
+      force: false,
+      includeExternalClosed: true,
+      historyPageLimit: 4,
+      revalidate: false,
+      includeStateCounts: true,
+    });
+  });
+
+  it("serves unmapped PR detail through one coordinate-based mobile command", async () => {
+    const detail = { snapshot: { detail: null, checks: [] }, reviewThreads: [], actionRuns: [], activity: [] };
+    const getMobileGithubDetail = vi.fn().mockResolvedValue(detail);
+    const { service } = createService({ prService: { getMobileGithubDetail } });
+
+    await expect(service.execute(makePayload("prs.getMobileGithubDetail", {
+      repoOwner: "arul28",
+      repoName: "ADE",
+      githubPrNumber: 849,
+    }))).resolves.toEqual(detail);
+    expect(getMobileGithubDetail).toHaveBeenCalledWith({
+      repoOwner: "arul28",
+      repoName: "ADE",
+      githubPrNumber: 849,
+    });
+  });
+
   it("advertises the complete paired-client analytics command contract", async () => {
     const flush = vi.fn(async () => true);
     const { service } = createService({ productAnalyticsService: { flush } });

@@ -1340,6 +1340,7 @@ export type SyncRemoteCommandAction =
   | "prs.cancelQueueAutomation"
   | "prs.reorderQueue"
   | "prs.getMobileSnapshot"
+  | "prs.getMobileGithubDetail"
   | "sync.getWebPairingInfo"
   | "sync.getDesktopPairingInfo"
   | "modelPicker.getFavorites"
@@ -1448,6 +1449,7 @@ export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe"
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
 export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", SyncBrainStatusPayload>;
+export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
 export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscribe", SyncRosterSubscribePayload>;
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
@@ -1511,6 +1513,7 @@ export type SyncEnvelope =
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
   | SyncBrainStatusEnvelope
+  | SyncPrsUpdatedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope

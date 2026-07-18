@@ -19,7 +19,7 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
 - **One push per iteration. Wait for BOTH signals before fixing anything.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every expected review bot has posted (or its status check has settled). This is not just an efficiency rule: **review-comment fixes routinely introduce new CI failures**, so applying them on a partial signal means the next push fails and you've thrown away the prior CI cycle. Wait for both, then dispatch ci-fix-agent and review-fix-agent in parallel with full knowledge of both, and combine their edits into one commit. If only one signal has landed when you wake, do not iterate — reschedule and sleep.
-- **Default wait is 12 minutes.** After any push, schedule the next poll ~720s out (unless CI hasn't started at all — then 270s to stay in cache). 12 minutes is the **floor** that lets both CI shards and the slower review bots (Greptile, Copilot) finish. Re-entering before that almost always shows a partial state and produces the wrong decision. Only schedule shorter (270s) in Phase 0 immediately post-push to observe CI has kicked off.
+- **Default wait is 12 minutes.** After any push, schedule the next poll ~720s out (unless CI hasn't started at all — then 270s to stay in cache). 12 minutes is the **floor** that lets both CI shards and the slower review bots (especially Greptile) finish. Re-entering before that almost always shows a partial state and produces the wrong decision. Only schedule shorter (270s) in Phase 0 immediately post-push to observe CI has kicked off.
 - **Token-idle waits.** Waiting is done by the agent's native scheduler/resume primitive, or by a shell `sleep` followed by one-shot checks. Between wake-ups, agents should be asleep, not consuming model context or tokens.
 - **Idempotent resume.** All state lives in `.ade/shipLane/<branch>.json`. A re-invocation reads that file and picks up where it left off.
 
@@ -190,7 +190,8 @@ Record in the state file which path was used (`prCreatedVia: "ade" | "gh"`). If 
 
 ### 0.4 Post initial bot pings
 
-See Phase 4 rules — always `@copilot review but do not make fixes`; add `@greptile` and `@coderabbit` if the diff touches more than 250 files.
+See Phase 4 rules. Do not ping GitHub Copilot. Add `@greptile` and `@coderabbit`
+only when the diff touches more than 250 files.
 
 ### 0.5 Write initial state
 
@@ -221,7 +222,7 @@ This is a one-shot poll. Do not use `gh pr checks --watch`, shell `while` loops,
 **Wait for both CI and review bots before iterating.** The poll must treat these as two independent signals and only report "ready to fix" when **both** are terminal:
 
 - **CI terminal** = every required check has a final conclusion (`success`, `failure`, `cancelled`, `skipped`, `neutral`). If any required check is still `QUEUED` or `IN_PROGRESS`, CI is not terminal.
-- **Review bots terminal** = every expected review bot has either posted its review (`gh api repos/.../pulls/{N}/reviews` contains a submission newer than `lastPushSha`'s commit time for each bot) **or** its status check entry has settled. Expected bots for this repo include **Greptile** (appears as the `Greptile Review` status check — wait for it to leave `pending`), **CodeRabbit** (posts a status check and/or review), and **Copilot** (posts an issue comment after being pinged; allow ~3–5 min from the ping). Greptile in particular is slow enough that the 12-minute wait is driven primarily by it.
+- **Review bots terminal** = every expected review bot has either posted its review (`gh api repos/.../pulls/{N}/reviews` contains a submission newer than `lastPushSha`'s commit time for each bot) **or** its status check entry has settled. Expected bots for this repo are **Greptile** (appears as the `Greptile Review` status check — wait for it to leave `pending`) and **CodeRabbit** (posts a status check and/or review). GitHub Copilot is neither pinged nor expected: quota exhaustion can stop it without producing a normal review response, so its events never gate the loop. Greptile in particular is slow enough that the 12-minute wait is driven primarily by it.
 
 If either signal is still in flight, return "still waiting" and let Phase 5 reschedule. **Do not push a fix on a partial signal.**
 
@@ -281,7 +282,7 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
   "newComments": [
     {
       "id": 987700,
-      "author": "copilot-pull-request-reviewer",
+      "author": "human-reviewer",
       "body": "Consider guarding against null here.",
       "path": "apps/desktop/src/main/services/x.ts",
       "line": 42,
@@ -292,7 +293,7 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
 }
 ```
 
-`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty. Populate `pendingReviewBots` with any expected bot that has neither posted a review newer than `lastPushSha` nor has a settled status check (e.g., Greptile status still `pending`, Copilot has not commented within ~5 min of the ping).
+`reviewBotsRunning` is `true` whenever `pendingReviewBots` is non-empty. Populate `pendingReviewBots` with any expected bot that has neither posted a review newer than `lastPushSha` nor has a settled status check (for example, Greptile status is still `pending`).
 
 `behindMain` is derived from `mergeStateStatus` being `BEHIND` or `DIRTY`, or from `git merge-base --is-ancestor origin/main HEAD` returning non-zero.
 
@@ -583,14 +584,10 @@ There is no second force-finalize. Iteration 6 is one shot at landing the lane.
 
 ## Phase 4 — Post-push bot pings
 
-Runs after **any** push. The ping depends on whether this is the initial PR push
-or a later fix iteration:
+Runs after **any** push. Never ping GitHub Copilot. The ping depends on whether
+this is the initial PR push or a later fix iteration:
 
-- **Initial push** (Phase 0, PR just created):
-
-```bash
-gh pr comment "$PR_NUMBER" --body "@copilot review but do not make fixes"
-```
+- **Initial push** (Phase 0, PR just created): no direct review ping.
 
 - **Subsequent fix-iteration re-pushes:**
 
@@ -646,7 +643,7 @@ Agent-CLI-agnostic guidance. Pick the right primitive for the harness:
 Cadence (applies once you've picked a primitive):
 
 - Just pushed, neither CI nor review has started yet → **270 seconds** (stay in prompt cache; next poll only confirms things have kicked off)
-- CI running OR review bots still pending → **720 seconds** (12 min). This is the spec floor: CI shards typically finish in 3–5 min, Greptile in 5–10 min, Copilot within a few minutes of its ping. 12 min is what lets **both** land before the next poll.
+- CI running OR review bots still pending → **720 seconds** (12 min). This is the spec floor: CI shards typically finish in 3–5 min and Greptile in 5–10 min. 12 min is what lets **both** land before the next poll.
 - CI terminal AND review bots terminal, now waiting on human review → **1800 seconds** (30 min; cost-efficient)
 - Unknown → **720 seconds** default
 

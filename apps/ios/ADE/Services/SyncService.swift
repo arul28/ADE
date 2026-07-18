@@ -1861,10 +1861,25 @@ func makeLanesReparentArgs(
   return args
 }
 
-func makePrGithubSnapshotArgs(force: Bool = false, includeExternalClosed: Bool = false) -> [String: Any] {
+func makePrGithubSnapshotArgs(
+  force: Bool = false,
+  includeExternalClosed: Bool = false,
+  historyPageLimit: Int? = nil,
+  revalidate: Bool = true,
+  includeStateCounts: Bool = false
+) -> [String: Any] {
   var args: [String: Any] = ["force": force]
+  if !revalidate {
+    args["revalidate"] = false
+  }
+  if includeStateCounts {
+    args["includeStateCounts"] = true
+  }
   if includeExternalClosed {
     args["includeExternalClosed"] = true
+  }
+  if let historyPageLimit {
+    args["historyPageLimit"] = max(1, historyPageLimit)
   }
   return args
 }
@@ -2018,6 +2033,9 @@ final class SyncService: ObservableObject {
   @Published private(set) var workProjectionRevision = 0
   @Published private(set) var filesProjectionRevision = 0
   @Published private(set) var prsProjectionRevision = 0
+  /// Host-pushed invalidation for GitHub projection changes that do not touch
+  /// replicated `pull_requests` rows (notably unmapped PR webhooks).
+  @Published private(set) var prsRemoteRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
@@ -2094,6 +2112,10 @@ final class SyncService: ObservableObject {
   /// view side; the entry's `loadedAt` gates whether the refresh actually
   /// re-fetches the sidecar fan-out.
   @Published private(set) var prDetailCache: [String: PrDetailWarmEntry] = [:]
+  /// Expensive unmapped-detail reads are single-flight per GitHub coordinate.
+  /// SwiftUI task cancellation does not cancel an already-sent host command,
+  /// so every later revision joins the same service-owned request.
+  private var prMobileGithubDetailInFlight: [String: Task<PrMobileGithubDetailSnapshot, Error>] = [:]
 
   /// Repo-scoped GitHub PR list shared by the Lanes and Work tabs so a lane (a
   /// branch) can surface a PR opened directly on GitHub — not only PRs mapped
@@ -5801,12 +5823,67 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "prs.getMobileSnapshot", as: PrMobileSnapshot.self)
   }
 
-  func fetchGitHubPullRequestSnapshot(force: Bool = false, includeExternalClosed: Bool = false) async throws -> GitHubPrSnapshot {
+  func fetchGitHubPullRequestSnapshot(
+    force: Bool = false,
+    includeExternalClosed: Bool = false,
+    historyPageLimit: Int? = nil,
+    revalidate: Bool = true,
+    includeStateCounts: Bool = false
+  ) async throws -> GitHubPrSnapshot {
     try await sendDecodableCommand(
       action: "prs.getGitHubSnapshot",
-      args: makePrGithubSnapshotArgs(force: force, includeExternalClosed: includeExternalClosed),
+      args: makePrGithubSnapshotArgs(
+        force: force,
+        includeExternalClosed: includeExternalClosed,
+        historyPageLimit: historyPageLimit,
+        revalidate: revalidate,
+        includeStateCounts: includeStateCounts
+      ),
       as: GitHubPrSnapshot.self
     )
+  }
+
+  func fetchPrMobileGithubDetail(
+    repoOwner: String,
+    repoName: String,
+    githubPrNumber: Int
+  ) async throws -> PrMobileGithubDetailSnapshot {
+    guard supportsRemoteAction("prs.getMobileGithubDetail") else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Full GitHub PR details are not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    let requestKey = "\(repoOwner.lowercased())/\(repoName.lowercased())#\(githubPrNumber)"
+    if let inFlight = prMobileGithubDetailInFlight[requestKey] {
+      return try await inFlight.value
+    }
+
+    let task = Task { @MainActor [weak self] in
+      guard let self else { throw CancellationError() }
+      return try await self.sendDecodableCommand(
+        action: "prs.getMobileGithubDetail",
+        args: [
+          "repoOwner": repoOwner,
+          "repoName": repoName,
+          "githubPrNumber": githubPrNumber,
+        ],
+        as: PrMobileGithubDetailSnapshot.self
+      )
+    }
+    prMobileGithubDetailInFlight[requestKey] = task
+    do {
+      let result = try await task.value
+      prMobileGithubDetailInFlight[requestKey] = nil
+      return result
+    } catch {
+      prMobileGithubDetailInFlight[requestKey] = nil
+      throw error
+    }
   }
 
   /// Best-effort refresh of the shared `laneGithubPrItems` cache used by the
@@ -11211,6 +11288,12 @@ final class SyncService: ObservableObject {
           updateProfile { $0.savedRelayCandidates = nil }
         }
       }
+      resolve(requestId: requestId, result: .success(payload))
+    case "prs_updated":
+      // Coalesce at the view task boundary. The host sends only a tiny
+      // invalidation signal; PRsTabView then performs one cached/projected
+      // snapshot read, never a GitHub poll per event.
+      prsRemoteRevision += 1
       resolve(requestId: requestId, result: .success(payload))
     case "heartbeat":
       if let dict = payload as? [String: Any], (dict["kind"] as? String) == "ping" {

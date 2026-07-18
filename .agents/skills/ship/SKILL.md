@@ -90,11 +90,13 @@ shows the PR is dirty/conflicting). If the branch is merely behind but cleanly
 mergeable, skip the rebase and let the merge handle it — needless rebases burn
 iterations and CI.
 
-**Bot pings by iteration.** First push (Phase 0 / initial PR) → `@copilot review
-but do not make fixes`. Subsequent fix-iteration re-pushes → `@codex review`. For
-a >250-file diff, also ping `@greptile` and `@coderabbit` (separate comments).
-Phase 1 still waits for the review signal to settle before fixing. This is the
-playbook's Phase 4 rule — defer to it for exact bodies.
+**Bot pings by iteration.** Never ping GitHub Copilot and never treat Copilot as
+an expected review signal; quota exhaustion otherwise leaves the loop waiting
+forever. Initial PR pushes do not need a direct review ping. Subsequent
+fix-iteration re-pushes → `@codex review`. For a >250-file diff, also ping
+`@greptile` and `@coderabbit` (separate comments). Phase 1 still waits for the
+expected review signals to settle before fixing. This is the playbook's Phase 4
+rule — defer to it for exact bodies.
 
 **Merge needs admin.** `main` is ruleset-guarded — `gh pr merge --squash` will
 show BLOCKED. Retry with `gh pr merge --admin --squash`; the ruleset's
@@ -147,8 +149,8 @@ self-resume signal. Either:
 ## The loop (summary — full detail in the playbook)
 
 - **Phase 0 (first run):** safety rails (clean tree, GitHub origin, refuse
-  `main`) → commit → push → open PR (`ade`, gh fallback) → `@copilot` ping →
-  write state, schedule first wake.
+  `main`) → commit → push → open PR (`ade`, gh fallback) → write state →
+  schedule first wake.
 - **Phase 1 — Poll:** wait for BOTH CI terminal AND review bots terminal. Return
   a structured summary (merged / conflicting / ciFailed / newComments). Don't fix
   on a partial signal.

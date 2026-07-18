@@ -2105,3 +2105,26 @@ export type PrMobileSnapshot = {
   /** Mobile clients should surface a "host offline" banner when this is false. */
   live: boolean;
 };
+
+/**
+ * One batched detail payload for a GitHub PR that does not have a local
+ * `pull_requests` row yet. Mobile uses this instead of issuing a command per
+ * sidecar, keeping the unmapped detail screen at one controller round trip.
+ */
+export type PrMobileGithubDetailSnapshot = {
+  item: GitHubPrListItem;
+  snapshot: {
+    detail: PrDetail | null;
+    status: PrStatus | null;
+    checks: PrCheck[];
+    reviews: PrReview[];
+    comments: PrComment[];
+    files: PrFile[];
+    commits: PrCommit[];
+  };
+  reviewThreads: PrReviewThread[];
+  actionRuns: PrActionRun[];
+  activity: PrActivityEvent[];
+  /** Optional sidecars that failed to load and must not be treated as true zeroes. */
+  unavailableParts: string[];
+};

@@ -3726,6 +3726,21 @@ struct GitHubPrSnapshot: Codable, Equatable {
   var repoPullRequests: [GitHubPrListItem]
   var externalPullRequests: [GitHubPrListItem]
   var syncedAt: String
+  var history: GitHubPrSnapshotHistory? = nil
+}
+
+struct GitHubPrSnapshotHistory: Codable, Equatable {
+  var includeExternalClosed: Bool
+  var pageLimit: Int
+  var repoPullRequestsLoaded: Int
+  var repoPullRequestsMayHaveMore: Bool
+  var repoPullRequestCounts: GitHubPrSnapshotCounts?
+}
+
+struct GitHubPrSnapshotCounts: Codable, Equatable {
+  var open: Int
+  var closed: Int
+  var merged: Int
 }
 
 struct PrReviewThreadComment: Codable, Identifiable, Equatable {
@@ -3794,6 +3809,18 @@ struct PrActivityEvent: Codable, Identifiable, Equatable {
   var body: String?
   var timestamp: String
   var metadata: [String: RemoteJSONValue]?
+}
+
+/// One host round trip for the full GitHub detail surface when a PR has not
+/// been mapped into ADE yet. Keeping the sidecars together avoids mobile
+/// command fan-out and makes the detail screen usable before lane mapping.
+struct PrMobileGithubDetailSnapshot: Codable, Equatable {
+  var item: GitHubPrListItem
+  var snapshot: PullRequestSnapshot
+  var reviewThreads: [PrReviewThread]
+  var actionRuns: [PrActionRun]
+  var activity: [PrActivityEvent]
+  var unavailableParts: [String]
 }
 
 struct PrDeployment: Codable, Identifiable, Equatable {

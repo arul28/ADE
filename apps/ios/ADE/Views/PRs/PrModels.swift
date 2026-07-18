@@ -404,6 +404,7 @@ struct PrDetailWarmEntry {
   var aiSummary: AiReviewSummary?
   var groupMembers: [PrGroupMemberSummary]
   var capabilities: PrActionCapabilities?
+  var unavailableParts: [String]
   var loadedAt: Date
 }
 

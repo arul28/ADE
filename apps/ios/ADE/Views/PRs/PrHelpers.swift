@@ -59,6 +59,26 @@ func shouldFetchPrDetailLiveSidecars(hasLoadedLiveSidecars: Bool, refreshRemote:
   refreshRemote || !hasLoadedLiveSidecars
 }
 
+/// Applies a partial aggregate response without turning unavailable sidecars
+/// into authoritative empty values. Fresh fields replace the cache; failed
+/// fields retain the last known good value and remain visibly marked partial.
+func prMergeMobileGithubSnapshot(
+  incoming: PullRequestSnapshot,
+  previous: PullRequestSnapshot?,
+  unavailableParts: [String]
+) -> PullRequestSnapshot {
+  let unavailable = Set(unavailableParts)
+  return PullRequestSnapshot(
+    detail: incoming.detail,
+    status: unavailable.contains("status") ? previous?.status : incoming.status,
+    checks: unavailable.contains("checks") ? (previous?.checks ?? []) : incoming.checks,
+    reviews: unavailable.contains("reviews") ? (previous?.reviews ?? []) : incoming.reviews,
+    comments: unavailable.contains("comments") ? (previous?.comments ?? []) : incoming.comments,
+    files: unavailable.contains("files") ? (previous?.files ?? []) : incoming.files,
+    commits: unavailable.contains("commits") ? previous?.commits : incoming.commits
+  )
+}
+
 func parsePullRequestPatch(_ patch: String) -> [PrDiffDisplayLine] {
   guard !patch.isEmpty else { return [] }
 
@@ -256,6 +276,135 @@ func filterPullRequestListItems(
 
 func repoScopedGitHubPullRequests(from snapshot: GitHubPrSnapshot?) -> [GitHubPrListItem] {
   snapshot?.repoPullRequests ?? []
+}
+
+func prSyntheticGitHubId(repoOwner: String, repoName: String, githubPrNumber: Int) -> String {
+  "gh:\(repoOwner)/\(repoName)#\(githubPrNumber)"
+}
+
+func prSyntheticGitHubId(for item: GitHubPrListItem) -> String {
+  prSyntheticGitHubId(
+    repoOwner: item.repoOwner,
+    repoName: item.repoName,
+    githubPrNumber: item.githubPrNumber
+  )
+}
+
+func prGitHubCoordinates(fromRouteId routeId: String) -> (repoOwner: String, repoName: String, githubPrNumber: Int)? {
+  guard routeId.hasPrefix("gh:") else { return nil }
+  let locator = routeId.dropFirst(3)
+  guard let hashIndex = locator.lastIndex(of: "#"),
+    let slashIndex = locator[..<hashIndex].firstIndex(of: "/"),
+    let number = Int(locator[locator.index(after: hashIndex)...])
+  else { return nil }
+  let owner = String(locator[..<slashIndex])
+  let repo = String(locator[locator.index(after: slashIndex)..<hashIndex])
+  guard !owner.isEmpty, !repo.isEmpty, number > 0 else { return nil }
+  return (owner, repo, number)
+}
+
+private func prGitHubIdentityKey(repoOwner: String, repoName: String, githubPrNumber: Int) -> String {
+  "\(repoOwner.lowercased())/\(repoName.lowercased())#\(githubPrNumber)"
+}
+
+/// Reconciles the bounded live GitHub projection with replicated ADE PR rows.
+/// The host projection is authoritative for rich GitHub metadata, while the
+/// local rows keep linked and terminal PRs visible during reconnects or while a
+/// webhook-backed projection refresh is still in flight.
+func prReconcileGitHubPullRequests(
+  snapshotItems: [GitHubPrListItem],
+  mappedPrs: [PullRequestListItem]
+) -> [GitHubPrListItem] {
+  var result = snapshotItems
+  var indexByIdentity: [String: Int] = [:]
+  indexByIdentity.reserveCapacity(snapshotItems.count + mappedPrs.count)
+  for (index, item) in result.enumerated() {
+    indexByIdentity[
+      prGitHubIdentityKey(
+        repoOwner: item.repoOwner,
+        repoName: item.repoName,
+        githubPrNumber: item.githubPrNumber
+      )
+    ] = index
+  }
+
+  for mapped in mappedPrs {
+    let key = prGitHubIdentityKey(
+      repoOwner: mapped.repoOwner,
+      repoName: mapped.repoName,
+      githubPrNumber: mapped.githubPrNumber
+    )
+    if let index = indexByIdentity[key] {
+      var item = result[index]
+      item.linkedPrId = mapped.id
+      item.linkedGroupId = mapped.linkedGroupId
+      item.linkedLaneId = mapped.laneId
+      item.linkedLaneName = mapped.laneName
+      item.adeKind = mapped.adeKind
+      item.workflowDisplayState = mapped.workflowDisplayState
+      item.cleanupState = mapped.cleanupState
+      // Let the newest projection own state in either direction. This keeps a
+      // terminal replicated row visible behind an older open-only response,
+      // while also allowing a freshly reopened local row to override a stale
+      // closed projection. If timestamps are unavailable, retain the previous
+      // terminal-row safety behavior.
+      let mappedUpdatedAt = prParsedDate(mapped.updatedAt)
+      let projectedUpdatedAt = prParsedDate(item.updatedAt)
+      let mappedStateIsNewer = if let mappedUpdatedAt, let projectedUpdatedAt {
+        mappedUpdatedAt >= projectedUpdatedAt
+      } else {
+        mapped.state == "merged" || mapped.state == "closed"
+      }
+      if mappedStateIsNewer {
+        item.state = mapped.state
+        item.isDraft = mapped.state == "draft"
+        item.title = mapped.title
+        item.githubUrl = mapped.githubUrl
+        item.baseBranch = mapped.baseBranch
+        item.headBranch = mapped.headBranch
+        item.updatedAt = mapped.updatedAt
+      }
+      result[index] = item
+      continue
+    }
+
+    let item = GitHubPrListItem(
+      id: prSyntheticGitHubId(
+        repoOwner: mapped.repoOwner,
+        repoName: mapped.repoName,
+        githubPrNumber: mapped.githubPrNumber
+      ),
+      scope: "repo",
+      repoOwner: mapped.repoOwner,
+      repoName: mapped.repoName,
+      githubPrNumber: mapped.githubPrNumber,
+      githubUrl: mapped.githubUrl,
+      title: mapped.title,
+      state: mapped.state,
+      isDraft: mapped.state == "draft",
+      baseBranch: mapped.baseBranch,
+      headBranch: mapped.headBranch,
+      headRepoOwner: mapped.repoOwner,
+      headRepoName: mapped.repoName,
+      author: nil,
+      createdAt: mapped.createdAt,
+      updatedAt: mapped.updatedAt,
+      linkedPrId: mapped.id,
+      linkedGroupId: mapped.linkedGroupId,
+      linkedLaneId: mapped.laneId,
+      linkedLaneName: mapped.laneName,
+      adeKind: mapped.adeKind,
+      workflowDisplayState: mapped.workflowDisplayState,
+      cleanupState: mapped.cleanupState,
+      labels: [],
+      isBot: false,
+      commentCount: 0
+    )
+    indexByIdentity[key] = result.count
+    result.append(item)
+  }
+
+  return result
 }
 
 // MARK: - GitHub PR list filter/sort/count (free functions)

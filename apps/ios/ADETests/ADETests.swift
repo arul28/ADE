@@ -1110,10 +1110,20 @@ final class ADETests: XCTestCase {
     let defaultArgs = makePrGithubSnapshotArgs(force: false, includeExternalClosed: false)
     XCTAssertEqual(defaultArgs["force"] as? Bool, false)
     XCTAssertNil(defaultArgs["includeExternalClosed"])
+    XCTAssertNil(defaultArgs["revalidate"])
 
-    let historyArgs = makePrGithubSnapshotArgs(force: true, includeExternalClosed: true)
+    let historyArgs = makePrGithubSnapshotArgs(
+      force: true,
+      includeExternalClosed: true,
+      historyPageLimit: 4,
+      revalidate: false,
+      includeStateCounts: true
+    )
     XCTAssertEqual(historyArgs["force"] as? Bool, true)
     XCTAssertEqual(historyArgs["includeExternalClosed"] as? Bool, true)
+    XCTAssertEqual(historyArgs["historyPageLimit"] as? Int, 4)
+    XCTAssertEqual(historyArgs["revalidate"] as? Bool, false)
+    XCTAssertEqual(historyArgs["includeStateCounts"] as? Bool, true)
   }
 
   func testProjectScopedOutboundEnvelopeTypesIncludeActiveProjectId() {
@@ -4956,6 +4966,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
+    XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-legacy"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-legacy"))
     do {
@@ -4969,6 +4980,19 @@ final class ADETests: XCTestCase {
       XCTFail("A legacy host must reject scheduled-work pause before transport")
     } catch {
       XCTAssertEqual((error as NSError).code, 15)
+    }
+    do {
+      _ = try await service.fetchPrMobileGithubDetail(
+        repoOwner: "arul28",
+        repoName: "ADE",
+        githubPrNumber: 849
+      )
+      XCTFail("A legacy host must reject aggregate PR detail before transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 17)
+      XCTAssertEqual(nsError.userInfo["ADEErrorCode"] as? String, "unsupported_action")
     }
     let analyticsOptOutAcknowledged = await service.setProductAnalyticsClientEnabled(false)
     XCTAssertTrue(analyticsOptOutAcknowledged)
@@ -5081,6 +5105,51 @@ final class ADETests: XCTestCase {
       let nsError = error as NSError
       XCTAssertEqual(nsError.domain, "ADE")
       XCTAssertEqual(nsError.code, 15)
+    }
+  }
+
+  @MainActor
+  func testMobileGithubDetailStaysGatedWhenCompatibleHostOmitsAction() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "prs.getGitHubSnapshot",
+            "policy": ["viewerAllowed": true, "queueable": false],
+          ]],
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "limited",
+          "requiredActions": ["prs.getMobileGithubDetail"],
+          "missingActions": ["prs.getMobileGithubDetail"],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .limited)
+    XCTAssertEqual(service.hostCompatibilityMissingActions, ["prs.getMobileGithubDetail"])
+    XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
+    do {
+      _ = try await service.fetchPrMobileGithubDetail(
+        repoOwner: "arul28",
+        repoName: "ADE",
+        githubPrNumber: 849
+      )
+      XCTFail("An advertised host without the action must reject aggregate PR detail before transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 17)
+      XCTAssertEqual(nsError.userInfo["ADEErrorCode"] as? String, "unsupported_action")
     }
   }
 
@@ -8902,6 +8971,7 @@ final class ADETests: XCTestCase {
       aiSummary: nil,
       groupMembers: [],
       capabilities: nil,
+      unavailableParts: [],
       loadedAt: Date(timeIntervalSince1970: 0)
     )
 

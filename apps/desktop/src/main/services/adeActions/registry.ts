@@ -428,6 +428,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getIntegrationResolutionState",
     "getMergeContext",
     "getMergeContexts",
+    "getMobileGithubDetail",
     "getMobileSnapshot",
     "getPrHealth",
     "getQueueState",

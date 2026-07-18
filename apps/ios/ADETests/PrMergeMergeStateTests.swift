@@ -382,7 +382,133 @@ final class PrMergeMergeStateTests: XCTestCase {
     XCTAssertEqual(admin, "gh pr merge 42 --squash --admin --repo arul28/ADE")
   }
 
+  // MARK: - Mobile GitHub projection reliability
+
+  func testGitHubSnapshotDecodesProjectionHistoryCounts() throws {
+    let snapshot = try JSONDecoder().decode(GitHubPrSnapshot.self, from: Data(#"""
+    {
+      "repo": { "owner": "arul28", "name": "ADE", "defaultBranch": "main" },
+      "viewerLogin": "arul28",
+      "repoPullRequests": [],
+      "externalPullRequests": [],
+      "syncedAt": "2026-07-17T12:00:00Z",
+      "history": {
+        "includeExternalClosed": false,
+        "pageLimit": 0,
+        "repoPullRequestsLoaded": 2,
+        "repoPullRequestsMayHaveMore": false,
+        "repoPullRequestCounts": { "open": 2, "closed": 17, "merged": 834 }
+      }
+    }
+    """#.utf8))
+
+    XCTAssertEqual(snapshot.history?.repoPullRequestCounts?.open, 2)
+    XCTAssertEqual(snapshot.history?.repoPullRequestCounts?.merged, 834)
+    XCTAssertEqual(snapshot.history?.repoPullRequestCounts?.closed, 17)
+  }
+
+  func testReconcileKeepsMappedTerminalPrVisibleWhenProjectionOmitsIt() {
+    let mapped = mappedPr(state: "merged")
+    let reconciled = prReconcileGitHubPullRequests(snapshotItems: [], mappedPrs: [mapped])
+
+    XCTAssertEqual(reconciled.count, 1)
+    XCTAssertEqual(reconciled[0].state, "merged")
+    XCTAssertEqual(reconciled[0].linkedPrId, mapped.id)
+    XCTAssertEqual(reconciled[0].linkedLaneId, mapped.laneId)
+  }
+
+  func testReconcileLetsReplicatedTerminalStateOverrideStaleOpenProjection() {
+    let mapped = mappedPr(state: "closed")
+    let reconciled = prReconcileGitHubPullRequests(
+      snapshotItems: [githubItem(state: "open")],
+      mappedPrs: [mapped]
+    )
+
+    XCTAssertEqual(reconciled.count, 1)
+    XCTAssertEqual(reconciled[0].state, "closed")
+    XCTAssertEqual(reconciled[0].linkedPrId, mapped.id)
+  }
+
+  func testReconcileLetsNewerReplicatedReopenOverrideStaleClosedProjection() {
+    let mapped = mappedPr(state: "open")
+    let reconciled = prReconcileGitHubPullRequests(
+      snapshotItems: [githubItem(state: "closed")],
+      mappedPrs: [mapped]
+    )
+
+    XCTAssertEqual(reconciled.count, 1)
+    XCTAssertEqual(reconciled[0].state, "open")
+    XCTAssertEqual(reconciled[0].updatedAt, mapped.updatedAt)
+  }
+
+  func testSyntheticGitHubRouteRoundTripsCoordinates() {
+    let route = prSyntheticGitHubId(repoOwner: "arul28", repoName: "ADE", githubPrNumber: 849)
+    let coords = prGitHubCoordinates(fromRouteId: route)
+
+    XCTAssertEqual(route, "gh:arul28/ADE#849")
+    XCTAssertEqual(coords?.repoOwner, "arul28")
+    XCTAssertEqual(coords?.repoName, "ADE")
+    XCTAssertEqual(coords?.githubPrNumber, 849)
+  }
+
+  func testPartialMobileDetailRetainsLastGoodSidecars() {
+    let previous = PullRequestSnapshot(
+      detail: nil,
+      status: nil,
+      checks: [check(name: "CI", conclusion: "success")],
+      reviews: [],
+      comments: [],
+      files: [PrFile(filename: "old.swift", status: "modified", additions: 1, deletions: 0, patch: nil, previousFilename: nil)],
+      commits: nil
+    )
+    let incoming = PullRequestSnapshot(
+      detail: nil,
+      status: nil,
+      checks: [],
+      reviews: [],
+      comments: [],
+      files: [PrFile(filename: "new.swift", status: "added", additions: 2, deletions: 0, patch: nil, previousFilename: nil)],
+      commits: nil
+    )
+
+    let merged = prMergeMobileGithubSnapshot(
+      incoming: incoming,
+      previous: previous,
+      unavailableParts: ["checks"]
+    )
+
+    XCTAssertEqual(merged.checks.map(\.name), ["CI"])
+    XCTAssertEqual(merged.files.map(\.filename), ["new.swift"])
+  }
+
   // MARK: - Helpers
+
+  private func githubItem(state: String) -> GitHubPrListItem {
+    GitHubPrListItem(
+      id: "node-849", scope: "repo", repoOwner: "arul28", repoName: "ADE",
+      githubPrNumber: 849, githubUrl: "https://github.com/arul28/ADE/pull/849",
+      title: "Clean up the PR list", state: state, isDraft: false,
+      baseBranch: "main", headBranch: "feature/pr-list", headRepoOwner: "arul28",
+      headRepoName: "ADE", author: "arul28", createdAt: "2026-07-17T10:00:00Z",
+      updatedAt: "2026-07-17T11:00:00Z", linkedPrId: nil, linkedGroupId: nil,
+      linkedLaneId: nil, linkedLaneName: nil, adeKind: nil, workflowDisplayState: nil,
+      cleanupState: nil, labels: [], isBot: false, commentCount: 3
+    )
+  }
+
+  private func mappedPr(state: String) -> PullRequestListItem {
+    PullRequestListItem(
+      id: "pr-849", laneId: "lane-849", laneName: "PR list", projectId: "project-1",
+      repoOwner: "arul28", repoName: "ADE", githubPrNumber: 849,
+      githubUrl: "https://github.com/arul28/ADE/pull/849", title: "Clean up the PR list",
+      state: state, baseBranch: "main", headBranch: "feature/pr-list",
+      checksStatus: "passing", reviewStatus: "approved", additions: 12, deletions: 4,
+      lastSyncedAt: "2026-07-17T12:00:00Z", createdAt: "2026-07-17T10:00:00Z",
+      updatedAt: "2026-07-17T12:00:00Z", adeKind: "single", linkedGroupId: nil,
+      linkedGroupType: nil, linkedGroupName: nil, linkedGroupPosition: nil,
+      linkedGroupCount: 0, workflowDisplayState: "complete", cleanupState: "none"
+    )
+  }
 
   private func check(name: String, conclusion: String) -> PrCheck {
     PrCheck(name: name, status: "completed", conclusion: conclusion, detailsUrl: nil, startedAt: nil, completedAt: nil)
