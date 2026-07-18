@@ -286,6 +286,7 @@ describe("openCodeAuthService", () => {
 
   it("clearProviderKey DELETEs the managed OpenCode credential", async () => {
     const release = vi.fn();
+    const deleteApiKey = vi.fn();
     __setOpenCodeAuthHooksForTests({
       acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
       httpJson: async (url, init) => {
@@ -293,22 +294,48 @@ describe("openCodeAuthService", () => {
         expect(init?.method).toBe("DELETE");
         return { ok: true, status: 204, body: null };
       },
+      deleteApiKey,
     });
 
     await expect(clearProviderKey(deps, { providerId: " github-copilot " })).resolves.toEqual({ ok: true });
+    expect(deleteApiKey).toHaveBeenCalledWith("github-copilot");
     expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("clearProviderKey reports server failures and releases the lease", async () => {
     const release = vi.fn();
+    const deleteApiKey = vi.fn();
     __setOpenCodeAuthHooksForTests({
       acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
       httpJson: async () => ({ ok: false, status: 405, body: null }),
+      deleteApiKey,
     });
 
     await expect(clearProviderKey(deps, { providerId: "openai" })).resolves.toEqual({
       ok: false,
       error: "OpenCode DELETE /auth failed (405).",
+    });
+    expect(deleteApiKey).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("clearProviderKey reports durable key-store deletion failures", async () => {
+    const release = vi.fn();
+    __setOpenCodeAuthHooksForTests({
+      acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
+      httpJson: async () => ({ ok: true, status: 204, body: null }),
+      deleteApiKey: () => {
+        throw new Error("keychain unavailable");
+      },
+    });
+
+    await expect(clearProviderKey(deps, { providerId: "openai" })).resolves.toEqual({
+      ok: false,
+      error: "OpenCode removed the key, but ADE could not delete its durable copy: keychain unavailable",
+    });
+    expect(logger.warn).toHaveBeenCalledWith("opencode.oauth_key_delete_failed", {
+      providerId: "openai",
+      error: "keychain unavailable",
     });
     expect(release).toHaveBeenCalledTimes(1);
   });

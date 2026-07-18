@@ -7,6 +7,7 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
 } from "../../../shared/types/config";
+import { isAllowedOpenCodeOAuthUrl } from "../../../shared/opencodeOAuth";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
@@ -152,6 +153,10 @@ export function OAuthConnectModal({
       if (cancelRequestedRef.current) {
         void window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
         return;
+      }
+      if (result.url && !isAllowedOpenCodeOAuthUrl(result.url)) {
+        await window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+        throw new Error("OpenCode returned an unsafe OAuth URL.");
       }
       openUrlInAdeBrowser(result.url);
       setStartResult(result);

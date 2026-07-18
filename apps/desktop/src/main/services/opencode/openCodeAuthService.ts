@@ -19,10 +19,14 @@ import type {
   OpenCodeOAuthStatusEvent,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
+import { isAllowedOpenCodeOAuthUrl } from "../../../shared/opencodeOAuth";
 import { buildOpenCodeMergedConfig, buildSharedOpenCodeServerKey } from "./openCodeRuntime";
 import { acquireSharedOpenCodeServer } from "./openCodeServerManager";
 import { probeOpenCodeProviderInventory } from "./openCodeInventory";
-import { storeApiKey as storeStoredApiKey } from "../ai/apiKeyStore";
+import {
+  deleteApiKey as deleteStoredApiKey,
+  storeApiKey as storeStoredApiKey,
+} from "../ai/apiKeyStore";
 
 /** How long an OAuth flow's shared lease stays alive between poll ticks. */
 const OAUTH_LEASE_IDLE_TTL_MS = 10_000;
@@ -50,26 +54,12 @@ type OpenCodeAuthHooks = {
   openExternal(url: string): Promise<void>;
   probeInventory(deps: OpenCodeAuthDeps): Promise<void>;
   storeApiKey(providerId: string, key: string): void;
+  deleteApiKey(providerId: string): void;
   now(): number;
 };
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isAllowedOAuthExternalUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol === "https:") return true;
-    if (parsed.protocol !== "http:") return false;
-    const hostname = parsed.hostname.toLowerCase();
-    return hostname === "localhost"
-      || hostname === "[::1]"
-      || hostname === "::1"
-      || /^127(?:\.\d{1,3}){3}$/.test(hostname);
-  } catch {
-    return false;
-  }
 }
 
 const defaultHooks: OpenCodeAuthHooks = {
@@ -102,7 +92,7 @@ const defaultHooks: OpenCodeAuthHooks = {
     return Array.isArray(data?.connected) ? data.connected : [];
   },
   async openExternal(url) {
-    if (!isAllowedOAuthExternalUrl(url)) {
+    if (!isAllowedOpenCodeOAuthUrl(url)) {
       throw new Error("OpenCode returned an unsafe OAuth URL.");
     }
     // try/catch keeps esbuild treating this as a runtime-optional require so
@@ -126,6 +116,9 @@ const defaultHooks: OpenCodeAuthHooks = {
   },
   storeApiKey(providerId, key) {
     storeStoredApiKey(providerId, key);
+  },
+  deleteApiKey(providerId) {
+    deleteStoredApiKey(providerId);
   },
   now() {
     return Date.now();
@@ -358,6 +351,16 @@ export async function clearProviderKey(
     if (!res.ok) {
       return { ok: false, error: `OpenCode DELETE /auth failed (${res.status}).` };
     }
+    try {
+      hooks.deleteApiKey(providerId);
+    } catch (err) {
+      const error = errorMessage(err);
+      deps.logger.warn("opencode.oauth_key_delete_failed", { providerId, error });
+      return {
+        ok: false,
+        error: `OpenCode removed the key, but ADE could not delete its durable copy: ${error}`,
+      };
+    }
     return { ok: true };
   } catch (err) {
     return { ok: false, error: errorMessage(err) };
@@ -391,5 +394,5 @@ export function __getActiveOAuthProviderIdsForTests(): string[] {
 }
 
 export function __isAllowedOAuthExternalUrlForTests(url: string): boolean {
-  return isAllowedOAuthExternalUrl(url);
+  return isAllowedOpenCodeOAuthUrl(url);
 }
