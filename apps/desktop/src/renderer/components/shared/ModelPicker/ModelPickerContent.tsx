@@ -304,6 +304,7 @@ export const ModelPickerContent = memo(function ModelPickerContent({
       }
       if (!matchesCursorAvailabilityMode(m)) return false;
       if (!authOnly) return true;
+      if (modelRequiresConfiguration(m)) return false;
       // Prefer auth-derived gate; fall back to caller-provided `isAvailable` if no auth signal exists.
       if (Object.keys(effectiveAuth).length > 0) {
         return familyIsReady(m.family);

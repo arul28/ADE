@@ -116,10 +116,10 @@ describe("classifyOpenCodeLaunchFailure", () => {
     ).toEqual({ kind: "launch-timeout" });
   });
 
-  it("classifies a darwin Gatekeeper kill with the quarantine xattr as quarantined", () => {
+  it("classifies explicit darwin developer-verification evidence with the quarantine xattr as quarantined", () => {
     setProcessPlatform("darwin");
     mockState.probeOpenCodeBinaryQuarantine.mockReturnValue("quarantined");
-    const error = new Error("Server exited with code null\nServer output: killed");
+    const error = new Error("OpenCode developer cannot be verified");
     expect(
       classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
     ).toEqual({
@@ -136,6 +136,24 @@ describe("classifyOpenCodeLaunchFailure", () => {
     expect(
       classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
     ).toEqual({ kind: "bad-signature", binaryPath: "/bin/opencode" });
+  });
+
+  it("keeps generic darwin kills unknown even when a quarantine attribute exists", () => {
+    setProcessPlatform("darwin");
+    mockState.probeOpenCodeBinaryQuarantine.mockReturnValue("quarantined");
+    const error = new Error("Server exited with code null\nServer output: killed");
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "unknown", message: error.message });
+  });
+
+  it("keeps explicit signature failures unknown when the quarantine probe is inconclusive", () => {
+    setProcessPlatform("darwin");
+    mockState.probeOpenCodeBinaryQuarantine.mockReturnValue("unknown");
+    const error = new Error("dyld: code signature invalid for opencode");
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "unknown", message: error.message });
   });
 
   it("classifies unrecognized failures as unknown, preserving the message", () => {

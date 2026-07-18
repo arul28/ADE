@@ -869,6 +869,23 @@ describe("ModelPicker", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("excludes configuration-gated models from the auth-only filter", async () => {
+    const user = userEvent.setup();
+    authOnlyState = true;
+    providerAuthStatusInternal = { anthropic: "ok" };
+    const gatedOpus = {
+      ...OPUS,
+      catalogRequiresConfiguration: true,
+    } as ModelDescriptor;
+
+    renderPicker({ models: [SONNET, gatedOpus] });
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    const ids = screen.getAllByRole("option").map((row) => row.getAttribute("data-model-id"));
+    expect(ids).toContain(SONNET.id);
+    expect(ids).not.toContain(OPUS.id);
+  });
+
   it("does not render the Set up banner when the active rail is authed", async () => {
     const user = userEvent.setup();
     providerAuthStatusInternal = { anthropic: "ok", openai: "unauthed" };

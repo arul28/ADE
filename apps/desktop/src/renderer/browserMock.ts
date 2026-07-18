@@ -3821,6 +3821,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       opencodeOAuthStart: resolvedArg({ url: "", method: "auto", instructions: "" } as any),
       opencodeOAuthCancel: resolvedArg(undefined),
       setOpencodeProviderKey: resolvedArg({ ok: false, error: "browser" } as any),
+      clearOpencodeProviderKey: resolvedArg({ ok: false, error: "browser" } as any),
       refreshModelsDev: resolved({ lastFetchedAt: null }),
       onOpencodeOAuthStatus: () => () => {},
     },

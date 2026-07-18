@@ -576,6 +576,7 @@ import { mergeAiConfig, type createProjectConfigService } from "../config/projec
 import {
   addOpenCodeOAuthStatusListener,
   cancelOAuth as cancelOpenCodeOAuth,
+  clearProviderKey as clearOpenCodeProviderKey,
   listAuthMethods as listOpenCodeAuthMethods,
   setProviderKey as setOpenCodeProviderKey,
   startOAuth as startOpenCodeOAuth,
@@ -4477,6 +4478,28 @@ export function registerIpc({
     ): Promise<{ ok: boolean; error?: string }> => {
       const ctx = getCtx();
       const result = await setOpenCodeProviderKey(buildOpenCodeAuthDeps(), arg);
+      if (result.ok) {
+        try {
+          ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+        } catch (error) {
+          ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+            provider: arg.providerId,
+            error: getErrorMessage(error),
+          });
+        }
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiClearOpencodeProviderKey,
+    async (
+      _event,
+      arg: { providerId: string },
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const ctx = getCtx();
+      const result = await clearOpenCodeProviderKey(buildOpenCodeAuthDeps(), arg);
       if (result.ok) {
         try {
           ctx.aiIntegrationService?.invalidateProviderReadinessCaches();

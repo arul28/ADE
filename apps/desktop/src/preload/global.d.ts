@@ -949,6 +949,9 @@ declare global {
           providerId: string;
           key: string;
         }) => Promise<{ ok: boolean; error?: string }>;
+        clearOpencodeProviderKey: (args: {
+          providerId: string;
+        }) => Promise<{ ok: boolean; error?: string }>;
         refreshModelsDev: () => Promise<{ lastFetchedAt: number | null }>;
         onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void) => () => void;
         cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;

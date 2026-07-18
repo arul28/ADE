@@ -3,10 +3,12 @@ import type { Logger } from "../logging/logger";
 import type { OpenCodeOAuthStatusEvent } from "../../../shared/types/config";
 import {
   __getActiveOAuthProviderIdsForTests,
+  __isAllowedOAuthExternalUrlForTests,
   __resetOpenCodeAuthServiceForTests,
   __setOpenCodeAuthHooksForTests,
   addOpenCodeOAuthStatusListener,
   cancelOAuth,
+  clearProviderKey,
   listAuthMethods,
   setProviderKey,
   startOAuth,
@@ -103,6 +105,55 @@ describe("openCodeAuthService", () => {
     expect(__getActiveOAuthProviderIdsForTests()).toEqual([]);
   });
 
+  it("serializes OAuth polls and aborts a stalled provider-list request", async () => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const listConnectedProviders = vi.fn(
+      async (_baseUrl: string, _directory: string, signal?: AbortSignal): Promise<string[]> => {
+        signals.push(signal!);
+        activeRequests += 1;
+        maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+        return await new Promise<string[]>((_, reject) => {
+          signal?.addEventListener("abort", () => {
+            activeRequests -= 1;
+            reject(signal.reason);
+          }, { once: true });
+        });
+      },
+    );
+    __setOpenCodeAuthHooksForTests({
+      acquireLease: async () => ({ url: "http://127.0.0.1:4200", release: vi.fn() }),
+      httpJson: async () => ({ ok: true, status: 200, body: { url: "https://x", method: "auto", instructions: "" } }),
+      listConnectedProviders,
+      openExternal: async () => {},
+      probeInventory: async () => {},
+    });
+
+    await startOAuth(deps, { providerId: "openai", methodIndex: 0 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(listConnectedProviders).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(listConnectedProviders).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(listConnectedProviders).toHaveBeenCalledTimes(2);
+    expect(maxActiveRequests).toBe(1);
+  });
+
+  it("allows HTTPS and loopback HTTP OAuth URLs only", () => {
+    expect(__isAllowedOAuthExternalUrlForTests("https://example.com/oauth")).toBe(true);
+    expect(__isAllowedOAuthExternalUrlForTests("http://localhost:3000/callback")).toBe(true);
+    expect(__isAllowedOAuthExternalUrlForTests("http://127.0.0.2/callback")).toBe(true);
+    expect(__isAllowedOAuthExternalUrlForTests("http://[::1]/callback")).toBe(true);
+    expect(__isAllowedOAuthExternalUrlForTests("http://example.com/oauth")).toBe(false);
+    expect(__isAllowedOAuthExternalUrlForTests("file:///tmp/token")).toBe(false);
+    expect(__isAllowedOAuthExternalUrlForTests("custom-protocol://oauth")).toBe(false);
+  });
+
   it("emits timeout and releases the lease when the provider never connects", async () => {
     vi.useFakeTimers();
     const events = collectEvents();
@@ -194,5 +245,71 @@ describe("openCodeAuthService", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toContain("400");
     expect(storeApiKey).not.toHaveBeenCalled();
+  });
+
+  it("setProviderKey reports durable key-store failures", async () => {
+    const release = vi.fn();
+    __setOpenCodeAuthHooksForTests({
+      acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
+      httpJson: async () => ({ ok: true, status: 200, body: true }),
+      storeApiKey: () => {
+        throw new Error("keychain unavailable");
+      },
+    });
+
+    const result = await setProviderKey(deps, { providerId: "moonshotai", key: "sk-test" });
+    expect(result).toEqual({
+      ok: false,
+      error: "OpenCode accepted the key, but ADE could not store it durably: keychain unavailable",
+    });
+    expect(logger.warn).toHaveBeenCalledWith("opencode.oauth_key_mirror_failed", {
+      providerId: "moonshotai",
+      error: "keychain unavailable",
+    });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("setProviderKey rejects empty inputs before acquiring a lease", async () => {
+    const acquireLease = vi.fn();
+    __setOpenCodeAuthHooksForTests({ acquireLease });
+
+    await expect(setProviderKey(deps, { providerId: " ", key: "sk-test" })).resolves.toEqual({
+      ok: false,
+      error: "Provider ID is required.",
+    });
+    await expect(setProviderKey(deps, { providerId: "openai", key: " " })).resolves.toEqual({
+      ok: false,
+      error: "Provider key is required.",
+    });
+    expect(acquireLease).not.toHaveBeenCalled();
+  });
+
+  it("clearProviderKey DELETEs the managed OpenCode credential", async () => {
+    const release = vi.fn();
+    __setOpenCodeAuthHooksForTests({
+      acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
+      httpJson: async (url, init) => {
+        expect(url).toBe("http://127.0.0.1:4200/auth/github-copilot");
+        expect(init?.method).toBe("DELETE");
+        return { ok: true, status: 204, body: null };
+      },
+    });
+
+    await expect(clearProviderKey(deps, { providerId: " github-copilot " })).resolves.toEqual({ ok: true });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("clearProviderKey reports server failures and releases the lease", async () => {
+    const release = vi.fn();
+    __setOpenCodeAuthHooksForTests({
+      acquireLease: async () => ({ url: "http://127.0.0.1:4200", release }),
+      httpJson: async () => ({ ok: false, status: 405, body: null }),
+    });
+
+    await expect(clearProviderKey(deps, { providerId: "openai" })).resolves.toEqual({
+      ok: false,
+      error: "OpenCode DELETE /auth failed (405).",
+    });
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });

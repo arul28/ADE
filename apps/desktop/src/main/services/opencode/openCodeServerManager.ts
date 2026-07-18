@@ -513,10 +513,9 @@ function errorCode(error: unknown): string {
 /**
  * Classify a raw OpenCode launch/probe failure into a typed diagnostic. See the
  * task heuristics: ENOENT / no resolved binary → not-installed; EADDRINUSE →
- * port-conflict; startup deadline → launch-timeout; darwin Gatekeeper signals
- * (EPERM / "operation not permitted" / "killed" / "code signature") →
- * quarantined (when the `com.apple.quarantine` xattr is present) else
- * bad-signature; anything else → unknown.
+ * port-conflict; startup deadline → launch-timeout; explicit darwin
+ * signature/developer-verification evidence → quarantined or bad-signature
+ * only when the quarantine probe is conclusive; anything else → unknown.
  */
 export function classifyOpenCodeLaunchFailure(
   error: unknown,
@@ -536,16 +535,9 @@ export function classifyOpenCodeLaunchFailure(
   if (lower.includes("timeout waiting for server to start")) {
     return { kind: "launch-timeout" };
   }
-  if (
-    process.platform === "darwin"
-    && (
-      code === "EPERM"
-      || lower.includes("operation not permitted")
-      || lower.includes("killed")
-      || lower.includes("code signature")
-      || lower.includes("developer cannot be verified")
-    )
-  ) {
+  const hasExplicitSignatureEvidence = lower.includes("code signature")
+    || lower.includes("developer cannot be verified");
+  if (process.platform === "darwin" && hasExplicitSignatureEvidence) {
     const quarantine = probeOpenCodeBinaryQuarantine(binaryPath);
     if (quarantine === "quarantined") {
       return {
@@ -554,7 +546,9 @@ export function classifyOpenCodeLaunchFailure(
         fixCommand: `xattr -d com.apple.quarantine "${binaryPath}"`,
       };
     }
-    return { kind: "bad-signature", binaryPath };
+    if (quarantine === "clean") {
+      return { kind: "bad-signature", binaryPath };
+    }
   }
   return { kind: "unknown", message: message || "OpenCode server failed to launch." };
 }

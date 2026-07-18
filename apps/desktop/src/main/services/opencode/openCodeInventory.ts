@@ -86,8 +86,32 @@ function readPersistedInventoryFile(): PersistedInventoryFile {
   if (persistedInventoryMemo) return persistedInventoryMemo;
   try {
     const raw = fs.readFileSync(resolvePersistedInventoryPath(), "utf8");
-    const parsed = JSON.parse(raw) as PersistedInventoryFile;
-    persistedInventoryMemo = parsed && typeof parsed === "object" ? parsed : {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      persistedInventoryMemo = {};
+    } else {
+      persistedInventoryMemo = Object.fromEntries(
+        Object.entries(parsed).filter(([, entry]) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+          const record = entry as Record<string, unknown>;
+          if (typeof record.savedAt !== "number" || !Number.isFinite(record.savedAt)) return false;
+          if (!Array.isArray(record.providers)) return false;
+          return record.providers.every((provider) => {
+            if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+            const info = provider as Record<string, unknown>;
+            return typeof info.id === "string"
+              && typeof info.name === "string"
+              && typeof info.connected === "boolean"
+              && typeof info.modelCount === "number"
+              && Number.isFinite(info.modelCount)
+              && (
+                info.availableModelCount === undefined
+                || (typeof info.availableModelCount === "number" && Number.isFinite(info.availableModelCount))
+              );
+          });
+        }),
+      ) as PersistedInventoryFile;
+    }
   } catch {
     persistedInventoryMemo = {};
   }
@@ -147,6 +171,8 @@ function fingerprintOpenCodeConfig(
   return stableStringify({
     apiKeys: ai.apiKeys ?? {},
     localProviders: ai.localProviders ?? {},
+    customProviders: ai.customProviders ?? [],
+    customModelSlugs: ai.customModelSlugs ?? [],
     discoveredModels: discoveredLocalModels?.map((m) => `${m.provider}/${m.modelId}`).sort() ?? [],
   });
 }
@@ -459,6 +485,12 @@ export async function probeOpenCodeProviderInventory(args: {
               ...(normalizedModel.serviceTiers?.length ? { serviceTiers: normalizedModel.serviceTiers } : {}),
               capabilities: normalizedModel.capabilities ?? readOpenCodeModelCapabilities(modelRecord),
             });
+            // Keep ADE's normalized identity/display metadata, but always route
+            // through the exact model ID OpenCode advertised. An alias row may
+            // normalize to a newer canonical ADE ID that this provider cannot
+            // actually launch.
+            descriptor.openCodeModelId = mid;
+            descriptor.providerModelId = `${provider.id}/${mid}`;
             const existingIndex = descriptorIds.get(descriptor.id);
             if (existingIndex !== undefined) {
               if (

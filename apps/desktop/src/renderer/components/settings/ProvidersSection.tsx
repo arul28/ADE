@@ -696,10 +696,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     try {
       await window.ade.ai.storeApiKey(provider, trimmed);
       if (options?.alsoOpenCode) {
-        try {
-          await window.ade.ai.setOpencodeProviderKey({ providerId: provider, key: trimmed });
-        } catch {
-          // OpenCode registration is best-effort; the stored key still applies.
+        const result = await window.ade.ai.setOpencodeProviderKey({ providerId: provider, key: trimmed });
+        if (!result.ok) {
+          throw new Error(result.error || "OpenCode rejected the provider key.");
         }
       }
       invalidateAiDiscoveryCache();
@@ -716,11 +715,17 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     }
   };
 
-  const deleteApiKey = async (provider: string) => {
+  const deleteApiKey = async (provider: string, options?: { alsoOpenCode?: boolean }) => {
     setError(null);
     setNotice(null);
     setOpenRowMenu(null);
     try {
+      if (options?.alsoOpenCode) {
+        const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider });
+        if (!result.ok) {
+          throw new Error(result.error || "OpenCode could not remove the provider key.");
+        }
+      }
       await window.ade.ai.deleteApiKey(provider);
       invalidateAiDiscoveryCache();
       setNotice(`${provider} key removed.`);
@@ -1436,7 +1441,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
                               {keySource === "store" ? (
                                 <>
                                   <button type="button" style={{ textAlign: "left", padding: "8px 12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textPrimary, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => beginEditing(provider.provider)}>Replace</button>
-                                  <button type="button" style={{ textAlign: "left", padding: "8px 12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => void deleteApiKey(provider.provider)}>Delete</button>
+                                  <button type="button" style={{ textAlign: "left", padding: "8px 12px", fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger, background: "transparent", border: "none", cursor: "pointer" }} onClick={() => void deleteApiKey(provider.provider, { alsoOpenCode: true })}>Delete</button>
                                 </>
                               ) : null}
                             </div>

@@ -514,6 +514,7 @@ export const IPC = {
   aiOpencodeOAuthStart: "ade.ai.opencodeOAuthStart",
   aiOpencodeOAuthCancel: "ade.ai.opencodeOAuthCancel",
   aiSetOpencodeProviderKey: "ade.ai.setOpencodeProviderKey",
+  aiClearOpencodeProviderKey: "ade.ai.clearOpencodeProviderKey",
   aiRefreshModelsDev: "ade.ai.refreshModelsDev",
   aiOpencodeOAuthStatus: "ade.ai.opencodeOAuthStatus",
   projectSecretsList: "ade.projectSecrets.list",

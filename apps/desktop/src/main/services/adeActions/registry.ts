@@ -5,6 +5,7 @@ import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import {
   addOpenCodeOAuthStatusListener,
   cancelOAuth as cancelOpenCodeOAuth,
+  clearProviderKey as clearOpenCodeProviderKey,
   listAuthMethods as listOpenCodeAuthMethods,
   setProviderKey as setOpenCodeProviderKey,
   startOAuth as startOpenCodeOAuth,
@@ -177,7 +178,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   // cancelScheduledCleanup can silently defeat a cleanup policy another
   // automation scheduled, so it is operator-only like the webhook lifecycle.
   automations: ["setWebhookGatewayPublicUrl", "linearIngressSetup", "linearIngressTeardown", "cancelScheduledCleanup"],
-  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "refreshModelsDev"],
+  ai: ["updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev"],
   budget: ["updateConfig"],
   feedback: ["submitPreparedDraft"],
   usage: ["forceRefresh", "refreshHistory", "poll", "start", "stop"],
@@ -564,6 +565,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "opencodeOAuthStart",
     "opencodeOAuthCancel",
     "setOpencodeProviderKey",
+    "clearOpencodeProviderKey",
     "refreshModelsDev",
     "listCursorCloudRepositories",
     "listCursorCloudAgents",
@@ -2048,12 +2050,12 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
 // Bridge OpenCode OAuth status transitions onto each runtime's event buffer so
 // remote/web clients (which drain runtimeEvents over the sync/relay channel)
 // mirror them, exactly like desktop windows do over IPC. Registered once per
-// runtime; the listener lives for the runtime's lifetime.
+// runtime; the listener is detached when the runtime is disposed.
 const oauthStatusBridgedRuntimes = new WeakSet<AdeRuntime>();
 function ensureOpenCodeOAuthStatusRelayBridge(runtime: AdeRuntime): void {
   if (!runtime.eventBuffer || oauthStatusBridgedRuntimes.has(runtime)) return;
   oauthStatusBridgedRuntimes.add(runtime);
-  addOpenCodeOAuthStatusListener((event) => {
+  const unsubscribe = addOpenCodeOAuthStatusListener((event) => {
     try {
       runtime.eventBuffer.push({
         timestamp: new Date().toISOString(),
@@ -2064,6 +2066,11 @@ function ensureOpenCodeOAuthStatusRelayBridge(runtime: AdeRuntime): void {
       // A full/broken buffer must not break the OAuth flow.
     }
   });
+  const dispose = runtime.dispose;
+  runtime.dispose = () => {
+    unsubscribe();
+    dispose();
+  };
 }
 
 function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -2092,6 +2099,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       setOpenCodeProviderKey(buildOpenCodeAuthDeps(), {
         providerId: requireNonEmptyString(args?.providerId, "providerId"),
         key: requireNonEmptyString(args?.key, "key"),
+      }),
+    clearOpencodeProviderKey: (args?: { providerId?: string }) =>
+      clearOpenCodeProviderKey(buildOpenCodeAuthDeps(), {
+        providerId: requireNonEmptyString(args?.providerId, "providerId"),
       }),
     refreshModelsDev: async () => {
       try {

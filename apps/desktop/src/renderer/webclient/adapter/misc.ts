@@ -447,6 +447,13 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
         { ok: false, error: "OpenCode provider keys are unavailable in the web client while offline" },
         false,
       ),
+    clearOpencodeProviderKey: (args: unknown) =>
+      call<{ ok: boolean; error?: string }>(
+        "ai.clearOpencodeProviderKey",
+        args,
+        { ok: false, error: "OpenCode provider keys are unavailable in the web client while offline" },
+        false,
+      ),
     refreshModelsDev: () =>
       call<{ lastFetchedAt: number | null }>("ai.refreshModelsDev", undefined, { lastFetchedAt: null }),
     onOpencodeOAuthStatus: (cb: (status: OpenCodeOAuthStatusEvent) => void) =>

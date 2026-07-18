@@ -28,6 +28,8 @@ import { storeApiKey as storeStoredApiKey } from "../ai/apiKeyStore";
 const OAUTH_LEASE_IDLE_TTL_MS = 10_000;
 /** OAuth completion poll cadence. */
 const POLL_INTERVAL_MS = 2_000;
+/** Bound each provider-list request so a stalled server cannot wedge polling. */
+const POLL_REQUEST_TIMEOUT_MS = 10_000;
 /** Give up on an OAuth flow after this long without the provider connecting. */
 const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -44,7 +46,7 @@ type HttpJsonResult = { ok: boolean; status: number; body: unknown };
 type OpenCodeAuthHooks = {
   acquireLease(deps: OpenCodeAuthDeps): Promise<SharedLease>;
   httpJson(url: string, init?: RequestInit): Promise<HttpJsonResult>;
-  listConnectedProviders(baseUrl: string, directory: string): Promise<string[]>;
+  listConnectedProviders(baseUrl: string, directory: string, signal?: AbortSignal): Promise<string[]>;
   openExternal(url: string): Promise<void>;
   probeInventory(deps: OpenCodeAuthDeps): Promise<void>;
   storeApiKey(providerId: string, key: string): void;
@@ -53,6 +55,21 @@ type OpenCodeAuthHooks = {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isAllowedOAuthExternalUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:") return true;
+    if (parsed.protocol !== "http:") return false;
+    const hostname = parsed.hostname.toLowerCase();
+    return hostname === "localhost"
+      || hostname === "[::1]"
+      || hostname === "::1"
+      || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  } catch {
+    return false;
+  }
 }
 
 const defaultHooks: OpenCodeAuthHooks = {
@@ -78,13 +95,16 @@ const defaultHooks: OpenCodeAuthHooks = {
     }
     return { ok: res.ok, status: res.status, body };
   },
-  async listConnectedProviders(baseUrl, directory) {
+  async listConnectedProviders(baseUrl, directory, signal) {
     const client = createOpencodeClient({ baseUrl, directory });
-    const listed = await client.provider.list({ query: { directory }, throwOnError: true });
+    const listed = await client.provider.list({ query: { directory }, throwOnError: true, signal });
     const data = listed.data as { connected?: string[] } | undefined;
     return Array.isArray(data?.connected) ? data.connected : [];
   },
   async openExternal(url) {
+    if (!isAllowedOAuthExternalUrl(url)) {
+      throw new Error("OpenCode returned an unsafe OAuth URL.");
+    }
     // try/catch keeps esbuild treating this as a runtime-optional require so
     // the ade-cli static runtime (no electron) can bundle this module; there
     // the OAuth URL is still surfaced to the caller, just not auto-opened.
@@ -118,7 +138,8 @@ const statusListeners = new Set<StatusListener>();
 
 type ActiveFlow = {
   release: () => void;
-  timer: ReturnType<typeof setInterval>;
+  timer: ReturnType<typeof setTimeout> | null;
+  requestController: AbortController | null;
 };
 const activeFlows = new Map<string, ActiveFlow>();
 
@@ -144,13 +165,14 @@ function emit(event: OpenCodeOAuthStatusEvent): void {
   }
 }
 
-/** Tear down an active flow (clear the poll timer, release the lease) and emit `state`. */
+/** Tear down an active flow (clear/abort polling, release the lease) and emit `state`. */
 function finishFlow(providerId: string, state: OpenCodeOAuthStatusEvent["state"], error?: string): void {
   const flow = activeFlows.get(providerId);
   if (!flow) return;
-  clearInterval(flow.timer);
-  flow.release();
   activeFlows.delete(providerId);
+  if (flow.timer) clearTimeout(flow.timer);
+  flow.requestController?.abort(new Error("OpenCode OAuth polling stopped."));
+  flow.release();
   emit({ providerId, state, ...(error ? { error } : {}) });
 }
 
@@ -209,32 +231,60 @@ export async function startOAuth(
 
     emit({ providerId, state: "pending" });
     const startedAt = hooks.now();
-    const timer = setInterval(() => {
-      void (async () => {
-        try {
-          if (hooks.now() - startedAt >= OAUTH_TIMEOUT_MS) {
-            finishFlow(providerId, "timeout");
-            return;
-          }
-          const connected = await hooks.listConnectedProviders(lease.url, deps.projectRoot);
-          if (!activeFlows.has(providerId)) return; // cancelled while awaiting
-          if (connected.includes(providerId)) {
-            finishFlow(providerId, "connected");
-            void hooks.probeInventory(deps).catch((err) => {
-              deps.logger.warn("opencode.oauth_post_connect_probe_failed", {
-                providerId,
-                error: errorMessage(err),
-              });
-            });
-          }
-        } catch (err) {
-          deps.logger.warn("opencode.oauth_poll_failed", { providerId, error: errorMessage(err) });
-        }
-      })();
-    }, POLL_INTERVAL_MS);
-    if (timer.unref) timer.unref();
+    const flow: ActiveFlow = {
+      release: () => lease.release(),
+      timer: null,
+      requestController: null,
+    };
+    const scheduleNextPoll = () => {
+      flow.timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
+      if (flow.timer.unref) flow.timer.unref();
+    };
+    const poll = async (): Promise<void> => {
+      if (activeFlows.get(providerId) !== flow) return;
+      const elapsed = hooks.now() - startedAt;
+      if (elapsed >= OAUTH_TIMEOUT_MS) {
+        finishFlow(providerId, "timeout");
+        return;
+      }
 
-    activeFlows.set(providerId, { release: () => lease.release(), timer });
+      const controller = new AbortController();
+      flow.requestController = controller;
+      const requestTimeout = setTimeout(
+        () => controller.abort(new Error("OpenCode provider list request timed out.")),
+        Math.min(POLL_REQUEST_TIMEOUT_MS, OAUTH_TIMEOUT_MS - elapsed),
+      );
+      if (requestTimeout.unref) requestTimeout.unref();
+      try {
+        const connected = await hooks.listConnectedProviders(lease.url, deps.projectRoot, controller.signal);
+        if (activeFlows.get(providerId) !== flow) return;
+        if (connected.includes(providerId)) {
+          finishFlow(providerId, "connected");
+          void hooks.probeInventory(deps).catch((err) => {
+            deps.logger.warn("opencode.oauth_post_connect_probe_failed", {
+              providerId,
+              error: errorMessage(err),
+            });
+          });
+          return;
+        }
+      } catch (err) {
+        if (activeFlows.get(providerId) !== flow) return;
+        deps.logger.warn("opencode.oauth_poll_failed", { providerId, error: errorMessage(err) });
+      } finally {
+        clearTimeout(requestTimeout);
+        if (activeFlows.get(providerId) === flow) flow.requestController = null;
+      }
+
+      if (hooks.now() - startedAt >= OAUTH_TIMEOUT_MS) {
+        finishFlow(providerId, "timeout");
+        return;
+      }
+      scheduleNextPoll();
+    };
+
+    activeFlows.set(providerId, flow);
+    scheduleNextPoll();
     handedOff = true;
     return { url, method, instructions };
   } catch (err) {
@@ -259,7 +309,11 @@ export async function setProviderKey(
   deps: OpenCodeAuthDeps,
   args: { providerId: string; key: string },
 ): Promise<{ ok: boolean; error?: string }> {
-  const { providerId, key } = args;
+  const providerId = args.providerId.trim();
+  const key = args.key.trim();
+  if (!providerId) return { ok: false, error: "Provider ID is required." };
+  if (!key) return { ok: false, error: "Provider key is required." };
+
   const lease = await hooks.acquireLease(deps);
   try {
     const res = await hooks.httpJson(`${lease.url}/auth/${encodeURIComponent(providerId)}`, {
@@ -273,7 +327,36 @@ export async function setProviderKey(
     try {
       hooks.storeApiKey(providerId, key);
     } catch (err) {
-      deps.logger.warn("opencode.oauth_key_mirror_failed", { providerId, error: errorMessage(err) });
+      const error = errorMessage(err);
+      deps.logger.warn("opencode.oauth_key_mirror_failed", { providerId, error });
+      return {
+        ok: false,
+        error: `OpenCode accepted the key, but ADE could not store it durably: ${error}`,
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: errorMessage(err) };
+  } finally {
+    lease.release();
+  }
+}
+
+/** Remove a provider credential from the managed OpenCode server. */
+export async function clearProviderKey(
+  deps: OpenCodeAuthDeps,
+  args: { providerId: string },
+): Promise<{ ok: boolean; error?: string }> {
+  const providerId = args.providerId.trim();
+  if (!providerId) return { ok: false, error: "Provider ID is required." };
+
+  const lease = await hooks.acquireLease(deps);
+  try {
+    const res = await hooks.httpJson(`${lease.url}/auth/${encodeURIComponent(providerId)}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      return { ok: false, error: `OpenCode DELETE /auth failed (${res.status}).` };
     }
     return { ok: true };
   } catch (err) {
@@ -293,7 +376,8 @@ export function __resetOpenCodeAuthServiceForTests(): void {
   for (const providerId of [...activeFlows.keys()]) {
     const flow = activeFlows.get(providerId);
     if (flow) {
-      clearInterval(flow.timer);
+      if (flow.timer) clearTimeout(flow.timer);
+      flow.requestController?.abort(new Error("OpenCode OAuth service reset."));
       flow.release();
     }
     activeFlows.delete(providerId);
@@ -304,4 +388,8 @@ export function __resetOpenCodeAuthServiceForTests(): void {
 
 export function __getActiveOAuthProviderIdsForTests(): string[] {
   return [...activeFlows.keys()];
+}
+
+export function __isAllowedOAuthExternalUrlForTests(url: string): boolean {
+  return isAllowedOAuthExternalUrl(url);
 }

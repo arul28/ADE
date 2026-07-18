@@ -2,8 +2,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const childProcessMockState = vi.hoisted(() => ({
+  execFileSync: vi.fn(),
+}));
+
+vi.mock("node:child_process", async () => {
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  return {
+    ...actual,
+    execFileSync: (...args: unknown[]) => childProcessMockState.execFileSync(...args),
+  };
+});
+
 import {
   clearOpenCodeBinaryCache,
+  probeOpenCodeBinaryQuarantine,
   resolveOpenCodeBinary,
 } from "./openCodeBinaryManager";
 
@@ -15,6 +29,14 @@ const originalEnv = {
   PATH: process.env.PATH,
   SHELL: process.env.SHELL,
 };
+const originalProcessPlatform = process.platform;
+
+function setProcessPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", {
+    value: platform,
+    configurable: true,
+  });
+}
 
 function makeExecutable(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -42,6 +64,7 @@ describe("openCodeBinaryManager", () => {
   let homeDir: string;
 
   beforeEach(() => {
+    childProcessMockState.execFileSync.mockReset();
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-opencode-bin-"));
     homeDir = path.join(tempRoot, "home");
     fs.mkdirSync(homeDir, { recursive: true });
@@ -65,6 +88,7 @@ describe("openCodeBinaryManager", () => {
   });
 
   afterEach(() => {
+    setProcessPlatform(originalProcessPlatform);
     clearOpenCodeBinaryCache();
     vi.restoreAllMocks();
     restoreEnv("ADE_DISABLE_BUNDLED_OPENCODE");
@@ -127,5 +151,36 @@ describe("openCodeBinaryManager", () => {
       path: bundledPath,
       source: "bundled",
     });
+  });
+
+  it("treats any successful quarantine attribute read as quarantined", () => {
+    setProcessPlatform("darwin");
+    childProcessMockState.execFileSync.mockReturnValue("");
+
+    expect(probeOpenCodeBinaryQuarantine("/bin/opencode")).toBe("quarantined");
+  });
+
+  it("returns clean only for an explicit missing quarantine attribute", () => {
+    setProcessPlatform("darwin");
+    childProcessMockState.execFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("xattr failed"), {
+        status: 1,
+        stderr: "xattr: /bin/opencode: No such xattr: com.apple.quarantine",
+      });
+    });
+
+    expect(probeOpenCodeBinaryQuarantine("/bin/opencode")).toBe("clean");
+  });
+
+  it("keeps other quarantine probe failures unknown", () => {
+    setProcessPlatform("darwin");
+    childProcessMockState.execFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("xattr failed"), {
+        status: 1,
+        stderr: "xattr: /bin/opencode: Permission denied",
+      });
+    });
+
+    expect(probeOpenCodeBinaryQuarantine("/bin/opencode")).toBe("unknown");
   });
 });

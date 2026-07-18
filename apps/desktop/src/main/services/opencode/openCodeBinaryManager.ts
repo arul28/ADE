@@ -186,20 +186,30 @@ export function probeOpenCodeBinaryQuarantine(binaryPath: string | null | undefi
   const trimmed = binaryPath?.trim();
   if (!trimmed) return "unknown";
   try {
-    const output = execFileSync("xattr", ["-p", "com.apple.quarantine", trimmed], {
+    execFileSync("xattr", ["-p", "com.apple.quarantine", trimmed], {
       encoding: "utf8",
       timeout: 1_000,
       windowsHide: true,
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
-    return output.trim().length > 0 ? "quarantined" : "clean";
+    return "quarantined";
   } catch (error) {
-    // `xattr -p` exits non-zero when the attribute is absent — treat that as
-    // "clean". A missing `xattr` binary (ENOENT) or a timeout leaves `status`
-    // null, which we surface as "unknown" so callers don't over-claim.
-    const status = (error && typeof error === "object" && "status" in error)
-      ? (error as { status?: number | null }).status
-      : undefined;
-    return typeof status === "number" && status !== 0 ? "clean" : "unknown";
+    // A non-zero exit can also mean permission/I/O failures, so only the
+    // platform's explicit missing-attribute diagnostic proves the binary is
+    // clean. All other failures remain inconclusive.
+    const record = error && typeof error === "object"
+      ? error as { code?: unknown; message?: unknown; stderr?: unknown }
+      : null;
+    const stderr = typeof record?.stderr === "string"
+      ? record.stderr
+      : Buffer.isBuffer(record?.stderr) ? record.stderr.toString("utf8") : "";
+    const detail = `${typeof record?.message === "string" ? record.message : ""}\n${stderr}`;
+    if (
+      record?.code === "ENOATTR"
+      || /no such (?:xattr|extended attribute)|attribute not found/i.test(detail)
+    ) {
+      return "clean";
+    }
+    return "unknown";
   }
 }

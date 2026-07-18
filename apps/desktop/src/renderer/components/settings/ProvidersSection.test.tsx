@@ -233,6 +233,7 @@ describe("ProvidersSection", () => {
         }),
         opencodeOAuthCancel: vi.fn().mockResolvedValue(undefined),
         setOpencodeProviderKey: vi.fn().mockResolvedValue({ ok: true }),
+        clearOpencodeProviderKey: vi.fn().mockResolvedValue({ ok: true }),
         refreshModelsDev: vi.fn().mockResolvedValue({ lastFetchedAt: Date.now() }),
         onOpencodeOAuthStatus: vi.fn((cb: (event: { providerId: string; state: string; error?: string }) => void) => {
           emitOAuthStatus = cb;
@@ -257,6 +258,9 @@ describe("ProvidersSection", () => {
             }
           };
         }),
+      },
+      builtInBrowser: {
+        navigate: vi.fn().mockResolvedValue(undefined),
       },
     } as any;
   });
@@ -543,6 +547,59 @@ describe("ProvidersSection", () => {
     expect(screen.getByText(/Fireworks/)).toBeTruthy();
   });
 
+  it("keeps an OpenCode key editor open when provider registration fails", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    const setProviderKeyMock = window.ade.ai.setOpencodeProviderKey as ReturnType<typeof vi.fn>;
+    setProviderKeyMock.mockResolvedValue({ ok: false, error: "OpenCode rejected this key." });
+
+    renderProvidersSection();
+
+    const addButton = await screen.findByLabelText("Add OpenAI key");
+    await act(async () => {
+      addButton.click();
+    });
+    fireEvent.change(screen.getByLabelText("OpenAI API key"), {
+      target: { value: "sk-test" },
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Save" }).click();
+    });
+
+    expect(await screen.findByText("OpenCode rejected this key.")).toBeTruthy();
+    expect(screen.getByLabelText("OpenAI API key")).toBeTruthy();
+    expect(screen.queryByText("openai key saved.")).toBeNull();
+  });
+
+  it("clears an OpenCode provider credential before deleting its stored key", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+    listApiKeysMock.mockReset();
+    listApiKeysMock.mockResolvedValue(["openai"]);
+
+    renderProvidersSection();
+
+    const menuButton = await screen.findByLabelText("More actions for OpenAI");
+    await act(async () => {
+      menuButton.click();
+    });
+    await act(async () => {
+      screen.getByRole("button", { name: "Delete" }).click();
+    });
+
+    await waitFor(() => {
+      expect(window.ade.ai.clearOpencodeProviderKey).toHaveBeenCalledWith({ providerId: "openai" });
+      expect(window.ade.ai.deleteApiKey).toHaveBeenCalledWith("openai");
+    });
+    const clearCall = (window.ade.ai.clearOpencodeProviderKey as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const deleteCall = (window.ade.ai.deleteApiKey as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(clearCall).toBeLessThan(deleteCall);
+    expect(await screen.findByText("openai key removed.")).toBeTruthy();
+  });
+
   it("drives the OAuth connect modal happy path", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();
@@ -576,6 +633,10 @@ describe("ProvidersSection", () => {
         providerId: "openai",
         methodIndex: 0,
         inputs: undefined,
+      });
+      expect(window.ade.builtInBrowser.navigate).toHaveBeenCalledWith({
+        url: "https://auth.openai.com/device",
+        newTab: true,
       });
     });
 

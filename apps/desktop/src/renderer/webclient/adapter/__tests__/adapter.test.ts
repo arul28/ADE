@@ -914,10 +914,11 @@ describe("createAdeWebAdapter", () => {
       "ai.opencodeOAuthStart",
       "ai.opencodeOAuthCancel",
       "ai.setOpencodeProviderKey",
+      "ai.clearOpencodeProviderKey",
       "ai.refreshModelsDev",
     ]);
     fake.commandResults.set("ai.opencodeAuthMethods", {
-      methods: { anthropic: { type: "oauth", label: "Claude" } },
+      methods: { anthropic: [{ type: "oauth", label: "Claude" }] },
     });
     fake.commandResults.set("ai.opencodeOAuthStart", {
       url: "https://opencode.example/oauth",
@@ -925,7 +926,10 @@ describe("createAdeWebAdapter", () => {
       instructions: "Open the link to finish signing in.",
     });
     fake.commandResults.set("ai.setOpencodeProviderKey", { ok: true });
-    fake.commandResults.set("ai.refreshModelsDev", { lastFetchedAt: "2026-07-17T00:00:00.000Z" });
+    fake.commandResults.set("ai.clearOpencodeProviderKey", { ok: true });
+    fake.commandResults.set("ai.refreshModelsDev", {
+      lastFetchedAt: Date.parse("2026-07-17T00:00:00.000Z"),
+    });
 
     const adapter = createAdeWebAdapter(fake.asClient());
     adapter.bindProject(project, "project-1");
@@ -933,16 +937,17 @@ describe("createAdeWebAdapter", () => {
     // The web adapter builds `ai` as a Record and casts it, so type the surface
     // locally instead of depending on the preload global contract landing first.
     const ai = adapter.ade.ai as unknown as {
-      opencodeAuthMethods: () => Promise<{ methods: Record<string, { type: string; label: string }> }>;
+      opencodeAuthMethods: () => Promise<{ methods: Record<string, Array<{ type: string; label: string }>> }>;
       opencodeOAuthStart: (args: unknown) => Promise<{ url: string; method: string; instructions: string }>;
       opencodeOAuthCancel: (args: unknown) => Promise<unknown>;
       setOpencodeProviderKey: (args: unknown) => Promise<{ ok: boolean; error?: string }>;
-      refreshModelsDev: () => Promise<{ lastFetchedAt: string | null }>;
+      clearOpencodeProviderKey: (args: unknown) => Promise<{ ok: boolean; error?: string }>;
+      refreshModelsDev: () => Promise<{ lastFetchedAt: number | null }>;
       onOpencodeOAuthStatus: (cb: (status: unknown) => void) => () => void;
     };
 
     await expect(ai.opencodeAuthMethods()).resolves.toEqual({
-      methods: { anthropic: { type: "oauth", label: "Claude" } },
+      methods: { anthropic: [{ type: "oauth", label: "Claude" }] },
     });
     await expect(ai.opencodeOAuthStart({ providerId: "anthropic" })).resolves.toMatchObject({
       url: "https://opencode.example/oauth",
@@ -950,7 +955,10 @@ describe("createAdeWebAdapter", () => {
     });
     await ai.opencodeOAuthCancel({ providerId: "anthropic" });
     await expect(ai.setOpencodeProviderKey({ providerId: "anthropic", key: "sk-test" })).resolves.toEqual({ ok: true });
-    await expect(ai.refreshModelsDev()).resolves.toEqual({ lastFetchedAt: "2026-07-17T00:00:00.000Z" });
+    await expect(ai.clearOpencodeProviderKey({ providerId: "anthropic" })).resolves.toEqual({ ok: true });
+    await expect(ai.refreshModelsDev()).resolves.toEqual({
+      lastFetchedAt: Date.parse("2026-07-17T00:00:00.000Z"),
+    });
 
     const statusEvents: unknown[] = [];
     const unsubscribe = ai.onOpencodeOAuthStatus((status) => statusEvents.push(status));
@@ -962,6 +970,7 @@ describe("createAdeWebAdapter", () => {
       "ai.opencodeOAuthStart",
       "ai.opencodeOAuthCancel",
       "ai.setOpencodeProviderKey",
+      "ai.clearOpencodeProviderKey",
       "ai.refreshModelsDev",
     ]);
 

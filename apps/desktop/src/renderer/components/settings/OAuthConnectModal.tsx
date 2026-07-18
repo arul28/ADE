@@ -7,6 +7,7 @@ import type {
   OpenCodeOAuthStartResult,
   OpenCodeOAuthStatusEvent,
 } from "../../../shared/types/config";
+import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
@@ -39,6 +40,14 @@ function promptVisible(
     : current !== prompt.when.value;
 }
 
+function buildPromptDefaults(prompts: OpenCodeProviderAuthPrompt[]): Record<string, string> {
+  const defaults: Record<string, string> = {};
+  for (const prompt of prompts) {
+    defaults[prompt.key] = prompt.type === "select" ? prompt.options?.[0]?.value ?? "" : "";
+  }
+  return defaults;
+}
+
 type Phase = "form" | "starting" | "waiting" | "error";
 
 export function OAuthConnectModal({
@@ -63,14 +72,7 @@ export function OAuthConnectModal({
   const method = methods[methodIndex];
   const prompts = method?.prompts ?? [];
 
-  const [inputs, setInputs] = useState<Record<string, string>>(() => {
-    const seed: Record<string, string> = {};
-    for (const prompt of prompts) {
-      if (prompt.type === "select") seed[prompt.key] = prompt.options?.[0]?.value ?? "";
-      else seed[prompt.key] = "";
-    }
-    return seed;
-  });
+  const [inputs, setInputs] = useState<Record<string, string>>(() => buildPromptDefaults(prompts));
   const [phase, setPhase] = useState<Phase>("form");
   const [startResult, setStartResult] = useState<OpenCodeOAuthStartResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -84,9 +86,12 @@ export function OAuthConnectModal({
   // in-modal close paths cancel explicitly, but a parent unmount (nav away,
   // settings close) would otherwise leave the poller running to its timeout.
   const flowActiveRef = useRef(false);
+  const startPendingRef = useRef(false);
+  const cancelRequestedRef = useRef(false);
   useEffect(
     () => () => {
-      if (flowActiveRef.current) {
+      cancelRequestedRef.current = true;
+      if (startPendingRef.current || flowActiveRef.current) {
         void window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
       }
     },
@@ -129,6 +134,8 @@ export function OAuthConnectModal({
   }, []);
 
   const startFlow = async () => {
+    cancelRequestedRef.current = false;
+    startPendingRef.current = true;
     setPhase("starting");
     setErrorMessage(null);
     try {
@@ -141,16 +148,25 @@ export function OAuthConnectModal({
         methodIndex,
         inputs: Object.keys(filteredInputs).length ? filteredInputs : undefined,
       });
+      startPendingRef.current = false;
+      if (cancelRequestedRef.current) {
+        void window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+        return;
+      }
+      openUrlInAdeBrowser(result.url);
       setStartResult(result);
       flowActiveRef.current = true;
       setPhase("waiting");
     } catch (err) {
+      startPendingRef.current = false;
+      if (cancelRequestedRef.current) return;
       setPhase("error");
       setErrorMessage(err instanceof Error ? err.message : String(err));
     }
   };
 
   const handleCancel = async () => {
+    cancelRequestedRef.current = true;
     flowActiveRef.current = false;
     try {
       await window.ade.ai.opencodeOAuthCancel({ providerId });
@@ -271,7 +287,11 @@ export function OAuthConnectModal({
                   <span style={labelStyle}>Method</span>
                   <select
                     value={methodIndex}
-                    onChange={(event) => setMethodIndex(Number(event.target.value))}
+                    onChange={(event) => {
+                      const nextMethodIndex = Number(event.target.value);
+                      setMethodIndex(nextMethodIndex);
+                      setInputs(buildPromptDefaults(methods[nextMethodIndex]?.prompts ?? []));
+                    }}
                     style={fieldStyle}
                   >
                     {oauthMethods.map((entry) => (
