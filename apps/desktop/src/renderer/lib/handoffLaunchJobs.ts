@@ -1,6 +1,6 @@
 import type { OpenProjectBinding, TerminalToolType } from "../../shared/types";
 
-export type HandoffLaunchJobStatus = "preparing-summary" | "creating-chat" | "sending-handoff";
+export type HandoffLaunchJobStatus = "preparing-summary" | "forking-history" | "creating-chat" | "sending-handoff";
 
 export type HandoffLaunchJob = {
   id: string;
@@ -35,9 +35,29 @@ export function buildHandoffLaunchJobsScopeKey(args: {
 }
 
 export function handoffLaunchStatusMessage(status: HandoffLaunchJobStatus): string {
-  if (status === "preparing-summary") return "Preparing summary...";
+  if (status === "preparing-summary") return "Summarizing chat & creating handoff...";
+  if (status === "forking-history") return "Forking chat history...";
   if (status === "creating-chat") return "Creating chat...";
   return "Sending handoff...";
+}
+
+/**
+ * True when a real session row plausibly IS the chat this in-flight handoff job
+ * is creating: same lane, same tool type, and started at/after the job began
+ * (small slack absorbs renderer-vs-runtime clock drift). The sidebar hides the
+ * placeholder as soon as such a row is visible so a handoff never reads as two
+ * new sessions with one vanishing (ADE-122). A same-provider chat launched
+ * concurrently in the same lane can hide the placeholder a moment early, which
+ * is a harmless cosmetic trade.
+ */
+export function handoffJobLikelyMaterialized(
+  job: HandoffLaunchJob,
+  session: { laneId: string; toolType: string | null; startedAt: string },
+): boolean {
+  if (session.laneId !== job.laneId) return false;
+  if (!session.toolType || session.toolType !== job.targetToolType) return false;
+  const startedAtMs = Date.parse(session.startedAt);
+  return Number.isFinite(startedAtMs) && startedAtMs >= job.createdAtMs - 15_000;
 }
 
 export function handoffLaunchTitle(job: HandoffLaunchJob): string {

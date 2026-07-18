@@ -197,7 +197,6 @@ import {
   buildHandoffLaunchJobsScopeKey,
   createHandoffLaunchJobId,
   type HandoffLaunchJob,
-  type HandoffLaunchJobStatus,
 } from "../../lib/handoffLaunchJobs";
 import {
   createAppControlContextInstanceId,
@@ -8305,14 +8304,13 @@ export function AgentChatPane({
   const launchDraftCliSession = useCallback((mode: DraftLaunchMode) => launchDraftSession("cli", mode), [launchDraftSession]);
 
   const handoffSession = useCallback(async (mode: "brief" | "fork" = "brief") => {
-    if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked) return;
+    if (!canShowHandoff || !selectedSessionId || !handoffModelId || handoffBlocked || handoffBusy) return;
     const sourceLaneId = selectedSession?.laneId ?? laneId;
     if (!sourceLaneId) return;
     const jobId = createHandoffLaunchJobId();
-    const stageTimerIds: number[] = [];
-    const patchHandoffJob = (status: HandoffLaunchJobStatus) => {
+    const patchHandoffJob = (patch: Partial<HandoffLaunchJob>) => {
       setHandoffLaunchJobs((current) => current.map((job) => (
-        job.id === jobId ? { ...job, status } : job
+        job.id === jobId ? { ...job, ...patch } : job
       )));
     };
     const targetModelLabel = handoffTargetDescriptor?.displayName
@@ -8326,7 +8324,10 @@ export function AgentChatPane({
         targetModelId: handoffModelId,
         targetModelLabel,
         targetToolType: handoffTargetProvider ? chatToolTypeForProvider(handoffTargetProvider) : "other",
-        status: "preparing-summary",
+        // One honest per-mode label for the whole operation; the renderer
+        // cannot observe runtime-side stage transitions, and fake timed stage
+        // hops misreported where a slow handoff actually was.
+        status: mode === "fork" ? "forking-history" : "preparing-summary",
         createdAtMs: Date.now(),
       },
       ...current.filter((job) => job.sourceSessionId !== selectedSessionId),
@@ -8334,8 +8335,6 @@ export function AgentChatPane({
     setError(null);
     setHandoffBusy(true);
     setChatActionsOpen(false);
-    stageTimerIds.push(window.setTimeout(() => patchHandoffJob("creating-chat"), 700));
-    stageTimerIds.push(window.setTimeout(() => patchHandoffJob("sending-handoff"), 1500));
     try {
       const resolvedHandoffPermissionMode = handoffNativePermissionMode ?? selectedSession?.permissionMode;
       const trimmedHandoffNote = handoffNote.trim();
@@ -8349,9 +8348,16 @@ export function AgentChatPane({
           const laneName = createDeterministicAutoLaneName(seed, { genericSuffix: autoLaneGenericSuffix() });
           const createdLane = await window.ade.lanes.create({ name: laneName });
           resolvedTargetLaneId = createdLane.id;
+          patchHandoffJob({ laneId: createdLane.id, laneName });
           await refreshLanesStore().catch(() => {});
         } else if (handoffTargetLaneId && handoffTargetLaneId !== sourceLaneId) {
           resolvedTargetLaneId = handoffTargetLaneId;
+          // Re-home the sidebar placeholder to the lane the new chat will
+          // actually appear in.
+          patchHandoffJob({
+            laneId: handoffTargetLaneId,
+            laneName: availableLanes?.find((lane) => lane.id === handoffTargetLaneId)?.name ?? handoffTargetLaneId,
+          });
         }
       }
       const result = await window.ade.agentChat.handoff({
@@ -8379,23 +8385,41 @@ export function AgentChatPane({
       invalidateCurrentChatSessionList();
       void refreshSessions({ force: true }).catch(() => {});
     } catch (handoffError) {
-      const message = handoffError instanceof Error ? handoffError.message : String(handoffError);
+      const rawMessage = handoffError instanceof Error ? handoffError.message : String(handoffError);
+      // A transport timeout abandons the RPC but does not cancel the
+      // daemon-side handoff, which usually still completes. Say so instead of
+      // reporting a hard failure, and re-poll the session list so a late
+      // success surfaces as the expected new chat, not a surprise.
+      const isTransportTimeout = /timed out (?:after \d+\s*ms|waiting for method)/i.test(rawMessage);
+      const message = isTransportTimeout
+        ? "The handoff is taking longer than expected. ADE is still finishing it in the background — if it completes, the new chat will appear in the session list."
+        : rawMessage;
       setError(message);
+      if (isTransportTimeout) {
+        for (const delayMs of [20_000, 60_000, 120_000]) {
+          window.setTimeout(() => {
+            if (!paneMountedRef.current) return;
+            invalidateCurrentChatSessionList();
+            void refreshSessions({ force: true }).catch(() => {});
+          }, delayMs);
+        }
+      }
       if (handoffErrorClearTimerRef.current != null) {
         window.clearTimeout(handoffErrorClearTimerRef.current);
       }
       handoffErrorClearTimerRef.current = window.setTimeout(() => {
         handoffErrorClearTimerRef.current = null;
         setError((current) => (current === message ? null : current));
-      }, 6000);
+      }, isTransportTimeout ? 12000 : 6000);
     } finally {
-      stageTimerIds.forEach((timerId) => window.clearTimeout(timerId));
       setHandoffLaunchJobs((current) => current.filter((job) => job.id !== jobId));
       setHandoffBusy(false);
     }
   }, [
+    availableLanes,
     canShowHandoff,
     handoffBlocked,
+    handoffBusy,
     handoffClaudePermissionMode,
     handoffCodexApprovalPolicy,
     handoffCodexConfigSource,

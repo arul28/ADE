@@ -4610,6 +4610,62 @@ describe("createAgentChatService", () => {
       });
     });
 
+    // ADE-122 regression: seeding a fork re-published every historical envelope
+    // to live event subscribers, streaming the entire source chat over IPC/sync
+    // and stalling the app during the handoff. Seeded history must be durable
+    // and readable, but never live-published.
+    it("seeds forked history into storage without re-publishing it as live events", async () => {
+      installRealTranscriptParser();
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const source = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
+      });
+      source.threadId = "source-thread-live-publish";
+      const sourceEnvelopes: AgentChatEventEnvelope[] = Array.from({ length: 4 }, (_, index) => ({
+        sessionId: source.id,
+        timestamp: `2026-07-10T11:0${index}:00.000Z`,
+        event: index % 2 === 0
+          ? { type: "user_message", messageId: `seed-user-${index}`, text: `Seed user message ${index}.` }
+          : { type: "text", messageId: `seed-assistant-${index}`, text: `Seed assistant reply ${index}.` },
+        provenance: { messageId: `provider-message-${index}` },
+      }));
+      writeTestTranscriptEnvelopes(source.id, sourceEnvelopes);
+      mockState.codexResponseOverrides.set("thread/fork", { thread: { id: "forked-thread-live-publish" } });
+
+      const result = await service.handoffSession({
+        sourceSessionId: source.id,
+        targetModelId: "openai/gpt-5.5",
+        mode: "fork",
+      });
+
+      const publishedSeeded = events.filter((envelope) =>
+        envelope.sessionId === result.session.id
+        && (envelope.provenance as { providerOrigin?: string } | undefined)?.providerOrigin === "handoff_fork");
+      expect(publishedSeeded).toHaveLength(0);
+
+      const history = service.getChatEventHistory(result.session.id, { maxEvents: 50 });
+      const seededHistory = history.events.filter((envelope) =>
+        (envelope.provenance as { providerOrigin?: string } | undefined)?.providerOrigin === "handoff_fork");
+      expect(seededHistory).toHaveLength(sourceEnvelopes.length);
+
+      const targetTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${result.session.id}.jsonl`);
+      await vi.waitFor(() => {
+        const parsed = fs.readFileSync(targetTranscript, "utf8")
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+        const seededLines = parsed.filter((envelope) =>
+          (envelope.provenance as { providerOrigin?: string } | undefined)?.providerOrigin === "handoff_fork");
+        expect(seededLines).toHaveLength(sourceEnvelopes.length);
+      });
+    });
+
     it("forks an OpenCode chat from the source session without injecting a summary prompt", async () => {
       vi.mocked(streamText).mockReturnValue({
         fullStream: (async function* () {

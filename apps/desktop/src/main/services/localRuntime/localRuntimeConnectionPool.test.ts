@@ -2098,6 +2098,72 @@ describe("local runtime connection pool", () => {
     );
   });
 
+  // ADE-122 regression: the 30s default action timeout fired a false failure on
+  // brief handoffs (AI brief + session creation + first-message dispatch) while
+  // the daemon-side handoff kept running to a late "surprise" success.
+  it("extends handoff actions beyond the default chat action timeout", async () => {
+    const call = vi.fn().mockResolvedValue({
+      domain: "chat",
+      action: "handoffSession",
+      result: {},
+      statusHints: {},
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    await pool.callActionForRoot(rootPath, {
+      domain: "chat",
+      action: "handoffSession",
+      args: { sourceSessionId: "chat-1", targetModelId: "openai/gpt-5.5", mode: "brief" },
+    });
+    await pool.callActionForRoot(rootPath, {
+      domain: "chat",
+      action: "prepareCrossMachineHandoff",
+      args: { sourceSessionId: "chat-1" },
+    });
+
+    expect(call).toHaveBeenNthCalledWith(
+      1,
+      "ade/actions/call",
+      expect.objectContaining({
+        arguments: expect.objectContaining({
+          domain: "chat",
+          action: "handoffSession",
+        }),
+      }),
+      { timeoutMs: 120_000 },
+    );
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "ade/actions/call",
+      expect.objectContaining({
+        arguments: expect.objectContaining({
+          domain: "chat",
+          action: "prepareCrossMachineHandoff",
+        }),
+      }),
+      { timeoutMs: 120_000 },
+    );
+  });
+
   it("bounds mutations and propagates their timeout without closing or replaying the client", async () => {
     const timeout = new Error("Remote ADE service timed out waiting for method ade/actions/call (30000ms).");
     const call = vi.fn().mockRejectedValue(timeout);
