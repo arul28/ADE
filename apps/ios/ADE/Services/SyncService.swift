@@ -1601,18 +1601,9 @@ private final class SyncSocketSessionDelegate: NSObject, URLSessionWebSocketDele
     reason: Data?
   ) {
     let reasonMessage = reason.flatMap { String(data: $0, encoding: .utf8) }
-    let message: String
-    if closeCode.rawValue == 4001 {
-      message = "The machine stopped responding. Reconnecting now."
-    } else if let reasonMessage, !reasonMessage.isEmpty {
-      message = reasonMessage
-    } else {
-      message = "The connection to the machine was interrupted. Reconnecting now."
-    }
-    let error = NSError(
-      domain: "ADE",
-      code: 24,
-      userInfo: [NSLocalizedDescriptionKey: message]
+    let error = syncSocketCloseError(
+      closeCodeRawValue: Int(closeCode.rawValue),
+      reason: reasonMessage
     )
     Task { @MainActor [weak service] in
       service?.handleSocketDidComplete(

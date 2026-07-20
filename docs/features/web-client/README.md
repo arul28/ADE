@@ -26,15 +26,27 @@ direct deployment-check fallback. The app is built from `apps/desktop` with
 
 Build and static host:
 
-- `apps/desktop/package.json` - `dev:webclient` and `build:webclient`.
+- `apps/desktop/package.json` - `dev:webclient` and `build:webclient`. The
+  production build runs `check-webclient-entry.mjs` after Vite succeeds.
 - `apps/desktop/vite.webclient.config.ts` - Vite build for the hosted SPA.
   Renames `webclient.html` to `index.html`, writes to
   `apps/desktop/dist/web-client`, and copies Cloudflare Pages files into the
-  output root.
-- `apps/desktop/src/renderer/webclient.html` - browser entry HTML.
+  output root. It relies on Rollup's normal graph splitting instead of forcing
+  the desktop renderer's heavy vendor groups into eager module preloads; the
+  shared renderer's dynamic imports remain the feature-loading boundaries.
+- `apps/desktop/scripts/check-webclient-entry.mjs` - post-build regression
+  guard for the first-load graph. It collects local entry scripts and
+  `modulepreload` links from the generated `index.html`, rejects eagerly linked
+  Monaco/graph/terminal/Markdown-style chunks, rejects external entry scripts,
+  and caps raw entry HTML plus referenced JavaScript at 1000 KB.
+- `apps/desktop/src/renderer/webclient.html` - browser entry HTML. It paints a
+  dependency-free loading shell before React evaluates and preconnects to the
+  production Clerk and account-directory origins.
 - `apps/desktop/src/renderer/webclient/public/_headers` - Pages headers,
   including CSP. `connect-src` allows `wss:` and `https:`, not arbitrary
-  hosted-page `ws:` connections.
+  hosted-page `ws:` connections. Fingerprinted `/assets/*` responses are cached
+  for one year as immutable; `/` and `/index.html` remain `no-cache` so a new
+  deployment's entry graph is discovered immediately.
 - `apps/desktop/src/renderer/webclient/public/_redirects` - SPA fallback:
   `/* /index.html 200`.
 
@@ -59,7 +71,12 @@ Browser sync client:
 - `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
   lifecycle, account adoption, paired hello, DPoP proof on reconnect,
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
-  attribution.
+  attribution. DPoP/token preparation begins in parallel with the socket dial;
+  transport open and authenticated hello have separate 8-second and 12-second
+  deadlines. While the page is visible, a 15-second watchdog closes a socket
+  after 75 seconds without inbound traffic; returning to a visible stale tab
+  bypasses accumulated backoff. Relay application close codes are translated
+  into stable offline/capacity/retry messages instead of exposing raw reasons.
 - `apps/desktop/src/renderer/webclient/sync/relayPolicy.ts` - typed hosted Relay
   authorization policy. It keeps local pairing provenance separate from
   account ownership, filters Relay routes while signed out, and surfaces the
@@ -72,6 +89,11 @@ Browser sync client:
   and the WebCrypto `CryptoKeyPair`. A versioned one-time trust migration
   clears legacy environments and selection while preserving unrelated browser
   and account state; environments paired after the marker persist normally.
+  Every operation runs through an explicit transaction; trust reset and
+  account-owner pruning update environments, selection, and metadata
+  atomically. IndexedDB open attempts fail after 4 seconds, distinguish blocked
+  upgrades from generic failures, clear their rejected cached promise so Retry
+  can reopen, and close/reset the connection on `versionchange`.
 - `apps/desktop/src/renderer/webclient/sync/dpop.ts` - WebCrypto P-256 ECDSA
   DPoP key generation and proof signing. The private key is non-extractable by
   default.
@@ -126,16 +148,23 @@ Browser shell and routes:
   machine picker,
   30-second active-account lease monitor, project picker, adapter load, pending
   `/open` target stash, project binding, and projectless `/chats` routing before
-  a project is selected. Saved machines are shown first instead of reconnecting
-  automatically on page load.
+  a project is selected. Ordinary visits paint the machine picker immediately;
+  account bootstrap/directory work and IndexedDB loading proceed independently
+  instead of blocking first paint. Saved environments stay hidden until the
+  current account owner's atomic privacy prune completes, and stale async loads
+  cannot publish another account's records. Storage failure leaves account
+  sign-in and the directory usable with a separate saved-browser Retry path.
+  Saved machines are shown first instead of reconnecting automatically on page
+  load.
 - `apps/desktop/src/renderer/webclient/shell/WebShell.tsx` - machine
   switcher, project switcher, forget machine, reconnect hint, and "Open in
   desktop" button.
 - `apps/desktop/src/renderer/webclient/shell/MachinePicker.tsx`,
   `ProjectPicker.tsx`, and `ScreenShell.tsx` - the account/switch UI pieces the
   boot sequence composes (account machines, compatible saved-machine list,
-  project list, and the shared screen frame); `shellTokens.ts` holds the
-  standalone-shell design tokens.
+  independent directory/storage loading and retry states, project list, and the
+  shared screen frame); `shellTokens.ts` holds the standalone-shell design
+  tokens.
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
   layer over `apps/desktop/src/shared/deeplinks.ts`.
 
@@ -196,6 +225,10 @@ Machine runtime and sync host:
 
 Account connection and entry points:
 
+- `apps/account-directory/src/directory.ts` - Clerk-scoped machine
+  register/list/delete routes. The list query reads the 500 most recently seen
+  rows, computes online-first order, and exposes auth/D1 durations through the
+  CORS-visible `Server-Timing` header.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` -
   the focused **Connections > Phone** and **Connections > Web** tab bodies plus
   the shared **This Mac** card. The Web variant is account-sign-in only; the
@@ -234,6 +267,7 @@ Tests:
 - `apps/desktop/src/renderer/components/app/TopBar.test.tsx`.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`.
 - `apps/desktop/src/renderer/webclient/sync/__tests__/sync.test.ts`.
+- `apps/desktop/src/renderer/webclient/sync/envStore.test.ts`.
 - `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts`.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/webRoutes.test.ts`.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/WebClientRoot.test.tsx` -
@@ -262,7 +296,17 @@ Tests:
   secrets and non-extractable DPoP private keys. The browser must sign in and
   adopt the account machine again; a legacy direct environment cannot be
   recreated through the hosted UI. The private key cannot be exported for
-  backup or migration.
+  backup or migration. A blocked upgrade or unavailable storage is recoverable:
+  the machine directory continues loading, saved environments remain hidden,
+  and Retry performs a fresh open attempt. Multi-store privacy cleanup must
+  remain transactional so selection metadata cannot outlive a removed
+  account-owned environment.
+- **Connection liveness is application-observed.** An open browser WebSocket is
+  not proof that the relay path is usable. The visible-page watchdog requires
+  inbound ADE traffic within 75 seconds and reconnects stale tabs; do not remove
+  it in favor of the browser's socket state alone. Transport-open and
+  authenticated-hello deadlines are intentionally separate so slow token/DPoP
+  preparation and a dead network route produce different failures.
 - **Analytics consent is browser-local and fail-closed.** The preference lives
   in local storage, while the host keeps an in-memory consent bit for that
   paired socket. Every adapter connection reasserts the local choice before
@@ -395,6 +439,11 @@ machine picker loads the user's machines from the Clerk-verified
 account-directory Worker. Offline machines remain listed with their last-seen
 state and cannot be selected. Saved pre-release direct environments are shown
 separately as a local compatibility path; they are not a pairing fallback.
+The Worker reads at most the owner's 500 most recently seen rows from D1 before
+computing online-first display order. Machine-list responses expose
+`Server-Timing` entries for Clerk authentication and the D1 query; CORS exposes
+that header to the hosted browser. These timings are diagnostics only and do
+not change the directory response contract.
 
 Hosted builds use ADE's production Clerk application and production directory
 by default. Vite development uses the isolated development Clerk application
@@ -550,6 +599,10 @@ Ops checks after deploy:
 - `https://ade-web-client.pages.dev/pair#<payload>` scrubs the obsolete route
   and fragment, then shows account sign-in; no pairing UI is rendered.
 - Response headers include the CSP from `_headers`.
+- Fingerprinted assets return immutable one-year caching while `/` and
+  `/index.html` return `no-cache`.
+- The build reports the raw first-load entry graph and fails if it exceeds
+  1000 KB or eagerly references a guarded heavy feature chunk.
 
 ## Known limitations
 
