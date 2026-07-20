@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.32] - 2026-07-20
+
+### Web client
+
+- Login-path bundle cut from ~4.7 MB to ~250 KB with a build-time budget guard; hashed assets cache immutably; instant HTML splash and preconnects.
+- Sign-in and the machine directory render immediately; IndexedDB maintenance is batched, bounded, and recoverable (no more indefinite "Starting ADE").
+- Dead-connection watchdog, split transport/hello timeouts, overlapped credential preparation, and accurate relay close-code errors.
+
+### ADE Relay
+
+- Native ping/pong liveness on the Mac's relay control socket; half-open sockets after sleep or network changes recover in seconds.
+- Failed connection opens are rejected in under a second via new reject signaling; close codes survive the relay boundaries.
+- Machines publish directory availability immediately on relay-readiness transitions; idle relay objects stop scheduling needless sweeps.
+- Directory listings are bounded and expose Server-Timing.
+
+### iOS
+
+- Classifies the relay's new close codes for smarter retry behavior.
+
 ## [1.2.31] - 2026-07-18
 
 ### Added
@@ -870,6 +889,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.31...HEAD
+[1.2.32]: https://github.com/arul28/ADE/compare/v1.2.31...v1.2.32
 [1.2.31]: https://github.com/arul28/ADE/compare/v1.2.30...v1.2.31
 [1.2.30]: https://github.com/arul28/ADE/compare/v1.2.29...v1.2.30
 [1.2.29]: https://github.com/arul28/ADE/compare/v1.2.28...v1.2.29
