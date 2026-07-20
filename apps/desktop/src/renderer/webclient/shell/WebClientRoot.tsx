@@ -454,6 +454,10 @@ export function WebClientRoot({
       setPhase({ kind: "machine-picker" });
       beginPrivacyLoad(accountSnapshot);
     })().catch(() => {
+      if (accountProgressInterval != null) {
+        window.clearInterval(accountProgressInterval);
+        accountProgressInterval = null;
+      }
       if (disposed) return;
       const accountSnapshot = accountClient.getSnapshot();
       setAccount(accountSnapshot);
