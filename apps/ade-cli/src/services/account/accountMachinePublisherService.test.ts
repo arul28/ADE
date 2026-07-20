@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_MACHINE_HEARTBEAT_MS,
+  ACCOUNT_MACHINE_RELAY_STATE_POLL_MS,
   type AccountMachineRegistrationSnapshot,
   buildAccountMachineRegistration,
   createAccountMachinePublisherService,
@@ -281,6 +282,119 @@ describe("account machine publisher health", () => {
     token = "heartbeat-token";
     await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_HEARTBEAT_MS);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+    service.dispose();
+  });
+
+  it("coalesces relay readiness changes into a publish and resets the heartbeat", async () => {
+    vi.useFakeTimers();
+    const current = routeSnapshot();
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    current.routeHealth.relay.relayControlConnected = false;
+    current.routeHealth.relay.relayBridgeValidated = false;
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RELAY_STATE_POLL_MS);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_HEARTBEAT_MS - 1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    service.dispose();
+  });
+
+  it("publishes at the first relay poll when the startup snapshot was unavailable", async () => {
+    vi.useFakeTimers();
+    let ready = false;
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => ready ? routeSnapshot() : null,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(service.getPublisherHealth().state).toBe("no_active_sync_scope");
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    ready = true;
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RELAY_STATE_POLL_MS);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(service.getPublisherHealth().state).toBe("published");
+    service.dispose();
+  });
+
+  it("publishes when the reachable endpoint set changes", async () => {
+    vi.useFakeTimers();
+    const current = snapshot();
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 200 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    current.pairingConnectInfo!.addressCandidates.push({
+      kind: "lan",
+      host: "192.168.1.21",
+    });
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RELAY_STATE_POLL_MS);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const registration = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+    expect(registration.reachableEndpoints).toEqual([
+      { kind: "lan", host: "192.168.1.20", port: 8787 },
+      { kind: "lan", host: "192.168.1.21", port: 8787 },
+    ]);
+    expect(service.getPublisherHealth().reachableEndpointCount).toBe(2);
+    service.dispose();
+  });
+
+  it("does not publish relay transitions while signed out", async () => {
+    vi.useFakeTimers();
+    const current = routeSnapshot();
+    const getAccessToken = vi.fn(async () => "account-token");
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken,
+      getAccountStatus: () => ({ signedIn: false, sessionReadState: "missing" as const }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    current.routeHealth.relay.relayBridgeValidated = false;
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RELAY_STATE_POLL_MS * 2);
+
+    expect(getAccessToken).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(service.getPublisherHealth().state).toBe("account_signed_out");
     service.dispose();
   });
 });

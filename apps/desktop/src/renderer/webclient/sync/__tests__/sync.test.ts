@@ -9,9 +9,18 @@ import type {
 } from "../../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../../shared/types/account";
 import { AdeSyncClient } from "../client";
-import type { WebSocketLike } from "../connection";
+import { SyncConnection, type WebSocketLike } from "../connection";
 import { deriveBrowserSyncEndpoints } from "../endpoints";
-import { MemoryStorage, WebClientEnvStore, type WebClientEnvironmentRecord } from "../envStore";
+import {
+  IndexedDbOpenError,
+  IndexedDbStorage,
+  MemoryStorage,
+  WEB_TRUST_RESET_VERSION,
+  WebClientEnvStore,
+  type WebClientEnvironmentRecord,
+  type WebClientStorageArea,
+  type WebClientStorageTransaction,
+} from "../envStore";
 import { WebRelayAuthRequiredError, type WebRelayAccess } from "../relayPolicy";
 import { generateDpopKeyPair, exportPublicKeyX963Base64, rawEcdsaSignatureToDer, signDpopProof } from "../dpop";
 import { randomHex } from "../ids";
@@ -133,15 +142,19 @@ class ScriptedSocket implements WebSocketLike {
   onclose: ((event: CloseEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
   readonly sent: SyncEnvelope[] = [];
+  readonly closeHistory: Array<{ code: number; reason: string }> = [];
+  closedWith: { code: number; reason: string } | null = null;
 
   constructor(
     readonly url: string,
     private readonly onClientEnvelope: (socket: ScriptedSocket, envelope: SyncEnvelope) => void | Promise<void>,
+    openDelayMs = 0,
   ) {
     setTimeout(() => {
+      if (this.readyState !== 0) return;
       this.readyState = 1;
       this.onopen?.(new Event("open"));
-    }, 0);
+    }, openDelayMs);
   }
 
   send(data: string): void {
@@ -152,6 +165,8 @@ class ScriptedSocket implements WebSocketLike {
   }
 
   close(code = 1000, reason = ""): void {
+    this.closedWith = { code, reason };
+    this.closeHistory.push(this.closedWith);
     this.readyState = 3;
     this.onclose?.({ code, reason } as CloseEvent);
   }
@@ -161,16 +176,46 @@ class ScriptedSocket implements WebSocketLike {
   }
 }
 
-function createSocketFactory(handler: (socket: ScriptedSocket, envelope: SyncEnvelope) => void | Promise<void>) {
+function createSocketFactory(
+  handler: (socket: ScriptedSocket, envelope: SyncEnvelope) => void | Promise<void>,
+  options: { openDelayMs?: number | ((socketIndex: number) => number) } = {},
+) {
   const sockets: ScriptedSocket[] = [];
   return {
     sockets,
     factory(url: string): WebSocketLike {
-      const socket = new ScriptedSocket(url, handler);
+      const socketIndex = sockets.length;
+      const openDelayMs = typeof options.openDelayMs === "function"
+        ? options.openDelayMs(socketIndex)
+        : options.openDelayMs;
+      const socket = new ScriptedSocket(url, handler, openDelayMs);
       sockets.push(socket);
       return socket;
     },
   };
+}
+
+class VisibilityDocument {
+  visibilityState: DocumentVisibilityState = "visible";
+  private readonly listeners = new Set<() => void>();
+
+  readonly document = {
+    get visibilityState() {
+      return (this as { owner: VisibilityDocument }).owner.visibilityState;
+    },
+    owner: this,
+    addEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+      if (typeof listener === "function") this.listeners.add(listener as () => void);
+    },
+    removeEventListener: (_type: string, listener: EventListenerOrEventListenerObject) => {
+      if (typeof listener === "function") this.listeners.delete(listener as () => void);
+    },
+  } as unknown as Document;
+
+  setVisibility(state: DocumentVisibilityState): void {
+    this.visibilityState = state;
+    for (const listener of this.listeners) listener();
+  }
 }
 
 class DelayedPutStorage extends MemoryStorage {
@@ -200,6 +245,23 @@ class DelayedPutStorage extends MemoryStorage {
 
   resumePausedPut(): void {
     this.resumePut?.();
+  }
+}
+
+class TransactionCountingStorage extends MemoryStorage {
+  readonly transactions: Array<{ areas: WebClientStorageArea[]; mode: IDBTransactionMode }> = [];
+
+  override async transaction<T>(
+    areas: WebClientStorageArea[],
+    mode: IDBTransactionMode,
+    operation: (transaction: WebClientStorageTransaction) => Promise<T>,
+  ): Promise<T> {
+    this.transactions.push({ areas: [...areas], mode });
+    return await super.transaction(areas, mode, operation);
+  }
+
+  resetTransactions(): void {
+    this.transactions.length = 0;
   }
 }
 
@@ -425,6 +487,94 @@ describe("browser sync endpoints and storage", () => {
     });
     expect(await store.listEnvironments()).toHaveLength(1);
   });
+
+  it("rejects blocked IndexedDB opens with a typed error and permits retry", async () => {
+    const open = vi.fn(() => {
+      const request = {} as IDBOpenDBRequest;
+      setTimeout(() => request.onblocked?.(new Event("blocked") as IDBVersionChangeEvent), 0);
+      return request;
+    });
+    vi.stubGlobal("indexedDB", { open });
+    try {
+      const storage = new IndexedDbStorage({ openTimeoutMs: 100 });
+
+      await expect(storage.list("environments")).rejects.toEqual(expect.objectContaining({
+        name: "IndexedDbOpenError",
+        code: "blocked",
+      }));
+      await expect(storage.list("environments")).rejects.toBeInstanceOf(IndexedDbOpenError);
+      expect(open).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("times out an IndexedDB open that never settles", async () => {
+    vi.stubGlobal("indexedDB", {
+      open: vi.fn(() => ({} as IDBOpenDBRequest)),
+    });
+    try {
+      const storage = new IndexedDbStorage({ openTimeoutMs: 5 });
+
+      await expect(storage.list("environments")).rejects.toEqual(expect.objectContaining({
+        name: "IndexedDbOpenError",
+        code: "timeout",
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("batches the one-time trust reset into one readwrite transaction", async () => {
+    const storage = new TransactionCountingStorage();
+    await storage.put("environments", "legacy", await makeEnvironment(new MemoryStorage(), {
+      envId: "legacy",
+    }));
+    await storage.put("meta", "selectedEnvId", "legacy");
+    await storage.delete("meta", "machineTrustResetVersion");
+    storage.resetTransactions();
+
+    const store = new WebClientEnvStore(storage);
+    await expect(store.listEnvironments()).resolves.toEqual([]);
+
+    expect(storage.transactions.filter((transaction) => transaction.mode === "readwrite")).toEqual([{
+      areas: ["environments", "meta"],
+      mode: "readwrite",
+    }]);
+    await expect(storage.get("meta", "machineTrustResetVersion")).resolves.toBe(WEB_TRUST_RESET_VERSION);
+  });
+
+  it("prunes account records and returns survivors from one readwrite transaction", async () => {
+    const storage = new TransactionCountingStorage();
+    const store = new WebClientEnvStore(storage);
+    await store.saveEnvironment(await makeEnvironment(new MemoryStorage(), {
+      envId: "local",
+      accountOwnerUserId: null,
+    }));
+    await store.saveEnvironment(await makeEnvironment(new MemoryStorage(), {
+      envId: "current",
+      accountOwnerUserId: "account-current",
+    }));
+    await store.saveEnvironment(await makeEnvironment(new MemoryStorage(), {
+      envId: "foreign",
+      accountOwnerUserId: "account-previous",
+    }));
+    await store.setSelectedEnvId("foreign");
+    storage.resetTransactions();
+
+    const result = await store.pruneAccountOwnedEnvironments("account-current");
+
+    expect(result).toEqual(["foreign"]);
+    expect(result.environments.map((environment) => environment.envId).sort()).toEqual([
+      "current",
+      "local",
+    ]);
+    expect(storage.transactions).toEqual([{
+      areas: ["environments", "meta"],
+      mode: "readwrite",
+    }]);
+    await expect(store.getSelectedEnvId()).resolves.toBeNull();
+  });
 });
 
 describe("browser sync connection and client", () => {
@@ -432,6 +582,306 @@ describe("browser sync connection and client", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("closes a stale visible connection and enters the normal reconnect path", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await connecting;
+
+    await vi.advanceTimersByTimeAsync(75_000);
+
+    expect(script.sockets[0]?.closedWith).toEqual({
+      code: 4008,
+      reason: "Inbound connection stale",
+    });
+    expect(connection.getStatus()).toMatchObject({
+      state: "reconnecting",
+      error: "Connection became unresponsive. Reconnecting.",
+    });
+    expect(script.sockets).toHaveLength(1);
+    connection.dispose();
+  });
+
+  it("does not close a stale connection while the document is hidden", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });
+    const visibility = new VisibilityDocument();
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: visibility.document,
+    });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await connecting;
+    visibility.setVisibility("hidden");
+
+    await vi.advanceTimersByTimeAsync(90_000);
+
+    expect(script.sockets[0]?.readyState).toBe(1);
+    expect(script.sockets[0]?.closedWith).toBeNull();
+    expect(connection.getStatus().state).toBe("connected");
+    connection.dispose();
+  });
+
+  it("closes a stale hidden connection on visibility resume and bypasses backoff", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });
+    const visibility = new VisibilityDocument();
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: visibility.document,
+    });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await connecting;
+    visibility.setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(90_000);
+
+    visibility.setVisibility("visible");
+    expect(script.sockets[0]?.closedWith?.code).toBe(4008);
+    for (let attempt = 0; attempt < 20 && connection.getStatus().state !== "connected"; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(1);
+      await flushMicrotasks();
+    }
+
+    expect(script.sockets).toHaveLength(2);
+    expect(connection.getStatus().state).toBe("connected");
+    connection.dispose();
+  });
+
+  it("allows a five-second transport open and a separate hello response within twelve seconds", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      setTimeout(() => {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }, 11_000);
+    }, { openDelayMs: 5_000 });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    );
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(script.sockets[0]?.readyState).toBe(1);
+    await vi.advanceTimersByTimeAsync(11_000);
+    await connecting;
+
+    expect(connection.getStatus().state).toBe("connected");
+    expect(script.sockets[0]?.closeHistory).toEqual([]);
+    connection.dispose();
+  });
+
+  it("applies the same split open and hello deadlines to account adoption", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      const peer = (envelope.payload as { peer: SyncPeerMetadata }).peer;
+      setTimeout(() => {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: {
+            ...helloOk(),
+            accountPairing: { deviceId: peer.deviceId, secret: "paired-secret" },
+          },
+        });
+      }, 11_000);
+    }, { openDelayMs: 5_000 });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const pairing = connection.pairWithAccount({
+      endpoints: [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      peer: { ...hostPeer, deviceId: "browser-device", deviceType: "browser" },
+      accountToken: "account-token",
+      createDpop: async () => ({ timestamp: 1, nonce: "nonce", signature: "signature" }),
+      expectedHostDeviceId: hostPeer.deviceId,
+      existingPairing: null,
+      buildEnvironment: () => environment,
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(11_000);
+
+    await expect(pairing).resolves.toMatchObject({ endpoint: pairingPayload.relayUrl });
+    expect(connection.getStatus().state).toBe("connected");
+    expect(script.sockets[0]?.closeHistory).toEqual([]);
+    connection.dispose();
+  });
+
+  it("fails a transport that does not open within eight seconds", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const script = createSocketFactory(() => undefined, { openDelayMs: 8_001 });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const outcome = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    ).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    await expect(outcome).resolves.toMatchObject({
+      message: expect.stringContaining("Timed out opening"),
+    });
+    expect(script.sockets[0]?.closeHistory).toContainEqual({
+      code: 4000,
+      reason: "Transport open timeout",
+    });
+    expect(connection.getStatus()).toMatchObject({
+      state: "reconnecting",
+      error: expect.stringContaining("Timed out opening"),
+    });
+    connection.dispose();
+  });
+
+  it("starts paired proof and Relay token preparation before the socket opens", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    vi.useFakeTimers();
+    const digest = vi.spyOn(crypto.subtle, "digest");
+    const relayTokenProvider = vi.fn(async () => "relay-account-token");
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    }, { openDelayMs: 5_000 });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      relayTokenProvider,
+    );
+    await flushMicrotasks();
+
+    expect(script.sockets[0]?.readyState).toBe(0);
+    expect(digest).toHaveBeenCalled();
+    expect(relayTokenProvider).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await connecting;
+    expect(script.sockets[0]?.sent[0]?.payload).toMatchObject({
+      auth: {
+        dpop: expect.any(Object),
+        relayAccountToken: "relay-account-token",
+      },
+    });
+    connection.dispose();
+  });
+
+  it.each([
+    { code: 4501, expected: "This Mac appears to be offline" },
+    { code: 4503, expected: "Too many active connections to this Mac" },
+    { code: 4502, expected: "Connection lost. Reconnecting." },
+    { code: 4000, expected: "Connection lost. Reconnecting." },
+    { code: 4505, expected: "Connection lost. Reconnecting." },
+    { code: 4506, expected: "Connection lost. Reconnecting." },
+  ])("maps Relay close code $code and keeps reconnecting", async ({ code, expected }) => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const closeEvents: Array<{ code: number; reason: string }> = [];
+    connection.on("close", (event) => closeEvents.push(event));
+
+    await connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    );
+    script.sockets[0]?.close(code, "relay detail");
+
+    expect(closeEvents).toEqual([{ code, reason: "relay detail" }]);
+    expect(connection.getStatus()).toMatchObject({
+      state: "reconnecting",
+      error: expected,
+    });
+    connection.dispose();
+  });
+
+  it("rejects an in-flight command immediately when the transport is lost without replaying it", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await vi.advanceTimersByTimeAsync(0);
+    await connecting;
+    const command = client.sendCommand("chat.send", { text: "once" });
+    await flushMicrotasks();
+    expect(script.sockets[0]?.sent.filter((envelope) => envelope.type === "command")).toHaveLength(1);
+
+    script.sockets[0]?.close(4505, "superseded");
+    await expect(command).rejects.toMatchObject({
+      code: "connection_lost_outcome_unknown",
+      details: { closeCode: 4505, reason: "superseded" },
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+
+    expect(script.sockets).toHaveLength(2);
+    expect(script.sockets[1]?.sent.some((envelope) => envelope.type === "command")).toBe(false);
+    client.dispose();
   });
 
   it("does not open ADE Relay while signed out", async () => {

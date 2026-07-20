@@ -64,11 +64,20 @@ type SyncTunnelClientArgs = {
   loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
   /** Test seam for account-session lifecycle reconciliation. */
   accountStatusPollMs?: number;
+  /** Test seams; production uses the exported protocol-liveness defaults. */
+  controlPingIntervalMs?: number;
+  controlPongDeadlineMs?: number;
 };
 
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 60_000;
 const ACCOUNT_STATUS_POLL_MS = 1_000;
+export const CONTROL_PING_INTERVAL_MS = 30_000;
+export const CONTROL_PONG_DEADLINE_MS = 10_000;
+export const BRIDGE_VALIDATION_FRESH_MS = 30_000;
+export const RELAY_CLOSE_PARTNER_CLOSED = 4000;
+export const RELAY_CLOSE_HOST_UNAVAILABLE = 4501;
+export const RELAY_CLOSE_BRIDGE_REJECTED = 4507;
 export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay.";
 
 /**
@@ -105,6 +114,22 @@ function nowSeconds(): string {
   return String(Math.floor(Date.now() / 1000));
 }
 
+const MAX_CLOSE_REASON_BYTES = 123;
+
+function applicationCloseCode(code: unknown, fallback = RELAY_CLOSE_PARTNER_CLOSED): number {
+  return typeof code === "number" && Number.isInteger(code) && code >= 4000 && code <= 4999
+    ? code
+    : fallback;
+}
+
+function sanitizedCloseReason(reason: unknown, fallback: string): string {
+  const raw = typeof reason === "string" ? reason : Buffer.isBuffer(reason) ? reason.toString("utf8") : "";
+  const clean = raw.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() || fallback;
+  const encoded = Buffer.from(clean, "utf8");
+  if (encoded.byteLength <= MAX_CLOSE_REASON_BYTES) return clean;
+  return encoded.subarray(0, MAX_CLOSE_REASON_BYTES).toString("utf8").replace(/\uFFFD$/, "").trimEnd();
+}
+
 /**
  * Brain-side tunnel client. While the sync host and account lease are valid,
  * keeps a signed control WebSocket open to the relay; for each `{t:"open", id}`
@@ -115,11 +140,13 @@ function nowSeconds(): string {
 export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncTunnelClientService {
   const log = args.logger ?? {};
   let control: WebSocket | null = null;
+  let stopControlLiveness: (() => void) | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let accountStatusTimer: NodeJS.Timeout | null = null;
   let connectingControl = false;
   let accountLeaseCheckInFlight: Promise<void> | null = null;
   let accountLeaseUserId: string | null = args.getAccountLease ? null : "legacy";
+  let accountEligible: boolean | null = null;
   let attempt = 0;
   let started = false;
   let stopped = false;
@@ -127,6 +154,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let lastError: string | null = null;
   let validatedPort: number | null = null;
   let validatedLoopbackNonce: string | null = null;
+  let lastBridgeValidationAtMs = 0;
   let lastFailureAt: string | null = null;
   let lastSuccessAt: string | null = null;
   let bridgeValidationInFlight: Promise<boolean> | null = null;
@@ -139,15 +167,22 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     lastFailureAt = new Date().toISOString();
   };
 
+  const clearBridgeValidation = (): void => {
+    validatedPort = null;
+    validatedLoopbackNonce = null;
+    lastBridgeValidationAtMs = 0;
+  };
+
   const identity = (): MachineIdentity => {
     const override = args.machineIdentity?.();
     return override ?? args.configStore.getMachineIdentity();
   };
 
   const relayHttpUrl = (): string => args.configStore.getRelayUrl() || defaultRelayUrl();
-  const accountSignedIn = (): boolean =>
+  const computeAccountEligibility = (): boolean =>
     (args.isAccountSignedIn?.() ?? true)
     && (!args.getAccountLease || accountLeaseUserId != null);
+  const accountSignedIn = (): boolean => accountEligible === true;
 
   const clearReconnect = (): void => {
     if (reconnectTimer) {
@@ -157,7 +192,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const scheduleReconnect = (): void => {
-    if (stopped || reconnectTimer || !accountSignedIn()) return;
+    if (stopped || reconnectTimer || control || !accountSignedIn()) return;
     const delay = computeBackoffMs(attempt);
     attempt += 1;
     reconnectTimer = setTimeout(() => {
@@ -206,33 +241,77 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       const sig = signRelayHmacHex(id.secret, buildHostSignatureBase(id.machineKey, ts));
       const wsBase = httpToWsUrl(relayHttpUrl());
       const url = `${wsBase}/host/${id.machineKey}?ts=${ts}&sig=${sig}`;
-      const socket = new WebSocket(url);
+      let socket: WebSocket;
+      try {
+        socket = new WebSocket(url);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        recordFailure(reason);
+        log.warn?.("sync_tunnel.control_error", { error: reason });
+        scheduleReconnect();
+        return;
+      }
       control = socket;
+      let socketLivenessStop: (() => void) | null = null;
       armOpenDeadline(socket, () => {
         recordFailure("relay control socket connect timed out");
       });
 
       socket.on("open", () => {
+        if (stopped || !accountSignedIn() || control !== socket) {
+          try {
+            socket.close();
+          } catch {
+            // already closing
+          }
+          return;
+        }
         attempt = 0;
+        clearReconnect();
         connected = true;
         lastError = null;
         lastSuccessAt = new Date().toISOString();
+        socketLivenessStop = armControlLiveness(
+          socket,
+          () => {
+            if (control !== socket) return;
+            recordFailure("relay control socket missed pong");
+            log.warn?.("sync_tunnel.control_pong_timeout");
+            try {
+              socket.terminate();
+            } catch {
+              // already dead
+            }
+          },
+          args.controlPingIntervalMs ?? CONTROL_PING_INTERVAL_MS,
+          args.controlPongDeadlineMs ?? CONTROL_PONG_DEADLINE_MS,
+        );
+        stopControlLiveness = socketLivenessStop;
         log.info?.("sync_tunnel.control_open", { machineKey: id.machineKey });
         void validateCurrentBridge();
       });
       socket.on("message", (raw: RawData) => {
         const message = parseControlMessage(rawToText(raw));
-        if (message?.t === "open") void openTunnel(id, message.id);
+        if (message?.t === "open") void openTunnel(id, message.id, socket);
       });
       socket.on("error", (error: Error) => {
+        if (control !== socket) return;
         recordFailure(error.message);
         log.warn?.("sync_tunnel.control_error", { error: error.message });
       });
       socket.on("close", () => {
+        socketLivenessStop?.();
+        if (stopControlLiveness === socketLivenessStop) stopControlLiveness = null;
+        if (control !== socket) return;
         connected = false;
-        if (control === socket) control = null;
+        control = null;
         if (!stopped) scheduleReconnect();
       });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      recordFailure(reason);
+      log.warn?.("sync_tunnel.control_connect_failed", { error: reason });
+      scheduleReconnect();
     } finally {
       connectingControl = false;
     }
@@ -240,19 +319,20 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
   const runBridgeValidation = async (): Promise<boolean> => {
     if (!accountSignedIn()) {
+      clearBridgeValidation();
       recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
       return false;
     }
     const port = args.getSyncPort();
     if (port == null) {
+      clearBridgeValidation();
       recordFailure("Relay bridge refused because the ADE sync listener is not bound.");
       log.warn?.("sync_tunnel.no_sync_port");
       return false;
     }
     const expectedLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
     if (!expectedLoopbackNonce) {
-      validatedPort = null;
-      validatedLoopbackNonce = null;
+      clearBridgeValidation();
       recordFailure("Relay bridge refused because the ADE sync listener identity is unavailable.");
       log.warn?.("sync_tunnel.no_loopback_identity", { port });
       return false;
@@ -264,8 +344,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         loopbackProbe,
       );
       if (stopped || !accountSignedIn()) {
-        validatedPort = null;
-        validatedLoopbackNonce = null;
+        clearBridgeValidation();
         if (!stopped) recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
         return false;
       }
@@ -273,20 +352,19 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         args.getSyncPort() !== port
         || (args.getExpectedLoopbackNonce?.() ?? null) !== expectedLoopbackNonce
       ) {
-        validatedPort = null;
-        validatedLoopbackNonce = null;
+        clearBridgeValidation();
         recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
         return false;
       }
       validatedPort = port;
       validatedLoopbackNonce = expectedLoopbackNonce;
+      lastBridgeValidationAtMs = Date.now();
       lastError = null;
       lastSuccessAt = result.checkedAt;
       log.debug?.("sync_tunnel.bridge_validated", { port });
       return true;
     } catch (error) {
-      validatedPort = null;
-      validatedLoopbackNonce = null;
+      clearBridgeValidation();
       const reason = `Relay bridge refused because 127.0.0.1:${port} is not the ADE sync listener: ${error instanceof Error ? error.message : String(error)}`;
       recordFailure(reason);
       log.warn?.("sync_tunnel.loopback_validation_failed", {
@@ -314,54 +392,127 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     return current;
   };
 
-  const openTunnel = async (id: MachineIdentity, connectionId: string): Promise<void> => {
-    // Keep validation on every inbound open as defense in depth even though
-    // control-open and listener-ready lifecycle events validate proactively.
-    if (!await validateCurrentBridge()) return;
+  const sendControlReject = (
+    controlSocket: WebSocket,
+    connectionId: string,
+    code: number,
+    reason: string,
+  ): void => {
+    if (controlSocket.readyState !== WebSocket.OPEN) return;
+    try {
+      controlSocket.send(JSON.stringify({
+        t: "reject",
+        id: connectionId,
+        code: applicationCloseCode(code, RELAY_CLOSE_BRIDGE_REJECTED),
+        reason: sanitizedCloseReason(reason, "bridge rejected"),
+      }));
+    } catch {
+      // A dead control socket is handled by the native ping/pong state machine.
+    }
+  };
+
+  const openTunnel = async (
+    id: MachineIdentity,
+    connectionId: string,
+    controlSocket: WebSocket,
+  ): Promise<void> => {
+    const currentPort = args.getSyncPort();
+    const currentLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
+    const cacheAgeMs = Date.now() - lastBridgeValidationAtMs;
+    const validationIsFresh = currentPort != null
+      && currentLoopbackNonce != null
+      && validatedPort === currentPort
+      && validatedLoopbackNonce === currentLoopbackNonce
+      && cacheAgeMs >= 0
+      && cacheAgeMs < BRIDGE_VALIDATION_FRESH_MS;
+
+    if (!validationIsFresh && !await validateCurrentBridge()) {
+      sendControlReject(
+        controlSocket,
+        connectionId,
+        args.getSyncPort() == null || !accountSignedIn()
+          ? RELAY_CLOSE_HOST_UNAVAILABLE
+          : RELAY_CLOSE_BRIDGE_REJECTED,
+        args.getSyncPort() == null ? "host sync listener unavailable" : "bridge validation failed",
+      );
+      return;
+    }
+
     const port = validatedPort;
-    if (port == null || args.getSyncPort() !== port) {
+    if (
+      port == null
+      || args.getSyncPort() !== port
+      || (args.getExpectedLoopbackNonce?.() ?? null) !== validatedLoopbackNonce
+      || !accountSignedIn()
+    ) {
+      clearBridgeValidation();
       recordFailure("Relay bridge refused because the ADE sync listener changed during validation.");
+      sendControlReject(controlSocket, connectionId, RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
       return;
     }
     const relayBridgeProof = args.getRelayBridgeProof();
     if (!relayBridgeProof) {
-      validatedPort = null;
-      validatedLoopbackNonce = null;
+      clearBridgeValidation();
       recordFailure("Relay bridge refused because the local bridge credential is unavailable.");
       log.warn?.("sync_tunnel.no_bridge_credential", { connectionId, port });
+      sendControlReject(controlSocket, connectionId, RELAY_CLOSE_BRIDGE_REJECTED, "bridge credential unavailable");
       return;
     }
     const ts = nowSeconds();
     const sig = signRelayHmacHex(id.secret, buildPipeSignatureBase(id.machineKey, connectionId, ts));
     const pipeUrl = `${httpToWsUrl(relayHttpUrl())}/host/${id.machineKey}/pipe/${connectionId}?ts=${ts}&sig=${sig}`;
 
-    const pipe = new WebSocket(pipeUrl);
-    const local = new WebSocket(`ws://127.0.0.1:${String(port)}`, {
-      headers: { [SYNC_RELAY_BRIDGE_PROOF_HEADER]: relayBridgeProof },
-    });
+    let pipe: WebSocket | null = null;
+    let local: WebSocket | null = null;
+    try {
+      pipe = new WebSocket(pipeUrl);
+      local = new WebSocket(`ws://127.0.0.1:${String(port)}`, {
+        headers: { [SYNC_RELAY_BRIDGE_PROOF_HEADER]: relayBridgeProof },
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      recordFailure(reason);
+      if (pipe) safeCloseWebSocket(pipe, RELAY_CLOSE_BRIDGE_REJECTED, "bridge setup failed");
+      sendControlReject(
+        controlSocket,
+        connectionId,
+        pipe ? RELAY_CLOSE_HOST_UNAVAILABLE : RELAY_CLOSE_BRIDGE_REJECTED,
+        pipe ? "host sync listener unavailable" : "relay pipe unavailable",
+      );
+      return;
+    }
+
+    const tunnel: Tunnel = { pipe, local, connectionId };
+    tunnels.add(tunnel);
+    let pipeOpen = false;
+    let localOpen = false;
+    let rejected = false;
+    const bridgeReady = (): boolean => pipeOpen && localOpen;
+    const rejectOpen = (code: number, reason: string): void => {
+      if (rejected) return;
+      rejected = true;
+      sendControlReject(controlSocket, connectionId, code, reason);
+    };
+    const closeBoth = (sourceCode: number, sourceReason: unknown): void => {
+      if (!tunnels.delete(tunnel)) return;
+      const code = applicationCloseCode(sourceCode);
+      const reason = sanitizedCloseReason(sourceReason, "partner closed");
+      safeCloseWebSocket(pipe, code, reason);
+      safeCloseWebSocket(local, code, reason);
+      log.debug?.("sync_tunnel.closed", { connectionId, code });
+    };
+
     armOpenDeadline(pipe, () => {
       recordFailure("relay pipe connect timed out");
+      rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
     });
     armOpenDeadline(local, () => {
       recordFailure("local sync socket connect timed out");
+      rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
     });
-    const tunnel: Tunnel = { pipe, local, connectionId };
-    tunnels.add(tunnel);
 
-    const closeBoth = (): void => {
-      if (!tunnels.delete(tunnel)) return;
-      try {
-        pipe.close();
-      } catch {
-        // ignore
-      }
-      try {
-        local.close();
-      } catch {
-        // ignore
-      }
-      log.debug?.("sync_tunnel.closed", { connectionId });
-    };
+    pipe.on("open", () => { pipeOpen = true; });
+    local.on("open", () => { localOpen = true; });
 
     // Byte-for-byte forwarding in both directions; the `isBinary` flag preserves
     // text-vs-binary framing so the sync protocol rides through unmodified.
@@ -369,64 +520,86 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     // instant this pipe opens — usually BEFORE the local socket to the sync
     // host has finished connecting — so each direction buffers until its
     // target opens rather than dropping those first frames.
-    const forwardOrBuffer = makeBufferedForwarder(() => closeBoth());
+    const forwardOrBuffer = makeBufferedForwarder(() => {
+      if (!bridgeReady()) rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge frame buffer overflow");
+      closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "bridge frame buffer overflow");
+    });
     pipe.on("message", (data: RawData, isBinary: boolean) => forwardOrBuffer(local, data, isBinary));
     local.on("message", (data: RawData, isBinary: boolean) => forwardOrBuffer(pipe, data, isBinary));
-    pipe.on("close", closeBoth);
-    local.on("close", closeBoth);
+    pipe.on("close", (code: number, reason: Buffer) => {
+      if (!bridgeReady()) {
+        rejectOpen(applicationCloseCode(code, RELAY_CLOSE_BRIDGE_REJECTED), "relay pipe unavailable");
+      }
+      closeBoth(code, reason);
+    });
+    local.on("close", (code: number, reason: Buffer) => {
+      if (!bridgeReady()) rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
+      closeBoth(code, reason);
+    });
     pipe.on("error", (error: Error) => {
       recordFailure(error.message);
-      closeBoth();
+      if (!bridgeReady()) rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
+      closeBoth(RELAY_CLOSE_PARTNER_CLOSED, "relay pipe error");
     });
     local.on("error", (error: Error) => {
       recordFailure(error.message);
-      closeBoth();
+      if (!bridgeReady()) rejectOpen(RELAY_CLOSE_HOST_UNAVAILABLE, "host sync listener unavailable");
+      closeBoth(RELAY_CLOSE_PARTNER_CLOSED, "host sync listener error");
     });
-    log.debug?.("sync_tunnel.open", { connectionId });
+
+    if (validationIsFresh) {
+      void validateCurrentBridge().then((valid) => {
+        if (valid || !tunnels.has(tunnel)) return;
+        rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge revalidation failed");
+        closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "bridge revalidation failed");
+      });
+    }
+    log.debug?.("sync_tunnel.open", { connectionId, cachedValidation: validationIsFresh });
   };
 
   const closeRelayConnections = (): void => {
-    if (control) {
+    stopControlLiveness?.();
+    stopControlLiveness = null;
+    const controlToClose = control;
+    control = null;
+    if (controlToClose) {
       try {
-        control.close();
+        controlToClose.close();
       } catch {
         // ignore
       }
-      control = null;
     }
     for (const tunnel of [...tunnels]) {
       tunnels.delete(tunnel);
-      try {
-        tunnel.pipe.close();
-      } catch {
-        // ignore
-      }
-      try {
-        tunnel.local.close();
-      } catch {
-        // ignore
-      }
+      safeCloseWebSocket(tunnel.pipe, RELAY_CLOSE_PARTNER_CLOSED, "host unavailable");
+      safeCloseWebSocket(tunnel.local, RELAY_CLOSE_PARTNER_CLOSED, "host unavailable");
     }
     connected = false;
-    validatedPort = null;
-    validatedLoopbackNonce = null;
+    clearBridgeValidation();
   };
 
-  const reconcileAccountEligibility = (): void => {
+  const reconcileAccountEligibility = async (forceReconnect = false): Promise<void> => {
     if (stopped || !started) return;
-    if (!accountSignedIn()) {
+    const previousEligibility = accountEligible;
+    const nextEligibility = computeAccountEligibility();
+    accountEligible = nextEligibility;
+    if (!nextEligibility) {
       clearReconnect();
       lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
-      closeRelayConnections();
+      if (previousEligibility !== false) closeRelayConnections();
       return;
     }
     if (lastError === RELAY_SIGN_IN_REQUIRED_MESSAGE) lastError = null;
-    if (!control) void connectControl();
+    if (forceReconnect && previousEligibility === true) closeRelayConnections();
+    if (previousEligibility !== true || forceReconnect) {
+      clearReconnect();
+      await connectControl();
+    }
   };
 
   const refreshAccountLease = async (): Promise<void> => {
     if (!args.getAccountLease) {
-      reconcileAccountEligibility();
+      await reconcileAccountEligibility();
       return;
     }
     if (accountLeaseCheckInFlight) return await accountLeaseCheckInFlight;
@@ -439,8 +612,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         nextUserId = null;
       }
       accountLeaseUserId = nextUserId;
-      if (previousUserId !== nextUserId) closeRelayConnections();
-      reconcileAccountEligibility();
+      const accountSwitched = previousUserId != null
+        && nextUserId != null
+        && previousUserId !== nextUserId;
+      await reconcileAccountEligibility(accountSwitched);
     })();
     accountLeaseCheckInFlight = check;
     try {
@@ -455,13 +630,13 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       if (started) return;
       started = true;
       stopped = false;
+      accountEligible = null;
       accountStatusTimer = setInterval(
         () => { void refreshAccountLease(); },
         args.accountStatusPollMs ?? ACCOUNT_STATUS_POLL_MS,
       );
       accountStatusTimer.unref?.();
       await refreshAccountLease();
-      await connectControl();
     },
 
     async stop(): Promise<void> {
@@ -473,6 +648,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         accountStatusTimer = null;
       }
       closeRelayConnections();
+      accountEligible = null;
     },
 
     validateCurrentBridge,
@@ -566,6 +742,63 @@ function armOpenDeadline(socket: WebSocket, onTimeout: () => void): void {
   socket.once("open", clear);
   socket.once("close", clear);
   socket.once("error", clear);
+}
+
+/** Native protocol ping/pong liveness; no JSON frames reach or wake the DO. */
+function armControlLiveness(
+  socket: WebSocket,
+  onMiss: () => void,
+  pingIntervalMs: number,
+  pongDeadlineMs: number,
+): () => void {
+  let stopped = false;
+  let pongDeadline: NodeJS.Timeout | null = null;
+  const clearPongDeadline = (): void => {
+    if (!pongDeadline) return;
+    clearTimeout(pongDeadline);
+    pongDeadline = null;
+  };
+  const onPong = (): void => {
+    clearPongDeadline();
+  };
+  const pingTimer = setInterval(() => {
+    if (stopped || socket.readyState !== WebSocket.OPEN || pongDeadline) return;
+    pongDeadline = setTimeout(() => {
+      pongDeadline = null;
+      if (!stopped) onMiss();
+    }, pongDeadlineMs);
+    pongDeadline.unref?.();
+    try {
+      socket.ping();
+    } catch {
+      clearPongDeadline();
+      onMiss();
+    }
+  }, pingIntervalMs);
+  pingTimer.unref?.();
+  socket.on("pong", onPong);
+
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(pingTimer);
+    clearPongDeadline();
+    socket.off("pong", onPong);
+  };
+  socket.once("close", stop);
+  return stop;
+}
+
+function safeCloseWebSocket(socket: WebSocket, code: number, reason: string): void {
+  try {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.close(applicationCloseCode(code), sanitizedCloseReason(reason, "partner closed"));
+    } else if (socket.readyState === WebSocket.CONNECTING) {
+      socket.terminate();
+    }
+  } catch {
+    // already closing/dead
+  }
 }
 
 /** Frames buffered per still-connecting target before the pair is torn down. */

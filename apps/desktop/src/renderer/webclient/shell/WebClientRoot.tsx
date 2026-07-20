@@ -98,13 +98,34 @@ function readStashedTarget(): DeeplinkTarget | null {
 }
 
 type Phase =
-  | { kind: "loading" }
+  | { kind: "signing-in" }
+  | { kind: "booting"; message: string }
   | { kind: "machine-picker" }
   | { kind: "connecting"; name: string }
   | { kind: "auth-required"; message: string }
   | { kind: "project-picker"; projects: SyncMobileProjectSummary[] }
   | { kind: "ready"; AppRoot: React.ComponentType }
   | { kind: "error"; message: string; canRetry: boolean };
+
+type SavedEnvironmentsState = "loading" | "ready" | "unavailable";
+
+function accountEnvironmentOwner(snapshot: BrowserAccountSnapshot): string | null {
+  return (
+    snapshot.state === "signed_in" || snapshot.state === "directory_unavailable"
+  )
+    ? snapshot.userId
+    : null;
+}
+
+function environmentsVisibleToOwner(
+  environments: WebClientEnvironmentRecord[],
+  ownerUserId: string | null,
+): WebClientEnvironmentRecord[] {
+  return environments.filter((environment) => (
+    environment.accountOwnerUserId == null
+    || environment.accountOwnerUserId === ownerUserId
+  ));
+}
 
 function relayAccessFromAccount(
   account: BrowserAccountSnapshot,
@@ -132,11 +153,18 @@ export function WebClientRoot({
   accountClient?: BrowserAccountClient;
 }) {
   const [accountClient] = useState(() => providedAccountClient ?? new BrowserAccountClient());
-  const [phase, setPhase] = useState<Phase>({ kind: "loading" });
+  const [phase, setPhase] = useState<Phase>(() => (
+    window.location.pathname === "/account/callback"
+      ? { kind: "signing-in" }
+      : { kind: "machine-picker" }
+  ));
   const [status, setStatus] = useState<AdeSyncClientStatus>(() => client.getStatus());
-  const [environments, setEnvironments] = useState<WebClientEnvironmentRecord[]>([]);
+  const [storedEnvironments, setStoredEnvironments] = useState<WebClientEnvironmentRecord[]>([]);
+  const [savedEnvironmentsState, setSavedEnvironmentsState] = useState<SavedEnvironmentsState>("loading");
+  const [savedEnvironmentsOwner, setSavedEnvironmentsOwner] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<SyncMobileProjectSummary[]>([]);
   const [account, setAccount] = useState<BrowserAccountSnapshot>(() => accountClient.getSnapshot());
+  const [directoryLoading, setDirectoryLoading] = useState(false);
   const [connectingAccountMachineKey, setConnectingAccountMachineKey] = useState<string | null>(null);
 
   const adapterRef = useRef<AdeWebAdapter | null>(null);
@@ -145,30 +173,85 @@ export function WebClientRoot({
   const fatalRebootRef = useRef(false);
   const phaseIsReadyRef = useRef(false);
   const connectingAccountMachineRef = useRef<string | null>(null);
+  const accountRef = useRef(account);
+  const savedEnvironmentsLoadRef = useRef(0);
+  const privacyReadyOwnerRef = useRef<{ ownerUserId: string | null } | null>(null);
+  const pendingEnvironmentRefreshRef = useRef<{
+    ownerUserId: string | null;
+    environments: WebClientEnvironmentRecord[];
+  } | null>(null);
   phaseIsReadyRef.current = phase.kind === "ready";
+  accountRef.current = account;
+  const currentAccountOwner = accountEnvironmentOwner(account);
+  const environments = savedEnvironmentsState === "ready"
+    && savedEnvironmentsOwner === currentAccountOwner
+    ? storedEnvironments
+    : [];
   const relayAccess = useMemo(
     () => relayAccessFromAccount(account, () => accountClient.getAccessToken()),
     [account, accountClient],
   );
 
   const refreshEnvironments = useCallback(async () => {
-    const list = await client.listEnvironments();
-    setEnvironments(list);
-    return list;
+    try {
+      const list = await client.listEnvironments();
+      const ownerUserId = accountEnvironmentOwner(accountRef.current);
+      const visibleList = environmentsVisibleToOwner(list, ownerUserId);
+      pendingEnvironmentRefreshRef.current = { ownerUserId, environments: visibleList };
+      if (privacyReadyOwnerRef.current?.ownerUserId === ownerUserId) {
+        setStoredEnvironments(visibleList);
+        setSavedEnvironmentsOwner(ownerUserId);
+        setSavedEnvironmentsState("ready");
+      }
+      return visibleList;
+    } catch (error) {
+      setStoredEnvironments([]);
+      setSavedEnvironmentsOwner(accountEnvironmentOwner(accountRef.current));
+      setSavedEnvironmentsState("unavailable");
+      throw error;
+    }
   }, [client]);
 
   const applyAccountPrivacy = useCallback(async (
     snapshot: BrowserAccountSnapshot,
   ): Promise<WebClientEnvironmentRecord[]> => {
-    const currentOwnerUserId = (
-      snapshot.state === "signed_in" || snapshot.state === "directory_unavailable"
-    )
-      ? snapshot.userId
-      : null;
-    await client.pruneAccountOwnedEnvironments(currentOwnerUserId);
+    const loadId = ++savedEnvironmentsLoadRef.current;
+    const currentOwnerUserId = accountEnvironmentOwner(snapshot);
+    privacyReadyOwnerRef.current = null;
+    pendingEnvironmentRefreshRef.current = null;
+    setStoredEnvironments([]);
+    setSavedEnvironmentsOwner(currentOwnerUserId);
+    setSavedEnvironmentsState("loading");
     setAccount(snapshot);
-    return await refreshEnvironments();
-  }, [client, refreshEnvironments]);
+    try {
+      const result = await client.pruneAccountOwnedEnvironments(currentOwnerUserId);
+      const survivingEnvironments = (
+        result as unknown as { environments?: WebClientEnvironmentRecord[] }
+      ).environments ?? [];
+      if (savedEnvironmentsLoadRef.current === loadId) {
+        privacyReadyOwnerRef.current = { ownerUserId: currentOwnerUserId };
+        const pendingRefresh = pendingEnvironmentRefreshRef.current as {
+          ownerUserId: string | null;
+          environments: WebClientEnvironmentRecord[];
+        } | null;
+        const visibleEnvironments = pendingRefresh?.ownerUserId === currentOwnerUserId
+          ? pendingRefresh.environments
+          : environmentsVisibleToOwner(survivingEnvironments, currentOwnerUserId);
+        setStoredEnvironments(visibleEnvironments);
+        setSavedEnvironmentsOwner(currentOwnerUserId);
+        setSavedEnvironmentsState("ready");
+      }
+      return survivingEnvironments;
+    } catch {
+      if (savedEnvironmentsLoadRef.current === loadId) {
+        privacyReadyOwnerRef.current = null;
+        setStoredEnvironments([]);
+        setSavedEnvironmentsOwner(currentOwnerUserId);
+        setSavedEnvironmentsState("unavailable");
+      }
+      return [];
+    }
+  }, [client]);
 
   const showMachinePicker = useCallback(() => {
     fatalRebootRef.current = false;
@@ -221,8 +304,11 @@ export function WebClientRoot({
     setPhase({ kind: "ready", AppRoot });
   }, [client]);
 
-  const afterConnect = useCallback(async () => {
-    const activeEnv = (await client.listEnvironments()).find((environment) => environment.envId === client.getStatus().selectedEnvId) ?? null;
+  const afterConnect = useCallback(async (environmentSeed?: WebClientEnvironmentRecord[]) => {
+    const availableEnvironments = environmentSeed ?? await client.listEnvironments();
+    const activeEnv = availableEnvironments.find(
+      (environment) => environment.envId === client.getStatus().selectedEnvId,
+    ) ?? null;
     let projects: SyncMobileProjectSummary[] = [];
     try {
       projects = (await client.getProjectCatalog()).projects;
@@ -254,7 +340,9 @@ export function WebClientRoot({
     setPhase({ kind: "connecting", name: environment.machineName });
     try {
       await client.connect(environment.envId, relayAccess);
-      await afterConnect();
+      setPhase({ kind: "booting", message: "Opening your workspace…" });
+      const refreshed = await refreshEnvironments();
+      await afterConnect(refreshed);
     } catch (error) {
       if (error instanceof WebRelayAuthRequiredError) {
         setPhase({ kind: "auth-required", message: error.message });
@@ -263,7 +351,7 @@ export function WebClientRoot({
       const message = error instanceof Error ? error.message : String(error);
       setPhase({ kind: "error", message, canRetry: true });
     }
-  }, [client, relayAccess, afterConnect]);
+  }, [client, relayAccess, afterConnect, refreshEnvironments]);
 
   const connectToAccountMachine = useCallback(async (machine: AdeAccountMachine) => {
     if (connectingAccountMachineRef.current) return;
@@ -284,8 +372,9 @@ export function WebClientRoot({
         relayBaseUrls: accountClient.getRelayBaseUrls(),
         getRelayAccountToken: () => accountClient.getAccessToken(),
       });
-      await refreshEnvironments();
-      await afterConnect();
+      setPhase({ kind: "booting", message: "Opening your workspace…" });
+      const refreshed = await refreshEnvironments();
+      await afterConnect(refreshed);
     } catch (error) {
       const snapshot = accountClient.getSnapshot();
       await applyAccountPrivacy(snapshot);
@@ -304,6 +393,8 @@ export function WebClientRoot({
   useEffect(() => {
     if (bootedRef.current) return;
     bootedRef.current = true;
+    let disposed = false;
+    let accountProgressInterval: number | null = null;
     void (async () => {
       // Older native clients may still open the retired web pairing URL. Treat
       // it as the normal sign-in entry and scrub the obsolete payload.
@@ -320,15 +411,54 @@ export function WebClientRoot({
         stashedTargetRef.current = readStashedTarget();
       }
 
+      let privacyStartedFor: string | null | undefined;
+      const beginPrivacyLoad = (snapshot: BrowserAccountSnapshot) => {
+        const ownerUserId = accountEnvironmentOwner(snapshot);
+        if (privacyStartedFor === ownerUserId) return;
+        privacyStartedFor = ownerUserId;
+        void applyAccountPrivacy(snapshot);
+      };
+
       if (path === "/account/callback") {
-        setAccount((current) => ({ ...current, state: "loading", message: null }));
+        // bootstrap() performs token exchange and then the directory request.
+        // Observe the account snapshot so the UI can distinguish those stages
+        // without coupling either one to browser storage.
+        accountProgressInterval = window.setInterval(() => {
+          const pendingSnapshot = accountClient.getSnapshot();
+          if (
+            pendingSnapshot.userId
+            && (pendingSnapshot.state === "signed_in" || pendingSnapshot.state === "directory_unavailable")
+          ) {
+            setAccount(pendingSnapshot);
+            setDirectoryLoading(true);
+            setPhase({ kind: "machine-picker" });
+            beginPrivacyLoad(pendingSnapshot);
+          }
+        }, 16);
       }
+
       const accountSnapshot = await accountClient.bootstrap();
-      await applyAccountPrivacy(accountSnapshot);
+      if (disposed) return;
+      if (accountProgressInterval != null) {
+        window.clearInterval(accountProgressInterval);
+        accountProgressInterval = null;
+      }
+      setAccount(accountSnapshot);
+      setDirectoryLoading(false);
       setPhase({ kind: "machine-picker" });
-    })().catch((error) => {
-      setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
+      beginPrivacyLoad(accountSnapshot);
+    })().catch(() => {
+      if (disposed) return;
+      const accountSnapshot = accountClient.getSnapshot();
+      setAccount(accountSnapshot);
+      setDirectoryLoading(false);
+      setPhase({ kind: "machine-picker" });
+      void applyAccountPrivacy(accountSnapshot);
     });
+    return () => {
+      disposed = true;
+      if (accountProgressInterval != null) window.clearInterval(accountProgressInterval);
+    };
   }, [accountClient, applyAccountPrivacy]);
 
   // ---- Live status subscription ------------------------------------------
@@ -449,24 +579,35 @@ export function WebClientRoot({
 
   const onAccountSignOut = useCallback(() => {
     const snapshot = accountClient.signOut();
-    void (async () => {
-      client.disconnect();
-      await applyAccountPrivacy(snapshot);
-      showMachinePicker();
-    })();
+    client.disconnect();
+    showMachinePicker();
+    void applyAccountPrivacy(snapshot);
   }, [accountClient, applyAccountPrivacy, client, showMachinePicker]);
 
   const onRetryDirectory = useCallback(() => {
-    setAccount((current) => ({ ...current, state: "loading", message: null }));
-    void accountClient.loadMachines().then(applyAccountPrivacy).catch(() => {
-      void applyAccountPrivacy(accountClient.getSnapshot());
+    setDirectoryLoading(true);
+    void accountClient.loadMachines().then((snapshot) => {
+      setAccount(snapshot);
+      setDirectoryLoading(false);
+      void applyAccountPrivacy(snapshot);
+    }).catch(() => {
+      const snapshot = accountClient.getSnapshot();
+      setAccount(snapshot);
+      setDirectoryLoading(false);
+      void applyAccountPrivacy(snapshot);
     });
   }, [accountClient, applyAccountPrivacy]);
 
+  const onRetrySavedEnvironments = useCallback(() => {
+    void applyAccountPrivacy(accountRef.current);
+  }, [applyAccountPrivacy]);
+
   // ---- Render -------------------------------------------------------------
   switch (phase.kind) {
-    case "loading":
-      return <Connecting name={null} />;
+    case "signing-in":
+      return <ProgressScreen title="Signing in…" message="Completing secure sign-in…" />;
+    case "booting":
+      return <ProgressScreen title="Starting ADE" message={phase.message} />;
     case "connecting":
       return <Connecting name={phase.name} />;
     case "machine-picker":
@@ -476,11 +617,14 @@ export function WebClientRoot({
           account={account}
           relayAccess={relayAccess}
           connectingMachineKey={connectingAccountMachineKey}
+          directoryLoading={directoryLoading}
+          savedEnvironmentsState={savedEnvironmentsState}
           onSelect={(environment) => void connectTo(environment)}
           onSelectAccountMachine={(machine) => void connectToAccountMachine(machine)}
           onSignIn={onAccountSignIn}
           onSignOut={onAccountSignOut}
           onRetryDirectory={onRetryDirectory}
+          onRetrySavedEnvironments={onRetrySavedEnvironments}
         />
       );
     case "auth-required":
@@ -510,13 +654,13 @@ export function WebClientRoot({
           projects={phase.projects}
           machineName={status.hostName}
           onPick={(project) => {
-            setPhase({ kind: "connecting", name: project.displayName });
+            setPhase({ kind: "booting", message: `Opening ${project.displayName}…` });
             void enterProject(project, phase.projects).catch((error) => {
               setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
             });
           }}
           onOpenChats={() => {
-            setPhase({ kind: "connecting", name: "Chats" });
+            setPhase({ kind: "booting", message: "Opening Chats…" });
             void enterChats(phase.projects).catch((error) => {
               setPhase({ kind: "error", message: error instanceof Error ? error.message : String(error), canRetry: false });
             });
@@ -572,11 +716,11 @@ export function WebClientRoot({
   }
 }
 
-function Connecting({ name }: { name: string | null }) {
+function ProgressScreen({ title, message }: { title: string; message: string }) {
   return (
     <ScreenShell
-      title={name ? `Connecting to ${name}` : "Starting ADE"}
-      subtitle="Connecting to your machine…"
+      title={title}
+      subtitle={message}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, color: COLORS.textSecondary, fontFamily: SANS_FONT, fontSize: 13 }}>
         <span
@@ -590,9 +734,18 @@ function Connecting({ name }: { name: string | null }) {
             animation: "ade-web-spin 0.8s linear infinite",
           }}
         />
-        Connecting…
+        {message}
         <style>{"@keyframes ade-web-spin { to { transform: rotate(360deg); } }"}</style>
       </div>
     </ScreenShell>
+  );
+}
+
+function Connecting({ name }: { name: string }) {
+  return (
+    <ProgressScreen
+      title={`Connecting to ${name}…`}
+      message="Establishing a secure connection…"
+    />
   );
 }

@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import {
+  CONTROL_PING_INTERVAL_MS,
+  CONTROL_PONG_DEADLINE_MS,
   computeBackoffMs,
   createSyncTunnelClientService,
   parseControlMessage,
+  RELAY_CLOSE_BRIDGE_REJECTED,
+  RELAY_CLOSE_HOST_UNAVAILABLE,
 } from "./syncTunnelClientService";
+import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import type { SyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSharedSyncListener } from "./sharedSyncListener";
 import {
@@ -245,11 +250,86 @@ describe("createSyncTunnelClientService", () => {
       signedIn = false;
       releaseClaim(new Response(null, { status: 204 }));
       await starting;
-      expect(service.getStatus().connected).toBe(false);
-      expect(service.getStatus().lastError).toBe("Sign in to ADE to use ADE Relay.");
+      await vi.waitFor(() => {
+        expect(service.getStatus().connected).toBe(false);
+        expect(service.getStatus().lastError).toBe("Sign in to ADE to use ADE Relay.");
+      });
     } finally {
       await service.dispose();
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps account polling from bypassing reconnect backoff after a failed claim", async () => {
+    const originalFetch = globalThis.fetch;
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.999999);
+    const fetchMock = vi.fn(async () => new Response(null, { status: 503 }));
+    globalThis.fetch = fetchMock;
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getRelayBridgeProof: () => "e".repeat(43),
+      accountStatusPollMs: 5,
+      configStore: fakeStore(),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(service.getStatus()).toMatchObject({
+        connected: false,
+        lastError: "claim failed (503)",
+      });
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("terminates and reconnects a control socket that misses its native pong deadline", async () => {
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0, autoPong: false });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const address = relay.address();
+    const relayPort = typeof address === "object" && address ? address.port : 0;
+    let connections = 0;
+    let pings = 0;
+    relay.on("connection", (socket) => {
+      connections += 1;
+      socket.on("ping", () => { pings += 1; });
+    });
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    globalThis.fetch = fetchMock;
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      controlPingIntervalMs: 10,
+      controlPongDeadlineMs: 10,
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+    });
+
+    try {
+      expect(CONTROL_PING_INTERVAL_MS).toBe(30_000);
+      expect(CONTROL_PONG_DEADLINE_MS).toBe(10_000);
+      await service.start();
+      await vi.waitFor(() => {
+        expect(connections).toBeGreaterThanOrEqual(2);
+      }, { timeout: 1_000 });
+      expect(pings).toBeGreaterThanOrEqual(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
     }
   });
 
@@ -262,9 +342,13 @@ describe("createSyncTunnelClientService", () => {
     const address = relay.address();
     const relayPort = typeof address === "object" && address ? address.port : 0;
     const connections: string[] = [];
+    const controlMessages: unknown[] = [];
     relay.on("connection", (socket, request) => {
       connections.push(request.url ?? "");
       if (connections.length === 1) {
+        socket.on("message", (raw) => {
+          controlMessages.push(JSON.parse(raw.toString()) as unknown);
+        });
         socket.send(JSON.stringify({ t: "open", id: "abcdef01" }));
       }
     });
@@ -301,10 +385,291 @@ describe("createSyncTunnelClientService", () => {
         activeTunnels: 0,
         relayBridgeValidated: false,
       });
+      await vi.waitFor(() => {
+        expect(controlMessages).toContainEqual({
+          t: "reject",
+          id: "abcdef01",
+          code: RELAY_CLOSE_BRIDGE_REJECTED,
+          reason: "bridge validation failed",
+        });
+      });
       expect(service.getStatus().lastFailureAt).not.toBeNull();
     } finally {
       await service.dispose();
       globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("rejects an open as host-unavailable when the local sync socket cannot connect", async () => {
+    const unavailable = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      unavailable.once("listening", resolve);
+      unavailable.once("error", reject);
+    });
+    const unavailableAddress = unavailable.address();
+    const unavailablePort = typeof unavailableAddress === "object" && unavailableAddress
+      ? unavailableAddress.port
+      : 0;
+    await new Promise<void>((resolve) => unavailable.close(() => resolve()));
+
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const relayAddress = relay.address();
+    const relayPort = typeof relayAddress === "object" && relayAddress ? relayAddress.port : 0;
+    const connections: string[] = [];
+    const controlMessages: unknown[] = [];
+    relay.on("connection", (socket, request) => {
+      connections.push(request.url ?? "");
+      if (!request.url?.includes("/pipe/")) {
+        socket.on("message", (raw) => {
+          controlMessages.push(JSON.parse(raw.toString()) as unknown);
+        });
+        socket.send(JSON.stringify({ t: "open", id: "abcdef01" }));
+      }
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const expectedNonce = "c".repeat(32);
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => unavailablePort,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+      loopbackProbe: async (port) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(controlMessages).toContainEqual({
+          t: "reject",
+          id: "abcdef01",
+          code: RELAY_CLOSE_HOST_UNAVAILABLE,
+          reason: "host sync listener unavailable",
+        });
+      });
+      expect(connections.some((url) => url.includes("/pipe/abcdef01"))).toBe(true);
+      expect(service.getStatus().activeTunnels).toBe(0);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("dials immediately from a fresh validation cache and tears down if concurrent revalidation fails", async () => {
+    const local = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      local.once("listening", resolve);
+      local.once("error", reject);
+    });
+    const localAddress = local.address();
+    const localPort = typeof localAddress === "object" && localAddress ? localAddress.port : 0;
+    let localConnections = 0;
+    let localClose: { code: number; reason: string } | null = null;
+    local.on("connection", (socket) => {
+      localConnections += 1;
+      socket.on("close", (code, reason) => {
+        localClose = { code, reason: reason.toString() };
+      });
+    });
+
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const relayAddress = relay.address();
+    const relayPort = typeof relayAddress === "object" && relayAddress ? relayAddress.port : 0;
+    let controlSocket: WebSocket | null = null;
+    let pipeConnections = 0;
+    let pipeClose: { code: number; reason: string } | null = null;
+    const controlMessages: unknown[] = [];
+    relay.on("connection", (socket, request) => {
+      if (request.url?.includes("/pipe/")) {
+        pipeConnections += 1;
+        socket.on("close", (code, reason) => {
+          pipeClose = { code, reason: reason.toString() };
+        });
+      } else {
+        controlSocket = socket;
+        socket.on("message", (raw) => {
+          controlMessages.push(JSON.parse(raw.toString()) as unknown);
+        });
+      }
+    });
+
+    const expectedNonce = "c".repeat(32);
+    let probeCalls = 0;
+    let finishRevalidation!: (result: SyncLoopbackProbeResult) => void;
+    const revalidation = new Promise<SyncLoopbackProbeResult>((resolve) => {
+      finishRevalidation = resolve;
+    });
+    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> => {
+      probeCalls += 1;
+      if (probeCalls === 1) {
+        return {
+          ok: true,
+          port,
+          statusCode: 426,
+          statusMessage: "Upgrade Required",
+          markerValue: expectedNonce,
+          checkedAt: new Date().toISOString(),
+          reason: null,
+        };
+      }
+      return await revalidation;
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => localPort,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+      loopbackProbe,
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().relayBridgeValidated).toBe(true);
+        expect(controlSocket).not.toBeNull();
+      });
+      (controlSocket as unknown as WebSocket).send(JSON.stringify({ t: "open", id: "abcdef01" }));
+      await vi.waitFor(() => {
+        expect(probeCalls).toBe(2);
+        expect(pipeConnections).toBe(1);
+        expect(localConnections).toBe(1);
+        expect(service.getStatus().activeTunnels).toBe(1);
+      });
+
+      finishRevalidation({
+        ok: false,
+        port: localPort,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: "d".repeat(32),
+        checkedAt: new Date().toISOString(),
+        reason: "listener identity changed",
+      });
+      await vi.waitFor(() => {
+        expect(pipeClose).toEqual({ code: RELAY_CLOSE_BRIDGE_REJECTED, reason: "bridge revalidation failed" });
+        expect(localClose).toEqual({ code: RELAY_CLOSE_BRIDGE_REJECTED, reason: "bridge revalidation failed" });
+        expect(service.getStatus().activeTunnels).toBe(0);
+        expect(controlMessages).toContainEqual({
+          t: "reject",
+          id: "abcdef01",
+          code: RELAY_CLOSE_BRIDGE_REJECTED,
+          reason: "bridge revalidation failed",
+        });
+      });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => local.close(() => resolve()));
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("preserves application close codes and reasons across the pipe/local bridge", async () => {
+    const local = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      local.once("listening", resolve);
+      local.once("error", reject);
+    });
+    const localAddress = local.address();
+    const localPort = typeof localAddress === "object" && localAddress ? localAddress.port : 0;
+    const localSockets: WebSocket[] = [];
+    const localCloses: Array<{ code: number; reason: string }> = [];
+    local.on("connection", (socket) => {
+      const index = localSockets.push(socket) - 1;
+      socket.on("close", (code, reason) => {
+        localCloses[index] = { code, reason: reason.toString() };
+      });
+    });
+
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const relayAddress = relay.address();
+    const relayPort = typeof relayAddress === "object" && relayAddress ? relayAddress.port : 0;
+    let controlSocket: WebSocket | null = null;
+    const pipeSockets: WebSocket[] = [];
+    const pipeCloses: Array<{ code: number; reason: string }> = [];
+    relay.on("connection", (socket, request) => {
+      if (request.url?.includes("/pipe/")) {
+        const index = pipeSockets.push(socket) - 1;
+        socket.on("close", (code, reason) => {
+          pipeCloses[index] = { code, reason: reason.toString() };
+        });
+      } else {
+        controlSocket = socket;
+      }
+    });
+    const expectedNonce = "c".repeat(32);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => localPort,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+      loopbackProbe: async (port) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().relayBridgeValidated).toBe(true);
+        expect(controlSocket).not.toBeNull();
+      });
+      (controlSocket as unknown as WebSocket).send(JSON.stringify({ t: "open", id: "abcdef01" }));
+      await vi.waitFor(() => {
+        expect(pipeSockets).toHaveLength(1);
+        expect(localSockets).toHaveLength(1);
+      });
+      localSockets[0]?.close(4666, "local app close");
+      await vi.waitFor(() => {
+        expect(pipeCloses[0]).toEqual({ code: 4666, reason: "local app close" });
+      });
+
+      (controlSocket as unknown as WebSocket).send(JSON.stringify({ t: "open", id: "abcdef02" }));
+      await vi.waitFor(() => {
+        expect(pipeSockets).toHaveLength(2);
+        expect(localSockets).toHaveLength(2);
+      });
+      pipeSockets[1]?.close(4777, "pipe app close");
+      await vi.waitFor(() => {
+        expect(localCloses[1]).toEqual({ code: 4777, reason: "pipe app close" });
+        expect(service.getStatus().activeTunnels).toBe(0);
+      });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => local.close(() => resolve()));
       await new Promise<void>((resolve) => relay.close(() => resolve()));
     }
   });

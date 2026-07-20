@@ -137,9 +137,17 @@ class FakeD1Database {
   }
 
   all<T>(sql: string, values: unknown[]): T[] {
-    if (!sql.toLowerCase().includes("from machines")) return [];
+    const normalized = sql.toLowerCase();
+    if (!normalized.includes("from machines")) return [];
     const [userId] = values;
-    return this.rows.filter((row) => row.user_id === userId) as T[];
+    let rows = this.rows.filter((row) => row.user_id === userId);
+    if (normalized.includes("order by last_seen_at desc")) {
+      rows = [...rows].sort((left, right) =>
+        Number(right.last_seen_at ?? 0) - Number(left.last_seen_at ?? 0)
+      );
+    }
+    if (normalized.includes("limit 500")) rows = rows.slice(0, 500);
+    return rows as T[];
   }
 
   run(sql: string, values: unknown[]): number {
@@ -977,6 +985,7 @@ describe("machine directory", () => {
     }), env);
     expect(allowed.status).toBe(200);
     expect(allowed.headers.get("access-control-allow-origin")).toBe("https://app.ade.dev");
+    expect(allowed.headers.get("access-control-expose-headers")).toBe("Server-Timing");
 
     const hostilePreflight = await handleRequest(new Request("https://directory.test/account/machines", {
       method: "OPTIONS",
@@ -1046,6 +1055,33 @@ describe("machine directory", () => {
       lastSeenAt: now - 120_000,
       reachableEndpoints: [{ kind: "lan", host: "mac.local", port: 8787 }],
     }));
+    expect(response.headers.get("server-timing")).toMatch(
+      /^auth;dur=\d+\.\d{2}, db;dur=\d+\.\d{2}$/,
+    );
+  });
+
+  it("returns only the 500 most recently seen machines", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    env.DB.rows = Array.from({ length: 501 }, (_, index) => ({
+      user_id: "user_1",
+      machine_key: `machine-${index}`,
+      device_id: `device-${index}`,
+      name: `Machine ${index}`,
+      platform: "macOS",
+      device_type: "desktop",
+      pubkey: null,
+      reachable_endpoints: "[]",
+      last_seen_at: index,
+      created_at: index,
+    }));
+
+    const response = await handleRequest(request("GET", "/account/machines", token), env);
+    const body = await response.json() as { machines: Array<{ machineKey: string }> };
+
+    expect(body.machines).toHaveLength(500);
+    expect(body.machines[0]?.machineKey).toBe("machine-500");
+    expect(body.machines[499]?.machineKey).toBe("machine-1");
   });
 
   it("honors an environment override for the online window", async () => {

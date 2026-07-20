@@ -1,6 +1,7 @@
 import {
   buildHostSignatureBase,
   buildPipeSignatureBase,
+  CONNECTION_ID_PATTERN,
   constantTimeEqual,
   DEFAULT_MAX_TUNNELS_PER_MACHINE,
   generateConnectionId,
@@ -11,12 +12,14 @@ import {
 } from "./relay";
 
 // Application close codes must live in 4000-4999. Documented in the README.
-const CLOSE_HOST_OFFLINE = 4501; // phone connected but no host control socket
-const CLOSE_IDLE = 4502; // pipe pair idle past IDLE_MS, swept by the alarm
-const CLOSE_TOO_MANY = 4503; // machine already at MAX_TUNNELS_PER_MACHINE
-const CLOSE_CLIENT_GONE = 4504; // pipe arrived but its phone had already left
-const CLOSE_CONTROL_REPLACED = 4505; // a newer host control socket took over
-const CLOSE_PARTNER_CLOSED = 4000; // the other end of the tunnel closed cleanly
+export const CLOSE_PARTNER_CLOSED = 4000; // the other end closed without an application code
+export const CLOSE_HOST_OFFLINE = 4501; // no usable host control/bridge socket
+export const CLOSE_IDLE = 4502; // pipe pair idle past IDLE_MS, swept by the alarm
+export const CLOSE_TOO_MANY = 4503; // machine already at MAX_TUNNELS_PER_MACHINE
+export const CLOSE_CLIENT_GONE = 4504; // pipe arrived but its phone had already left
+export const CLOSE_CONTROL_REPLACED = 4505; // a newer host control socket took over
+export const CLOSE_PRE_PIPE_BUFFER_OVERFLOW = 4506; // bounded early-frame buffer overflow
+export const CLOSE_BRIDGE_REJECTED = 4507; // host rejected an open it could not service
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const IDLE_MS = 10 * 60 * 1000;
@@ -28,6 +31,28 @@ const ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
 // tunnel via {t:"open"} and then dials the pipe). Buffer those first frames so
 // none are dropped, bounded so a phone that never gets a pipe can't grow it.
 const MAX_BUFFERED_CLIENT_FRAMES = 64;
+const MAX_BUFFERED_CLIENT_BYTES = 256 * 1024;
+const MAX_CLOSE_REASON_BYTES = 123;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+function applicationCloseCode(code: unknown, fallback: number): number {
+  return typeof code === "number" && Number.isInteger(code) && code >= 4000 && code <= 4999
+    ? code
+    : fallback;
+}
+
+function sanitizedCloseReason(reason: unknown, fallback: string): string {
+  const raw = typeof reason === "string" ? reason : "";
+  const clean = raw.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim() || fallback;
+  const encoded = textEncoder.encode(clean);
+  if (encoded.byteLength <= MAX_CLOSE_REASON_BYTES) return clean;
+  return textDecoder.decode(encoded.slice(0, MAX_CLOSE_REASON_BYTES)).replace(/\uFFFD$/, "").trimEnd();
+}
+
+function bufferedFrameBytes(message: string | ArrayBuffer): number {
+  return typeof message === "string" ? textEncoder.encode(message).byteLength : message.byteLength;
+}
 
 /**
  * Structured single-line log. View live with `wrangler tail ade-tunnel-relay`,
@@ -62,7 +87,10 @@ export class TunnelDurableObject implements DurableObject {
   // Frames a phone sent before its pipe attached, keyed by connectionId. Held
   // in memory only: the client + control sockets keep the object resident
   // during the sub-second open handshake, so this survives until the flush.
-  private readonly pendingClientFrames = new Map<string, (string | ArrayBuffer)[]>();
+  private readonly pendingClientFrames = new Map<
+    string,
+    { frames: (string | ArrayBuffer)[]; bytes: number }
+  >();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -184,7 +212,7 @@ export class TunnelDurableObject implements DurableObject {
       const buffered = this.pendingClientFrames.get(id);
       if (!buffered) return;
       this.pendingClientFrames.delete(id);
-      for (const frame of buffered) {
+      for (const frame of buffered.frames) {
         try {
           server.send(frame);
         } catch {
@@ -229,8 +257,16 @@ export class TunnelDurableObject implements DurableObject {
     try {
       control.send(JSON.stringify({ t: "open", id }));
     } catch {
-      // Control socket died between the lookup and now; the phone socket will be
-      // swept or closed when the (never-arriving) pipe times out.
+      // The control socket died between lookup and signaling. Do not leave the
+      // phone occupying a tunnel slot while it waits for a pipe that cannot come.
+      logTunnel("connect_rejected", { reason: "host_offline" });
+      const client = this.clientForId(id);
+      try {
+        client?.close(CLOSE_HOST_OFFLINE, "host offline");
+      } catch {
+        // already closing
+      }
+      return response;
     }
     await this.ensureSweepScheduled();
     return response;
@@ -278,12 +314,36 @@ export class TunnelDurableObject implements DurableObject {
     if (!att) return;
 
     if (att.role === "control") {
-      // Control frames are signaling only; keep-alive pings get a pong, the
-      // rest are ignored so the protocol can grow without breaking old hosts.
+      // Native WebSocket ping/pong frames are handled by the Cloudflare edge
+      // without waking this object. The JSON ping branch remains only for old
+      // hosts; unknown types stay ignored for forward/backward compatibility.
       if (typeof message === "string") {
         try {
-          const parsed = JSON.parse(message) as { t?: string };
-          if (parsed?.t === "ping") ws.send(JSON.stringify({ t: "pong" }));
+          const parsed = JSON.parse(message) as {
+            t?: unknown;
+            id?: unknown;
+            code?: unknown;
+            reason?: unknown;
+          };
+          if (parsed?.t === "ping") {
+            ws.send(JSON.stringify({ t: "pong" }));
+          } else if (
+            parsed?.t === "reject"
+            && typeof parsed.id === "string"
+            && CONNECTION_ID_PATTERN.test(parsed.id)
+          ) {
+            const client = this.clientForId(parsed.id);
+            if (!client) return;
+            const code = applicationCloseCode(parsed.code, CLOSE_BRIDGE_REJECTED);
+            const reason = sanitizedCloseReason(parsed.reason, "bridge rejected");
+            this.pendingClientFrames.delete(parsed.id);
+            logTunnel("connect_rejected", { reason: "bridge_rejected", code });
+            try {
+              client.close(code, reason);
+            } catch {
+              // already closing
+            }
+          }
         } catch {
           // ignore malformed control frames
         }
@@ -300,19 +360,21 @@ export class TunnelDurableObject implements DurableObject {
       }
     } else if (att.role === "client" && att.id) {
       // Pipe not attached yet — hold the frame so the phone's hello isn't lost.
-      const buffered = this.pendingClientFrames.get(att.id) ?? [];
-      if (buffered.length >= MAX_BUFFERED_CLIENT_FRAMES) {
+      const buffered = this.pendingClientFrames.get(att.id) ?? { frames: [], bytes: 0 };
+      const nextBytes = buffered.bytes + bufferedFrameBytes(message);
+      if (buffered.frames.length >= MAX_BUFFERED_CLIENT_FRAMES || nextBytes > MAX_BUFFERED_CLIENT_BYTES) {
         // Dropping mid-stream would corrupt the byte-for-byte sync protocol;
         // fail the tunnel loudly so the phone reconnects instead of hanging.
         this.pendingClientFrames.delete(att.id);
         try {
-          ws.close(4506, "pre-pipe buffer overflow");
+          ws.close(CLOSE_PRE_PIPE_BUFFER_OVERFLOW, "pre-pipe buffer overflow");
         } catch {
           // already closing
         }
         return;
       }
-      buffered.push(message);
+      buffered.frames.push(message);
+      buffered.bytes = nextBytes;
       this.pendingClientFrames.set(att.id, buffered);
     }
     this.touch(ws, att);
@@ -324,22 +386,24 @@ export class TunnelDurableObject implements DurableObject {
     ws.serializeAttachment({ ...att, ts: now } satisfies SocketAttachment);
   }
 
-  async webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {
-    this.teardownPartner(ws);
+  async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
+    this.teardownPartner(ws, code, reason);
   }
 
   async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
-    this.teardownPartner(ws);
+    this.teardownPartner(ws, CLOSE_PARTNER_CLOSED, "partner error");
   }
 
-  private teardownPartner(ws: WebSocket): void {
+  private teardownPartner(ws: WebSocket, sourceCode: number, sourceReason: string): void {
     const att = ws.deserializeAttachment() as SocketAttachment | null;
     if (!att || att.role === "control") return;
     if (att.id) this.pendingClientFrames.delete(att.id);
     const partner = this.partnerOf(ws, att);
     if (partner) {
+      const code = applicationCloseCode(sourceCode, CLOSE_PARTNER_CLOSED);
+      const reason = sanitizedCloseReason(sourceReason, "partner closed");
       try {
-        partner.close(CLOSE_PARTNER_CLOSED, "partner closed");
+        partner.close(code, reason);
       } catch {
         // already closing
       }
@@ -347,7 +411,11 @@ export class TunnelDurableObject implements DurableObject {
   }
 
   private async ensureSweepScheduled(): Promise<void> {
-    if ((await this.state.storage.getAlarm()) === null) {
+    const hasNonControlSocket = this.state.getWebSockets().some((ws) => {
+      const att = ws.deserializeAttachment() as SocketAttachment | null;
+      return att?.role === "client" || att?.role === "pipe";
+    });
+    if (hasNonControlSocket && (await this.state.storage.getAlarm()) === null) {
       await this.state.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
     }
   }
@@ -355,10 +423,11 @@ export class TunnelDurableObject implements DurableObject {
   async alarm(): Promise<void> {
     const now = Date.now();
     const byId = new Map<string, { sockets: WebSocket[]; maxTs: number }>();
-    let remaining = 0;
+    let remainingNonControl = 0;
     for (const ws of this.state.getWebSockets()) {
-      remaining += 1;
       const att = ws.deserializeAttachment() as SocketAttachment | null;
+      if (att?.role !== "client" && att?.role !== "pipe") continue;
+      remainingNonControl += 1;
       if (!att?.id) continue;
       const entry = byId.get(att.id) ?? { sockets: [], maxTs: 0 };
       entry.sockets.push(ws);
@@ -371,14 +440,14 @@ export class TunnelDurableObject implements DurableObject {
       for (const ws of entry.sockets) {
         try {
           ws.close(CLOSE_IDLE, "idle timeout");
-          remaining -= 1;
+          remainingNonControl -= 1;
         } catch {
           // already closing
         }
       }
     }
 
-    if (remaining > 0) {
+    if (remainingNonControl > 0) {
       await this.state.storage.setAlarm(now + SWEEP_INTERVAL_MS);
     }
   }

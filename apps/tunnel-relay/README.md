@@ -30,7 +30,6 @@ different trust model and lifecycle. It uses Durable Objects with SQLite storage
 1. The brain claims a `machineKey` and opens a signed **control** socket
    (`/host/:machineKey`). Only one control socket per machine; a newer one
    supersedes the old (close `4505`).
-- `4506` client — pre-pipe frame buffer overflow (phone should reconnect)
 2. A client dials `/connect/:machineKey` (no **Worker-level** client auth — the
    `machineKey` is unguessable). ADE's bridged sync listener still requires a
    paired/PIN/DPoP handshake plus a fresh same-account proof for every Relay
@@ -38,7 +37,13 @@ different trust model and lifecycle. It uses Durable Objects with SQLite storage
    a short `connectionId`, holds the phone socket, and signals the brain
    `{t:"open", id}` over the control socket.
 3. The brain opens a signed **pipe** socket (`/host/:machineKey/pipe/:id`) plus
-   a local socket to its sync server, and pipes bytes between them.
+   a local socket to its sync server, and pipes bytes between them. If it cannot
+   service the open, it sends `{t:"reject", id, code, reason}` on the control
+   socket so the DO can close the waiting client immediately. Older DOs ignore
+   this unknown message type; newer DOs still work with older brains that do
+   not send rejections. A successful listener validation is reusable for 30
+   seconds: pipe and local dials start immediately while revalidation runs in
+   parallel, and a failed revalidation tears the new bridge down.
 4. The DO pairs the phone socket and the pipe socket by `connectionId` and
    relays every frame (text and binary) verbatim in both directions. No frame
    wrapping — the sync protocol, including its chunked/binary frames, is
@@ -86,8 +91,9 @@ What the relay's position does **not** grant:
   concurrent-tunnel cap until the 10-minute idle sweep closes them — a bounded,
   self-healing DoS. They still cannot authenticate to the brain.
 - Early phone frames are buffered in DO memory (bounded, 64 frames) while the
-  host dials the pipe socket. A hibernation eviction inside that sub-second
-  window drops them; the phone's reconnect/resync path recovers.
+  host dials the pipe socket. The same per-connection buffer also has a 256 KiB
+  total-byte cap. A hibernation eviction inside that sub-second window drops
+  the frames; the phone's reconnect/resync path recovers.
 
 Treat the relay like any other network hop you don't fully control: fine for
 transport, not a place to rely on for confidentiality until E2E payload
@@ -99,16 +105,29 @@ socket and active Relay peers. A connecting client must present a fresh
 same-account token inside its ADE hello; the relay Worker does not validate or
 store that token, but it can read it because TLS terminates at Cloudflare.
 
+The brain sends a native WebSocket protocol ping every 30 seconds and requires
+a pong within 10 seconds. A missed pong terminates the control socket and enters
+the same jittered reconnect state machine as any other disconnect. These are
+protocol control frames handled at the Cloudflare edge: they do not become JSON
+`{t:"ping"}` messages, wake a hibernated DO, or add billed DO messages.
+
 ## Close codes
 
 | Code | Where | Meaning |
 |---|---|---|
-| `4501` | phone `/connect` | No host control socket registered ("host offline") |
+| `4501` | phone `/connect` | Host unavailable: no usable control socket or local sync listener |
 | `4502` | pipe/phone | Idle > 10 min, closed by the alarm sweep |
 | `4503` | phone `/connect` | Machine already at 16 concurrent tunnels |
 | `4504` | pipe | Pipe arrived but its phone had already disconnected |
 | `4505` | host control | Replaced by a newer host control socket |
-| `4000` | pipe/phone | Partner side of the tunnel closed (clean teardown) |
+| `4506` | phone `/connect` | Pre-pipe frame buffer exceeded 64 frames or 256 KiB |
+| `4507` | phone/pipe | Brain rejected the open because bridge validation/setup failed |
+| `4000` | pipe/phone/local bridge | Partner closed without an application close code |
+
+For pipe/phone and brain pipe/local boundaries, application close codes in
+`4000`–`4999` and sanitized reasons (bounded to the WebSocket 123-byte limit)
+are preserved. Non-application close codes fall back to `4000`. Reject messages
+use their valid application code, or `4507` when the supplied code is invalid.
 
 Auth failures on `/host` and `/host/.../pipe` are rejected **before** the
 upgrade with an HTTP status (`401` bad/expired signature or unknown machine,
@@ -118,8 +137,11 @@ upgrade with an HTTP status (`401` bad/expired signature or unknown machine,
 
 Pipe pairs with no traffic for 10 minutes are closed by a Durable Object
 `alarm` that runs every 5 minutes (last-activity is tracked in each socket's
-hibernation attachment, throttled to a 60s write granularity). The brain
-reconnects its control socket with jittered exponential backoff (1s → 60s cap).
+hibernation attachment, throttled to a 60s write granularity). Alarms are only
+scheduled or rescheduled while at least one non-control socket exists, so an
+idle machine with only its hibernated control socket causes no recurring alarm
+wakes. The brain reconnects its control socket with jittered exponential
+backoff (first retry within about 1s, 60s cap, reset after a successful open).
 
 ## Observability
 
@@ -127,7 +149,7 @@ reconnects its control socket with jittered exponential backoff (1s → 60s cap)
 in the dashboard (Workers → **ade-tunnel-relay** → Logs) and stream live via
 `npx wrangler tail ade-tunnel-relay`. Only lifecycle/rejection events are
 logged — never per-frame, so a busy tunnel stays cheap: `host_registered`,
-`connect_rejected` (`reason: host_offline | too_many`), `auth_failed`
+`connect_rejected` (`reason: host_offline | too_many | bridge_rejected`), `auth_failed`
 (`role: host | pipe`). Cost is already gated by design (signed upgrades, one
 control socket per machine, the max-tunnels cap, and the idle sweep above), so
 no request-budget limiter is needed here — unlike `apps/push-relay`, whose
