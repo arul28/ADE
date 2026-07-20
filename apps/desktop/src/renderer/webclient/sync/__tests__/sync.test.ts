@@ -509,6 +509,68 @@ describe("browser sync endpoints and storage", () => {
     }
   });
 
+  it("reopens IndexedDB and reruns the trust reset after versionchange", async () => {
+    const firstEnvironment = await makeEnvironment(new MemoryStorage(), { envId: "first" });
+    const secondEnvironment = await makeEnvironment(new MemoryStorage(), { envId: "second" });
+    const transactions: IDBTransactionMode[][] = [[], []];
+
+    const successfulRequest = <T,>(value: T): IDBRequest<T> => {
+      const request = { result: value } as IDBRequest<T>;
+      queueMicrotask(() => request.onsuccess?.(new Event("success")));
+      return request;
+    };
+    const databases = [[firstEnvironment], [secondEnvironment]].map((environments, index) => ({
+      close: vi.fn(),
+      objectStoreNames: { contains: () => true },
+      onversionchange: null,
+      transaction: (_areas: string[], mode: IDBTransactionMode) => {
+        transactions[index].push(mode);
+        const transaction = {
+          abort: vi.fn(),
+          error: null,
+          objectStore: (area: WebClientStorageArea) => ({
+            delete: vi.fn(),
+            get: () => successfulRequest(
+              area === "meta" ? WEB_TRUST_RESET_VERSION : undefined,
+            ),
+            getAll: () => successfulRequest(environments),
+            put: vi.fn(),
+          }),
+          onabort: null,
+          oncomplete: null,
+          onerror: null,
+        } as unknown as IDBTransaction;
+        setTimeout(() => transaction.oncomplete?.(new Event("complete")), 0);
+        return transaction;
+      },
+    })) as unknown as IDBDatabase[];
+    let nextDatabase = 0;
+    const open = vi.fn(() => {
+      const request = { result: databases[nextDatabase++] } as IDBOpenDBRequest;
+      setTimeout(() => request.onsuccess?.(new Event("success")), 0);
+      return request;
+    });
+    vi.stubGlobal("indexedDB", { open });
+
+    try {
+      const storage = new IndexedDbStorage({ openTimeoutMs: 100 });
+      const store = new WebClientEnvStore(storage);
+
+      await expect(store.listEnvironments()).resolves.toEqual([firstEnvironment]);
+      databases[0].onversionchange?.(new Event("versionchange") as IDBVersionChangeEvent);
+      await expect(store.listEnvironments()).resolves.toEqual([secondEnvironment]);
+
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(databases[0].close).toHaveBeenCalledOnce();
+      expect(transactions).toEqual([
+        ["readwrite", "readonly"],
+        ["readwrite", "readonly"],
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("times out an IndexedDB open that never settles", async () => {
     vi.stubGlobal("indexedDB", {
       open: vi.fn(() => ({} as IDBOpenDBRequest)),
@@ -564,7 +626,7 @@ describe("browser sync endpoints and storage", () => {
 
     const result = await store.pruneAccountOwnedEnvironments("account-current");
 
-    expect(result).toEqual(["foreign"]);
+    expect(result.removedIds).toEqual(["foreign"]);
     expect(result.environments.map((environment) => environment.envId).sort()).toEqual([
       "current",
       "local",
@@ -819,6 +881,7 @@ describe("browser sync connection and client", () => {
 
   it.each([
     { code: 4501, expected: "This Mac appears to be offline" },
+    { code: 4507, expected: "Your Mac couldn't accept the connection. Retrying…" },
     { code: 4503, expected: "Too many active connections to this Mac" },
     { code: 4502, expected: "Connection lost. Reconnecting." },
     { code: 4000, expected: "Connection lost. Reconnecting." },

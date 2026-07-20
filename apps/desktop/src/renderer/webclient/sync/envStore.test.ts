@@ -93,18 +93,23 @@ describe("web-client trust reset migration", () => {
       accountOwnerUserId: "account-a",
     });
 
-    await expect(store.pruneAccountOwnedEnvironments("account-b")).resolves.toEqual([
-      "stale",
-    ]);
+    await expect(store.pruneAccountOwnedEnvironments("account-b")).resolves.toEqual({
+      removedIds: ["stale"],
+      environments: expect.arrayContaining([
+        expect.objectContaining({ envId: "manual" }),
+        expect.objectContaining({ envId: "current" }),
+      ]),
+    });
     await expect(store.listEnvironments()).resolves.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ envId: "manual" }),
         expect.objectContaining({ envId: "current" }),
       ]),
     );
-    await expect(store.pruneAccountOwnedEnvironments(null)).resolves.toEqual([
-      "current",
-    ]);
+    await expect(store.pruneAccountOwnedEnvironments(null)).resolves.toEqual({
+      removedIds: ["current"],
+      environments: [expect.objectContaining({ envId: "manual" })],
+    });
     await expect(store.listEnvironments()).resolves.toEqual([
       expect.objectContaining({ envId: "manual" }),
     ]);

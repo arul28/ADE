@@ -45,6 +45,7 @@ import {
   IndexedDbStorage,
   WebClientEnvStore,
   type WebClientEnvironmentRecord,
+  type WebClientEnvironmentPruneResult,
   type WebClientStorage,
 } from "./envStore";
 import { randomHex, uuid } from "./ids";
@@ -424,11 +425,12 @@ export class AdeSyncClient {
 
   async pruneAccountOwnedEnvironments(
     currentOwnerUserId: string | null,
-  ): Promise<string[]> {
-    const removedIds = await this.envStore.pruneAccountOwnedEnvironments(
+  ): Promise<WebClientEnvironmentPruneResult> {
+    const result = await this.envStore.pruneAccountOwnedEnvironments(
       currentOwnerUserId,
     );
-    return await this.finishAccountEnvironmentRemoval(removedIds);
+    await this.finishAccountEnvironmentRemoval(result.removedIds);
+    return result;
   }
 
   private async finishAccountEnvironmentRemoval(

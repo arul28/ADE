@@ -225,9 +225,7 @@ export function WebClientRoot({
     setAccount(snapshot);
     try {
       const result = await client.pruneAccountOwnedEnvironments(currentOwnerUserId);
-      const survivingEnvironments = (
-        result as unknown as { environments?: WebClientEnvironmentRecord[] }
-      ).environments ?? [];
+      const survivingEnvironments = result.environments;
       if (savedEnvironmentsLoadRef.current === loadId) {
         privacyReadyOwnerRef.current = { ownerUserId: currentOwnerUserId };
         const pendingRefresh = pendingEnvironmentRefreshRef.current as {
@@ -434,7 +432,7 @@ export function WebClientRoot({
             setPhase({ kind: "machine-picker" });
             beginPrivacyLoad(pendingSnapshot);
           }
-        }, 16);
+        }, 150);
       }
 
       const accountSnapshot = await accountClient.bootstrap();

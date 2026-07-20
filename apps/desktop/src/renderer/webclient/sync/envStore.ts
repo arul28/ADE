@@ -15,6 +15,7 @@ export type WebClientStorage = {
     mode: IDBTransactionMode,
     operation: (transaction: WebClientStorageTransaction) => Promise<T>,
   ): Promise<T>;
+  setVersionChangeHandler?(handler: () => void): void;
 };
 
 export type WebClientStorageTransaction = {
@@ -70,7 +71,8 @@ export class IndexedDbOpenError extends Error {
   }
 }
 
-export type WebClientEnvironmentPruneResult = string[] & {
+export type WebClientEnvironmentPruneResult = {
+  readonly removedIds: string[];
   /** Records that survived this same pruning transaction. */
   readonly environments: WebClientEnvironmentRecord[];
 };
@@ -87,14 +89,10 @@ function pruneResult(
   removedIds: string[],
   environments: WebClientEnvironmentRecord[],
 ): WebClientEnvironmentPruneResult {
-  const result = [...removedIds] as WebClientEnvironmentPruneResult;
-  Object.defineProperty(result, "environments", {
-    configurable: false,
-    enumerable: false,
-    value: sortEnvironments(environments),
-    writable: false,
-  });
-  return result;
+  return {
+    removedIds: [...removedIds],
+    environments: sortEnvironments(environments),
+  };
 }
 
 function openRequest<T>(request: IDBRequest<T>): Promise<T> {
@@ -114,8 +112,13 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
 
 export class IndexedDbStorage implements WebClientStorage {
   private dbPromise: Promise<IDBDatabase> | null = null;
+  private versionChangeHandler: (() => void) | null = null;
 
   constructor(private readonly options: { openTimeoutMs?: number } = {}) {}
+
+  setVersionChangeHandler(handler: () => void): void {
+    this.versionChangeHandler = handler;
+  }
 
   async get<T>(area: WebClientStorageArea, key: string): Promise<T | null> {
     return await this.transaction([area], "readonly", async (transaction) => (
@@ -224,7 +227,13 @@ export class IndexedDbStorage implements WebClientStorage {
           }
           settled = true;
           globalThis.clearTimeout(timeout);
-          request.result.onversionchange = () => request.result.close();
+          request.result.onversionchange = () => {
+            request.result.close();
+            if (this.dbPromise === attempt) {
+              this.dbPromise = null;
+              this.versionChangeHandler?.();
+            }
+          };
           resolve(request.result);
         };
         request.onerror = () => rejectOpen(new IndexedDbOpenError(
@@ -296,7 +305,11 @@ export class MemoryStorage implements WebClientStorage {
 export class WebClientEnvStore {
   private trustResetPromise: Promise<void> | null = null;
 
-  constructor(private readonly storage: WebClientStorage = new IndexedDbStorage()) {}
+  constructor(private readonly storage: WebClientStorage = new IndexedDbStorage()) {
+    this.storage.setVersionChangeHandler?.(() => {
+      this.trustResetPromise = null;
+    });
+  }
 
   private async ensureTrustReset(): Promise<void> {
     if (!this.trustResetPromise) {
@@ -353,7 +366,7 @@ export class WebClientEnvStore {
   async removeAccountOwnedEnvironments(ownerUserIdValue: string): Promise<string[]> {
     const ownerUserId = ownerUserIdValue.trim();
     if (!ownerUserId) return [];
-    return await this.pruneAccountOwnedEnvironments(ownerUserId, { removeCurrent: true });
+    return (await this.pruneAccountOwnedEnvironments(ownerUserId, { removeCurrent: true })).removedIds;
   }
 
   async pruneAccountOwnedEnvironments(

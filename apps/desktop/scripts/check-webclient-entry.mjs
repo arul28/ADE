@@ -52,7 +52,14 @@ for (const match of html.matchAll(/<(script|link)\b[^>]*>/gi)) {
 
   const isJavaScript = tagName === "script" || relation.includes("modulepreload");
   const outputPath = isJavaScript ? localOutputPath(reference) : null;
+  if (tagName === "script" && !outputPath) {
+    throw new Error(`Webclient entry references external JavaScript: ${reference}`);
+  }
   if (outputPath) referencedJavaScript.add(outputPath);
+}
+
+if (referencedJavaScript.size === 0) {
+  throw new Error("Webclient entry check found no local JavaScript references");
 }
 
 let totalRawBytes = Buffer.byteLength(html);

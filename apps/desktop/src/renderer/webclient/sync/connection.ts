@@ -728,6 +728,8 @@ export class SyncConnection {
     switch (event.code) {
       case 4501:
         return new SyncConnectionError("This Mac appears to be offline", "relay_host_offline");
+      case 4507:
+        return new SyncConnectionError("Your Mac couldn't accept the connection. Retrying…", "relay_bridge_rejected");
       case 4503:
         return new SyncConnectionError("Too many active connections to this Mac", "relay_capacity");
       case 4502:

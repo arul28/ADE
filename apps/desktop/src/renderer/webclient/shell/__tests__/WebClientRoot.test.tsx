@@ -5,7 +5,12 @@ import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { BrowserAccountClient, BrowserAccountSnapshot } from "../../account/client";
-import type { AdeSyncClient, AdeSyncClientStatus, WebClientEnvironmentRecord } from "../../sync";
+import type {
+  AdeSyncClient,
+  AdeSyncClientStatus,
+  WebClientEnvironmentPruneResult,
+  WebClientEnvironmentRecord,
+} from "../../sync";
 import { WebClientRoot } from "../WebClientRoot";
 
 afterEach(() => {
@@ -82,10 +87,8 @@ function savedEnvironment(overrides: Partial<WebClientEnvironmentRecord> = {}): 
 function pruneResult(
   environments: WebClientEnvironmentRecord[],
   removedIds: string[] = [],
-): string[] {
-  const result = [...removedIds];
-  Object.defineProperty(result, "environments", { value: environments });
-  return result;
+): WebClientEnvironmentPruneResult {
+  return { removedIds, environments };
 }
 
 function syncClient(overrides: Record<string, unknown> = {}): AdeSyncClient {
@@ -129,7 +132,7 @@ describe("WebClientRoot entry routes", () => {
 
   it("renders sign-in immediately while browser storage is still pending", async () => {
     window.history.replaceState(null, "", "/");
-    const never = new Promise<string[]>(() => undefined);
+    const never = new Promise<WebClientEnvironmentPruneResult>(() => undefined);
     const prune = vi.fn(() => never);
     const client = syncClient({ pruneAccountOwnedEnvironments: prune });
 
@@ -167,7 +170,7 @@ describe("WebClientRoot entry routes", () => {
       currentSnapshot = { ...signedInAccount(), machines: [] };
       return directoryResponse;
     });
-    const never = new Promise<string[]>(() => undefined);
+    const never = new Promise<WebClientEnvironmentPruneResult>(() => undefined);
     const listEnvironments = vi.fn(async () => [savedEnvironment({
       envId: "foreign",
       machineName: "Previous account Mac",
@@ -199,8 +202,8 @@ describe("WebClientRoot entry routes", () => {
 
   it("publishes only the environments returned after privacy pruning", async () => {
     window.history.replaceState(null, "", "/account/callback?code=test&state=test");
-    let resolvePrune!: (result: string[]) => void;
-    const prune = vi.fn(() => new Promise<string[]>((resolve) => {
+    let resolvePrune!: (result: WebClientEnvironmentPruneResult) => void;
+    const prune = vi.fn(() => new Promise<WebClientEnvironmentPruneResult>((resolve) => {
       resolvePrune = resolve;
     }));
     const client = syncClient({

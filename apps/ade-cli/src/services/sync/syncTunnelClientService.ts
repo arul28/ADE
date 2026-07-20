@@ -74,7 +74,6 @@ const BACKOFF_CAP_MS = 60_000;
 const ACCOUNT_STATUS_POLL_MS = 1_000;
 export const CONTROL_PING_INTERVAL_MS = 30_000;
 export const CONTROL_PONG_DEADLINE_MS = 10_000;
-export const BRIDGE_VALIDATION_FRESH_MS = 30_000;
 export const RELAY_CLOSE_PARTNER_CLOSED = 4000;
 export const RELAY_CLOSE_HOST_UNAVAILABLE = 4501;
 export const RELAY_CLOSE_BRIDGE_REJECTED = 4507;
@@ -89,7 +88,7 @@ export function computeBackoffMs(attempt: number, random: () => number = Math.ra
   return Math.floor(random() * ceiling);
 }
 
-export type ControlMessage = { t: "open"; id: string } | { t: "pong" } | { t: "ping" };
+export type ControlMessage = { t: "open"; id: string };
 
 /** Parses a host control frame; returns null for anything unrecognized. */
 export function parseControlMessage(raw: string): ControlMessage | null {
@@ -105,8 +104,6 @@ export function parseControlMessage(raw: string): ControlMessage | null {
     const id = (parsed as { id?: unknown }).id;
     return typeof id === "string" && /^[a-f0-9]{8,32}$/i.test(id) ? { t: "open", id } : null;
   }
-  if (t === "pong") return { t: "pong" };
-  if (t === "ping") return { t: "ping" };
   return null;
 }
 
@@ -154,7 +151,6 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let lastError: string | null = null;
   let validatedPort: number | null = null;
   let validatedLoopbackNonce: string | null = null;
-  let lastBridgeValidationAtMs = 0;
   let lastFailureAt: string | null = null;
   let lastSuccessAt: string | null = null;
   let bridgeValidationInFlight: Promise<boolean> | null = null;
@@ -170,7 +166,6 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const clearBridgeValidation = (): void => {
     validatedPort = null;
     validatedLoopbackNonce = null;
-    lastBridgeValidationAtMs = 0;
   };
 
   const identity = (): MachineIdentity => {
@@ -182,7 +177,14 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const computeAccountEligibility = (): boolean =>
     (args.isAccountSignedIn?.() ?? true)
     && (!args.getAccountLease || accountLeaseUserId != null);
-  const accountSignedIn = (): boolean => accountEligible === true;
+  const accountSignedIn = (): boolean => {
+    if (accountEligible !== true) return false;
+    try {
+      return args.isAccountSignedIn?.() ?? true;
+    } catch {
+      return false;
+    }
+  };
 
   const clearReconnect = (): void => {
     if (reconnectTimer) {
@@ -291,6 +293,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         void validateCurrentBridge();
       });
       socket.on("message", (raw: RawData) => {
+        if (control !== socket) return;
         const message = parseControlMessage(rawToText(raw));
         if (message?.t === "open") void openTunnel(id, message.id, socket);
       });
@@ -358,7 +361,6 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       }
       validatedPort = port;
       validatedLoopbackNonce = expectedLoopbackNonce;
-      lastBridgeValidationAtMs = Date.now();
       lastError = null;
       lastSuccessAt = result.checkedAt;
       log.debug?.("sync_tunnel.bridge_validated", { port });
@@ -398,7 +400,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     code: number,
     reason: string,
   ): void => {
-    if (controlSocket.readyState !== WebSocket.OPEN) return;
+    if (control !== controlSocket || controlSocket.readyState !== WebSocket.OPEN) return;
     try {
       controlSocket.send(JSON.stringify({
         t: "reject",
@@ -416,17 +418,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     connectionId: string,
     controlSocket: WebSocket,
   ): Promise<void> => {
-    const currentPort = args.getSyncPort();
-    const currentLoopbackNonce = args.getExpectedLoopbackNonce?.() ?? null;
-    const cacheAgeMs = Date.now() - lastBridgeValidationAtMs;
-    const validationIsFresh = currentPort != null
-      && currentLoopbackNonce != null
-      && validatedPort === currentPort
-      && validatedLoopbackNonce === currentLoopbackNonce
-      && cacheAgeMs >= 0
-      && cacheAgeMs < BRIDGE_VALIDATION_FRESH_MS;
-
-    if (!validationIsFresh && !await validateCurrentBridge()) {
+    if (!await validateCurrentBridge()) {
       sendControlReject(
         controlSocket,
         connectionId,
@@ -462,6 +454,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     const sig = signRelayHmacHex(id.secret, buildPipeSignatureBase(id.machineKey, connectionId, ts));
     const pipeUrl = `${httpToWsUrl(relayHttpUrl())}/host/${id.machineKey}/pipe/${connectionId}?ts=${ts}&sig=${sig}`;
 
+    if (control !== controlSocket) return;
     let pipe: WebSocket | null = null;
     let local: WebSocket | null = null;
     try {
@@ -547,14 +540,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       closeBoth(RELAY_CLOSE_PARTNER_CLOSED, "host sync listener error");
     });
 
-    if (validationIsFresh) {
-      void validateCurrentBridge().then((valid) => {
-        if (valid || !tunnels.has(tunnel)) return;
-        rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge revalidation failed");
-        closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "bridge revalidation failed");
-      });
-    }
-    log.debug?.("sync_tunnel.open", { connectionId, cachedValidation: validationIsFresh });
+    log.debug?.("sync_tunnel.open", { connectionId });
   };
 
   const closeRelayConnections = (): void => {

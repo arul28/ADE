@@ -58,9 +58,9 @@ describe("parseControlMessage", () => {
     expect(parseControlMessage(JSON.stringify({ t: "open" }))).toBeNull();
   });
 
-  it("passes ping/pong and rejects junk", () => {
-    expect(parseControlMessage(JSON.stringify({ t: "ping" }))).toEqual({ t: "ping" });
-    expect(parseControlMessage(JSON.stringify({ t: "pong" }))).toEqual({ t: "pong" });
+  it("rejects JSON ping/pong and junk", () => {
+    expect(parseControlMessage(JSON.stringify({ t: "ping" }))).toBeNull();
+    expect(parseControlMessage(JSON.stringify({ t: "pong" }))).toBeNull();
     expect(parseControlMessage("not json")).toBeNull();
     expect(parseControlMessage(JSON.stringify({ t: "other" }))).toBeNull();
   });
@@ -290,6 +290,183 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
+  it("gates an open immediately when sign-out happens before the next account poll", async () => {
+    const local = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      local.once("listening", resolve);
+      local.once("error", reject);
+    });
+    const localAddress = local.address();
+    const localPort = typeof localAddress === "object" && localAddress ? localAddress.port : 0;
+    let localConnections = 0;
+    local.on("connection", () => { localConnections += 1; });
+
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const relayAddress = relay.address();
+    const relayPort = typeof relayAddress === "object" && relayAddress ? relayAddress.port : 0;
+    let controlSocket: WebSocket | null = null;
+    const relayConnections: string[] = [];
+    const controlMessages: unknown[] = [];
+    relay.on("connection", (socket, request) => {
+      relayConnections.push(request.url ?? "");
+      if (!request.url?.includes("/pipe/")) {
+        controlSocket = socket;
+        socket.on("message", (raw) => controlMessages.push(JSON.parse(raw.toString()) as unknown));
+      }
+    });
+
+    let signedIn = true;
+    const expectedNonce = "c".repeat(32);
+    const loopbackProbe = vi.fn(async (port: number) => ({
+      ok: true as const,
+      port,
+      statusCode: 426,
+      statusMessage: "Upgrade Required",
+      markerValue: expectedNonce,
+      checkedAt: new Date().toISOString(),
+      reason: null,
+    }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => localPort,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      isAccountSignedIn: () => signedIn,
+      accountStatusPollMs: 10_000,
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+      loopbackProbe,
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().relayBridgeValidated).toBe(true);
+        expect(controlSocket).not.toBeNull();
+      });
+      const probesBeforeSignOut = loopbackProbe.mock.calls.length;
+
+      signedIn = false;
+      (controlSocket as unknown as WebSocket).send(JSON.stringify({ t: "open", id: "abcdef01" }));
+
+      await vi.waitFor(() => {
+        expect(controlMessages).toContainEqual({
+          t: "reject",
+          id: "abcdef01",
+          code: RELAY_CLOSE_HOST_UNAVAILABLE,
+          reason: "bridge validation failed",
+        });
+      });
+      expect(loopbackProbe).toHaveBeenCalledTimes(probesBeforeSignOut);
+      expect(relayConnections).toHaveLength(1);
+      expect(localConnections).toBe(0);
+      expect(service.getStatus().activeTunnels).toBe(0);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => local.close(() => resolve()));
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("does not open a queued tunnel from a superseded control socket", async () => {
+    const local = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      local.once("listening", resolve);
+      local.once("error", reject);
+    });
+    const localAddress = local.address();
+    const localPort = typeof localAddress === "object" && localAddress ? localAddress.port : 0;
+    let localConnections = 0;
+    local.on("connection", () => { localConnections += 1; });
+
+    const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await new Promise<void>((resolve, reject) => {
+      relay.once("listening", resolve);
+      relay.once("error", reject);
+    });
+    const relayAddress = relay.address();
+    const relayPort = typeof relayAddress === "object" && relayAddress ? relayAddress.port : 0;
+    const controlSockets: WebSocket[] = [];
+    let pipeConnections = 0;
+    relay.on("connection", (socket, request) => {
+      if (request.url?.includes("/pipe/")) {
+        pipeConnections += 1;
+      } else {
+        controlSockets.push(socket);
+      }
+    });
+
+    const expectedNonce = "c".repeat(32);
+    let probeCalls = 0;
+    let finishQueuedProbe!: (result: SyncLoopbackProbeResult) => void;
+    const queuedProbe = new Promise<SyncLoopbackProbeResult>((resolve) => {
+      finishQueuedProbe = resolve;
+    });
+    const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> => {
+      probeCalls += 1;
+      if (probeCalls === 1) {
+        return {
+          ok: true,
+          port,
+          statusCode: 426,
+          statusMessage: "Upgrade Required",
+          markerValue: expectedNonce,
+          checkedAt: new Date().toISOString(),
+          reason: null,
+        };
+      }
+      return await queuedProbe;
+    });
+    const originalFetch = globalThis.fetch;
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => localPort,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+      loopbackProbe,
+    });
+
+    try {
+      await service.start();
+      await vi.waitFor(() => {
+        expect(service.getStatus().relayBridgeValidated).toBe(true);
+        expect(controlSockets).toHaveLength(1);
+      });
+      controlSockets[0].send(JSON.stringify({ t: "open", id: "abcdef01" }));
+      await vi.waitFor(() => expect(probeCalls).toBe(2));
+
+      controlSockets[0].close();
+      await vi.waitFor(() => expect(controlSockets).toHaveLength(2));
+      finishQueuedProbe({
+        ok: true,
+        port: localPort,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(pipeConnections).toBe(0);
+      expect(localConnections).toBe(0);
+      expect(service.getStatus().activeTunnels).toBe(0);
+    } finally {
+      await service.dispose();
+      random.mockRestore();
+      globalThis.fetch = originalFetch;
+      await new Promise<void>((resolve) => local.close(() => resolve()));
+      await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
   it("terminates and reconnects a control socket that misses its native pong deadline", async () => {
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0, autoPong: false });
     await new Promise<void>((resolve, reject) => {
@@ -469,7 +646,7 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
-  it("dials immediately from a fresh validation cache and tears down if concurrent revalidation fails", async () => {
+  it("probes serially on every open and constructs no tunnel when validation fails", async () => {
     const local = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {
       local.once("listening", resolve);
@@ -478,12 +655,10 @@ describe("createSyncTunnelClientService", () => {
     const localAddress = local.address();
     const localPort = typeof localAddress === "object" && localAddress ? localAddress.port : 0;
     let localConnections = 0;
-    let localClose: { code: number; reason: string } | null = null;
+    const localFrames: string[] = [];
     local.on("connection", (socket) => {
       localConnections += 1;
-      socket.on("close", (code, reason) => {
-        localClose = { code, reason: reason.toString() };
-      });
+      socket.on("message", (raw) => localFrames.push(raw.toString()));
     });
 
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -495,14 +670,10 @@ describe("createSyncTunnelClientService", () => {
     const relayPort = typeof relayAddress === "object" && relayAddress ? relayAddress.port : 0;
     let controlSocket: WebSocket | null = null;
     let pipeConnections = 0;
-    let pipeClose: { code: number; reason: string } | null = null;
     const controlMessages: unknown[] = [];
     relay.on("connection", (socket, request) => {
       if (request.url?.includes("/pipe/")) {
         pipeConnections += 1;
-        socket.on("close", (code, reason) => {
-          pipeClose = { code, reason: reason.toString() };
-        });
       } else {
         controlSocket = socket;
         socket.on("message", (raw) => {
@@ -513,9 +684,9 @@ describe("createSyncTunnelClientService", () => {
 
     const expectedNonce = "c".repeat(32);
     let probeCalls = 0;
-    let finishRevalidation!: (result: SyncLoopbackProbeResult) => void;
-    const revalidation = new Promise<SyncLoopbackProbeResult>((resolve) => {
-      finishRevalidation = resolve;
+    let finishOpenProbe!: (result: SyncLoopbackProbeResult) => void;
+    const openProbe = new Promise<SyncLoopbackProbeResult>((resolve) => {
+      finishOpenProbe = resolve;
     });
     const loopbackProbe = vi.fn(async (port: number): Promise<SyncLoopbackProbeResult> => {
       probeCalls += 1;
@@ -530,7 +701,7 @@ describe("createSyncTunnelClientService", () => {
           reason: null,
         };
       }
-      return await revalidation;
+      return await openProbe;
     });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response(null, { status: 204 });
@@ -551,12 +722,13 @@ describe("createSyncTunnelClientService", () => {
       (controlSocket as unknown as WebSocket).send(JSON.stringify({ t: "open", id: "abcdef01" }));
       await vi.waitFor(() => {
         expect(probeCalls).toBe(2);
-        expect(pipeConnections).toBe(1);
-        expect(localConnections).toBe(1);
-        expect(service.getStatus().activeTunnels).toBe(1);
       });
+      expect(pipeConnections).toBe(0);
+      expect(localConnections).toBe(0);
+      expect(localFrames).toEqual([]);
+      expect(service.getStatus().activeTunnels).toBe(0);
 
-      finishRevalidation({
+      finishOpenProbe({
         ok: false,
         port: localPort,
         statusCode: 426,
@@ -566,16 +738,17 @@ describe("createSyncTunnelClientService", () => {
         reason: "listener identity changed",
       });
       await vi.waitFor(() => {
-        expect(pipeClose).toEqual({ code: RELAY_CLOSE_BRIDGE_REJECTED, reason: "bridge revalidation failed" });
-        expect(localClose).toEqual({ code: RELAY_CLOSE_BRIDGE_REJECTED, reason: "bridge revalidation failed" });
-        expect(service.getStatus().activeTunnels).toBe(0);
         expect(controlMessages).toContainEqual({
           t: "reject",
           id: "abcdef01",
           code: RELAY_CLOSE_BRIDGE_REJECTED,
-          reason: "bridge revalidation failed",
+          reason: "bridge validation failed",
         });
       });
+      expect(pipeConnections).toBe(0);
+      expect(localConnections).toBe(0);
+      expect(localFrames).toEqual([]);
+      expect(service.getStatus().activeTunnels).toBe(0);
     } finally {
       await service.dispose();
       globalThis.fetch = originalFetch;
