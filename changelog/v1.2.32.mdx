@@ -1,0 +1,25 @@
+---
+title: "v1.2.32"
+description: "Release notes for ADE v1.2.32 - July 20, 2026"
+---
+
+v1.2.32 makes the hosted web client dramatically faster to load and the ADE Relay noticeably quicker to connect and recover — closer to how a LAN connection feels.
+
+---
+
+## Web client
+
+- **The sign-in screen loads in a fraction of the time.** The login path previously shipped ~4.7 MB of JavaScript before the button could render; it is now ~250 KB, guarded by a build-time budget so it cannot regress. Hashed assets are cached immutably, so revisits and the OAuth callback stop re-downloading the app.
+- **Something on screen instantly.** The page shows a splash the moment HTML arrives, and the sign-in button and your machine list render immediately instead of waiting on browser-storage housekeeping.
+- **No more infinite "Starting ADE".** Browser-storage stalls are now bounded with a retry, instead of hanging the page indefinitely.
+- **Clearer connection errors.** The web client now tells you when your Mac is offline or busy rather than showing a generic failure, detects dead connections within about a minute, and recovers when you return to the tab.
+
+## ADE Relay
+
+- **Faster connects, faster failures.** Connection setup overlaps credential preparation with dialing, failed connection attempts are rejected in under a second instead of timing out for up to 30 seconds, and cold connections no longer trip an overly tight timeout.
+- **Your Mac comes back quickly after sleep.** The Mac's relay link now detects a dead connection within seconds and re-registers immediately, so "my Mac isn't showing up" windows after waking or switching networks are largely gone.
+- **Machines appear in the directory right away.** The Mac publishes its availability the moment relay readiness changes instead of waiting for the next 30-second cycle.
+
+## iOS
+
+- **Smarter relay retries.** The app now understands the relay's new failure signals and retries appropriately instead of treating them as generic errors.
