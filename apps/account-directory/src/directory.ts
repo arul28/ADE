@@ -96,6 +96,24 @@ function text(value: string, status = 200): Response {
   });
 }
 
+function withServerTiming(
+  response: Response,
+  authDurationMs: number,
+  dbDurationMs: number,
+): Response {
+  const duration = (value: number) => Math.max(0, value).toFixed(2);
+  const headers = new Headers(response.headers);
+  headers.set(
+    "server-timing",
+    `auth;dur=${duration(authDurationMs)}, db;dur=${duration(dbDurationMs)}`,
+  );
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
@@ -338,14 +356,24 @@ async function handleRegister(request: Request, env: Env, userId: string): Promi
   return json(machineRecord(row));
 }
 
-async function handleList(request: Request, env: Env, userId: string): Promise<Response> {
+async function handleList(
+  request: Request,
+  env: Env,
+  userId: string,
+  authDurationMs: number,
+): Promise<Response> {
   if (request.method !== "GET") return text("method not allowed", 405);
+  const dbStartedAt = performance.now();
   const rows = (await env.DB.prepare(`
     select user_id, machine_key, device_id, name, platform, device_type, pubkey,
            reachable_endpoints, last_seen_at, created_at
       from machines
      where user_id = ?
+     -- 500 is the machine-directory cap, matching the client's effective cap.
+     order by last_seen_at desc
+     limit 500
   `).bind(userId).all<MachineRow>()).results ?? [];
+  const dbDurationMs = performance.now() - dbStartedAt;
   const now = Date.now();
   const windowMs = onlineWindowMs(env);
   const machines = rows.map((row) => ({
@@ -355,7 +383,7 @@ async function handleList(request: Request, env: Env, userId: string): Promise<R
     if (left.online !== right.online) return left.online ? -1 : 1;
     return Number(right.lastSeenAt ?? 0) - Number(left.lastSeenAt ?? 0);
   });
-  return json({ machines });
+  return withServerTiming(json({ machines }), authDurationMs, dbDurationMs);
 }
 
 async function handleDelete(
@@ -388,6 +416,7 @@ function trustedWebClientOrigin(env: Env): string | null {
 function withCors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", origin);
+  headers.set("access-control-expose-headers", "Server-Timing");
   headers.set("vary", "Origin");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
@@ -407,19 +436,25 @@ async function handleRequestCore(
 
   const route = routeAccount(url.pathname);
   if (!route) return text("not found", 404);
+  const timeMachineList = route.kind === "list" && request.method === "GET";
+  const authStartedAt = timeMachineList ? performance.now() : 0;
   const authentication = await authenticate(request, env);
+  const authDurationMs = timeMachineList ? performance.now() - authStartedAt : 0;
   if (!authentication.ok) {
-    return json(
+    const response = json(
       { error: authentication.reason },
       {
         status: authentication.reason === "authentication unavailable" ? 503 : 401,
       },
     );
+    return timeMachineList
+      ? withServerTiming(response, authDurationMs, 0)
+      : response;
   }
   const userId = authentication.userId;
 
   if (route.kind === "register") return await handleRegister(request, env, userId);
-  if (route.kind === "list") return await handleList(request, env, userId);
+  if (route.kind === "list") return await handleList(request, env, userId, authDurationMs);
   return await handleDelete(request, env, userId, route.machineKey);
 }
 

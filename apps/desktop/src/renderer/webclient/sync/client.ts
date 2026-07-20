@@ -45,6 +45,7 @@ import {
   IndexedDbStorage,
   WebClientEnvStore,
   type WebClientEnvironmentRecord,
+  type WebClientEnvironmentPruneResult,
   type WebClientStorage,
 } from "./envStore";
 import { randomHex, uuid } from "./ids";
@@ -183,13 +184,15 @@ export class AdeSyncClient {
     storage?: WebClientStorage;
     socketFactory?: WebSocketFactory;
     connection?: SyncConnection;
-    connectTimeoutMs?: number;
+    transportOpenTimeoutMs?: number;
+    authenticatedHelloTimeoutMs?: number;
     document?: Document | null;
   } = {}) {
     this.envStore = new WebClientEnvStore(options.storage ?? new IndexedDbStorage());
     this.connection = options.connection ?? new SyncConnection({
       socketFactory: options.socketFactory,
-      connectTimeoutMs: options.connectTimeoutMs,
+      transportOpenTimeoutMs: options.transportOpenTimeoutMs,
+      authenticatedHelloTimeoutMs: options.authenticatedHelloTimeoutMs,
       document: options.document,
     });
     this.connection.on("statusChanged", () => this.emitStatus());
@@ -208,6 +211,13 @@ export class AdeSyncClient {
     });
     this.connection.on("pairingRejected", ({ envId }) => {
       void this.removeEnvironment(envId);
+    });
+    this.connection.on("close", ({ code, reason }) => {
+      this.rejectPendingCommands(new AdeSyncError(
+        "Connection lost — outcome unknown. Check the current state before retrying.",
+        "connection_lost_outcome_unknown",
+        { closeCode: code, reason },
+      ));
     });
     this.connection.on("brainStatus", (payload) => this.emit("brainStatus", payload));
     this.connection.on("tablesChanged", (tables) => this.emit("tablesChanged", tables));
@@ -415,11 +425,12 @@ export class AdeSyncClient {
 
   async pruneAccountOwnedEnvironments(
     currentOwnerUserId: string | null,
-  ): Promise<string[]> {
-    const removedIds = await this.envStore.pruneAccountOwnedEnvironments(
+  ): Promise<WebClientEnvironmentPruneResult> {
+    const result = await this.envStore.pruneAccountOwnedEnvironments(
       currentOwnerUserId,
     );
-    return await this.finishAccountEnvironmentRemoval(removedIds);
+    await this.finishAccountEnvironmentRemoval(result.removedIds);
+    return result;
   }
 
   private async finishAccountEnvironmentRemoval(
@@ -926,11 +937,7 @@ export class AdeSyncClient {
   }
 
   private rejectAllPending(error: Error): void {
-    for (const [requestId, pending] of this.pendingCommands) {
-      clearTimeout(pending.timer);
-      this.pendingCommands.delete(requestId);
-      pending.reject(error);
-    }
+    this.rejectPendingCommands(error);
     for (const [requestId, pending] of this.pendingFiles) {
       clearTimeout(pending.timer);
       this.pendingFiles.delete(requestId);
@@ -947,6 +954,14 @@ export class AdeSyncClient {
       pending.reject(error);
     }
     this.rejectPendingProjectCatalog(error);
+  }
+
+  private rejectPendingCommands(error: Error): void {
+    for (const [requestId, pending] of this.pendingCommands) {
+      clearTimeout(pending.timer);
+      this.pendingCommands.delete(requestId);
+      pending.reject(error);
+    }
   }
 
   private async persistCurrentEnvironment(

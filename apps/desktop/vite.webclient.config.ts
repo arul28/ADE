@@ -76,35 +76,6 @@ export default defineConfig({
     rollupOptions: {
       input: {
         index: path.resolve(__dirname, "src/renderer/webclient.html"),
-      },
-      output: {
-        // Keep this in sync with vite.config.ts until the desktop/web-client targets share a build helper.
-        manualChunks(id) {
-          const normalized = id.replace(/\\/g, "/");
-          if (!normalized.includes("/node_modules/")) return undefined;
-          if (normalized.includes("/node_modules/monaco-editor/")) return "vendor-monaco";
-          if (
-            normalized.includes("/node_modules/@xyflow/react/")
-            || normalized.includes("/node_modules/dagre/")
-            || normalized.includes("/node_modules/framer-motion/")
-            || normalized.includes("/node_modules/motion/")
-          ) {
-            return "vendor-graph";
-          }
-          if (
-            normalized.includes("/node_modules/@xterm/")
-            || normalized.includes("/node_modules/xterm/")
-          ) {
-            return "vendor-terminal";
-          }
-          if (
-            normalized.includes("/node_modules/react-markdown/")
-            || normalized.includes("/node_modules/remark-gfm/")
-          ) {
-            return "vendor-markdown";
-          }
-          return undefined;
-        }
       }
     }
   }

@@ -220,13 +220,20 @@ Runtime support files outside `services/sync/`:
   gated on `routeHealth.relay.relayBridgeValidated`, which the tunnel client now
   sets proactively (see `syncTunnelClientService.ts`) so the relay route appears
   in the directory without waiting for an external client to open the first
-  tunnel. A 60-second heartbeat keeps the Worker row inside its 90-second online
+  tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
   window without turning sync retries or status polling into product analytics.
   Successful account sign-in also requests an immediate publish; the brain
   observes both its local auth event and cross-process credential-file changes
-  from desktop sign-in. A confirmed Relay identity-conflict recovery requests
+  from desktop sign-in. Separately, a lightweight 2-second observer computes a
+  signature for the publish-relevant relay control/bridge state and reachable
+  endpoints. Its first valid snapshot and every later change trigger a
+  coalesced publish, so a
+  newly validated or lost relay route reaches the directory without waiting for
+  the heartbeat. A triggered write becomes the new heartbeat anchor rather than
+  causing a duplicate write at the old deadline. A confirmed Relay
+  identity-conflict recovery also requests
   another publish as soon as the replacement control route validates. Every
-  heartbeat re-reads the active sync snapshot and token so a brain started
+  publication re-reads the active sync snapshot and token so a brain started
   before sign-in still recovers. The last typed
   publisher outcome is exposed as `routeHealth.accountDirectory` in
   `sync.getStatus`, `ade sync status`, and the desktop This Mac card, including
@@ -255,6 +262,11 @@ Runtime support files outside `services/sync/`:
   `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
   hatch. Source-checkout runtimes and non-development custom issuers keep their
   existing override behavior.
+- `apps/account-directory/src/directory.ts` — the Clerk-scoped machine
+  register/list/delete Worker routes. Machine listing selects the owner's 500
+  most recently seen rows before computing online-first order and exposes
+  separate authentication and D1 durations through `Server-Timing`; the
+  trusted web-client CORS response exposes that header.
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
   origin, bounded success/error response decoding, route allowlisting, machine
   selection, and paired endpoint validation shared by desktop, the brain, ADE
@@ -665,13 +677,23 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   loopback sync listener (matching port + identity nonce) whenever the control
   socket opens and whenever the shared listener reports a fresh loopback
   validation (`sharedSyncListener.onLoopbackValidated`, wired in
-  `bootstrap.ts`), coalescing overlapping probes through a single in-flight
-  promise. This flips `relayBridgeValidated` — and therefore directory relay
+  `bootstrap.ts`), serializing probes through the same validation queue used by
+  inbound opens. This flips `relayBridgeValidated` — and therefore directory relay
   publication — true as soon as the listener is confirmed, so the earlier
   "bridge not validated against the sync port" state self-heals instead of
   waiting for an inbound client to open the first tunnel. `openTunnel` still
-  re-validates on every inbound open as defense in depth and refuses the pipe
-  if the sync port changed mid-validation. Control observability preserves the
+  re-validates on every inbound open as defense in depth. Validation calls are
+  strictly serialized, and the port plus loopback identity
+  are checked again before pipe creation so a listener change cannot reuse a
+  stale result. The control socket uses native WebSocket ping frames every 30
+  seconds with a 10-second pong deadline; a miss terminates it and enters the
+  guarded reconnect state machine without waking the hibernated Durable Object
+  with JSON traffic. Opens that fail validation, local-listener setup, or pipe
+  setup send a bounded `{t:"reject"}` signal so the waiting controller closes
+  immediately instead of hanging. Pipe/local application close codes and
+  sanitized reasons are preserved across the bridge; other closes normalize to
+  `4000`. Account loss clears validation and all sockets, while account switches
+  force a clean control reconnect. Control observability preserves the
   causal failure rather than replacing it with a generic WebSocket error:
   upgrade rejection captures the HTTP status and at most 512 sanitized response
   bytes; close telemetry records code, reason, and whether the socket opened.

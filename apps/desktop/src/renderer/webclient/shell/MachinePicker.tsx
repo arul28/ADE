@@ -62,12 +62,16 @@ function EnvironmentButton({
 
 function SavedEnvironmentList({
   environments,
+  state,
   onSelect,
+  onRetry,
 }: {
   environments: WebClientEnvironmentRecord[];
+  state: "loading" | "ready" | "unavailable";
   onSelect: (environment: WebClientEnvironmentRecord) => void;
+  onRetry: () => void;
 }) {
-  if (environments.length === 0) return null;
+  if (state === "ready" && environments.length === 0) return null;
   return (
     <section style={{ display: "grid", gap: 10, borderTop: `1px solid ${COLORS.border}`, paddingTop: 14 }}>
       <div style={{ display: "grid", gap: 4 }}>
@@ -78,7 +82,18 @@ function SavedEnvironmentList({
           Existing connections saved in this browser remain available.
         </span>
       </div>
-      {environments.map((environment) => (
+      {state === "loading" ? (
+        <div role="status" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
+          Loading saved environments…
+        </div>
+      ) : state === "unavailable" ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
+            Browser storage unavailable
+          </span>
+          <button type="button" style={outlineButton()} onClick={onRetry}>Retry</button>
+        </div>
+      ) : environments.map((environment) => (
         <EnvironmentButton key={environment.envId} environment={environment} onSelect={onSelect} />
       ))}
     </section>
@@ -91,21 +106,27 @@ export function MachinePicker({
   account,
   relayAccess,
   connectingMachineKey,
+  directoryLoading = false,
+  savedEnvironmentsState = "ready",
   onSelect,
   onSelectAccountMachine,
   onSignIn,
   onSignOut,
   onRetryDirectory,
+  onRetrySavedEnvironments = () => undefined,
 }: {
   environments: WebClientEnvironmentRecord[];
   account: BrowserAccountSnapshot;
   relayAccess: WebRelayAccess;
   connectingMachineKey: string | null;
+  directoryLoading?: boolean;
+  savedEnvironmentsState?: "loading" | "ready" | "unavailable";
   onSelect: (environment: WebClientEnvironmentRecord) => void;
   onSelectAccountMachine: (machine: AdeAccountMachine) => void;
   onSignIn: () => void;
   onSignOut: () => void;
   onRetryDirectory: () => void;
+  onRetrySavedEnvironments?: () => void;
 }) {
   const signedIn = browserAccountIsSignedIn(account.state);
   const directEnvironments = environments.filter((environment) => (
@@ -127,9 +148,7 @@ export function MachinePicker({
         title="Sign in to ADE"
         subtitle="Sign in to open your machines in the browser."
       >
-        {account.state === "loading" ? (
-          <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13 }}>Checking your account…</div>
-        ) : signInAvailable ? (
+        {signInAvailable ? (
           <button
             type="button"
             style={primaryButton({ justifySelf: "stretch", height: 44, fontSize: 14, padding: "0 20px" })}
@@ -146,7 +165,12 @@ export function MachinePicker({
         {account.message && account.state === "auth_expired" ? (
           <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>{account.message}</div>
         ) : null}
-        <SavedEnvironmentList environments={savedEnvironments} onSelect={onSelect} />
+        <SavedEnvironmentList
+          environments={savedEnvironments}
+          state={savedEnvironmentsState}
+          onSelect={onSelect}
+          onRetry={onRetrySavedEnvironments}
+        />
       </ScreenShell>
     );
   }
@@ -158,7 +182,11 @@ export function MachinePicker({
         <button type="button" style={outlineButton()} onClick={onSignOut}>Sign out</button>
       </div>
 
-      {account.state === "directory_unavailable" ? (
+      {directoryLoading ? (
+        <div role="status" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13 }}>
+          Loading your Macs…
+        </div>
+      ) : account.state === "directory_unavailable" ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
             We couldn't load your machines. Your saved connections still work.
@@ -208,7 +236,12 @@ export function MachinePicker({
         </div>
       )}
 
-      <SavedEnvironmentList environments={savedEnvironments} onSelect={onSelect} />
+      <SavedEnvironmentList
+        environments={savedEnvironments}
+        state={savedEnvironmentsState}
+        onSelect={onSelect}
+        onRetry={onRetrySavedEnvironments}
+      />
     </ScreenShell>
   );
 }

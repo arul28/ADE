@@ -9,7 +9,13 @@ import {
   verifySignedQuery,
   type TunnelRelayEnv,
 } from "../src/relay";
-import { TunnelDurableObject } from "../src/tunnelDo";
+import {
+  CLOSE_BRIDGE_REJECTED,
+  CLOSE_HOST_OFFLINE,
+  CLOSE_PARTNER_CLOSED,
+  CLOSE_PRE_PIPE_BUFFER_OVERFLOW,
+  TunnelDurableObject,
+} from "../src/tunnelDo";
 
 const MACHINE_KEY = "a".repeat(48);
 const SECRET = "s".repeat(48);
@@ -20,6 +26,7 @@ const SECRET = "s".repeat(48);
 class FakeStorage {
   private map = new Map<string, unknown>();
   private alarm: number | null = null;
+  setAlarmCalls = 0;
   async get<T>(key: string): Promise<T | undefined> {
     return this.map.get(key) as T | undefined;
   }
@@ -30,18 +37,69 @@ class FakeStorage {
     return this.alarm;
   }
   async setAlarm(time: number): Promise<void> {
+    this.setAlarmCalls += 1;
     this.alarm = time;
   }
 }
 
+type TestSocketRole = "control" | "client" | "pipe";
+
+class FakeSocket {
+  readonly sent: unknown[] = [];
+  readonly closes: Array<{ code?: number; reason?: string }> = [];
+  throwOnSend = false;
+
+  constructor(
+    readonly tags: string[],
+    private attachment: { role: TestSocketRole; id?: string; ts: number },
+  ) {}
+
+  deserializeAttachment(): unknown {
+    return this.attachment;
+  }
+
+  serializeAttachment(attachment: unknown): void {
+    this.attachment = attachment as typeof this.attachment;
+  }
+
+  send(value: unknown): void {
+    if (this.throwOnSend) throw new Error("socket is dead");
+    this.sent.push(value);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.closes.push({ code, reason });
+  }
+}
+
+class FakeState {
+  readonly storage = new FakeStorage();
+  readonly sockets: FakeSocket[] = [];
+
+  addSocket(role: TestSocketRole, id?: string, ts = Date.now()): FakeSocket {
+    const tags = [role, ...(id ? [`conn:${id}`] : [])];
+    const socket = new FakeSocket(tags, { role, id, ts });
+    this.sockets.push(socket);
+    return socket;
+  }
+
+  getWebSockets(tag?: string): WebSocket[] {
+    const sockets = tag ? this.sockets.filter((socket) => socket.tags.includes(tag)) : this.sockets;
+    return sockets as unknown as WebSocket[];
+  }
+
+  acceptWebSocket(): void {}
+}
+
+function makeDoHarness(): { durable: TunnelDurableObject; state: FakeState; storage: FakeStorage } {
+  const state = new FakeState();
+  const durable = new TunnelDurableObject(state as unknown as DurableObjectState, {} as TunnelRelayEnv);
+  return { durable, state, storage: state.storage };
+}
+
 function makeDo(): TunnelDurableObject {
-  const storage = new FakeStorage();
-  const state = {
-    storage,
-    getWebSockets: () => [],
-    acceptWebSocket: () => undefined,
-  } as unknown as DurableObjectState;
-  return new TunnelDurableObject(state, {} as TunnelRelayEnv);
+  const { durable } = makeDoHarness();
+  return durable;
 }
 
 function claimRequest(secret: unknown): Request {
@@ -183,5 +241,107 @@ describe("signed upgrade auth rejections", () => {
       }),
     );
     expect(res.status).toBe(401);
+  });
+});
+
+describe("durable socket lifecycle", () => {
+  it("maps brain rejects to the waiting client and keeps unknown control types ignored", async () => {
+    const { durable, state } = makeDoHarness();
+    const control = state.addSocket("control");
+    const client = state.addSocket("client", "abcdef01");
+
+    await durable.webSocketMessage(
+      control as unknown as WebSocket,
+      JSON.stringify({
+        t: "reject",
+        id: "abcdef01",
+        code: 4555,
+        reason: `bridge\u0000 refused ${"é".repeat(100)}`,
+      }),
+    );
+    expect(client.closes).toHaveLength(1);
+    expect(client.closes[0]?.code).toBe(4555);
+    expect(client.closes[0]?.reason).not.toContain("\u0000");
+    expect(Buffer.byteLength(client.closes[0]?.reason ?? "", "utf8")).toBeLessThanOrEqual(123);
+
+    const secondClient = state.addSocket("client", "abcdef02");
+    await durable.webSocketMessage(
+      control as unknown as WebSocket,
+      JSON.stringify({ t: "reject", id: "abcdef02", code: 1006, reason: "bad code" }),
+    );
+    expect(secondClient.closes).toEqual([{ code: CLOSE_BRIDGE_REJECTED, reason: "bad code" }]);
+
+    await durable.webSocketMessage(control as unknown as WebSocket, JSON.stringify({ t: "future-type" }));
+    expect(control.sent).toEqual([]);
+    expect(secondClient.closes).toHaveLength(1);
+  });
+
+  it("preserves application close details across a pair and falls back to 4000 otherwise", async () => {
+    const first = makeDoHarness();
+    const client = first.state.addSocket("client", "abcdef01");
+    const pipe = first.state.addSocket("pipe", "abcdef01");
+    await first.durable.webSocketClose(
+      client as unknown as WebSocket,
+      4666,
+      "phone\tclosed",
+      true,
+    );
+    expect(client.closes).toEqual([]);
+    expect(pipe.closes).toEqual([{ code: 4666, reason: "phone closed" }]);
+
+    const second = makeDoHarness();
+    const normalClient = second.state.addSocket("client", "abcdef02");
+    const normalPipe = second.state.addSocket("pipe", "abcdef02");
+    await second.durable.webSocketClose(normalClient as unknown as WebSocket, 1000, "", true);
+    expect(normalPipe.closes).toEqual([{ code: CLOSE_PARTNER_CLOSED, reason: "partner closed" }]);
+  });
+
+  it("closes an early client when its buffered frames exceed 256 KiB", async () => {
+    const { durable, state } = makeDoHarness();
+    const client = state.addSocket("client", "abcdef01");
+
+    await durable.webSocketMessage(client as unknown as WebSocket, new ArrayBuffer(128 * 1024));
+    expect(client.closes).toEqual([]);
+    await durable.webSocketMessage(client as unknown as WebSocket, new ArrayBuffer(128 * 1024));
+    expect(client.closes).toEqual([]);
+    await durable.webSocketMessage(client as unknown as WebSocket, new ArrayBuffer(1));
+    expect(client.closes).toEqual([{
+      code: CLOSE_PRE_PIPE_BUFFER_OVERFLOW,
+      reason: "pre-pipe buffer overflow",
+    }]);
+  });
+
+  it("reschedules alarms for data sockets but not for an idle control socket", async () => {
+    const { durable, state, storage } = makeDoHarness();
+    state.addSocket("control");
+    await durable.alarm();
+    expect(storage.setAlarmCalls).toBe(0);
+    expect(await storage.getAlarm()).toBeNull();
+
+    state.addSocket("client", "abcdef01");
+    await durable.alarm();
+    expect(storage.setAlarmCalls).toBe(1);
+    expect(await storage.getAlarm()).not.toBeNull();
+  });
+
+  it("closes the new client immediately when signaling the control socket throws", async () => {
+    const { durable, state, storage } = makeDoHarness();
+    const control = state.addSocket("control");
+    control.throwOnSend = true;
+    const testDurable = durable as unknown as {
+      acceptSocket: (attachment: { role: TestSocketRole; id?: string }) => Promise<Response>;
+    };
+    testDurable.acceptSocket = async (attachment) => {
+      state.addSocket(attachment.role, attachment.id);
+      return new Response(null, { status: 200 });
+    };
+
+    const response = await durable.fetch(new Request(`https://relay.test/connect/${MACHINE_KEY}`, {
+      headers: { Upgrade: "websocket" },
+    }));
+    const client = state.sockets.find((socket) => socket.tags.includes("client"));
+    expect(response.status).toBe(200);
+    expect(client?.closes).toEqual([{ code: CLOSE_HOST_OFFLINE, reason: "host offline" }]);
+    expect(storage.setAlarmCalls).toBe(0);
   });
 });

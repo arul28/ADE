@@ -125,3 +125,27 @@ func syncSocketCompletionAction(
     ? .recoverTransport(closeCodeRawValue: closeCodeRawValue)
     : .failHandshake
 }
+
+func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
+  let message: String
+  switch closeCodeRawValue {
+  case 4001:
+    message = "The machine stopped responding. Reconnecting now."
+  case 4506:
+    message = "The relay connection was interrupted. Reconnecting now."
+  case 4507:
+    message = "The machine couldn't accept the relay connection. Reconnecting now."
+  default:
+    if let trimmedReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !trimmedReason.isEmpty {
+      message = trimmedReason
+    } else {
+      message = "The connection to the machine was interrupted. Reconnecting now."
+    }
+  }
+  return NSError(
+    domain: "ADE",
+    code: 24,
+    userInfo: [NSLocalizedDescriptionKey: message]
+  )
+}

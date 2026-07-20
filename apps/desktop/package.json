@@ -18,7 +18,7 @@
     "dev:browser-bridge": "node ./scripts/browser-runtime-bridge.mjs",
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
-    "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner",
+    "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
     "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
     "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --publish never",
     "dist:mac:dir": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",

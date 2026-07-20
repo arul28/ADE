@@ -21,7 +21,8 @@ import {
   resolveOfficialAccountDirectoryBaseUrl,
 } from "./sharedAccountAuthService";
 
-export const ACCOUNT_MACHINE_HEARTBEAT_MS = 60_000;
+export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
+export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
 
 export type AccountMachineRegistration = {
@@ -52,6 +53,14 @@ export type AccountMachineRegistrationSnapshot = Pick<
 type PublisherAccountStatus = Pick<AccountAuthStatus, "signedIn" | "source"> & {
   sessionReadState: AccountSessionReadState;
 };
+
+function isPublisherSignedOut(
+  status: PublisherAccountStatus | null,
+): status is PublisherAccountStatus {
+  return status !== null
+    && !status.signedIn
+    && status.source !== "env-token";
+}
 
 function validatedRelayUrl(raw: string, machineKey: string): string | null {
   let url: URL;
@@ -158,6 +167,20 @@ export function buildAccountMachineRegistration(args: {
   };
 }
 
+function relayPublishStateSignature(
+  snapshot: AccountMachineRegistrationSnapshot,
+  registration: AccountMachineRegistration,
+): string {
+  const reachableEndpoints = registration.reachableEndpoints
+    .map((endpoint) => JSON.stringify(endpoint))
+    .sort();
+  return JSON.stringify({
+    relayControlConnected: snapshot.routeHealth.relay.relayControlConnected,
+    relayBridgeValidated: snapshot.routeHealth.relay.relayBridgeValidated,
+    reachableEndpoints,
+  });
+}
+
 export function createAccountMachinePublisherService(options: {
   getAccessToken: () => Promise<string | null>;
   getAccountStatus?: () => PublisherAccountStatus;
@@ -168,24 +191,38 @@ export function createAccountMachinePublisherService(options: {
   subscribeToSignIn?: (listener: () => void) => (() => void);
   fetchImpl?: typeof fetch;
   heartbeatMs?: number;
+  relayStatePollMs?: number;
   requestTimeoutMs?: number;
   now?: () => number;
   logger?: AccountMachinePublisherLogger;
 }) {
   const heartbeatMs = Math.max(1_000, Math.floor(options.heartbeatMs ?? ACCOUNT_MACHINE_HEARTBEAT_MS));
+  const relayStatePollMs = Math.max(
+    250,
+    Math.floor(options.relayStatePollMs ?? ACCOUNT_MACHINE_RELAY_STATE_POLL_MS),
+  );
   const requestTimeoutMs = Math.max(250, Math.floor(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS));
   const now = options.now ?? Date.now;
   let started = false;
   let disposed = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
+  let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  let relayStatePollTimer: ReturnType<typeof setTimeout> | null = null;
   let activeController: AbortController | null = null;
   let inFlight: Promise<void> | null = null;
+  let triggeredPublishPending = false;
+  let lastRelayPublishStateSignature: string | null = null;
   let lastWarning: string | null = null;
   let unsubscribeSignIn: (() => void) | null = null;
   let health = createSyncAccountDirectoryHealth(
     "sync_disabled",
     "Account-directory publishing has not started.",
   );
+
+  const observeRelayPublishState = (signature: string): boolean => {
+    const changed = lastRelayPublishStateSignature !== signature;
+    lastRelayPublishStateSignature = signature;
+    return changed;
+  };
 
   const warnOnce = (code: string, meta: Record<string, unknown> = {}): void => {
     if (lastWarning === code) return;
@@ -326,6 +363,7 @@ export function createAccountMachinePublisherService(options: {
       });
       return;
     }
+    observeRelayPublishState(relayPublishStateSignature(snapshot, registration));
     const reachableEndpointCount = registration.reachableEndpoints.length;
 
     let accountStatus: PublisherAccountStatus | null = null;
@@ -340,11 +378,7 @@ export function createAccountMachinePublisherService(options: {
       });
       return;
     }
-    if (
-      accountStatus
-      && !accountStatus.signedIn
-      && accountStatus.source !== "env-token"
-    ) {
+    if (isPublisherSignedOut(accountStatus)) {
       const unreadable = accountStatus.sessionReadState === "unreadable";
       recordOutcome(unreadable ? "token_unreadable" : "account_signed_out", {
         attemptAt,
@@ -464,24 +498,89 @@ export function createAccountMachinePublisherService(options: {
     return current;
   };
 
-  const schedule = (): void => {
-    if (!started || disposed || timer) return;
-    timer = setTimeout(() => {
-      timer = null;
-      void publishNow().finally(schedule);
-    }, heartbeatMs);
-    timer.unref?.();
+  const clearHeartbeatTimer = (): void => {
+    if (heartbeatTimer) clearTimeout(heartbeatTimer);
+    heartbeatTimer = null;
   };
 
-  const publishAfterCurrentAttempt = (): void => {
+  const schedule = (): void => {
+    if (!started || disposed || heartbeatTimer) return;
+    heartbeatTimer = setTimeout(() => {
+      heartbeatTimer = null;
+      void publishNow().finally(schedule);
+    }, heartbeatMs);
+    heartbeatTimer.unref?.();
+  };
+
+  const requestTriggeredPublish = (): void => {
+    // A relay-state write becomes the new heartbeat anchor, avoiding a second
+    // directory write when the old 30-second deadline arrives.
+    clearHeartbeatTimer();
+    if (triggeredPublishPending) return;
+    triggeredPublishPending = true;
     const current = inFlight;
-    if (!current) {
-      void publishNow();
+    const run = (): void => {
+      triggeredPublishPending = false;
+      if (disposed) return;
+      clearHeartbeatTimer();
+      void publishNow().finally(() => {
+        clearHeartbeatTimer();
+        schedule();
+      });
+    };
+    if (current) void current.then(run, run);
+    else run();
+  };
+
+  const inspectRelayPublishState = async (): Promise<void> => {
+    if (!started || disposed || options.isSyncEnabled?.() === false) return;
+    try {
+      const accountStatus = options.getAccountStatus?.() ?? null;
+      if (isPublisherSignedOut(accountStatus)) return;
+    } catch {
       return;
     }
-    void current.finally(() => {
-      if (!disposed) void publishNow();
+
+    let snapshot: AccountMachineRegistrationSnapshot | null;
+    try {
+      snapshot = await options.getSnapshot();
+    } catch {
+      return;
+    }
+    if (disposed || !snapshot) return;
+
+    let machineKey = "";
+    try {
+      machineKey = options.getMachineKey().trim();
+    } catch {
+      return;
+    }
+    if (!machineKey) return;
+    const registration = buildAccountMachineRegistration({
+      machineKey,
+      snapshot,
+      packageChannel: process.env.ADE_PACKAGE_CHANNEL,
     });
+    if (!registration) return;
+
+    const signature = relayPublishStateSignature(snapshot, registration);
+    // A first valid observation also publishes: startup may have run before an
+    // active sync scope existed, and waiting for the heartbeat would re-create
+    // the directory's 30-second connected-machine delay.
+    if (observeRelayPublishState(signature)) {
+      requestTriggeredPublish();
+    }
+  };
+
+  const scheduleRelayStatePoll = (): void => {
+    if (!started || disposed || relayStatePollTimer) return;
+    relayStatePollTimer = setTimeout(() => {
+      relayStatePollTimer = null;
+      // The 2-second observation window also debounces/coalesces rapid tunnel
+      // readiness changes without coupling this publisher to the tunnel client.
+      void inspectRelayPublishState().finally(scheduleRelayStatePoll);
+    }, relayStatePollMs);
+    relayStatePollTimer.unref?.();
   };
 
   return {
@@ -490,17 +589,17 @@ export function createAccountMachinePublisherService(options: {
       started = true;
       unsubscribeSignIn = options.subscribeToSignIn?.(() => {
         // If sign-in races an older signed-out attempt, run once more after it
-        // settles instead of coalescing away the auth transition until the
-        // next scheduled heartbeat.
-        publishAfterCurrentAttempt();
+        // settles instead of coalescing away the auth transition for 30s.
+        requestTriggeredPublish();
       }) ?? null;
       void publishNow().finally(schedule);
+      scheduleRelayStatePoll();
     },
 
     publishNow,
 
     requestPublishAfterCurrentAttempt(): void {
-      publishAfterCurrentAttempt();
+      requestTriggeredPublish();
     },
 
     getPublisherHealth(): SyncAccountDirectoryHealth {
@@ -510,8 +609,9 @@ export function createAccountMachinePublisherService(options: {
     dispose(): void {
       disposed = true;
       started = false;
-      if (timer) clearTimeout(timer);
-      timer = null;
+      clearHeartbeatTimer();
+      if (relayStatePollTimer) clearTimeout(relayStatePollTimer);
+      relayStatePollTimer = null;
       activeController?.abort();
       activeController = null;
       unsubscribeSignIn?.();

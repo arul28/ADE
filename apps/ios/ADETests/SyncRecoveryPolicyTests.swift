@@ -275,6 +275,59 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     )
   }
 
+  func testRelayApplicationCloseCodesRemainTransportFailures() {
+    let byteCapped = syncSocketCloseError(
+      closeCodeRawValue: 4506,
+      reason: "pre-pipe buffer overflow"
+    )
+    XCTAssertEqual(
+      byteCapped.localizedDescription,
+      "The relay connection was interrupted. Reconnecting now."
+    )
+    XCTAssertNil(byteCapped.userInfo["ADEErrorCode"])
+
+    let bridgeRejected = syncSocketCloseError(
+      closeCodeRawValue: 4507,
+      reason: "bridge rejected"
+    )
+    XCTAssertEqual(
+      bridgeRejected.localizedDescription,
+      "The machine couldn't accept the relay connection. Reconnecting now."
+    )
+    XCTAssertNil(bridgeRejected.userInfo["ADEErrorCode"])
+    XCTAssertNotEqual(
+      SyncUserFacingError.message(for: bridgeRejected),
+      "This phone is no longer paired with this machine. Pair again from Settings."
+    )
+    XCTAssertEqual(
+      syncSocketCompletionAction(
+        isCurrentSocket: true,
+        completedWhileOpening: false,
+        canSendLiveRequests: true,
+        closeCodeRawValue: 4507
+      ),
+      .recoverTransport(closeCodeRawValue: 4507)
+    )
+  }
+
+  func testUnknownApplicationCloseCodeDegradesToGenericTransportRecovery() {
+    let error = syncSocketCloseError(closeCodeRawValue: 4999, reason: nil)
+    XCTAssertEqual(
+      error.localizedDescription,
+      "The connection to the machine was interrupted. Reconnecting now."
+    )
+    XCTAssertNil(error.userInfo["ADEErrorCode"])
+    XCTAssertEqual(
+      syncSocketCompletionAction(
+        isCurrentSocket: true,
+        completedWhileOpening: false,
+        canSendLiveRequests: true,
+        closeCodeRawValue: 4999
+      ),
+      .recoverTransport(closeCodeRawValue: 4999)
+    )
+  }
+
   @MainActor
   func testAttemptedLiveChatSendTimeoutNeverEntersDurableQueue() async throws {
     let pendingOperationsKey = "ade.sync.pendingOperations"

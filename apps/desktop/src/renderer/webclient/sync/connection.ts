@@ -26,8 +26,11 @@ import {
 } from "./wireProtocol";
 
 const SOCKET_OPEN = 1;
-const DEFAULT_CONNECT_TIMEOUT_MS = 4_000;
+const DEFAULT_TRANSPORT_OPEN_TIMEOUT_MS = 8_000;
+const DEFAULT_AUTHENTICATED_HELLO_TIMEOUT_MS = 12_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
+const INBOUND_STALE_MS = 75_000;
+const INBOUND_STALE_CHECK_INTERVAL_MS = 15_000;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 const MAX_CONSECUTIVE_AUTH_FAILURES = 5;
@@ -77,6 +80,11 @@ export type SyncConnectionEvents = {
   close: { code: number; reason: string };
   error: Error;
 };
+
+type PreparedPairedHelloAuth = Promise<{
+  dpop: SyncDpopProof | null;
+  relayAccountToken: string;
+}>;
 
 export type AccountPairAndConnectArgs = {
   endpoints: BrowserDialCandidate[];
@@ -133,6 +141,7 @@ export class SyncConnection {
   private shouldReconnect = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private inboundStaleTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS;
   private backoffMs = BACKOFF_MIN_MS;
   private consecutiveAuthFailures = 0;
@@ -164,16 +173,25 @@ export class SyncConnection {
     error: null,
   };
   private readonly socketFactory: WebSocketFactory;
-  private readonly connectTimeoutMs: number;
+  private readonly transportOpenTimeoutMs: number;
+  private readonly authenticatedHelloTimeoutMs: number;
   private readonly documentRef: Document | null;
 
   constructor(options: {
     socketFactory?: WebSocketFactory;
-    connectTimeoutMs?: number;
+    transportOpenTimeoutMs?: number;
+    authenticatedHelloTimeoutMs?: number;
     document?: Document | null;
   } = {}) {
     this.socketFactory = options.socketFactory ?? createDefaultSocket;
-    this.connectTimeoutMs = Math.max(250, Math.floor(options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS));
+    this.transportOpenTimeoutMs = Math.max(
+      250,
+      Math.floor(options.transportOpenTimeoutMs ?? DEFAULT_TRANSPORT_OPEN_TIMEOUT_MS),
+    );
+    this.authenticatedHelloTimeoutMs = Math.max(
+      250,
+      Math.floor(options.authenticatedHelloTimeoutMs ?? DEFAULT_AUTHENTICATED_HELLO_TIMEOUT_MS),
+    );
     this.documentRef = options.document ?? (typeof document === "undefined" ? null : document);
     this.documentRef?.addEventListener("visibilitychange", this.handleVisibilityChange);
   }
@@ -246,8 +264,13 @@ export class SyncConnection {
       this.reconnectTimer = null;
     }
     if (this.ws) {
+      const socket = this.ws;
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      socket.onerror = null;
       try {
-        this.ws.close(options.code ?? 1000, options.reason ?? "Client disconnect");
+        socket.close(options.code ?? 1000, options.reason ?? "Client disconnect");
       } catch {
         // ignore
       }
@@ -312,59 +335,80 @@ export class SyncConnection {
 
   private async connectEndpoint(environment: WebClientEnvironmentRecord, candidate: BrowserDialCandidate): Promise<void> {
     const endpoint = candidate.url;
+    const preparedAuth = this.preparePairedHelloAuth(
+      environment,
+      browserEndpointRequiresRelayAccess(candidate),
+    );
+    // Authentication preparation starts with the dial. Observe an early
+    // rejection until onopen awaits the same promise so it cannot be reported
+    // as unhandled while the transport is still opening.
+    void preparedAuth.catch(() => undefined);
     const socket = this.socketFactory(endpoint);
     this.ws = socket;
     this.status.endpoint = endpoint;
     this.emit("statusChanged", this.getStatus());
     let settled = false;
     await new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Timed out connecting to ${endpoint}.`));
-        try {
-          socket.close(4000, "Connect timeout");
-        } catch {
-          // ignore
+      let helloTimeout: ReturnType<typeof setTimeout> | null = null;
+      const clearDeadlines = () => {
+        clearTimeout(openTimeout);
+        if (helloTimeout) clearTimeout(helloTimeout);
+      };
+      const fail = (error: Error, closeReason?: string) => {
+        if (settled) return;
+        settled = true;
+        clearDeadlines();
+        if (closeReason) {
+          socket.onclose = null;
+          try {
+            socket.close(4000, closeReason);
+          } catch {
+            // Ignore close failures while abandoning this candidate.
+          }
         }
-      }, this.connectTimeoutMs);
+        reject(error);
+      };
+      const openTimeout = setTimeout(() => {
+        fail(new Error(`Timed out opening ${endpoint}.`), "Transport open timeout");
+      }, this.transportOpenTimeoutMs);
 
       socket.onopen = () => {
-        void this.sendHello(environment, browserEndpointRequiresRelayAccess(candidate)).catch(reject);
+        if (settled) return;
+        clearTimeout(openTimeout);
+        helloTimeout = setTimeout(() => {
+          fail(new Error(`Timed out authenticating with ${endpoint}.`), "Authenticated hello timeout");
+        }, this.authenticatedHelloTimeoutMs);
+        void this.sendHello(socket, environment, preparedAuth).catch((error) => {
+          fail(error instanceof Error ? error : new Error(String(error)), "Hello preparation failed");
+        });
       };
       socket.onmessage = (event) => {
         void this.handleMessage(asMessageEvent(event.data), {
           onHelloOk: (payload) => {
             if (settled) return;
             if (payload.brain?.deviceId?.trim() !== environment.hostDeviceId) {
-              settled = true;
-              clearTimeout(timeout);
-              reject(new Error("Connected machine identity did not match the stored pairing."));
+              fail(new Error("Connected machine identity did not match the stored pairing."));
               return;
             }
             settled = true;
-            clearTimeout(timeout);
+            clearDeadlines();
             this.finishConnected(environment, endpoint, payload);
             resolve();
           },
           onHelloError: (payload) => {
             if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            reject(this.handleAuthFailure(environment, payload));
+            fail(this.handleAuthFailure(environment, payload));
           },
+        }).catch((error) => {
+          fail(error instanceof Error ? error : new Error(String(error)));
         });
       };
       socket.onerror = () => {
-        if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          reject(new Error(`WebSocket failed for ${endpoint}.`));
-        }
+        fail(new Error(`WebSocket failed for ${endpoint}.`));
       };
       socket.onclose = (event) => {
         if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          reject(new Error("Connection closed before authentication completed."));
+          fail(this.errorForClose(event));
           return;
         }
         this.handleClose(event);
@@ -383,18 +427,35 @@ export class SyncConnection {
     this.setStatus({ state: "connecting", endpoint, error: null });
     let settled = false;
     return await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      let helloTimeout: ReturnType<typeof setTimeout> | null = null;
+      const clearDeadlines = () => {
+        clearTimeout(openTimeout);
+        if (helloTimeout) clearTimeout(helloTimeout);
+      };
+      const fail = (error: Error, closeReason?: string) => {
         if (settled) return;
         settled = true;
-        reject(new Error("Timed out connecting to the account machine."));
-        try {
-          socket.close(4000, "Account pairing timeout");
-        } catch {
-          // Ignore close failures after timeout.
+        clearDeadlines();
+        if (closeReason) {
+          socket.onclose = null;
+          try {
+            socket.close(4000, closeReason);
+          } catch {
+            // Ignore close failures after a deadline.
+          }
         }
-      }, this.connectTimeoutMs * 2);
+        reject(error);
+      };
+      const openTimeout = setTimeout(() => {
+        fail(new Error("Timed out opening the account machine connection."), "Account transport open timeout");
+      }, this.transportOpenTimeoutMs);
 
       socket.onopen = () => {
+        if (settled) return;
+        clearTimeout(openTimeout);
+        helloTimeout = setTimeout(() => {
+          fail(new Error("Timed out authenticating with the account machine."), "Account hello timeout");
+        }, this.authenticatedHelloTimeoutMs);
         const payload: SyncHelloPayload = {
           peer: args.peer,
           auth: {
@@ -420,45 +481,36 @@ export class SyncConnection {
               hostDeviceId !== args.expectedHostDeviceId
               || !pairing
             ) {
-              settled = true;
-              clearTimeout(timeout);
-              reject(new Error("Account machine identity did not match the verified directory record."));
+              fail(new Error("Account machine identity did not match the verified directory record."));
               return;
             }
             let environment: WebClientEnvironmentRecord;
             try {
               environment = args.buildEnvironment(payload, endpoint, pairing);
             } catch (error) {
-              settled = true;
-              clearTimeout(timeout);
-              reject(error);
+              fail(error instanceof Error ? error : new Error(String(error)));
               return;
             }
             settled = true;
-            clearTimeout(timeout);
+            clearDeadlines();
             this.finishConnected(environment, endpoint, payload);
             this.shouldReconnect = true;
             resolve({ environment, helloOk: payload, endpoint });
           },
           onHelloError: (payload) => {
             if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            reject(new Error(payload.message || "Account authentication was rejected."));
+            fail(new Error(payload.message || "Account authentication was rejected."));
           },
+        }).catch((error) => {
+          fail(error instanceof Error ? error : new Error(String(error)));
         });
       };
       socket.onerror = () => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timeout);
-        reject(new Error("The secure machine connection failed."));
+        fail(new Error("The secure machine connection failed."));
       };
       socket.onclose = (event) => {
         if (!settled) {
-          settled = true;
-          clearTimeout(timeout);
-          reject(new Error("Connection closed before account authentication completed."));
+          fail(this.errorForClose(event));
           return;
         }
         this.handleClose(event);
@@ -466,17 +518,32 @@ export class SyncConnection {
     });
   }
 
-  private async sendHello(environment: WebClientEnvironmentRecord, throughRelay: boolean): Promise<void> {
-    if (!this.ws || this.ws.readyState !== SOCKET_OPEN) return;
+  private preparePairedHelloAuth(
+    environment: WebClientEnvironmentRecord,
+    throughRelay: boolean,
+  ): PreparedPairedHelloAuth {
     const dpop = environment.dpopPublicKeyX963
-      ? await signDpopProof({
+      ? signDpopProof({
           privateKey: environment.dpopKeys.privateKey,
           publicKeyX963Base64: environment.dpopPublicKeyX963,
           deviceId: environment.pairedDeviceId,
           secret: environment.secret,
         })
-      : null;
-    const relayAccountToken = await this.getRelayAccountToken(throughRelay);
+      : Promise.resolve(null);
+    const relayAccountToken = this.getRelayAccountToken(throughRelay);
+    return Promise.all([dpop, relayAccountToken]).then(([preparedDpop, preparedRelayAccountToken]) => ({
+      dpop: preparedDpop,
+      relayAccountToken: preparedRelayAccountToken,
+    }));
+  }
+
+  private async sendHello(
+    socket: WebSocketLike,
+    environment: WebClientEnvironmentRecord,
+    preparedAuth: PreparedPairedHelloAuth,
+  ): Promise<void> {
+    const { dpop, relayAccountToken } = await preparedAuth;
+    if (socket !== this.ws || socket.readyState !== SOCKET_OPEN) return;
     const payload: SyncHelloPayload = {
       peer: {
         deviceId: environment.localDeviceId,
@@ -495,7 +562,7 @@ export class SyncConnection {
         ...(relayAccountToken ? { relayAccountToken } : {}),
       },
     };
-    this.ws.send(encodeEnvelopeText({ type: "hello", requestId: "hello", payload }));
+    socket.send(encodeEnvelopeText({ type: "hello", requestId: "hello", payload }));
   }
 
   private async getRelayAccountToken(throughRelay: boolean): Promise<string> {
@@ -582,6 +649,7 @@ export class SyncConnection {
       error: null,
     });
     this.startHeartbeat(helloOk.heartbeatIntervalMs);
+    this.startInboundStaleWatchdog();
     this.emit("helloOk", helloOk);
     if (helloOk.projects) this.emit("projectCatalog", { projects: helloOk.projects });
   }
@@ -638,21 +706,84 @@ export class SyncConnection {
     }, this.heartbeatIntervalMs * 2);
   }
 
-  private handleClose(event: CloseEvent): void {
+  private startInboundStaleWatchdog(): void {
+    if (this.inboundStaleTimer) clearInterval(this.inboundStaleTimer);
+    this.inboundStaleTimer = setInterval(() => {
+      this.closeIfInboundStale(false);
+    }, INBOUND_STALE_CHECK_INTERVAL_MS);
+  }
+
+  private closeIfInboundStale(bypassBackoff: boolean): boolean {
+    if (!this.isConnected() || !visible(this.documentRef)) return false;
+    const lastSeenAtMs = this.status.lastSeenAt ? Date.parse(this.status.lastSeenAt) : Number.NaN;
+    if (!Number.isFinite(lastSeenAtMs) || Date.now() - lastSeenAtMs < INBOUND_STALE_MS) return false;
+    const socket = this.ws;
+    if (!socket) return false;
+    socket.onopen = null;
+    socket.onmessage = null;
+    socket.onclose = null;
+    socket.onerror = null;
+    try {
+      socket.close(4008, "Inbound connection stale");
+    } catch {
+      // The local close is still authoritative for reconnect bookkeeping.
+    }
+    this.handleClose(
+      { code: 4008, reason: "Inbound connection stale" } as CloseEvent,
+      bypassBackoff,
+    );
+    return true;
+  }
+
+  private errorForClose(event: Pick<CloseEvent, "code" | "reason">): SyncConnectionError {
+    switch (event.code) {
+      case 4501:
+        return new SyncConnectionError("This Mac appears to be offline", "relay_host_offline");
+      case 4507:
+        return new SyncConnectionError("Your Mac couldn't accept the connection. Retrying…", "relay_bridge_rejected");
+      case 4503:
+        return new SyncConnectionError("Too many active connections to this Mac", "relay_capacity");
+      case 4502:
+        return new SyncConnectionError("Connection lost. Reconnecting.", "relay_idle");
+      case 4505:
+        return new SyncConnectionError("Connection lost. Reconnecting.", "relay_superseded");
+      case 4506:
+        return new SyncConnectionError("Connection lost. Reconnecting.", "relay_buffer_overflow");
+      case 4000:
+        return new SyncConnectionError("Connection lost. Reconnecting.", "relay_partner_closed");
+      case 4008:
+        return new SyncConnectionError("Connection became unresponsive. Reconnecting.", "connection_stale");
+      default:
+        return new SyncConnectionError(event.reason || "Connection lost. Reconnecting.", "connection_closed");
+    }
+  }
+
+  private handleClose(event: CloseEvent, bypassBackoff = false): void {
     this.stopTimers();
     this.ws = null;
     this.latestHello = null;
     this.emit("close", { code: event.code, reason: event.reason });
     if (this.intentionalClose) return;
-    this.setStatus({ state: "disconnected", connectedAt: null, error: event.reason || null });
-    if (this.shouldReconnect) this.scheduleReconnect();
+    this.setStatus({
+      state: "disconnected",
+      connectedAt: null,
+      error: this.errorForClose(event).message,
+    });
+    if (this.shouldReconnect) {
+      this.scheduleReconnect(
+        bypassBackoff ? this.visibilityReconnectDelayMs() : 0,
+        bypassBackoff,
+      );
+    }
   }
 
-  private scheduleReconnect(minimumDelayMs = 0): void {
+  private scheduleReconnect(minimumDelayMs = 0, bypassBackoff = false): void {
     if (!this.environment || !visible(this.documentRef) || this.reconnectTimer) return;
     const jitter = Math.floor(Math.random() * 350);
-    const delay = Math.max(minimumDelayMs, Math.min(BACKOFF_MAX_MS, this.backoffMs) + jitter);
-    this.backoffMs = Math.min(BACKOFF_MAX_MS, this.backoffMs * 2);
+    const delay = bypassBackoff
+      ? minimumDelayMs
+      : Math.max(minimumDelayMs, Math.min(BACKOFF_MAX_MS, this.backoffMs) + jitter);
+    if (!bypassBackoff) this.backoffMs = Math.min(BACKOFF_MAX_MS, this.backoffMs * 2);
     this.setStatus({ state: "reconnecting" });
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -663,14 +794,22 @@ export class SyncConnection {
     }, delay);
   }
 
-  private readonly handleVisibilityChange = () => {
-    if (!visible(this.documentRef) || this.isConnected() || !this.environment || !this.shouldReconnect) return;
-    if (this.reconnectTimer || this.status.state === "connecting" || this.status.state === "reconnecting") return;
+  private visibilityReconnectDelayMs(): number {
     const elapsedSinceDialMs = Date.now() - this.lastDialStartedAtMs;
-    const debounceDelayMs = elapsedSinceDialMs < VISIBILITY_RECONNECT_DEBOUNCE_MS
+    return elapsedSinceDialMs < VISIBILITY_RECONNECT_DEBOUNCE_MS
       ? VISIBILITY_RECONNECT_DEBOUNCE_MS - elapsedSinceDialMs
       : 0;
-    this.scheduleReconnect(debounceDelayMs);
+  }
+
+  private readonly handleVisibilityChange = () => {
+    if (!visible(this.documentRef)) return;
+    if (this.isConnected()) {
+      this.closeIfInboundStale(true);
+      return;
+    }
+    if (!this.environment || !this.shouldReconnect) return;
+    if (this.reconnectTimer || this.status.state === "connecting" || this.status.state === "reconnecting") return;
+    this.scheduleReconnect(this.visibilityReconnectDelayMs());
   };
 
   private cleanupSocket(): void {
@@ -693,6 +832,10 @@ export class SyncConnection {
     if (this.heartbeatTimer) {
       clearTimeout(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+    if (this.inboundStaleTimer) {
+      clearInterval(this.inboundStaleTimer);
+      this.inboundStaleTimer = null;
     }
   }
 

@@ -46,12 +46,18 @@ describe("web-client trust reset migration", () => {
     const request = {} as IDBOpenDBRequest;
     const getRequest = {} as IDBRequest<unknown>;
     const close = vi.fn();
+    const transaction = {
+      abort: vi.fn(),
+      error: null,
+      objectStore: () => ({ get: () => getRequest }),
+      onabort: null,
+      oncomplete: null,
+      onerror: null,
+    } as unknown as IDBTransaction;
     const db = {
       close,
       onversionchange: null,
-      transaction: () => ({
-        objectStore: () => ({ get: () => getRequest }),
-      }),
+      transaction: () => transaction,
     } as unknown as IDBDatabase;
     const storage = new IndexedDbStorage({
       indexedDb: { open: () => request },
@@ -64,6 +70,7 @@ describe("web-client trust reset migration", () => {
     await vi.waitFor(() => expect(getRequest.onsuccess).toBeTypeOf("function"));
     Object.defineProperty(getRequest, "result", { value: undefined });
     getRequest.onsuccess?.(new Event("success"));
+    transaction.oncomplete?.(new Event("complete"));
 
     await expect(pendingRead).resolves.toBeNull();
     db.onversionchange?.(new Event("versionchange") as IDBVersionChangeEvent);
@@ -138,18 +145,23 @@ describe("web-client trust reset migration", () => {
       accountOwnerUserId: "account-a",
     });
 
-    await expect(store.pruneAccountOwnedEnvironments("account-b")).resolves.toEqual([
-      "stale",
-    ]);
+    await expect(store.pruneAccountOwnedEnvironments("account-b")).resolves.toEqual({
+      removedIds: ["stale"],
+      environments: expect.arrayContaining([
+        expect.objectContaining({ envId: "manual" }),
+        expect.objectContaining({ envId: "current" }),
+      ]),
+    });
     await expect(store.listEnvironments()).resolves.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ envId: "manual" }),
         expect.objectContaining({ envId: "current" }),
       ]),
     );
-    await expect(store.pruneAccountOwnedEnvironments(null)).resolves.toEqual([
-      "current",
-    ]);
+    await expect(store.pruneAccountOwnedEnvironments(null)).resolves.toEqual({
+      removedIds: ["current"],
+      environments: [expect.objectContaining({ envId: "manual" })],
+    });
     await expect(store.listEnvironments()).resolves.toEqual([
       expect.objectContaining({ envId: "manual" }),
     ]);
