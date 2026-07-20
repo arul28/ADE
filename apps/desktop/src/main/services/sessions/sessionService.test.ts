@@ -150,6 +150,55 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("projects tracked CLI spawn lineage from resume metadata without assigning a chat owner", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-lineage-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-lineage",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Codex CLI child",
+      startedAt: "2026-07-18T04:10:54.789Z",
+      transcriptPath: "/tmp/session-lineage.log",
+      toolType: "codex",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "thread",
+        targetId: null,
+        launch: { permissionMode: "default" },
+        orchestrationParentSessionId: "parent-session-1",
+        spawnKind: "subagent",
+      },
+    });
+
+    expect(service.list({ laneId: "lane-1" })).toEqual([
+      expect.objectContaining({
+        id: "session-lineage",
+        chatSessionId: null,
+        orchestrationParentSessionId: "parent-session-1",
+        spawnKind: "subagent",
+      }),
+    ]);
+
+    service.setResumeCommand("session-lineage", "codex resume thread-1");
+    expect(service.get("session-lineage")).toEqual(expect.objectContaining({
+      chatSessionId: null,
+      orchestrationParentSessionId: "parent-session-1",
+      spawnKind: "subagent",
+      resumeMetadata: expect.objectContaining({
+        targetId: "thread-1",
+        orchestrationParentSessionId: "parent-session-1",
+        spawnKind: "subagent",
+      }),
+    }));
+  });
+
   it("preserves Codex approval and sandbox settings when rebuilding the resume command", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

@@ -16,6 +16,7 @@ import type {
 } from "./externalSessions";
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
+import type { LinearConnectionStatus } from "./linearSync";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -201,6 +202,37 @@ export type SyncDeviceRuntimeState = SyncDeviceRecord & {
   syncLag: number | null;
 };
 
+export function peerToRuntimeDeviceState(
+  peer: SyncPeerConnectionState,
+  metadata: SyncDeviceRecord["metadata"] = {},
+): SyncDeviceRuntimeState {
+  return {
+    deviceId: peer.deviceId,
+    siteId: peer.siteId,
+    name: peer.deviceName,
+    platform: peer.platform,
+    deviceType: peer.deviceType,
+    createdAt: peer.connectedAt,
+    updatedAt: peer.lastSeenAt,
+    lastSeenAt: peer.lastSeenAt,
+    lastHost: peer.remoteAddress,
+    lastPort: peer.remotePort,
+    tailscaleIp: null,
+    ipAddresses: [],
+    metadata,
+    isLocal: false,
+    isBrain: peer.isBrain,
+    isHost: peer.isHost,
+    connectionState: "connected",
+    connectedAt: peer.connectedAt,
+    lastAppliedAt: peer.lastAppliedAt,
+    remoteAddress: peer.remoteAddress,
+    remotePort: peer.remotePort,
+    latencyMs: peer.latencyMs,
+    syncLag: peer.syncLag,
+  };
+}
+
 export type SyncTailnetDiscoveryState =
   | "disabled"
   | "publishing"
@@ -286,8 +318,10 @@ export type SyncRouteHealth = {
     relayControlConnected: boolean;
     relayBridgeValidated: boolean;
     lastFailureAt: string | null;
-    reason: string | null;
-    lastSuccessAt: string | null;
+    skipReason: string | null;
+    lastControlError: string | null;
+    lastControlOpenAt: string | null;
+    lastBridgeValidationAt: string | null;
   };
   accountDirectory: SyncAccountDirectoryHealth;
 };
@@ -680,7 +714,9 @@ export type SyncCloudRelayStatus = {
   activeTunnels: number;
   relayBridgeValidated: boolean;
   lastFailureAt: string | null;
-  lastSuccessAt: string | null;
+  lastControlOpenAt: string | null;
+  lastBridgeValidationAt: string | null;
+  lastControlError: string | null;
   lastError: string | null;
 };
 
@@ -1046,6 +1082,32 @@ export type SyncSendToSessionArgs = {
 
 export type SyncSendToSessionResult = PtySendToSessionResult;
 
+export type CtoStartLinearMobileOAuthArgs = Record<string, never>;
+
+export type CtoStartLinearMobileOAuthResult = {
+  sessionId: string;
+  authorizeUrl: string;
+  expiresAt: string;
+};
+
+export type CtoCompleteLinearMobileOAuthArgs = {
+  sessionId: string;
+  code: string;
+  state: string;
+};
+
+export type CtoCompleteLinearMobileOAuthResult = LinearConnectionStatus;
+
+export type CtoSetLinearTokenSyncArgs = {
+  token: string;
+};
+
+export type CtoSetLinearTokenResult = LinearConnectionStatus;
+
+export type CtoClearLinearTokenArgs = Record<string, never>;
+
+export type CtoClearLinearTokenResult = LinearConnectionStatus;
+
 export type SyncRemoteCommandAction =
   | "analytics.capture"
   | "analytics.flush"
@@ -1165,6 +1227,10 @@ export type SyncRemoteCommandAction =
   | "cto.getState"
   | "cto.getMemory"
   | "cto.getLinearConnectionStatus"
+  | "cto.startLinearMobileOAuth"
+  | "cto.completeLinearMobileOAuth"
+  | "cto.setLinearToken"
+  | "cto.clearLinearToken"
   | "cto.getLinearQuickView"
   | "cto.getLinearIssuePickerData"
   | "cto.searchLinearIssues"
@@ -1305,6 +1371,7 @@ export type SyncRemoteCommandAction =
   | "prs.cancelQueueAutomation"
   | "prs.reorderQueue"
   | "prs.getMobileSnapshot"
+  | "prs.getMobileGithubDetail"
   | "sync.getWebPairingInfo"
   | "sync.getDesktopPairingInfo"
   | "modelPicker.getFavorites"
@@ -1413,6 +1480,7 @@ export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe"
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
 export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", SyncBrainStatusPayload>;
+export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
 export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscribe", SyncRosterSubscribePayload>;
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
 export type SyncRosterSnapshotEnvelope = SyncEnvelopeWithPayload<"roster_snapshot", SyncRosterSnapshotPayload>;
@@ -1476,6 +1544,7 @@ export type SyncEnvelope =
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
   | SyncBrainStatusEnvelope
+  | SyncPrsUpdatedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope
   | SyncRosterSnapshotEnvelope

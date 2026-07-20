@@ -2017,6 +2017,36 @@ async function handleLinearOrganizationRegister(request: Request, env: RelayEnv)
   return json({ organizationId: auth.organizationId });
 }
 
+/**
+ * Bounces Linear's OAuth redirect (an https URL Linear accepts) to the ADE app's
+ * custom scheme so `ASWebAuthenticationSession` can capture it. Stateless: the
+ * PKCE `state` is validated on the desktop, never here. The authorization `code`
+ * is PKCE-bound and useless in transit, but MUST NOT be logged regardless.
+ */
+function handleLinearOAuthCallback(request: Request): Response {
+  if (request.method !== "GET") return text("method not allowed", 405);
+  const params = new URL(request.url).searchParams;
+  const callback = new URLSearchParams();
+  const error = params.get("error");
+  if (error) {
+    callback.set("error", error);
+    const description = params.get("error_description");
+    if (description) callback.set("error_description", description);
+  } else {
+    callback.set("code", params.get("code") ?? "");
+  }
+  callback.set("state", params.get("state") ?? "");
+  // URLSearchParams serializes spaces as "+", but the iOS callback parser reads
+  // the custom-scheme URL with URLComponents, which does NOT turn "+" back into
+  // a space — so an error like "User declined" would render as "User+declined".
+  // Emit %20 for spaces to keep Linear's user-facing error text readable.
+  const query = callback.toString().replace(/\+/g, "%20");
+  return new Response(null, {
+    status: 302,
+    headers: { location: `ade://linear-oauth?${query}` },
+  });
+}
+
 async function pruneOldLinearEvents(env: RelayEnv): Promise<void> {
   const days = Number(env.EVENT_RETENTION_DAYS ?? DEFAULT_RETENTION_DAYS);
   const retentionDays = Number.isFinite(days) ? Math.max(1, Math.trunc(days)) : DEFAULT_RETENTION_DAYS;
@@ -2290,6 +2320,7 @@ export async function handleRequest(request: Request, env: RelayEnv): Promise<Re
   if (url.pathname === "/account/integrations") return await handleAccountIntegrations(request, env);
   if (url.pathname === "/linear/orgs/register") return await handleLinearOrganizationRegister(request, env);
   if (url.pathname === "/linear/webhook") return await handleLinearWebhook(request, env);
+  if (url.pathname === "/linear/oauth/callback") return handleLinearOAuthCallback(request);
   const linearOrganizationEvents = routeLinearOrganizationEvents(url.pathname);
   if (linearOrganizationEvents) {
     return await handleListLinearEvents(request, env, linearOrganizationEvents.organizationId);

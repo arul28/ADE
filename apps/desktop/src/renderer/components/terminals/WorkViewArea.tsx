@@ -729,6 +729,7 @@ function CliSessionSurface({
 
 function SessionSurface({
   session,
+  sessionTitleById,
   lanes,
   isActive,
   pageActive = true,
@@ -752,6 +753,7 @@ function SessionSurface({
   terminalPaneOpen,
 }: {
   session: TerminalSessionSummary;
+  sessionTitleById?: ReadonlyMap<string, string>;
   lanes: LaneSummary[];
   isActive: boolean;
   pageActive?: boolean;
@@ -790,6 +792,7 @@ function SessionSurface({
         laneId={session.laneId}
         laneLabel={session.laneName}
         lockSessionId={session.id}
+        sessionTitleById={sessionTitleById}
         hideSessionTabs
         hideLaneToolDrawers
         onSessionCreated={onOpenChatSession}
@@ -1070,6 +1073,10 @@ export function WorkViewArea({
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
+  const sessionTitleById = useMemo(
+    () => new Map(sessions.map((session) => [session.id, session.title] as const)),
+    [sessions],
+  );
 
   const showingDraft = activeItemId == null;
   const activeSession = showingDraft
@@ -1083,6 +1090,7 @@ export function WorkViewArea({
   const renderGridSession = (session: TerminalSessionSummary) => (
     <SessionSurface
       session={session}
+      sessionTitleById={sessionTitleById}
       lanes={lanes}
       // Exactly the focused grid member is active; every displayed tile stays
       // visible (terminalVisible) and keeps receiving live output. Only the
@@ -1138,6 +1146,7 @@ export function WorkViewArea({
       >
         <SessionSurface
           session={activeSession}
+          sessionTitleById={sessionTitleById}
           lanes={lanes}
           isActive
           pageActive={pageActive}

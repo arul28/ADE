@@ -1,4 +1,9 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, protocol, safeStorage, shell } from "electron";
+
+if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
+  process.env.ADE_RUNTIME_PACKAGED = "1";
+}
+
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -27,6 +32,7 @@ import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
 import { openKvDb } from "./services/state/kvDb";
+import { createRegisteredSyncPeerGate } from "./services/state/syncPeerCompactionGate";
 import { ensureAdeDirs } from "./services/state/projectState";
 import {
   persistableRemoteProjectIconDataUrl,
@@ -2166,8 +2172,15 @@ app.whenReady().then(async () => {
       }
     };
 
+    let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
+    const hasSyncPeers = createRegisteredSyncPeerGate({
+      syncEnabled: true,
+      getSyncService: () => syncServiceRef,
+    });
     const db = await measureProjectInitStep("db_open", () =>
-      openKvDb(adePaths.dbPath, logger),
+      openKvDb(adePaths.dbPath, logger, {
+        hasSyncPeers,
+      }),
     );
     const keybindingsService = createKeybindingsService({ db });
     const agentToolsService = createAgentToolsService({ logger });
@@ -2901,7 +2914,6 @@ app.whenReady().then(async () => {
       });
     };
 
-    let syncServiceRef: ReturnType<typeof createSyncService> | null = null;
     const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
       ? null
       : createSupervisedPtyLoader({ logger });
@@ -3581,7 +3593,12 @@ app.whenReady().then(async () => {
       diskPressure: diskPressureMonitor,
       isPathActive: (filePath) =>
         agentChatService.isTranscriptPathActive(filePath)
-        || ptyService.isTranscriptPathActive(filePath),
+        || ptyService.isTranscriptPathActive(filePath)
+        || iosSimulatorService.isBuildPathActive(filePath),
+      projectId,
+      captureAnalytics: (input) => {
+        productAnalyticsService.capture(input);
+      },
     });
 
     // Phone sync is owned by the per-machine ADE service. The desktop
@@ -4309,17 +4326,12 @@ app.whenReady().then(async () => {
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
-    const db = await openKvDb(adePaths.dbPath, logger);
-    const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
-    const usageTrackingService = createUsageTrackingService({
-      logger,
-      db,
-      pollIntervalMs: 120_000,
-      onUpdate: (snapshot) => {
-        emitProjectEvent(projectRoot, IPC.usageEvent, snapshot);
-      },
-      projectRoot,
+    const db = await openKvDb(adePaths.dbPath, logger, {
+      // The machine runtime owns sync and the real storage doctor in this mode;
+      // this dormant fallback has no authoritative local peer signal.
+      hasSyncPeers: () => true,
     });
+    const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
     const storageInsightsService = createStorageInsightsService({
       projectRoot,
       adeHome: machineAdeLayout.adeDir,
@@ -4327,10 +4339,14 @@ app.whenReady().then(async () => {
       logger,
       // Daemon-backed mode: the brain owns activity tracking and runs the real compression sweep
       // (see apps/ade-cli/src/bootstrap.ts); this fallback instance deliberately refuses to compress
-      // because activity cannot be known here.
+      // because activity cannot be known here. It also never arms the maintenance timers (no
+      // diskPressure supplied), so it only runs maintenance if runMaintenanceNow is called directly.
       isPathActive: () => true,
+      projectId: runtimeProject.projectId,
+      captureAnalytics: (input) => {
+        productAnalyticsService.capture(input);
+      },
     });
-    usageTrackingService.start();
     const diskPressureMonitor = createDiskPressureMonitor({
       roots: [projectRoot, machineAdeLayout.adeDir],
       logger,
@@ -4352,7 +4368,10 @@ app.whenReady().then(async () => {
       adeCliService: shellContext.adeCliService,
       builtInBrowserService,
       diskPressureMonitor,
-      usageTrackingService,
+      // The machine brain owns quota polling and streams its snapshots through
+      // the runtime event pump. A second renderer-side tracker races those
+      // events and can make the compact header disagree with the open panel.
+      usageTrackingService: null,
       storageInsightsService,
     };
   };

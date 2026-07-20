@@ -407,6 +407,75 @@ describe("chatTranscriptRows", () => {
     expect(anchor.agentType).toBe("claude");
   });
 
+  it("keeps a navigable spawn card when the canonical dot twin follows the underscore event", () => {
+    // Both events share the agentId identity key; the dot twin's taskId is bare
+    // (no `chat:` prefix), so the anchor must retain the childSessionId derived
+    // from the underscore event.
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-18T04:10:54.789Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-123",
+          agentId: "child-123",
+          agentType: "codex",
+          description: "Codex Chat",
+          spawnKind: "subagent",
+        },
+      },
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-18T04:10:54.900Z",
+        event: {
+          type: "subagent.started",
+          agentId: "child-123",
+          agentType: "codex",
+          description: "Codex Chat",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    const anchor = rows[0]!.event;
+    if (anchor.type !== "subagent_spawn_anchor") throw new Error("Expected spawn anchor");
+    expect(anchor.childSessionId).toBe("child-123");
+    expect(anchor.spawnKind).toBe("subagent");
+  });
+
+  it("keeps a navigable spawn card when the dot twin precedes the underscore event", () => {
+    const rows = collapseChatTranscriptEvents([
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-18T04:10:54.700Z",
+        event: {
+          type: "subagent.started",
+          agentId: "child-123",
+          agentType: "codex",
+          description: "Codex Chat",
+        },
+      },
+      {
+        sessionId: "parent-session",
+        timestamp: "2026-07-18T04:10:54.789Z",
+        event: {
+          type: "subagent_started",
+          taskId: "chat:child-123",
+          agentId: "child-123",
+          agentType: "codex",
+          description: "Codex Chat",
+          spawnKind: "subagent",
+        },
+      },
+    ]);
+
+    expect(rows).toHaveLength(1);
+    const anchor = rows[0]!.event;
+    if (anchor.type !== "subagent_spawn_anchor") throw new Error("Expected spawn anchor");
+    expect(anchor.childSessionId).toBe("child-123");
+    expect(anchor.spawnKind).toBe("subagent");
+  });
+
   it("leaves childSessionId/spawnKind null for a runtime-native subagent", () => {
     const rows = collapseChatTranscriptEvents([
       {

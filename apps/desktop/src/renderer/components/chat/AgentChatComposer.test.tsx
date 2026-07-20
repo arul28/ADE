@@ -245,6 +245,49 @@ describe("AgentChatComposer", () => {
     await waitFor(() => expect(resolveSmartLinkPreview).toHaveBeenCalledTimes(2));
   });
 
+  it("renders a real GitHub brand mark instead of a text monogram on github chips", async () => {
+    const url = "https://github.com/arul28/ADE/pull/835";
+    const resolveSmartLinkPreview = vi.fn().mockResolvedValue({
+      url,
+      provider: "github",
+      kind: "github_pr",
+      label: "arul28/ADE#835",
+    });
+    (window as any).ade = { agentChat: { resolveSmartLinkPreview } };
+    const props = buildComposerProps({ draft: url, turnActive: false });
+    const view = render(<AgentChatComposer {...props} />);
+
+    const icon = await waitFor(() => {
+      const el = view.container.querySelector<HTMLElement>("[data-smart-link-icon]");
+      if (!el) throw new Error("smart-link icon not rendered yet");
+      return el;
+    });
+    // A real logo SVG, never the "GH" fallback monogram.
+    expect(icon.querySelector("svg")).toBeTruthy();
+    expect(icon.textContent ?? "").not.toContain("GH");
+  });
+
+  it("keeps the rich smart-link editor left-aligned so a pasted link never centers the composer", () => {
+    const url = "https://github.com/arul28/ADE/pull/835";
+    (window as any).ade = {
+      agentChat: {
+        resolveSmartLinkPreview: vi.fn().mockResolvedValue({
+          url,
+          provider: "github",
+          kind: "github_pr",
+          label: "arul28/ADE#835",
+        }),
+      },
+    };
+    const props = buildComposerProps({ draft: url, turnActive: false });
+    render(<AgentChatComposer {...props} />);
+
+    // The contenteditable must carry an explicit text-left; otherwise it
+    // inherits text-align:center from centered empty-state ancestors when a
+    // paste swaps the textarea for this rich editor.
+    expect(screen.getByRole("textbox").className).toContain("text-left");
+  });
+
   it("clear draft only triggers the draft-clear action during an active turn", () => {
     const props = renderComposer();
 

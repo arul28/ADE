@@ -9,6 +9,14 @@ import type { Logger } from "../logging/logger";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
+import {
+  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
+  INGRESS_EVENT_RETENTION_MS,
+  PR_SNAPSHOT_RETENTION_DAYS,
+  REVIEW_ARTIFACT_RETENTION_DAYS,
+  type DbMaintenanceApi,
+  type DbMaintenanceResult,
+} from "./dbMaintenanceApi";
 import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../../../shared/types/sync";
 
 type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSyncType;
@@ -121,6 +129,9 @@ export type AdeDb = {
 
   sync: AdeDbSyncApi;
 
+  /** Retention and compaction hooks consumed by the storage doctor. */
+  maintenance?: DbMaintenanceApi;
+
   /**
    * Force pending WAL frames onto the main database before shutdown. This uses a
    * TRUNCATE checkpoint and can wait for active readers, so keep calls on
@@ -151,6 +162,8 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
   // Allow concurrent access from multiple ADE processes (e.g. dogfooding).
   // Without this, a second instance gets SQLITE_BUSY immediately on writes.
   db.exec("PRAGMA busy_timeout = 5000");
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA synchronous = NORMAL");
   return db;
 }
 
@@ -3484,7 +3497,28 @@ function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {
   db.loadExtension(extensionPath);
 }
 
-export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
+export type OpenKvDbOptions = {
+  /** Conservative by default: compaction is unsafe unless zero sync peers is proven. */
+  hasSyncPeers?: () => boolean;
+};
+
+function sqliteFootprintBytes(dbPath: string): number {
+  let total = 0;
+  for (const filePath of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    try {
+      total += fs.statSync(filePath).size;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  return total;
+}
+
+export async function openKvDb(
+  dbPath: string,
+  logger: Logger,
+  options: OpenKvDbOptions = {},
+): Promise<AdeDb> {
   const extensionPath = resolveCrsqliteExtensionPath();
   const hasCrsqlite = extensionPath != null;
   const desiredSiteId = ensureLocalSiteIdFile(dbPath);
@@ -3631,6 +3665,195 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
   const run = crrAwareDb.run;
   const all = crrAwareDb.all;
   const get = crrAwareDb.get;
+
+  const unsupportedMaintenanceResult = (): DbMaintenanceResult => ({
+    itemsAffected: 0,
+    bytesReclaimed: 0,
+    skippedReason: "unsupported",
+  });
+
+  const runMaintenanceSafely = (
+    action: keyof DbMaintenanceApi,
+    operation: () => DbMaintenanceResult,
+  ): DbMaintenanceResult => {
+    try {
+      return operation();
+    } catch (error) {
+      logger.warn("db.maintenance_failed", {
+        action,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return unsupportedMaintenanceResult();
+    }
+  };
+
+  const vacuumIfFragmented = (threshold: number): DbMaintenanceResult => {
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 1) {
+      throw new Error(`Invalid fragmentation threshold: ${String(threshold)}`);
+    }
+
+    const beforeBytes = sqliteFootprintBytes(dbPath);
+    const pageCount = Number(getRow<{ page_count: number }>(db, "pragma page_count")?.page_count ?? 0);
+    const freePagesBefore = Number(getRow<{ freelist_count: number }>(db, "pragma freelist_count")?.freelist_count ?? 0);
+    const fragmentation = pageCount > 0 ? freePagesBefore / pageCount : 0;
+    const autoVacuum = Number(getRow<{ auto_vacuum: number }>(db, "pragma auto_vacuum")?.auto_vacuum ?? 0);
+    const AUTO_VACUUM_INCREMENTAL = 2;
+    // Bounded per-call incremental budget: at most 25 chunks * 2,000 pages =
+    // 50k pages reclaimed without ever running a blocking full VACUUM again.
+    const INCREMENTAL_VACUUM_CHUNK_PAGES = 2_000;
+    const INCREMENTAL_VACUUM_MAX_ITERATIONS = 25;
+    let itemsAffected = 0;
+    let skippedReason: DbMaintenanceResult["skippedReason"] = null;
+    let mode: "full" | "incremental" | "none" = "none";
+
+    const readFreePages = (): number =>
+      Number(getRow<{ freelist_count: number }>(db, "pragma freelist_count")?.freelist_count ?? 0);
+    const readFragmentation = (freePages: number): number => {
+      const pages = Number(getRow<{ page_count: number }>(db, "pragma page_count")?.page_count ?? 0);
+      return pages > 0 ? freePages / pages : 0;
+    };
+
+    if (autoVacuum === AUTO_VACUUM_INCREMENTAL) {
+      // Incremental auto-vacuum is already active: never run a blocking full
+      // VACUUM again. Reclaim the freelist in bounded chunks until it drops
+      // below the threshold fraction or the per-call budget is exhausted.
+      if (freePagesBefore > 0) {
+        mode = "incremental";
+        let freeNow = freePagesBefore;
+        for (let iteration = 0; iteration < INCREMENTAL_VACUUM_MAX_ITERATIONS && freeNow > 0; iteration += 1) {
+          db.exec(`PRAGMA incremental_vacuum(${INCREMENTAL_VACUUM_CHUNK_PAGES})`);
+          freeNow = readFreePages();
+          if (readFragmentation(freeNow) < threshold) break;
+        }
+        itemsAffected = Math.max(0, freePagesBefore - freeNow);
+      } else {
+        skippedReason = "below_threshold";
+      }
+    } else if (pageCount > 0 && fragmentation >= threshold) {
+      // Not yet incremental: a one-time full VACUUM rebuilds the file and, via
+      // the preceding pragma, activates incremental auto-vacuum so every later
+      // sweep uses the bounded path above instead of another full VACUUM.
+      db.exec("PRAGMA auto_vacuum = INCREMENTAL");
+      db.exec("VACUUM");
+      itemsAffected = freePagesBefore;
+      mode = "full";
+    } else {
+      skippedReason = "below_threshold";
+    }
+
+    getRow(db, "pragma wal_checkpoint(TRUNCATE)");
+    const afterBytes = sqliteFootprintBytes(dbPath);
+    const bytesReclaimed = Math.max(0, beforeBytes - afterBytes);
+    logger.info("db.maintenance_vacuum", {
+      mode,
+      fragmentation,
+      threshold,
+      freePagesBefore,
+      itemsAffected,
+      bytesReclaimed,
+    });
+    return { itemsAffected, bytesReclaimed, skippedReason };
+  };
+
+  const maintenance: DbMaintenanceApi = {
+    pruneIngressEvents: () => runMaintenanceSafely("pruneIngressEvents", () => {
+      if (!rawHasTable(db, "automation_ingress_events")) return unsupportedMaintenanceResult();
+      const cutoff = new Date(Date.now() - INGRESS_EVENT_RETENTION_MS).toISOString();
+      let itemsAffected = runStatement(
+        db,
+        "delete from automation_ingress_events where received_at < ?",
+        [cutoff],
+      ).changes;
+      const projects = allRows<{ project_id: string }>(
+        db,
+        "select distinct project_id from automation_ingress_events",
+      );
+      for (const project of projects) {
+        itemsAffected += runStatement(
+          db,
+          `delete from automation_ingress_events
+            where rowid in (
+              select rowid
+              from automation_ingress_events
+              where project_id = ? and status not in ('dispatched', 'failed')
+              order by received_at desc, rowid desc
+              limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
+            )`,
+          [project.project_id],
+        ).changes;
+      }
+      return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
+    }),
+    pruneReviewArtifacts: () => runMaintenanceSafely("pruneReviewArtifacts", () => {
+      if (!rawHasTable(db, "review_run_artifacts")) return unsupportedMaintenanceResult();
+      const cutoff = new Date(
+        Date.now() - REVIEW_ARTIFACT_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
+      ).toISOString();
+      const itemsAffected = runStatement(
+        db,
+        "delete from review_run_artifacts where created_at < ?",
+        [cutoff],
+      ).changes;
+      return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
+    }),
+    prunePrSnapshots: () => runMaintenanceSafely("prunePrSnapshots", () => {
+      if (!rawHasTable(db, "pull_request_snapshots")) return unsupportedMaintenanceResult();
+      const cutoff = new Date(
+        Date.now() - PR_SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
+      ).toISOString();
+      const itemsAffected = runStatement(
+        db,
+        "delete from pull_request_snapshots where updated_at < ?",
+        [cutoff],
+      ).changes;
+      return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
+    }),
+    compactCrsqlTombstones: () => runMaintenanceSafely("compactCrsqlTombstones", () => {
+      const hasSyncPeers = options.hasSyncPeers ?? (() => true);
+      if (hasSyncPeers()) {
+        return { itemsAffected: 0, bytesReclaimed: 0, skippedReason: "has_peers" };
+      }
+      if (
+        !crsqliteLoaded
+        || !rawHasTable(db, "operations")
+        || !rawHasTable(db, "operations__crsql_pks")
+        || !rawHasTable(db, "operations__crsql_clock")
+      ) {
+        return unsupportedMaintenanceResult();
+      }
+
+      const shadowRowsBefore = Number(getRow<{ count: number }>(
+        db,
+        `select
+           (select count(*) from operations__crsql_pks)
+           + (select count(*) from operations__crsql_clock) as count`,
+      )?.count ?? 0);
+      rebuildCrrTableWithBackfill(db, "operations");
+      const shadowRowsAfter = Number(getRow<{ count: number }>(
+        db,
+        `select
+           (select count(*) from operations__crsql_pks)
+           + (select count(*) from operations__crsql_clock) as count`,
+      )?.count ?? 0);
+      const vacuumResult = vacuumIfFragmented(0);
+      const itemsAffected = Math.max(0, shadowRowsBefore - shadowRowsAfter);
+      logger.info("db.maintenance_crsql_compacted", {
+        tableName: "operations",
+        shadowRowsBefore,
+        shadowRowsAfter,
+        bytesReclaimed: vacuumResult.bytesReclaimed,
+      });
+      return {
+        itemsAffected,
+        bytesReclaimed: vacuumResult.bytesReclaimed,
+        skippedReason: null,
+      };
+    }),
+    vacuumIfFragmented: (threshold) => runMaintenanceSafely(
+      "vacuumIfFragmented",
+      () => vacuumIfFragmented(threshold),
+    ),
+  };
 
   const sync: AdeDbSyncApi = {
     isAvailable: () => crsqliteLoaded,
@@ -3866,6 +4089,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
     all,
     get,
     sync,
+    maintenance,
     flushNow: () => {
       getRow(db, "pragma wal_checkpoint(TRUNCATE)");
     },

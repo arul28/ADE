@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http";
 import { WebSocket, type RawData } from "ws";
 import {
   buildHostSignatureBase,
@@ -26,10 +27,12 @@ export type SyncTunnelClientStatus = {
   connected: boolean;
   activeTunnels: number;
   lastError: string | null;
+  lastControlError: string | null;
   relayBridgeValidated: boolean;
   validatedPort: number | null;
   lastFailureAt: string | null;
-  lastSuccessAt: string | null;
+  lastControlOpenAt: string | null;
+  lastBridgeValidationAt: string | null;
   relayUrl: string;
   machineKey: string;
 };
@@ -56,7 +59,7 @@ type SyncTunnelClientArgs = {
   /** Relay is usable only while the host has a current ADE account session. */
   isAccountSignedIn?: () => boolean;
   /** Refresh-aware lease; the account token is validated upstream and never retained here. */
-  getAccountLease?: () => Promise<{ userId: string } | null>;
+  getAccountLease?: () => Promise<{ userId: string; expiresAt?: string | null } | null>;
   configStore: SyncCloudRelayStore;
   /** Overrides the identity from configStore (e.g. a shared machine store). */
   machineIdentity?: () => MachineIdentity | null;
@@ -67,6 +70,8 @@ type SyncTunnelClientArgs = {
   /** Test seams; production uses the exported protocol-liveness defaults. */
   controlPingIntervalMs?: number;
   controlPongDeadlineMs?: number;
+  /** Requests a fresh directory publication after a confirmed-409 identity rotation opens. */
+  onIdentityRotated?: () => void | Promise<void>;
 };
 
 const BACKOFF_BASE_MS = 1_000;
@@ -78,6 +83,25 @@ export const RELAY_CLOSE_PARTNER_CLOSED = 4000;
 export const RELAY_CLOSE_HOST_UNAVAILABLE = 4501;
 export const RELAY_CLOSE_BRIDGE_REJECTED = 4507;
 export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay.";
+const MAX_UNEXPECTED_RESPONSE_BODY_BYTES = 512;
+const MAX_CONFIRMED_CONFLICT_ROTATIONS = 1;
+
+class RelayClaimError extends Error {
+  logged = false;
+
+  constructor(
+    readonly status: number,
+    readonly machineKey: string,
+  ) {
+    super(`claim failed (${status})`);
+    this.name = "RelayClaimError";
+  }
+}
+
+type ControlSocketState = {
+  opened: boolean;
+  failureReason: string | null;
+};
 
 /**
  * Exponential backoff with full jitter, capped at 60s. Exposed for tests so the
@@ -149,13 +173,20 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let stopped = false;
   let connected = false;
   let lastError: string | null = null;
+  let lastControlError: string | null = null;
   let validatedPort: number | null = null;
   let validatedLoopbackNonce: string | null = null;
   let lastFailureAt: string | null = null;
-  let lastSuccessAt: string | null = null;
-  let bridgeValidationInFlight: Promise<boolean> | null = null;
-  let claimed = false;
+  let lastControlOpenAt: string | null = null;
+  let lastBridgeValidationAt: string | null = null;
+  let bridgeValidationTail: Promise<void> = Promise.resolve();
+  let claimedIdentity: { relayOrigin: string; machineKey: string } | null = null;
+  let accountLeaseExpiresAtMs: number | null = null;
+  let consecutiveAccountLeaseFailures = 0;
+  let confirmedConflictRotations = 0;
+  let identityRotationPendingPublish = false;
   const tunnels = new Set<Tunnel>();
+  const controlSocketStates = new WeakMap<WebSocket, ControlSocketState>();
   const loopbackProbe = args.loopbackProbe ?? probeAdeLoopbackListener;
 
   const recordFailure = (reason: string): void => {
@@ -166,6 +197,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const clearBridgeValidation = (): void => {
     validatedPort = null;
     validatedLoopbackNonce = null;
+  };
+
+  const recordControlFailure = (reason: string): void => {
+    lastControlError = reason;
+    recordFailure(reason);
   };
 
   const identity = (): MachineIdentity => {
@@ -194,7 +230,13 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const scheduleReconnect = (): void => {
-    if (stopped || reconnectTimer || control || !accountSignedIn()) return;
+    if (
+      stopped
+      || reconnectTimer
+      || control
+      || connectingControl
+      || !accountSignedIn()
+    ) return;
     const delay = computeBackoffMs(attempt);
     attempt += 1;
     reconnectTimer = setTimeout(() => {
@@ -205,8 +247,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   const claimOnce = async (id: MachineIdentity): Promise<void> => {
-    if (claimed) return;
-    const url = `${relayHttpUrl().replace(/\/+$/, "")}/machines/${id.machineKey}/claim`;
+    const relayOrigin = relayHttpUrl().replace(/\/+$/, "");
+    if (
+      claimedIdentity?.relayOrigin === relayOrigin
+      && claimedIdentity.machineKey === id.machineKey
+    ) return;
+    const url = `${relayOrigin}/machines/${id.machineKey}/claim`;
     const response = await fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -214,27 +260,77 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       signal: AbortSignal.timeout(CONNECT_DEADLINE_MS),
     });
     if (!response.ok) {
-      throw new Error(`claim failed (${response.status})`);
+      await response.body?.cancel().catch(() => {});
+      throw new RelayClaimError(response.status, id.machineKey);
     }
-    claimed = true;
-    log.info?.("sync_tunnel.claimed", { machineKey: id.machineKey });
+    await response.body?.cancel().catch(() => {});
+    claimedIdentity = { relayOrigin, machineKey: id.machineKey };
+    log.info?.("sync_tunnel.claimed", {
+      machineKey: id.machineKey,
+      status: response.status,
+    });
+  };
+
+  const claimWithConflictRecovery = async (initialIdentity: MachineIdentity): Promise<MachineIdentity> => {
+    try {
+      await claimOnce(initialIdentity);
+      return initialIdentity;
+    } catch (error) {
+      if (
+        !(error instanceof RelayClaimError)
+        || error.status !== 409
+        || confirmedConflictRotations >= MAX_CONFIRMED_CONFLICT_ROTATIONS
+        || args.machineIdentity
+      ) {
+        throw error;
+      }
+
+      error.logged = true;
+      log.warn?.("sync_tunnel.claim_failed", {
+        error: error.message,
+        machineKey: error.machineKey,
+        status: error.status,
+        identityRotation: "starting",
+      });
+      const rotated = args.configStore.rotateMachineIdentity(initialIdentity.machineKey);
+      if (rotated.machineKey === initialIdentity.machineKey) {
+        throw error;
+      }
+      confirmedConflictRotations += 1;
+      identityRotationPendingPublish = true;
+      log.info?.("sync_tunnel.identity_rotated", {
+        previousMachineKey: initialIdentity.machineKey,
+        machineKey: rotated.machineKey,
+        triggerStatus: 409,
+      });
+      await claimOnce(rotated);
+      return rotated;
+    }
   };
 
   const connectControl = async (): Promise<void> => {
-    if (stopped || control || connectingControl) return;
+    if (stopped || control || connectingControl || reconnectTimer) return;
     if (!accountSignedIn()) {
       lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
       return;
     }
     connectingControl = true;
+    let reconnectAfterAttempt = false;
     try {
-      const id = identity();
+      let id = identity();
       try {
-        await claimOnce(id);
+        id = await claimWithConflictRecovery(id);
       } catch (error) {
-        recordFailure(error instanceof Error ? error.message : String(error));
-        log.warn?.("sync_tunnel.claim_failed", { error: lastError });
-        scheduleReconnect();
+        const reason = error instanceof Error ? error.message : String(error);
+        recordFailure(reason);
+        if (!(error instanceof RelayClaimError) || !error.logged) {
+          log.warn?.("sync_tunnel.claim_failed", {
+            error: reason,
+            machineKey: error instanceof RelayClaimError ? error.machineKey : id.machineKey,
+            status: error instanceof RelayClaimError ? error.status : null,
+          });
+        }
+        reconnectAfterAttempt = true;
         return;
       }
       if (stopped || !accountSignedIn() || control) return;
@@ -248,36 +344,43 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         socket = new WebSocket(url);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        recordFailure(reason);
+        recordControlFailure(reason);
         log.warn?.("sync_tunnel.control_error", { error: reason });
-        scheduleReconnect();
+        reconnectAfterAttempt = true;
         return;
       }
+      const socketState: ControlSocketState = { opened: false, failureReason: null };
+      controlSocketStates.set(socket, socketState);
       control = socket;
       let socketLivenessStop: (() => void) | null = null;
       armOpenDeadline(socket, () => {
-        recordFailure("relay control socket connect timed out");
+        if (control !== socket) return;
+        const reason = "relay control socket connect timed out";
+        socketState.failureReason = reason;
+        recordControlFailure(reason);
       });
 
       socket.on("open", () => {
         if (stopped || !accountSignedIn() || control !== socket) {
           try {
-            socket.close();
+            socket.close(1000, "account lease unavailable");
           } catch {
             // already closing
           }
           return;
         }
+        socketState.opened = true;
         attempt = 0;
         clearReconnect();
         connected = true;
         lastError = null;
-        lastSuccessAt = new Date().toISOString();
+        lastControlError = null;
+        lastControlOpenAt = new Date().toISOString();
         socketLivenessStop = armControlLiveness(
           socket,
           () => {
             if (control !== socket) return;
-            recordFailure("relay control socket missed pong");
+            recordControlFailure("relay control socket missed pong");
             log.warn?.("sync_tunnel.control_pong_timeout");
             try {
               socket.terminate();
@@ -289,7 +392,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           args.controlPongDeadlineMs ?? CONTROL_PONG_DEADLINE_MS,
         );
         stopControlLiveness = socketLivenessStop;
-        log.info?.("sync_tunnel.control_open", { machineKey: id.machineKey });
+        log.info?.("sync_tunnel.control_open", {
+          machineKey: id.machineKey,
+          openedAt: lastControlOpenAt,
+        });
         void validateCurrentBridge();
       });
       socket.on("message", (raw: RawData) => {
@@ -297,26 +403,86 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         const message = parseControlMessage(rawToText(raw));
         if (message?.t === "open") void openTunnel(id, message.id, socket);
       });
+      socket.on("unexpected-response", (request, response) => {
+        captureUnexpectedResponseBody(response, (body) => {
+          if (control !== socket) {
+            try {
+              request.destroy();
+              socket.terminate();
+            } catch {
+              // superseded socket is already closed
+            }
+            return;
+          }
+          const status = response.statusCode ?? 0;
+          const reason = `Relay control upgrade failed with HTTP ${status}${body ? `: ${body}` : "."}`;
+          socketState.failureReason = reason;
+          recordControlFailure(reason);
+          log.warn?.("sync_tunnel.control_error", {
+            error: reason,
+            status,
+            body,
+            opened: socketState.opened,
+          });
+          try {
+            request.destroy();
+          } catch {
+            // request already closed
+          }
+          try {
+            socket.terminate();
+          } catch {
+            // socket already closed
+          }
+        });
+      });
       socket.on("error", (error: Error) => {
         if (control !== socket) return;
-        recordFailure(error.message);
-        log.warn?.("sync_tunnel.control_error", { error: error.message });
+        const reason = socketState.failureReason ?? error.message;
+        if (!socketState.failureReason) {
+          socketState.failureReason = reason;
+          recordControlFailure(reason);
+        }
+        log.warn?.("sync_tunnel.control_error", {
+          error: reason,
+          wsError: error.message,
+          opened: socketState.opened,
+        });
       });
-      socket.on("close", () => {
+      socket.on("close", (code: number, rawReason: Buffer) => {
         socketLivenessStop?.();
         if (stopControlLiveness === socketLivenessStop) stopControlLiveness = null;
-        if (control !== socket) return;
+        const reason = rawReason.toString("utf8").trim();
+        const wasCurrent = control === socket;
+        log.info?.("sync_tunnel.control_close", {
+          code,
+          reason,
+          opened: socketState.opened,
+          machineKey: id.machineKey,
+        });
+        if (!wasCurrent) return;
+
         connected = false;
         control = null;
-        if (!stopped) scheduleReconnect();
+        if (!stopped && accountSignedIn()) {
+          const closeReason = reason
+            ? `Relay control closed (${code}): ${reason}`
+            : `Relay control closed (${code}).`;
+          if (reason || !socketState.failureReason) {
+            socketState.failureReason = closeReason;
+            recordControlFailure(closeReason);
+          }
+          scheduleReconnect();
+        }
       });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      recordFailure(reason);
+      recordControlFailure(reason);
       log.warn?.("sync_tunnel.control_connect_failed", { error: reason });
-      scheduleReconnect();
+      reconnectAfterAttempt = true;
     } finally {
       connectingControl = false;
+      if (reconnectAfterAttempt) scheduleReconnect();
     }
   };
 
@@ -362,8 +528,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       validatedPort = port;
       validatedLoopbackNonce = expectedLoopbackNonce;
       lastError = null;
-      lastSuccessAt = result.checkedAt;
+      lastBridgeValidationAt = result.checkedAt;
       log.debug?.("sync_tunnel.bridge_validated", { port });
+      if (identityRotationPendingPublish && connected) {
+        identityRotationPendingPublish = false;
+        void Promise.resolve()
+          .then(() => args.onIdentityRotated?.())
+          .catch((error) => {
+            log.warn?.("sync_tunnel.identity_republish_failed", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      }
       return true;
     } catch (error) {
       clearBridgeValidation();
@@ -379,18 +555,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
   const validateCurrentBridge = (): Promise<boolean> => {
     if (stopped) return Promise.resolve(false);
-    if (bridgeValidationInFlight) return bridgeValidationInFlight;
-    const current = runBridgeValidation()
+    // Every caller gets a fresh probe, but probes run one at a time. Inbound
+    // opens must never share a cached/in-flight success before constructing the
+    // authenticated local socket.
+    const current = bridgeValidationTail
+      .then(runBridgeValidation, runBridgeValidation)
       .catch((error) => {
         const reason = error instanceof Error ? error.message : String(error);
         recordFailure(reason);
         log.warn?.("sync_tunnel.bridge_validation_failed", { error: reason });
         return false;
-      })
-      .finally(() => {
-        if (bridgeValidationInFlight === current) bridgeValidationInFlight = null;
       });
-    bridgeValidationInFlight = current;
+    bridgeValidationTail = current.then(() => undefined, () => undefined);
     return current;
   };
 
@@ -429,6 +605,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       );
       return;
     }
+    if (control !== controlSocket) return;
 
     const port = validatedPort;
     if (
@@ -543,14 +720,20 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     log.debug?.("sync_tunnel.open", { connectionId });
   };
 
-  const closeRelayConnections = (): void => {
+  const closeRelayConnections = (controlReason: string): void => {
     stopControlLiveness?.();
     stopControlLiveness = null;
-    const controlToClose = control;
+    const socket = control;
     control = null;
-    if (controlToClose) {
+    if (socket) {
+      const state = controlSocketStates.get(socket);
+      if (state && !state.failureReason) state.failureReason = controlReason;
       try {
-        controlToClose.close();
+        if (socket.readyState === WebSocket.CONNECTING) {
+          socket.terminate();
+        } else {
+          socket.close(1000, controlReason.slice(0, 123));
+        }
       } catch {
         // ignore
       }
@@ -564,23 +747,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     clearBridgeValidation();
   };
 
-  const reconcileAccountEligibility = async (forceReconnect = false): Promise<void> => {
+  const reconcileAccountEligibility = async (): Promise<void> => {
     if (stopped || !started) return;
-    const previousEligibility = accountEligible;
     const nextEligibility = computeAccountEligibility();
     accountEligible = nextEligibility;
     if (!nextEligibility) {
       clearReconnect();
       lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
-      if (previousEligibility !== false) closeRelayConnections();
+      closeRelayConnections("account lease unavailable");
       return;
     }
     if (lastError === RELAY_SIGN_IN_REQUIRED_MESSAGE) lastError = null;
-    if (forceReconnect && previousEligibility === true) closeRelayConnections();
-    if (previousEligibility !== true || forceReconnect) {
-      clearReconnect();
-      await connectControl();
-    }
+    if (!control && !connectingControl && !reconnectTimer) await connectControl();
   };
 
   const refreshAccountLease = async (): Promise<void> => {
@@ -591,17 +769,36 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     if (accountLeaseCheckInFlight) return await accountLeaseCheckInFlight;
     const check = (async () => {
       const previousUserId = accountLeaseUserId;
-      let nextUserId: string | null = null;
       try {
-        nextUserId = (await args.getAccountLease?.())?.userId.trim() || null;
-      } catch {
-        nextUserId = null;
+        const lease = await args.getAccountLease?.();
+        const nextUserId = lease?.userId.trim() || null;
+        const parsedExpiry = lease?.expiresAt ? Date.parse(lease.expiresAt) : Number.NaN;
+        accountLeaseExpiresAtMs = Number.isFinite(parsedExpiry) ? parsedExpiry : null;
+        consecutiveAccountLeaseFailures = 0;
+        accountLeaseUserId = nextUserId;
+        if (previousUserId !== nextUserId) {
+          closeRelayConnections(nextUserId ? "account identity changed" : "account lease unavailable");
+        }
+      } catch (error) {
+        consecutiveAccountLeaseFailures += 1;
+        const reason = error instanceof Error ? error.message : String(error);
+        const leaseStillCurrent = previousUserId != null
+          && accountLeaseExpiresAtMs != null
+          && accountLeaseExpiresAtMs > Date.now();
+        log.warn?.("sync_tunnel.account_lease_failed", {
+          error: reason,
+          consecutiveFailures: consecutiveAccountLeaseFailures,
+          leaseExpiresAt: accountLeaseExpiresAtMs == null
+            ? null
+            : new Date(accountLeaseExpiresAtMs).toISOString(),
+          retained: leaseStillCurrent,
+        });
+        if (!leaseStillCurrent) {
+          accountLeaseUserId = null;
+          closeRelayConnections("account lease refresh failed or expired");
+        }
       }
-      accountLeaseUserId = nextUserId;
-      const accountSwitched = previousUserId != null
-        && nextUserId != null
-        && previousUserId !== nextUserId;
-      await reconcileAccountEligibility(accountSwitched);
+      await reconcileAccountEligibility();
     })();
     accountLeaseCheckInFlight = check;
     try {
@@ -633,8 +830,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         clearInterval(accountStatusTimer);
         accountStatusTimer = null;
       }
-      closeRelayConnections();
       accountEligible = null;
+      closeRelayConnections("service stopped");
     },
 
     validateCurrentBridge,
@@ -649,6 +846,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         connected: eligible && connected,
         activeTunnels: eligible ? tunnels.size : 0,
         lastError: eligible ? lastError : RELAY_SIGN_IN_REQUIRED_MESSAGE,
+        lastControlError,
         relayBridgeValidated: eligible
           && currentPort != null
           && currentLoopbackNonce != null
@@ -656,7 +854,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           && validatedLoopbackNonce === currentLoopbackNonce,
         validatedPort,
         lastFailureAt,
-        lastSuccessAt,
+        lastControlOpenAt,
+        lastBridgeValidationAt,
         relayUrl: relayHttpUrl(),
         machineKey,
       };
@@ -669,6 +868,38 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 }
 
 type Tunnel = { pipe: WebSocket; local: WebSocket; connectionId: string };
+
+function captureUnexpectedResponseBody(
+  response: IncomingMessage,
+  onCaptured: (body: string) => void,
+): void {
+  const chunks: Buffer[] = [];
+  let capturedBytes = 0;
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    const body = Buffer.concat(chunks, capturedBytes)
+      .toString("utf8")
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    onCaptured(body);
+  };
+  response.on("data", (value: Buffer | string) => {
+    if (capturedBytes >= MAX_UNEXPECTED_RESPONSE_BODY_BYTES) return;
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    const remaining = MAX_UNEXPECTED_RESPONSE_BODY_BYTES - capturedBytes;
+    const bounded = chunk.subarray(0, remaining);
+    chunks.push(bounded);
+    capturedBytes += bounded.length;
+    if (capturedBytes >= MAX_UNEXPECTED_RESPONSE_BODY_BYTES) finish();
+  });
+  response.once("end", finish);
+  response.once("aborted", finish);
+  response.once("error", finish);
+  response.once("close", finish);
+}
 
 function forward(target: WebSocket, data: RawData, isBinary: boolean): void {
   if (target.readyState !== WebSocket.OPEN) return;

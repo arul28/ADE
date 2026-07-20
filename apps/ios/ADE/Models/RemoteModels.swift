@@ -1402,6 +1402,16 @@ struct LinearIssueComment: Codable, Hashable, Identifiable {
   var userDisplayName: String?
 }
 
+/// Response of `cto.startLinearMobileOAuth`: the pending desktop OAuth session
+/// plus the Linear authorize URL the phone opens in `ASWebAuthenticationSession`.
+/// The `code_verifier` never leaves the desktop; the phone only forwards the
+/// authorization `code` back over sync for the desktop to exchange.
+struct LinearMobileOAuthSession: Codable, Hashable {
+  var sessionId: String
+  var authorizeUrl: String
+  var expiresAt: String
+}
+
 
 struct AgentChatSession: Codable, Identifiable, Equatable {
   var id: String { sessionId }
@@ -3726,6 +3736,21 @@ struct GitHubPrSnapshot: Codable, Equatable {
   var repoPullRequests: [GitHubPrListItem]
   var externalPullRequests: [GitHubPrListItem]
   var syncedAt: String
+  var history: GitHubPrSnapshotHistory? = nil
+}
+
+struct GitHubPrSnapshotHistory: Codable, Equatable {
+  var includeExternalClosed: Bool
+  var pageLimit: Int
+  var repoPullRequestsLoaded: Int
+  var repoPullRequestsMayHaveMore: Bool
+  var repoPullRequestCounts: GitHubPrSnapshotCounts?
+}
+
+struct GitHubPrSnapshotCounts: Codable, Equatable {
+  var open: Int
+  var closed: Int
+  var merged: Int
 }
 
 struct PrReviewThreadComment: Codable, Identifiable, Equatable {
@@ -3794,6 +3819,18 @@ struct PrActivityEvent: Codable, Identifiable, Equatable {
   var body: String?
   var timestamp: String
   var metadata: [String: RemoteJSONValue]?
+}
+
+/// One host round trip for the full GitHub detail surface when a PR has not
+/// been mapped into ADE yet. Keeping the sidecars together avoids mobile
+/// command fan-out and makes the detail screen usable before lane mapping.
+struct PrMobileGithubDetailSnapshot: Codable, Equatable {
+  var item: GitHubPrListItem
+  var snapshot: PullRequestSnapshot
+  var reviewThreads: [PrReviewThread]
+  var actionRuns: [PrActionRun]
+  var activity: [PrActivityEvent]
+  var unavailableParts: [String]
 }
 
 struct PrDeployment: Codable, Identifiable, Equatable {
@@ -4694,6 +4731,7 @@ extension MobileAdeUsageStats {
 
 struct MobileUsageQuotaWindow: Codable, Equatable, Identifiable {
   var id: String { "\(provider):\(windowType):\(resetsAt):\(percentUsed)" }
+  var clampedPercentUsed: Double { max(0, min(100, percentUsed)) }
   var provider: String
   var windowType: String
   var percentUsed: Double

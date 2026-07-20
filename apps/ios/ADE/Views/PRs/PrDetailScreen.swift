@@ -8,17 +8,20 @@ struct PrDetailView: View {
   let transitionNamespace: Namespace.ID?
   let requestedRepoOwner: String?
   let requestedRepoName: String?
+  let availableLanes: [LaneSummary]
 
   init(
     prId: String,
     transitionNamespace: Namespace.ID?,
     requestedRepoOwner: String? = nil,
-    requestedRepoName: String? = nil
+    requestedRepoName: String? = nil,
+    availableLanes: [LaneSummary] = []
   ) {
     self.prId = prId
     self.transitionNamespace = transitionNamespace
     self.requestedRepoOwner = requestedRepoOwner
     self.requestedRepoName = requestedRepoName
+    self.availableLanes = availableLanes
   }
 
   @State private var pr: PullRequestListItem?
@@ -31,6 +34,7 @@ struct PrDetailView: View {
   @State private var aiSummary: AiReviewSummary?
   @State private var groupMembers: [PrGroupMemberSummary] = []
   @State private var capabilities: PrActionCapabilities?
+  @State private var unavailableDetailParts: [String] = []
   @State private var selectedTab: PrDetailTab = .overview
   @State private var mergeMethod: PrMergeMethodOption = .squash
   @State private var reviewerInput = ""
@@ -41,6 +45,7 @@ struct PrDetailView: View {
   @State private var cleanupConfirmationPresented = false
   @State private var filesWorkspaceId: String?
   @State private var stackPresentation: PrStackPresentation?
+  @State private var laneLinkItem: GitHubPrListItem?
   @State private var editorSheet: PrDetailEditorSheet?
   @State private var mergeMethodSheetPresented: Bool = false
   @State private var actionsSheetPresented: Bool = false
@@ -146,7 +151,11 @@ struct PrDetailView: View {
   }
 
   private var routedPrNumber: Int? {
-    Self.prNumber(fromRouteId: prId)
+    routedGitHubCoordinates?.githubPrNumber ?? Self.prNumber(fromRouteId: prId)
+  }
+
+  private var routedGitHubCoordinates: (repoOwner: String, repoName: String, githubPrNumber: Int)? {
+    prGitHubCoordinates(fromRouteId: prId)
   }
 
   private var requestedRepoScope: PrDetailRouteScope? {
@@ -162,7 +171,7 @@ struct PrDetailView: View {
   }
 
   private var hasActionablePrId: Bool {
-    pr != nil || snapshot != nil || githubItem?.linkedPrId != nil
+    pr != nil || githubItem?.linkedPrId != nil
   }
 
   private var isAwaitingInitialPrDetail: Bool {
@@ -361,8 +370,15 @@ struct PrDetailView: View {
 
   private var canAutoMapCurrentPr: Bool {
     isLive && !isDetailBusy && syncService.supportsRemoteAction("prs.createLaneFromPrBranch")
+      && githubItem?.scope != "external"
       && !currentPr.repoOwner.isEmpty && !currentPr.repoName.isEmpty
       && currentPr.githubPrNumber > 0
+  }
+
+  private var canMapCurrentPr: Bool {
+    isLive && !isDetailBusy && githubItem != nil
+      && githubItem?.scope != "external"
+      && syncService.supportsRemoteAction("prs.linkToLane")
   }
 
   /// GitHub-style requirement checklist for the merge rail + merge sheet.
@@ -510,6 +526,18 @@ struct PrDetailView: View {
         .prListRow()
       }
 
+      if !unavailableDetailParts.isEmpty {
+        ADENoticeCard(
+          title: "Some PR data is unavailable",
+          message: "ADE could not refresh \(unavailableDetailParts.map { $0.replacingOccurrences(of: "_", with: " ") }.joined(separator: ", ")). The visible data is partial, not a zero result.",
+          icon: "exclamationmark.arrow.triangle.2.circlepath",
+          tint: ADEColor.warning,
+          actionTitle: "Retry",
+          action: { Task { await retryPrDetailLoad() } }
+        )
+        .prListRow()
+      }
+
       if isAwaitingInitialPrDetail {
         ADECardSkeleton(rows: 4)
           .prListRow()
@@ -591,7 +619,7 @@ struct PrDetailView: View {
       await reload(refreshRemote: true)
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
-    .task(id: syncService.prsProjectionRevision) {
+    .task(id: "\(syncService.prsProjectionRevision):\(syncService.prsRemoteRevision)") {
       // Seed from the warm cache first so an instant render is shown and, when
       // the cached entry is fresh, `hasLoadedLiveSidecars` is set BEFORE the
       // gate below evaluates. Doing this inside `.task` (rather than relying on
@@ -658,6 +686,29 @@ struct PrDetailView: View {
     .sheet(item: $stackPresentation) { presentation in
       PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
         .environmentObject(syncService)
+    }
+    .sheet(item: $laneLinkItem) { item in
+      PrLaneLinkSheet(
+        item: item,
+        lanes: availableLanes,
+        canLink: canMapCurrentPr
+      ) { laneId in
+        runPrAction(
+          "Linking pull request",
+          action: {
+            try await syncService.linkPullRequestToLane(
+              laneId: laneId,
+              prUrlOrNumber: item.githubUrl.isEmpty ? "\(item.githubPrNumber)" : item.githubUrl
+            )
+          },
+          onSuccess: { laneLinkItem = nil }
+        )
+      } onOpenGitHub: {
+        openGitHub(urlString: item.githubUrl)
+      }
+      .presentationDetents([.large])
+      .presentationDragIndicator(.hidden)
+      .presentationBackground(.clear)
     }
     .sheet(isPresented: $actionsSheetPresented) {
       prActionsSheet
@@ -922,7 +973,13 @@ struct PrDetailView: View {
     if !isCurrentPrMapped {
       PrUnmappedThreadBanner(
         canAutoMap: canAutoMapCurrentPr,
+        canMap: canMapCurrentPr,
         onAutoMap: autoMapCurrentPr,
+        onMap: {
+          if let githubItem {
+            laneLinkItem = githubItem
+          }
+        },
         onOpenInGitHub: { openGitHub(urlString: currentPr.githubUrl) }
       )
       .prListRow()
@@ -1309,11 +1366,12 @@ struct PrDetailView: View {
   @MainActor
   private func reload(refreshRemote: Bool = false, includeLiveSidecars: Bool? = nil) async {
     let requestedPrNumber = routedPrNumber
-    let shouldFetchLiveSidecars = isLive && ((includeLiveSidecars ?? refreshRemote) || requestedPrNumber != nil)
+    let routeCoordinates = routedGitHubCoordinates
+    let shouldFetchLiveSidecars = isLive && (includeLiveSidecars ?? (refreshRemote || requestedPrNumber != nil))
 
     do {
       var refreshError: Error?
-      if refreshRemote {
+      if refreshRemote, routeCoordinates == nil {
         do {
           if requestedPrNumber == nil {
             try await syncService.refreshPullRequestSnapshots(prId: effectivePrId)
@@ -1325,9 +1383,11 @@ struct PrDetailView: View {
         }
       }
       let listItems = try await syncService.fetchPullRequestListItems()
-      var fallbackGitHubItem: GitHubPrListItem?
-      if shouldFetchLiveSidecars && requestedPrNumber != nil {
-        fallbackGitHubItem = await fetchGitHubFallbackItem(requestedPrNumber: requestedPrNumber)
+      var fallbackGitHubItem: GitHubPrListItem? = githubItem
+      if shouldFetchLiveSidecars && requestedPrNumber != nil && routeCoordinates == nil {
+        if fallbackGitHubItem == nil {
+          fallbackGitHubItem = await fetchGitHubFallbackItem(requestedPrNumber: requestedPrNumber)
+        }
       }
 
       pr = prDetailRouteListItem(
@@ -1339,6 +1399,52 @@ struct PrDetailView: View {
         requestedRepoName: requestedRepoScope?.repoName
       )
       let snapshotPrId = pr?.id ?? (requestedPrNumber == nil ? prId : nil)
+
+      if pr == nil, let routeCoordinates {
+        githubItem = fallbackGitHubItem
+        if shouldFetchLiveSidecars {
+          let mobileDetail = try await syncService.fetchPrMobileGithubDetail(
+            repoOwner: routeCoordinates.repoOwner,
+            repoName: routeCoordinates.repoName,
+            githubPrNumber: routeCoordinates.githubPrNumber
+          )
+          let unavailable = Set(mobileDetail.unavailableParts)
+          let previousSnapshot = snapshot
+          let incomingSnapshot = mobileDetail.snapshot
+          githubItem = mobileDetail.item
+          snapshot = prMergeMobileGithubSnapshot(
+            incoming: incomingSnapshot,
+            previous: previousSnapshot,
+            unavailableParts: mobileDetail.unavailableParts
+          )
+          if !unavailable.contains("review_threads") {
+            reviewThreads = mobileDetail.reviewThreads
+          }
+          if !unavailable.contains("action_runs") {
+            actionRuns = mobileDetail.actionRuns
+          }
+          if !unavailable.contains("activity") {
+            activityEvents = mobileDetail.activity
+          }
+          unavailableDetailParts = mobileDetail.unavailableParts
+          deployments = []
+          aiSummary = nil
+          capabilities = nil
+          groupMembers = []
+          // Partial failures retain the last good values above and use the
+          // normal 25-second freshness window as retry backoff. Explicit Retry
+          // still bypasses the gate immediately.
+          hasLoadedLiveSidecars = true
+        }
+        errorMessage = refreshError?.localizedDescription
+        recomputeDerivedModels()
+        if shouldFetchLiveSidecars {
+          storeWarmCache()
+        }
+        hasAttemptedInitialLoad = true
+        return
+      }
+
       if let snapshotPrId {
         snapshot = try await syncService.fetchPullRequestSnapshot(prId: snapshotPrId)
       } else {
@@ -1393,6 +1499,7 @@ struct PrDetailView: View {
       } else {
         groupMembers = []
       }
+      unavailableDetailParts = []
       errorMessage = refreshError?.localizedDescription
     } catch {
       errorMessage = error.localizedDescription
@@ -1432,6 +1539,7 @@ struct PrDetailView: View {
     aiSummary = entry.aiSummary
     groupMembers = entry.groupMembers
     capabilities = entry.capabilities
+    unavailableDetailParts = entry.unavailableParts
     // Treat the cache as a successful prior load so the UI shows content (not
     // the skeleton/unavailable states) while the background refresh runs.
     hasAttemptedInitialLoad = true
@@ -1461,6 +1569,7 @@ struct PrDetailView: View {
         aiSummary: aiSummary,
         groupMembers: groupMembers,
         capabilities: capabilities,
+        unavailableParts: unavailableDetailParts,
         loadedAt: Date()
       ),
       for: prId
@@ -1476,7 +1585,10 @@ struct PrDetailView: View {
 
   @MainActor
   private func fetchGitHubFallbackItem(requestedPrNumber: Int?) async -> GitHubPrListItem? {
-    guard let github = try? await syncService.fetchGitHubPullRequestSnapshot() else { return nil }
+    guard let github = try? await syncService.fetchGitHubPullRequestSnapshot(
+      includeExternalClosed: true,
+      historyPageLimit: 2
+    ) else { return nil }
     let routeScope = requestedRepoScope
     return repoScopedGitHubPullRequests(from: github)
       .first {

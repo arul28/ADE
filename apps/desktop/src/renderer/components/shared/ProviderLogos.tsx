@@ -177,6 +177,11 @@ export function ProviderLogo({
       return <Ollama.Avatar size={size} className={c} />;
     case "lmstudio":
       return <LmStudio.Avatar size={size} className={c} />;
+    case "moonshotai":
+    case "moonshot":
+    case "kimi":
+    case "kimi-for-coding":
+      return <Kimi.Color size={size} className={c} />;
     default: {
       const lobeSrc = lobeProviderIconSrc(raw);
       if (lobeSrc) {

@@ -290,9 +290,9 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
       }}
       wrapperStyle={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
     >
-      <span
+      <button
+        type="button"
         role="status"
-        tabIndex={0}
         aria-label={`ADE resource pressure level ${level}`}
         title={description}
         data-ade-resource-pressure-level={level}
@@ -312,9 +312,12 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
           boxShadow: `0 0 0 1px ${color}22, 0 0 16px -10px ${color}`,
           outline: "none",
         }}
+        onClick={() => {
+          window.location.hash = "#/settings?tab=storage#diagnostics";
+        }}
       >
         <WarningCircle size={14} weight="fill" />
-      </span>
+      </button>
     </SmartTooltip>
   );
 }

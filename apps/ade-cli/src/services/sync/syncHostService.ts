@@ -227,7 +227,7 @@ export function isRuntimeOnlySyncPeer(args: {
     && args.metadata.capabilities.includes(SYNC_RUNTIME_ONLY_CAPABILITY);
 }
 
-const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
+const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 60_000;
 const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
 const DEFAULT_SYNC_POLL_INTERVAL_MS = 400;
@@ -5960,6 +5960,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
      */
     broadcastBrainStatusNow(): void {
       broadcastBrainStatus();
+    },
+
+    /**
+     * Tell connected controllers that the host's cached GitHub projection has
+     * changed. The payload is intentionally tiny; clients fetch the newest
+     * projected snapshot once, while the normal CRR stream continues to carry
+     * mapped PR rows. This covers unmapped webhook updates without polling.
+     */
+    broadcastPrsUpdated(): void {
+      const payload = { updatedAt: nowIso() };
+      for (const peer of peers) {
+        if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+        send(peer.ws, "prs_updated", payload);
+      }
     },
 
     async broadcastProjectCatalog(): Promise<void> {

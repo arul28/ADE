@@ -501,7 +501,10 @@ export function createBrainProjectActionsSyncHandler(
   });
   const localDeviceId = ensureSecretFile(args.localDeviceIdPath, 16);
   const localSiteId = ensureSecretFile(args.localSiteIdPath, 16);
-  const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? 5_000));
+  // This fallback has no host-side heartbeat timeout; the value is advertised
+  // to clients. A 5s default made an otherwise idle Relay tunnel wake its DO
+  // for a ping/pong cycle twelve times per minute while no project host existed.
+  const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? 60_000));
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? 1_500));
   const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? BRAIN_SYNC_AUTH_TIMEOUT_MS));
   const pairFailures = createPairFailureTracker();

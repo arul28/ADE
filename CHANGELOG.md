@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.31] - 2026-07-18
+
+### Added
+
+- iOS: connect, reconnect, and disconnect your Linear workspace from the Linear pane's new settings gear, using a native worker-bounce OAuth flow or an API key, with the workspace logo and status shown and controls gated for older hosts.
+- Desktop: the Linear connection card now renders the workspace logo.
+
+### Changed
+
+- Rebuilt the Providers settings panel with runtime cards, fully-managed OpenCode subscriptions, Kimi, and custom providers.
+- Added a Storage doctor and Storage tab health surface; eliminated ingress-payload bloat.
+- Overhauled iOS pull-requests reliability, performance, and UI.
+
+### Fixed
+
+- Glitchy fork and brief handoff: seeding lag, phantom duplicate sessions, and a false 30-second timeout (ADE-122).
+- Mobile settings and live provider usage.
+- Claude context-usage card spamming the chat thread.
+- Smart-link chip brand logos and paste centering.
+- Packaged builds now ignore development Clerk configuration.
+
+## [1.2.30] - 2026-07-17
+
+### Fixed
+
+- Web client no longer times out connecting to your Mac over the account relay; Files and PRs tabs load quickly via cached, coalesced reads instead of lagging per round-trip.
+- Web client keeps its session across reloads, shows account identity (name and avatar) instead of a raw id, and no longer crashes right after connecting.
+- Connections "This Mac" card always describes the local machine even when the window is remote-bound, scopes pairing-code management locally, and stays populated when a routed runtime is offline.
+
+### Changed
+
+- Relay machine-key rotation writes credentials as one atomic pair under a live-owner lock, and the relay claim is scoped to the machine identity, so concurrent brains can't clobber each other's relay connection during rotation.
+
+### iOS
+
+- Connection reliability improvements to how the iPhone client reaches your Mac over the relay.
+
 ## [1.2.29] - 2026-07-17
 
 ### Added
@@ -832,7 +869,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.29...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.31...HEAD
+[1.2.31]: https://github.com/arul28/ADE/compare/v1.2.30...v1.2.31
+[1.2.30]: https://github.com/arul28/ADE/compare/v1.2.29...v1.2.30
 [1.2.29]: https://github.com/arul28/ADE/compare/v1.2.28...v1.2.29
 [1.2.28]: https://github.com/arul28/ADE/compare/v1.2.27...v1.2.28
 [1.2.27]: https://github.com/arul28/ADE/compare/v1.2.26...v1.2.27

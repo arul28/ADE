@@ -462,6 +462,9 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeOAuthStartResult,
+  OpenCodeOAuthStatusEvent,
+  OpenCodeProviderAuthMethods,
   OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
   SyncCloudRelayStatus,
@@ -570,6 +573,16 @@ import {
 } from "../diffs/diffService";
 import type { createFileService } from "../files/fileService";
 import { mergeAiConfig, type createProjectConfigService } from "../config/projectConfigService";
+import {
+  addOpenCodeOAuthStatusListener,
+  cancelOAuth as cancelOpenCodeOAuth,
+  clearProviderKey as clearOpenCodeProviderKey,
+  listAuthMethods as listOpenCodeAuthMethods,
+  setProviderKey as setOpenCodeProviderKey,
+  startOAuth as startOpenCodeOAuth,
+  type OpenCodeAuthDeps,
+} from "../opencode/openCodeAuthService";
+import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import type { createProcessService } from "../processes/processService";
 import type { createTestService } from "../tests/testService";
 import type { createGitOperationsService } from "../git/gitOperationsService";
@@ -641,6 +654,8 @@ import type { createLinearIssueTracker } from "../cto/linearIssueTracker";
 import type { createUsageTrackingService } from "../usage/usageTrackingService";
 import type { createStorageInsightsService } from "../storage/storageInsightsService";
 import type {
+  MaintenanceRunReport,
+  RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
@@ -3730,6 +3745,16 @@ export function registerIpc({
     );
   });
 
+  // Machine-level daemon health (slow-action window). Direct IPC like
+  // getResourceUsage: the connection pool lives in Electron main, so there is no
+  // action-domain routing and no runtime-backed null-service risk.
+  ipcMain.handle(IPC.appGetRuntimeHealth, async (): Promise<RuntimeHealthSnapshot> => {
+    return (
+      localRuntimeConnectionPool?.getRuntimeHealth?.()
+      ?? { slowActions24h: 0, slowActionP95Ms: null, sampledAt: new Date().toISOString() }
+    );
+  });
+
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
     const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
     return monitor.getSnapshot({ maxAgeMs: 1_000 });
@@ -3746,6 +3771,11 @@ export function registerIpc({
   ipcMain.handle(IPC.storageCompressNow, async (): Promise<StorageCompressionResult> => {
     const service = requireAppContextValue(getCtx(), "storageInsightsService");
     return service.compressNow();
+  });
+
+  ipcMain.handle(IPC.storageRunMaintenanceNow, async (): Promise<MaintenanceRunReport> => {
+    const service = requireAppContextValue(getCtx(), "storageInsightsService");
+    return service.runMaintenanceNow();
   });
 
   ipcMain.handle(IPC.storageCleanupPreview, async (
@@ -4310,6 +4340,10 @@ export function registerIpc({
         opencodeBinarySource: status.opencodeBinarySource,
         opencodeInventoryError: status.opencodeInventoryError,
         opencodeProviders: status.opencodeProviders,
+        opencodeProvidersStale: status.opencodeProvidersStale,
+        modelsDevLastFetchedAt: status.modelsDevLastFetchedAt,
+        customProviders: status.customProviders,
+        customModelSlugs: status.customModelSlugs,
         apiKeyStore: status.apiKeyStore,
         features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
           feature,
@@ -4400,6 +4434,111 @@ export function registerIpc({
       local: snapshot.local ?? {},
     });
     void ctx.agentChatService?.refreshScheduledWork();
+  });
+
+  // Broadcast OpenCode OAuth status transitions to all renderer windows. The
+  // relay/web fan-out is registered separately in the adeActions AI domain,
+  // which has the runtime event buffer remote/web clients subscribe to.
+  addOpenCodeOAuthStatusListener((event: OpenCodeOAuthStatusEvent) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      try {
+        win.webContents.send(IPC.aiOpencodeOAuthStatus, event);
+      } catch {
+        // ignore broadcast failures
+      }
+    }
+  });
+
+  const buildOpenCodeAuthDeps = (): OpenCodeAuthDeps => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["projectConfigService"] as const);
+    const projectRoot = ctx.project?.rootPath;
+    if (!projectRoot) {
+      throw new Error("No project is open.");
+    }
+    return {
+      projectRoot,
+      projectConfig: ctx.projectConfigService.getEffective(),
+      logger: ctx.logger,
+    };
+  };
+
+  ipcMain.handle(
+    IPC.aiOpencodeAuthMethods,
+    async (): Promise<{ methods: OpenCodeProviderAuthMethods }> => {
+      return await listOpenCodeAuthMethods(buildOpenCodeAuthDeps());
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiOpencodeOAuthStart,
+    async (
+      _event,
+      arg: { providerId: string; methodIndex: number; inputs?: Record<string, string> },
+    ): Promise<OpenCodeOAuthStartResult> => {
+      return await startOpenCodeOAuth(buildOpenCodeAuthDeps(), arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiOpencodeOAuthCancel,
+    async (_event, arg: { providerId: string }): Promise<void> => {
+      cancelOpenCodeOAuth(arg);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiSetOpencodeProviderKey,
+    async (
+      _event,
+      arg: { providerId: string; key: string },
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const ctx = getCtx();
+      const result = await setOpenCodeProviderKey(buildOpenCodeAuthDeps(), arg);
+      if (result.ok) {
+        try {
+          ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+        } catch (error) {
+          ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+            provider: arg.providerId,
+            error: getErrorMessage(error),
+          });
+        }
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiClearOpencodeProviderKey,
+    async (
+      _event,
+      arg: { providerId: string },
+    ): Promise<{ ok: boolean; error?: string }> => {
+      const ctx = getCtx();
+      const result = await clearOpenCodeProviderKey(buildOpenCodeAuthDeps(), arg);
+      if (result.ok) {
+        try {
+          ctx.aiIntegrationService?.invalidateProviderReadinessCaches();
+        } catch (error) {
+          ctx.logger.warn("ai.api_key_cache_invalidation_failed", {
+            provider: arg.providerId,
+            error: getErrorMessage(error),
+          });
+        }
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(IPC.aiRefreshModelsDev, async (): Promise<{ lastFetchedAt: number | null }> => {
+    const ctx = getCtx();
+    try {
+      await refreshModelsDevNow();
+    } catch (error) {
+      ctx.logger.warn("ai.modelsdev.refresh_failed", { error: getErrorMessage(error) });
+    }
+    return { lastFetchedAt: getModelsDevLastFetchedAt() };
   });
 
   ipcMain.handle(IPC.projectSecretsList, async (): Promise<ProjectSecretsListResult> => {
@@ -4615,6 +4754,26 @@ export function registerIpc({
       includeTransferReadiness: arg?.includeTransferReadiness,
       forceTransferReadiness: arg?.forceTransferReadiness,
     });
+  });
+
+  ipcMain.handle(IPC.syncGetLocalStatus, async (_event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
+    const params = {
+      includeTransferReadiness: arg?.includeTransferReadiness === true,
+      forceTransferReadiness: arg?.forceTransferReadiness === true,
+    };
+    if (localRuntimeConnectionPool) {
+      try {
+        // Machine-level call: intentionally bypasses the window's local/remote
+        // project binding so Connections can always describe this physical Mac.
+        return await localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
+          "sync.getStatus",
+          params,
+        );
+      } catch (error) {
+        if (!isSyncServiceUnavailableError(error)) throw error;
+      }
+    }
+    return await (await requireSyncService()).getStatus(params);
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {

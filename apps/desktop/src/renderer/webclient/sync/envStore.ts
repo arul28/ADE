@@ -3,7 +3,7 @@ import type {
   SyncPairingHostIdentity,
 } from "../../../shared/types/sync";
 
-export type WebClientStorageArea = "environments" | "meta";
+export type WebClientStorageArea = "environments" | "meta" | "account";
 
 export type WebClientStorage = {
   get<T>(area: WebClientStorageArea, key: string): Promise<T | null>;
@@ -51,7 +51,8 @@ export type WebClientEnvironmentRecord = {
 };
 
 const DB_NAME = "ade-web-client";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
+const DB_UPGRADE_BLOCKED_TIMEOUT_MS = 5_000;
 const SELECTED_ENV_ID_KEY = "selectedEnvId";
 export const WEB_TRUST_RESET_VERSION = 1;
 const TRUST_RESET_VERSION_KEY = "machineTrustResetVersion";
@@ -114,7 +115,11 @@ export class IndexedDbStorage implements WebClientStorage {
   private dbPromise: Promise<IDBDatabase> | null = null;
   private versionChangeHandler: (() => void) | null = null;
 
-  constructor(private readonly options: { openTimeoutMs?: number } = {}) {}
+  constructor(private readonly options: {
+    indexedDb?: Pick<IDBFactory, "open">;
+    upgradeBlockedTimeoutMs?: number;
+    openTimeoutMs?: number;
+  } = {}) {}
 
   setVersionChangeHandler(handler: () => void): void {
     this.versionChangeHandler = handler;
@@ -187,7 +192,7 @@ export class IndexedDbStorage implements WebClientStorage {
       const attempt = new Promise<IDBDatabase>((resolve, reject) => {
         let request: IDBOpenDBRequest;
         try {
-          request = indexedDB.open(DB_NAME, DB_VERSION);
+          request = (this.options.indexedDb ?? indexedDB).open(DB_NAME, DB_VERSION);
         } catch (error) {
           reject(new IndexedDbOpenError(
             "Browser storage is unavailable.",
@@ -197,9 +202,15 @@ export class IndexedDbStorage implements WebClientStorage {
           return;
         }
         let settled = false;
-        const timeout = globalThis.setTimeout(() => {
+        let blockedTimer: ReturnType<typeof setTimeout> | null = null;
+        const clearBlockedTimer = () => {
+          if (blockedTimer) globalThis.clearTimeout(blockedTimer);
+          blockedTimer = null;
+        };
+        const openTimer = globalThis.setTimeout(() => {
           if (settled) return;
           settled = true;
+          clearBlockedTimer();
           reject(new IndexedDbOpenError(
             "Opening browser storage timed out.",
             "timeout",
@@ -208,33 +219,49 @@ export class IndexedDbStorage implements WebClientStorage {
         const rejectOpen = (error: IndexedDbOpenError) => {
           if (settled) return;
           settled = true;
-          globalThis.clearTimeout(timeout);
+          globalThis.clearTimeout(openTimer);
+          clearBlockedTimer();
           reject(error);
         };
         request.onupgradeneeded = () => {
           const db = request.result;
           if (!db.objectStoreNames.contains("environments")) db.createObjectStore("environments");
           if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta");
+          if (!db.objectStoreNames.contains("account")) db.createObjectStore("account");
         };
-        request.onblocked = () => rejectOpen(new IndexedDbOpenError(
-          "Browser storage is blocked by another ADE tab.",
-          "blocked",
-        ));
+        request.onblocked = () => {
+          if (blockedTimer || settled) return;
+          globalThis.clearTimeout(openTimer);
+          const requestedTimeout = this.options.upgradeBlockedTimeoutMs;
+          const timeoutMs = typeof requestedTimeout === "number"
+            && Number.isFinite(requestedTimeout)
+            && requestedTimeout >= 0
+            ? requestedTimeout
+            : DB_UPGRADE_BLOCKED_TIMEOUT_MS;
+          blockedTimer = globalThis.setTimeout(() => {
+            rejectOpen(new IndexedDbOpenError(
+              "ADE browser storage couldn't be upgraded. Close other ADE tabs and try again.",
+              "blocked",
+            ));
+          }, timeoutMs);
+        };
         request.onsuccess = () => {
+          const db = request.result;
           if (settled) {
-            request.result.close();
+            db.close();
             return;
           }
           settled = true;
-          globalThis.clearTimeout(timeout);
-          request.result.onversionchange = () => {
-            request.result.close();
+          globalThis.clearTimeout(openTimer);
+          clearBlockedTimer();
+          db.onversionchange = () => {
+            db.close();
             if (this.dbPromise === attempt) {
               this.dbPromise = null;
               this.versionChangeHandler?.();
             }
           };
-          resolve(request.result);
+          resolve(db);
         };
         request.onerror = () => rejectOpen(new IndexedDbOpenError(
           "Failed to open ADE web client browser storage.",
@@ -255,6 +282,7 @@ export class MemoryStorage implements WebClientStorage {
   private readonly areas: Record<WebClientStorageArea, Map<string, unknown>> = {
     environments: new Map(),
     meta: new Map(),
+    account: new Map(),
   };
 
   async get<T>(area: WebClientStorageArea, key: string): Promise<T | null> {

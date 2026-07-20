@@ -886,6 +886,63 @@ describe("ptyService", () => {
       expect(resolveBuiltInBrowserActorCapability(actorToken)).toBeNull();
     });
 
+    it("exports spawn lineage without replacing the tracked CLI session identity", async () => {
+      const { service, loadPty } = createHarness();
+
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "Codex child",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+        spawnLineage: {
+          parentChatSessionId: "parent-session-1",
+          spawnKind: null,
+        },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
+      const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        ADE_CHAT_SESSION_ID: result.sessionId,
+        ADE_PARENT_CHAT_SESSION_ID: "parent-session-1",
+        ADE_SPAWN_KIND: "",
+      }));
+      expect(opts?.env?.ADE_CHAT_SESSION_ID).not.toBe("parent-session-1");
+    });
+
+    it("strips inherited parent lineage env when the launch has no spawn lineage", async () => {
+      const previousParent = process.env.ADE_PARENT_CHAT_SESSION_ID;
+      const previousKind = process.env.ADE_SPAWN_KIND;
+      // The daemon can itself run inside a spawned agent shell; those inherited
+      // vars must not leak into terminals created without lineage.
+      process.env.ADE_PARENT_CHAT_SESSION_ID = "inherited-parent";
+      process.env.ADE_SPAWN_KIND = "subagent";
+      try {
+        const { service, loadPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex plain",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+        });
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+        expect(opts?.env).toBeDefined();
+        expect(opts?.env).not.toHaveProperty("ADE_PARENT_CHAT_SESSION_ID");
+        expect(opts?.env).not.toHaveProperty("ADE_SPAWN_KIND");
+      } finally {
+        if (previousParent === undefined) delete process.env.ADE_PARENT_CHAT_SESSION_ID;
+        else process.env.ADE_PARENT_CHAT_SESSION_ID = previousParent;
+        if (previousKind === undefined) delete process.env.ADE_SPAWN_KIND;
+        else process.env.ADE_SPAWN_KIND = previousKind;
+      }
+    });
+
     it("refuses only new tracked CLI launches when storage is exhausted", async () => {
       let exhausted = false;
       const canPerform = vi.fn(() => exhausted
@@ -2061,6 +2118,53 @@ describe("ptyService", () => {
         startedAt: expect.any(String),
       });
       expect(sessionService.create).toHaveBeenCalledTimes(createCallsBeforeResume);
+    });
+
+    it("restores spawn-lineage env from persisted resume metadata on resume", async () => {
+      const { service, sessionService, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-spawned",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-spawned.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen resume thread-spawned",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-spawned",
+          launch: { permissionMode: "config-toml" },
+          orchestrationParentSessionId: "parent-session-1",
+          spawnKind: "subagent",
+        },
+      });
+      sessionService.end({
+        sessionId: "session-spawned",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await service.create({
+        sessionId: "session-spawned",
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        startupCommand: "codex --no-alt-screen resume thread-spawned",
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const opts = ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
+      expect(opts?.env).toEqual(expect.objectContaining({
+        ADE_PARENT_CHAT_SESSION_ID: "parent-session-1",
+        ADE_SPAWN_KIND: "subagent",
+      }));
+      expect(opts?.env?.ADE_CHAT_SESSION_ID).toBe("session-spawned");
     });
 
     it("backfills a targetless Claude resume command before launching the resumed PTY", async () => {

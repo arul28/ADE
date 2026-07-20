@@ -1110,10 +1110,20 @@ final class ADETests: XCTestCase {
     let defaultArgs = makePrGithubSnapshotArgs(force: false, includeExternalClosed: false)
     XCTAssertEqual(defaultArgs["force"] as? Bool, false)
     XCTAssertNil(defaultArgs["includeExternalClosed"])
+    XCTAssertNil(defaultArgs["revalidate"])
 
-    let historyArgs = makePrGithubSnapshotArgs(force: true, includeExternalClosed: true)
+    let historyArgs = makePrGithubSnapshotArgs(
+      force: true,
+      includeExternalClosed: true,
+      historyPageLimit: 4,
+      revalidate: false,
+      includeStateCounts: true
+    )
     XCTAssertEqual(historyArgs["force"] as? Bool, true)
     XCTAssertEqual(historyArgs["includeExternalClosed"] as? Bool, true)
+    XCTAssertEqual(historyArgs["historyPageLimit"] as? Int, 4)
+    XCTAssertEqual(historyArgs["revalidate"] as? Bool, false)
+    XCTAssertEqual(historyArgs["includeStateCounts"] as? Bool, true)
   }
 
   func testProjectScopedOutboundEnvelopeTypesIncludeActiveProjectId() {
@@ -1374,6 +1384,26 @@ final class ADETests: XCTestCase {
       settingsConnectedRouteChipText(durationMs: 10_001, routeKind: .relay),
       "relay"
     )
+  }
+
+  @MainActor
+  func testUserDisconnectReturnsToHubBeforeTransportChanges() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.projectHomePresented = false
+
+    service.disconnectForUserConnectionChange()
+
+    XCTAssertTrue(service.projectHomePresented)
+  }
+
+  @MainActor
+  func testOrdinaryReconnectDoesNotOverrideProjectPresentation() async {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.projectHomePresented = false
+
+    await service.reconnectIfPossible(userInitiated: true)
+
+    XCTAssertFalse(service.projectHomePresented)
   }
 
   func testSyncReconnectStateUsesBackoffAndResetsAfterSuccess() {
@@ -3058,18 +3088,40 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: transientError, fallback: .connecting), .connecting)
   }
 
-  func testSyncClientHeartbeatUsesHalfServerIntervalWithBounds() {
+  func testSyncClientHeartbeatUsesTwoServerIntervalsAsSilenceFallback() {
+    let fallbackInterval = syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 30_000)
     XCTAssertEqual(
-      syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 30_000),
-      15_000_000_000
+      fallbackInterval,
+      60_000_000_000
     )
     XCTAssertEqual(
       syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 4_000),
-      5_000_000_000
+      10_000_000_000
     )
     XCTAssertEqual(
       syncClientHeartbeatIntervalNanoseconds(serverIntervalMs: 120_000),
-      25_000_000_000
+      240_000_000_000
+    )
+    XCTAssertFalse(
+      syncShouldSendClientHeartbeatFallback(
+        now: 159,
+        lastInboundMessageAt: 100,
+        intervalNanoseconds: fallbackInterval
+      )
+    )
+    XCTAssertTrue(
+      syncShouldSendClientHeartbeatFallback(
+        now: 160,
+        lastInboundMessageAt: 100,
+        intervalNanoseconds: fallbackInterval
+      )
+    )
+    XCTAssertTrue(
+      syncShouldSendClientHeartbeatFallback(
+        now: 100,
+        lastInboundMessageAt: nil,
+        intervalNanoseconds: fallbackInterval
+      )
     )
   }
 
@@ -4914,6 +4966,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
+    XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-legacy"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-legacy"))
     do {
@@ -4928,8 +4981,98 @@ final class ADETests: XCTestCase {
     } catch {
       XCTAssertEqual((error as NSError).code, 15)
     }
+    do {
+      _ = try await service.fetchPrMobileGithubDetail(
+        repoOwner: "arul28",
+        repoName: "ADE",
+        githubPrNumber: 849
+      )
+      XCTFail("A legacy host must reject aggregate PR detail before transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 17)
+      XCTAssertEqual(nsError.userInfo["ADEErrorCode"] as? String, "unsupported_action")
+    }
     let analyticsOptOutAcknowledged = await service.setProductAnalyticsClientEnabled(false)
     XCTAssertTrue(analyticsOptOutAcknowledged)
+  }
+
+  @MainActor
+  func testLegacyHostWithoutLinearCommandsGatesMobileLinearActions() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.send",
+            "policy": ["viewerAllowed": true, "queueable": true],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .limited)
+    XCTAssertFalse(service.supportsRemoteAction("cto.startLinearMobileOAuth"))
+    XCTAssertFalse(service.supportsRemoteAction("cto.setLinearToken"))
+    XCTAssertFalse(service.supportsRemoteAction("cto.clearLinearToken"))
+  }
+
+  @MainActor
+  func testHostAdvertisingLinearCommandsEnablesMobileLinearActions() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    let linearActions = [
+      "cto.startLinearMobileOAuth",
+      "cto.completeLinearMobileOAuth",
+      "cto.setLinearToken",
+      "cto.clearLinearToken",
+    ]
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": linearActions.map { action in
+            [
+              "action": action,
+              "policy": ["viewerAllowed": true, "queueable": false],
+            ]
+          },
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "full",
+          "requiredActions": [],
+          "missingActions": [],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .full)
+    XCTAssertTrue(service.supportsRemoteAction("cto.startLinearMobileOAuth"))
+    XCTAssertTrue(service.supportsRemoteAction("cto.completeLinearMobileOAuth"))
+    XCTAssertTrue(service.supportsRemoteAction("cto.setLinearToken"))
+    XCTAssertTrue(service.supportsRemoteAction("cto.clearLinearToken"))
   }
 
   @MainActor
@@ -5039,6 +5182,51 @@ final class ADETests: XCTestCase {
       let nsError = error as NSError
       XCTAssertEqual(nsError.domain, "ADE")
       XCTAssertEqual(nsError.code, 15)
+    }
+  }
+
+  @MainActor
+  func testMobileGithubDetailStaysGatedWhenCompatibleHostOmitsAction() async throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "prs.getGitHubSnapshot",
+            "policy": ["viewerAllowed": true, "queueable": false],
+          ]],
+        ],
+        "mobileCompatibility": [
+          "contractVersion": 1,
+          "mode": "limited",
+          "requiredActions": ["prs.getMobileGithubDetail"],
+          "missingActions": ["prs.getMobileGithubDetail"],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.hostCompatibilityMode, .limited)
+    XCTAssertEqual(service.hostCompatibilityMissingActions, ["prs.getMobileGithubDetail"])
+    XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
+    do {
+      _ = try await service.fetchPrMobileGithubDetail(
+        repoOwner: "arul28",
+        repoName: "ADE",
+        githubPrNumber: 849
+      )
+      XCTFail("An advertised host without the action must reject aggregate PR detail before transport")
+    } catch {
+      let nsError = error as NSError
+      XCTAssertEqual(nsError.domain, "ADE")
+      XCTAssertEqual(nsError.code, 17)
+      XCTAssertEqual(nsError.userInfo["ADEErrorCode"] as? String, "unsupported_action")
     }
   }
 
@@ -5159,6 +5347,22 @@ final class ADETests: XCTestCase {
     XCTAssertGreaterThan(workUsageDayActivityScore(tokensOnly), 0)
     XCTAssertGreaterThan(workUsageDayActivityScore(legacyTotalOnly), 0)
     XCTAssertEqual(workUsageDayActivityScore(empty), 0)
+  }
+
+  func testMobileUsagePercentUsesProviderPercentWithoutInvertingIt() {
+    var window = MobileUsageQuotaWindow(
+      provider: "claude",
+      windowType: "weekly",
+      percentUsed: 63,
+      resetsAt: "2026-07-20T12:00:00Z",
+      resetsInMs: 1_000,
+      windowDurationMs: nil
+    )
+    XCTAssertEqual(window.clampedPercentUsed, 63)
+    window.percentUsed = -4
+    XCTAssertEqual(window.clampedPercentUsed, 0)
+    window.percentUsed = 140
+    XCTAssertEqual(window.clampedPercentUsed, 100)
   }
 
   func testMobileUsageQuotaSnapshotDecodesSourceFreshnessAndUnknownFields() throws {
@@ -8844,6 +9048,7 @@ final class ADETests: XCTestCase {
       aiSummary: nil,
       groupMembers: [],
       capabilities: nil,
+      unavailableParts: [],
       loadedAt: Date(timeIntervalSince1970: 0)
     )
 

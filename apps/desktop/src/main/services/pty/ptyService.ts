@@ -371,6 +371,7 @@ function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   laneId: string;
   chatSessionId: string | null;
   ownerSessionId?: string | null;
+  spawnLineage?: PtyCreateArgs["spawnLineage"];
 }): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {
     ...env,
@@ -389,6 +390,15 @@ function withAdeTerminalContextEnv(env: NodeJS.ProcessEnv, args: {
   } else {
     delete next.ADE_CHAT_SESSION_ID;
     delete next.ADE_BROWSER_ACTOR_TOKEN;
+  }
+  if (args.spawnLineage) {
+    next.ADE_PARENT_CHAT_SESSION_ID = args.spawnLineage.parentChatSessionId;
+    next.ADE_SPAWN_KIND = args.spawnLineage.spawnKind ?? "";
+  } else {
+    // The daemon itself may run inside a spawned agent shell that inherited
+    // these; without lineage they must not leak into unrelated terminals.
+    delete next.ADE_PARENT_CHAT_SESSION_ID;
+    delete next.ADE_SPAWN_KIND;
   }
   return next;
 }
@@ -3645,11 +3655,25 @@ export function createPtyService({
       if (explicitNoColor && !explicitForceColor) {
         delete baseLaunchEnv.FORCE_COLOR;
       }
+      // Resume launches re-enter create() without args.spawnLineage — recover
+      // it from the persisted resume metadata so a resumed spawned CLI keeps
+      // its parent env (self-reporting + nested lineage).
+      const persistedParentSessionId = isTrackedAgentCliToolType(toolTypeHint)
+        ? existingSession?.resumeMetadata?.orchestrationParentSessionId?.trim() || null
+        : null;
+      const effectiveSpawnLineage = args.spawnLineage
+        ?? (persistedParentSessionId
+          ? {
+              parentChatSessionId: persistedParentSessionId,
+              spawnKind: existingSession?.resumeMetadata?.spawnKind ?? null,
+            }
+          : null);
       const contextLaunchEnv = withAdeTerminalContextEnv(baseLaunchEnv, {
         projectRoot,
         laneId,
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
+        spawnLineage: effectiveSpawnLineage,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,

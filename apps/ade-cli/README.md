@@ -371,7 +371,8 @@ ade search --status --text                                  # index doc counts, 
 ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # prints GitHub + ADE PR URLs
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
 ade prs list-open --text
-ade prs github-snapshot --include-external-closed
+ade prs github-snapshot --include-external-closed --history-page-limit 4
+ade prs github-snapshot --include-state-counts --no-revalidate
 ade prs checks pr-id --text
 ade prs comments pr-id --text
 ade run defs --text
@@ -382,7 +383,8 @@ ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --prompt "fix failing tests"
-ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flake"   # --type subagent|peer|none (chat mode only): cosmetic relationship + completion-report policy — subagent wakes the parent on completion, peer leaves a quiet note, none (default) is silent; a typed agent is still a full agent
+ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flake"   # --type subagent|peer|none: cosmetic relationship + completion-report policy — subagent wakes the parent on completion, peer leaves a quiet note, none (default) is silent; a typed agent is still a full agent
+ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals; shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # spawned chats default their parent to $ADE_CHAT_SESSION_ID; --parent <session> overrides, --no-parent opts out
@@ -438,6 +440,7 @@ ade usage budget cumulative --scope global --text
 ade storage snapshot --text                          # categorized ADE disk usage + free space (mirrors the desktop storage dashboard)
 ade storage snapshot --refresh --text                # force a fresh scan instead of the cached snapshot
 ade storage compress --text                          # losslessly compress old chat/terminal history
+ade --role cto storage maintenance --text            # run the policy-driven ledger maintenance sweep now (CTO)
 ade storage actions --text                           # raw storage service actions (cleanupPreview/cleanup live here)
 ade actions list --domain chat --text
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts

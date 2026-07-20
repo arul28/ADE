@@ -50,9 +50,14 @@ const NUMBER_PROPERTIES = new Set([
   "terminal_session_count", "active_lane_count", "lanes_created", "lanes_archived", "commits_created",
   "push_operations", "pr_landings", "files_changed", "artifacts_captured", "automation_runs", "worker_runs",
   "active_days", "current_streak_days", "token_count", "input_token_count", "output_token_count", "call_count",
-  "duration_ms", "provider_count", "model_count", "error_count",
+  "duration_ms", "provider_count", "model_count", "error_count", "bytes_freed", "files_compressed",
 ]);
 const BOOLEAN_PROPERTIES = new Set(["recoverable", "paired", "cached_data", "is_packaged"]);
+
+// Actions emitted only by daemon services (not user-mutation ledger rows) that
+// are still meaningful product facts. Kept here rather than in the usage-stats
+// MEANINGFUL_ACTIONS set because they never correspond to a persisted mutation.
+const ANALYTICS_ONLY_ACTIONS = new Set(["maintenance_run"]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
   ade_app_opened: new Set([
@@ -62,6 +67,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_project_opened: new Set(["route_kind", "source", "mode", "connection_state"]),
   ade_feature_used: new Set([
     "feature", "action", "outcome", "source", "mode", "provider", "model_family", "duration_bucket", "connection_state",
+    "bytes_freed", "files_compressed",
   ]),
   ade_work_session_started: new Set(["feature", "action", "outcome", "source", "mode", "provider"]),
   ade_work_session_completed: new Set([
@@ -89,10 +95,11 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   ]),
   feature: new Set([
     "chat", "cli", "work", "lanes", "files", "git", "processes", "orchestration", "prs",
-    "automations", "command_palette",
+    "automations", "command_palette", "storage_doctor",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
+    "partial", "failed",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "gemini", "local", "other"]),
   model_family: new Set([
@@ -141,7 +148,7 @@ function safeStringProperty(key: string, value: ProductAnalyticsPropertyValue): 
   if (key === "action") {
     if (typeof value !== "string" || value.length > 256) return null;
     const raw = value.trim();
-    return raw === "open" || isMeaningfulUsageAction(raw) ? raw : null;
+    return raw === "open" || isMeaningfulUsageAction(raw) || ANALYTICS_ONLY_ACTIONS.has(raw) ? raw : null;
   }
   if (key === "error_kind") return coarseErrorKind(value);
   const safe = safeProductAnalyticsString(value);

@@ -5,7 +5,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLinearClient } from "./linearClient";
 import { createLinearCredentialService } from "./linearCredentialService";
-import { createLinearOAuthService } from "./linearOAuthService";
+import {
+  createLinearOAuthService,
+  LINEAR_MOBILE_OAUTH_REDIRECT_URI,
+} from "./linearOAuthService";
 import {
   LINEAR_OAUTH_TOKEN_URL,
   linearInvalidGrantLikelyStaleRotation,
@@ -400,6 +403,7 @@ describe("linearOAuthService", () => {
     // admin for Linear to deliver its data-change webhooks (asserted below).
     expect(result.authUrl).toContain(`scope=${encodeURIComponent("read,write")}`);
     expect(result.authUrl).not.toContain("admin");
+    expect(result.authUrl).toContain("actor=user");
     expect(result.authUrl).toContain("prompt=consent");
     expect(result.redirectUri).toContain("/oauth/callback");
 
@@ -686,6 +690,86 @@ describe("linearOAuthService", () => {
 
     expect(authUrl.searchParams.get("code_challenge_method")).toBeNull();
     expect(authUrl.searchParams.get("code_challenge")).toBeNull();
+  });
+
+  it("completes an external PKCE session through the Worker redirect and stores the OAuth token", async () => {
+    const credentials = createCredentialsMock({ clientSecret: null, clientSource: "ade-app" });
+    credentials.getOAuthClientCredentials.mockReturnValue({
+      clientId: "public-client-id",
+      clientSecret: null as any,
+    });
+    const mockFetch = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        access_token: "linear-mobile-access-token",
+        refresh_token: "linear-mobile-refresh-token",
+        expires_in: 7200,
+      }),
+    })) as any;
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: mockFetch,
+    });
+    activeServices.push(service);
+
+    const started = await service.startExternalSession({
+      redirectUri: LINEAR_MOBILE_OAUTH_REDIRECT_URI,
+    });
+    const authorizeUrl = new URL(started.authorizeUrl);
+    const state = authorizeUrl.searchParams.get("state");
+
+    expect(started.sessionId).toMatch(/^linear-oauth-/);
+    expect(Date.parse(started.expiresAt)).toBeGreaterThan(Date.now());
+    expect(authorizeUrl.searchParams.get("redirect_uri")).toBe(LINEAR_MOBILE_OAUTH_REDIRECT_URI);
+    expect(authorizeUrl.searchParams.get("client_id")).toBe("public-client-id");
+    expect(authorizeUrl.searchParams.get("scope")).toBe("read,write,admin");
+    expect(authorizeUrl.searchParams.get("response_type")).toBe("code");
+    expect(authorizeUrl.searchParams.get("prompt")).toBe("consent");
+    expect(authorizeUrl.searchParams.get("actor")).toBe("user");
+    expect(authorizeUrl.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorizeUrl.searchParams.get("code_challenge")).toBeTruthy();
+    expect(state).toBeTruthy();
+
+    await expect(service.completeExternalSession({
+      sessionId: started.sessionId,
+      code: "wrong-state-code",
+      state: "wrong-state",
+    })).resolves.toEqual({
+      ok: false,
+      message: expect.stringContaining("state did not match"),
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    await expect(service.completeExternalSession({
+      sessionId: started.sessionId,
+      code: "mobile-authorization-code",
+      state: state!,
+    })).resolves.toEqual({ ok: true });
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.linear.app/oauth/token",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const tokenRequest = new URLSearchParams(String(mockFetch.mock.calls[0]![1]?.body));
+    expect(tokenRequest.get("code")).toBe("mobile-authorization-code");
+    expect(tokenRequest.get("redirect_uri")).toBe(LINEAR_MOBILE_OAUTH_REDIRECT_URI);
+    expect(tokenRequest.get("client_id")).toBe("public-client-id");
+    expect(tokenRequest.get("code_verifier")).toBeTruthy();
+    expect(tokenRequest.get("client_secret")).toBeNull();
+    expect(credentials.setOAuthToken).toHaveBeenCalledWith(expect.objectContaining({
+      accessToken: "linear-mobile-access-token",
+      refreshToken: "linear-mobile-refresh-token",
+    }));
+    await expect(service.completeExternalSession({
+      sessionId: started.sessionId,
+      code: "replayed-code",
+      state: state!,
+    })).resolves.toEqual({
+      ok: false,
+      message: expect.stringContaining("not found or has expired"),
+    });
   });
 });
 

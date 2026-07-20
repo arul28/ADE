@@ -212,6 +212,8 @@ private func workUsageFormatDay(_ date: String) -> String {
 }
 
 struct WorkUsageActivityCarousel: View {
+  let refreshRevision: Int
+
   @EnvironmentObject private var syncService: SyncService
   @AppStorage("ade.work.activityTab.v1") private var tabRaw = WorkUsageTab.activity.rawValue
   @AppStorage("ade.work.usageRange.v1") private var rangeRaw = WorkUsageRange.all.rawValue
@@ -224,7 +226,13 @@ struct WorkUsageActivityCarousel: View {
 
   private var tab: WorkUsageTab { WorkUsageTab(rawValue: tabRaw) ?? .activity }
   private var range: WorkUsageRange { WorkUsageRange(rawValue: rangeRaw) ?? .all }
-  private var loadKey: String { "\(tabRaw):\(rangeRaw):\(syncService.connectionState.rawValue)" }
+  private var loadKey: String {
+    "\(tabRaw):\(rangeRaw):\(syncService.connectionState.rawValue):\(refreshRevision)"
+  }
+
+  init(refreshRevision: Int = 0) {
+    self.refreshRevision = refreshRevision
+  }
 
   private var summary: MobileAdeUsageSummary? {
     loadedRange == rangeRaw ? stats?.summary : nil
@@ -511,12 +519,22 @@ private struct WorkUsageQuotaCompact: View {
           let weekly = windows.first { $0.windowType == "weekly" || $0.windowType == "monthly" }
           let status = snapshot.providerStatus?[provider]
           HStack(spacing: 8) {
-            Text(provider == "claude" ? "Claude" : "Codex")
+            if let assetName = providerAssetName(provider) {
+              Image(assetName)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 15, height: 15)
+                .accessibilityHidden(true)
+            }
+            Text(providerLabel(provider))
               .font(.caption.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
-              .frame(width: 54, alignment: .leading)
-            Text(fiveHour.map { "5h \(Int(max(0, 100 - $0.percentUsed)))%" } ?? "5h —")
-            Text(weekly.map { "week \(Int(max(0, 100 - $0.percentUsed)))%" } ?? "week —")
+              .frame(width: 48, alignment: .leading)
+            Text(fiveHour.map { "5h \(Int($0.clampedPercentUsed))%" } ?? "5h —")
+            Text(weekly.map {
+              let label = $0.windowType == "monthly" ? "month" : "week"
+              return "\(label) \(Int($0.clampedPercentUsed))%"
+            } ?? "week —")
             Spacer(minLength: 0)
             Text(mobileUsageStatusLabel(status))
               .foregroundStyle(ADEColor.textMuted)

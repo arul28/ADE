@@ -18,6 +18,10 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
     renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,
   },
+  chat: {
+    handoffSession: IPC.agentChatHandoff,
+    prepareCrossMachineHandoff: IPC.agentChatPrepareCrossMachineHandoff,
+  },
 };
 
 const LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS = 150_000;
@@ -82,6 +86,13 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.lanesImportBranch:
     case IPC.lanesDelete:
       return 4 * 60_000;
+    // Handoff runs an AI brief + session creation + first-message dispatch
+    // (and cross-machine prepare additionally packages provider history);
+    // it must outlive the daemon-side 120s action timeout so the false
+    // "timed out but later succeeded" failure can't reappear via this layer.
+    case IPC.agentChatHandoff:
+    case IPC.agentChatPrepareCrossMachineHandoff:
+      return 150_000;
     case IPC.iosSimulatorLaunch:
       return 10 * 60_000;
     case IPC.transcriptionTranscribe:

@@ -111,7 +111,11 @@ and in tests.
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
   layer for `terminal_sessions` rows. CRUD, continuation metadata
-  normalization, `reattach`, `reconcileStaleRunningSessions`. Reconcile and
+  normalization, `reattach`, `reconcileStaleRunningSessions`. Normalized
+  `TerminalResumeMetadata` retains optional `orchestrationParentSessionId` /
+  `spawnKind`; tracked agent CLI rows project those fields onto
+  `TerminalSessionSummary`, and resume-command backfill merges the existing
+  metadata so lineage survives continuation. Reconcile and
   ownership-aware queries gate row sweeps on both live owners and known local
   owners from `processRegistryService`: a `running` row whose owner is live
   belongs to a sibling and must be left alone; a row whose owner is known on
@@ -135,6 +139,16 @@ and in tests.
   [ARCHITECTURE.md §3.4](../../ARCHITECTURE.md#34-cross-process-ownership).
 - `apps/desktop/src/main/services/sessions/sessionService.test.ts` —
   session persistence tests.
+- `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` —
+  `ade new chat --mode cli` forwards the parent chat id and spawn kind for
+  agent providers; `start_cli_session` validates them and persists them in
+  `TerminalResumeMetadata` without assigning `chatSessionId`. Plain shell
+  sessions omit the fields.
+- `apps/ade-cli/src/tuiClient/closedCliSessions.ts`,
+  `apps/ade-cli/src/tuiClient/components/Drawer.tsx` — ADE Code projects spawn
+  lineage from closed tracked CLI resume metadata and shows compact `sub` /
+  `peer` markers for chat and CLI children in the session drawer; `none` stays
+  visually quiet.
 - `apps/desktop/src/main/services/sessions/sessionDeltaService.ts` —
   end-of-session git diff + transcript delta computation, reads from
   `session_deltas` table.
@@ -168,7 +182,8 @@ Shared types and IPC:
 
 - `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
-  `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`,
+  `TerminalResumeMetadata` (including tracked CLI spawn lineage),
+  `PtyCreateArgs`, `SessionDeltaSummary`,
   offset-stamped `PtyDataEvent`,
   `PtySendToSessionArgs` / `PtySendToSessionResult` (the
   send-or-continue surface), `PtyResumeSessionArgs` /
@@ -267,9 +282,10 @@ Renderer surfaces:
   `window.ade.pty.resumeSession`, alongside the continuation composer
   that sends a new prompt through `window.ade.pty.sendToSession`.
   It also listens for the renderer-wide `ade:work:select-session` event
-  used by orchestration panels and worker-to-lead links; the listener
-  selects the lane when supplied, focuses the target session, opens its
-  Work tab, and updates `selectedSessionId`.
+  used by orchestration panels and lineage links; the listener uses the
+  supplied lane when present or resolves it from the loaded session list,
+  then focuses the target session, opens its Work tab, and updates
+  `selectedSessionId`.
   Also owns the right-edge `WorkSidebar` toggle and resizer: when the
   sidebar is open and the view mode is not `grid`, the work view area
   shares its row with `WorkSidebar` via a flex container with a
@@ -356,10 +372,16 @@ Renderer surfaces:
   `CreateLaneDialogHost` in `close-on-create` mode, so a new lane can
   be created from Work without navigating away; once the lane record
   exists, env setup continues detached and failures surface as a sticky
-  retry toast.
+  retry toast. It also builds parent-title and live-child indexes from the
+  unfiltered session list, so a lineage tooltip can name a parent hidden by
+  the current lane/search filter.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   per-session card (status dot, title, preview line, tool type, lane,
-  delta chips). Chat summaries with a future `nextWakeAt` render a compact
+  delta chips). Any session with `orchestrationParentSessionId` renders a
+  small deterministic lineage identicon immediately left of the status dot;
+  its tooltip names the parent when available, and clicking it opens the
+  parent without selecting the child card. Chat summaries with a future
+  `nextWakeAt` render a compact
   `⏰ <duration>` chip that refreshes while the row is mounted; paused or
   overdue schedules omit the chip because their session summary reports no
   future wake. Surfaces a small amber warning pip next to the title
@@ -383,7 +405,9 @@ Renderer surfaces:
 - `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx` —
   tabs/grid/single Work view. The grid mode renders through the shared
   `PaneTilingLayout`; the seed tree comes from
-  `buildWorkSessionTilingTree`. Also hosts the chat-like continuation
+  `buildWorkSessionTilingTree`. It builds a session-title index and threads it
+  into locked `AgentChatPane` embeddings so spawned-chat roster rows use live
+  child titles. Also hosts the chat-like continuation
   composer for ended tracked agent CLI sessions: when a Claude / Codex /
   Cursor / OpenCode / Droid PTY has exited, the surface keeps the
   transcript and renders a model / permission / slash-aware composer
@@ -781,7 +805,10 @@ Fields that feed UI and downstream systems:
 - git anchoring: `headShaStart`, `headShaEnd` (used by
   `sessionDeltaService`)
 - resume: `resumeCommand`, `resumeMetadata` (provider, target kind,
-  target ID, launch config)
+  target ID, launch config, and optional `orchestrationParentSessionId` /
+  `spawnKind` for tracked agent CLI lineage)
+- spawn lineage: optional `orchestrationParentSessionId` and `spawnKind`,
+  projected from a chat record or tracked agent CLI `resumeMetadata`
 
 See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
 
@@ -990,7 +1017,8 @@ Processes (managed):
 - `resumeCommand` is derived from `resumeMetadata` when present, then
   falls back to `defaultResumeCommandForTool(toolType)`. Editing it
   directly is only allowed through `sessionService.setResumeCommand` or
-  `updateMeta`, both of which re-derive the metadata.
+  `updateMeta`, both of which re-derive the metadata; target-id refreshes merge
+  the current metadata so tracked CLI spawn lineage is not discarded.
 - Transcript writes are capped at 16 MB; after the cap a notice line is
   written once and further output is dropped. The runtime seeds
   `transcriptBytesWritten` from the file size on attach, so the cap

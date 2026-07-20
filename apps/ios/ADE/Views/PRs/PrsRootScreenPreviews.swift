@@ -201,20 +201,17 @@ private struct PrsGitHubRootPreviewScreen: View {
         .prListRowCard()
 
         PrRowCard(
-          item: PrsRootPreviewData.github346,
-          onLink: {}
+          item: PrsRootPreviewData.github346
         )
         .prListRowCard()
 
         PrRowCard(
-          item: PrsRootPreviewData.github425,
-          onLink: {}
+          item: PrsRootPreviewData.github425
         )
         .prListRowCard()
 
         PrRowCard(
-          item: PrsRootPreviewData.github344,
-          onLink: {}
+          item: PrsRootPreviewData.github344
         )
         .prListRowCard()
       }

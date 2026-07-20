@@ -19,6 +19,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
+  MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
   MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
 } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import {
@@ -2945,6 +2946,139 @@ async function connectPeer(
   );
   return { ws, ...tracked };
 }
+
+describe("PR snapshot invalidation push", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  it("broadcasts one lightweight prs_updated envelope to an authenticated peer", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-pr-invalidation");
+      const envelopeCount = peer.envelopes.length;
+
+      host.broadcastPrsUpdated();
+
+      const envelope = await waitForValue(
+        () => peer?.envelopes.slice(envelopeCount).find((entry) => entry.type === "prs_updated"),
+        "prs_updated push",
+      );
+      const payload = envelope.payload as { updatedAt?: string };
+      expect(envelope.type).toBe("prs_updated");
+      expect(payload).toEqual({ updatedAt: expect.any(String) });
+      expect(Number.isNaN(Date.parse(payload.updatedAt ?? ""))).toBe(false);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
+describe("CTO-gated Linear sync commands", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  it("advertises them as optional, paired-controller-invocable capabilities (not forbidden at the gate)", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      peer = await connectPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "viewer-linear-controller",
+      );
+      const hello = peer.envelopes.find((envelope) => envelope.type === "hello_ok");
+      const actions = (hello?.payload as {
+        features?: { commandRouting?: { actions?: SyncRemoteCommandDescriptor[] } };
+      })?.features?.commandRouting?.actions ?? [];
+
+      expect(MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS).toEqual([
+        "cto.startLinearMobileOAuth",
+        "cto.completeLinearMobileOAuth",
+        "cto.setLinearToken",
+        "cto.clearLinearToken",
+      ]);
+      expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
+        expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),
+      );
+      for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
+        expect(actions).toContainEqual({
+          action,
+          scope: "project",
+          policy: { viewerAllowed: true },
+        });
+
+        const requestId = `viewer-${action}`;
+        peer.ws.send(encodeSyncEnvelope({
+          type: "command",
+          requestId,
+          projectId: "project-1",
+          payload: {
+            commandId: `command-${action}`,
+            projectId: "project-1",
+            action,
+            args: action === "cto.completeLinearMobileOAuth"
+              ? { sessionId: "session-1", code: "code-1", state: "state-1" }
+              : action === "cto.setLinearToken"
+                ? { token: "lin_api_viewer_must_not_write" }
+                : {},
+          },
+        }));
+
+        const result = await waitForEnvelope(peer.envelopes, "command_result", requestId);
+        // A paired controller (the phone) must pass the authorization gate for
+        // these credential mutations — same trust level as lanes.create/delete.
+        // The result is never a forbidden_command rejection (it may fail
+        // downstream on a service not wired into this host harness, which is
+        // fine here — the handler success paths live in syncRemoteCommandService
+        // tests).
+        expect((result.payload as { error?: { code?: string } }).error?.code).not.toBe(
+          "forbidden_command",
+        );
+      }
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
 
 describe("outbound changeset ack retries", () => {
   beforeEach(() => {

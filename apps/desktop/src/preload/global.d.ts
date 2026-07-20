@@ -219,6 +219,9 @@ import type {
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
+  OpenCodeOAuthStartResult,
+  OpenCodeOAuthStatusEvent,
+  OpenCodeProviderAuthMethods,
   CursorCloudAgentSummary,
   CursorCloudArtifactDownload,
   CursorCloudArtifactSummary,
@@ -669,6 +672,8 @@ import type {
 } from "../shared/types";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
 import type {
+  MaintenanceRunReport,
+  RuntimeHealthSnapshot,
   StorageCleanupPreview,
   StorageCleanupResult,
   StorageCleanupTarget,
@@ -698,6 +703,7 @@ declare global {
         ping: () => Promise<"pong">;
         getInfo: () => Promise<AppInfo>;
         getResourceUsage: () => Promise<AppResourceUsageSnapshot>;
+        getRuntimeHealth: () => Promise<RuntimeHealthSnapshot>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{
@@ -759,6 +765,7 @@ declare global {
         getPressure: () => Promise<DiskPressureSnapshot>;
         getSnapshot: (args?: { forceRefresh?: boolean }) => Promise<StorageSnapshot>;
         compressNow: () => Promise<StorageCompressionResult>;
+        runMaintenanceNow: () => Promise<MaintenanceRunReport>;
         cleanupPreview: (targets: StorageCleanupTarget[]) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],
@@ -935,6 +942,22 @@ declare global {
         listApiKeys: () => Promise<string[]>;
         verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
         updateConfig: (config: Partial<AiConfig>) => Promise<void>;
+        opencodeAuthMethods: () => Promise<{ methods: OpenCodeProviderAuthMethods }>;
+        opencodeOAuthStart: (args: {
+          providerId: string;
+          methodIndex: number;
+          inputs?: Record<string, string>;
+        }) => Promise<OpenCodeOAuthStartResult>;
+        opencodeOAuthCancel: (args: { providerId: string }) => Promise<void>;
+        setOpencodeProviderKey: (args: {
+          providerId: string;
+          key: string;
+        }) => Promise<{ ok: boolean; error?: string }>;
+        clearOpencodeProviderKey: (args: {
+          providerId: string;
+        }) => Promise<{ ok: boolean; error?: string }>;
+        refreshModelsDev: () => Promise<{ lastFetchedAt: number | null }>;
+        onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void) => () => void;
         cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;
@@ -1015,6 +1038,8 @@ declare global {
       };
       sync: {
         getStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
+        /** Always reads this physical machine's local ADE brain, even in a remote-bound window. */
+        getLocalStatus: (args?: SyncGetStatusArgs) => Promise<SyncRoleSnapshot>;
         refreshDiscovery: () => Promise<SyncRoleSnapshot>;
         listDevices: () => Promise<SyncDeviceRuntimeState[]>;
         updateLocalDevice: (args: {

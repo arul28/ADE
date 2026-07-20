@@ -89,6 +89,28 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(2 * 60_000);
   });
 
+  // ADE-122 regression: a handoff (AI brief + session creation + first-message
+  // dispatch, or cross-machine history packaging) got the 30s default on the
+  // direct-IPC and remote-runtime paths, fired a false timeout, and then
+  // completed anyway as a "surprise" session about a minute later.
+  it("extends handoff timeouts on direct, local runtime, and remote runtime paths", () => {
+    expect(ipcInvokeTimeoutMs(IPC.agentChatHandoff)).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.agentChatPrepareCrossMachineHandoff)).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "chat", action: "handoffSession", args: {} },
+    }])).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "chat", action: "prepareCrossMachineHandoff", args: {} },
+    }])).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "chat", action: "handoffSession", args: {} },
+    }])).toBe(150_000);
+  });
+
   it("extends lane creation timeouts on direct and local runtime paths", () => {
     expect(ipcInvokeTimeoutMs(IPC.lanesCreate)).toBe(4 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{

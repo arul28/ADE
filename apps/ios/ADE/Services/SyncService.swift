@@ -1384,8 +1384,21 @@ func syncClientHeartbeatIntervalNanoseconds(serverIntervalMs rawValue: Any?) -> 
     return nil
   }()
   let serverMs = min(120_000, max(5_000, parsedMs ?? 30_000))
-  let clientMs = min(25_000, max(5_000, serverMs / 2))
-  return UInt64(clientMs) * 1_000_000
+  // The host already sends a heartbeat every advertised interval and the
+  // client responds with a pong. This task is only a silence fallback: waiting
+  // two host intervals avoids a second app-level ping/pong cycle on healthy
+  // relay connections while still probing well inside the host's mobile miss
+  // budget.
+  return UInt64(serverMs * 2) * 1_000_000
+}
+
+func syncShouldSendClientHeartbeatFallback(
+  now: TimeInterval,
+  lastInboundMessageAt: TimeInterval?,
+  intervalNanoseconds: UInt64
+) -> Bool {
+  guard let lastInboundMessageAt else { return true }
+  return now - lastInboundMessageAt >= TimeInterval(intervalNanoseconds) / 1_000_000_000
 }
 
 func syncShouldReconnectAfterRequestTimeout(
@@ -1839,10 +1852,25 @@ func makeLanesReparentArgs(
   return args
 }
 
-func makePrGithubSnapshotArgs(force: Bool = false, includeExternalClosed: Bool = false) -> [String: Any] {
+func makePrGithubSnapshotArgs(
+  force: Bool = false,
+  includeExternalClosed: Bool = false,
+  historyPageLimit: Int? = nil,
+  revalidate: Bool = true,
+  includeStateCounts: Bool = false
+) -> [String: Any] {
   var args: [String: Any] = ["force": force]
+  if !revalidate {
+    args["revalidate"] = false
+  }
+  if includeStateCounts {
+    args["includeStateCounts"] = true
+  }
   if includeExternalClosed {
     args["includeExternalClosed"] = true
+  }
+  if let historyPageLimit {
+    args["historyPageLimit"] = max(1, historyPageLimit)
   }
   return args
 }
@@ -1946,6 +1974,15 @@ func performAuthorizedAccountPairingCommit<Hello, Prepared, Committed>(
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
   @Published private(set) var hostName: String?
+
+  /// Human-facing name of the connected machine, or a neutral "your Mac"
+  /// fallback. Shared by Linear connect/status copy (and available to other
+  /// surfaces that otherwise re-derive the same fallback).
+  var machineDisplayName: String {
+    let trimmed = hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let trimmed, !trimmed.isEmpty { return trimmed }
+    return "your Mac"
+  }
   /// Whether this phone currently holds a Tailscale-assigned address on a
   /// tunnel interface. Drives the "iPhone isn't on Tailscale" connection hint.
   @Published private(set) var phoneHasTailnetInterface = false
@@ -1996,6 +2033,9 @@ final class SyncService: ObservableObject {
   @Published private(set) var workProjectionRevision = 0
   @Published private(set) var filesProjectionRevision = 0
   @Published private(set) var prsProjectionRevision = 0
+  /// Host-pushed invalidation for GitHub projection changes that do not touch
+  /// replicated `pull_requests` rows (notably unmapped PR webhooks).
+  @Published private(set) var prsRemoteRevision = 0
   @Published private(set) var proofArtifactsProjectionRevision = 0
 
   private let iso8601WithFractionalSecondsFormatter: ISO8601DateFormatter = {
@@ -2072,6 +2112,10 @@ final class SyncService: ObservableObject {
   /// view side; the entry's `loadedAt` gates whether the refresh actually
   /// re-fetches the sidecar fan-out.
   @Published private(set) var prDetailCache: [String: PrDetailWarmEntry] = [:]
+  /// Expensive unmapped-detail reads are single-flight per GitHub coordinate.
+  /// SwiftUI task cancellation does not cancel an already-sent host command,
+  /// so every later revision joins the same service-owned request.
+  private var prMobileGithubDetailInFlight: [String: Task<PrMobileGithubDetailSnapshot, Error>] = [:]
 
   /// Repo-scoped GitHub PR list shared by the Lanes and Work tabs so a lane (a
   /// branch) can surface a PR opened directly on GitHub — not only PRs mapped
@@ -2400,6 +2444,23 @@ final class SyncService: ObservableObject {
   func closeProjectHome() {
     guard activeProjectId != nil else { return }
     projectHomePresented = false
+  }
+
+  /// A user-requested machine transition always returns the UI to the Hub
+  /// before the socket changes. The active project remains cached, but no
+  /// in-project screen can keep rendering state owned by the previous machine.
+  func prepareForUserConnectionChange() {
+    projectHomePresented = true
+  }
+
+  func disconnectForUserConnectionChange() {
+    prepareForUserConnectionChange()
+    disconnect()
+  }
+
+  func reconnectForUserConnectionChange() async {
+    prepareForUserConnectionChange()
+    await reconnectIfPossible(userInitiated: true)
   }
 
   func selectProject(_ project: MobileProjectSummary) {
@@ -4055,6 +4116,7 @@ final class SyncService: ObservableObject {
   }
 
   func reconnect(toSavedHost host: DiscoveredSyncHost) async {
+    prepareForUserConnectionChange()
     ProductAnalytics.shared.captureQuickConnect(.pairedMachine)
     let profiles = loadSavedProfiles()
     let candidates = profiles.values.filter { profile in
@@ -4100,6 +4162,7 @@ final class SyncService: ObservableObject {
     relayCandidates: [String]
   ) async -> Bool {
     guard var profile = savedProfileForPairingQr(hostIdentity: hostIdentity) else { return false }
+    prepareForUserConnectionChange()
     let directHosts = directCandidates.compactMap { syncEndpointHost($0) }
     let relayHosts = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
     profile.savedAddressCandidates = deduplicatedAddresses(profile.savedAddressCandidates + directHosts)
@@ -4136,6 +4199,7 @@ final class SyncService: ObservableObject {
     accountToken: String,
     authorization: AccountPairingAuthorization
   ) async -> Bool {
+    prepareForUserConnectionChange()
     ProductAnalytics.shared.captureQuickConnect(.accountMachine)
     let token = accountToken.trimmingCharacters(in: .whitespacesAndNewlines)
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4443,6 +4507,7 @@ final class SyncService: ObservableObject {
         .compactMap { syncEndpointHost($0) }
     )
     guard let preferredAddress = directHosts.first else { return false }
+    prepareForUserConnectionChange()
     var profile = HostConnectionProfile(
       hostIdentity: handoff.hostIdentity,
       hostName: handoff.hostName,
@@ -4487,6 +4552,7 @@ final class SyncService: ObservableObject {
         .compactMap(syncEndpointHost)
     )
     guard let preferredAddress = directHosts.first else { return false }
+    prepareForUserConnectionChange()
     var profile = HostConnectionProfile(
       hostIdentity: response.machine.deviceId,
       hostName: response.machine.name,
@@ -4847,6 +4913,7 @@ final class SyncService: ObservableObject {
     tailscaleAddress: String? = nil,
     relayCandidates: [String] = []
   ) async {
+    prepareForUserConnectionChange()
     lastPairingErrorCode = nil
     lastPairingFailure = nil
     relayAuthorizationRequirement = nil
@@ -5478,6 +5545,63 @@ final class SyncService: ObservableObject {
     )
   }
 
+  // MARK: - Linear credential mutations (mobile connect / manage)
+  //
+  // These four commands are CTO-only credential mutations gated on the host
+  // (a read-only/viewer controller cannot invoke them — see Unit A). The token
+  // itself never crosses the wire: OAuth exchange and storage happen on the
+  // desktop; the phone only starts a PKCE-bound session and forwards the
+  // authorization code back. Each command that returns a fresh
+  // `LinearConnectionStatus` also updates the published property so the Work
+  // top-bar entry point and any open pane reflect the change immediately.
+
+  /// Begins a worker-bounce OAuth session on the connected desktop and returns
+  /// the Linear authorize URL to open in `ASWebAuthenticationSession`.
+  func startLinearMobileOAuth() async throws -> LinearMobileOAuthSession {
+    try await sendDecodableCommand(
+      action: "cto.startLinearMobileOAuth",
+      as: LinearMobileOAuthSession.self
+    )
+  }
+
+  /// Forwards the captured authorization `code` + `state` to the desktop, which
+  /// exchanges them (with its stored PKCE verifier) and stores the OAuth token.
+  @MainActor
+  func completeLinearMobileOAuth(sessionId: String, code: String, state: String) async throws -> LinearConnectionStatus {
+    let status = try await sendDecodableCommand(
+      action: "cto.completeLinearMobileOAuth",
+      args: ["sessionId": sessionId, "code": code, "state": state],
+      as: LinearConnectionStatus.self
+    )
+    linearConnectionStatus = status
+    return status
+  }
+
+  /// Stores a manually-entered Linear API key on the desktop (authMode `manual`)
+  /// and returns the recomputed, viewer-validated connection status.
+  @MainActor
+  func setLinearToken(_ token: String) async throws -> LinearConnectionStatus {
+    let status = try await sendDecodableCommand(
+      action: "cto.setLinearToken",
+      args: ["token": token],
+      as: LinearConnectionStatus.self
+    )
+    linearConnectionStatus = status
+    return status
+  }
+
+  /// Clears the stored Linear credential on the desktop (affects the whole
+  /// machine) and returns the resulting disconnected status.
+  @MainActor
+  func clearLinearToken() async throws -> LinearConnectionStatus {
+    let status = try await sendDecodableCommand(
+      action: "cto.clearLinearToken",
+      as: LinearConnectionStatus.self
+    )
+    linearConnectionStatus = status
+    return status
+  }
+
   func updateCtoIdentity(patch: CtoIdentityPatch) async throws -> CtoSnapshot {
     let patchArgs = try encodedCommandArgs(from: patch)
     return try await sendDecodableCommand(
@@ -5756,12 +5880,67 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "prs.getMobileSnapshot", as: PrMobileSnapshot.self)
   }
 
-  func fetchGitHubPullRequestSnapshot(force: Bool = false, includeExternalClosed: Bool = false) async throws -> GitHubPrSnapshot {
+  func fetchGitHubPullRequestSnapshot(
+    force: Bool = false,
+    includeExternalClosed: Bool = false,
+    historyPageLimit: Int? = nil,
+    revalidate: Bool = true,
+    includeStateCounts: Bool = false
+  ) async throws -> GitHubPrSnapshot {
     try await sendDecodableCommand(
       action: "prs.getGitHubSnapshot",
-      args: makePrGithubSnapshotArgs(force: force, includeExternalClosed: includeExternalClosed),
+      args: makePrGithubSnapshotArgs(
+        force: force,
+        includeExternalClosed: includeExternalClosed,
+        historyPageLimit: historyPageLimit,
+        revalidate: revalidate,
+        includeStateCounts: includeStateCounts
+      ),
       as: GitHubPrSnapshot.self
     )
+  }
+
+  func fetchPrMobileGithubDetail(
+    repoOwner: String,
+    repoName: String,
+    githubPrNumber: Int
+  ) async throws -> PrMobileGithubDetailSnapshot {
+    guard supportsRemoteAction("prs.getMobileGithubDetail") else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Full GitHub PR details are not available on this machine version. Update ADE on the machine and reconnect.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+    let requestKey = "\(repoOwner.lowercased())/\(repoName.lowercased())#\(githubPrNumber)"
+    if let inFlight = prMobileGithubDetailInFlight[requestKey] {
+      return try await inFlight.value
+    }
+
+    let task = Task { @MainActor [weak self] in
+      guard let self else { throw CancellationError() }
+      return try await self.sendDecodableCommand(
+        action: "prs.getMobileGithubDetail",
+        args: [
+          "repoOwner": repoOwner,
+          "repoName": repoName,
+          "githubPrNumber": githubPrNumber,
+        ],
+        as: PrMobileGithubDetailSnapshot.self
+      )
+    }
+    prMobileGithubDetailInFlight[requestKey] = task
+    do {
+      let result = try await task.value
+      prMobileGithubDetailInFlight[requestKey] = nil
+      return result
+    } catch {
+      prMobileGithubDetailInFlight[requestKey] = nil
+      throw error
+    }
   }
 
   /// Best-effort refresh of the shared `laneGithubPrItems` cache used by the
@@ -11167,6 +11346,12 @@ final class SyncService: ObservableObject {
         }
       }
       resolve(requestId: requestId, result: .success(payload))
+    case "prs_updated":
+      // Coalesce at the view task boundary. The host sends only a tiny
+      // invalidation signal; PRsTabView then performs one cached/projected
+      // snapshot read, never a GitHub poll per event.
+      prsRemoteRevision += 1
+      resolve(requestId: requestId, result: .success(payload))
     case "heartbeat":
       if let dict = payload as? [String: Any], (dict["kind"] as? String) == "ping" {
         sendEnvelope(type: "heartbeat", requestId: requestId, payload: [
@@ -11291,9 +11476,20 @@ final class SyncService: ObservableObject {
         try? await Task.sleep(nanoseconds: intervalNanoseconds)
         guard let self, !Task.isCancelled else { return }
         guard self.isCurrentConnectionGeneration(connectionGeneration), self.canSendLiveRequests() else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if !syncShouldSendClientHeartbeatFallback(
+          now: now,
+          lastInboundMessageAt: self.lastInboundMessageAt,
+          intervalNanoseconds: intervalNanoseconds
+        ) {
+          // The host heartbeat (or useful application traffic) already proved
+          // the relay path. Coalesce this client fallback instead of waking the
+          // tunnel Durable Object for another ping/pong pair.
+          continue
+        }
         let path = self.lastNetworkPathSnapshot
         if syncShouldProbeTransportAfterHeartbeatSilence(
-          now: ProcessInfo.processInfo.systemUptime,
+          now: now,
           lastInboundMessageAt: self.lastInboundMessageAt,
           heartbeatIntervalNanoseconds: intervalNanoseconds,
           isExpensive: path?.isExpensive == true,

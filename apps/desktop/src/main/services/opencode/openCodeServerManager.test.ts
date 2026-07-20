@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mockState = vi.hoisted(() => ({
   created: [] as Array<{ close: ReturnType<typeof vi.fn>; url: string }>,
   resolveOpenCodeBinaryPath: vi.fn(() => "/Users/admin/.opencode/bin/opencode"),
+  probeOpenCodeBinaryQuarantine: vi.fn(() => "unknown" as "quarantined" | "clean" | "unknown"),
 }));
 
 vi.mock("./openCodeBinaryManager", () => ({
   resolveOpenCodeBinaryPath: mockState.resolveOpenCodeBinaryPath,
+  probeOpenCodeBinaryQuarantine: mockState.probeOpenCodeBinaryQuarantine,
 }));
 
 import {
@@ -22,9 +24,12 @@ import {
   __terminateOpenCodeServerProcessesForTests,
   acquireDedicatedOpenCodeServer,
   acquireSharedOpenCodeServer,
+  classifyOpenCodeLaunchFailure,
   getOpenCodeRuntimeDiagnostics,
+  OpenCodeLaunchError,
   parseWindowsWmicProcessCsv,
   recoverManagedOpenCodeOrphans,
+  renderOpenCodeDiagnostic,
 } from "./openCodeServerManager";
 
 const originalProcessPlatform = process.platform;
@@ -75,6 +80,107 @@ describe("Windows managed OpenCode command detection", () => {
     const cmdLine =
       'C:\\\\Windows\\\\System32\\\\cmd.exe /d /s /c set "ADE_OPENCODE_MANAGED=1"&&set "OPENCODE_DISABLE_PROJECT_CONFIG=1"&&set "ADE_OPENCODE_OWNER_PID=999"&&"C:\\\\tools\\\\opencode.bat" serve --hostname=127.0.0.1 --port=4310';
     expect(__isManagedOpenCodeServeCommandForTests(cmdLine)).toBe(true);
+  });
+});
+
+describe("classifyOpenCodeLaunchFailure", () => {
+  afterEach(() => {
+    setProcessPlatform(originalProcessPlatform);
+    mockState.probeOpenCodeBinaryQuarantine.mockReturnValue("unknown");
+  });
+
+  it("classifies a missing resolved binary as not-installed", () => {
+    expect(
+      classifyOpenCodeLaunchFailure(new Error("boom"), { port: 4096, binaryPath: null }),
+    ).toEqual({ kind: "not-installed" });
+  });
+
+  it("classifies ENOENT spawn errors as not-installed", () => {
+    const error = Object.assign(new Error("spawn opencode ENOENT"), { code: "ENOENT" });
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "not-installed" });
+  });
+
+  it("classifies EADDRINUSE as port-conflict with the attempted port", () => {
+    const error = Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4310, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "port-conflict", port: 4310 });
+  });
+
+  it("classifies a startup deadline as launch-timeout", () => {
+    const error = new Error("Timeout waiting for server to start after 15000ms");
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "launch-timeout" });
+  });
+
+  it("classifies explicit darwin developer-verification evidence with the quarantine xattr as quarantined", () => {
+    setProcessPlatform("darwin");
+    mockState.probeOpenCodeBinaryQuarantine.mockReturnValue("quarantined");
+    const error = new Error("OpenCode developer cannot be verified");
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({
+      kind: "quarantined",
+      binaryPath: "/bin/opencode",
+      fixCommand: 'xattr -d com.apple.quarantine "/bin/opencode"',
+    });
+  });
+
+  it("classifies a darwin code-signature failure without quarantine as bad-signature", () => {
+    setProcessPlatform("darwin");
+    mockState.probeOpenCodeBinaryQuarantine.mockReturnValue("clean");
+    const error = new Error("dyld: code signature invalid for opencode");
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "bad-signature", binaryPath: "/bin/opencode" });
+  });
+
+  it("keeps generic darwin kills unknown even when a quarantine attribute exists", () => {
+    setProcessPlatform("darwin");
+    mockState.probeOpenCodeBinaryQuarantine.mockReturnValue("quarantined");
+    const error = new Error("Server exited with code null\nServer output: killed");
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "unknown", message: error.message });
+  });
+
+  it("keeps explicit signature failures unknown when the quarantine probe is inconclusive", () => {
+    setProcessPlatform("darwin");
+    mockState.probeOpenCodeBinaryQuarantine.mockReturnValue("unknown");
+    const error = new Error("dyld: code signature invalid for opencode");
+    expect(
+      classifyOpenCodeLaunchFailure(error, { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "unknown", message: error.message });
+  });
+
+  it("classifies unrecognized failures as unknown, preserving the message", () => {
+    setProcessPlatform("linux");
+    expect(
+      classifyOpenCodeLaunchFailure(new Error("weird failure"), { port: 4096, binaryPath: "/bin/opencode" }),
+    ).toEqual({ kind: "unknown", message: "weird failure" });
+  });
+
+  it("renders stable prefix-keyed messages and wraps them in OpenCodeLaunchError", () => {
+    expect(
+      renderOpenCodeDiagnostic({
+        kind: "quarantined",
+        binaryPath: "/bin/opencode",
+        fixCommand: 'xattr -d com.apple.quarantine "/bin/opencode"',
+      }),
+    ).toBe(
+      'OpenCode: quarantined: OpenCode binary is quarantined by macOS Gatekeeper. Fix: xattr -d com.apple.quarantine "/bin/opencode"',
+    );
+    expect(renderOpenCodeDiagnostic({ kind: "port-conflict", port: 4310 })).toBe(
+      "OpenCode: port-conflict: Port 4310 is already in use. Free the port or retry.",
+    );
+
+    const err = new OpenCodeLaunchError({ kind: "not-installed" });
+    expect(err).toBeInstanceOf(Error);
+    expect(err.diagnostic).toEqual({ kind: "not-installed" });
+    expect(err.message.startsWith("OpenCode: not-installed:")).toBe(true);
   });
 });
 

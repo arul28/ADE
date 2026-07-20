@@ -4,8 +4,34 @@ import {
   ACCOUNT_MACHINE_RELAY_STATE_POLL_MS,
   type AccountMachineRegistrationSnapshot,
   buildAccountMachineRegistration,
+  createBrainAccountMachinePublisherService,
   createAccountMachinePublisherService,
 } from "./accountMachinePublisherService";
+import {
+  DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+  DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+} from "../../../../desktop/src/shared/accountDirectory";
+
+const sharedAccountAuthService = vi.hoisted(() => ({
+  getStatus: vi.fn(() => ({
+    signedIn: true,
+    userId: "account-user",
+    source: "loopback" as const,
+  })),
+  getAccessToken: vi.fn(async () => "account-token"),
+  getSessionReadState: vi.fn(() => "available" as const),
+  onSignedIn: vi.fn(() => () => {}),
+}));
+
+vi.mock("./sharedAccountAuthService", async () => {
+  const actual = await vi.importActual<typeof import("./sharedAccountAuthService")>(
+    "./sharedAccountAuthService",
+  );
+  return {
+    ...actual,
+    getSharedAccountAuthService: () => sharedAccountAuthService,
+  };
+});
 
 function snapshot(
   overrides: Partial<AccountMachineRegistrationSnapshot> = {},
@@ -47,8 +73,10 @@ function snapshot(
         relayControlConnected: false,
         relayBridgeValidated: false,
         lastFailureAt: null,
-        reason: null,
-        lastSuccessAt: null,
+        skipReason: null,
+        lastControlError: null,
+        lastControlOpenAt: null,
+        lastBridgeValidationAt: null,
       },
     },
     ...overrides,
@@ -83,17 +111,25 @@ function routeSnapshot(
     relayControlConnected: true,
     relayBridgeValidated: true,
     lastFailureAt: null,
-    reason: null,
-    lastSuccessAt: "2026-07-16T00:00:00.000Z",
+    skipReason: null,
+    lastControlError: null,
+    lastControlOpenAt: "2026-07-16T00:00:00.000Z",
+    lastBridgeValidationAt: "2026-07-16T00:00:00.000Z",
   };
   return value;
 }
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 describe("account machine publisher health", () => {
+  it("defaults the account-directory heartbeat to 30 seconds", () => {
+    expect(ACCOUNT_MACHINE_HEARTBEAT_MS).toBe(30_000);
+  });
+
   it("records a successful publication with its endpoint count and timestamps", async () => {
     let clock = 100;
     const service = createAccountMachinePublisherService({
@@ -399,6 +435,43 @@ describe("account machine publisher health", () => {
   });
 });
 
+describe("brain account machine publisher directory policy", () => {
+  it("posts the account bearer to production when a packaged override targets development", async () => {
+    vi.stubEnv("ADE_RUNTIME_PACKAGED", "1");
+    vi.stubEnv("ADE_ALLOW_DEVELOPMENT_CLERK", "");
+    const requests: Array<{ input: string; init?: RequestInit }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (
+      input: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      requests.push({ input: String(input), init });
+      return new Response(null, { status: 204 });
+    }));
+    const service = createBrainAccountMachinePublisherService({
+      secretsDir: "/tmp/ade-account-publisher-policy",
+      projectRoots: () => [],
+      isSyncEnabled: () => true,
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+
+    await service.publishNow();
+    service.dispose();
+
+    expect(requests.map((request) => request.input)).toEqual([
+      `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/account/machines/register`,
+    ]);
+    expect(new Headers(requests[0]?.init?.headers).get("authorization"))
+      .toBe("Bearer account-token");
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "published",
+      directoryOrigin: DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
+    });
+  });
+});
+
 describe("account machine registration publisher", () => {
   it("suffixes Beta and Alpha machine names but never stable names", () => {
     const registrationName = (packageChannel: string | null) =>
@@ -444,7 +517,7 @@ describe("account machine registration publisher", () => {
     const host = routeSnapshot();
     host.routeHealth.listener.loopbackAdeValidated = false;
     host.routeHealth.tailscale.tailscaleReachable = false;
-    host.routeHealth.relay.reason = "Relay route is unusable because loopback validation failed.";
+    host.routeHealth.relay.skipReason = "Relay route is unusable because loopback validation failed.";
     host.pairingConnectInfo!.addressCandidates = [
       { kind: "lan", host: "192.168.1.20" },
       { kind: "tailscale", host: "studio.tailnet.ts.net" },
@@ -486,6 +559,29 @@ describe("account machine registration publisher", () => {
       machineKey: "machine-studio",
       deviceId: "device-studio",
     }));
+  });
+
+  it("ignores a development directory at the core publisher boundary when packaged", async () => {
+    vi.stubEnv("ADE_RUNTIME_PACKAGED", "1");
+    vi.stubEnv("ADE_ALLOW_DEVELOPMENT_CLERK", "");
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-secret-token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => `${DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL}/tenant`,
+      fetchImpl,
+    });
+
+    await service.publishNow();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe(
+      `${DEFAULT_ADE_ACCOUNT_DIRECTORY_URL}/account/machines/register`,
+    );
   });
 
   it("never sends the bearer to an untrusted URL or logs it on failure", async () => {
@@ -585,6 +681,30 @@ describe("account machine registration publisher", () => {
     await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_HEARTBEAT_MS);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     resolveFetch!(new Response("{}", { status: 200 }));
+    service.dispose();
+  });
+
+  it("queues an identity-recovery publish after the current attempt", async () => {
+    let resolveFetch: ((response: Response) => void) | null = null;
+    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "token",
+      getSnapshot: async () => routeSnapshot(),
+      getMachineKey: () => "machine-studio",
+      fetchImpl,
+    });
+
+    const first = service.publishNow();
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    service.requestPublishAfterCurrentAttempt();
+    resolveFetch!(new Response("{}", { status: 200 }));
+    await first;
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+    const second = service.publishNow();
+    resolveFetch!(new Response("{}", { status: 200 }));
+    await second;
     service.dispose();
   });
 });

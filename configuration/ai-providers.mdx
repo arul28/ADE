@@ -1,24 +1,75 @@
 ---
 title: "AI providers"
-description: "Connect Claude Code, Codex, Cursor, Factory Droid, and OpenCode — with your own key or an existing subscription."
+description: "Connect coding agents with your own key or subscription, and reach 160+ more models through OpenCode — fully managed by ADE."
 icon: "brain"
 ---
 
-ADE runs **Claude Code, Codex, Cursor, Factory Droid, and OpenCode** — every chat, CTO task, and worker routes through one of these five agents. Connect at least one before starting agent work. Each can use your own API key or, where supported, an existing subscription sign-in.
+ADE runs your chats, CTO tasks, and workers through **coding agents** you already know — Claude Code, Codex, Cursor, and Droid — plus **OpenCode**, a managed layer that opens up subscriptions, provider keys, and 160+ more models behind one roof. Connect at least one before starting agent work.
 
-## The five agents
+Settings → Providers is organized into two groups: the coding agents, and everything OpenCode unlocks.
 
-| Agent | Connect with | Typical use |
-|-------|--------------|-------------|
-| **Claude Code** | Claude subscription or Anthropic API key | General coding, planning, review, worker tasks. |
-| **Codex** | OpenAI sign-in or API key | OpenAI coding workflows and CLI-backed sessions. |
-| **Cursor** | Cursor API key (`CURSOR_API_KEY`) | Cursor agent sessions through the Cursor SDK. |
-| **Factory Droid** | Factory sign-in or API key | Droid agent sessions, including AGI mode. |
-| **OpenCode** | API key, OpenRouter, or local endpoint | Broadest model reach; local or provider-backed. |
+## Coding agents
 
-## The models you can reach through ADE's agents
+Each coding agent uses the login or key you already have. ADE detects your existing CLI credentials automatically, so most of these light up green without any extra setup.
 
-These agents — plus OpenCode and OpenRouter routing — give you access to models from every major lab. Pick whichever fits the task.
+| Agent | Connect with |
+|-------|--------------|
+| **Claude Code** | Your `claude` login — a Claude Pro/Max subscription or `ANTHROPIC_API_KEY`. |
+| **Codex CLI** | Your ChatGPT sign-in — a Plus/Pro subscription or `OPENAI_API_KEY`. |
+| **Cursor** | A Cursor API key (`CURSOR_API_KEY`). ADE verifies it and lists Cursor's models. |
+| **Droid** | Your Factory login or `FACTORY_API_KEY`. |
+
+<AccordionGroup>
+  <Accordion title="Claude Code" icon="anthropic">
+    Sign in with a Claude subscription or paste an Anthropic API key. ADE runs Claude through the bundled Claude Agent SDK, so the `claude` CLI does not need to be installed separately. If sign-in is required, the card offers a one-click login. See [Claude Code](/ai-tools/claude-code) for lane context and permission modes.
+  </Accordion>
+  <Accordion title="Codex CLI" icon="openai">
+    Sign in with your ChatGPT account or provide an API key. Codex runs as a CLI-backed session and reaches OpenAI models.
+  </Accordion>
+  <Accordion title="Cursor" icon="arrow-pointer">
+    Add a Cursor API key (or set `CURSOR_API_KEY` in the environment ADE launches from). ADE verifies it with the Cursor SDK and discovers your available models. See [Cursor](/ai-tools/cursor).
+  </Accordion>
+  <Accordion title="Droid" icon="robot">
+    Sign in with Factory or set `FACTORY_API_KEY`. Droid runs as an agent provider and supports AGI mode for larger autonomous tasks.
+  </Accordion>
+</AccordionGroup>
+
+## OpenCode — universal model access
+
+OpenCode is the managed layer that reaches everything else. ADE downloads and runs it for you, keeps its credentials in an isolated ADE-managed store (never your own `~/.local/share/opencode`), and refreshes its model catalog on its own. One group, four ways in:
+
+<Steps>
+  <Step title="Subscriptions">
+    Connect a subscription you already pay for — currently GitHub Copilot, ChatGPT Plus/Pro, GitLab, Poe, and DigitalOcean. Click **Connect**, finish the sign-in in your browser, and the row flips to Connected when the provider reports back. The available list comes straight from OpenCode, so it grows over time.
+
+    **Kimi for Coding** connects here too, with a membership key instead of a browser sign-in.
+
+    <Note>
+    Claude Pro/Max cannot be used through OpenCode — Anthropic's terms of service don't allow it. Connect Claude through the **Claude Code** agent above instead.
+    </Note>
+  </Step>
+  <Step title="API provider keys">
+    Paste a key for any first-class provider — Anthropic, OpenAI, Google AI, Mistral, DeepSeek, xAI, Groq, Together AI, OpenRouter, or **Moonshot AI** (`MOONSHOT_API_KEY`). Use **Verify all** to check every stored key at once. Keys are held in local encrypted storage.
+  </Step>
+  <Step title="More providers">
+    Beyond the first-class rows, OpenCode reaches **160+ more providers**. Search the chip cloud, then paste a key against any provider by its ID. The catalog is cached between sessions, so it renders the moment Settings opens.
+  </Step>
+  <Step title="Local model servers">
+    Point ADE at **LM Studio** or **Ollama** running locally. ADE auto-detects the OpenAI-compatible endpoint, lists the models you've loaded, and lets you set a default per runtime.
+  </Step>
+</Steps>
+
+### Catalog freshness
+
+The group header shows when the model catalog (from models.dev) last synced. ADE refreshes it on launch and every six hours; hit **refresh** in the header to pull the latest metadata on demand.
+
+### Advanced — custom providers & model slugs
+
+Open **Advanced** to add a custom OpenAI- or Anthropic-compatible provider (name, base URL, key, and model slugs) or to register extra model slugs by `providerId/modelId`. Both flow straight into the managed OpenCode config.
+
+## The models you can reach
+
+Between the coding agents and OpenCode's routing, you get models from every major lab. Pick whichever fits the task.
 
 <Frame>
   <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "center", justifyContent: "center", padding: "1.25rem 0.5rem" }}>
@@ -36,42 +87,7 @@ These agents — plus OpenCode and OpenRouter routing — give you access to mod
   </div>
 </Frame>
 
-## Connect a provider
-
-<Steps>
-  <Step title="Open Settings → AI Connections">
-    Choose the agent you want to connect.
-  </Step>
-  <Step title="Add credentials or sign in">
-    Paste an API key, sign in with a subscription, configure a local endpoint, or authenticate the provider CLI.
-  </Step>
-  <Step title="Verify">
-    ADE probes the provider CLI and lists its available models. A green status means it's ready to start a session.
-  </Step>
-  <Step title="Choose defaults">
-    Set your default chat model and any role-specific overrides for CTO, workers, or specific lanes.
-  </Step>
-</Steps>
-
-Per-agent key steps are below.
-
-<AccordionGroup>
-  <Accordion title="Claude Code" icon="anthropic">
-    Sign in with a Claude subscription or paste an Anthropic API key. ADE runs Claude through the bundled Claude Agent SDK, so the `claude` CLI does not need to be installed separately. See [Claude Code](/ai-tools/claude-code) for lane context and permission modes.
-  </Accordion>
-  <Accordion title="Codex" icon="openai">
-    Sign in with your OpenAI account or provide an API key. Codex runs as a CLI-backed session and reaches OpenAI models.
-  </Accordion>
-  <Accordion title="Cursor" icon="arrow-pointer">
-    Provide a Cursor API key (or set `CURSOR_API_KEY` in the environment ADE launches from). ADE recognizes the key as valid auth and discovers Cursor's available models at startup. See [Cursor](/ai-tools/cursor).
-  </Accordion>
-  <Accordion title="Factory Droid" icon="robot">
-    Sign in with Factory or provide an API key. Droid runs as an agent provider and supports AGI mode for larger autonomous tasks.
-  </Accordion>
-  <Accordion title="OpenCode" icon="layer-group">
-    Toggle OpenCode on; ADE downloads and manages the binary and local server. OpenCode is what powers API-backed and local-model chats — back it with an Anthropic or OpenAI key, an OpenRouter key for any model, or a local OpenAI-compatible endpoint such as LM Studio or Ollama. See [OpenCode & Windsurf](/ai-tools/windsurf).
-  </Accordion>
-</AccordionGroup>
+A model that still needs a key or sign-in shows dimmed in the model picker with a set-up shortcut that jumps straight back to this page.
 
 ## Permission presets
 
@@ -93,6 +109,17 @@ Running several agents in parallel can spend quickly. Use cheaper models for rou
 <Frame caption="Live provider usage and quota windows in the top-bar Usage popup.">
   <img src="/media/features/settings/provider-usage.webp" alt="Per-provider usage and quota windows in ADE" />
 </Frame>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="OpenCode won't launch on macOS">
+    If OpenCode is blocked by macOS Gatekeeper, its diagnostics report a quarantined binary and the exact fix — clear the quarantine attribute with `xattr -d com.apple.quarantine <path>` (the card shows the full path), then re-check.
+  </Accordion>
+  <Accordion title="A CLI shows as detected but not signed in">
+    Run the login command the card suggests, then hit **Refresh**. If a CLI is installed but not found, make sure it is on the shell PATH that ADE launches from.
+  </Accordion>
+</AccordionGroup>
 
 <Warning>
 Provider calls go directly from your machine to the provider or local endpoint you configure. Keep keys out of committed files — ADE stores them in local encrypted settings.

@@ -12,7 +12,7 @@ The Linear services live under the `cto/` service directory as shared plumbing; 
 
 - `linearAppClient.ts` — the ADE Linear OAuth app constants: the bundled public `ADE_LINEAR_APP_CLIENT_ID` and the `LinearOAuthClientSource` (`"ade-app" | "custom"`) type. This app is the default sign-in client; its authorization auto-provisions the workspace webhook the automations Linear ingress consumes.
 - `linearCredentialService.ts` — personal API key + OAuth client + auth-mode storage in the active project's `.ade/secrets`, with `ensureFreshToken()` for automatic OAuth refresh. `getOAuthClientCredentials()` falls back to the bundled ADE app client (secretless) when no custom client is configured, and `getOAuthClientSource()` reports which is in effect.
-- `linearOAuthService.ts` / `linearOAuthRefreshLock.ts` / `linearTokenRefresh.ts` — PKCE loopback OAuth flow (port 19836), the cross-process refresh lock, and the token-refresh exchange. The authorize URL requests `read,write,admin` for the ADE app client and `read,write` for a custom client.
+- `linearOAuthService.ts` / `linearOAuthRefreshLock.ts` / `linearTokenRefresh.ts` — the OAuth flows, the cross-process refresh lock, and the token-refresh exchange. Two authorize paths share the same PKCE code exchange and token storage: `startSession`/`getSession` run the desktop **loopback** flow (ephemeral server on port 19836), while `startExternalSession`/`completeExternalSession` run the **worker-bounce** flow used by mobile — no loopback server; the redirect target is `LINEAR_MOBILE_OAUTH_REDIRECT_URI` (the `ade-github-webhook-relay` Cloudflare worker's `/linear/oauth/callback`, which 302-bounces to `ade://linear-oauth`). In both flows the PKCE verifier and the resulting token stay desktop-side. The authorize URL requests `read,write,admin` for the ADE app client and `read,write` for a custom client.
 - `linearClient.ts` — the GraphQL client shared by desktop and the headless ADE CLI (reads plus the lightweight `updateIssueState` / `updateIssueAssignee` / `createComment` / `addIssueLabel` writes, and the `listWebhooks` / `createWebhook` / `deleteWebhook` methods the automations Linear ingress uses to manage a per-workspace webhook).
 - `linearIssueTracker.ts` / `issueTracker.ts` — normalization into `NormalizedLinearIssue` and the read shims + write helpers renderer/CLI surfaces call through.
 - `linearGraphQLInput.ts` — GraphQL input builders shared by client and tracker.
@@ -23,8 +23,14 @@ The Linear services live under the `cto/` service directory as shared plumbing; 
 
 - `renderer/components/app/LinearQuickViewButton.tsx`, `LinearIssueBrowser.tsx`, `LinearIssueSelectModal.tsx`, `LinearIssueResolveModals.tsx` — the top-bar quick view, the filter/search browser, and the single-issue select/resolve dialogs.
 - `renderer/components/app/BatchLaunchModal.tsx`, `BatchLaunchStatusToast.tsx`, `renderer/components/shared/SessionLaunchModelControls.tsx`, and `renderer/lib/linearBatchLaunch.ts` — multi-select batch launch: per-issue configuration, the single canonical model-picker Fast control, bounded-parallel create-lane → session → kickoff, and lifecycle-backed readiness/attention status.
-- `renderer/components/settings/LinearSection.tsx` — Settings → Integrations connect/disconnect panel.
+- `renderer/components/settings/LinearSection.tsx` — Settings → Integrations connect/disconnect panel; renders the connected workspace's org logo alongside its name.
 - `renderer/components/lanes/LinearIssueBadge.tsx` (+ `linearBrand.tsx`, `linearIssueDisplay.ts`, `linearProjectIcon.tsx`) — the lane-list badge and brand/display helpers.
+
+### iOS Linear surface (`apps/ios/ADE/Views/Linear/`)
+
+- `LinearPaneSheet.swift`, `LinearIssueListScreen.swift`, `LinearIssueDetailScreen.swift`, `LinearLaunchScreen.swift` / `LinearLaunchModel.swift`, `LinearPaneStore.swift`, `LinearPaneToolbarButton.swift`, `LinearBrand.swift` / `LinearSVGPath.swift` — the Work top-bar Linear pane: grouped issue browser, detail view, lane/agent launcher, pane store, and brand/logo assets. Reads and launches go over the existing `cto.*` read RPCs and the existing lane/chat/CLI launch primitives.
+- `LinearConnectionScreen.swift` — the connection-management screen pushed from the pane's gear button. Shows the connected workspace (org logo + name + viewer + auth-mode/expiry) with **Reconnect** and **Disconnect**; when disconnected it hosts the same inline connect affordances as the pane's empty state, so the gear is never a dead end. `LinearConnectActions` (in the same file) is the shared connect UI — "Sign in with Linear" (worker-bounce OAuth) plus an expandable "Use an API key" form — reused by both the connection screen and the disconnected pane. `LinearOrgAvatar` renders the workspace logo with a monogram fallback.
+- `LinearOAuthRunner.swift` — drives the phone side of worker-bounce OAuth: calls `cto.startLinearMobileOAuth` (desktop mints the PKCE session), opens the `authorizeUrl` in an `ASWebAuthenticationSession(callbackURLScheme:"ade")`, captures `ade://linear-oauth?code&state` in-session (so it never reaches `DeepLinkRouter`, which ignores the `linear-oauth` host), then calls `cto.completeLinearMobileOAuth` for the desktop-side exchange + store. Each connect surface (screen and disconnected pane) owns its own runner; every capability is feature-gated on `supportsRemoteAction(...)` so the affordance is hidden on older brains that don't advertise the command.
 
 ### Shared and CLI
 
@@ -44,6 +50,15 @@ Credentials are owned by `apps/desktop/src/main/services/cto/linearCredentialSer
 
 Until a token is stored, nothing binds and no background work runs — connecting is a deliberate act of storing a token.
 
+### Connecting and managing from mobile
+
+The phone can connect, reconnect, and disconnect Linear against its paired Mac without a loopback server. Both mobile paths store the token **desktop-side** and are exposed as four `viewerAllowed` sync commands (`cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken`):
+
+- **Worker-bounce OAuth.** `cto.startLinearMobileOAuth` has the desktop mint a PKCE session (`linearOAuthService.startExternalSession`) whose `redirect_uri` is the `ade-github-webhook-relay` Cloudflare worker's `/linear/oauth/callback`. The phone opens the returned `authorizeUrl` in an `ASWebAuthenticationSession`; after the user authorizes, Linear redirects to the worker, which 302-bounces to `ade://linear-oauth?code&state`. The web-auth session (scheme `ade`) captures that callback in-process, so the phone hands `code` + `state` back through `cto.completeLinearMobileOAuth`, and the desktop performs the token exchange (`completeExternalSession`) and stores it. The PKCE verifier and the token never leave the Mac, so the authorization code is useless in transit.
+- **API key.** `cto.setLinearToken` forwards a pasted personal API key to the desktop `linearCredentialService`; `cto.clearLinearToken` disconnects the workspace for the whole machine.
+
+Because the four commands are advertised as optional capabilities, the iOS UI gates each affordance on `supportsRemoteAction(...)` — an older brain that never advertises them simply shows no connect/reconnect/disconnect buttons (with a short "update ADE on your Mac" hint) instead of erroring.
+
 ## Read surface
 
 - `linearClient.ts` — the GraphQL client (shared by desktop and the headless ADE CLI). Reads: `fetchIssueById`, `listProjects`, `searchIssues` (paginated), `getQuickView` (workspace + active-project counters), `fetchIssueComments`, `listLabels`, `listUsers`. The shared issue fragment also carries cycle metadata, label colors, and child-issue fields.
@@ -60,10 +75,10 @@ Renderer surfaces over these reads:
 
 Mobile surfaces over the same reads:
 
-- `apps/ios/ADE/Views/Linear/` — the Work top-bar Linear pane: grouped issue browser, detail view with description/comments/sub-issues, and a launcher for "New lane" or "Launch agent". The pane is UI orchestration only; it reuses the existing `cto.*` read RPCs and the existing lane/chat/CLI launch primitives exposed through sync.
-- `apps/ios/ADE/App/DeepLinkRouter.swift` — routes `ade://linear-issue/<IDENT>` and the matching `https://ade-app.dev/open?type=linear-issue` handoff into the mobile pane when a project is open, otherwise bouncing the link to the paired Mac.
+- `apps/ios/ADE/Views/Linear/` — the Work top-bar Linear pane: grouped issue browser, detail view with description/comments/sub-issues, and a launcher for "New lane" or "Launch agent". The pane is UI orchestration only; it reuses the existing `cto.*` read RPCs and the existing lane/chat/CLI launch primitives exposed through sync. The pane's gear opens `LinearConnectionScreen` for **managing** the connection from the phone — connect (worker-bounce OAuth or API key), reconnect, and disconnect — and the disconnected pane surfaces the same connect actions inline. These write paths drive the four `cto.*` connection commands below and are feature-gated so they simply don't appear against an older brain that doesn't advertise them.
+- `apps/ios/ADE/App/DeepLinkRouter.swift` — routes `ade://linear-issue/<IDENT>` and the matching `https://ade-app.dev/open?type=linear-issue` handoff into the mobile pane when a project is open, otherwise bouncing the link to the paired Mac. It deliberately ignores the `linear-oauth` host: the OAuth callback is captured inside the `ASWebAuthenticationSession`, never as an app deeplink.
 
-IPC (named in `apps/desktop/src/shared/ipc.ts`, registered in `registerIpc.ts`, reached via `window.ade.cto.*`): `ctoGetLinearConnectionStatus`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`. The mobile client drives the read subset through `cto.*` sync commands (see [`../cto/README.md`](../cto/README.md#sync-command-surface)).
+IPC (named in `apps/desktop/src/shared/ipc.ts`, registered in `registerIpc.ts`, reached via `window.ade.cto.*`): `ctoGetLinearConnectionStatus`, `ctoSetLinearToken`, `ctoClearLinearToken`, `ctoStartLinearOAuth`, `ctoGetLinearOAuthSession`, `ctoSetLinearOAuthClient`, `ctoClearLinearOAuthClient`, `ctoGetLinearProjects`, `ctoGetLinearQuickView`, `ctoGetLinearIssuePickerData`, `ctoSearchLinearIssues`, `ctoGetLinearIssueComments`. The mobile client drives the read subset through `cto.*` sync commands, plus four **connection-management** sync commands — `cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken` — that let the phone connect, reconnect, and disconnect Linear (see [`../cto/README.md`](../cto/README.md#sync-command-surface) and [`../sync-and-multi-device/remote-commands.md`](../sync-and-multi-device/remote-commands.md)). All four are `viewerAllowed` and advertised as **optional** mobile capabilities, so older brains that omit them leave the phone's connect/manage affordances hidden rather than failing.
 
 ## Lane attachment, commit references, and PR magic words
 
@@ -123,7 +138,7 @@ State lives in `.ade/ade.db` and replicates through cr-sqlite. Tables the live L
 ## Gotchas
 
 - **Dormant until connected.** Until a token is stored, nothing fires and no listener binds. Tests should stub `getStatus().tokenStored` accordingly.
-- **OAuth is loopback-only.** Port 19836 must be free; the service does not pick alternatives. Collisions surface as a startup error in the panel.
+- **Desktop OAuth is loopback-only.** The desktop sign-in flow needs port 19836 free; the service does not pick alternatives, and collisions surface as a startup error in the panel. The mobile worker-bounce flow does not use a loopback server (it relies on the relay worker + `ade://` callback), so it is unaffected by port 19836.
 - **Token storage is per-app, not per-project.** `LinearConnectionStatus.storageScope` is `app`; switching projects does not change which workspace is attached unless the token is rotated.
 - **Live status is off by default.** Nothing writes back to Linear on launch / PR / merge unless `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`; every hook short-circuits when the flag is unset.
 - **CRR strips non-PK uniqueness.** Linear tables don't rely on secondary UNIQUE constraints for upserts; use explicit select-then-update or the delete-then-insert pattern instead of `ON CONFLICT(some_unique_col)`.

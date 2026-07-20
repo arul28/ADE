@@ -102,6 +102,7 @@ import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
+import { shouldRejectDevelopmentEnvCredential } from "./services/account/accountAuthService";
 import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
 import {
   runAdeCodeRemote,
@@ -232,6 +233,7 @@ type FormatterId =
   | "external-sessions"
   | "storage-snapshot"
   | "storage-compress"
+  | "storage-maintenance"
   | "sync-status"
   | "sync-web";
 
@@ -1377,6 +1379,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --no-fast, --standard  Disable fast service tier explicitly.
     --prompt <text>        First chat message or CLI initial input.
 
+  Spawn lineage:
+    In tracked agent shells, chat mode and agent-provider CLI mode default
+    their parent to $ADE_CHAT_SESSION_ID. Use --parent <sessionId> to override
+    it or --no-parent to opt out. CLI terminals record lineage without taking
+    attached-terminal ownership. Plain shell terminals do not record lineage.
+
   Compatibility:
     ade chat create still creates persistent Work chats.
     ade shell start-cli still starts tracked provider CLI sessions.
@@ -1396,6 +1404,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
   --type <subagent|peer|none> sets only the cosmetic relationship and completion-report policy; a typed agent is a full agent. subagent wakes the parent, peer leaves a quiet note, and none (default) sends no report.
+
+  Spawn lineage: when run from a tracked agent shell (ADE_CHAT_SESSION_ID set),
+  the new session links back to the spawning chat. In CLI mode, the terminal
+  shows that spawn lineage on its own sidebar card and links back to the chat
+  (agent providers only — plain shell terminals don't record lineage).
+  Override with --parent <sessionId>; opt out with --no-parent.
 `,
   lanes: `${ADE_BANNER}
   Lanes
@@ -1525,8 +1539,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
     $ ade prs checks <pr> --text                    Show check status
     $ ade prs comments <pr> --text                  Show unresolved review work
-    $ ade prs github-snapshot --include-external-closed
-                                                    Include closed external PR history in the GitHub snapshot
+    $ ade prs github-snapshot --include-external-closed --history-page-limit 4
+                                                    Include bounded closed PR history in the GitHub snapshot
+    $ ade prs github-snapshot --include-state-counts --no-revalidate
+                                                    Include exact state totals without a background refresh
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -2086,12 +2102,14 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Reports what ADE is holding on disk (chats/terminal history, lane worktrees,
   build output, caches, proof attachments, recovery backups, database) and the
   volume's free space, mirroring the desktop Settings storage dashboard. The
-  snapshot is read-only; compression is lossless and safe. Target-scoped cleanup
+  snapshot is read-only; compression is lossless and safe. Maintenance runs the
+  policy-driven ledger sweep (prune/compress/vacuum). Target-scoped cleanup
   (which deletes files) is intentionally left to the action bridge.
 
     $ ade storage snapshot --text                   Categorized ADE disk usage + free-space summary
     $ ade storage snapshot --refresh --text         Force a fresh scan (skip the cached snapshot)
     $ ade storage compress --text                   Losslessly compress old chat/terminal history
+    $ ade --role cto storage maintenance --text     Run the policy-driven maintenance sweep now (CTO)
     $ ade storage actions --text                    List raw storage service actions
     $ ade storage action cleanupPreview --input-json '{"targets":[...]}'   Preview a target-scoped cleanup
     $ ade --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'   Delete previewed targets (CTO)
@@ -2534,12 +2552,12 @@ function readLaneId(args: string[]): string | null {
 }
 
 /**
- * Parent chat-session lineage for spawned chat sessions. Defaults to the
- * spawning agent's own session — ADE injects ADE_CHAT_SESSION_ID into every
- * tracked agent shell (chat runtimes and tracked CLI/PTY sessions) — so a
- * child created via `ade chat create` links back to the chat that spawned it
- * instead of becoming an orphan. `--parent <sessionId>` overrides the
- * default; `--no-parent` opts out entirely.
+ * Parent chat-session lineage for spawned chat and agent-provider CLI
+ * sessions. Defaults to the spawning agent's own session — ADE injects
+ * ADE_CHAT_SESSION_ID into every tracked agent shell (chat runtimes and
+ * tracked CLI/PTY sessions). `--parent <sessionId>` overrides the default;
+ * `--no-parent` opts out entirely. CLI callers keep chatSessionId separate
+ * because that field represents attached-terminal ownership, not lineage.
  */
 function readParentSessionId(args: string[]): string | undefined {
   const override = readValue(args, ["--parent", "--parent-session", "--parent-session-id"]);
@@ -4162,7 +4180,11 @@ function resolveNewChatLaneArgs(args: string[], prompt: string | null): {
   maybePut(createLaneArgs, "description", readValue(args, ["--description", "--desc"]));
   maybePut(createLaneArgs, "baseBranch", readValue(args, ["--base", "--base-branch"]));
   maybePut(createLaneArgs, "branchName", readValue(args, ["--branch-name"]));
-  maybePut(createLaneArgs, "parentLaneId", readValue(args, ["--parent", "--parent-lane", "--parent-lane-id"]));
+  // No bare `--parent` alias here: in `ade new chat` that flag is documented as
+  // the spawn-lineage parent SESSION (readParentSessionId), and this resolver
+  // runs first — consuming it would silently eat the lineage flag whenever
+  // --auto-create-lane is used. Lane parentage keeps the explicit aliases.
+  maybePut(createLaneArgs, "parentLaneId", readValue(args, ["--parent-lane", "--parent-lane-id"]));
   return { laneId: null, autoCreateLane: true, createLaneArgs };
 }
 
@@ -4183,7 +4205,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
   const spawnTypeArg = readValue(args, ["--type", "--spawn-type"]);
-  const spawnKind = mode === "chat" ? spawnTypeArg?.trim().toLowerCase() : undefined;
+  const spawnKind = spawnTypeArg?.trim().toLowerCase();
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
@@ -4217,10 +4239,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   };
 
   // Consume the flags in both modes so they never leak into the generic arg
-  // bag; lineage only applies to chat mode (a PTY session is not a chat
-  // record, so there is nothing to link).
+  // bag. Both chat and CLI modes record the same spawn lineage fields; CLI
+  // sessions keep chatSessionId free for true attached-terminal ownership.
   const parentSessionId = readParentSessionId(args);
-  const orchestrationParentSessionId = mode === "chat" ? parentSessionId : undefined;
+  const orchestrationParentSessionId = parentSessionId;
   const launchArgs = mode === "chat"
     ? collectGenericObjectArgs(args, {
         provider,
@@ -4248,6 +4270,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         modelId: modelArg,
         reasoningEffort,
         ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
+        // Spawn lineage rides on resume metadata, which only agent providers
+        // have — plain shell terminals can't persist it, so don't pretend.
+        ...(provider !== "shell" && orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+        ...(provider !== "shell" && spawnKind ? { spawnKind } : {}),
         cols: readIntOption(args, ["--cols"], 120),
         rows: readIntOption(args, ["--rows"], 36),
         cwd: readValue(args, ["--cwd"]),
@@ -5775,6 +5801,19 @@ function buildPrPlan(args: string[]): CliPlan {
     };
     if (readFlag(args, ["--include-external-closed", "--include-closed-external"])) {
       snapshotArgs.includeExternalClosed = true;
+    }
+    const historyPageLimit = readIntOption(args, ["--history-page-limit", "--history-pages"]);
+    if (historyPageLimit !== undefined) {
+      if (historyPageLimit <= 0) {
+        throw new CliUsageError("--history-page-limit must be a positive integer.");
+      }
+      snapshotArgs.historyPageLimit = historyPageLimit;
+    }
+    if (readFlag(args, ["--include-state-counts", "--state-counts"])) {
+      snapshotArgs.includeStateCounts = true;
+    }
+    if (readFlag(args, ["--no-revalidate"])) {
+      snapshotArgs.revalidate = false;
     }
     return {
       kind: "execute",
@@ -10220,8 +10259,19 @@ function buildStoragePlan(args: string[]): CliPlan {
       steps: [actionStep("result", "storage", "compressNow", {})],
     };
   }
+  if (sub === "maintenance" || sub === "maintain" || sub === "run-maintenance") {
+    // Runs the same policy-driven maintenance sweep as the desktop Settings
+    // "Run maintenance now" button (prune/compress/vacuum per the storage
+    // ledger). CTO-only at the action bridge, so agents must pass --role cto.
+    return {
+      kind: "execute",
+      label: "storage maintenance",
+      formatter: "storage-maintenance",
+      steps: [actionStep("result", "storage", "runMaintenanceNow", {})],
+    };
+  }
   throw new CliUsageError(
-    "storage supports snapshot, compress, actions, or action <name>. Use 'ade actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
+    "storage supports snapshot, compress, maintenance, actions, or action <name>. Use 'ade actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
   );
 }
 
@@ -12428,9 +12478,11 @@ function checkSyncReadiness(value: unknown): ReadinessCheck & {
   }
   if (
     relay?.enabled === true
-    && (relay?.relayControlConnected !== true || asString(relay?.reason) != null)
+    && (relay?.relayControlConnected !== true || asString(relay?.skipReason) != null)
   ) {
-    failures.push(`relay: ${asString(relay.reason) ?? "control channel is not connected"}`);
+    failures.push(`relay: ${asString(relay.skipReason)
+      ?? asString(relay.lastControlError)
+      ?? "control channel is not connected"}`);
   }
   const usable = failures.length === 0;
   return {
@@ -15251,6 +15303,8 @@ async function runServe(
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       phonePairingStateDir: layout.secretsDir,
       getAccountDirectoryHealth,
+      requestAccountMachinePublish: () =>
+        accountMachinePublisher?.requestPublishAfterCurrentAttempt(),
       projectCatalogProvider: machineProjectCatalogProvider,
       // All-projects chat roster (mobile hub). Closes over `scopeRegistry`,
       // which is assigned by this very `new ProjectScopeRegistry(...)` call —
@@ -16037,9 +16091,11 @@ function formatSyncStatus(value: unknown): string {
   const tailscaleState = tailscale.tailscaleReachable === true
     ? "reachable"
     : asString(tailscale.reason) ?? (tailscale.enabled === true ? "not reachable" : "disabled");
+  const relaySkipReason = asString(relay.skipReason)
+    ?? asString(relay.lastControlError);
   const relayState = relay.relayControlConnected === true && relay.relayBridgeValidated === true
     ? "reachable"
-    : asString(relay.reason) ?? (relay.enabled === true ? "not reachable" : "disabled");
+    : relaySkipReason ?? (relay.enabled === true ? "not reachable" : "disabled");
   const transferReadiness = isRecord(snapshot.transferReadiness)
     ? snapshot.transferReadiness
     : null;
@@ -16068,6 +16124,9 @@ function formatSyncStatus(value: unknown): string {
     ["listener", listenerState],
     ["tailscale", tailscaleState],
     ["relay", relayState],
+    ["relay control error", relay.lastControlError],
+    ["relay control opened", relay.lastControlOpenAt],
+    ["relay bridge validated", relay.lastBridgeValidationAt],
     ["account directory", accountParts.join(" · ")],
     ["directory reason", skipReason],
     ["directory attempt", lastAttempt],
@@ -16315,6 +16374,38 @@ function formatStorageCompression(value: unknown): string {
     ["files compressed", value.filesCompressed],
     ["reclaimed", formatBytes(value.savedBytes)],
   ]);
+}
+
+function formatStorageMaintenance(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const header = renderKeyValues("ADE storage maintenance", [
+    ["trigger", value.trigger],
+    ["reclaimed", formatBytes(value.reclaimedBytes)],
+    ["db size", typeof value.dbSizeBytes === "number" ? formatBytes(value.dbSizeBytes) : undefined],
+    ["started", value.startedAt],
+    ["finished", value.finishedAt],
+  ]);
+  const actions = Array.isArray(value.actions) ? value.actions.filter(isRecord) : [];
+  const rows = actions.map((action) => {
+    const note = typeof action.error === "string" && action.error
+      ? `error: ${action.error}`
+      : typeof action.skippedReason === "string" && action.skippedReason
+        ? `skipped: ${action.skippedReason}`
+        : "";
+    return [
+      cell(action.ledgerId, 32),
+      cell(action.kind, 12),
+      typeof action.itemsAffected === "number" ? String(action.itemsAffected) : "-",
+      formatBytes(action.bytesReclaimed),
+      note,
+    ];
+  });
+  const table = renderTable(
+    ["LEDGER", "KIND", "ITEMS", "RECLAIMED", "NOTE"],
+    rows,
+    "No maintenance actions were applied.",
+  );
+  return `${header}\n\n${table}`;
 }
 
 function formatLastFailureLine(report: AdeLastFailureReport): string {
@@ -17874,6 +17965,8 @@ function formatTextOutput(
       return formatStorageSnapshot(value);
     case "storage-compress":
       return formatStorageCompression(value);
+    case "storage-maintenance":
+      return formatStorageMaintenance(value);
     case "action-result":
     default:
       if (isRecord(value))
@@ -18204,7 +18297,13 @@ export function detectAccountLoginMode(args: {
 } = {}): AccountLoginMode {
   const env = args.env ?? process.env;
   if (args.explicitHeadless) return "device";
-  if (env.ADE_ACCOUNT_TOKEN?.trim()) return "env-token";
+  const envCredential = env.ADE_ACCOUNT_TOKEN?.trim();
+  if (
+    envCredential
+    && !shouldRejectDevelopmentEnvCredential(env, envCredential)
+  ) {
+    return "env-token";
+  }
   if (args.browserOpenFailed) return "device";
   if (env.SSH_TTY?.trim() || env.SSH_CONNECTION?.trim() || env.SSH_CLIENT?.trim()) {
     return "device";

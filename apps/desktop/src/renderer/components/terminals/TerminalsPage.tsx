@@ -271,7 +271,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       const detail = (event as CustomEvent<{ sessionId?: string; laneId?: string }>).detail;
       const sessionId = detail?.sessionId;
       if (!sessionId) return;
-      if (detail.laneId) work.selectLane(detail.laneId);
+      // Callers (spawn cards, subagents pane) often don't know the target's
+      // lane. Resolve it from the loaded session list so cross-lane jumps
+      // land on the right lane instead of focusing an off-lane session.
+      const laneId = detail.laneId ?? work.sessions.find((s) => s.id === sessionId)?.laneId ?? null;
+      if (laneId) work.selectLane(laneId);
       work.focusSession(sessionId);
       work.openSessionTab(sessionId);
       work.setSelectedSessionId(sessionId);

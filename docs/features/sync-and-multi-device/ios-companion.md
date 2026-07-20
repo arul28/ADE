@@ -323,13 +323,21 @@ apps/ios/
 │   │   │                            # launch config, brand/logo paths, pane store
 │   │   │                            # and toolbar button. Uses existing cto.* read
 │   │   │                            # RPCs plus lane/chat/CLI launch primitives.
+│   │   │                            # LinearConnectionScreen (gear → connect via
+│   │   │                            #   OAuth/API key, reconnect, disconnect;
+│   │   │                            #   shared LinearConnectActions on the
+│   │   │                            #   disconnected pane) +
+│   │   │                            # LinearOAuthRunner (worker-bounce OAuth via
+│   │   │                            #   ASWebAuthenticationSession, ade:// capture),
+│   │   │                            #   all gated on supportsRemoteAction.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen
 │   │   │                            #   (PrDetailView — Overview emitted as
 │   │   │                            #   sibling List rows, not a monolith),
 │   │   │                            # PrDetailActivityTab (timeline builder +
 │   │   │                            #   commit-group folding), PrDetailOverviewTab,
 │   │   │                            # PrMergeGateCard (PrGlassPalette tokens),
-│   │   │                            # PrHelpers, PrListRowModifier,
+│   │   │                            # PrHelpers, PrModels, PrRowCard,
+│   │   │                            # PrListRowModifier,
 │   │   │                            # PrWorkflowCards, PrStackSheet,
 │   │   │                            # CreatePrWizardView, PrRebaseScreen,
 │   │   │                            # PrTargetBranchPickerDropdown,
@@ -366,6 +374,8 @@ apps/ios/
     ├── AccountEmailAuthFlowTests.swift # returning email sign-in, new-email
     │                                   # sign-up fallback, exact error codes
     ├── PairingAndDpopTests.swift    # smart-URL QR parse + DPoP proof tests
+    ├── PrMergeMergeStateTests.swift # PR merge state, history/count decoding,
+    │                                # reconciliation, partial-detail retention
     └── SSHBootstrapTests.swift      # key parsing, fingerprint, bootstrap policy
 ```
 
@@ -449,6 +459,10 @@ hosts it alongside its back-button affordance). It replaces the
 older `ADEConnectionPill` and the per-tab "connection notice" banner
 cards — controllers no longer ship duplicate offline / reconnect /
 hydrating cards inside each screen body.
+
+The Work root top bar also places a Settings gear immediately to the right of
+the notification bell. It opens the same `ConnectionSettingsView` sheet as the
+Hub connection affordance and is hidden while Work is in multi-select mode.
 
 The Hub is the exception: with the navigation bar hidden, its
 no-machine / connection-error state renders `HubNoMachineState` instead
@@ -683,10 +697,14 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    later therefore reconnects without navigation or a user tap. A successful
    hello restores the active project, chat and terminal subscriptions, tracked
    lane presence, and pending safe operations without rebuilding the current
-   navigation stack. User-initiated disconnects from Settings (including the
-   connecting-state Cancel button) cancel scheduled reconnect work and leave
-   the phone in the disconnected state until the user reconnects or pairs
-   again.
+   navigation stack. A user-initiated machine transition from Settings first
+   presents the Hub, then disconnects, reconnects, pairs, or adopts the selected
+   machine. The cached active project can remain available for recovery, but no
+   in-project screen keeps rendering state owned by the previous machine.
+   Disconnects (including the connecting-state Cancel button) also cancel
+   scheduled reconnect work and leave the phone disconnected until the user
+   reconnects or pairs again. Ordinary transport recovery does not force Hub
+   navigation.
 8. After pairing completes, the phone announces currently-open lanes
    via `lanes.presence.announce` so the runtime decorates
    `LaneSummary.devicesOpen` for other controllers; the phone calls
@@ -1315,7 +1333,11 @@ refresh is in flight.
 Projection reloads are keyed by narrow revision counters:
 `lanesProjectionRevision`, `laneDetailProjectionRevision`,
 `workProjectionRevision`, `filesProjectionRevision`,
-`prsProjectionRevision`, and `proofArtifactsProjectionRevision`.
+`prsProjectionRevision`, `prsRemoteRevision`, and
+`proofArtifactsProjectionRevision`. `prsProjectionRevision` tracks replicated
+mapped-PR changes; `prsRemoteRevision` is the coalescing key for the host's
+lightweight `prs_updated` invalidation when local-only GitHub projections
+change.
 Top-level tabs and detail screens observe only the revision that maps
 to their data, so a chat transcript changeset no longer causes Files,
 Lanes, and PRs to all re-query together.
@@ -1386,6 +1408,23 @@ the lane-PR list, `PrDetailView` synthesizes a fallback list item from the
 repo-scoped GitHub row + snapshot so the hero card never collapses into a
 `Pull request / @unknown` placeholder.
 
+The list reconciles the bounded GitHub projection with the replicated mapped-PR
+cache, so linked rows remain available offline and a replicated merged/closed
+state wins over a stale Open projection. For the All scope, Open / Merged /
+Closed tabs read exact repository totals from one cached GraphQL count query;
+ADE and External scope counts remain local to the reconciled row set. Terminal
+history pages independently in bounded two-page increments, up to ten pages. A
+tiny host `prs_updated` envelope invalidates the list after webhook changes;
+the view coalesces bursts for 300 ms and reads the newest projected snapshot
+once with row revalidation disabled, so freshness requires neither a timer nor
+one request per PR. Manual refresh runs PR and lane refreshes concurrently.
+
+`PrRowCard` keeps scroll-time rendering deliberately compact: a state symbol,
+two-line title, age, identity line, and one signal line for branch/lane/checks/
+reviews/comments. It does not fetch author avatars from the network. Filtering,
+sorting, counts, and mapped-row reconciliation are recomputed only when their
+inputs change rather than during each SwiftUI `body` pass.
+
 ### PR detail screen
 
 Source: `apps/ios/ADE/Views/PRs/PrDetailScreen.swift` (the `PrDetailView`
@@ -1405,7 +1444,8 @@ Reading order (desktop parity, folded to one column):
    status, diff totals, and an expandable commit list whose rows jump to the
    matching timeline anchor;
 2. an unmapped-PR banner (`PrUnmappedThreadBanner`) when the PR has no ADE
-   lane, offering auto-map (`prs.createLaneFromPrBranch`) or Open in GitHub;
+   lane, offering auto-map (`prs.createLaneFromPrBranch`), map to an existing
+   lane (`prs.linkToLane`), or Open in GitHub;
 3. the AI summary card (`PrAiSummaryCard`, +/- totals from the file list);
 4. the PR description (`PrThreadDescriptionCard`);
 5. a chronological event feed — one row per timeline event or folded
@@ -1433,6 +1473,18 @@ display items, the unresolved/resolved thread split, and the synthesized
 fallback PR — are precomputed once per data change in
 `recomputeDerivedModels()`, never inside `body`.
 
+Unmapped rows navigate to this full screen with a synthetic
+`gh:owner/repo#number` route instead of opening the old metadata-only sheet.
+The warm cache seeds the row title immediately, then
+`prs.getMobileGithubDetail` loads detail/status/checks/reviews/comments/files,
+commits, review threads, action runs, and activity in one sync command. The
+description, files, checks, and timeline therefore remain readable before lane
+mapping; lane-dependent mutation controls stay locked. Optional sub-read
+failures are returned in `unavailableParts`; the phone preserves the previous
+successful field values, displays a partial-data retry notice, and uses the
+normal 25 s freshness window as retry backoff. An explicit retry bypasses that
+window.
+
 **Palette.** The PR surfaces use `PrGlassPalette` (in `PrMergeGateCard.swift`)
 and `PrsGlass` (in `PrListRowModifier.swift`), which are now flat and
 adaptive light/dark and map to the desktop CSS tokens: `ink` =
@@ -1445,21 +1497,21 @@ the previous stacked radial-gradient / `.plusLighter` backdrop was dropped
 because it forced expensive re-compositing under every scroll frame.
 
 **Freshness.** `PrDetailView` re-fetches its action sidecars (review threads,
-activity feed, action runs, deployments, AI summary, capabilities) on a
-`.task(id: syncService.prsProjectionRevision)`, throttled by a warm-cache
-freshness window (`detailFreshnessWindow = 25 s`). It first seeds from the
-service warm cache for an instant render; when the cached entry is younger
-than 25 s the revision-driven reload skips the cold sidecar fan-out (8+
-network calls) and only refreshes the cheap local projection, and when the
-window has lapsed the next projection bump re-fetches the sidecars too. This
-is what keeps an open detail screen live under webhook-relay-driven host
-updates: a GitHub webhook lands on the host, the host's hot poll rewrites
-the replicated snapshot rows, the changeset pump bumps `prsProjectionRevision`
-here, and the gate turns that into a throttled sidecar refresh (at most once
-per 25 s) instead of a one-shot load. Pull-to-refresh and the explicit retry
-path bypass the window. Detail actions (merge / close / reopen / comment /
-edit) route through `SyncService.runDurablePrAction` so their spinners
-survive a tab switch + remount.
+activity feed, action runs, deployments, AI summary, capabilities) on a task
+keyed by both the replicated PR projection revision and the lightweight remote
+GitHub projection revision, throttled by a warm-cache freshness window
+(`detailFreshnessWindow = 25 s`). It first seeds from the service warm cache for
+an instant render; when the cached entry is younger than 25 s the
+revision-driven reload skips the cold sidecar fan-out (8+ network calls) and
+only refreshes the cheap local projection, and when the window has lapsed the
+next revision bump re-fetches sidecars too. Mapped PR changes arrive through
+the replicated changeset stream and bump `prsProjectionRevision`; local-only
+GitHub projection changes arrive through `prs_updated` and bump
+`prsRemoteRevision`. Both paths therefore share one throttled refresh gate
+instead of creating a poll loop. Pull-to-refresh and the explicit retry path
+bypass the window. Detail actions (merge / close / reopen / comment / edit)
+route through `SyncService.runDurablePrAction` so their spinners survive a tab
+switch + remount.
 
 ## Command policy from the runtime
 
@@ -1490,13 +1542,16 @@ The usage commands are viewer-allowed project actions:
 - `usage.getQuotaSnapshot` reads the host's cached Claude/Codex quota windows
   without doing provider or ledger work. `usage.refreshQuota` runs a bounded
   quota-only refresh with interactive host authentication disabled. Work shows
-  a compact Limits summary and Settings shows the full windows, source,
-  freshness, stale/error state, reset times, and explicit refresh control.
+  a compact provider-icon summary using the host's percent-used values directly.
+  Settings mirrors the desktop cards with provider icons, usage-threshold
+  colors, reset countdowns, source/freshness/error state, explicit refresh, and
+  external links to the Claude and Codex usage pages.
 - `usage.getAdeStats` returns the same stale-while-revalidate activity snapshot
   used by desktop Stats, including daily points and `desktop` / `mobile` /
   `tui` / `web` client attribution. The phone uses it for the Activity mode of
   the Work new-chat carousel rather than duplicating the full desktop Stats
-  page.
+  page. Pull-to-refresh on the new-chat screen refreshes both quota and the
+  currently selected activity range.
 
 `MobileUsageQuotaStore` persists snapshots by host identity, rebinds on machine
 changes, ignores an older in-flight response after a host switch, and clears

@@ -1,5 +1,5 @@
 import React from "react";
-import type { BrowserAccountSnapshot } from "../account/client";
+import { browserAccountIsSignedIn, type BrowserAccountSnapshot } from "../account/client";
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
@@ -10,6 +10,7 @@ import {
   type WebRelayAccess,
 } from "../sync";
 import { ScreenShell } from "./ScreenShell";
+import { AccountIdentity } from "./AccountIdentity";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton, recessedStyle } from "./shellTokens";
 
 function lastConnectedLabel(value: string | null | undefined): string {
@@ -22,10 +23,6 @@ function lastSeenLabel(value: number | null): string {
   if (value == null) return "Last seen unavailable";
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? `Last seen ${date.toLocaleString()}` : "Last seen unavailable";
-}
-
-function accountIdentity(account: BrowserAccountSnapshot): string {
-  return account.email ?? account.name ?? account.userId ?? "ADE account";
 }
 
 function hasDirectRoute(environment: WebClientEnvironmentRecord): boolean {
@@ -131,7 +128,7 @@ export function MachinePicker({
   onRetryDirectory: () => void;
   onRetrySavedEnvironments?: () => void;
 }) {
-  const signedIn = account.state === "signed_in" || account.state === "directory_unavailable";
+  const signedIn = browserAccountIsSignedIn(account.state);
   const directEnvironments = environments.filter((environment) => (
     environment.accountOwnerUserId == null && hasDirectRoute(environment)
   ));
@@ -149,7 +146,7 @@ export function MachinePicker({
     return (
       <ScreenShell
         title="Sign in to ADE"
-        subtitle="Sign in to open your Macs in the browser."
+        subtitle="Sign in to open your machines in the browser."
       >
         {signInAvailable ? (
           <button
@@ -179,11 +176,9 @@ export function MachinePicker({
   }
 
   return (
-    <ScreenShell title="Choose a Mac" subtitle="Choose a Mac on your ADE account.">
+    <ScreenShell title="Choose a machine" subtitle="Choose a machine on your ADE account.">
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
-          Signed in as {accountIdentity(account)}
-        </div>
+        <AccountIdentity account={account} />
         <button type="button" style={outlineButton()} onClick={onSignOut}>Sign out</button>
       </div>
 
@@ -194,13 +189,13 @@ export function MachinePicker({
       ) : account.state === "directory_unavailable" ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
-            We couldn't load your Macs. Your saved connections still work.
+            We couldn't load your machines. Your saved connections still work.
           </span>
           <button type="button" style={outlineButton()} onClick={onRetryDirectory}>Try again</button>
         </div>
       ) : account.machines.length === 0 ? (
         <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 13, lineHeight: 1.55 }}>
-          No Macs are connected to this account yet. Open ADE on your Mac and sign in with this account.
+          No machines are connected to this account yet. Open ADE on a machine and sign in with this account.
         </div>
       ) : (
         <div style={{ display: "grid", gap: 10 }}>
@@ -214,7 +209,7 @@ export function MachinePicker({
                 type="button"
                 disabled={!available || connecting}
                 onClick={() => onSelectAccountMachine(machine)}
-                title={connectionState === "offline" ? "This Mac is offline." : !available ? "Open ADE on this Mac to finish connecting it." : undefined}
+                title={connectionState === "offline" ? "This machine is offline." : !available ? "Open ADE on this machine to finish connecting it." : undefined}
                 style={recessedStyle({
                   display: "grid",
                   gap: 4,
@@ -229,7 +224,7 @@ export function MachinePicker({
                     {machine.name ?? machine.machineKey}
                   </span>
                   <span style={{ color: available ? COLORS.success : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
-                    {connecting ? "Connecting…" : available ? "Ready" : connectionState === "offline" ? "Offline" : "Open ADE on this Mac"}
+                    {connecting ? "Connecting…" : available ? "Ready" : connectionState === "offline" ? "Offline" : "Open ADE on this machine"}
                   </span>
                 </span>
                 <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 11 }}>

@@ -79,8 +79,9 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | File | Responsibility |
 |------|---------------|
 | `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayCandidateForCurrentLaneBranch`: it returns the best PR whose head branch matches the lane's current branch ref, considering both mapped `pull_requests` rows and unmapped `github_pr_projections` rows (folded in as synthetic `gh:owner/repo#num` summaries with `unmapped: true`), ranked open/draft → merged → closed then most-recently-updated / created / highest PR number, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state — and a lane whose PR was created outside ADE still badges from the projection alone. A primary lane whose branch equals its base is excluded. `listPrsByLane()` walks `laneService.list` and applies the same candidate selection over one shared read of mapped rows + projection rows. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. |
-| `prService.mobileSnapshot.test.ts` | Coverage for the mobile snapshot builder: stack chaining, capability gates, per-lane create eligibility, workflow-card aggregation |
-| `prService.mergeInto.test.ts` | Coverage for integration proposals that preview or adopt an existing merge target lane, including dirty-worktree handling and drift metadata. |
+| `prService.test.ts` | Feature-level service coverage, including mobile snapshot aggregation, paged GitHub history and exact state totals, webhook invalidation, unmapped mobile detail, and integration proposal behavior. |
+| `prMergeQueue.test.ts` | Merge-queue transition and landing coverage. |
+| `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage. |
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) so background polling and PR events run for runtime-bound windows; the desktop main process still owns one for local-bound windows. When zero PRs are tracked yet, the forced full-snapshot `discoverLanePullRequests` fetch is throttled to a 10-minute cadence instead of running every tick — user-driven surfaces discover PRs on their own reads anyway |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
 | `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
@@ -89,6 +90,12 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prIssueResolver.ts` | Builds issue-resolution prompts for the agent, launches chat session |
 | `prRebaseResolver.ts` | Builds rebase-resolution prompts, launches chat session |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
+
+`prService.ts` also owns the coordinate-based `getMobileGithubDetail`
+aggregate for unmapped PRs and the opt-in repository state-count query used by
+mobile. Count requests are single-flight and epoch-guarded, and snapshot
+invalidation clears their cache so an older response cannot repopulate a newer
+webhook generation.
 
 Renderer components (`apps/desktop/src/renderer/components/prs/`):
 
@@ -153,6 +160,11 @@ Shared contracts:
 | `apps/desktop/src/shared/linearMagicWords.ts` | Pure helpers for PR/commit Linear references. `linearPrMagicWord` / `buildLinearPrReference` / `ensureLinearPrReference` (single-issue magic word in the PR body), `dedupeLinearPrIssueReferences` / `ensureLinearPrReferences` (multi-issue dedupe + injection), and `renderLinearPrIssueLinkSection` / `ensureLinearPrIssueLinkSection` (the `<!-- ade:linear-links v=1 -->`-fenced "Linked Linear issues" markdown block appended to PR bodies by `prService.applyLinearPrLinkage`). |
 | `apps/desktop/src/shared/prMarkdownText.ts` | `normalizeEscapedMarkdownNewlines(text)` — unescapes literal `\n` / `\r\n` / `\r` / `\t` sequences that arrive in PR bodies after GitHub round-trips them through JSON. Used by `PrMarkdown` before handing the string to ReactMarkdown so escaped newlines render as paragraph breaks. |
 | `apps/desktop/src/shared/ipc.ts` / `apps/desktop/src/preload/preload.ts` | PR IPC constants and renderer bridge for proposal simulation, update, commit, resolver, cleanup, and read flows. Read-heavy PR tab calls route to the remote runtime only for remote-bound windows and use in-process IPC for local-bound windows. Local PR/session push subscriptions are multiplexed so multiple renderer subscribers share one IPC listener per channel. |
+
+For mobile, `types/prs.ts` also defines paged GitHub history metadata
+(`pageLimit`, `repoPullRequestsMayHaveMore`, `repoPullRequestCounts`) and
+`PrMobileGithubDetailSnapshot`, whose `unavailableParts` distinguishes a failed
+optional sidecar from an authoritative empty result.
 
 ## Core model
 
@@ -263,6 +275,14 @@ Caching layers:
 
 Snapshot contents include `labels` (name, color, description),
 `isBot`, and `commentCount` fields so filters can run locally.
+History-enabled snapshots also carry `repoPullRequestsMayHaveMore` and the
+applied `pageLimit`. The mobile caller opts into
+`history.repoPullRequestCounts`: one GraphQL query fetches exact Open / Merged /
+Closed totals independent of the loaded row window, with cached projection
+counts as the best-effort fallback. iOS uses those totals for the All-scope
+category tabs and requests additional terminal-history pages only when the
+user taps Load more; ADE/External scope counts are derived from the rows
+already reconciled on-device.
 
 PR rows in `tabs/GitHubTab.tsx` and queue member rows in `tabs/QueueTab.tsx`
 render the linked lane's color through `LaneAccentDot` (resolved from the
@@ -791,7 +811,9 @@ Builder responsibilities:
 - **Create eligibility** (`buildCreateCapabilities`) — enumerates
   non-primary, non-archived lanes, marks lanes as ineligible when an
   open/draft PR already exists, and resolves the default base branch
-  through `resolveStableLaneBaseBranch`.
+  through `resolveStableLaneBaseBranch`. The aggregate lane read is
+  metadata-only (`includeStatus: false`); it never probes every worktree's git
+  status just to paint the PR tab.
 - **Workflow cards** (`buildWorkflowCards`) — pulls non-terminal
   queue entries from `queue_landing_state` joined with `pr_groups`,
   active integration proposals via `listIntegrationWorkflows({ view:
@@ -817,18 +839,49 @@ through the existing command surface (`prs.createFromLane`,
 PRs with `source lane -> target lane` titles and no AI-generated
 title/body step; the explicit `prs.draftDescription` action remains
 available to callers that request PR-description drafting directly.
-The mobile client calls `getMobileSnapshot` on open and re-fetches on
-focus or after a successful mutation.
+The mobile client calls `getMobileSnapshot` on open and re-fetches on focus or
+after a successful mutation. Unmapped GitHub projections are local-only on the
+host, so webhook changes also emit a tiny `prs_updated` sync invalidation.
+iOS coalesces event bursts, then performs one cached/projected GitHub snapshot
+read with background revalidation disabled; it does not poll GitHub on a timer
+or run one request per PR. The list
+reconciles that projection with replicated `pull_requests` rows so mapped PRs
+remain visible offline and a terminal local state cannot fall back to a stale
+Open row.
+Open / Merged / Closed totals come from one batched GraphQL count query cached
+with the snapshot; row history remains independently paged, so accurate tab
+counts do not require downloading the entire repository history.
+
+The iOS list row intentionally follows GitHub's information hierarchy instead
+of rendering every field as a badge: state symbol and title first, then PR
+number/author/repository, followed by a compact branch, lane, check, review,
+and comment signal row. It uses local symbols rather than network-fetched
+avatars and precomputes filtered/reconciled rows when inputs change, keeping
+scroll-time view work bounded.
 
 The mobile PR **detail** screen (`PrDetailView`, a single-column
 adaptation of the desktop Timeline+Rails layout) pulls its per-PR action
 sidecars — review threads, activity feed, action runs, deployments, AI
 summary, and this snapshot's capabilities — separately, and keeps them
-live while open through a warm-cache freshness gate keyed on the sync
-projection revision: webhook-driven host updates rewrite the replicated
-snapshot rows, the changeset pump bumps the projection, and the detail
-screen re-fetches the sidecars at most once every 25 s. See
+live while open through a warm-cache freshness gate keyed on both the
+replicated PR revision and the lightweight remote GitHub revision. Mapped-row
+changes arrive through the changeset stream; local-only projection changes use
+`prs_updated`. The detail screen re-fetches sidecars at most once every 25 s.
+See
 [iOS companion → PR detail screen](../sync-and-multi-device/ios-companion.md#pr-detail-screen).
+
+An unmapped PR uses the stable synthetic id `gh:owner/repo#number` and the
+`prs.getMobileGithubDetail` aggregate. That command returns the core snapshot,
+fresh list/header identity, review threads, action runs, and activity in one
+controller round trip. Phone requests are single-flight per PR, and failed
+optional sidecars are named explicitly so the phone preserves the last good
+value and shows partial-data retry UI instead of caching an empty result as a
+true zero. Partial aggregates use the normal 25 s freshness window as retry
+backoff; explicit Retry bypasses it. The phone renders the same
+description/files/checks/timeline it would for a mapped PR while keeping
+mutation controls locked until the PR is mapped.
+The same banner offers both create-from-branch and map-to-existing-lane actions,
+so mapping does not require backing out to the list.
 
 The mobile detail header is intentionally compact: a plain back chevron,
 centered PR title with `#number · lane · branch`, and a plain ellipsis

@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createOpencodeClient } from "@opencode-ai/sdk";
 import type { Logger } from "../logging/logger";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
@@ -44,6 +47,102 @@ type CacheEntry = {
 let inventoryCache: CacheEntry | null = null;
 const probeInFlightMap = new Map<string, Promise<OpenCodeInventoryResult>>();
 
+// ---------------------------------------------------------------------------
+// Cross-launch inventory persistence
+//
+// A cold settings read (no warm in-memory cache) would otherwise report zero
+// providers until the first probe completes, so the settings UI flashes empty
+// on every app start. We persist each successful probe's provider list, keyed
+// by project root, to Electron userData and reload it (flagged stale) on cold
+// reads so provider chips render immediately.
+// ---------------------------------------------------------------------------
+
+type PersistedInventoryFile = Record<string, { providers: OpenCodeProviderInfo[]; savedAt: number }>;
+
+type ElectronLikeApp = { app?: { getPath(name: string): string } };
+
+let persistPathOverride: string | null = null;
+let persistedInventoryMemo: PersistedInventoryFile | null = null;
+
+function resolvePersistedInventoryPath(): string {
+  if (persistPathOverride) return persistPathOverride;
+  const envOverride = process.env.ADE_OPENCODE_INVENTORY_CACHE_FILE?.trim();
+  if (envOverride) return path.resolve(envOverride);
+  try {
+    const electron = require("electron") as ElectronLikeApp;
+    const userDataPath = electron.app?.getPath?.("userData");
+    if (typeof userDataPath === "string" && userDataPath.trim().length > 0) {
+      return path.resolve(userDataPath, "opencode-inventory-cache.json");
+    }
+  } catch {
+    // Not running inside Electron (e.g. unit tests) — fall through.
+  }
+  const homeDir = os.homedir().trim();
+  const baseDir = homeDir.length > 0 ? path.resolve(homeDir, ".ade") : os.tmpdir();
+  return path.resolve(baseDir, "opencode-inventory-cache.json");
+}
+
+function readPersistedInventoryFile(): PersistedInventoryFile {
+  if (persistedInventoryMemo) return persistedInventoryMemo;
+  try {
+    const raw = fs.readFileSync(resolvePersistedInventoryPath(), "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      persistedInventoryMemo = {};
+    } else {
+      persistedInventoryMemo = Object.fromEntries(
+        Object.entries(parsed).filter(([, entry]) => {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+          const record = entry as Record<string, unknown>;
+          if (typeof record.savedAt !== "number" || !Number.isFinite(record.savedAt)) return false;
+          if (!Array.isArray(record.providers)) return false;
+          return record.providers.every((provider) => {
+            if (!provider || typeof provider !== "object" || Array.isArray(provider)) return false;
+            const info = provider as Record<string, unknown>;
+            return typeof info.id === "string"
+              && typeof info.name === "string"
+              && typeof info.connected === "boolean"
+              && typeof info.modelCount === "number"
+              && Number.isFinite(info.modelCount)
+              && (
+                info.availableModelCount === undefined
+                || (typeof info.availableModelCount === "number" && Number.isFinite(info.availableModelCount))
+              );
+          });
+        }),
+      ) as PersistedInventoryFile;
+    }
+  } catch {
+    persistedInventoryMemo = {};
+  }
+  return persistedInventoryMemo;
+}
+
+/** Persist a successful probe's provider list, keyed by project root. Best-effort. */
+export function persistOpenCodeInventory(projectRoot: string, providers: OpenCodeProviderInfo[]): void {
+  try {
+    const all = { ...readPersistedInventoryFile() };
+    all[projectRoot] = { providers, savedAt: Date.now() };
+    persistedInventoryMemo = all;
+    const filePath = resolvePersistedInventoryPath();
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(all), "utf8");
+  } catch {
+    // Non-critical — persistence failures must not break the probe.
+  }
+}
+
+/** Load the last persisted provider list for a project (empty when none). */
+export function loadPersistedOpenCodeInventory(projectRoot: string): OpenCodeProviderInfo[] {
+  return readPersistedInventoryFile()[projectRoot]?.providers ?? [];
+}
+
+/** Test hook: point persistence at a temp file and drop the in-memory memo. */
+export function __setOpenCodeInventoryPersistencePathForTests(filePath: string | null): void {
+  persistPathOverride = filePath;
+  persistedInventoryMemo = null;
+}
+
 export type OpenCodeInventoryResult = {
   /** Selectable model ids for connected providers only. */
   modelIds: string[];
@@ -72,6 +171,8 @@ function fingerprintOpenCodeConfig(
   return stableStringify({
     apiKeys: ai.apiKeys ?? {},
     localProviders: ai.localProviders ?? {},
+    customProviders: ai.customProviders ?? [],
+    customModelSlugs: ai.customModelSlugs ?? [],
     discoveredModels: discoveredLocalModels?.map((m) => `${m.provider}/${m.modelId}`).sort() ?? [],
   });
 }
@@ -165,7 +266,6 @@ function readOpenCodeModelCapabilities(model: Record<string, unknown>): {
 function normalizeOpenCodeProviderModel(
   providerId: string,
   modelId: string,
-  _availableProviderModelIds: Set<string>,
   displayName?: string,
 ): {
   modelId: string;
@@ -351,14 +451,6 @@ export async function probeOpenCodeProviderInventory(args: {
           // local-provider catalog; only show models ADE just discovered as loaded.
           if (isLocal && !discoveryExists) continue;
           const models = provider.models ?? {};
-          const availableProviderModelIds = new Set(
-            Object.values(models)
-              .map((model) => {
-                const record = model as Record<string, unknown>;
-                return typeof record.id === "string" ? record.id.trim().toLowerCase() : "";
-              })
-              .filter(Boolean),
-          );
           for (const model of Object.values(models)) {
             const modelRecord = model as Record<string, unknown>;
             const mid = typeof modelRecord.id === "string" ? modelRecord.id.trim() : "";
@@ -367,7 +459,7 @@ export async function probeOpenCodeProviderInventory(args: {
             if (discoveryExists && (!allowedModels || !allowedModels.has(mid))) continue;
             const variants = classifyOpenCodeVariants(modelRecord);
             const rawDisplayName = typeof modelRecord.name === "string" && modelRecord.name.trim().length ? modelRecord.name.trim() : undefined;
-            const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, availableProviderModelIds, rawDisplayName);
+            const normalizedModel = normalizeOpenCodeProviderModel(provider.id, mid, rawDisplayName);
             const limit = typeof modelRecord.limit === "object" && modelRecord.limit
               ? modelRecord.limit as { context?: number; output?: number }
               : null;
@@ -393,6 +485,12 @@ export async function probeOpenCodeProviderInventory(args: {
               ...(normalizedModel.serviceTiers?.length ? { serviceTiers: normalizedModel.serviceTiers } : {}),
               capabilities: normalizedModel.capabilities ?? readOpenCodeModelCapabilities(modelRecord),
             });
+            // Keep ADE's normalized identity/display metadata, but always route
+            // through the exact model ID OpenCode advertised. An alias row may
+            // normalize to a newer canonical ADE ID that this provider cannot
+            // actually launch.
+            descriptor.openCodeModelId = mid;
+            descriptor.providerModelId = `${provider.id}/${mid}`;
             const existingIndex = descriptorIds.get(descriptor.id);
             if (existingIndex !== undefined) {
               if (
@@ -450,6 +548,7 @@ export async function probeOpenCodeProviderInventory(args: {
           providers: providerInfos,
           error: null,
         };
+        persistOpenCodeInventory(args.projectRoot, providerInfos);
         return { modelIds, catalogModelIds, providers: providerInfos, error: null, descriptors };
       } finally {
         lease.release("handle_close");

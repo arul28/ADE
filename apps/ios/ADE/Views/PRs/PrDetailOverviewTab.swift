@@ -319,11 +319,13 @@ private struct PrSummaryCommitRow: View {
 
 /// Amber banner shown at the top of the thread when the PR is not mapped to an
 /// ADE lane. Primary action is auto-map ("Create lane from PR branch", gated on
-/// host support); the secondary action opens the PR on GitHub. (Linking to an
-/// existing lane lives on the root unmapped-PR sheet.)
+/// host support); mapping to an existing lane and opening GitHub stay available
+/// without leaving the full detail view.
 struct PrUnmappedThreadBanner: View {
   let canAutoMap: Bool
+  let canMap: Bool
   let onAutoMap: () -> Void
+  let onMap: () -> Void
   let onOpenInGitHub: () -> Void
 
   var body: some View {
@@ -345,33 +347,34 @@ struct PrUnmappedThreadBanner: View {
         Spacer(minLength: 0)
       }
 
+      if canAutoMap {
+        Button(action: onAutoMap) {
+          Label("Create lane from PR branch", systemImage: "arrow.triangle.branch")
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(ADEColor.accentDeep, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        }
+        .buttonStyle(.plain)
+      }
+
       HStack(spacing: 8) {
-        if canAutoMap {
-          Button(action: onAutoMap) {
-            Label("Create lane from PR branch", systemImage: "arrow.triangle.branch")
-              .font(.system(size: 12, weight: .semibold))
-              .foregroundStyle(.white)
-              .frame(maxWidth: .infinity)
-              .padding(.vertical, 9)
-              .background(ADEColor.accentDeep, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        if canMap {
+          Button(action: onMap) {
+            Label("Map to lane", systemImage: "link")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.accent)
+              .frame(maxWidth: .infinity, minHeight: 44)
+              .background(ADEColor.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
           }
           .buttonStyle(.plain)
         }
         Button(action: onOpenInGitHub) {
           Label("Open in GitHub", systemImage: "arrow.up.right.square")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(ADEColor.accent)
-            .frame(maxWidth: canAutoMap ? nil : .infinity)
-            .padding(.horizontal, canAutoMap ? 12 : 0)
-            .padding(.vertical, 9)
-            .background(
-              RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .fill(ADEColor.accent.opacity(0.12))
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .strokeBorder(ADEColor.accent.opacity(0.35), lineWidth: 0.5)
-            )
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, minHeight: 44)
+            .background(ADEColor.textMuted.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
         .buttonStyle(.plain)
       }

@@ -76,8 +76,9 @@ export async function fetchAccountStatus(options?: { force?: boolean }): Promise
   inFlight = api
     .status()
     .then((status) => {
-      if (serial === fetchSerial) emit(status);
-      return status;
+      const normalized = status ?? SIGNED_OUT_ACCOUNT;
+      if (serial === fetchSerial) emit(normalized);
+      return normalized;
     })
     .catch(() => cachedStatus?.value ?? SIGNED_OUT_ACCOUNT)
     .finally(() => {

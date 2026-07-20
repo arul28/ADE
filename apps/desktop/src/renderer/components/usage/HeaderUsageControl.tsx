@@ -13,6 +13,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
+import { shouldApplyUsageSnapshot } from "./usageSnapshotOrdering";
 
 const TRACKED_PROVIDERS: UsageProvider[] = ["claude", "codex"];
 
@@ -82,23 +83,6 @@ function formatUsageTitle(usage: HeaderUsageWindowSummary): string {
   return `${usage.planLabel} ${percentLabel(usage.planPercent)}, 5h ${percentLabel(usage.fiveHourPercent)}`;
 }
 
-function snapshotLastPolledMs(snapshot: UsageSnapshot | null): number | null {
-  if (!snapshot) return null;
-  const timestamp = Date.parse(snapshot.lastPolledAt);
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function shouldApplyCachedSnapshot(
-  nextSnapshot: UsageSnapshot | null,
-  currentSnapshot: UsageSnapshot | null,
-): boolean {
-  if (!currentSnapshot) return true;
-  if (!nextSnapshot) return false;
-  const nextTimestamp = snapshotLastPolledMs(nextSnapshot);
-  const currentTimestamp = snapshotLastPolledMs(currentSnapshot);
-  return nextTimestamp == null || currentTimestamp == null || nextTimestamp >= currentTimestamp;
-}
-
 function formatUpdatedAgo(snapshot: UsageSnapshot | null, nowMs: number): string {
   const t = snapshot ? Date.parse(snapshot.lastPolledAt) : Number.NaN;
   if (!Number.isFinite(t)) return "";
@@ -164,8 +148,10 @@ export function HeaderUsageControl({
   const [snapshot, setSnapshot] = useState<UsageSnapshot | null>(null);
   const [providerConnections, setProviderConnections] =
     useState<AiProviderConnections | null | undefined>(undefined);
+  const [bindingRevision, setBindingRevision] = useState(0);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const snapshotRef = useRef<UsageSnapshot | null>(null);
+  const bindingGenerationRef = useRef(0);
 
   const [refreshing, setRefreshing] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -179,16 +165,18 @@ export function HeaderUsageControl({
   }, [open]);
 
   const applySnapshot = useCallback((nextSnapshot: UsageSnapshot | null) => {
+    if (!shouldApplyUsageSnapshot(nextSnapshot, snapshotRef.current)) return;
     snapshotRef.current = nextSnapshot;
     setSnapshot(nextSnapshot);
   }, []);
 
   const handleRefresh = useCallback(async () => {
     if (!window.ade?.usage?.refresh) return;
+    const requestedGeneration = bindingGenerationRef.current;
     setRefreshing(true);
     try {
       const next = await window.ade.usage.refresh();
-      if (next) applySnapshot(next);
+      if (next && requestedGeneration === bindingGenerationRef.current) applySnapshot(next);
     } catch {
       // swallow
     } finally {
@@ -213,14 +201,22 @@ export function HeaderUsageControl({
     });
     const readCachedSnapshot = () => {
       if (cancelled) return;
+      const requestedGeneration = bindingGenerationRef.current;
       void readSnapshot().then(({ failed, snapshot: nextSnapshot }) => {
-        if (cancelled) return;
+        if (cancelled || requestedGeneration !== bindingGenerationRef.current) return;
         const currentSnapshot = snapshotRef.current;
         if (failed && currentSnapshot) return;
-        if (!shouldApplyCachedSnapshot(nextSnapshot, currentSnapshot)) return;
         applySnapshot(nextSnapshot);
       });
     };
+    const unsubscribeBinding = window.ade.app.onProjectBindingChanged?.(() => {
+      bindingGenerationRef.current += 1;
+      snapshotRef.current = null;
+      setSnapshot(null);
+      setProviderConnections(undefined);
+      setBindingRevision((revision) => revision + 1);
+      readCachedSnapshot();
+    });
 
     if (!deferInitialRead || open) {
       readCachedSnapshot();
@@ -229,6 +225,7 @@ export function HeaderUsageControl({
     return () => {
       cancelled = true;
       unsubscribe?.();
+      unsubscribeBinding?.();
     };
   }, [applySnapshot, deferInitialRead, open]);
 
@@ -257,7 +254,7 @@ export function HeaderUsageControl({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [deferInitialRead, open]);
+  }, [bindingRevision, deferInitialRead, open]);
 
   const detectedProviders = useMemo<UsageProvider[]>(() => {
     const providersWithUsage = TRACKED_PROVIDERS.filter((provider) =>

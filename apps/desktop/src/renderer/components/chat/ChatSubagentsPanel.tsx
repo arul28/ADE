@@ -781,6 +781,7 @@ function SubagentRow({
   canViewFullTranscript,
   onClick,
   depth = 0,
+  spawnedChatTitle = null,
 }: {
   snapshot: ChatSubagentSnapshot;
   selected: boolean;
@@ -793,10 +794,21 @@ function SubagentRow({
   /** Whether this runtime can surface a full child transcript (drives the
    * drawer's "transcript not ready yet" vs "live details only" footer). */
   canViewFullTranscript: boolean;
+  /** Live title of the spawned child chat this row navigates to, when resolved.
+   * Non-null marks this as a spawned-chat row (navigates on click). */
+  spawnedChatTitle?: string | null;
   onClick: () => void;
 }) {
-  const name = chatSubagentDisplayName(snapshot);
-  const kindLabel = kindBadge(snapshot);
+  const isSpawnedChat = snapshot.childSessionId != null;
+  // Spawned-chat rows read as the chat they open: prefer the resolved live
+  // session title, then the snapshot description ("Codex Chat") — never the bare
+  // agentType ("codex"), which becomes the small chip instead.
+  const name = isSpawnedChat
+    ? (spawnedChatTitle?.trim() || snapshot.description?.trim() || chatSubagentDisplayName(snapshot))
+    : chatSubagentDisplayName(snapshot);
+  // Spawned-chat rows surface the runtime as the uppercase chip (reusing the
+  // kindBadge chip idiom); other rows keep their taskType kind chip.
+  const kindLabel = isSpawnedChat ? (snapshot.agentType?.trim() || null) : kindBadge(snapshot);
   const color = chatSubagentColor(snapshot.agentId ?? snapshot.taskId);
   const isRunning = snapshot.status === "running";
   const isCompleted = snapshot.status === "completed";
@@ -830,7 +842,7 @@ function SubagentRow({
       <button
         type="button"
         onClick={onClick}
-        title={snapshot.description || "View subagent details"}
+        title={isSpawnedChat ? "Open the spawned chat" : (snapshot.description || "View subagent details")}
         data-selected={selected || undefined}
         className={cn(
           "group relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
@@ -873,6 +885,15 @@ function SubagentRow({
         </span>
 
         <span className="flex shrink-0 items-center gap-1.5 font-sans text-[10.5px] tabular-nums">
+          {isSpawnedChat ? (
+            <span
+              aria-hidden
+              className="inline-flex items-center gap-0.5 whitespace-nowrap text-fg/0 transition-colors group-hover:text-fg/40"
+            >
+              open
+              <CaretRight size={10} weight="bold" />
+            </span>
+          ) : null}
           {probing ? (
             <span
               aria-hidden
@@ -956,6 +977,7 @@ export function ChatSubagentsPanel({
   onSelectSubagent,
   onClearSelectedSubagent,
   probeSubagentTranscript,
+  resolveSpawnedChatTitle,
   capability = null,
   selectedTaskId,
   className,
@@ -982,6 +1004,10 @@ export function ChatSubagentsPanel({
   /** Probe (same fetch the takeover uses) for whether an agent has a pullable
    * transcript. Returns true → take over the chat; false → inline drawer. */
   probeSubagentTranscript?: (args: { taskId: string; agentId: string | null }) => Promise<boolean>;
+  /** Resolve the live title of a spawned child chat by session id, so spawned-chat
+   * rows show the chat's real title instead of the runtime name. Returns null when
+   * the session isn't known (yet). */
+  resolveSpawnedChatTitle?: (sessionId: string) => string | null;
   /** Per-runtime subagent capability — the single source of truth for whether a
    * subagent click can take over the chat (full transcript) or only opens the
    * inline drawer, and whether running agents take over immediately. Null →
@@ -1219,15 +1245,11 @@ export function ChatSubagentsPanel({
   const immediateForRunning = canTakeover && (capability?.hasRichMetadata ?? false);
 
   const handleRowClick = (snap: ChatSubagentSnapshot) => {
-    // A spawned ADE chat (peer/subagent) carries a `chat:<id>` taskId — clicking
-    // navigates to that chat instead of a transcript takeover/drawer. Only
-    // runtime-native subagents (non-`chat:` taskIds) keep the takeover behavior.
-    if (snap.taskId.startsWith("chat:")) {
-      const childSessionId = snap.agentId?.trim() || snap.taskId.slice("chat:".length);
-      if (childSessionId) {
-        navigateToSpawnedChat(childSessionId, null);
-        return;
-      }
+    // Spawned ADE chats navigate directly; runtime-native subagents keep the
+    // transcript takeover/details behavior below.
+    if (snap.childSessionId != null) {
+      navigateToSpawnedChat(snap.childSessionId, null);
+      return;
     }
     // Clicking the row whose drawer is open closes it.
     if (expandedTaskId === snap.taskId) {
@@ -1329,6 +1351,11 @@ export function ChatSubagentsPanel({
       canViewFullTranscript={canTakeover}
       category={snap.background ? "background" : "subagent"}
       depth={subagentTreeDepth(snap, snapshots)}
+      spawnedChatTitle={
+        snap.childSessionId != null
+          ? resolveSpawnedChatTitle?.(snap.childSessionId) ?? null
+          : null
+      }
       onClick={() => handleRowClick(snap)}
     />
   );

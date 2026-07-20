@@ -890,6 +890,7 @@ export function chatSessionToOptimisticSummary(
     ...(session.orchestrationRunId ? { orchestrationRunId: session.orchestrationRunId } : {}),
     ...(session.orchestrationRole ? { orchestrationRole: session.orchestrationRole } : {}),
     ...(session.orchestrationParentSessionId ? { orchestrationParentSessionId: session.orchestrationParentSessionId } : {}),
+    ...(session.spawnKind ? { spawnKind: session.spawnKind } : {}),
     ...(session.orchestrationTag ? { orchestrationTag: session.orchestrationTag } : {}),
     ...(session.orchestrationStepId ? { orchestrationStepId: session.orchestrationStepId } : {}),
     ...(session.orchestrationBundlePath ? { orchestrationBundlePath: session.orchestrationBundlePath } : {}),

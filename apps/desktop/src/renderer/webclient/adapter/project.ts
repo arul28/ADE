@@ -33,15 +33,18 @@ export function createProjectNamespace(infra: AdapterInfra): AdeNamespace<"proje
 
   async function switchToProject(project: SyncMobileProjectSummary): Promise<ProjectInfo> {
     const result = await client.switchProject(project.id);
+    if (!result.ok) {
+      throw new Error(result.message?.trim() || `Could not switch to ${project.displayName}.`);
+    }
     const nextProject =
-      result.ok && result.project
+      result.project
         ? {
             rootPath: result.project.rootPath ?? project.rootPath ?? "",
             displayName: result.project.displayName,
             baseRef: result.project.defaultBaseRef ?? project.defaultBaseRef ?? "main",
           }
         : projectInfoFromCatalog(project);
-    state.bindProject(nextProject);
+    state.bindProject(nextProject, result.project?.id ?? project.id);
     events.emit("projectChanged", nextProject);
     events.emit("projectBindingChanged", null);
     return nextProject;

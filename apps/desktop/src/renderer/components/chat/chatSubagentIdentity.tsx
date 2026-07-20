@@ -60,10 +60,16 @@ export function ChatSubagentGlyph({
   id,
   color,
   status,
+  size = 18,
 }: {
   id: string;
   color: string;
-  status: ChatSubagentSnapshot["status"];
+  // When omitted, renders the plain identicon: no spinner ring, no
+  // completed/failed corner badge, no dimming. Used for compact lineage cues
+  // (e.g. the Work sidebar card) where only the pattern+color identity matters.
+  status?: ChatSubagentSnapshot["status"];
+  /** Overall glyph size in px (svg + wrapper). Defaults to 18. */
+  size?: number;
 }) {
   const cells = identiconCells(id);
   const isRunning = status === "running";
@@ -73,7 +79,10 @@ export function ChatSubagentGlyph({
   const pad = 2;
 
   return (
-    <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+    <span
+      className="relative flex shrink-0 items-center justify-center"
+      style={{ height: size, width: size }}
+    >
       {isRunning ? (
         <span
           aria-hidden
@@ -83,8 +92,8 @@ export function ChatSubagentGlyph({
       ) : null}
       <svg
         aria-hidden
-        width={18}
-        height={18}
+        width={size}
+        height={size}
         viewBox="0 0 18 18"
         className={cn("rounded-full", dimmed && "opacity-55")}
         style={{ backgroundColor: `color-mix(in srgb, ${color} 16%, transparent)` }}

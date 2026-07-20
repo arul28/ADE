@@ -172,6 +172,35 @@ async function shutdownRuntime(socketPath: string): Promise<void> {
 }
 
 describe("local runtime connection pool", () => {
+  it("aggregates slow actions into a bounded 24h runtime-health window", () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never) as unknown as {
+      recordSlowAction: (atMs: number, totalMs: number) => void;
+      getRuntimeHealth: (nowMs?: number) => {
+        slowActions24h: number;
+        slowActionP95Ms: number | null;
+        sampledAt: string;
+      };
+      dispose: () => void;
+    };
+    const now = Date.parse("2026-07-17T12:00:00.000Z");
+
+    // An empty window reports zero slow actions and a null p95.
+    expect(pool.getRuntimeHealth(now)).toMatchObject({ slowActions24h: 0, slowActionP95Ms: null });
+
+    // One sample 25h old (out of window) plus 100 in-window samples 501..600 ms.
+    pool.recordSlowAction(now - 25 * 60 * 60_000, 9_000);
+    for (let index = 0; index < 100; index += 1) {
+      pool.recordSlowAction(now - index * 60_000, 501 + index);
+    }
+    const health = pool.getRuntimeHealth(now);
+    expect(health.slowActions24h).toBe(100); // the 25h-old sample is pruned
+    // Nearest-rank p95 of 501..600 → index ceil(0.95*100)-1 = 94 → 595.
+    expect(health.slowActionP95Ms).toBe(595);
+    expect(health.sampledAt).toBe(new Date(now).toISOString());
+    pool.dispose();
+  });
+
   it("compares ADE runtime versions without requiring exact tag formatting", () => {
     expect(compareRuntimeVersionStrings("v1.2.14", "1.2.13")).toBe(1);
     expect(compareRuntimeVersionStrings("1.2.12", "v1.2.13")).toBe(-1);
@@ -2095,6 +2124,72 @@ describe("local runtime connection pool", () => {
         }),
       }),
       { timeoutMs: 30_000 },
+    );
+  });
+
+  // ADE-122 regression: the 30s default action timeout fired a false failure on
+  // brief handoffs (AI brief + session creation + first-message dispatch) while
+  // the daemon-side handoff kept running to a late "surprise" success.
+  it("extends handoff actions beyond the default chat action timeout", async () => {
+    const call = vi.fn().mockResolvedValue({
+      domain: "chat",
+      action: "handoffSession",
+      result: {},
+      statusHints: {},
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    await pool.callActionForRoot(rootPath, {
+      domain: "chat",
+      action: "handoffSession",
+      args: { sourceSessionId: "chat-1", targetModelId: "openai/gpt-5.5", mode: "brief" },
+    });
+    await pool.callActionForRoot(rootPath, {
+      domain: "chat",
+      action: "prepareCrossMachineHandoff",
+      args: { sourceSessionId: "chat-1" },
+    });
+
+    expect(call).toHaveBeenNthCalledWith(
+      1,
+      "ade/actions/call",
+      expect.objectContaining({
+        arguments: expect.objectContaining({
+          domain: "chat",
+          action: "handoffSession",
+        }),
+      }),
+      { timeoutMs: 120_000 },
+    );
+    expect(call).toHaveBeenNthCalledWith(
+      2,
+      "ade/actions/call",
+      expect.objectContaining({
+        arguments: expect.objectContaining({
+          domain: "chat",
+          action: "prepareCrossMachineHandoff",
+        }),
+      }),
+      { timeoutMs: 120_000 },
     );
   });
 

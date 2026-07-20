@@ -1517,6 +1517,15 @@ export type AgentChatContextUsage = {
   rawMaxTokens?: number;
   percentage: number;
   model?: string;
+  // Typed per-turn breakdown for the composer meter's hover. The `categories`
+  // array is display-oriented (provider-shaped names) and drives the inline
+  // `/context` card; these fields let consumers read the breakdown without
+  // reparsing display strings. Present on automatic "live" Claude snapshots;
+  // absent on the SDK `/context` command payload (which has different categories).
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreationTokens?: number;
 };
 
 export type AgentChatContextUsageArgs = {

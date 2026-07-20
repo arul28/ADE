@@ -28,7 +28,7 @@ import {
 const SOCKET_OPEN = 1;
 const DEFAULT_TRANSPORT_OPEN_TIMEOUT_MS = 8_000;
 const DEFAULT_AUTHENTICATED_HELLO_TIMEOUT_MS = 12_000;
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 60_000;
 const INBOUND_STALE_MS = 75_000;
 const INBOUND_STALE_CHECK_INTERVAL_MS = 15_000;
 const BACKOFF_MIN_MS = 1_000;
@@ -140,8 +140,9 @@ export class SyncConnection {
   private endpoints: BrowserDialCandidate[] = [];
   private shouldReconnect = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   private inboundStaleTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS;
   private backoffMs = BACKOFF_MIN_MS;
   private consecutiveAuthFailures = 0;
   private lastDialStartedAtMs = 0;
@@ -586,6 +587,7 @@ export class SyncConnection {
       callbacks.onHelloError?.(envelope.payload as SyncHelloErrorPayload);
     }
     this.routeEnvelope(envelope);
+    if (this.isConnected()) this.scheduleHeartbeatFallback();
   }
 
   private routeEnvelope(envelope: SyncEnvelope): void {
@@ -680,9 +682,17 @@ export class SyncConnection {
   }
 
   private startHeartbeat(intervalMs: number | undefined): void {
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
-    const delay = Math.max(5_000, Math.floor(intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS));
-    this.heartbeatTimer = setInterval(() => {
+    this.heartbeatIntervalMs = Math.max(
+      5_000,
+      Math.floor(intervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS),
+    );
+    this.scheduleHeartbeatFallback();
+  }
+
+  private scheduleHeartbeatFallback(): void {
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = setTimeout(() => {
+      this.heartbeatTimer = null;
       if (!this.isConnected()) return;
       this.send({
         type: "heartbeat",
@@ -692,7 +702,8 @@ export class SyncConnection {
           dbVersion: 0,
         } satisfies SyncHeartbeatPayload,
       });
-    }, delay);
+      this.scheduleHeartbeatFallback();
+    }, this.heartbeatIntervalMs * 2);
   }
 
   private startInboundStaleWatchdog(): void {
@@ -819,7 +830,7 @@ export class SyncConnection {
 
   private stopTimers(): void {
     if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
+      clearTimeout(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
     if (this.inboundStaleTimer) {

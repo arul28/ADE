@@ -6,6 +6,7 @@ import cron from "node-cron";
 import { z } from "zod";
 import type {
   AiConfig,
+  AiCustomProviderConfig,
   AiFeatureKey,
   AiTaskRoutingKey,
   AiTaskRoutingRule,
@@ -1625,10 +1626,37 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   const localProviders = coerceAiLocalProviders(value.localProviders);
   if (localProviders) out.localProviders = localProviders;
 
+  const customProviders = coerceAiCustomProviders(value.customProviders);
+  if (customProviders) out.customProviders = customProviders;
+
+  const customModelSlugs = asStringArray(value.customModelSlugs)
+    ?.map((slug) => slug.trim())
+    .filter(Boolean);
+  if (customModelSlugs?.length) out.customModelSlugs = customModelSlugs;
+
   const workerSafety = coerceWorkerSafetyPolicy(value.workerSafety);
   if (workerSafety) out.workerSafety = workerSafety;
 
   return Object.keys(out).length ? out : undefined;
+}
+
+function coerceAiCustomProviders(value: unknown): AiConfig["customProviders"] {
+  if (!Array.isArray(value)) return undefined;
+  const out = value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const id = asString(entry.id)?.trim();
+    const baseURL = asString(entry.baseURL)?.trim();
+    const models = asStringArray(entry.models)?.map((model) => model.trim()).filter(Boolean) ?? [];
+    if (!id || !baseURL || !models.length) return [];
+    const npmRaw = asString(entry.npm)?.trim();
+    const npm: AiCustomProviderConfig["npm"] =
+      npmRaw === "@ai-sdk/openai-compatible" || npmRaw === "@ai-sdk/openai" || npmRaw === "@ai-sdk/anthropic"
+        ? npmRaw
+        : undefined;
+    const name = asString(entry.name)?.trim();
+    return [{ id, name: name || id, baseURL, ...(npm ? { npm } : {}), models }];
+  });
+  return out.length ? out : undefined;
 }
 
 function normalizePriorityLabels(value: unknown): Array<"urgent" | "high" | "normal" | "low" | "none"> | undefined {
@@ -1958,6 +1986,11 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.apiKeys ?? {}),
     ...(localAi?.apiKeys ?? {})
   };
+  // Replace semantics (not union): the UI writes the full authoritative list,
+  // and this merge also runs on the ai.updateConfig write-patch path — a union
+  // would make removals impossible to persist. Absent = keep, [] = clear.
+  const customProviders = localAi?.customProviders ?? sharedAi?.customProviders ?? [];
+  const customModelSlugs = localAi?.customModelSlugs ?? sharedAi?.customModelSlugs ?? [];
   const localProvidersEntries = (["ollama", "lmstudio"] as const)
     .map((provider) => {
       const mergedProvider = {
@@ -1984,6 +2017,8 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),
     ...(Object.keys(featureReasoningOverrides).length ? { featureReasoningOverrides } : {}),
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
+    ...(customProviders.length ? { customProviders } : {}),
+    ...(customModelSlugs.length ? { customModelSlugs } : {}),
     ...(localProvidersEntries.length ? { localProviders } : {}),
     ...(workerSafety ? { workerSafety } : {}),
   };

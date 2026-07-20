@@ -366,14 +366,23 @@ traffic always uses the paired sync WebSocket advertised on the LAN, through a
 Tailscale tailnet, or through the relay. Install Tailscale on the phone and the
 ADE machine for a direct route when they are not on the same local network.
 
-On desktop, the **This Mac** card and **Connections > Phone** are runtime
-controls, not project controls. They remain available while a window is bound
-to a remote project: `window.ade.sync.*` routes to the active runtime binding,
-so a local/no-project window manages the local machine brain while a
-remote-bound window manages the remote machine's sync service. The pairing PIN
-manager lives on the This Mac card. The legacy in-process desktop sync host is
-disabled by default and can be re-enabled only for diagnostics with
-`ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
+On desktop, the **This Mac** card and **Connections > Phone**/**Web** tabs are
+runtime controls that always describe the **physical Mac the user is sitting
+at**, even while the window is bound to a remote project. Most
+`window.ade.sync.*` calls follow the active binding and would report the remote
+machine, so the Connections panel reads its identity, pairing code, and local
+device lists through `window.ade.sync.getLocalStatus(...)`, which deliberately
+bypasses the binding and targets this machine's local brain (see the
+`ade.sync.getLocalStatus` IPC handler and `useSyncConnections.ts`). The
+binding-routed `sync.getStatus` is still fetched, but only to detect that the
+window is remote-bound and to name the machine it is working on. Because the
+pairing and device *mutations* (`setPin`, `generatePin`, `clearPin`,
+`forgetDevice`, name edits) continue to route through the binding, the panel
+presents them **read-only while remote-bound** and labels the connected-device
+list with the local Mac's name so it cannot be mistaken for the bound machine's.
+The pairing PIN manager lives on the This Mac card. The legacy in-process
+desktop sync host is disabled by default and can be re-enabled only for
+diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 ## Troubleshooting
 

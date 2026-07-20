@@ -104,6 +104,17 @@ queueing/sending them, and shows update guidance from the host state. When a new
 mobile release adds required host behavior, update the shared contract and the
 iOS compatibility tests in the same branch.
 
+Alongside the required set the file keeps an **optional** list
+(`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`) for additive commands newer
+phones feature-detect but that older mobile builds never call — so their absence
+must not put a host in `limited`. The four Linear connection commands
+(`cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`,
+`cto.setLinearToken`, `cto.clearLinearToken`) that let the phone connect,
+reconnect, and disconnect Linear are optional: a brain that predates them simply
+doesn't advertise them, and the iOS Linear pane hides those affordances locally
+instead of erroring. See `remote-commands.md` and
+`../linear-integration/README.md`.
+
 ## What syncs, what does not
 
 | Data category | Sync mechanism | Devices |
@@ -215,13 +226,15 @@ Runtime support files outside `services/sync/`:
   observes both its local auth event and cross-process credential-file changes
   from desktop sign-in. Separately, a lightweight 2-second observer computes a
   signature for the publish-relevant relay control/bridge state and reachable
-  endpoints. Its
-  first valid snapshot and every later change trigger a coalesced publish, so a
+  endpoints. Its first valid snapshot and every later change trigger a
+  coalesced publish, so a
   newly validated or lost relay route reaches the directory without waiting for
   the heartbeat. A triggered write becomes the new heartbeat anchor rather than
-  causing a duplicate write at the old deadline. Every publication re-reads the
-  active sync snapshot and token so a brain started before sign-in still
-  recovers. The last typed
+  causing a duplicate write at the old deadline. A confirmed Relay
+  identity-conflict recovery also requests
+  another publish as soon as the replacement control route validates. Every
+  publication re-reads the active sync snapshot and token so a brain started
+  before sign-in still recovers. The last typed
   publisher outcome is exposed as `routeHealth.accountDirectory` in
   `sync.getStatus`, `ade sync status`, and the desktop This Mac card, including
   the selected directory origin, HTTP status, bounded classified HTTP reason,
@@ -232,7 +245,23 @@ Runtime support files outside `services/sync/`:
   the account bearer. The publisher and desktop account bridge derive the
   official directory from the same project-aware Clerk issuer resolver, while
   the machine-owned `ADE_ACCOUNT_DIRECTORY_URL` override remains fail-closed
-  behind the trusted-origin parser.
+  behind the trusted-origin parser. In a packaged runtime, an explicit override
+  of that publisher URL to ADE's development directory is ignored and resolves
+  to the production directory instead. This follows the same atomic packaged
+  Clerk policy as OAuth and attestation resolution: the distributed CLI/brain
+  and Electron entry points set `ADE_RUNTIME_PACKAGED=1`; development Clerk
+  hosts cannot produce a mixed development/production configuration;
+  persisted or environment-provided credentials pinned to a development
+  issuer/client (including an access-token development `iss` claim) are rejected
+  before refresh or publication; rejected environment credentials are treated
+  as absent so they do not block a production login; persisted development
+  sessions are compare-and-deleted only when the store supports an atomic
+  update, followed by one re-read that can surface a peer-written production
+  replacement in the same status call; stores without that primitive leave the
+  value untouched but continue to report it as signed out; and
+  `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
+  hatch. Source-checkout runtimes and non-development custom issuers keep their
+  existing override behavior.
 - `apps/account-directory/src/directory.ts` — the Clerk-scoped machine
   register/list/delete Worker routes. Machine listing selects the owner's 500
   most recently seen rows before computing online-first order and exposes
@@ -294,7 +323,27 @@ Desktop connection UI:
   message under **Technical details**: missing project registration asks the
   user to open a project, a non-installed local release build asks for an
   Applications install/relaunch, and other sync-service failures ask for an ADE
-  restart.
+  restart. The local-brain-only
+  `window.ade.sync.getLocalStatus(...)` accessor is available for the card to
+  consume so a window bound to another machine can still show the physical
+  Mac's identity, pairing code, and Phone/Web device lists.
+- `apps/desktop/src/renderer/components/settings/useSyncConnections.ts` — the
+  hook that keeps the Connections panel local-vs-remote aware. It fetches the
+  binding-following `sync.getStatus` **and** the machine-level
+  `sync.getLocalStatus` on every refresh; the This Mac card always renders the
+  `getLocalStatus` snapshot, so it names the physical Mac even in a remote-bound
+  window, and never substitutes a routed (remote) snapshot when the local one is
+  unavailable. It derives `isRemoteBound` by comparing the two snapshots'
+  `localDevice.deviceId`, exposes the bound machine's display name for labeling,
+  and gates `canManageDevices` on `!isRemoteBound`. Because the mutation methods
+  (`setPin`, `generatePin`, `clearPin`, `forgetDevice`, name edits) still follow
+  the window binding, the panel renders the pairing code and device controls
+  read-only while remote-bound and labels the connected device list with the
+  local Mac's name so it can't be mistaken for the bound machine's. When
+  remote-bound it also scopes the shown devices to this Mac's live
+  `connectedPeers` (via `peerToRuntimeDeviceState`) instead of the routed
+  `listDevices()` result, which would describe the remote machine; offline-paired
+  rows are unavailable in that mode until a local-scoped device IPC exists.
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,
   preload routing, and the Connections recovery copy. Keep these predicates
@@ -601,31 +650,40 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   the per-project host and the brain ingress handler read it.
 - `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity at
   `~/.ade/secrets/sync-cloud-relay.json` (lazily-minted 32-hex `machineKey` +
-  HMAC `secret`, chmod `0600`). The identity is unchanged by the accounts
-  overhaul. Legacy `enabled` / `enabledSetByUser` fields are accepted only long
-  enough to rewrite the file without them; there is no stored enablement or
-  user kill-switch. The store derives the controller-facing
+  HMAC `secret`, chmod `0600`). The identity is stable in normal operation.
+  Only a claim endpoint response with the exact HTTP status `409` can trigger
+  the tunnel client's one-attempt recovery: the store serializes competing
+  brains with an exclusive sibling lock, compare-and-swaps the expected
+  `machineKey`, and mints a replacement key + secret. Generic network, auth,
+  upgrade, and bridge failures never rotate identity. Legacy `enabled` /
+  `enabledSetByUser` fields are accepted only long enough to rewrite the file
+  without them; there is no stored enablement or user kill-switch. The store
+  derives the controller-facing
   `wss://<relay>/connect/<machineKey>` URL and the canonical host/pipe
   HMAC signing strings shared with the `apps/tunnel-relay` worker.
 - `syncTunnelClientService.ts` — the brain-side tunnel client. When the
   machine has a current ADE account lease it keeps an outbound WebSocket
   registered with the relay worker (HMAC-signed host/pipe upgrades,
   exponential backoff with jitter capped at 60 s) so controllers off the
-  LAN/tailnet can dial the machine through the relay. Sign-out or lease loss
-  closes the control socket and active pipes. The normal ADE sync
+  LAN/tailnet can dial the machine through the relay. Connect and reconnect are
+  single-flight: lease reconciliation does not close a still-valid connecting
+  socket, and a transient token-refresh exception retains the current control
+  route through the last known account-lease expiry. Sign-out, an explicit
+  missing lease, account switch, or expiry closes the control socket and active
+  pipes. The normal ADE sync
   hello/pairing then runs inside that pipe. TLS terminates at the relay, so the
   relay can inspect the handshake and subsequent sync traffic. Bridge
   validation is **proactive**: `validateCurrentBridge()` re-probes the
   loopback sync listener (matching port + identity nonce) whenever the control
   socket opens and whenever the shared listener reports a fresh loopback
   validation (`sharedSyncListener.onLoopbackValidated`, wired in
-  `bootstrap.ts`), coalescing overlapping probes through a single in-flight
-  promise. This flips `relayBridgeValidated` — and therefore directory relay
+  `bootstrap.ts`), serializing probes through the same validation queue used by
+  inbound opens. This flips `relayBridgeValidated` — and therefore directory relay
   publication — true as soon as the listener is confirmed, so the earlier
   "bridge not validated against the sync port" state self-heals instead of
   waiting for an inbound client to open the first tunnel. `openTunnel` still
   re-validates on every inbound open as defense in depth. Validation calls are
-  serialized through one in-flight promise, and the port plus loopback identity
+  strictly serialized, and the port plus loopback identity
   are checked again before pipe creation so a listener change cannot reuse a
   stale result. The control socket uses native WebSocket ping frames every 30
   seconds with a 10-second pong deadline; a miss terminates it and enters the
@@ -635,7 +693,15 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   immediately instead of hanging. Pipe/local application close codes and
   sanitized reasons are preserved across the bridge; other closes normalize to
   `4000`. Account loss clears validation and all sockets, while account switches
-  force a clean control reconnect.
+  force a clean control reconnect. Control observability preserves the
+  causal failure rather than replacing it with a generic WebSocket error:
+  upgrade rejection captures the HTTP status and at most 512 sanitized response
+  bytes; close telemetry records code, reason, and whether the socket opened.
+  `sync_tunnel.claimed`, `.claim_failed`, `.control_open`, `.control_error`, and
+  `.control_close` are the structured lifecycle events. `routeHealth.relay`
+  exposes `skipReason` / `lastControlError`, while
+  `lastControlOpenAt` and `lastBridgeValidationAt` retain the two independent
+  success histories.
 
 Push publisher (`apps/ade-cli/src/services/push/`) — the APNs push +
 Live Activity pipeline (`pushPublisherService.ts`,
@@ -656,7 +722,8 @@ diagnostics. The unit tests next to the proxies still exercise the same
 canonical code through the re-export.
 
 Sync IPC routing in the renderer
-(`apps/desktop/src/preload/preload.ts`): every `window.ade.sync.*` call
+(`apps/desktop/src/preload/preload.ts`): project-scoped
+`window.ade.sync.*` calls
 goes through `callProjectRuntimeSyncOr(method, params, localFallback)`,
 which:
 
@@ -666,6 +733,13 @@ which:
 2. Otherwise, it calls `IPC.localRuntimeCallSync` against the local
    runtime. In-process sync IPC is used only when no runtime binding is
    available, such as tests or diagnostics.
+
+`window.ade.sync.getLocalStatus(args?: SyncGetStatusArgs)` is the deliberate
+exception. Preload invokes `ade.sync.getLocalStatus` directly; main dispatches
+`sync.getStatus` through the machine-level `LocalRuntimeConnectionPool`, never
+the active window's remote project binding, with only the local in-process
+diagnostics service as its unavailable-runtime fallback. This is the path the
+Connections This Mac projection and local pairing/device controls should use.
 
 During project transitions, mutating sync methods (`sync.setPin`,
 `sync.clearPin`, `sync.connectToBrain`, lane-presence updates, model-picker
@@ -1025,7 +1099,7 @@ Tailscale candidate) keeps the pairing and the client moves on to other
 routes. `SyncPairingResultPayload.error.code` is one of
 `invalid_pin | pin_not_set | pairing_failed`.
 
-Heartbeat interval is 30 seconds. Desktop peers close after **two**
+Heartbeat interval is 60 seconds. Desktop peers close after **two**
 consecutive missed heartbeats; mobile peers get a wider grace window
 (`MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6`) because iOS can briefly suspend
 foreground networking during app and route transitions. Reconnection
@@ -1221,9 +1295,11 @@ feature is merged or because a deliberately isolated-port host is running.
   current. Every paired Relay hello — including first-time PIN pairing — must
   also carry a fresh short-lived Clerk token whose subject matches the account
   signed in on the host; the proof is never persisted. Direct LAN/Tailscale
-  hellos do not need an account token. Sign-out, account switch, expiry, or host
-  refresh failure closes Relay peers and revokes account-owned pairing records;
-  direct QR/Nearby/SSH records carry local provenance and survive. A verified
+  hellos do not need an account token. Sign-out, account switch, expiry, or a
+  refresh failure after the last known lease has expired closes Relay peers and
+  revokes account-owned pairing records; a transient refresh exception while
+  that lease is current leaves the route intact. Direct QR/Nearby/SSH records
+  carry local provenance and survive. A verified
   same-owner account hello with the pinned DPoP key may rotate the paired secret
   so a lost credential-delivery response can be retried safely.
   The `machineKey` is an unguessable 32-hex identifier and the tunnel

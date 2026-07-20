@@ -115,9 +115,10 @@ Lane lifecycle `namePattern` values are globs matched against the resolved lane 
 - `triggerType` — maps to one of the trigger types above.
 - `status` — `AutomationIngressStatus` (`received`, `matched`, `dispatched`, `ignored`, `error`).
 - `summary` — human-readable one-liner.
-- `rawPayloadJson` — the full original payload.
 - `cursor` — for relay polling.
 - `receivedAt`.
+
+The raw webhook payload is **not** persisted or returned. `automationIngressService` normalizes and matches against the payload in memory, but the stored `automation_ingress_events` row keeps only the fields above (`raw_payload_json` is written `null`), and the record `automationService` returns to run-detail / history readers no longer includes a `rawPayloadJson`. Rows are bounded at write time (7 days, and the newest 2,000 non-`dispatched` rows per project) and swept again by the storage doctor.
 
 Label normalization helper `normalizeLabels` accepts either string arrays or objects with a `.name` property (the GitHub payload shape).
 

@@ -18,7 +18,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/renderer/lib/aiDiscoveryCache.ts` | Project-scoped AI integration-status and provider-model cache shared across renderer surfaces. `getAiStatusCached` uses a 10-second freshness window and deduplicates concurrent `ade.ai.getStatus` requests; cache update/invalidation events let open ModelPickers react without polling or mounting their own background refresh loops. |
 | `CrossMachineHandoffModal.tsx` | Modal state and user flow for **Send to machine**. It verifies a local source lane, follows live remote connection snapshots, lets the user pick brief or full-history fork (fork defaults on for fork-capable providers and constrains the model picker to the same provider), handles existing-project versus confirmed-clone setup, decodes destination responses at the renderer boundary, pins acceptance to the reviewed route kind, and exposes retryable source-marker failures after destination success. A fork that the destination can't accept (older ADE with no `forkHandoffSupport`, oversize history, or an unforkable provider file) surfaces a plain reason and a one-click **send as brief** that re-runs prepare + preflight; the insecure-route consent line is fork-aware (a fork discloses that the full history is sent exactly as recorded, a brief that only the summary is sent). |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, including a `Woke on schedule` divider before every synthetic scheduled turn and inline `SubagentSpawnCard` / `SubagentResultCard` / `BackgroundFinishChip` rows (from `SubagentActivityCards.tsx`) for real subagents and backgrounded shell commands, and accepts stable row-key jump requests from the while-you-were-away strip and the spawn/result jump affordances. Keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. The last text block of a multi-block assistant turn exposes Copy turn, which joins only that turn's assistant text blocks with blank lines; legacy rows without a turn id and single-block turns keep only the normal block copy. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. A stalled Codex turn renders a clickable Wait / Nudge / Retry / Resume recovery card wired to `agentChat.recoverCodexTurn`; terminal provider capacity/usage-limit errors render `ProviderFailureRecoveryCard` with same-thread retry and model-selection actions. User messages marked `metadata.hideFullPrompt` render and copy only their `displayText`, keeping internal handoff briefs out of the visible transcript details, and a handoff-brief user row shows a small brief chip. When a fork seeds pre-fork history into the new chat, the envelopes carry the `handoff_fork` provider origin and the list draws a single `Forked from the previous chat — full history above` divider (`computeForkHistoryDividerRowKey` pins it to the first live row after the seeded history) instead of one marker per seeded row. |
-| `AgentChatComposer.tsx`, `ComposerSmartLinkMenu.tsx` | Text input, attachments, model selector, compact title-only permission controls, slash commands, smart-link chips, pending-input answering (including Codex MCP form/URL elicitations), voice-dictation target registration, and parallel model-slot controls. Completed URLs are non-editable inline chips whose `data-composer-chip-text` preserves the literal URL during serialization; clicking or keyboard-activating a chip opens the Copy link / Remove link menu, and character deletion removes the whole URL token. During an active Claude turn, its split Send control selects without dispatching among inline, after-turn, and interrupt delivery; the primary button and Enter execute the selected mode. Staged rows expose send-during-turn, interrupt, cancel, and Edit-back-to-composer actions. It forwards one-shot open requests to the shared ModelPicker so transcript recovery cards can open model selection without synthetic DOM events; the picker acknowledges each request so remounts do not reopen it. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. For orchestration model-selection pending inputs it decodes the agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) before rendering the selection card. |
+| `AgentChatComposer.tsx`, `ComposerSmartLinkMenu.tsx`, `smartLinkChipMark.ts` | Text input, attachments, model selector, compact title-only permission controls, slash commands, smart-link chips (`smartLinkChipMark.ts` returns the inline `currentColor` SVG brand mark each chip renders), pending-input answering (including Codex MCP form/URL elicitations), voice-dictation target registration, and parallel model-slot controls. Completed URLs are non-editable inline chips whose `data-composer-chip-text` preserves the literal URL during serialization; clicking or keyboard-activating a chip opens the Copy link / Remove link menu, and character deletion removes the whole URL token. During an active Claude turn, its split Send control selects without dispatching among inline, after-turn, and interrupt delivery; the primary button and Enter execute the selected mode. Staged rows expose send-during-turn, interrupt, cancel, and Edit-back-to-composer actions. It forwards one-shot open requests to the shared ModelPicker so transcript recovery cards can open model selection without synthetic DOM events; the picker acknowledges each request so remounts do not reopen it. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. For orchestration model-selection pending inputs it decodes the agent briefing metadata (`workDescription`, `filesHint`, `dependsOn`) before rendering the selection card. |
 | `ProviderFailureRecoveryCard.tsx` | Friendly recovery surface for terminal provider capacity and usage-limit failures. Shows human-readable error identity and guidance, then offers **Retry turn** and **Choose model** only after the failed turn has released the composer. |
 | `chatTurnState.ts` | Pure turn-state helpers shared by live and hydration paths. Terminal transcript evidence beats a stale active session summary, and failed-turn retry resolves the associated non-steer user message even when the optimistic row has no provider turn id. |
 | `ChatActionsDrawerPanel.tsx`, `ChatSourcesPanel.tsx`, `chatSources.ts` | Chat Actions tab shell plus Codex Sources view. The source derivation deduplicates files, web queries/results, MCP apps/tools, and external resource URLs from transcript events; safe web rows open in ADE's browser. |
@@ -36,7 +36,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; defines the shared Background/Schedule Earlier predicates (including fired one-shot wakeups); and formats next-fire labels. A parent turn's terminal event does not stop a background row, and background snapshots whose `sourceTaskId` belongs to a real subagent are omitted so native Agents do not appear twice. Shared by desktop, ADE Code, and mirrored by iOS. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary with lazy diff expansion. |
 | `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex forks the thread before the selected turn (`thread/fork` + `beforeTurnId`) on app-server >= 0.145.0, or falls back to `thread/rollback` (latest user message only) on older servers, and restores files through ADE's git plan. |
-| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
+| `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, latest plan, tasks, schedule, and subagent/background rosters. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. Spawned-chat rows are identified by `childSessionId`, show the live child title supplied by `AgentChatPane` / `WorkViewArea`, keep the runtime as a small kind chip, and navigate to the child rather than opening the provider-subagent drawer. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Computer-use backend status. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. See [App Control](../computer-use/app-control.md). |
 | `ChatIosSimulatorPanel.tsx` | macOS-only iOS Simulator drawer. Two mount points: under the chat composer and inside the Work right-edge sidebar. Tool-readiness checklist, device + target pickers, three-backend live preview, `interact` vs `inspect` mode, hit-test overlay, and selection emission as `IosElementContextItem`. Accepts an optional `laneId` prop, forwarded into `iosSimulator.launch` so the resulting `IosSimulatorSession` records its launching lane. Simulator controls are not blocked when another chat session owns the simulator — ownership only affects which session receives context insertions, not whether the user can interact with the device. See [iOS Simulator feature](../ios-simulator/README.md). |
@@ -109,12 +109,18 @@ and a footer that contains the composer.
   ceiling for normal tile sizes.
 - **Smart links.** Once an HTTP(S) or `ade://` URL is completed by paste,
   whitespace, or paragraph insertion, the rich editor replaces its visible run
-  with an atomic violet chip. The provider catalog supplies compact offline
-  labels for GitHub, Linear, and ADE links; generic pages may asynchronously
-  adopt a bounded page title and favicon from `chat.resolveSmartLinkPreview`.
-  The literal URL remains `draft` and is what the agent receives. Hover/title
-  reveals the full URL; click, Enter, or Space opens Copy link / Remove link;
-  Backspace/Delete removes an adjacent or focused chip in one operation.
+  with an atomic violet chip. Each chip shows the provider's real brand mark —
+  the GitHub octocat, the Linear mark (shared `LINEAR_LOGO_PATH`), and an ADE
+  monogram — rendered as an inline `currentColor` SVG by `smartLinkChipMark.ts`;
+  generic pages show a globe until they asynchronously adopt a bounded page
+  title and favicon from `chat.resolveSmartLinkPreview` (a resolved favicon
+  replaces the globe). The provider catalog in `smartLinks.ts` still supplies
+  the compact text label beside the mark. The literal URL remains `draft` and
+  is what the agent receives. Hover/title reveals the full URL; click, Enter, or
+  Space opens Copy link / Remove link; Backspace/Delete removes an adjacent or
+  focused chip in one operation. The rich contenteditable is explicitly
+  left-aligned so a pasted link (which swaps the textarea for the rich editor)
+  cannot inherit a centered ancestor's `text-align`.
 - **Focus-on-active.** The composer receives focus whenever the
   enclosing `AgentChatPane` reports `isTileActive: true` (for packed
   grid tiles) or any equivalent active state — typing in the grid
@@ -216,9 +222,13 @@ and a footer that contains the composer.
   parallel-slot model fell off the allowlist — main and slot setters
   also no-op on out-of-list ids instead of silently bouncing.
   Handoffs create a root-store `HandoffLaunchJob` before the IPC call
-  starts, advance it through summary/chat/send labels while the old
-  surface closes, and remove it once the new chat is created or the
-  handoff fails. When the source provider is fork-capable
+  starts, label it by mode (`preparing-summary` for a brief,
+  `forking-history` for a fork) while the old surface closes, and remove
+  it once the new chat is created or the handoff fails — or hide it
+  earlier as soon as a matching real session row appears in the sidebar
+  (`handoffJobLikelyMaterialized`), so an in-flight handoff never reads
+  as two sessions with one vanishing (ADE-122). When the source provider
+  is fork-capable
   (`providerSupportsHandoffFork`: Claude, Codex, OpenCode, or Droid) the
   local handoff surface exposes both **Brief** and **Fork** modes,
   defaulting to fork; Cursor is brief-only. Fork keeps the new chat in the
@@ -654,12 +664,17 @@ the same panel with zero new chrome: `claudeWorkflowProgress.ts` normalizes
 the undocumented `workflow_progress` snapshot and fans each workflow agent
 out as its own subagent row (phase in the summary line, tokens/duration
 from the snapshot, `workflowName` chip), while the parent workflow task row
-falls back to a phase/count rollup summary. Child chat sessions spawned
-with a parent lineage (`ade chat create` from a tracked agent shell,
-`--parent`) also list here via synthetic `subagent_*` events keyed
-`chat:<childSessionId>`; the parent transcript additionally shows a quiet
-"Subagent spawned" chip (a `status:"subagent_spawned"` system_notice) that
-deep-links to the child chat.
+falls back to a phase/count rollup summary. Child chat sessions spawned with
+a parent lineage (`ade chat create` from a tracked agent shell, `--parent`)
+also list here via synthetic `subagent_*` events keyed
+`chat:<childSessionId>`. `deriveChatSubagentSnapshots` preserves that prefixed
+task id and the underscore event's `spawnKind` when the canonical dot-form
+`subagent.started` twin merges into the same snapshot, then derives an explicit
+`childSessionId`. The panel uses that field for routing, labels the row with
+the live child-session title when available, and shows the runtime as the small
+kind chip. The parent transcript additionally shows a quiet "Subagent spawned"
+chip (a `status:"subagent_spawned"` system notice) that deep-links to the child
+chat.
 
 Codex parallel-agent lifecycle comes from both legacy `collabAgentToolCall`
 items and newer app-server `subAgentActivity` items. The service registers

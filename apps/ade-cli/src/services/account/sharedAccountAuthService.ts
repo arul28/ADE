@@ -4,7 +4,12 @@ import {
   DEFAULT_ADE_CLERK_ISSUER,
   DEFAULT_ADE_CLERK_JWKS_URL,
   DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+  isClerkDevelopmentIssuer,
+  isClerkDevelopmentOAuthClientId,
   officialAccountDirectoryUrlForIssuer,
+  shouldIgnoreDevelopmentAccountDirectoryUrl,
+  shouldIgnoreDevelopmentClerkConfiguration,
+  warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
@@ -68,6 +73,44 @@ function readProjectSecret(projectRoot: string, name: string): string | null {
   }
 }
 
+function enforcePackagedOAuthConfig(
+  env: NodeJS.ProcessEnv,
+  config: AccountOAuthConfig,
+): AccountOAuthConfig {
+  if (
+    !shouldIgnoreDevelopmentClerkConfiguration(env)
+    || (!isClerkDevelopmentIssuer(config.issuer)
+      && !isClerkDevelopmentOAuthClientId(config.clientId))
+  ) {
+    return config;
+  }
+  warnDevelopmentClerkIgnored();
+  return {
+    issuer: DEFAULT_ADE_CLERK_ISSUER,
+    clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+  };
+}
+
+function enforcePackagedAttestationConfig(
+  env: NodeJS.ProcessEnv,
+  config: AccountAttestationConfig,
+): AccountAttestationConfig {
+  if (
+    !shouldIgnoreDevelopmentClerkConfiguration(env)
+    || (!isClerkDevelopmentIssuer(config.issuer)
+      && !isClerkDevelopmentIssuer(config.jwksUrl)
+      && !isClerkDevelopmentOAuthClientId(config.oauthClientId))
+  ) {
+    return config;
+  }
+  warnDevelopmentClerkIgnored();
+  return {
+    issuer: DEFAULT_ADE_CLERK_ISSUER,
+    jwksUrl: DEFAULT_ADE_CLERK_JWKS_URL,
+    oauthClientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
+  };
+}
+
 export function resolveAccountOAuthConfig(args: {
   env: NodeJS.ProcessEnv;
   projectRoots: Iterable<string>;
@@ -79,21 +122,23 @@ export function resolveAccountOAuthConfig(args: {
     const issuer = readProjectSecret(projectRoot, "CLERK_ISSUER");
     const clientId = readProjectSecret(projectRoot, "CLERK_OAUTH_CLIENT_ID");
     if (issuer || clientId) {
-      return {
+      return enforcePackagedOAuthConfig(args.env, {
         issuer: issuer ?? args.env.CLERK_ISSUER?.trim() ?? "",
         clientId: clientId ?? args.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "",
-      };
+      });
     }
   }
   const issuer = args.env.CLERK_ISSUER?.trim() ?? "";
   const clientId = args.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "";
   // Environment overrides are another atomic pair: a partial custom pair must
   // fail closed rather than borrowing the missing half from ADE production.
-  if (issuer || clientId) return { issuer, clientId };
-  return {
+  if (issuer || clientId) {
+    return enforcePackagedOAuthConfig(args.env, { issuer, clientId });
+  }
+  return enforcePackagedOAuthConfig(args.env, {
     issuer: DEFAULT_ADE_CLERK_ISSUER,
     clientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
-  };
+  });
 }
 
 export function resolveOfficialAccountDirectoryBaseUrl(args: {
@@ -109,10 +154,22 @@ function resolveDeviceBridgeUrl(args: {
 }): string {
   for (const projectRoot of args.projectRoots) {
     const value = readProjectSecret(projectRoot, "ADE_ACCOUNT_DIRECTORY_URL");
-    if (value) return value;
+    if (value) {
+      if (shouldIgnoreDevelopmentAccountDirectoryUrl(value, args.env)) {
+        warnDevelopmentClerkIgnored();
+        return resolveOfficialAccountDirectoryBaseUrl(args);
+      }
+      return value;
+    }
   }
   const machineOverride = args.env.ADE_ACCOUNT_DIRECTORY_URL?.trim();
-  if (machineOverride) return machineOverride;
+  if (machineOverride) {
+    if (shouldIgnoreDevelopmentAccountDirectoryUrl(machineOverride, args.env)) {
+      warnDevelopmentClerkIgnored();
+      return resolveOfficialAccountDirectoryBaseUrl(args);
+    }
+    return machineOverride;
+  }
   return resolveOfficialAccountDirectoryBaseUrl(args);
 }
 
@@ -129,24 +186,28 @@ function resolveAttestationConfig(args: {
     const jwksUrl = readProjectSecret(projectRoot, "CLERK_JWKS_URL");
     const oauthClientId = readProjectSecret(projectRoot, "CLERK_OAUTH_CLIENT_ID");
     if (issuer || jwksUrl || oauthClientId) {
-      return {
+      return enforcePackagedAttestationConfig(args.env, {
         issuer: issuer ?? args.env.CLERK_ISSUER?.trim() ?? "",
         jwksUrl: jwksUrl ?? args.env.CLERK_JWKS_URL?.trim() ?? "",
         oauthClientId: oauthClientId ?? args.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "",
-      };
+      });
     }
   }
   const issuer = args.env.CLERK_ISSUER?.trim() ?? "";
   const jwksUrl = args.env.CLERK_JWKS_URL?.trim() ?? "";
   const oauthClientId = args.env.CLERK_OAUTH_CLIENT_ID?.trim() ?? "";
   if (issuer || jwksUrl || oauthClientId) {
-    return { issuer, jwksUrl, oauthClientId };
+    return enforcePackagedAttestationConfig(args.env, {
+      issuer,
+      jwksUrl,
+      oauthClientId,
+    });
   }
-  return {
+  return enforcePackagedAttestationConfig(args.env, {
     issuer: DEFAULT_ADE_CLERK_ISSUER,
     jwksUrl: DEFAULT_ADE_CLERK_JWKS_URL,
     oauthClientId: DEFAULT_ADE_CLERK_OAUTH_CLIENT_ID,
-  };
+  });
 }
 
 export function getSharedAccountAttestationConfig(args: {

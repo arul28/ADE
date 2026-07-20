@@ -61,6 +61,22 @@ describe("syncCloudRelayStore", () => {
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual(config);
   });
 
+  it("regenerates both halves when either persisted credential is invalid", () => {
+    const oldMachineKey = "a".repeat(32);
+    fs.writeFileSync(filePath, `${JSON.stringify({
+      machineKey: oldMachineKey,
+      secret: "too-short",
+      relayUrl: "https://relay.example.com",
+    })}\n`);
+
+    const repaired = createSyncCloudRelayStore({ filePath }).getConfig();
+
+    expect(repaired.machineKey).toMatch(/^[a-f0-9]{32}$/);
+    expect(repaired.machineKey).not.toBe(oldMachineKey);
+    expect(repaired.secret).toMatch(/^[a-f0-9]{48}$/);
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual(repaired);
+  });
+
   it("mints a stable identity and persists the file chmod 600", () => {
     const store = createSyncCloudRelayStore({ filePath });
     const first = store.getMachineIdentity();
@@ -85,6 +101,76 @@ describe("syncCloudRelayStore", () => {
     store.setRelayUrl("http://127.0.0.1:8787");
     const { machineKey } = store.getMachineIdentity();
     expect(store.getRelayWssUrl()).toBe(`ws://127.0.0.1:8787/connect/${machineKey}`);
+  });
+
+  it("rotates the full identity only when the expected key still matches", () => {
+    const store = createSyncCloudRelayStore({ filePath });
+    store.setRelayUrl("https://relay.example.com");
+    const first = store.getMachineIdentity();
+
+    const rotated = store.rotateMachineIdentity(first.machineKey);
+    expect(rotated).toMatchObject({
+      machineKey: expect.stringMatching(/^[a-f0-9]{32}$/),
+      secret: expect.stringMatching(/^[a-f0-9]{48}$/),
+      relayUrl: "https://relay.example.com",
+    });
+    expect(rotated.machineKey).not.toBe(first.machineKey);
+    expect(rotated.secret).not.toBe(first.secret);
+    expect(store.rotateMachineIdentity(first.machineKey)).toEqual(rotated);
+    expect(createSyncCloudRelayStore({ filePath }).getConfig()).toEqual(rotated);
+  });
+
+  it("does not race an identity rotation while another process owns the lock", () => {
+    const store = createSyncCloudRelayStore({ filePath });
+    const first = store.getMachineIdentity();
+    const lockPath = `${filePath}.rotate.lock`;
+    fs.writeFileSync(lockPath, "", { flag: "wx", mode: 0o600 });
+
+    expect(store.rotateMachineIdentity(first.machineKey)).toMatchObject(first);
+    fs.unlinkSync(lockPath);
+    expect(store.rotateMachineIdentity(first.machineKey).machineKey).not.toBe(first.machineKey);
+  });
+
+  it("does not steal an old lock from a live owner", () => {
+    const store = createSyncCloudRelayStore({ filePath });
+    const first = store.getConfig();
+    const lockPath = `${filePath}.rotate.lock`;
+    const liveOwner = {
+      version: 1,
+      pid: process.pid,
+      token: "live-owner-token".padEnd(32, "0"),
+      createdAt: "2020-01-01T00:00:00.000Z",
+    };
+    fs.writeFileSync(lockPath, `${JSON.stringify(liveOwner)}\n`, { flag: "wx", mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(lockPath, old, old);
+
+    expect(store.rotateMachineIdentity(first.machineKey)).toEqual(first);
+    expect(JSON.parse(fs.readFileSync(lockPath, "utf8"))).toEqual(liveOwner);
+    expect(createSyncCloudRelayStore({ filePath }).getConfig()).toEqual(first);
+  });
+
+  it("serializes relay URL writes behind the identity rotation lock", () => {
+    const store = createSyncCloudRelayStore({ filePath, lockWaitMs: 0 });
+    const first = store.getConfig();
+    const lockPath = `${filePath}.rotate.lock`;
+    fs.writeFileSync(lockPath, `${JSON.stringify({
+      version: 1,
+      pid: process.pid,
+      token: "live-config-owner".padEnd(32, "0"),
+      createdAt: new Date().toISOString(),
+    })}\n`, { flag: "wx", mode: 0o600 });
+
+    expect(() => store.setRelayUrl("https://new-relay.example.com")).toThrow(
+      "configuration is being updated by another live ADE process",
+    );
+    expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual(first);
+
+    fs.unlinkSync(lockPath);
+    expect(store.setRelayUrl("https://new-relay.example.com")).toMatchObject({
+      ...first,
+      relayUrl: "https://new-relay.example.com",
+    });
   });
 });
 

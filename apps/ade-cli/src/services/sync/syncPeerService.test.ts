@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer, type RawData, type WebSocket as ServerWebSocket } from "ws";
 import type { CrsqlChangeRow, SyncChangesetAckPayload, SyncChangesetBatchPayload, SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
-import { createSyncPeerService } from "./syncPeerService";
+import { createSyncPeerService, peerHeartbeatFallbackDelayMs } from "./syncPeerService";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
 
@@ -57,6 +57,12 @@ function makeChange(dbVersion: number, siteId: string): CrsqlChangeRow {
 }
 
 describe("createSyncPeerService", () => {
+  it("uses a two-interval heartbeat only as the peer fallback", () => {
+    expect(peerHeartbeatFallbackDelayMs(30_000)).toBe(60_000);
+    expect(peerHeartbeatFallbackDelayMs(60_000)).toBe(120_000);
+    expect(peerHeartbeatFallbackDelayMs(1_000)).toBe(10_000);
+  });
+
   it("chunks peer outbound changesets and advances after each ack", async () => {
     const localSiteId = "site-peer";
     const localDeviceId = "peer-device";

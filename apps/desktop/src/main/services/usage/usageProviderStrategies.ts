@@ -13,7 +13,8 @@ export type UsageProviderPollContext = {
   reason: UsageRefreshReason;
 };
 
-export type UsageProviderPollResult = {
+export type FreshUsageProviderPollResult = {
+  disposition?: "fresh";
   windows: UsageWindow[];
   /** Provider-level Codex spend control state, not tied to an individual quota window. */
   spendControlReached?: boolean;
@@ -25,6 +26,24 @@ export type UsageProviderPollResult = {
   dailyUsage7d?: number[];
   providerMessages?: UsageProviderMessage[];
 };
+
+type PreserveUsageProviderPollResult = {
+  /** The non-interactive caller could not authoritatively check this provider. */
+  disposition: "preserve_previous";
+  windows: [];
+  errors: [];
+  source?: UsageProviderSource;
+  spendControlReached?: never;
+  errorKind?: never;
+  retryAfterMs?: never;
+  extraUsage?: never;
+  dailyUsage7d?: never;
+  providerMessages?: never;
+};
+
+export type UsageProviderPollResult =
+  | FreshUsageProviderPollResult
+  | PreserveUsageProviderPollResult;
 
 /**
  * Boundary between the quota scheduler and provider-specific auth/fallback

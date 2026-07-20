@@ -792,6 +792,98 @@ describe("prService.getGithubSnapshot", () => {
     }));
   });
 
+  it("fetches all PR state totals in one GraphQL request when mobile asks for counts", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/graphql") {
+          return {
+            data: {
+              data: {
+                repository: {
+                  open: { totalCount: 4 },
+                  merged: { totalCount: 834 },
+                  closed: { totalCount: 17 },
+                },
+              },
+            },
+          };
+        }
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          return { data: [makeGitHubPull({ number: 321, title: "Live PR" })] };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    const snapshot = await service.getGithubSnapshot({ force: true, includeStateCounts: true });
+
+    expect(snapshot.history?.repoPullRequestCounts).toEqual({
+      open: 4,
+      merged: 834,
+      closed: 17,
+    });
+    expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
+      method: "POST",
+      path: "/graphql",
+    }));
+  });
+
+  it("retries a projected snapshot invalidated while exact state totals are loading", async () => {
+    let resolveStaleCounts!: (value: unknown) => void;
+    const staleCounts = new Promise<unknown>((resolve) => {
+      resolveStaleCounts = resolve;
+    });
+    let resolveFreshCounts!: (value: unknown) => void;
+    const freshCounts = new Promise<unknown>((resolve) => {
+      resolveFreshCounts = resolve;
+    });
+    let countRequests = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/graphql") {
+          countRequests += 1;
+          return countRequests === 1 ? staleCounts : freshCounts;
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) =>
+      String(sql).includes("from github_pr_projections") ? [makeGithubProjectionRow()] : []);
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    const staleRequest = service.getGithubSnapshot({ includeStateCounts: true, revalidate: false });
+    await flushMicrotasks();
+    service.invalidateGithubSnapshot();
+    const freshRequest = service.getGithubSnapshot({ includeStateCounts: true, revalidate: false });
+    await flushMicrotasks();
+
+    resolveFreshCounts({
+      data: { data: { repository: {
+        open: { totalCount: 2 }, merged: { totalCount: 20 }, closed: { totalCount: 3 },
+      } } },
+    });
+    await expect(freshRequest).resolves.toMatchObject({
+      history: { repoPullRequestCounts: { open: 2, merged: 20, closed: 3 } },
+    });
+
+    resolveStaleCounts({
+      data: { data: { repository: {
+        open: { totalCount: 1 }, merged: { totalCount: 10 }, closed: { totalCount: 1 },
+      } } },
+    });
+    await expect(staleRequest).resolves.toMatchObject({
+      history: { repoPullRequestCounts: { open: 2, merged: 20, closed: 3 } },
+    });
+    await expect(service.getGithubSnapshot({ includeStateCounts: true, revalidate: false })).resolves.toMatchObject({
+      history: { repoPullRequestCounts: { open: 2, merged: 20, closed: 3 } },
+    });
+    expect(countRequests).toBe(2);
+  });
+
   it("serves a webhook projection before live GitHub revalidation", async () => {
     const githubService = makeGithubService({
       getStatus: vi.fn(async () => makeGithubStatus()),
@@ -1133,6 +1225,27 @@ describe("prService.getGithubSnapshot", () => {
       const fresh = await service.getGithubSnapshot();
       expect(fresh.repoPullRequests[0]?.title).toBe("Fresh PR");
       expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("returns stale cached data without starting GitHub work when revalidation is disabled", async () => {
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-01-01T00:00:00Z"));
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async () => ({ data: [makeGitHubPull({ title: "Cached PR" })] })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    try {
+      await service.getGithubSnapshot();
+      nowSpy.mockReturnValue(Date.parse("2026-01-01T00:00:00Z") + GITHUB_SNAPSHOT_TTL_MS_FOR_TEST + 1);
+
+      const stale = await service.getGithubSnapshot({ revalidate: false });
+      expect(stale.repoPullRequests[0]?.title).toBe("Cached PR");
+      await flushMicrotasks(30);
+      expect(githubService.apiRequest).toHaveBeenCalledTimes(1);
     } finally {
       nowSpy.mockRestore();
     }
@@ -1840,6 +1953,74 @@ describe("prService.ingestGithubWebhook", () => {
       type: "prs-updated",
       prs: [],
     }));
+  });
+
+  it("invalidates exact state totals and refreshes them on the projected webhook read", async () => {
+    let countRequests = 0;
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/graphql") {
+          countRequests += 1;
+          return {
+            data: {
+              data: {
+                repository: {
+                  open: { totalCount: 1 },
+                  merged: { totalCount: countRequests },
+                  closed: { totalCount: 0 },
+                },
+              },
+            },
+          };
+        }
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          return { data: [makeGitHubPull()] };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const projectionRow = {
+      project_id: "proj-1", repo_owner: REPO.owner, repo_name: REPO.name,
+      github_pr_number: 404, github_node_id: "PR_projection_404",
+      github_url: "https://github.com/test-owner/test-repo/pull/404",
+      title: "Projected PR", state: "merged", is_draft: 0,
+      base_branch: "main", head_branch: "feature/unmapped",
+      head_repo_owner: REPO.owner, head_repo_name: REPO.name,
+      head_sha: "head-sha", base_sha: "base-sha", author: "octocat",
+      labels_json: "[]", is_bot: 0, comment_count: 0,
+      created_at: "2026-05-01T00:00:00Z", updated_at: "2026-05-02T00:00:00Z",
+      synced_at: "2026-05-02T00:00:01Z", last_event_name: "pull_request",
+      last_delivery_id: "delivery-counts",
+    };
+    const db = makeMockDb();
+    db.all.mockImplementation((sql: string) =>
+      String(sql).includes("from github_pr_projections") ? [projectionRow] : []);
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    const first = await service.getGithubSnapshot({ force: true, includeStateCounts: true });
+    expect(first.history?.repoPullRequestCounts?.merged).toBe(1);
+
+    await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-count-refresh",
+      payload: {
+        action: "closed",
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+        pull_request: makeUnmappedBranchPull({ state: "closed", merged_at: "2026-05-03T00:00:00Z" }),
+      },
+    });
+
+    const refreshed = await service.getGithubSnapshot({
+      includeStateCounts: true,
+      revalidate: false,
+    });
+    expect(refreshed.history?.repoPullRequestCounts?.merged).toBe(2);
+    expect(countRequests).toBe(2);
   });
 });
 
@@ -2657,6 +2838,53 @@ describe("prService coordinate-based detail (unmapped PRs)", () => {
     expect(runs).toEqual([]);
 
     // requireRow would have thrown; reaching here proves the row was never required.
+  });
+
+  it("returns a complete unmapped header and marks failed sidecars as unavailable", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation(() => null);
+    db.all.mockImplementation(() => []);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/up-owner/up-repo/pulls/77") {
+          return {
+            data: makeGitHubPull({
+              number: 77,
+              title: "Unmapped header",
+              body: "Unmapped body",
+              html_url: "https://github.com/up-owner/up-repo/pull/77",
+              base: { ref: "main" },
+              head: { ref: "fork-feature", sha: "head-sha" },
+            }),
+          };
+        }
+        throw new Error(`Unavailable test sidecar: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.getMobileGithubDetail({
+      repoOwner: "up-owner",
+      repoName: "up-repo",
+      githubPrNumber: 77,
+    });
+
+    expect(result.item).toEqual(expect.objectContaining({
+      title: "Unmapped header",
+      githubPrNumber: 77,
+      githubUrl: "https://github.com/up-owner/up-repo/pull/77",
+      baseBranch: "main",
+      headBranch: "fork-feature",
+    }));
+    expect(result.snapshot.detail?.body).toBe("Unmapped body");
+    expect(result.unavailableParts).toEqual(expect.arrayContaining([
+      "action_runs",
+      "comments",
+      "commits",
+      "files",
+      "review_threads",
+      "timeline",
+    ]));
   });
 });
 

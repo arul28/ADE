@@ -992,6 +992,42 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
+  it("uses client heartbeats only as an inbound-silence fallback", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    await connecting;
+    const socket = script.sockets[0]!;
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    socket.serverSend({
+      type: "heartbeat",
+      payload: { kind: "ping", sentAt: new Date().toISOString(), dbVersion: 0 },
+    });
+    await flushMicrotasks();
+    const clientPings = () => socket.sent.filter((envelope) =>
+      envelope.type === "heartbeat"
+      && (envelope.payload as { kind?: string } | null)?.kind === "ping");
+    expect(clientPings()).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(clientPings()).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(clientPings()).toHaveLength(1);
+    client.dispose();
+  });
+
   it("lets a locally paired environment use Relay only after the account directory verifies its host", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage, { accountOwnerUserId: null, addressCandidates: [] });
@@ -1069,6 +1105,8 @@ describe("browser sync connection and client", () => {
           userId: null,
           email: null,
           name: null,
+          imageUrl: null,
+          expiresAt: null,
           machines: [],
           relayBaseUrls: [],
           message: "Your ADE account session expired. Sign in again.",
@@ -1114,6 +1152,8 @@ describe("browser sync connection and client", () => {
           userId: null,
           email: null,
           name: null,
+          imageUrl: null,
+          expiresAt: null,
           machines: [],
           relayBaseUrls: [],
           message: "Your ADE account session expired. Sign in again.",
@@ -1173,6 +1213,8 @@ describe("browser sync connection and client", () => {
           userId: null,
           email: null,
           name: null,
+          imageUrl: null,
+          expiresAt: null,
           machines: [],
           relayBaseUrls: [],
           message: "Your ADE account session expired. Sign in again.",
@@ -1219,6 +1261,8 @@ describe("browser sync connection and client", () => {
           userId: "account-user-1",
           email: "user@example.test",
           name: null,
+          imageUrl: null,
+          expiresAt: null,
           machines: [],
           relayBaseUrls: [],
           message: "Machines are temporarily unavailable.",

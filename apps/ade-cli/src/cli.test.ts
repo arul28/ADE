@@ -35,6 +35,10 @@ import {
   summarizeExecution,
   unwrapToolResult,
 } from "./cli";
+import {
+  DEVELOPMENT_ADE_CLERK_ISSUER,
+  DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+} from "../../desktop/src/shared/accountDirectory";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -342,6 +346,41 @@ describe("ADE CLI", () => {
     })).toBe("loopback");
     expect(detectAccountLoginMode({ env: {} as NodeJS.ProcessEnv, platform: "darwin" }))
       .toBe("loopback");
+  });
+
+  it("treats rejected packaged development env credentials as absent when selecting login mode", () => {
+    const developmentAccessToken = [
+      Buffer.from(JSON.stringify({ alg: "none", typ: "JWT" })).toString("base64url"),
+      Buffer.from(JSON.stringify({
+        iss: DEVELOPMENT_ADE_CLERK_ISSUER,
+        sub: "development-user",
+        exp: Math.floor(Date.now() / 1000) + 3_600,
+      })).toString("base64url"),
+      "signature",
+    ].join(".");
+    const developmentRefreshToken = `ade_account_v1.${Buffer.from(JSON.stringify({
+      version: 1,
+      refreshToken: "development-refresh-token",
+      issuer: DEVELOPMENT_ADE_CLERK_ISSUER,
+      clientId: DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+    }), "utf8").toString("base64url")}`;
+
+    for (const credential of [developmentAccessToken, developmentRefreshToken]) {
+      const env = {
+        ADE_RUNTIME_PACKAGED: "1",
+        ADE_ACCOUNT_TOKEN: credential,
+        DISPLAY: ":0",
+      } as NodeJS.ProcessEnv;
+      expect(detectAccountLoginMode({ env, platform: "linux" })).toBe("loopback");
+      expect(detectAccountLoginMode({
+        env: { ...env, SSH_CONNECTION: "host details" },
+        platform: "linux",
+      })).toBe("device");
+      expect(detectAccountLoginMode({
+        env: { ...env, ADE_ALLOW_DEVELOPMENT_CLERK: "1" },
+        platform: "linux",
+      })).toBe("env-token");
+    }
   });
 
   it("formats account auth sources and durable-token provisioning guidance", () => {
@@ -1062,7 +1101,7 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("formats account-directory publisher health in sync status text", () => {
+  it("formats relay observability and account-directory health in sync status text", () => {
     const plan = expectExecutePlan(buildCliPlan(["sync", "status"]));
     const output = formatOutput({
       mode: "brain",
@@ -1078,7 +1117,15 @@ describe("ADE CLI", () => {
           reason: null,
         },
         tailscale: { enabled: false, tailscaleReachable: false, reason: null },
-        relay: { enabled: true, relayControlConnected: true, relayBridgeValidated: false, reason: "Relay bridge is not validated." },
+        relay: {
+          enabled: true,
+          relayControlConnected: false,
+          relayBridgeValidated: false,
+          skipReason: null,
+          lastControlError: "Relay control closed (1011): upstream restart",
+          lastControlOpenAt: "2026-07-16T11:58:00.000Z",
+          lastBridgeValidationAt: "2026-07-16T11:57:30.000Z",
+        },
         accountDirectory: {
           state: "http_error",
           skipReason: "The account directory returned HTTP 401: invalid issuer",
@@ -1105,6 +1152,9 @@ describe("ADE CLI", () => {
     }, { text: true } as any, inferFormatter(plan));
 
     expect(output).toContain("ADE sync status");
+    expect(output).toContain("Relay control closed (1011): upstream restart");
+    expect(output).toContain("2026-07-16T11:58:00.000Z");
+    expect(output).toContain("2026-07-16T11:57:30.000Z");
     expect(output).toContain("account directory");
     expect(output).toContain("http_error · 2 reachable endpoints · HTTP 401");
     expect(output).toContain("The account directory returned HTTP 401: invalid issuer");
@@ -1540,6 +1590,15 @@ describe("ADE CLI", () => {
       arguments: { domain: "storage", action: "compressNow", args: {} },
     });
 
+    const maintenancePlan = expectExecutePlan(
+      buildCliPlan(["storage", "maintenance"]),
+    );
+    expect(inferFormatter(maintenancePlan)).toBe("storage-maintenance");
+    expect(maintenancePlan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: { domain: "storage", action: "runMaintenanceNow", args: {} },
+    });
+
     expect(
       expectExecutePlan(buildCliPlan(["storage", "actions"])).steps[0]?.params,
     ).toEqual({ name: "list_ade_actions", arguments: { domain: "storage" } });
@@ -1589,6 +1648,37 @@ describe("ADE CLI", () => {
     expect(snapshotText).toContain("ADE storage");
     expect(snapshotText).toContain("GB free of");
     expect(snapshotText).toContain("chats_history");
+
+    const maintenanceText = formatOutput(
+      {
+        startedAt: "2026-07-12T00:00:00.000Z",
+        finishedAt: "2026-07-12T00:00:01.000Z",
+        trigger: "manual",
+        reclaimedBytes: 3 * 1024 ** 2,
+        dbSizeBytes: 45 * 1024 ** 2,
+        actions: [
+          {
+            ledgerId: "automation_ingress_events",
+            kind: "prune",
+            itemsAffected: 120,
+            bytesReclaimed: 2 * 1024 ** 2,
+          },
+          {
+            ledgerId: "pull_request_snapshots",
+            kind: "vacuum",
+            itemsAffected: 0,
+            bytesReclaimed: 0,
+            skippedReason: "not due",
+          },
+        ],
+      },
+      { text: true } as never,
+      inferFormatter(maintenancePlan),
+    );
+    expect(maintenanceText).toContain("ADE storage maintenance");
+    expect(maintenanceText).toContain("manual");
+    expect(maintenanceText).toContain("automation_ingress_events");
+    expect(maintenanceText).toContain("skipped: not due");
   });
 
   it("formats external session action results as text", () => {
@@ -2391,6 +2481,90 @@ describe("ADE CLI", () => {
       const staticPlan = expectStaticPlan(plan);
       expect((staticPlan.value as { launch: Record<string, unknown> }).launch.orchestrationParentSessionId)
         .toBe("parent-session-1");
+    });
+
+    it("ade new chat --mode cli records the env parent as spawn lineage without terminal ownership", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "cli",
+        "--lane", "lane-1",
+        "--provider", "codex",
+        "--type", "peer",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const launch = (staticPlan.value as { launch: Record<string, unknown> }).launch;
+      expect(launch.orchestrationParentSessionId).toBe("parent-session-1");
+      expect(launch.spawnKind).toBe("peer");
+      expect(launch).not.toHaveProperty("chatSessionId");
+    });
+
+    it("ade new chat --mode cli --no-parent leaves the terminal unlinked", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "cli",
+        "--lane", "lane-1",
+        "--provider", "codex",
+        "--no-parent",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const launch = (staticPlan.value as { launch: Record<string, unknown> }).launch;
+      expect(launch).not.toHaveProperty("orchestrationParentSessionId");
+      expect(launch).not.toHaveProperty("chatSessionId");
+    });
+
+    it("--auto-create-lane keeps --parent as the spawn-lineage session, not the lane parent", () => {
+      delete process.env.ADE_CHAT_SESSION_ID;
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "chat",
+        "--auto-create-lane",
+        "--lane-name", "spawn-target",
+        "--provider", "codex",
+        "--parent", "parent-session-1",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const value = staticPlan.value as { launch: Record<string, unknown>; createLane?: Record<string, unknown> };
+      expect(value.launch.orchestrationParentSessionId).toBe("parent-session-1");
+      expect(value.createLane ?? {}).not.toHaveProperty("parentLaneId");
+    });
+
+    it("--auto-create-lane --parent-lane still sets the lane parent without touching lineage", () => {
+      delete process.env.ADE_CHAT_SESSION_ID;
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "chat",
+        "--auto-create-lane",
+        "--lane-name", "spawn-target",
+        "--provider", "codex",
+        "--parent-lane", "lane-parent-1",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const value = staticPlan.value as { launch: Record<string, unknown>; createLane?: Record<string, unknown> };
+      expect(value.createLane?.parentLaneId).toBe("lane-parent-1");
+      expect(value.launch).not.toHaveProperty("orchestrationParentSessionId");
+    });
+
+    it("does not record spawn lineage for plain shell terminals", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      const plan = buildCliPlan([
+        "new", "chat",
+        "--mode", "cli",
+        "--lane", "lane-1",
+        "--provider", "shell",
+        "--type", "peer",
+        "--print-config",
+      ]);
+      const staticPlan = expectStaticPlan(plan);
+      const launch = (staticPlan.value as { launch: Record<string, unknown> }).launch;
+      expect(launch.provider).toBe("shell");
+      expect(launch).not.toHaveProperty("orchestrationParentSessionId");
+      expect(launch).not.toHaveProperty("spawnKind");
     });
   });
 
@@ -4576,9 +4750,10 @@ describe("ADE CLI", () => {
               },
               relay: {
                 enabled: true,
-                relayControlConnected: true,
+                relayControlConnected: false,
                 relayBridgeValidated: false,
-                reason: "Relay bridge refused the listener mismatch.",
+                skipReason: "Relay control upgrade failed with HTTP 401: token expired",
+                lastControlError: "Relay control closed (1006).",
               },
             },
           },
@@ -4593,9 +4768,10 @@ describe("ADE CLI", () => {
       expect(summary.sync.failingRoutes).toEqual([
         expect.stringContaining("listener"),
         expect.stringContaining("tailscale"),
-        expect.stringContaining("relay"),
+        "relay: Relay control upgrade failed with HTTP 401: token expired",
       ]);
       expect(summary.sync.message).toContain("404 Not Found");
+      expect(summary.sync.message).toContain("HTTP 401: token expired");
       const output = formatOutput(summary, {
         projectRoot,
         workspaceRoot: projectRoot,
@@ -4944,14 +5120,19 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("forwards PR GitHub snapshot full-history flag to the runtime action", () => {
+  it("forwards bounded PR GitHub snapshot options to the runtime action", () => {
     const snapshot = buildCliPlan([
       "prs",
       "github-snapshot",
       "--include-external-closed",
+      "--history-page-limit",
+      "4",
+      "--include-state-counts",
+      "--no-revalidate",
     ]);
     expect(snapshot.kind).toBe("execute");
     if (snapshot.kind !== "execute") return;
+    expect(snapshot.label).toBe("PR GitHub snapshot");
     expect(snapshot.steps[0]?.params).toEqual({
       name: "run_ade_action",
       arguments: {
@@ -4960,9 +5141,19 @@ describe("ADE CLI", () => {
         args: {
           force: false,
           includeExternalClosed: true,
+          historyPageLimit: 4,
+          includeStateCounts: true,
+          revalidate: false,
         },
       },
     });
+
+    expect(() => buildCliPlan([
+      "prs",
+      "github-snapshot",
+      "--history-page-limit",
+      "0",
+    ])).toThrow("--history-page-limit must be a positive integer.");
   });
 
   it("maps discoverable git status, sync, and conflict helpers to existing actions", () => {
@@ -5628,6 +5819,15 @@ describe("ADE CLI", () => {
     expect(newChatHelp.kind).toBe("help");
     if (newChatHelp.kind !== "help") return;
     expect(newChatHelp.text).toContain("--type <subagent|peer|none>");
+    expect(newChatHelp.text).toContain("Override with --parent <sessionId>");
+    expect(newChatHelp.text).toContain("plain shell terminals don't record lineage");
+
+    const newHelp = buildCliPlan(["new", "--help"]);
+    expect(newHelp.kind).toBe("help");
+    if (newHelp.kind !== "help") return;
+    expect(newHelp.text).toContain("--type <subagent|peer|none>");
+    expect(newHelp.text).toContain("--parent <sessionId>");
+    expect(newHelp.text).toContain("Plain shell terminals do not record lineage");
 
     const laneCommandHelp = buildCliPlan(["help", "lanes"]);
     expect(laneCommandHelp.kind).toBe("help");

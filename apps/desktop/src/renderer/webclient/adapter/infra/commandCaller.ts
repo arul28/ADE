@@ -1,14 +1,18 @@
 import type { SyncRemoteCommandDescriptor } from "../../../../shared/types/sync";
 import type { AdeSyncClient } from "../../sync";
+import { stableCacheKey } from "./cacheKey";
+import { createCoalescingReadCache } from "./coalescingReadCache";
 import type { AdapterProjectState } from "./projectState";
 
 type Fallback<T> = T | (() => T | Promise<T>);
 
 export type CommandCallOptions<T> = {
   fallback: Fallback<T>;
+  /** Mutation guard: false prevents this call from ever entering the read cache. */
   idempotent?: boolean;
   requireProject?: boolean;
   timeoutMs?: number;
+  cacheTtlMs?: number;
 };
 
 const RECOVERABLE_CODES = new Set([
@@ -22,11 +26,31 @@ const RECOVERABLE_CODES = new Set([
   "command_rejected",
 ]);
 
+const READ_CACHE_TTL_MS = 3_000;
+
+type CommandResult<T> = {
+  value: T;
+  cacheable: boolean;
+};
+
 export class CommandCaller {
+  private readonly readCache = createCoalescingReadCache(READ_CACHE_TTL_MS);
+
   constructor(
     private readonly client: AdeSyncClient,
     private readonly projectState: AdapterProjectState
   ) {}
+
+  invalidateCache(actionPrefixes?: string[]): void {
+    if (!actionPrefixes?.length) {
+      this.readCache.clear();
+      return;
+    }
+    this.readCache.invalidate((key) => {
+      const actionStart = key.indexOf("\u0000") + 1;
+      return actionPrefixes.some((prefix) => key.startsWith(prefix, actionStart));
+    });
+  }
 
   getDescriptor(action: string): SyncRemoteCommandDescriptor | null {
     return this.client.getCommandDescriptors().find((descriptor) => descriptor.action === action) ?? null;
@@ -50,26 +74,39 @@ export class CommandCaller {
       return await resolveFallback(options.fallback);
     }
 
-    try {
-      return (await this.client.sendCommand(action, args, {
-        projectId,
-        timeoutMs: options.timeoutMs,
-      })) as T;
-    } catch (error) {
-      if (options.idempotent && isRecoverable(error)) {
-        try {
-          return (await this.client.sendCommand(action, args, {
+    const cacheKey = options.cacheTtlMs !== undefined && options.idempotent !== false
+      ? `${projectId ?? "runtime"}\u0000${action}\u0000${stableCacheKey(args)}`
+      : null;
+    const fetchCommand = async (): Promise<CommandResult<T>> => {
+      try {
+        return {
+          value: (await this.client.sendCommand(action, args, {
             projectId,
             timeoutMs: options.timeoutMs,
-          })) as T;
-        } catch (retryError) {
-          if (isRecoverable(retryError)) return await resolveFallback(options.fallback);
-          throw retryError;
+          })) as T,
+          cacheable: true,
+        };
+      } catch (error) {
+        // The relay transport already owns reconnect/replay. An immediate
+        // adapter retry doubles billable relay traffic and normally repeats
+        // the same unavailable-project failure, so recover locally instead.
+        if (isRecoverable(error)) {
+          return {
+            value: await resolveFallback(options.fallback),
+            cacheable: false,
+          };
         }
+        throw error;
       }
-      if (isRecoverable(error)) return await resolveFallback(options.fallback);
-      throw error;
-    }
+    };
+
+    const result = cacheKey && options.cacheTtlMs !== undefined
+      ? await this.readCache.coalesce(cacheKey, fetchCommand, {
+          cacheResult: (next) => next.cacheable,
+          ttlMs: options.cacheTtlMs,
+        })
+      : await fetchCommand();
+    return result.value;
   }
 }
 

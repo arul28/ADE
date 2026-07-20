@@ -4155,6 +4155,11 @@ describe("preload OAuth bridge", () => {
     expect(iosSimulator).toHaveBeenCalledWith(iosEvent);
     expect(appControl).toHaveBeenCalledWith(appControlEvent);
 
+    const localUsageListener = on.mock.calls.find(([channel]) => channel === IPC.usageEvent)?.[1];
+    expect(typeof localUsageListener).toBe("function");
+    localUsageListener({}, { ...usageSnapshot, lastPolledAt: "newer-local-snapshot" });
+    expect(usageUpdate).toHaveBeenCalledTimes(1);
+
     for (const unsubscribe of unsubscribers) unsubscribe();
     emit(11, { type: "usage", snapshot: { ...usageSnapshot, lastPolledAt: "later" } });
     expect(usageUpdate).toHaveBeenCalledTimes(1);
@@ -5581,6 +5586,9 @@ describe("preload remote project binding", () => {
       if (channel === IPC.remoteRuntimeCallSync) {
         return { ok: true };
       }
+      if (channel === IPC.syncGetLocalStatus) {
+        return { machine: "local" };
+      }
       if (channel === IPC.remoteRuntimeCallAction) {
         return { result: [{ id: "lane-b" }] };
       }
@@ -5622,6 +5630,11 @@ describe("preload remote project binding", () => {
       projectId: "project-b",
       method: "sync.getStatus",
       params: {},
+    });
+    await expect(bridge.sync.getLocalStatus({ includeTransferReadiness: true }))
+      .resolves.toEqual({ machine: "local" });
+    expect(invoke).toHaveBeenCalledWith(IPC.syncGetLocalStatus, {
+      includeTransferReadiness: true,
     });
   });
 

@@ -12,6 +12,7 @@ import type {
 import { WebRelayAuthRequiredError } from "../sync";
 import {
   BrowserAccountClient,
+  browserAccountIsSignedIn,
   type BrowserAccountSnapshot,
 } from "../account/client";
 import {
@@ -27,13 +28,17 @@ import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 
 type AdeWebAdapter = {
   ade: Window["ade"];
-  bindProject: (project: ProjectInfo | null) => void;
+  bindProject: (project: ProjectInfo | null, projectId?: string | null) => void;
   dispose: () => void;
 };
 
-async function loadAdapter(client: AdeSyncClient, initialCatalog?: SyncMobileProjectSummary[]): Promise<AdeWebAdapter> {
+async function loadAdapter(
+  client: AdeSyncClient,
+  accountClient: BrowserAccountClient,
+  initialCatalog?: SyncMobileProjectSummary[],
+): Promise<AdeWebAdapter> {
   const module = await import("../adapter/index");
-  return module.createAdeWebAdapter(client, initialCatalog);
+  return module.createAdeWebAdapter(client, initialCatalog, accountClient);
 }
 
 async function loadAppRoot(): Promise<React.ComponentType> {
@@ -132,7 +137,7 @@ function relayAccessFromAccount(
   getAccessToken: () => Promise<string>,
 ): WebRelayAccess {
   if (
-    (account.state === "signed_in" || account.state === "directory_unavailable")
+    browserAccountIsSignedIn(account.state)
     && account.userId
   ) {
     return {
@@ -264,13 +269,16 @@ export function WebClientRoot({
     // project without a redundant switch, so avoid the extra disconnect +
     // reconnect (and its startup latency) when we're already on this project.
     if (project.id !== client.getStatus().activeProjectId) {
-      await client.switchProject(project.id).catch(() => {});
+      const result = await client.switchProject(project.id);
+      if (!result.ok) {
+        throw new Error(result.message?.trim() || `Could not switch to ${project.displayName}.`);
+      }
     }
     if (!adapterRef.current) {
-      adapterRef.current = await loadAdapter(client, catalogSeed);
+      adapterRef.current = await loadAdapter(client, accountClient, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
-    adapterRef.current.bindProject(toProjectInfo(project));
+    adapterRef.current.bindProject(toProjectInfo(project), project.id);
 
     // Point the address bar at the initial App route before mounting so the
     // App's BrowserRouter renders the right tab on first paint.
@@ -284,14 +292,14 @@ export function WebClientRoot({
 
     const AppRoot = await loadAppRoot();
     setPhase({ kind: "ready", AppRoot });
-  }, [client]);
+  }, [accountClient, client]);
 
   const enterChats = useCallback(async (
     catalogSeed?: SyncMobileProjectSummary[],
     initialPath = "/chats",
   ) => {
     if (!adapterRef.current) {
-      adapterRef.current = await loadAdapter(client, catalogSeed);
+      adapterRef.current = await loadAdapter(client, accountClient, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
     adapterRef.current.bindProject(null);
@@ -300,7 +308,7 @@ export function WebClientRoot({
     window.history.replaceState(null, "", initialPath);
     const AppRoot = await loadAppRoot();
     setPhase({ kind: "ready", AppRoot });
-  }, [client]);
+  }, [accountClient, client]);
 
   const afterConnect = useCallback(async (environmentSeed?: WebClientEnvironmentRecord[]) => {
     const availableEnvironments = environmentSeed ?? await client.listEnvironments();
@@ -557,8 +565,9 @@ export function WebClientRoot({
   const onSwitchProject = useCallback((project: SyncMobileProjectSummary) => {
     void (async () => {
       try {
-        await client.switchProject(project.id);
-        adapterRef.current?.bindProject(toProjectInfo(project));
+        const result = await client.switchProject(project.id);
+        if (!result.ok) return;
+        adapterRef.current?.bindProject(toProjectInfo(project), result.project?.id ?? project.id);
       } catch {
         // switchProject surfaces its own failure via status; leave the app up.
       }
@@ -576,10 +585,12 @@ export function WebClientRoot({
   }, [accountClient]);
 
   const onAccountSignOut = useCallback(() => {
-    const snapshot = accountClient.signOut();
-    client.disconnect();
-    showMachinePicker();
-    void applyAccountPrivacy(snapshot);
+    void (async () => {
+      const snapshot = await accountClient.signOut();
+      client.disconnect();
+      await applyAccountPrivacy(snapshot);
+      showMachinePicker();
+    })();
   }, [accountClient, applyAccountPrivacy, client, showMachinePicker]);
 
   const onRetryDirectory = useCallback(() => {
@@ -631,7 +642,7 @@ export function WebClientRoot({
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {account.state !== "unconfigured" ? (
               <button type="button" style={primaryButton({ height: 36 })} onClick={onAccountSignIn}>
-                {account.state === "signed_in" || account.state === "directory_unavailable" || account.state === "auth_expired"
+                {browserAccountIsSignedIn(account.state) || account.state === "auth_expired"
                   ? "Sign in again"
                   : "Sign in"}
               </button>
@@ -641,7 +652,7 @@ export function WebClientRoot({
               style={primaryButton({ height: 36, background: "transparent", color: COLORS.textSecondary, border: `1px solid ${COLORS.border}` })}
               onClick={showMachinePicker}
             >
-              Choose another Mac
+              Choose another machine
             </button>
           </div>
         </ScreenShell>

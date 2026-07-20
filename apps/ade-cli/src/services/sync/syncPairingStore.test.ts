@@ -64,6 +64,30 @@ describe("sync SSH pairing trust", () => {
     expect(fs.readFileSync(filePath, "utf8")).not.toContain(paired.secret);
   });
 
+  it("counts durable pairings independently of live connections", () => {
+    const { store } = createStore();
+    const peer = {
+      deviceId: "offline-phone-1",
+      deviceName: "Offline iPhone",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "offline-ios-site-1",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+
+    expect(store.countPairingRecords()).toBe(0);
+    store.pairPeerViaLocalTrust(peer);
+    expect(store.countPairingRecords()).toBe(1);
+    store.revoke(peer.deviceId);
+    expect(store.countPairingRecords()).toBe(0);
+  });
+
+  it("does not treat an unreadable pairing registry as empty", () => {
+    const { filePath, store } = createStore();
+    fs.writeFileSync(filePath, "not json");
+    expect(store.countPairingRecords()).toBeNull();
+  });
+
   it("grants desktop runtime access only after the SSH trust gate", () => {
     const { store } = createStore();
     const peer = {

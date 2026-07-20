@@ -4,8 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
+import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
+import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
 import {
   clearLastFailure,
   recordLastFailure,
@@ -199,6 +201,7 @@ export type AdeRuntimeSyncOptions = {
   personalChatScope?: Parameters<typeof createSyncService>[0]["personalChatScope"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
   getAccountDirectoryHealth?: Parameters<typeof createSyncService>[0]["getAccountDirectoryHealth"];
+  requestAccountMachinePublish?: () => void | Promise<void>;
   /**
    * Brain-level websocket listener shared by every project scope's sync host
    * so connected phones survive hosted-project switches. Owned (created and
@@ -306,12 +309,15 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
   };
 }
 
-function isSourceCheckoutRuntimeModule(modulePath: string): boolean {
-  return /[/\\]apps[/\\]ade-cli[/\\](?:src|dist)[/\\]bootstrap\.(?:ts|js|cjs)$/i.test(modulePath);
-}
-
 const currentModulePath =
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url);
+
+if (
+  !isSourceCheckoutRuntimeModule(currentModulePath)
+  && process.env.ADE_RUNTIME_PACKAGED === undefined
+) {
+  process.env.ADE_RUNTIME_PACKAGED = "1";
+}
 
 function automationsEnabledForHeadlessRuntime(): boolean {
   const override = readAutomationsEnvOverride(process.env);
@@ -499,9 +505,16 @@ export async function createAdeRuntime(args: {
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, resolveMachineAdeLayout().adeDir],
   });
+  let syncService: ReturnType<typeof createSyncService> | null = null;
+  const hasSyncPeers = createRegisteredSyncPeerGate({
+    syncEnabled: resolvedArgs.syncRuntime?.enabled === true,
+    getSyncService: () => syncService,
+  });
   let db: AdeDb;
   try {
-    db = await openKvDb(paths.dbPath, logger);
+    db = await openKvDb(paths.dbPath, logger, {
+      hasSyncPeers,
+    });
   } catch (error) {
     const code = mapKvDbOpenErrorCode(classifySqliteOpenError(error));
     const detail = error instanceof Error ? error.message : String(error);
@@ -1301,8 +1314,12 @@ export async function createAdeRuntime(args: {
   // by pushPublisherService.start() (declared below), so it stays empty and inert
   // when push publishing is not running.
   const pushPrNotificationSubscribers = new Set<(notification: PushPrNotification) => void>();
+  let syncService: ReturnType<typeof createSyncService> | null = null;
   const emitPrEvent = (event: PrEventPayload): void => {
     pushEvent("runtime", { type: "pr_event", event });
+    if (event.type === "prs-updated") {
+      syncService?.notifyPrsUpdated();
+    }
     if (event.type === "pr-notification" && pushPrNotificationSubscribers.size > 0) {
       const notification: PushPrNotification = {
         kind: event.kind,
@@ -1498,7 +1515,14 @@ export async function createAdeRuntime(args: {
     diskPressure: diskPressureMonitor,
     isPathActive: (filePath) =>
       Boolean(agentChatService?.isTranscriptPathActive(filePath))
-      || ptyService.isTranscriptPathActive(filePath),
+      || ptyService.isTranscriptPathActive(filePath)
+      || Boolean(iosSimulatorService?.isBuildPathActive(filePath)),
+    projectId,
+    // One bounded `ade_feature_used` per completed maintenance run at the daemon
+    // boundary (deduped to 20 h by the service).
+    captureAnalytics: (input) => {
+      productAnalyticsService.capture(input);
+    },
   });
   const budgetCapService = createBudgetCapService({
     db,
@@ -1536,16 +1560,13 @@ export async function createAdeRuntime(args: {
         const status = accountAuthService.getStatus();
         const userId = status.signedIn ? status.userId?.trim() || null : null;
         if (!userId) return null;
-        try {
-          const token = (await accountAuthService.getAccessToken()).trim();
-          const refreshed = accountAuthService.getStatus();
-          return token && refreshed.signedIn && refreshed.userId?.trim() === userId
-            ? { userId }
-            : null;
-        } catch {
-          return null;
-        }
+        const token = (await accountAuthService.getAccessToken()).trim();
+        const refreshed = accountAuthService.getStatus();
+        return token && refreshed.signedIn && refreshed.userId?.trim() === userId
+          ? { userId, expiresAt: refreshed.expiresAt }
+          : null;
       },
+      onIdentityRotated: () => resolvedArgs.syncRuntime?.requestAccountMachinePublish?.(),
     });
     resolvedArgs.syncRuntime?.sharedSyncListener?.onLoopbackValidated(() => {
       void service.validateCurrentBridge().catch((error) => {
@@ -1571,7 +1592,6 @@ export async function createAdeRuntime(args: {
   }
 
   let externalSessionsService: ReturnType<typeof createExternalSessionsService> | null = null;
-  let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
     const { createSyncService } = await import("./services/sync/syncService");
     syncService = createSyncService({
@@ -1615,6 +1635,7 @@ export async function createAdeRuntime(args: {
       ctoStateService,
       ctoMemoryService,
       linearCredentialService: headlessLinearServices.linearCredentialService,
+      linearOAuthService,
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
       getExternalSessionsService: () => externalSessionsService,
       processService,
@@ -1630,15 +1651,18 @@ export async function createAdeRuntime(args: {
       getModelPickerStore: () => getSharedModelPickerStore(db),
       cloudRelayStore,
       syncTunnelClientService,
-      onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
+      onStatusChanged: (snapshot) => {
+        pushEvent("runtime", { type: "sync-status", snapshot });
+      },
     });
     syncServiceForPtyEvents = syncService;
   }
 
   if (syncService) {
+    const currentSyncService = syncService;
     const initializeSyncService = async () => {
       try {
-        await syncService.initialize();
+        await currentSyncService.initialize();
       } catch (error) {
         logger.warn("sync.runtime_initialize_failed", {
           error: error instanceof Error ? error.message : String(error),

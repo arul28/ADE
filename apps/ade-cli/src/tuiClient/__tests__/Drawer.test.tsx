@@ -134,6 +134,25 @@ describe("Drawer closed CLI sessions", () => {
     });
   });
 
+  it("projects spawn lineage from tracked CLI resume metadata", () => {
+    const summary = terminalSessionToChatSummary(terminal({
+      terminalId: "cli-subagent",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "session",
+        targetId: "cli-subagent",
+        launch: {},
+        orchestrationParentSessionId: "parent-chat",
+        spawnKind: "subagent",
+      },
+    }));
+
+    expect(summary).toMatchObject({
+      orchestrationParentSessionId: "parent-chat",
+      spawnKind: "subagent",
+    });
+  });
+
   it.each([
     ["failed status", { status: "failed", exitCode: 1, runtimeState: "killed" }, "failed"],
     ["non-zero exit", { status: "completed", exitCode: 2, runtimeState: "exited" }, "failed"],
@@ -172,6 +191,61 @@ describe("Drawer closed CLI sessions", () => {
 });
 
 describe("Drawer lane and chat navigation layout", () => {
+  it("renders compact spawn-kind markers for chat and tracked CLI rows", () => {
+    const chat: AgentChatSessionSummary = {
+      sessionId: "chat-subagent",
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-code",
+      title: "Chat child",
+      status: "idle",
+      startedAt: "2026-05-12T11:30:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-05-12T11:31:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt: null,
+      orchestrationParentSessionId: "parent-chat",
+      spawnKind: "subagent",
+    };
+    const cli = terminalSessionToChatSummary(terminal({
+      terminalId: "cli-peer",
+      resumeMetadata: {
+        provider: "codex",
+        targetKind: "session",
+        targetId: "cli-peer",
+        launch: {},
+        orchestrationParentSessionId: "parent-chat",
+        spawnKind: "peer",
+      },
+    }));
+
+    const baseProps = {
+      lanes: [lane("lane-1", "Feature", "feature/spawn-kind", "2026-05-12T11:55:00.000Z")],
+      activeLaneId: "lane-1",
+      activeSessionId: null,
+      browsingLaneId: "lane-1",
+      selectedLaneIndex: 0,
+      selectedChatIndex: -1,
+      panelHeight: 30,
+    };
+    const chatFrame = stripAnsi(render(
+      <Drawer
+        {...baseProps}
+        sessions={[chat]}
+      />,
+    ).lastFrame() ?? "");
+    const cliFrame = stripAnsi(render(
+      <Drawer
+        {...baseProps}
+        sessions={[cli]}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(chatFrame).toContain("Chat child sub");
+    expect(cliFrame).toContain("Codex CLI peer");
+  });
+
   it("puts the primary lane first and removes old header/footer controls", () => {
     const frame = stripAnsi(render(
       <Drawer

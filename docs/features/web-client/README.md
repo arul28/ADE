@@ -2,10 +2,10 @@
 
 The web client is an owner-only browser controller for an ADE machine runtime.
 It is a hosted static SPA. New connections are account-only: the browser signs
-in to ADE, loads the account machine directory, and adopts the chosen Mac over
+in to ADE, loads the account machine directory, and adopts the chosen machine over
 ADE Relay. Localhost pages retain direct `ws://` for development.
 
-Hosted Relay connections require the browser and Mac to be signed in to the
+Hosted Relay connections require the browser and machine to be signed in to the
 same ADE account. The browser sends a fresh short-lived account proof with each
 paired Relay hello, and never persists that proof. Signing out immediately
 stops the Relay connection. Environments created from the account machine
@@ -46,17 +46,24 @@ Build and static host:
   including CSP. `connect-src` allows `wss:` and `https:`, not arbitrary
   hosted-page `ws:` connections. Fingerprinted `/assets/*` responses are cached
   for one year as immutable; `/` and `/index.html` remain `no-cache` so a new
-  deployment's entry graph is discovered immediately.
+  deployment's entry graph is discovered immediately. `img-src` allowlists the Clerk image CDNs and
+  Clerk's Google Storage profile-image path used by the account client.
 - `apps/desktop/src/renderer/webclient/public/_redirects` - SPA fallback:
   `/* /index.html 200`.
 
 Browser sync client:
 
 - `apps/desktop/src/renderer/webclient/account/client.ts` - Clerk
-  OAuth authorization-code + PKCE session for the static client. Access and
-  refresh tokens remain in module memory, the callback is scrubbed from the
-  address bar before directory loading, and account requests use exact trusted
-  origins with omitted browser credentials and referrers.
+  OAuth authorization-code + PKCE session for the static client. Access tokens
+  remain in module memory; the refresh credential plus exact OAuth issuer/client
+  identity persist in IndexedDB so reload boot can restore and refresh before
+  directory access. Profile identity is enriched through a bounded, best-effort
+  OAuth userinfo request. The callback is scrubbed from the address bar before
+  directory loading, and account requests use exact trusted origins with omitted
+  browser credentials and referrers.
+- `apps/desktop/src/renderer/webclient/account/sessionStore.ts` - versioned
+  IndexedDB refresh-session record. Explicit sign-out and confirmed auth expiry
+  clear it; OAuth access tokens are never persisted.
 - `apps/desktop/src/renderer/webclient/account/leaseMonitor.ts` - live account
   lifetime enforcement for account-owned environments and active Relay
   sockets. A 30-second check refreshes the in-memory token; confirmed expiry,
@@ -86,14 +93,16 @@ Browser sync client:
   hosted page; plain `ws://` is dialable only from local/http pages.
 - `apps/desktop/src/renderer/webclient/sync/envStore.ts` - IndexedDB storage
   for paired machine environments, per-device secret, host/candidate metadata,
-  and the WebCrypto `CryptoKeyPair`. A versioned one-time trust migration
+  the WebCrypto `CryptoKeyPair`, and the separate account-session object store.
+  A versioned one-time trust migration
   clears legacy environments and selection while preserving unrelated browser
   and account state; environments paired after the marker persist normally.
   Every operation runs through an explicit transaction; trust reset and
   account-owner pruning update environments, selection, and metadata
-  atomically. IndexedDB open attempts fail after 4 seconds, distinguish blocked
-  upgrades from generic failures, clear their rejected cached promise so Retry
-  can reopen, and close/reset the connection on `versionchange`.
+  atomically. Generic IndexedDB opens fail after 4 seconds; a blocked upgrade
+  gets a 5-second grace period for another tab to close and reports a distinct
+  typed failure. Rejected cached promises are cleared so Retry can reopen, and
+  `versionchange` closes/resets the database and the trust-reset state.
 - `apps/desktop/src/renderer/webclient/sync/dpop.ts` - WebCrypto P-256 ECDSA
   DPoP key generation and proof signing. The private key is non-extractable by
   default.
@@ -104,7 +113,11 @@ Browser sync client:
 Browser `window.ade` adapter:
 
 - `apps/desktop/src/renderer/webclient/adapter/index.ts` - installs a
-  sync-backed `window.ade` surface and hides native-only capabilities.
+  sync-backed `window.ade` surface, including the browser account client, and
+  hides native-only capabilities.
+- `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
+  OAuth session and account directory onto the reused `window.ade.account`
+  contract for status, sign-in/out, machine listing, and machine removal.
 - `apps/desktop/src/renderer/webclient/adapter/analytics.ts` - affirmative
   browser-local analytics preference, runtime-scoped status/capture calls, and
   per-connection consent reassertion. A failed opt-out acknowledgement closes
@@ -112,12 +125,49 @@ Browser `window.ade` adapter:
   mutations for that peer.
 - `apps/desktop/src/renderer/webclient/adapter/infra/commandCaller.ts` -
   remote-command dispatch through `SyncRemoteCommandDescriptor` scope/policy,
-  with fallback for unsupported hosts.
+  with fallback for unsupported hosts. Read commands that pass `cacheTtlMs`
+  (and are not marked `idempotent: false`) go through a per-caller coalescing
+  read cache: concurrent identical calls join a single in-flight relay request,
+  and the resolved value is reused for the TTL window (3 s). `invalidateCache`
+  clears the whole cache or a set of action prefixes so a mutation or a
+  `changeset_batch`-driven refresh drops stale reads.
+- `apps/desktop/src/renderer/webclient/adapter/infra/coalescingReadCache.ts`
+  and `infra/cacheKey.ts` - the shared coalescing/TTL cache primitive and a
+  deterministic argument-serializer used to key it. The cache keeps concurrent
+  callers joined even when the transport outlasts the TTL (the freshness window
+  starts at resolution) and never caches rejections.
+- `apps/desktop/src/renderer/webclient/adapter/infra/projectState.ts` - holds
+  the bound project and, critically, the `projectId` the shell passed at bind
+  time. `getProjectId()` prefers that bound id (then a catalog match by root
+  path) over the sync client's persisted `activeProjectId`, which can briefly
+  name the prior project during reconnect and would otherwise stamp file
+  requests and project commands with a stale id.
 - `apps/desktop/src/renderer/webclient/adapter/infra/invalidation.ts` -
   maps changed table names from `changeset_batch` envelopes to coarse
   renderer invalidation domains.
 - `apps/desktop/src/renderer/webclient/adapter/files.ts` - browser file API
-  over sync `file_request`; no local file watcher.
+  over sync `file_request`; no local file watcher. List reads
+  (`listWorkspaces` / `listTree` / `listTreeChildren`) are coalesced through a
+  3 s read cache and now **surface transport errors** instead of silently
+  returning an empty result — the earlier fallback-to-empty behavior masked a
+  failed request as a legitimately empty tree, which (combined with the stale
+  project-id above) produced the Files tab's spurious "no files" state. Writes
+  and `filesInvalidated` events clear the read cache and fan a change event out
+  to every workspace id seen for the project rather than a single `"*"` marker.
+- `apps/desktop/src/renderer/webclient/adapter/remoteRuntime.ts` - a
+  `window.ade.remoteRuntime` stub for the hosted client, which is already
+  attached to one paired machine and has no desktop-local target registry, SSH
+  discovery, or pairing host. Reads return empty collection-shaped results so
+  shared shell components still mount; machine-management mutations throw
+  "Desktop machine management is unavailable in ADE Web."
+- `apps/desktop/src/renderer/webclient/adapter/prs.ts` - PR namespace over
+  remote commands. List/detail reads go through the 3 s read cache, and a
+  `prsInvalidated` event no longer emits an empty PR list marker: it invalidates
+  the `prs.` cache, then hydrates one coalesced aggregate snapshot
+  (`prs.getMobileSnapshot`, falling back to `prs.list`) and emits `prs-updated`
+  only when the host actually returned a snapshot. `listAll`, `getForLane`, and
+  the non-conflict `listWithConflicts` are all derived from that one batched
+  snapshot instead of separate per-call round-trips.
 - `apps/desktop/src/renderer/webclient/adapter/sessionsPty.ts` - terminal and
   PTY APIs over `work.*`, `terminal_*`, and `terminal_history`.
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
@@ -154,6 +204,10 @@ Browser shell and routes:
   current account owner's atomic privacy prune completes, and stale async loads
   cannot publish another account's records. Storage failure leaves account
   sign-in and the directory usable with a separate saved-browser Retry path.
+  Project binding passes the selected `project.id`
+  (from the switch result when available) into `bindProject` so the adapter's
+  `getProjectId()` cannot fall back to a stale `activeProjectId` mid-reconnect,
+  and a failed `switchProject` surfaces its message instead of being swallowed.
   Saved machines are shown first instead of reconnecting automatically on page
   load.
 - `apps/desktop/src/renderer/webclient/shell/WebShell.tsx` - machine
@@ -165,6 +219,9 @@ Browser shell and routes:
   independent directory/storage loading and retry states, project list, and the
   shared screen frame); `shellTokens.ts` holds the standalone-shell design
   tokens.
+- `apps/desktop/src/renderer/webclient/shell/AccountIdentity.tsx` - shared
+  signed-in identity label and trusted profile-image/initials fallback for the
+  machine picker and connected shell; opaque account IDs are not shown.
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
   layer over `apps/desktop/src/shared/deeplinks.ts`.
 
@@ -264,11 +321,18 @@ Account connection and entry points:
 
 Tests:
 
+- `apps/desktop/src/renderer/webclient/account/client.test.ts` - OAuth callback,
+  refresh-session persistence/rotation/expiry, JWT lifetime, userinfo profile,
+  and browser storage/URL privacy contracts.
+- `apps/desktop/src/renderer/webclient/sync/envStore.test.ts` - browser trust
+  migration plus bounded and cooperative IndexedDB schema upgrades.
 - `apps/desktop/src/renderer/components/app/TopBar.test.tsx`.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`.
 - `apps/desktop/src/renderer/webclient/sync/__tests__/sync.test.ts`.
 - `apps/desktop/src/renderer/webclient/sync/envStore.test.ts`.
 - `apps/desktop/src/renderer/webclient/adapter/__tests__/adapter.test.ts`.
+- `apps/desktop/src/renderer/webclient/shell/__tests__/MachinePicker.test.tsx` -
+  signed-in identity, account-machine availability, and reauthentication UI.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/webRoutes.test.ts`.
 - `apps/desktop/src/renderer/webclient/shell/__tests__/WebClientRoot.test.tsx` -
   verifies that legacy `/pair#...` entry is scrubbed and lands on account sign-in.
@@ -292,8 +356,9 @@ Tests:
   desktop-only `rpc_*` and `fwd_*` channels. Unknown `hello_ok.features` keys
   are harmless, and missing additive keys mean the related capability is not
   available rather than failing the handshake.
-- **IndexedDB is the connection store.** Clearing site data removes paired
-  secrets and non-extractable DPoP private keys. The browser must sign in and
+- **IndexedDB is the connection and refresh-session store.** Clearing site data
+  removes the account refresh credential, paired secrets, and non-extractable
+  DPoP private keys. The browser must sign in and
   adopt the account machine again; a legacy direct environment cannot be
   recreated through the hosted UI. The private key cannot be exported for
   backup or migration. A blocked upgrade or unavailable storage is recoverable:
@@ -501,6 +566,20 @@ for their non-Relay routes.
 The browser intentionally does not maintain a local replica of `.ade/ade.db`.
 `SyncConnection.sendHello` sends `dbVersion: 0` and `capabilities: []`, so the
 host does not treat it like a changeset-acknowledging CRDT peer.
+
+Because there is no local replica, every read is a live relay round-trip to the
+machine — where the desktop renderer would hit its in-process cr-sqlite. Two
+adapter-side measures keep that from turning routine UI into a burst of
+redundant relay traffic. First, read commands and file-list requests pass
+through a short (3 s) **coalescing read cache**: concurrent identical reads join
+one in-flight request and reuse its result for the TTL window, while any
+mutation or `changeset_batch`-driven invalidation drops the affected entries.
+Second, the PRs surface **batches** its reads: instead of separate `prs.list` /
+`prs.getForLane` / `listWithConflicts` round-trips it hydrates a single
+coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
+`prsInvalidated` event triggers exactly one aggregate refresh rather than an
+empty-list marker. These caches are freshness hints over the authoritative
+relay reads, not a persisted store.
 
 Incoming `changeset_batch` envelopes are reduced to a set of table names in
 `connection.ts`. `createInvalidationScheduler` maps those table names to

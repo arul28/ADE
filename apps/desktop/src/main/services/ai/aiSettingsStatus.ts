@@ -109,6 +109,8 @@ export function getUnavailableAiStatus(): AiSettingsStatus {
     opencodeBinarySource: "missing",
     opencodeInventoryError: null,
     opencodeProviders: [],
+    opencodeProvidersStale: false,
+    modelsDevLastFetchedAt: null,
   };
 }
 
@@ -136,6 +138,10 @@ export async function buildAiSettingsStatus(
     opencodeBinarySource: status.opencodeBinarySource,
     opencodeInventoryError: status.opencodeInventoryError,
     opencodeProviders: status.opencodeProviders,
+    opencodeProvidersStale: status.opencodeProvidersStale,
+    modelsDevLastFetchedAt: status.modelsDevLastFetchedAt,
+    customProviders: status.customProviders,
+    customModelSlugs: status.customModelSlugs,
     apiKeyStore: status.apiKeyStore,
     features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
       feature,

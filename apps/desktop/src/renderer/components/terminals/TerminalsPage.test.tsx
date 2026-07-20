@@ -405,6 +405,32 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-worker");
   });
 
+  it("resolves the target lane from the session list when select-session carries no laneId", async () => {
+    // Spawn cards and the subagents pane dispatch without a laneId — the
+    // listener must look the session up so cross-lane jumps still land.
+    workMocks.currentWork.sessions = [
+      workMocks.makeTerminalSession("chat-spawned-child", "lane-background", "codex-chat"),
+    ];
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("work-view-area");
+
+    window.dispatchEvent(
+      new CustomEvent("ade:work:select-session", {
+        detail: { sessionId: "chat-spawned-child" },
+      }),
+    );
+
+    expect(workMocks.fns.selectLane).toHaveBeenCalledWith("lane-background");
+    expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-spawned-child");
+    expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith("chat-spawned-child");
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-spawned-child");
+  });
+
   it("opens the Browser sidebar only for matching project open requests", async () => {
     workMocks.projectRoot = "/repo-one";
     const browserEventListener: {

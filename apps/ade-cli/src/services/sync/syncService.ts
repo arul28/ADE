@@ -26,6 +26,7 @@ import type { createAiIntegrationService } from "../../../../desktop/src/main/se
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
+import type { createLinearOAuthService } from "../../../../desktop/src/main/services/cto/linearOAuthService";
 import type { createLinearIssueTracker } from "../../../../desktop/src/main/services/cto/linearIssueTracker";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
 import type { createProjectConfigService } from "../../../../desktop/src/main/services/config/projectConfigService";
@@ -143,6 +144,7 @@ type SyncServiceArgs = {
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
+  linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   /**
    * Resolvers for services that are constructed AFTER createSyncService in
    * main.ts. Using lazy getters lets the sync router forward remote commands
@@ -741,6 +743,7 @@ export function createSyncService(args: SyncServiceArgs) {
     ctoStateService: args.ctoStateService,
     ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
+    linearOAuthService: args.linearOAuthService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     getExternalSessionsService: args.getExternalSessionsService,
     projectConfigService: args.projectConfigService,
@@ -1405,11 +1408,12 @@ export function createSyncService(args: SyncServiceArgs) {
           enabled: relayEnabled,
           relayControlConnected,
           relayBridgeValidated,
-          lastFailureAt: relayEnabled && relayReason
-            ? (tunnelStatus?.lastFailureAt ?? rawListenerValidation.lastFailureAt)
-            : null,
-          reason: relayReason,
-          lastSuccessAt: relayReason == null ? (tunnelStatus?.lastSuccessAt ?? null) : null,
+          lastFailureAt: tunnelStatus?.lastFailureAt
+            ?? (relayEnabled && relayReason ? rawListenerValidation.lastFailureAt : null),
+          skipReason: relayReason,
+          lastControlError: tunnelStatus?.lastControlError ?? null,
+          lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
+          lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
         },
         accountDirectory,
       };
@@ -1646,7 +1650,9 @@ export function createSyncService(args: SyncServiceArgs) {
         activeTunnels: accountSignedIn ? (tunnelStatus?.activeTunnels ?? 0) : 0,
         relayBridgeValidated: accountSignedIn && (tunnelStatus?.relayBridgeValidated ?? false),
         lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
-        lastSuccessAt: tunnelStatus?.lastSuccessAt ?? null,
+        lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
+        lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
+        lastControlError: tunnelStatus?.lastControlError ?? null,
         lastError: accountSignedIn
           ? tunnelStatus?.lastError ?? null
           : "Sign in to ADE to use ADE Relay.",
@@ -1715,6 +1721,10 @@ export function createSyncService(args: SyncServiceArgs) {
       hostService?.handlePtyExit(event);
     },
 
+    notifyPrsUpdated(): void {
+      hostService?.broadcastPrsUpdated();
+    },
+
     getHostService(): SyncHostService | null {
       return hostService;
     },
@@ -1729,6 +1739,10 @@ export function createSyncService(args: SyncServiceArgs) {
 
     getDeviceRegistryService() {
       return deviceRegistryService;
+    },
+
+    getRegisteredPeerCount(): number | null {
+      return pairingStore.countPairingRecords();
     },
 
     async dispose(): Promise<void> {

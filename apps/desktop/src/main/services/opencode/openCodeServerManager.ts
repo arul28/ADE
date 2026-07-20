@@ -12,7 +12,7 @@ import {
   quoteWindowsCmdArg,
   resolveWindowsCmdLineInvocation,
 } from "../shared/processExecution";
-import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
+import { probeOpenCodeBinaryQuarantine, resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 
 export type OpenCodeServerLeaseKind = "shared" | "dedicated";
 export type OpenCodeServerOwnerKind = "inventory" | "oneshot" | "chat" | "coordinator";
@@ -29,6 +29,20 @@ export type OpenCodeServerShutdownReason =
   | "shutdown"
   | "config_changed"
   | "error";
+
+/**
+ * Typed classification of an OpenCode binary/server launch failure. Surfaced to
+ * the UI (via a stable, single-line error message; see
+ * {@link renderOpenCodeDiagnostic}) so it can offer a precise fix instead of a
+ * generic error.
+ */
+export type OpenCodeDiagnostic =
+  | { kind: "not-installed" }
+  | { kind: "quarantined"; binaryPath: string; fixCommand: string }
+  | { kind: "bad-signature"; binaryPath: string }
+  | { kind: "port-conflict"; port: number }
+  | { kind: "launch-timeout" }
+  | { kind: "unknown"; message: string };
 
 type OpenCodeServerInstance = {
   url: string;
@@ -486,6 +500,96 @@ function isPortConflict(error: unknown): boolean {
     }
   }
   return false;
+}
+
+function errorCode(error: unknown): string {
+  if (error && typeof error === "object" && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string") return code;
+  }
+  return "";
+}
+
+/**
+ * Classify a raw OpenCode launch/probe failure into a typed diagnostic. See the
+ * task heuristics: ENOENT / no resolved binary → not-installed; EADDRINUSE →
+ * port-conflict; startup deadline → launch-timeout; explicit darwin
+ * signature/developer-verification evidence → quarantined or bad-signature
+ * only when the quarantine probe is conclusive; anything else → unknown.
+ */
+export function classifyOpenCodeLaunchFailure(
+  error: unknown,
+  context: { port: number; binaryPath: string | null },
+): OpenCodeDiagnostic {
+  const binaryPath = context.binaryPath;
+  const code = errorCode(error);
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+
+  if (!binaryPath || code === "ENOENT" || lower.includes("enoent") || lower.includes("executable is not available")) {
+    return { kind: "not-installed" };
+  }
+  if (isPortConflict(error)) {
+    return { kind: "port-conflict", port: context.port };
+  }
+  if (lower.includes("timeout waiting for server to start")) {
+    return { kind: "launch-timeout" };
+  }
+  const hasExplicitSignatureEvidence = lower.includes("code signature")
+    || lower.includes("developer cannot be verified");
+  if (process.platform === "darwin" && hasExplicitSignatureEvidence) {
+    const quarantine = probeOpenCodeBinaryQuarantine(binaryPath);
+    if (quarantine === "quarantined") {
+      return {
+        kind: "quarantined",
+        binaryPath,
+        fixCommand: `xattr -d com.apple.quarantine "${binaryPath}"`,
+      };
+    }
+    if (quarantine === "clean") {
+      return { kind: "bad-signature", binaryPath };
+    }
+  }
+  return { kind: "unknown", message: message || "OpenCode server failed to launch." };
+}
+
+/**
+ * Render a diagnostic into a stable, single-line, actionable message. The
+ * `OpenCode: <kind>:` prefix is contract-stable — UI surfaces may key off it.
+ */
+export function renderOpenCodeDiagnostic(diagnostic: OpenCodeDiagnostic): string {
+  switch (diagnostic.kind) {
+    case "not-installed":
+      return "OpenCode: not-installed: OpenCode binary could not be found. Install OpenCode or ensure it is on your PATH.";
+    case "quarantined":
+      return `OpenCode: quarantined: OpenCode binary is quarantined by macOS Gatekeeper. Fix: ${diagnostic.fixCommand}`;
+    case "bad-signature":
+      return `OpenCode: bad-signature: OpenCode binary at "${diagnostic.binaryPath}" failed macOS code-signature verification. Reinstall OpenCode from a trusted source.`;
+    case "port-conflict":
+      return `OpenCode: port-conflict: Port ${diagnostic.port} is already in use. Free the port or retry.`;
+    case "launch-timeout":
+      return "OpenCode: launch-timeout: OpenCode server did not become ready in time. Retry, or kill any hung opencode process and try again.";
+    case "unknown":
+      return `OpenCode: unknown: ${diagnostic.message}`;
+  }
+}
+
+/** Launch failure carrying its typed {@link OpenCodeDiagnostic} for callers that can key off it. */
+export class OpenCodeLaunchError extends Error {
+  readonly diagnostic: OpenCodeDiagnostic;
+  constructor(diagnostic: OpenCodeDiagnostic) {
+    super(renderOpenCodeDiagnostic(diagnostic));
+    this.name = "OpenCodeLaunchError";
+    this.diagnostic = diagnostic;
+  }
+}
+
+function toOpenCodeLaunchError(
+  error: unknown,
+  context: { port: number; binaryPath: string | null },
+): OpenCodeLaunchError {
+  if (error instanceof OpenCodeLaunchError) return error;
+  return new OpenCodeLaunchError(classifyOpenCodeLaunchFailure(error, context));
 }
 
 function stopChildProcess(proc: ChildProcess): void {
@@ -956,19 +1060,24 @@ function parseOpenCodeServerListenUrl(line: string): string | null {
 async function createOpencodeServerWithRetry(
   config: OpenCodeConfig,
 ): Promise<OpenCodeServerInstance> {
+  const binaryPath = resolveOpenCodeBinaryPath();
   let lastError: unknown;
+  let lastPort = 0;
   for (let attempt = 0; attempt < PORT_RETRY_ATTEMPTS; attempt += 1) {
     const port = await findAvailablePort();
+    lastPort = port;
     protectedLaunchPorts.add(port);
     try {
       return await openCodeServerLauncher({ port, config });
     } catch (error) {
       protectedLaunchPorts.delete(port);
       lastError = error;
-      if (!isPortConflict(error)) throw error;
+      if (!isPortConflict(error)) {
+        throw toOpenCodeLaunchError(error, { port, binaryPath });
+      }
     }
   }
-  throw lastError;
+  throw toOpenCodeLaunchError(lastError, { port: lastPort, binaryPath });
 }
 
 function logRuntimeEvent(

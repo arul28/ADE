@@ -8,6 +8,8 @@ import {
 import {
   readAccountDirectoryHttpReason,
   resolveTrustedAccountDirectoryBaseUrl,
+  shouldIgnoreDevelopmentAccountDirectoryUrl,
+  warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
 import {
   getSignedInAccountAccessToken,
@@ -141,7 +143,7 @@ export function buildAccountMachineRegistration(args: {
       && args.snapshot.routeHealth.listener.loopbackAdeValidated
       && args.snapshot.routeHealth.relay.relayControlConnected
       && args.snapshot.routeHealth.relay.relayBridgeValidated
-      && args.snapshot.routeHealth.relay.reason == null
+      && args.snapshot.routeHealth.relay.skipReason == null
     ) {
       const url = validatedRelayUrl(host, machineKey);
       if (url) add({ kind: "relay", url });
@@ -266,8 +268,17 @@ export function createAccountMachinePublisherService(options: {
 
     let baseUrl: string | null = null;
     try {
+      const configuredBaseUrl = options.directoryBaseUrl?.();
+      let packagedSafeBaseUrl = configuredBaseUrl;
+      if (shouldIgnoreDevelopmentAccountDirectoryUrl(
+        configuredBaseUrl,
+        process.env,
+      )) {
+        warnDevelopmentClerkIgnored();
+        packagedSafeBaseUrl = undefined;
+      }
       baseUrl = resolveTrustedAccountDirectoryBaseUrl(
-        options.directoryBaseUrl?.(),
+        packagedSafeBaseUrl,
       );
     } catch {
       baseUrl = null;
@@ -587,6 +598,10 @@ export function createAccountMachinePublisherService(options: {
 
     publishNow,
 
+    requestPublishAfterCurrentAttempt(): void {
+      requestTriggeredPublish();
+    },
+
     getPublisherHealth(): SyncAccountDirectoryHealth {
       return { ...health };
     },
@@ -617,7 +632,7 @@ export function createBrainAccountMachinePublisherService(options: {
   secretsDir: string;
   projectRoots: () => Iterable<string>;
   isSyncEnabled: () => boolean;
-  getSnapshot: () => Promise<SyncRoleSnapshot | null>;
+  getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
   directoryBaseUrl?: () => string | null | undefined;
   logger: BrainAccountMachinePublisherLogger;
@@ -642,7 +657,12 @@ export function createBrainAccountMachinePublisherService(options: {
     getMachineKey: options.getMachineKey,
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
-      if (explicit?.trim()) return explicit;
+      if (explicit?.trim()) {
+        if (!shouldIgnoreDevelopmentAccountDirectoryUrl(explicit, process.env)) {
+          return explicit;
+        }
+        warnDevelopmentClerkIgnored();
+      }
       return resolveOfficialAccountDirectoryBaseUrl({
         env: process.env,
         projectRoots: options.projectRoots(),

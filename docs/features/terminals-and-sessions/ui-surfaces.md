@@ -43,10 +43,12 @@ targets attach to the chat session and `pty` targets attach to the running
 CLI session id.
 
 The same page is the subscriber for `ade:work:select-session`, the
-renderer event dispatched by orchestration "Open chat" buttons. The
-handler accepts `{ sessionId, laneId? }`, selects the lane when present,
-focuses the target chat, opens its Work tab, and stores it as the active
-selected session.
+renderer event dispatched by orchestration and lineage navigation. The
+handler accepts `{ sessionId, laneId? }`; when the caller omits `laneId`, it
+resolves the target lane from the loaded session list. It then selects that
+lane, focuses the target session, opens its Work tab, and stores it as the
+active selected session. This lets a spawned-chat row or parent-lineage glyph
+jump across lanes without already knowing the target lane.
 
 `useWorkLaneDeleteProgress` also makes this page the Work-owned consumer of
 lane deletion state. While Work is active it subscribes to streamed delete
@@ -162,6 +164,11 @@ from the active organization mode and uncollapsed groups) as the third
 argument so shift-range selection follows the visual order the user
 sees, not the underlying data order.
 
+The pane derives `liveChildrenByParentId` and `sessionTitleById` from the
+unfiltered session inventory. The latter uses `primarySessionLabel()` and is
+passed to each child card as `parentSessionTitle`, so lineage tooltips can name
+a parent even when search, lane, or status filters hide its row.
+
 ### `SessionCard.tsx`
 
 Three rows:
@@ -170,7 +177,13 @@ Three rows:
    `primarySessionLabel()` drive these. The relative time comes from
    `relativeTimeCompact`. Disposed CLI rows render a small inline
    "Stopped" label immediately before the red status dot rather than an
-   attention capsule.
+   attention capsule. When `orchestrationParentSessionId` is present, a small
+   deterministic `ChatSubagentGlyph` appears immediately left of the status
+   dot. `SessionListPane` supplies the parent title from its unfiltered session
+   index for the tooltip; clicking the glyph stops card selection and routes
+   to the parent through `navigateToSpawnedChat`. The glyph is a mouse
+   shortcut inside the existing card button; a spawned chat's **View parent
+   thread** header control remains the keyboard/assistive-technology route.
 2. **Preview line** (conditional) — when the card's lane is mid
    background AI auto-naming (`useLaneNaming(lane.id)` from
    `renderer/state/laneNamingStore.ts` is true), this row instead shows an
@@ -215,6 +228,11 @@ idle age so the user can decide whether to close it.
 
 Owns the render target for open sessions. Supports three modes tied to
 `viewMode`:
+
+`WorkViewArea` also builds a title index for all loaded sessions and threads
+it through `SessionSurface` into locked `AgentChatPane` embeddings. The chat
+pane uses it to label spawned-chat rows in Chat Info with the live child title
+instead of the provider/runtime fallback.
 
 - `tabs` — tab-strip + single `SessionSurface` for the active tab, plus
   a "New Chat" button in the tab strip. A second sub-mode (`hasGroupedTabs`)

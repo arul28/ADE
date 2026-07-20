@@ -1,6 +1,25 @@
 import { describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
 import { createPrEventFanout } from "./prEventFanout";
+import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
+
+describe("isSourceCheckoutRuntimeModule", () => {
+  it.each([
+    "/Users/developer/ADE/apps/ade-cli/src/bootstrap.ts",
+    "/Users/developer/ADE/apps/ade-cli/dist/cli.cjs",
+    "/Users/developer/ADE/apps/ade-cli/dist/bootstrap.cjs",
+    "/Users/developer/ADE/apps/desktop/dist/main/main.cjs",
+  ])("classifies a source-checkout module as development: %s", (modulePath) => {
+    expect(isSourceCheckoutRuntimeModule(modulePath)).toBe(true);
+  });
+
+  it.each([
+    "/Applications/ADE.app/Contents/Resources/app.asar/dist/main/main.cjs",
+    "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+  ])("classifies a packaged module as packaged: %s", (modulePath) => {
+    expect(isSourceCheckoutRuntimeModule(modulePath)).toBe(false);
+  });
+});
 
 describe("createPrEventFanout", () => {
   const event = {

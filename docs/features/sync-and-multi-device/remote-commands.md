@@ -120,7 +120,8 @@ accordingly — the brain's policy and scope are always authoritative.
 
 Mobile compatibility is a separate product contract layered on top of those
 descriptors. The required iOS action set lives in
-`apps/desktop/src/shared/syncMobileCompatibility.ts`; the brain evaluates the
+`apps/desktop/src/shared/syncMobileCompatibility.ts`
+(`MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS`); the brain evaluates the
 actual registry against that list and advertises
 `features.mobileCompatibility` in `hello_ok`. A missing action must produce
 `mode: "limited"` and a `missingActions` list, not a rejected connection. iOS
@@ -128,6 +129,17 @@ then keeps the WebSocket alive, hides or blocks unsupported actions locally, and
 surfaces update guidance. When adding, renaming, or removing a remote command
 that ADE Mobile uses, update the shared compatibility list and iOS tests in the
 same change.
+
+The same file also holds `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`: additive
+commands that newer phones may feature-detect from
+`hello_ok.features.commandRouting.actions` but that must **not** join the
+required set, because older mobile builds never call them. The four Linear
+connection commands (`cto.startLinearMobileOAuth`,
+`cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken`)
+live here: a brain that predates them omits them from its advertised actions, so
+the phone leaves Linear connect/reconnect/disconnect hidden (falling back to the
+API-key path or an "update ADE on your Mac" hint) rather than treating their
+absence as a broken connection. Their omission never flips a host to `limited`.
 
 ## Registry
 
@@ -406,6 +418,18 @@ a boolean.
   — the Linear read surface. The former worker-management commands
   (`removeAgent`, `setAgentStatus`, `triggerAgentWakeup`,
   `rollbackAgentRevision`) were removed with the worker subsystem.
+- `startLinearMobileOAuth`, `completeLinearMobileOAuth`, `setLinearToken`,
+  `clearLinearToken` — the Linear **connection-management** surface the iOS
+  Linear pane uses to connect, reconnect, and disconnect a workspace from the
+  phone. `startLinearMobileOAuth` mints a desktop PKCE session for the
+  worker-bounce OAuth flow (redirect through the `ade-github-webhook-relay`
+  worker back to `ade://linear-oauth`); `completeLinearMobileOAuth` hands the
+  captured `code`/`state` back for the desktop-side token exchange;
+  `setLinearToken` stores a pasted API key; `clearLinearToken` disconnects. All
+  four are `viewerAllowed` and are **optional** mobile capabilities (see the
+  compatibility note above) — older brains omit them, and iOS gates the connect
+  UI on the advertised action set. See
+  [Linear integration](../linear-integration/README.md#connecting-and-managing-from-mobile).
 
 The canonical list is typed as `SyncRemoteCommandAction` in
 `apps/desktop/src/shared/types/sync.ts`.
