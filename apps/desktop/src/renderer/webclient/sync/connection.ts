@@ -425,6 +425,7 @@ export class SyncConnection {
     this.ws = socket;
     this.status.endpoint = endpoint;
     this.emit("statusChanged", this.getStatus());
+    if (!this.isCurrentSocket(socket, generation)) throw new StaleSocketAttemptError();
     let settled = false;
     await new Promise<void>((resolve, reject) => {
       let helloTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -507,10 +508,13 @@ export class SyncConnection {
               fail(new Error("Connected machine identity did not match the stored pairing."));
               return;
             }
+            if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
+              fail(new StaleSocketAttemptError(), "Connection attempt superseded");
+              return;
+            }
             settled = true;
             clearDeadlines();
             if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
-            this.finishConnected(socket, environment, endpoint, payload, generation);
             resolve();
           },
           onHelloError: (payload) => {
@@ -556,6 +560,7 @@ export class SyncConnection {
     this.ws = socket;
     this.shouldReconnect = false;
     this.setStatus({ state: "connecting", endpoint, error: null });
+    if (!this.isCurrentSocket(socket, generation)) throw new StaleSocketAttemptError();
     let settled = false;
     return await new Promise((resolve, reject) => {
       let helloTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -664,10 +669,13 @@ export class SyncConnection {
               fail(error instanceof Error ? error : new Error(String(error)));
               return;
             }
+            if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
+              fail(new StaleSocketAttemptError(), "Connection attempt superseded");
+              return;
+            }
             settled = true;
             clearDeadlines();
             if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
-            this.finishConnected(socket, environment, endpoint, payload, generation);
             this.shouldReconnect = true;
             resolve({ environment, helloOk: payload, endpoint });
           },
@@ -829,8 +837,8 @@ export class SyncConnection {
     endpoint: string,
     helloOk: SyncHelloOkPayload,
     generation: number,
-  ): void {
-    if (!this.isCurrentSocket(socket, generation)) return;
+  ): boolean {
+    if (!this.isCurrentSocket(socket, generation)) return false;
     this.environment = environment;
     this.endpoints = [
       ...this.endpoints.filter((candidate) => candidate.url === endpoint),
@@ -848,12 +856,18 @@ export class SyncConnection {
       connectedAt: nowIso(),
       error: null,
     });
+    if (!this.isCurrentSocket(socket, generation)) return false;
     this.startHeartbeat(helloOk.heartbeatIntervalMs);
     this.startInboundStaleWatchdog();
     this.scheduleStableBackoffReset(generation);
     this.scheduleRelayAuthorizationRefresh(generation, helloOk.relayAuthorization ?? null, true);
     this.emit("helloOk", helloOk);
-    if (helloOk.projects) this.emit("projectCatalog", { projects: helloOk.projects });
+    if (!this.isCurrentSocket(socket, generation)) return false;
+    if (helloOk.projects) {
+      this.emit("projectCatalog", { projects: helloOk.projects });
+      if (!this.isCurrentSocket(socket, generation)) return false;
+    }
+    return true;
   }
 
   private scheduleRelayAuthorizationRefresh(
@@ -1000,12 +1014,13 @@ export class SyncConnection {
     }
 
     if (payload.error.code === "relay_account_changed") {
+      const socket = this.ws;
       this.relayRefreshAttempt = null;
       this.shouldReconnect = false;
       this.relayAuthorizationTerminalError = payload.error.message;
       this.setStatus({ state: "auth_failed", error: payload.error.message });
       try {
-        this.ws?.close(4003, "ADE account session changed");
+        socket?.close(4003, "ADE account session changed");
       } catch {
         // The terminal state is already recorded even if close throws.
       }
@@ -1140,17 +1155,19 @@ export class SyncConnection {
   ): void {
     if (!socket || !this.isCurrentSocket(socket, generation)) return;
     const terminalError = this.relayAuthorizationTerminalError;
-    this.connectionGeneration += 1;
+    const closeGeneration = ++this.connectionGeneration;
     this.stopTimers();
     this.ws = null;
     this.latestHello = null;
     this.emit("close", { code: event.code, reason: event.reason });
+    if (this.connectionGeneration !== closeGeneration || this.ws !== null) return;
     if (this.intentionalClose) return;
     this.setStatus({
       state: terminalError ? "auth_failed" : "disconnected",
       connectedAt: null,
       error: terminalError ?? this.errorForClose(event).message,
     });
+    if (this.connectionGeneration !== closeGeneration || this.ws !== null) return;
     if (this.shouldReconnect) {
       this.scheduleReconnect(
         bypassBackoff ? this.visibilityReconnectDelayMs() : 0,
@@ -1161,12 +1178,15 @@ export class SyncConnection {
 
   private scheduleReconnect(minimumDelayMs = 0, bypassBackoff = false): void {
     if (!this.environment || !visible(this.documentRef) || this.reconnectTimer) return;
+    const generation = this.connectionGeneration;
+    const socket = this.ws;
     const jitter = Math.floor(Math.random() * 350);
     const delay = bypassBackoff
       ? minimumDelayMs
       : Math.max(minimumDelayMs, Math.min(BACKOFF_MAX_MS, this.backoffMs) + jitter);
     if (!bypassBackoff) this.backoffMs = Math.min(BACKOFF_MAX_MS, this.backoffMs * 2);
     this.setStatus({ state: "reconnecting" });
+    if (this.connectionGeneration !== generation || this.ws !== socket) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.environment || !this.shouldReconnect || !visible(this.documentRef)) return;

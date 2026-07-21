@@ -5277,8 +5277,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       timer = setTimeout(() => {
         if (peer.lifecycleGeneration === operationGeneration) {
           // Promise.race does not cancel the handler. Invalidate its operation
-          // generation and close the peer so every post-await guard fails
-          // before pairing/arbitration/state mutation can resume.
+          // generation and close the peer so lifecycle-guarded auth, pairing,
+          // and host-state work cannot resume. Accepted commands intentionally
+          // keep running: their commandId ledger must capture the eventual
+          // result so a replacement peer can retry without executing twice.
           peer.lifecycleGeneration += 1;
           try {
             peer.ws.close(4002, "Sync message timed out");

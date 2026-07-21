@@ -976,6 +976,101 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
+  it("lets a statusChanged reconnect supersede finish without stale hello or catalog events", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      const projectId = script.sockets.indexOf(socket) === 0 ? "stale-project" : "replacement-project";
+      socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk(projectId) });
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const helloProjects: string[] = [];
+    const catalogProjects: string[] = [];
+    connection.on("helloOk", (payload) => helloProjects.push(payload.projects?.[0]?.id ?? "missing"));
+    connection.on("projectCatalog", (payload) => catalogProjects.push(payload.projects[0]?.id ?? "missing"));
+    let replacement: Promise<void> | null = null;
+    const unsubscribeStatus = connection.on("statusChanged", (status) => {
+      if (status.state !== "connected" || status.endpoint !== "ws://127.0.0.1:8787" || replacement) return;
+      replacement = connection.connect(
+        environment,
+        [{ url: "ws://127.0.0.1:8788", kind: "loopback", dialable: true }],
+      );
+    });
+
+    const firstOutcome = connection.connect(
+      environment,
+      [{ url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true }],
+    ).then(
+      () => ({ ok: true as const, error: null }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    expect(replacement).not.toBeNull();
+    await vi.advanceTimersByTimeAsync(1);
+    await replacement;
+
+    await expect(firstOutcome).resolves.toMatchObject({
+      ok: false,
+      error: { message: "Sync connection attempt was superseded." },
+    });
+    expect(script.sockets).toHaveLength(2);
+    expect(connection.getStatus()).toMatchObject({
+      state: "connected",
+      endpoint: "ws://127.0.0.1:8788",
+    });
+    expect(helloProjects).toEqual(["replacement-project"]);
+    expect(catalogProjects).toEqual(["replacement-project"]);
+    unsubscribeStatus();
+    connection.dispose();
+  });
+
+  it("lets a close listener reconnect without stale status or a duplicate replacement", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const initial = connection.connect(
+      environment,
+      [{ url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true }],
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await initial;
+    let replacement: Promise<void> | null = null;
+    const unsubscribeClose = connection.on("close", () => {
+      if (replacement) return;
+      replacement = connection.connect(
+        environment,
+        [{ url: "ws://127.0.0.1:8788", kind: "loopback", dialable: true }],
+      );
+    });
+
+    script.sockets[0]!.close(4505, "superseded route");
+    expect(script.sockets).toHaveLength(2);
+    expect(connection.getStatus()).toMatchObject({
+      state: "connecting",
+      endpoint: "ws://127.0.0.1:8788",
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    await replacement;
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(script.sockets).toHaveLength(2);
+    expect(connection.getStatus()).toMatchObject({
+      state: "connected",
+      endpoint: "ws://127.0.0.1:8788",
+    });
+    expect(script.sockets[1]!.closeHistory).toEqual([]);
+    unsubscribeClose();
+    connection.dispose();
+  });
+
   it("closes a stale visible connection and enters the normal reconnect path", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });

@@ -5383,10 +5383,12 @@ describe("sync host reliability guards", () => {
     }
   });
 
-  it("closes a peer when a mutating queued message times out so its handler cannot resume", async () => {
+  it("closes a timed-out command peer while preserving exactly-once completion for a replacement", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const logger = createDiscoveryLogger();
-    const sendMessage = vi.fn((): Promise<void> => new Promise<void>(() => {}));
+    let releaseSendMessage!: () => void;
+    const sendMessageGate = new Promise<void>((resolve) => { releaseSendMessage = resolve; });
+    const sendMessage = vi.fn(async () => { await sendMessageGate; });
     const host = createReliabilityHost(projectRoot, {
       logger,
       messageTimeoutMs: 100,
@@ -5396,13 +5398,11 @@ describe("sync host reliability guards", () => {
       } as unknown as Parameters<typeof createSyncHostService>[0]["agentChatService"],
     });
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
-    try {
-      const port = await host.waitUntilListening();
-      peer = await connectPeer(port, host.getBootstrapToken(), "desktop-timeout");
-
-      peer.ws.send(encodeSyncEnvelope({
+    let replacement: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    const sendCommand = (client: Awaited<ReturnType<typeof connectPeer>>, requestId: string): void => {
+      client.ws.send(encodeSyncEnvelope({
         type: "command",
-        requestId: "hung-command",
+        requestId,
         projectId: "project-1",
         payload: {
           commandId: "hung-command",
@@ -5414,6 +5414,12 @@ describe("sync host reliability guards", () => {
           },
         },
       }));
+    };
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "desktop-timeout");
+
+      sendCommand(peer, "hung-command");
       await waitForEnvelope(peer.envelopes, "command_ack", "hung-command");
 
       peer.ws.send(encodeSyncEnvelope({
@@ -5434,10 +5440,37 @@ describe("sync host reliability guards", () => {
         peerDeviceId: "desktop-timeout",
         requestId: "hung-command",
       }));
+
+      replacement = await connectPeer(port, host.getBootstrapToken(), "desktop-timeout");
+      sendCommand(replacement, "hung-command-retry");
+      await waitForEnvelope(replacement.envelopes, "command_ack", "hung-command-retry");
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      releaseSendMessage();
+      await expect(waitForEnvelope(
+        replacement.envelopes,
+        "command_result",
+        "hung-command-retry",
+      )).resolves.toMatchObject({
+        payload: {
+          commandId: "hung-command",
+          ok: true,
+          result: { ok: true },
+        },
+      });
+
+      sendCommand(replacement, "hung-command-replay");
+      await waitForEnvelope(replacement.envelopes, "command_ack", "hung-command-replay");
+      await expect(waitForEnvelope(
+        replacement.envelopes,
+        "command_result",
+        "hung-command-replay",
+      )).resolves.toMatchObject({ payload: { commandId: "hung-command", ok: true } });
       expect(sendMessage).toHaveBeenCalledTimes(1);
     } finally {
+      releaseSendMessage();
       try {
         peer?.ws.close();
+        replacement?.ws.close();
       } catch {
         // ignore
       }
