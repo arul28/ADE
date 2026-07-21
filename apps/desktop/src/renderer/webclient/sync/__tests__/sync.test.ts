@@ -169,6 +169,23 @@ function helloOkWithoutProjects(): SyncHelloOkPayload {
   return payload;
 }
 
+function helloOkWithTerminalInputAck(
+  projectId = "project-1",
+  retryWindowMs?: number,
+): SyncHelloOkPayload {
+  const payload = helloOk(projectId);
+  return {
+    ...payload,
+    features: {
+      ...payload.features,
+      terminalInputAck: {
+        enabled: true,
+        ...(retryWindowMs ? { retryWindowMs } : {}),
+      },
+    },
+  } as SyncHelloOkPayload;
+}
+
 class ScriptedSocket implements WebSocketLike {
   readyState = 0;
   onopen: ((event: Event) => void) | null = null;
@@ -1513,7 +1530,7 @@ describe("browser sync connection and client", () => {
   });
 
   it.each([
-    { code: 4501, expected: "This Mac appears to be offline" },
+    { code: 4501, expected: "Can't reach this Mac. Retrying…" },
     { code: 4507, expected: "Your Mac couldn't accept the connection. Retrying…" },
     { code: 4503, expected: "Too many active connections to this Mac" },
     { code: 4502, expected: "Connection lost. Reconnecting." },
@@ -1548,7 +1565,46 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
-  it("rejects an in-flight command immediately when the transport is lost without replaying it", async () => {
+  it("does not report application readiness until hello restoration completes", async () => {
+    const storage = new DelayedPutStorage();
+    const environment = await makeEnvironment(storage);
+    storage.delayNextEnvironmentPut = true;
+    const states: string[] = [];
+    let catalogRequestId: string | null = null;
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOkWithoutProjects() });
+      }
+      if (envelope.type === "project_catalog_request") {
+        catalogRequestId = envelope.requestId ?? null;
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    client.subscribe((status) => states.push(status.state));
+
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    for (let attempt = 0; attempt < 20 && !catalogRequestId; attempt += 1) await flush();
+
+    expect(client.getStatus()).toMatchObject({ state: "restoring", readiness: "restoring" });
+    await expect(client.sendCommand("chat.send", { text: "too early" })).rejects.toMatchObject({
+      code: "not_connected",
+    });
+    expect(script.sockets[0]?.sent.some((envelope) => envelope.type === "command")).toBe(false);
+
+    script.sockets[0]?.serverSend({
+      type: "project_catalog",
+      requestId: catalogRequestId,
+      payload: { projects: helloOk().projects ?? [] },
+    });
+    await storage.waitForPausedPut();
+    await connecting;
+    expect(client.getStatus()).toMatchObject({ state: "connected", readiness: "ready" });
+    expect(states).toContain("restoring");
+    storage.resumePausedPut();
+    client.dispose();
+  });
+
+  it("rejects every in-flight request category when the transport is lost without replaying mutations", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
     vi.useFakeTimers();
@@ -1563,20 +1619,45 @@ describe("browser sync connection and client", () => {
     const connecting = client.connect(environment.envId, signedInRelayAccess);
     await vi.advanceTimersByTimeAsync(0);
     await connecting;
-    const command = client.sendCommand("chat.send", { text: "once" });
+    const pending = [
+      client.sendCommand("chat.send", { text: "once" }),
+      client.requestFile("readFile", { workspaceId: "workspace", path: "README.md" }),
+      client.requestTerminalHistory({ sessionId: "term-1", beforeOffset: 10 }),
+      client.switchProject("project-2"),
+    ];
     await flushMicrotasks();
     expect(script.sockets[0]?.sent.filter((envelope) => envelope.type === "command")).toHaveLength(1);
+    expect(script.sockets[0]?.sent.map((envelope) => envelope.type)).toEqual(expect.arrayContaining([
+      "file_request",
+      "terminal_history",
+      "project_switch_request",
+    ]));
 
     script.sockets[0]?.close(4505, "superseded");
-    await expect(command).rejects.toMatchObject({
-      code: "connection_lost_outcome_unknown",
-      details: { closeCode: 4505, reason: "superseded" },
-    });
+    const settled = await Promise.allSettled(pending);
+    expect(settled).toHaveLength(4);
+    for (const result of settled) {
+      expect(result).toMatchObject({
+        status: "rejected",
+        reason: {
+          code: "connection_lost_outcome_unknown",
+          details: { closeCode: 4505, reason: "superseded" },
+        },
+      });
+    }
     await vi.advanceTimersByTimeAsync(1_000);
     await flushMicrotasks();
 
     expect(script.sockets).toHaveLength(2);
     expect(script.sockets[1]?.sent.some((envelope) => envelope.type === "command")).toBe(false);
+    script.sockets[0]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: helloOk("stale-project").projects ?? [] },
+    });
+    await flushMicrotasks();
+    await expect(client.getProjectCatalog()).resolves.toMatchObject({
+      projects: [{ id: "project-1" }],
+    });
     client.dispose();
   });
 
@@ -2417,7 +2498,7 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("drops stream subscriptions when switching projects", async () => {
+  it("rebinds stream subscriptions to the new project after switching", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
     let helloProjectId = "project-1";
@@ -2452,16 +2533,21 @@ describe("browser sync connection and client", () => {
     expect(script.sockets).toHaveLength(2);
     expect(script.sockets[0].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(true);
     expect(script.sockets[0].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(true);
-    expect(script.sockets[1].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
-    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+    expect(script.sockets[1].sent.find((envelope) => envelope.type === "chat_subscribe")).toMatchObject({
+      projectId: "project-2",
+      payload: { sessionId: "chat-1" },
+    });
+    expect(script.sockets[1].sent.find((envelope) => envelope.type === "terminal_subscribe")).toMatchObject({
+      projectId: "project-2",
+      payload: { sessionId: "term-1" },
+    });
 
     client.dispose();
   });
 
-  it("ignores stream subscriptions attempted during project switch", async () => {
+  it("queues stream subscriptions attempted during project switch for the new project", async () => {
     const storage = new DelayedPutStorage();
     const environment = await makeEnvironment(storage);
-    storage.delayNextEnvironmentPut = true;
     let helloProjectId = "project-1";
     const projectTwo = {
       ...helloOk("project-2").projects![0],
@@ -2484,6 +2570,7 @@ describe("browser sync connection and client", () => {
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
     await client.connect(environment.envId, signedInRelayAccess);
+    storage.delayNextEnvironmentPut = true;
     const switchPromise = client.switchProject("project-2");
     await storage.waitForPausedPut();
     client.subscribeChat("old-chat", {}, {});
@@ -2493,9 +2580,211 @@ describe("browser sync connection and client", () => {
     await flush();
 
     expect(script.sockets).toHaveLength(2);
-    expect(script.sockets[1].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
-    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+    expect(script.sockets[1].sent.find((envelope) => envelope.type === "chat_subscribe")).toMatchObject({
+      projectId: "project-2",
+      payload: { sessionId: "old-chat" },
+    });
+    expect(script.sockets[1].sent.find((envelope) => envelope.type === "terminal_subscribe")).toMatchObject({
+      projectId: "project-2",
+      payload: { sessionId: "old-term" },
+    });
 
+    client.dispose();
+  });
+
+  it("retries acknowledged terminal input in order with stable dedupe ids and preserves old-host payloads", async () => {
+    vi.useFakeTimers();
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const received: Array<{ sessionId: string; data: string; inputId?: string }> = [];
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: helloOkWithTerminalInputAck(),
+        });
+      }
+      if (envelope.type !== "terminal_input") return;
+      const input = envelope.payload as { sessionId: string; data: string; inputId?: string };
+      received.push(input);
+      if (input.data === "rejected") {
+        socket.serverSend({
+          type: "terminal_input_ack",
+          requestId: envelope.requestId,
+          payload: {
+            sessionId: input.sessionId,
+            inputId: input.inputId,
+            ok: false,
+            duplicate: false,
+            error: {
+              code: "project_mismatch",
+              message: "Terminal belongs to another project.",
+              retryable: false,
+            },
+          },
+        } as never);
+        return;
+      }
+      const attemptsForInput = received.filter((entry) => entry.inputId === input.inputId).length;
+      if (input.data === "first" && attemptsForInput < 2) return;
+      socket.serverSend({
+        type: "terminal_input_ack",
+        requestId: envelope.requestId,
+        payload: {
+          sessionId: input.sessionId,
+          inputId: input.inputId,
+          ok: true,
+          duplicate: attemptsForInput > 1,
+        },
+      } as never);
+    });
+    const client = new AdeSyncClient({
+      storage,
+      socketFactory: script.factory,
+      document: null,
+      terminalInputAckTimeoutMs: 100,
+      terminalInputMaxAttempts: 3,
+    });
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await vi.advanceTimersByTimeAsync(0);
+    await connecting;
+
+    const first = client.sendTerminalInput("term-1", "first");
+    const second = client.sendTerminalInput("term-1", "second");
+    await flushMicrotasks();
+    expect(received.map((entry) => entry.data)).toEqual(["first"]);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await flushMicrotasks();
+    await Promise.all([first, second]);
+    expect(received.map((entry) => entry.data)).toEqual(["first", "first", "second"]);
+    expect(received[0]?.inputId).toBeTruthy();
+    expect(received[1]?.inputId).toBe(received[0]?.inputId);
+    expect(received[2]?.inputId).not.toBe(received[0]?.inputId);
+
+    await expect(client.sendTerminalInput("term-1", "rejected")).rejects.toMatchObject({
+      code: "terminal_input_project_mismatch",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(received.filter((entry) => entry.data === "rejected")).toHaveLength(1);
+    client.dispose();
+
+    const oldHostStorage = new MemoryStorage();
+    const oldHostEnvironment = await makeEnvironment(oldHostStorage);
+    const oldHostScript = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const oldHostClient = new AdeSyncClient({
+      storage: oldHostStorage,
+      socketFactory: oldHostScript.factory,
+      document: null,
+    });
+    const oldHostConnect = oldHostClient.connect(oldHostEnvironment.envId, signedInRelayAccess);
+    await vi.advanceTimersByTimeAsync(0);
+    await oldHostConnect;
+    await oldHostClient.sendTerminalInput("term-old", "legacy");
+    await flushMicrotasks();
+    expect(oldHostScript.sockets[0]?.sent.find((envelope) => envelope.type === "terminal_input")?.payload).toEqual({
+      sessionId: "term-old",
+      data: "legacy",
+    });
+    oldHostClient.dispose();
+  });
+
+  it("restores the terminal subscription before replaying queued input after reconnect", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    let firstSocket: ScriptedSocket | null = null;
+    const inputIds: string[] = [];
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        firstSocket ??= socket;
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: helloOkWithTerminalInputAck(),
+        });
+      }
+      if (envelope.type !== "terminal_input") return;
+      const input = envelope.payload as unknown as { sessionId: string; inputId: string };
+      inputIds.push(input.inputId);
+      if (socket === firstSocket) {
+        socket.close(1006, "network");
+        return;
+      }
+      socket.serverSend({
+        type: "terminal_input_ack",
+        requestId: envelope.requestId,
+        payload: {
+          sessionId: input.sessionId,
+          inputId: input.inputId,
+          ok: true,
+          duplicate: true,
+        },
+      } as never);
+    });
+    const client = new AdeSyncClient({
+      storage,
+      socketFactory: script.factory,
+      document: null,
+      terminalInputAckTimeoutMs: 100,
+    });
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await vi.advanceTimersByTimeAsync(0);
+    await connecting;
+
+    client.subscribeTerminal("term-1", {}, {});
+    const input = client.sendTerminalInput("term-1", "pwd\n");
+    await flushMicrotasks();
+    expect(script.sockets).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1_001);
+    await vi.advanceTimersByTimeAsync(0);
+    await flushMicrotasks();
+    expect(script.sockets).toHaveLength(2);
+    await input;
+
+    const replayOrder = script.sockets[1].sent.map((envelope) => envelope.type);
+    expect(replayOrder.indexOf("terminal_subscribe")).toBeGreaterThanOrEqual(0);
+    expect(replayOrder.indexOf("terminal_subscribe")).toBeLessThan(replayOrder.indexOf("terminal_input"));
+    expect(inputIds).toHaveLength(2);
+    expect(inputIds[1]).toBe(inputIds[0]);
+    expect(client.getStatus()).toMatchObject({ state: "connected", readiness: "ready" });
+    client.dispose();
+  });
+
+  it("expires unconfirmed terminal input while the connection remains down", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: helloOkWithTerminalInputAck("project-1", 250),
+        });
+      }
+      if (envelope.type === "terminal_input") socket.close(1006, "network");
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await vi.advanceTimersByTimeAsync(0);
+    await connecting;
+
+    const input = client.sendTerminalInput("term-1", "date\n");
+    const rejection = expect(input).rejects.toMatchObject({
+      code: "terminal_input_retry_window_expired",
+    });
+    await flushMicrotasks();
+    await vi.advanceTimersByTimeAsync(250);
+    await rejection;
     client.dispose();
   });
 
@@ -2537,7 +2826,7 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("serves the hello catalog from cache and coalesces concurrent catalog requests", async () => {
+  it("restores a missing hello catalog before readiness and rejects that barrier on disconnect", async () => {
     const cachedStorage = new MemoryStorage();
     const cachedEnvironment = await makeEnvironment(cachedStorage);
     let cachedCatalogRequests = 0;
@@ -2572,12 +2861,11 @@ describe("browser sync connection and client", () => {
       }
     });
     const uncachedClient = new AdeSyncClient({ storage: uncachedStorage, socketFactory: uncachedScript.factory, document: null });
-    await uncachedClient.connect(uncachedEnvironment.envId, signedInRelayAccess);
-
-    const first = uncachedClient.getProjectCatalog();
-    const second = uncachedClient.getProjectCatalog();
-    await flush();
+    const connecting = uncachedClient.connect(uncachedEnvironment.envId, signedInRelayAccess);
+    for (let attempt = 0; attempt < 20 && catalogRequests === 0; attempt += 1) await flush();
     expect(catalogRequests).toBe(1);
+    expect(uncachedClient.getStatus()).toMatchObject({ state: "restoring", readiness: "restoring" });
+    await expect(uncachedClient.getProjectCatalog()).rejects.toMatchObject({ code: "not_connected" });
     const catalogSocket = uncachedScript.sockets.at(-1);
     expect(catalogSocket).toBeTruthy();
     catalogSocket!.serverSend({
@@ -2585,12 +2873,39 @@ describe("browser sync connection and client", () => {
       requestId: catalogRequestId,
       payload: { projects: helloOk("project-2").projects ?? [] },
     });
-
-    await expect(Promise.all([first, second])).resolves.toEqual([
+    await connecting;
+    await expect(Promise.all([
+      uncachedClient.getProjectCatalog(),
+      uncachedClient.getProjectCatalog(),
+    ])).resolves.toEqual([
       { projects: helloOk("project-2").projects },
       { projects: helloOk("project-2").projects },
     ]);
+    expect(catalogRequests).toBe(1);
     uncachedClient.dispose();
+
+    const interruptedStorage = new MemoryStorage();
+    const interruptedEnvironment = await makeEnvironment(interruptedStorage);
+    const interruptedScript = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOkWithoutProjects() });
+      }
+    });
+    const interruptedClient = new AdeSyncClient({
+      storage: interruptedStorage,
+      socketFactory: interruptedScript.factory,
+      document: null,
+    });
+    const interruptedConnect = interruptedClient.connect(interruptedEnvironment.envId, signedInRelayAccess);
+    for (
+      let attempt = 0;
+      attempt < 20 && !interruptedScript.sockets[0]?.sent.some((envelope) => envelope.type === "project_catalog_request");
+      attempt += 1
+    ) await flush();
+    expect(interruptedScript.sockets[0]?.sent.some((envelope) => envelope.type === "project_catalog_request")).toBe(true);
+    interruptedScript.sockets[0]?.close(1006, "network");
+    await expect(interruptedConnect).rejects.toMatchObject({ code: "connection_lost_outcome_unknown" });
+    interruptedClient.dispose();
   });
 
   it("correlates command ack/result, tolerates result before ack, and surfaces host error codes", async () => {

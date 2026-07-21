@@ -140,7 +140,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
                 type="button"
                 disabled={!available || connecting}
                 onClick={() => onSelect(machine)}
-                title={connectionState === "offline" ? "This machine is offline" : !available ? "Open ADE on this machine to finish setup" : undefined}
+                title={!available ? "Can't reach this Mac right now" : undefined}
                 style={{
                   ...menuItemStyle,
                   height: 36,
@@ -157,7 +157,7 @@ const AccountMachineMenu = React.memo(function AccountMachineMenu({
                   </span>
                 </span>
                 <span style={{ color: available ? COLORS.success : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 9 }}>
-                  {connecting ? "Connecting…" : available ? "Ready" : connectionState === "offline" ? "Offline" : "Setup needed"}
+                  {connecting ? "Reconnecting" : available ? "Connect" : "Can't reach this Mac"}
                 </span>
               </button>
             );
@@ -428,10 +428,10 @@ export function WebShell({
 
         <div style={{ flex: 1 }} />
 
-        {/* Reconnecting hint */}
-        {status.state === "reconnecting" ? (
-          <span style={{ color: COLORS.warning, fontFamily: SANS_FONT, fontSize: 11, marginRight: 4 }}>
-            Reconnecting…
+        {/* Keep the app mounted while presenting one plain-language state. */}
+        {status.state !== "connected" ? (
+          <span style={{ color: tone.color, fontFamily: SANS_FONT, fontSize: 11, marginRight: 4 }}>
+            {tone.label}
           </span>
         ) : null}
 

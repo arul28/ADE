@@ -250,21 +250,44 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("does not cache a recoverable command fallback", async () => {
+  it("keeps the last successful read through a transport outage without caching it as fresh", async () => {
+    vi.useFakeTimers();
     fake.descriptors = descriptors(["lanes.list"]);
+    fake.commandResults.set("lanes.list", [{ id: "lane-before-reconnect" }]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-before-reconnect" }]);
+    await vi.advanceTimersByTimeAsync(3_001);
     fake.commandErrors.set(
       "lanes.list",
       Object.assign(new Error("host unavailable"), { code: "host_unavailable" }),
     );
-    const adapter = createAdeWebAdapter(fake.asClient());
-    adapter.bindProject(project, "project-1");
-
-    await expect(adapter.ade.lanes.list()).resolves.toEqual([]);
+    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-before-reconnect" }]);
 
     fake.commandErrors.delete("lanes.list");
     fake.commandResults.set("lanes.list", [{ id: "lane-after-reconnect" }]);
     await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-after-reconnect" }]);
-    expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(2);
+    expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(3);
+
+    adapter.dispose();
+  });
+
+  it("rejects disconnected chat mutations instead of fabricating success", async () => {
+    fake.descriptors = descriptors(["chat.send"]);
+    fake.commandErrors.set(
+      "chat.send",
+      Object.assign(new Error("connection lost"), { code: "connection_lost_outcome_unknown" }),
+    );
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.send({
+      sessionId: "chat-1",
+      text: "keep this draft",
+    })).rejects.toMatchObject({ code: "connection_lost_outcome_unknown" });
+    expect(fake.commandCalls.map((call) => call.action)).toEqual(["chat.send"]);
+    expect(fake.chatSubscribeCalls).toEqual([]);
 
     adapter.dispose();
   });
@@ -858,6 +881,20 @@ describe("createAdeWebAdapter", () => {
       { sessionId: "session-1", beforeOffset: Number.MAX_SAFE_INTEGER, maxBytes: 4096 },
     ]);
 
+    fake.terminalHistoryErrors.set(
+      "session-1",
+      Object.assign(new Error("reconnecting"), { code: "not_connected" }),
+    );
+    await expect(adapter.ade.sessions.readTranscriptTail({
+      sessionId: "session-1",
+      maxBytes: 4096,
+      raw: true,
+    })).rejects.toMatchObject({ code: "not_connected" });
+    await expect(adapter.ade.terminal.read({
+      terminalId: "session-1",
+      since: 11,
+    })).rejects.toMatchObject({ code: "not_connected" });
+
     fake.emitTerminalData("session-1", {
       sessionId: "session-1",
       ptyId: "pty-1",
@@ -1122,6 +1159,7 @@ class FakeAdeSyncClient {
   terminalUnsubscribeCalls: string[] = [];
   terminalHistoryCalls: TerminalHistoryCall[] = [];
   terminalHistoryResults = new Map<string, SyncTerminalHistoryResponsePayload>();
+  terminalHistoryErrors = new Map<string, Error>();
   projects: SyncMobileProjectSummary[] = [
     {
       id: "project-1",
@@ -1222,6 +1260,8 @@ class FakeAdeSyncClient {
 
   async requestTerminalHistory(args: { sessionId: string; beforeOffset: number; maxBytes?: number }): Promise<{ sessionId: string; data: string; startOffset: number; endOffset: number; atStart: boolean }> {
     this.terminalHistoryCalls.push(args);
+    const error = this.terminalHistoryErrors.get(args.sessionId);
+    if (error) throw error;
     const result = this.terminalHistoryResults.get(args.sessionId);
     if (result) return result;
     return {

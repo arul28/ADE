@@ -59,6 +59,8 @@ export class AdeSyncError extends Error {
 export type AdeSyncClientStatus = SyncConnectionStatus & {
   activeProjectId: string | null;
   selectedEnvId: string | null;
+  /** Application readiness, which intentionally lags the transport hello. */
+  readiness: "disconnected" | "restoring" | "ready" | "failed";
 };
 
 export type WebAccountSessionLease = Readonly<{
@@ -97,6 +99,7 @@ type PendingRequest<T> = {
   resolve: (value: T) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  generation: number;
 };
 
 type PendingCommand = PendingRequest<unknown> & {
@@ -108,6 +111,7 @@ type ChatSubscription = {
   payload: SyncChatSubscribePayload;
   handlers: ChatHandlers;
   sinceSeq: number | null;
+  bindsActiveProject: boolean;
 };
 
 type TerminalSubscription = {
@@ -116,6 +120,40 @@ type TerminalSubscription = {
   handlers: TerminalHandlers;
   sinceOffset: number | null;
 };
+
+type TerminalInputOperation = {
+  inputId: string;
+  sessionId: string;
+  data: string;
+  byteLength: number;
+  attempts: number;
+  attemptGeneration: number;
+  firstSentAtMs: number | null;
+  retryWindowMs: number;
+  timer: ReturnType<typeof setTimeout> | null;
+  deadlineTimer: ReturnType<typeof setTimeout> | null;
+  resolve: () => void;
+  reject: (error: Error) => void;
+};
+
+type TerminalInputAckPayload =
+  | {
+      sessionId: string;
+      inputId: string;
+      ok: true;
+      duplicate: boolean;
+    }
+  | {
+      sessionId: string | null;
+      inputId?: string;
+      ok: false;
+      duplicate: false;
+      error: {
+        code: string;
+        message: string;
+        retryable: boolean;
+      };
+    };
 
 type ClientEvents = {
   status: AdeSyncClientStatus;
@@ -130,6 +168,12 @@ type ListenerMap = {
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 65_000;
+const DEFAULT_RESTORATION_TIMEOUT_MS = 15_000;
+const DEFAULT_TERMINAL_INPUT_ACK_TIMEOUT_MS = 2_000;
+const DEFAULT_TERMINAL_INPUT_MAX_ATTEMPTS = 4;
+const DEFAULT_TERMINAL_INPUT_RETRY_WINDOW_MS = 30_000;
+const MAX_QUEUED_TERMINAL_INPUTS = 128;
+const MAX_QUEUED_TERMINAL_INPUT_BYTES = 512 * 1024;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -163,6 +207,11 @@ export class AdeSyncClient {
   private activeProjectId: string | null = null;
   private currentCatalog: SyncProjectCatalogPayload | null = null;
   private latestHello: SyncHelloOkPayload | null = null;
+  private readiness: AdeSyncClientStatus["readiness"] = "disconnected";
+  private readinessError: Error | null = null;
+  private clientGeneration = 0;
+  private restorationPromise: Promise<void> | null = null;
+  private lastTransportState: SyncConnectionStatus["state"] = "idle";
   private relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS;
   private readonly pendingCommands = new Map<string, PendingCommand>();
   private readonly pendingFiles = new Map<string, PendingRequest<unknown>>();
@@ -171,7 +220,12 @@ export class AdeSyncClient {
   private readonly pendingProjectSwitches = new Map<string, PendingRequest<SyncProjectSwitchResultPayload>>();
   private readonly chatSubscriptions = new Map<string, ChatSubscription>();
   private readonly terminalSubscriptions = new Map<string, TerminalSubscription>();
+  private readonly terminalInputQueue: TerminalInputOperation[] = [];
+  private terminalInputQueueBytes = 0;
   private streamSubscriptionsPaused = false;
+  private readonly restorationTimeoutMs: number;
+  private readonly terminalInputAckTimeoutMs: number;
+  private readonly terminalInputMaxAttempts: number;
   private readonly listeners: ListenerMap = {
     status: new Set(),
     brainStatus: new Set(),
@@ -186,6 +240,9 @@ export class AdeSyncClient {
     connection?: SyncConnection;
     transportOpenTimeoutMs?: number;
     authenticatedHelloTimeoutMs?: number;
+    restorationTimeoutMs?: number;
+    terminalInputAckTimeoutMs?: number;
+    terminalInputMaxAttempts?: number;
     document?: Document | null;
   } = {}) {
     this.envStore = new WebClientEnvStore(options.storage ?? new IndexedDbStorage());
@@ -195,36 +252,60 @@ export class AdeSyncClient {
       authenticatedHelloTimeoutMs: options.authenticatedHelloTimeoutMs,
       document: options.document,
     });
-    this.connection.on("statusChanged", () => this.emitStatus());
+    this.restorationTimeoutMs = Math.max(
+      250,
+      Math.floor(options.restorationTimeoutMs ?? DEFAULT_RESTORATION_TIMEOUT_MS),
+    );
+    this.terminalInputAckTimeoutMs = Math.max(
+      50,
+      Math.floor(options.terminalInputAckTimeoutMs ?? DEFAULT_TERMINAL_INPUT_ACK_TIMEOUT_MS),
+    );
+    this.terminalInputMaxAttempts = Math.max(
+      1,
+      Math.floor(options.terminalInputMaxAttempts ?? DEFAULT_TERMINAL_INPUT_MAX_ATTEMPTS),
+    );
+    this.lastTransportState = this.connection.getStatus().state;
+    this.connection.on("statusChanged", (transportStatus) => {
+      if (transportStatus.state === "connected" && this.lastTransportState !== "connected") {
+        // A successful WebSocket hello only makes the restoration protocol
+        // available. Cached app state remains mounted, but commands are held
+        // until the catalog and stream registrations are restored below.
+        this.readiness = "restoring";
+        this.readinessError = null;
+      } else if (transportStatus.state !== "connected" && this.lastTransportState === "connected") {
+        this.readiness = "disconnected";
+      }
+      this.lastTransportState = transportStatus.state;
+      this.emitStatus();
+    });
     this.connection.on("envelope", (envelope) => this.handleEnvelope(envelope));
     this.connection.on("helloOk", (payload) => {
-      this.latestHello = payload;
-      this.activeProjectId = openProjectFromCatalog(payload.projects) ?? this.activeProjectId;
-      void this.persistCurrentEnvironment((environment) => ({
-        ...environment,
-        activeProjectId: this.activeProjectId,
-        lastConnectedAt: nowIso(),
-        lastGoodEndpoint: this.connection.getStatus().endpoint,
-      }));
-      this.resubscribeStreams();
-      this.emitStatus();
+      this.beginRestoration(payload);
     });
     this.connection.on("pairingRejected", ({ envId }) => {
       void this.removeEnvironment(envId);
     });
     this.connection.on("close", ({ code, reason }) => {
-      this.rejectPendingCommands(new AdeSyncError(
+      this.invalidateGeneration(new AdeSyncError(
         "Connection lost — outcome unknown. Check the current state before retrying.",
         "connection_lost_outcome_unknown",
         { closeCode: code, reason },
-      ));
+      ), { preserveTerminalInputs: true });
     });
     this.connection.on("brainStatus", (payload) => this.emit("brainStatus", payload));
     this.connection.on("tablesChanged", (tables) => this.emit("tablesChanged", tables));
     this.connection.on("projectCatalog", (payload) => {
       this.currentCatalog = payload;
-      this.resolveProjectCatalog(payload);
+      const catalogProjectId = openProjectFromCatalog(payload.projects);
+      if (catalogProjectId && catalogProjectId !== this.activeProjectId) {
+        this.activeProjectId = catalogProjectId;
+        this.rebindStreamSubscriptions();
+      }
+      this.resolveProjectCatalog(payload, this.clientGeneration);
       this.emit("projectCatalog", payload);
+      if (this.readiness === "failed" && this.latestHello && this.connection.isConnected()) {
+        this.beginRestoration({ ...this.latestHello, projects: payload.projects });
+      }
     });
   }
 
@@ -247,7 +328,6 @@ export class AdeSyncClient {
     };
     const deviceName = args.deviceName.trim();
     const expectedHostDeviceId = args.machine.deviceId?.trim() ?? "";
-    if (!args.machine.online) throw new AdeSyncError("That account machine is offline.", "machine_offline");
     if (!accessToken) throw new AdeSyncError("ADE account sign-in is required.", "account_signed_out");
     if (!accountOwnerUserId) throw new AdeSyncError("Sign in again to connect this machine.", "account_signed_out");
     if (!args.isAccountSessionLeaseCurrent(args.accountSessionLease)) {
@@ -414,6 +494,7 @@ export class AdeSyncClient {
     }
     this.selectedEnvId = paired.environment.envId;
     this.activeProjectId = paired.environment.activeProjectId ?? null;
+    await this.awaitCurrentRestoration();
     this.emitStatus();
     return paired.environment;
   }
@@ -460,19 +541,22 @@ export class AdeSyncClient {
     this.selectedEnvId = envId;
     this.activeProjectId = environment.activeProjectId ?? null;
     this.currentCatalog = null;
+    this.invalidateGeneration(new AdeSyncError("Connection replaced.", "disconnected"));
     await this.envStore.setSelectedEnvId(envId);
     await this.connection.connect(
       environment,
       endpoints,
       relayAccess.kind === "signed_in" ? relayAccess.getAccessToken : undefined,
     ).catch(mapRelayAuthError);
+    await this.awaitCurrentRestoration();
   }
 
   disconnect(): void {
     this.connection.disconnect({ reconnect: false });
     this.relayAccess = SIGNED_OUT_RELAY_ACCESS;
     this.currentCatalog = null;
-    this.rejectAllPending(new AdeSyncError("Disconnected from ADE machine.", "disconnected"));
+    this.latestHello = null;
+    this.invalidateGeneration(new AdeSyncError("Disconnected from ADE machine.", "disconnected"));
     this.emitStatus();
   }
 
@@ -499,10 +583,23 @@ export class AdeSyncClient {
   }
 
   getStatus(): AdeSyncClientStatus {
+    const transportStatus = this.connection.getStatus();
+    const state = transportStatus.state === "connected"
+      ? this.readiness === "ready"
+        ? "connected"
+        : this.readiness === "failed"
+          ? "error"
+          : "restoring"
+      : transportStatus.state;
     return {
-      ...this.connection.getStatus(),
+      ...transportStatus,
+      state,
+      error: this.readiness === "failed"
+        ? this.readinessError?.message ?? "Can't reach this Mac."
+        : transportStatus.error,
       activeProjectId: this.activeProjectId,
       selectedEnvId: this.selectedEnvId,
+      readiness: this.readiness,
     };
   }
 
@@ -515,6 +612,7 @@ export class AdeSyncClient {
     args: Record<string, unknown>,
     opts: SendCommandOptions = {},
   ): Promise<unknown> {
+    const generation = this.requireReadyGeneration();
     const commandId = uuid();
     const projectId = opts.projectId ?? this.activeProjectId;
     const promise = new Promise<unknown>((resolve, reject) => {
@@ -523,6 +621,7 @@ export class AdeSyncClient {
         acked: false,
         resolve,
         reject,
+        generation,
         timer: setTimeout(() => {
           this.pendingCommands.delete(commandId);
           reject(new AdeSyncError("Timed out waiting for remote command result.", "timeout"));
@@ -530,17 +629,21 @@ export class AdeSyncClient {
       };
       this.pendingCommands.set(commandId, pending);
     });
-    this.connection.send({
-      type: "command",
-      requestId: commandId,
-      projectId,
-      payload: {
-        commandId,
+    try {
+      this.connection.send({
+        type: "command",
+        requestId: commandId,
         projectId,
-        action,
-        args,
-      },
-    });
+        payload: {
+          commandId,
+          projectId,
+          action,
+          args,
+        },
+      });
+    } catch (error) {
+      this.rejectPending(this.pendingCommands, commandId, this.connectionError(error));
+    }
     return await promise;
   }
 
@@ -549,34 +652,40 @@ export class AdeSyncClient {
     args: FileArgsFor<TAction>,
     opts: FileRequestOptions = {},
   ): Promise<unknown> {
+    const generation = this.requireReadyGeneration();
     const requestId = uuid();
     const promise = new Promise<unknown>((resolve, reject) => {
       const pending: PendingRequest<unknown> = {
         resolve,
         reject,
+        generation,
         timer: setTimeout(() => timeout(pending, this.pendingFiles, requestId), opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
       };
       this.pendingFiles.set(requestId, pending);
     });
-    this.connection.send({
-      type: "file_request",
-      requestId,
-      projectId: opts.projectId ?? this.activeProjectId,
-      payload: { action, args } as SyncFileRequest,
-    });
+    try {
+      this.connection.send({
+        type: "file_request",
+        requestId,
+        projectId: opts.projectId ?? this.activeProjectId,
+        payload: { action, args } as SyncFileRequest,
+      });
+    } catch (error) {
+      this.rejectPending(this.pendingFiles, requestId, this.connectionError(error));
+    }
     return await promise;
   }
 
   subscribeChat(sessionId: string, opts: Omit<SyncChatSubscribePayload, "sessionId" | "sinceSeq"> = {}, handlers: ChatHandlers = {}): () => void {
-    if (this.streamSubscriptionsPaused) return () => undefined;
     const existing = this.chatSubscriptions.get(sessionId);
     const subscription: ChatSubscription = {
       payload: { ...opts, sessionId },
       handlers,
       sinceSeq: existing?.sinceSeq ?? null,
+      bindsActiveProject: opts.projectId == null,
     };
     this.chatSubscriptions.set(sessionId, subscription);
-    this.sendChatSubscribe(subscription);
+    if (!this.streamSubscriptionsPaused) this.sendChatSubscribe(subscription);
     return () => this.unsubscribeChat(sessionId);
   }
 
@@ -596,7 +705,6 @@ export class AdeSyncClient {
   }
 
   subscribeTerminal(sessionId: string, opts: { maxBytes?: number } = {}, handlers: TerminalHandlers = {}): () => void {
-    if (this.streamSubscriptionsPaused) return () => undefined;
     const existing = this.terminalSubscriptions.get(sessionId);
     const subscription: TerminalSubscription = {
       sessionId,
@@ -605,7 +713,7 @@ export class AdeSyncClient {
       sinceOffset: existing?.sinceOffset ?? null,
     };
     this.terminalSubscriptions.set(sessionId, subscription);
-    this.sendTerminalSubscribe(subscription);
+    if (!this.streamSubscriptionsPaused) this.sendTerminalSubscribe(subscription);
     return () => this.unsubscribeTerminal(sessionId);
   }
 
@@ -619,15 +727,53 @@ export class AdeSyncClient {
     });
   }
 
-  sendTerminalInput(sessionId: string, data: string): void {
-    this.connection.send({
-      type: "terminal_input",
-      projectId: this.activeProjectId,
-      payload: { sessionId, data },
+  async sendTerminalInput(sessionId: string, data: string): Promise<void> {
+    const generation = this.requireReadyGeneration();
+    if (!this.terminalInputAcksSupported()) {
+      // Older hosts do not expose a dedupe/ACK contract. Preserve their
+      // original best-effort payload exactly, including the absence of an id.
+      this.connection.send({
+        type: "terminal_input",
+        projectId: this.activeProjectId,
+        payload: { sessionId, data },
+      });
+      return;
+    }
+
+    const byteLength = new TextEncoder().encode(data).byteLength;
+    if (
+      this.terminalInputQueue.length >= MAX_QUEUED_TERMINAL_INPUTS
+      || this.terminalInputQueueBytes + byteLength > MAX_QUEUED_TERMINAL_INPUT_BYTES
+    ) {
+      throw new AdeSyncError(
+        "Terminal input is waiting for this Mac to catch up. Try again in a moment.",
+        "terminal_input_queue_full",
+      );
+    }
+
+    const promise = new Promise<void>((resolve, reject) => {
+      this.terminalInputQueue.push({
+        inputId: uuid(),
+        sessionId,
+        data,
+        byteLength,
+        attempts: 0,
+        attemptGeneration: generation,
+        firstSentAtMs: null,
+        retryWindowMs: this.terminalInputRetryWindowMs(),
+        timer: null,
+        deadlineTimer: null,
+        resolve,
+        reject,
+      });
+      this.terminalInputQueueBytes += byteLength;
     });
+    this.pumpTerminalInputQueue();
+    return promise;
   }
 
   sendTerminalResize(sessionId: string, cols: number, rows: number): void {
+    this.requireReadyGeneration();
     this.connection.send({
       type: "terminal_resize",
       projectId: this.activeProjectId,
@@ -636,31 +782,44 @@ export class AdeSyncClient {
   }
 
   async requestTerminalHistory(payload: SyncTerminalHistoryRequestPayload, timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<SyncTerminalHistoryResponsePayload> {
+    const generation = this.requireReadyGeneration();
     const requestId = uuid();
     const promise = new Promise<SyncTerminalHistoryResponsePayload>((resolve, reject) => {
       const pending: PendingRequest<SyncTerminalHistoryResponsePayload> = {
         resolve,
         reject,
+        generation,
         timer: setTimeout(() => timeout(pending, this.pendingTerminalHistory, requestId), timeoutMs),
       };
       this.pendingTerminalHistory.set(requestId, pending);
     });
-    this.connection.send({
-      type: "terminal_history",
-      requestId,
-      projectId: this.activeProjectId,
-      payload,
-    });
+    try {
+      this.connection.send({
+        type: "terminal_history",
+        requestId,
+        projectId: this.activeProjectId,
+        payload,
+      });
+    } catch (error) {
+      this.rejectPending(this.pendingTerminalHistory, requestId, this.connectionError(error));
+    }
     return await promise;
   }
 
   async getProjectCatalog(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<SyncProjectCatalogPayload> {
     if (this.currentCatalog) return this.currentCatalog;
+    this.requireReadyGeneration();
+    return await this.requestProjectCatalog(timeoutMs);
+  }
+
+  private async requestProjectCatalog(timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS): Promise<SyncProjectCatalogPayload> {
+    const generation = this.clientGeneration;
     const shouldSendRequest = this.pendingProjectCatalog.length === 0;
     const promise = new Promise<SyncProjectCatalogPayload>((resolve, reject) => {
       const pending: PendingRequest<SyncProjectCatalogPayload> = {
         resolve,
         reject,
+        generation,
         timer: setTimeout(() => {
           const index = this.pendingProjectCatalog.indexOf(pending);
           if (index >= 0) this.pendingProjectCatalog.splice(index, 1);
@@ -684,20 +843,26 @@ export class AdeSyncClient {
   }
 
   async switchProject(projectId: string): Promise<SyncProjectSwitchResultPayload> {
+    const generation = this.requireReadyGeneration();
     const requestId = uuid();
     const promise = new Promise<SyncProjectSwitchResultPayload>((resolve, reject) => {
       const pending: PendingRequest<SyncProjectSwitchResultPayload> = {
         resolve,
         reject,
+        generation,
         timer: setTimeout(() => timeout(pending, this.pendingProjectSwitches, requestId), DEFAULT_REQUEST_TIMEOUT_MS),
       };
       this.pendingProjectSwitches.set(requestId, pending);
     });
-    this.connection.send({
-      type: "project_switch_request",
-      requestId,
-      payload: { projectId },
-    });
+    try {
+      this.connection.send({
+        type: "project_switch_request",
+        requestId,
+        payload: { projectId },
+      });
+    } catch (error) {
+      this.rejectPending(this.pendingProjectSwitches, requestId, this.connectionError(error));
+    }
     const result = await promise;
     if (result.ok) {
       const envId = this.selectedEnvId;
@@ -708,7 +873,8 @@ export class AdeSyncClient {
           this.connection.disconnect({ reconnect: false, code: 1000, reason: "Project switch" });
           this.currentCatalog = null;
         }
-        this.clearStreamSubscriptions();
+        this.invalidateGeneration(new AdeSyncError("Project connection changed.", "disconnected"));
+        this.rebindStreamSubscriptions();
         await this.persistCurrentEnvironment((environment) => ({
           ...environment,
           port: result.connection?.port ?? environment.port,
@@ -717,7 +883,6 @@ export class AdeSyncClient {
           activeProjectId: this.activeProjectId,
         }));
         if (envId) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
           await this.connect(envId, this.relayAccess);
         }
       } finally {
@@ -753,7 +918,87 @@ export class AdeSyncClient {
     for (const listeners of Object.values(this.listeners)) listeners.clear();
   }
 
+  private beginRestoration(payload: SyncHelloOkPayload): void {
+    this.rejectAllPending(new AdeSyncError(
+      "Connection changed before the request completed.",
+      "connection_lost_outcome_unknown",
+    ));
+    const generation = ++this.clientGeneration;
+    this.readiness = "restoring";
+    this.readinessError = null;
+    this.latestHello = payload;
+    if (!this.terminalInputAcksSupported() && this.terminalInputQueue.length > 0) {
+      this.rejectTerminalInputQueue(new AdeSyncError(
+        "The reconnected Mac cannot safely confirm pending terminal input.",
+        "terminal_input_ack_unavailable",
+      ));
+    }
+    const restoredProjectId = openProjectFromCatalog(payload.projects);
+    if (restoredProjectId && restoredProjectId !== this.activeProjectId) {
+      this.activeProjectId = restoredProjectId;
+      this.rebindStreamSubscriptions();
+    }
+
+    const restoration = (async () => {
+      if (payload.projects !== undefined) {
+        const catalog = { projects: payload.projects } satisfies SyncProjectCatalogPayload;
+        this.currentCatalog = catalog;
+        this.resolveProjectCatalog(catalog, generation);
+      } else {
+        await this.requestProjectCatalog(this.restorationTimeoutMs);
+      }
+
+      // Local persistence is useful bookkeeping, not a connectivity barrier.
+      // IndexedDB may be slow or unavailable in private/embedded contexts, so
+      // do not let it hold an otherwise healthy live connection in restoring.
+      void this.persistCurrentEnvironment((environment) => ({
+        ...environment,
+        activeProjectId: this.activeProjectId,
+        lastConnectedAt: nowIso(),
+        lastGoodEndpoint: this.connection.getStatus().endpoint,
+      }), this.connection.getStatus().envId).catch(() => undefined);
+
+      if (generation !== this.clientGeneration || !this.connection.isConnected()) {
+        throw new AdeSyncError("Connection changed while restoring.", "disconnected");
+      }
+      // The host serializes inbound envelopes, so sending subscriptions before
+      // marking the app ready guarantees a queued terminal_input cannot be
+      // handled before its terminal_subscribe on this transport generation.
+      this.resubscribeStreams();
+      if (generation !== this.clientGeneration || !this.connection.isConnected()) {
+        throw new AdeSyncError("Connection changed while restoring.", "disconnected");
+      }
+      this.readiness = "ready";
+      this.readinessError = null;
+      this.pumpTerminalInputQueue();
+      this.emitStatus();
+    })();
+    this.restorationPromise = restoration;
+    void restoration.catch((error) => {
+      if (generation !== this.clientGeneration) return;
+      this.readiness = "failed";
+      this.readinessError = error instanceof Error ? error : new Error(String(error));
+      this.emitStatus();
+    });
+    this.emitStatus();
+  }
+
+  private async awaitCurrentRestoration(): Promise<void> {
+    const restoration = this.restorationPromise;
+    if (!restoration) {
+      throw new AdeSyncError("The Mac connected without restoring the workspace.", "restoration_missing");
+    }
+    await restoration;
+  }
+
   private handleEnvelope(envelope: SyncEnvelope): void {
+    // This case is written structurally so this renderer-only commit remains
+    // compatible with the preceding shared union. The sibling protocol commit
+    // adds the canonical terminal_input_ack envelope to that union.
+    if (String(envelope.type) === "terminal_input_ack") {
+      this.handleTerminalInputAck(envelope.payload as unknown as TerminalInputAckPayload);
+      return;
+    }
     switch (envelope.type) {
       case "command_ack":
         this.handleCommandAck(envelope.payload as SyncCommandAckPayload);
@@ -794,7 +1039,7 @@ export class AdeSyncClient {
 
   private handleCommandAck(payload: SyncCommandAckPayload): void {
     const pending = this.pendingCommands.get(payload.commandId);
-    if (!pending) return;
+    if (!pending || pending.generation !== this.clientGeneration) return;
     if (!payload.accepted) {
       clearTimeout(pending.timer);
       this.pendingCommands.delete(payload.commandId);
@@ -806,7 +1051,7 @@ export class AdeSyncClient {
 
   private handleCommandResult(payload: SyncCommandResultPayload): void {
     const pending = this.pendingCommands.get(payload.commandId);
-    if (!pending) return;
+    if (!pending || pending.generation !== this.clientGeneration) return;
     clearTimeout(pending.timer);
     this.pendingCommands.delete(payload.commandId);
     if (payload.ok) {
@@ -819,7 +1064,7 @@ export class AdeSyncClient {
   private handleFileResponse(requestId: string | null, payload: SyncFileResponsePayload): void {
     if (!requestId) return;
     const pending = this.pendingFiles.get(requestId);
-    if (!pending) return;
+    if (!pending || pending.generation !== this.clientGeneration) return;
     clearTimeout(pending.timer);
     this.pendingFiles.delete(requestId);
     if (payload.ok) {
@@ -866,10 +1111,54 @@ export class AdeSyncClient {
     subscription.handlers.data?.(payload);
   }
 
+  private handleTerminalInputAck(payload: TerminalInputAckPayload): void {
+    const operation = this.terminalInputQueue[0];
+    if (
+      !operation
+      || payload.inputId !== operation.inputId
+      || (payload.sessionId != null && payload.sessionId !== operation.sessionId)
+    ) {
+      return;
+    }
+    if (operation.timer) clearTimeout(operation.timer);
+    operation.timer = null;
+    if (!payload.ok) {
+      const subscription = this.terminalSubscriptions.get(operation.sessionId);
+      if (
+        payload.error.retryable
+        && payload.error.code === "not_subscribed"
+        && subscription
+        && operation.attempts < this.terminalInputMaxAttempts
+      ) {
+        // Retry only the protocol's explicit subscription race. Re-establish
+        // the attachment first, then resend the same dedupe id. All other
+        // terminal failures are definitive and advance the FIFO immediately.
+        try {
+          this.sendTerminalSubscribe(subscription, true);
+          this.pumpTerminalInputQueue();
+        } catch (error) {
+          this.failTerminalInput(operation, this.connectionError(error));
+        }
+        return;
+      }
+      this.failTerminalInput(operation, new AdeSyncError(
+        payload.error.message || "This Mac rejected terminal input.",
+        `terminal_input_${payload.error.code || "rejected"}`,
+        { retryable: payload.error.retryable },
+      ));
+      return;
+    }
+    this.terminalInputQueue.shift();
+    this.terminalInputQueueBytes = Math.max(0, this.terminalInputQueueBytes - operation.byteLength);
+    if (operation.deadlineTimer) clearTimeout(operation.deadlineTimer);
+    operation.resolve();
+    this.pumpTerminalInputQueue();
+  }
+
   private handleTerminalHistory(requestId: string | null, payload: SyncTerminalHistoryResponsePayload): void {
     if (!requestId) return;
     const pending = this.pendingTerminalHistory.get(requestId);
-    if (!pending) return;
+    if (!pending || pending.generation !== this.clientGeneration) return;
     clearTimeout(pending.timer);
     this.pendingTerminalHistory.delete(requestId);
     pending.resolve(payload);
@@ -878,53 +1167,193 @@ export class AdeSyncClient {
   private handleProjectSwitchResult(requestId: string | null, payload: SyncProjectSwitchResultPayload): void {
     if (!requestId) return;
     const pending = this.pendingProjectSwitches.get(requestId);
-    if (!pending) return;
+    if (!pending || pending.generation !== this.clientGeneration) return;
     clearTimeout(pending.timer);
     this.pendingProjectSwitches.delete(requestId);
     if (payload.ok) pending.resolve(payload);
     else pending.reject(new AdeSyncError(payload.message ?? "Project switch failed.", "project_switch_failed", payload));
   }
 
-  private sendChatSubscribe(subscription: ChatSubscription): void {
+  private sendChatSubscribe(subscription: ChatSubscription, throwOnFailure = false): void {
     if (!this.connection.isConnected()) return;
-    this.connection.send({
-      type: "chat_subscribe",
-      projectId: subscription.payload.projectId ?? this.activeProjectId,
-      payload: {
-        ...subscription.payload,
-        ...(subscription.sinceSeq != null ? { sinceSeq: subscription.sinceSeq } : {}),
-      },
-    });
+    try {
+      this.connection.send({
+        type: "chat_subscribe",
+        projectId: subscription.payload.projectId ?? this.activeProjectId,
+        payload: {
+          ...subscription.payload,
+          ...(subscription.sinceSeq != null ? { sinceSeq: subscription.sinceSeq } : {}),
+        },
+      });
+    } catch (error) {
+      const normalized = this.connectionError(error);
+      subscription.handlers.error?.(normalized);
+      if (throwOnFailure) throw normalized;
+    }
   }
 
-  private sendTerminalSubscribe(subscription: TerminalSubscription): void {
+  private sendTerminalSubscribe(subscription: TerminalSubscription, throwOnFailure = false): void {
     if (!this.connection.isConnected()) return;
-    this.connection.send({
-      type: "terminal_subscribe",
-      projectId: this.activeProjectId,
-      payload: {
-        sessionId: subscription.sessionId,
-        ...(subscription.maxBytes ? { maxBytes: subscription.maxBytes } : {}),
-        ...(subscription.sinceOffset != null ? { sinceOffset: subscription.sinceOffset } : {}),
-      },
-    });
+    try {
+      this.connection.send({
+        type: "terminal_subscribe",
+        projectId: this.activeProjectId,
+        payload: {
+          sessionId: subscription.sessionId,
+          ...(subscription.maxBytes ? { maxBytes: subscription.maxBytes } : {}),
+          ...(subscription.sinceOffset != null ? { sinceOffset: subscription.sinceOffset } : {}),
+        },
+      });
+    } catch (error) {
+      const normalized = this.connectionError(error);
+      subscription.handlers.error?.(normalized);
+      if (throwOnFailure) throw normalized;
+    }
   }
 
   private resubscribeStreams(): void {
-    for (const subscription of this.chatSubscriptions.values()) this.sendChatSubscribe(subscription);
-    for (const subscription of this.terminalSubscriptions.values()) this.sendTerminalSubscribe(subscription);
+    for (const subscription of this.chatSubscriptions.values()) this.sendChatSubscribe(subscription, true);
+    for (const subscription of this.terminalSubscriptions.values()) this.sendTerminalSubscribe(subscription, true);
   }
 
-  private clearStreamSubscriptions(): void {
-    this.chatSubscriptions.clear();
-    this.terminalSubscriptions.clear();
+  private terminalInputAcksSupported(): boolean {
+    const features = this.latestHello?.features as SyncHelloOkPayload["features"] & {
+      terminalInputAck?: {
+        enabled: boolean;
+        retryWindowMs?: number;
+        maxOutstanding?: number;
+      };
+    } | undefined;
+    return features?.terminalInputAck?.enabled === true;
   }
 
-  private resolveProjectCatalog(payload: SyncProjectCatalogPayload): void {
+  private terminalInputRetryWindowMs(): number {
+    const features = this.latestHello?.features as SyncHelloOkPayload["features"] & {
+      terminalInputAck?: { retryWindowMs?: number };
+    } | undefined;
+    const advertised = features?.terminalInputAck?.retryWindowMs;
+    return typeof advertised === "number" && Number.isFinite(advertised) && advertised > 0
+      ? Math.floor(advertised)
+      : DEFAULT_TERMINAL_INPUT_RETRY_WINDOW_MS;
+  }
+
+  private pumpTerminalInputQueue(): void {
+    const operation = this.terminalInputQueue[0];
+    if (
+      !operation
+      || operation.timer
+      || this.readiness !== "ready"
+      || !this.connection.isConnected()
+      || !this.terminalInputAcksSupported()
+    ) {
+      return;
+    }
+    if (operation.attemptGeneration !== this.clientGeneration) {
+      operation.attemptGeneration = this.clientGeneration;
+      operation.attempts = 0;
+    }
+    if (
+      operation.firstSentAtMs != null
+      && Date.now() - operation.firstSentAtMs >= operation.retryWindowMs
+    ) {
+      this.failTerminalInput(operation, new AdeSyncError(
+        "Terminal input could not be safely retried after reconnecting. Check the terminal before retrying.",
+        "terminal_input_retry_window_expired",
+      ));
+      return;
+    }
+    if (operation.attempts >= this.terminalInputMaxAttempts) {
+      this.failTerminalInput(operation, new AdeSyncError(
+        "This Mac did not confirm terminal input. Check the terminal before retrying.",
+        "terminal_input_ack_timeout",
+        { attempts: operation.attempts },
+      ));
+      return;
+    }
+
+    operation.attempts += 1;
+    if (operation.firstSentAtMs == null) {
+      operation.firstSentAtMs = Date.now();
+      operation.deadlineTimer = setTimeout(() => {
+        operation.deadlineTimer = null;
+        this.failTerminalInput(operation, new AdeSyncError(
+          "Terminal input could not be safely retried after reconnecting. Check the terminal before retrying.",
+          "terminal_input_retry_window_expired",
+        ));
+      }, operation.retryWindowMs);
+    }
+    const payload = {
+      sessionId: operation.sessionId,
+      data: operation.data,
+      inputId: operation.inputId,
+    };
+    const retryDelayMs = Math.max(
+      10,
+      Math.min(
+        this.terminalInputAckTimeoutMs,
+        Math.floor(operation.retryWindowMs / Math.max(1, this.terminalInputMaxAttempts)),
+      ),
+    );
+    operation.timer = setTimeout(() => {
+      operation.timer = null;
+      if (this.terminalInputQueue[0] !== operation) return;
+      this.pumpTerminalInputQueue();
+    }, retryDelayMs);
+    try {
+      this.connection.send({
+        type: "terminal_input",
+        requestId: operation.inputId,
+        projectId: this.activeProjectId,
+        payload,
+      });
+    } catch {
+      // A concurrent close will pause the queue. If the socket has not emitted
+      // close yet, the bounded ACK timer below retries with the same dedupe id.
+    }
+  }
+
+  private pauseTerminalInputQueue(): void {
+    for (const operation of this.terminalInputQueue) {
+      if (operation.timer) clearTimeout(operation.timer);
+      operation.timer = null;
+    }
+  }
+
+  private rejectTerminalInputQueue(error: Error): void {
+    const pending = this.terminalInputQueue.splice(0);
+    this.terminalInputQueueBytes = 0;
+    for (const operation of pending) {
+      if (operation.timer) clearTimeout(operation.timer);
+      if (operation.deadlineTimer) clearTimeout(operation.deadlineTimer);
+      operation.reject(error);
+    }
+  }
+
+  private failTerminalInput(operation: TerminalInputOperation, error: Error): void {
+    if (this.terminalInputQueue[0] !== operation) return;
+    if (operation.timer) clearTimeout(operation.timer);
+    if (operation.deadlineTimer) clearTimeout(operation.deadlineTimer);
+    this.terminalInputQueue.shift();
+    this.terminalInputQueueBytes = Math.max(0, this.terminalInputQueueBytes - operation.byteLength);
+    operation.reject(error);
+    this.pumpTerminalInputQueue();
+  }
+
+  private rebindStreamSubscriptions(): void {
+    for (const subscription of this.chatSubscriptions.values()) {
+      if (subscription.bindsActiveProject) subscription.sinceSeq = null;
+    }
+    for (const subscription of this.terminalSubscriptions.values()) {
+      subscription.sinceOffset = null;
+    }
+  }
+
+  private resolveProjectCatalog(payload: SyncProjectCatalogPayload, generation: number): void {
     const pending = this.pendingProjectCatalog.splice(0);
     for (const request of pending) {
       clearTimeout(request.timer);
-      request.resolve(payload);
+      if (request.generation === generation) request.resolve(payload);
+      else request.reject(new AdeSyncError("Connection changed before the catalog arrived.", "disconnected"));
     }
   }
 
@@ -964,11 +1393,50 @@ export class AdeSyncClient {
     }
   }
 
+  private rejectPending<T>(requests: Map<string, PendingRequest<T>>, requestId: string, error: Error): void {
+    const pending = requests.get(requestId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    requests.delete(requestId);
+    pending.reject(error);
+  }
+
+  private invalidateGeneration(
+    error: Error,
+    options: { preserveTerminalInputs?: boolean } = {},
+  ): void {
+    this.clientGeneration += 1;
+    this.readiness = "disconnected";
+    this.readinessError = null;
+    this.restorationPromise = null;
+    this.rejectAllPending(error);
+    if (options.preserveTerminalInputs) this.pauseTerminalInputQueue();
+    else this.rejectTerminalInputQueue(error);
+  }
+
+  private requireReadyGeneration(): number {
+    if (this.readiness !== "ready" || !this.connection.isConnected()) {
+      throw new AdeSyncError("Reconnecting to this Mac. Try again when connected.", "not_connected");
+    }
+    return this.clientGeneration;
+  }
+
+  private connectionError(error: unknown): Error {
+    return error instanceof AdeSyncError
+      ? error
+      : new AdeSyncError(
+          error instanceof Error ? error.message : "Connection to this Mac was lost.",
+          "not_connected",
+          error,
+        );
+  }
+
   private async persistCurrentEnvironment(
     update: (environment: WebClientEnvironmentRecord) => WebClientEnvironmentRecord,
+    envId = this.selectedEnvId,
   ): Promise<void> {
-    if (!this.selectedEnvId) return;
-    const current = await this.envStore.getEnvironment(this.selectedEnvId);
+    if (!envId) return;
+    const current = await this.envStore.getEnvironment(envId);
     if (!current) return;
     await this.envStore.saveEnvironment(update(current));
   }

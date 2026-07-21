@@ -504,10 +504,13 @@ export function accountMachineConnectionState(
   machine: AdeAccountMachine,
   relayBaseUrls: readonly string[] = [],
 ): AccountMachineConnectionState {
-  if (!machine.online) return "offline";
-  return accountMachineSecureSyncEndpoints(machine, relayBaseUrls).length > 0
-    ? "available"
-    : "unreachable";
+  // Directory presence is a short-lived hint, not proof that the end-to-end
+  // relay route is gone. A verified secure endpoint remains worth dialing even
+  // when the most recent presence heartbeat has expired.
+  if (accountMachineSecureSyncEndpoints(machine, relayBaseUrls).length > 0) {
+    return "available";
+  }
+  return machine.online ? "unreachable" : "offline";
 }
 
 function isLanHostname(value: string): boolean {

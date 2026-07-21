@@ -151,6 +151,7 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       if (!image) return null;
       return await commands.call("chat.saveTempAttachment", { ...args, data: image.dataUrl, filename: image.filename }, {
         fallback: { path: "", mimeType: image.mimeType, previewDataUrl: image.dataUrl },
+        idempotent: false,
       });
     },
     async getImageDataUrl(args: string | { path?: string; artifactPath?: string }) {

@@ -30,16 +30,16 @@ export function connectionTone(state: SyncConnectionState): ConnectionTone {
     case "connected":
       return { label: "Connected", color: COLORS.success, live: true, fatal: false };
     case "connecting":
-      return { label: "Connecting", color: COLORS.warning, live: false, fatal: false };
+    case "restoring":
     case "reconnecting":
-      return { label: "Reconnecting", color: COLORS.warning, live: true, fatal: false };
+      return { label: "Reconnecting", color: COLORS.warning, live: false, fatal: false };
     case "auth_failed":
-      return { label: "Disconnected", color: COLORS.danger, live: false, fatal: true };
+      return { label: "Can't reach this Mac", color: COLORS.danger, live: false, fatal: true };
     case "error":
-      return { label: "Connection error", color: COLORS.danger, live: false, fatal: false };
+      return { label: "Can't reach this Mac", color: COLORS.danger, live: false, fatal: false };
     case "disconnected":
     case "idle":
     default:
-      return { label: "Offline", color: COLORS.textMuted, live: false, fatal: false };
+      return { label: "Can't reach this Mac", color: COLORS.textMuted, live: false, fatal: false };
   }
 }

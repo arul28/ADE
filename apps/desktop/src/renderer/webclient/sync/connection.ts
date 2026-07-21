@@ -66,6 +66,7 @@ export type SyncConnectionState =
   | "idle"
   | "connecting"
   | "connected"
+  | "restoring"
   | "reconnecting"
   | "disconnected"
   | "auth_failed"
@@ -1099,7 +1100,7 @@ export class SyncConnection {
   private errorForClose(event: Pick<CloseEvent, "code" | "reason">): SyncConnectionError {
     switch (event.code) {
       case 4501:
-        return new SyncConnectionError("This Mac appears to be offline", "relay_host_offline");
+        return new SyncConnectionError("Can't reach this Mac. Retrying…", "relay_host_offline");
       case 4507:
         return new SyncConnectionError("Your Mac couldn't accept the connection. Retrying…", "relay_bridge_rejected");
       case 4508:

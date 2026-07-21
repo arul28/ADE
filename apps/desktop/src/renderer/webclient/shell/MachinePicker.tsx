@@ -209,7 +209,7 @@ export function MachinePicker({
                 type="button"
                 disabled={!available || connecting}
                 onClick={() => onSelectAccountMachine(machine)}
-                title={connectionState === "offline" ? "This machine is offline." : !available ? "Open ADE on this machine to finish connecting it." : undefined}
+                title={!available ? "Can't reach this Mac right now." : undefined}
                 style={recessedStyle({
                   display: "grid",
                   gap: 4,
@@ -224,7 +224,7 @@ export function MachinePicker({
                     {machine.name ?? machine.machineKey}
                   </span>
                   <span style={{ color: available ? COLORS.success : COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 10 }}>
-                    {connecting ? "Connecting…" : available ? "Ready" : connectionState === "offline" ? "Offline" : "Open ADE on this machine"}
+                    {connecting ? "Reconnecting" : available ? "Connect" : "Can't reach this Mac"}
                   </span>
                 </span>
                 <span style={{ color: COLORS.textMuted, fontFamily: MONO_FONT, fontSize: 11 }}>
