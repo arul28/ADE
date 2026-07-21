@@ -199,6 +199,7 @@ export class SyncConnection {
   private latestHello: SyncHelloOkPayload | null = null;
   private relayAccountTokenProvider: (() => Promise<string>) | null = null;
   private connectionGeneration = 0;
+  private operationGeneration = 0;
   private relayRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   private relayRefreshRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private relayRefreshAttempt: RelayRefreshAttempt | null = null;
@@ -289,6 +290,7 @@ export class SyncConnection {
 
   async pairWithAccount(args: AccountPairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     this.disconnect({ reconnect: false, code: 1000, reason: "Account pairing" });
+    const operationGeneration = this.operationGeneration;
     this.relayAccountTokenProvider = args.relayAccountTokenProvider ?? (() => Promise.resolve(args.accountToken));
     this.endpoints = args.endpoints;
     this.consecutiveAuthFailures = 0;
@@ -298,10 +300,16 @@ export class SyncConnection {
     for (const candidate of dialable) {
       try {
         const dpop = await args.createDpop();
-        return await this.pairWithAccountOnEndpoint(candidate, args, dpop);
+        if (operationGeneration !== this.operationGeneration) throw new StaleSocketAttemptError();
+        const result = await this.pairWithAccountOnEndpoint(candidate, args, dpop);
+        if (operationGeneration !== this.operationGeneration) throw new StaleSocketAttemptError();
+        return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
-        if (lastError instanceof StaleSocketAttemptError) throw lastError;
+        if (
+          lastError instanceof StaleSocketAttemptError
+          || operationGeneration !== this.operationGeneration
+        ) throw new StaleSocketAttemptError();
         this.cleanupSocket();
       }
     }
@@ -316,6 +324,7 @@ export class SyncConnection {
   }
 
   disconnect(options: { reconnect?: boolean; code?: number; reason?: string } = {}): void {
+    this.operationGeneration += 1;
     this.pendingAttemptCancel?.();
     this.pendingAttemptCancel = null;
     this.connectionGeneration += 1;
@@ -420,6 +429,7 @@ export class SyncConnection {
       let helloTimeout: ReturnType<typeof setTimeout> | null = null;
       let relayNegotiationTimeout: ReturnType<typeof setTimeout> | null = null;
       let helloStarted = false;
+      let relayAccepted = false;
       let cancelAttempt: () => void = () => {};
       const clearDeadlines = () => {
         clearTimeout(openTimeout);
@@ -475,13 +485,14 @@ export class SyncConnection {
         }, RELAY_READY_NEGOTIATION_WINDOW_MS);
       };
       socket.onmessage = (event) => {
-        if (settled || !this.isCurrentSocket(socket, generation)) return;
+        if (!this.isCurrentSocket(socket, generation)) return;
         const transport = throughRelay ? relayTransportFrame(event.data) : null;
         if (transport) {
+          if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
+          relayNegotiationTimeout = null;
           if (transport.t === "accepted") {
-            if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
-            relayNegotiationTimeout = null;
-          } else {
+            relayAccepted = true;
+          } else if (relayAccepted) {
             startHello();
           }
           // accepted means this Worker enforces readiness. Keep waiting for
@@ -542,6 +553,7 @@ export class SyncConnection {
       let helloTimeout: ReturnType<typeof setTimeout> | null = null;
       let relayNegotiationTimeout: ReturnType<typeof setTimeout> | null = null;
       let helloStarted = false;
+      let relayAccepted = false;
       let cancelAttempt: () => void = () => {};
       const clearDeadlines = () => {
         clearTimeout(openTimeout);
@@ -609,13 +621,14 @@ export class SyncConnection {
         }, RELAY_READY_NEGOTIATION_WINDOW_MS);
       };
       socket.onmessage = (event) => {
-        if (settled || !this.isCurrentSocket(socket, generation)) return;
+        if (!this.isCurrentSocket(socket, generation)) return;
         const transport = throughRelay ? relayTransportFrame(event.data) : null;
         if (transport) {
+          if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
+          relayNegotiationTimeout = null;
           if (transport.t === "accepted") {
-            if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
-            relayNegotiationTimeout = null;
-          } else {
+            relayAccepted = true;
+          } else if (relayAccepted) {
             startHello();
           }
           return;
@@ -746,18 +759,22 @@ export class SyncConnection {
     } else if (envelope.type === "hello_error") {
       callbacks.onHelloError?.(envelope.payload as SyncHelloErrorPayload);
     }
-    this.routeEnvelope(envelope);
+    if (!this.isCurrentSocket(socket, generation)) return;
+    this.routeEnvelope(envelope, socket, generation);
+    if (!this.isCurrentSocket(socket, generation)) return;
     if (this.isConnected()) {
       this.scheduleHeartbeatFallback();
     }
   }
 
-  private routeEnvelope(envelope: SyncEnvelope): void {
+  private routeEnvelope(envelope: SyncEnvelope, socket: WebSocketLike, generation: number): void {
     this.emit("envelope", envelope);
+    if (!this.isCurrentSocket(socket, generation)) return;
     switch (envelope.type) {
       case "heartbeat": {
         const payload = envelope.payload as SyncHeartbeatPayload;
         if (payload.kind === "ping") {
+          if (!this.isCurrentSocket(socket, generation)) return;
           this.send({
             type: "heartbeat",
             requestId: envelope.requestId ?? null,

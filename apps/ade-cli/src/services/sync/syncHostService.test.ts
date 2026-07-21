@@ -3988,6 +3988,111 @@ describe("sync host handoff over a shared listener", () => {
     };
   }
 
+  it("carries terminal input receipts across host handoff so a lost ACK retry cannot rewrite", async () => {
+    const rootA = createTempProjectRoot();
+    const rootB = createTempProjectRoot();
+    const tokenPath = path.join(rootA.projectRoot, "shared-terminal-bootstrap-token");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const writeBySessionId = vi.fn().mockReturnValue(true);
+    const makeTerminalArgs = (projectRoot: string, sessionAvailable: boolean) => {
+      const base = createHandoffHostArgs(projectRoot, tokenPath, {
+        siteId: `site-${path.basename(projectRoot)}`,
+        dbVersion: 0,
+        changes: [],
+      });
+      const transcriptPath = path.join(projectRoot, "terminal.log");
+      fs.writeFileSync(transcriptPath, "", "utf8");
+      const session = {
+        id: "session-1",
+        laneId: "lane-1",
+        transcriptPath,
+        status: "running",
+        runtimeState: "running",
+      };
+      return {
+        ...base,
+        projectId: "project-1",
+        sharedListener: listener,
+        sessionService: {
+          list: () => sessionAvailable ? [session] : [],
+          get: (id: string) => sessionAvailable && id === session.id ? session : null,
+          readTranscriptTail: async () => "",
+        },
+        ptyService: {
+          create: vi.fn(),
+          readTranscriptTail: vi.fn(async () => ""),
+          readTranscriptRange: vi.fn(async () => null),
+          writeBySessionId,
+          resizeBySessionId: vi.fn().mockReturnValue(true),
+          restoreDesktopSizeBySessionId: vi.fn().mockReturnValue(true),
+          hasLivePty: vi.fn().mockReturnValue(sessionAvailable),
+          enrichSessions: (rows: unknown[]) => rows,
+        },
+      };
+    };
+    let client: WebSocket | null = null;
+    let hostB: ReturnType<typeof createSyncHostService> | null = null;
+    try {
+      const port = await listener.ensureListening([0]);
+      const hostA = createSyncHostService(
+        makeTerminalArgs(rootA.projectRoot, true) as unknown as Parameters<typeof createSyncHostService>[0],
+      );
+      await hostA.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      sendHello(client, hostA.getBootstrapToken());
+      await waitForValue(() => envelopes.find((entry) => entry.type === "hello_ok"), "terminal handoff hello");
+      client.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "handoff-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: "session-1" },
+      }));
+      await waitForEnvelope(envelopes, "terminal_snapshot", "handoff-subscribe");
+      const inputPayload = { sessionId: "session-1", inputId: "handoff-input", data: "x" };
+      client.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "handoff-input-first",
+        projectId: "project-1",
+        payload: inputPayload,
+      }));
+      await expect(waitForEnvelope(
+        envelopes,
+        "terminal_input_ack",
+        "handoff-input-first",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: false } });
+      expect(writeBySessionId).toHaveBeenCalledTimes(1);
+
+      await hostA.dispose();
+      hostB = createSyncHostService(
+        makeTerminalArgs(rootB.projectRoot, false) as unknown as Parameters<typeof createSyncHostService>[0],
+      );
+      await hostB.waitUntilListening();
+      client.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "handoff-input-retry",
+        projectId: "project-1",
+        payload: inputPayload,
+      }));
+      await expect(waitForEnvelope(
+        envelopes,
+        "terminal_input_ack",
+        "handoff-input-retry",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: true } });
+      expect(writeBySessionId).toHaveBeenCalledTimes(1);
+    } finally {
+      try { client?.close(); } catch { /* ignore */ }
+      await hostB?.dispose();
+      await listener.close();
+      rootA.cleanup();
+      rootB.cleanup();
+    }
+  });
+
   it("keeps an authenticated peer connected across a host service swap and streams the new host's changesets", async () => {
     const rootA = createTempProjectRoot();
     const rootB = createTempProjectRoot();
@@ -6023,10 +6128,14 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
           duplicate: false,
         },
       });
+      // Receipt identity is immutable and wins over mutable session state: a
+      // lost success ACK retried after the PTY exits is still a duplicate.
+      setSessionAvailable(false);
       sendInput("duplicate", "input-written", "hello");
       await expect(ack("duplicate")).resolves.toMatchObject({
         payload: { ok: true, duplicate: true },
       });
+      setSessionAvailable(true);
       sendInput("collision", "input-written", "different");
       await expect(ack("collision")).resolves.toMatchObject({
         payload: {

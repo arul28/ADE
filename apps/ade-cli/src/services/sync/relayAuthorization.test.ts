@@ -61,6 +61,7 @@ function createHarness(options: {
   expiresAtMs?: number;
   verify?: (token: string, expectedUserId: string) => Promise<{ userId: string; expiresAtMs: number }>;
   capture?: () => Promise<{ userId: string; generation: number } | null>;
+  sendResult?: (payload: SyncRelayReauthorizeResultPayload, requestId: string | null) => void;
 } = {}) {
   const keys = makeKeyPair();
   const results: Array<{ payload: SyncRelayReauthorizeResultPayload; requestId: string | null }> = [];
@@ -79,7 +80,7 @@ function createHarness(options: {
       generation: 1,
     })),
     verifyAccountToken: verify,
-    sendResult: (payload, requestId) => results.push({ payload, requestId }),
+    sendResult: options.sendResult ?? ((payload, requestId) => results.push({ payload, requestId })),
     close,
     logger: { warn: vi.fn(), info: vi.fn() },
     randomChallenge: () => `challenge-${++challengeSequence}`,
@@ -182,6 +183,21 @@ describe("Relay authorization lifecycle", () => {
       error: { code: "relay_account_changed" },
     });
     expect(wrongTokenOwner.close).toHaveBeenCalledWith("ADE account session changed");
+  });
+
+  it("closes a terminal account change even when sending the result throws", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW_MS);
+    const harness = createHarness({
+      capture: async () => ({ userId: "different-host-user", generation: 1 }),
+      sendResult: () => { throw new Error("socket send failed"); },
+    });
+    await expect(harness.lifecycle.handle(reauthorizePayload({
+      privateKey: harness.keys.privateKey,
+      lease: harness.lifecycle.metadata()!,
+      token: "token-2",
+    }), "throwing-send")).rejects.toThrow("socket send failed");
+    expect(harness.close).toHaveBeenCalledWith("ADE account session changed");
   });
 
   it("replays the exact successful result after a lost ACK but rejects nonce reuse with changed input", async () => {

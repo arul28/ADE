@@ -1283,6 +1283,7 @@ export const TERMINAL_INPUT_MAX_OUTSTANDING = 64;
 export const ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS = 5 * 60_000;
 export const CONNECTION_ATTEMPT_ID_MAX_CHARS = 128;
 export const CONNECTION_ATTEMPT_MAX_FUTURE_MS = 5 * 60_000;
+export const CONNECTION_ATTEMPT_RESERVATION_TTL_MS = 30_000;
 const SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES = 64 * 1024;
 // Delivery-key dedupe map cap. Must exceed CHAT_EVENT_REPLAY_MAX_EVENTS so a
 // buffered event's key cannot be evicted while the event itself is still in
@@ -1792,6 +1793,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const connectionAttemptByDevice = new Map<string, {
     id: string;
     startedAtMs: number;
+    reservedAtMs: number;
     winner: PeerState | null;
   }>();
   // Host-scoped rather than peer-scoped so a transport reconnect from the
@@ -2803,6 +2805,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           if (!accepted || handedOffAttempt.startedAtMs > accepted.startedAtMs) {
             connectionAttemptByDevice.set(snapshot.metadata.deviceId, {
               ...handedOffAttempt,
+              reservedAtMs: Date.now(),
               winner: peer,
             });
           }
@@ -3619,14 +3622,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const accepted = connectionAttemptByDevice.get(deviceId);
     if (accepted) {
       const sameAttempt = accepted.id === attempt.id;
-      const liveWinner = accepted.winner?.authenticated
-        && accepted.winner.ws.readyState === WebSocket.OPEN;
+      // Arbitration may reserve a winner immediately before pairing/auth state
+      // is committed. Treat that OPEN, owned peer as live so a concurrent
+      // same-attempt candidate cannot steal the reservation in that gap.
+      const liveWinner = Boolean(
+        accepted.winner
+        && peers.has(accepted.winner)
+        && accepted.winner.ws.readyState === WebSocket.OPEN,
+      );
       if (sameAttempt && !liveWinner) {
         accepted.winner = currentPeer;
         return true;
       }
       const olderOrEqualAttempt = attempt.startedAtMs <= accepted.startedAtMs;
-      if (sameAttempt || olderOrEqualAttempt) return false;
+      const reservationFresh = Date.now() - accepted.reservedAtMs <= CONNECTION_ATTEMPT_RESERVATION_TTL_MS;
+      if (sameAttempt || (olderOrEqualAttempt && (liveWinner || reservationFresh))) return false;
     }
     // Authentication has already succeeded. Only now may a genuinely newer
     // attempt supersede the previous winner.
@@ -3634,6 +3644,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     connectionAttemptByDevice.set(deviceId, {
       id: attempt.id,
       startedAtMs: attempt.startedAtMs,
+      reservedAtMs: Date.now(),
       winner: currentPeer,
     });
     return true;
@@ -5438,6 +5449,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       let accountPairing: { deviceId: string; secret: string } | null = null;
       let relayAccountOwnerUserId: string | null = null;
       let relayAccountExpiresAtMs: number | null = null;
+      let connectionAttemptReserved = false;
+      let connectionAttemptRejected = false;
       let authFailureCode: SyncHelloErrorPayload["code"] = "auth_failed";
       let authFailureMessage = "Sync authentication failed.";
       // Return semantics: `true` means authentication FAILED -> the caller below
@@ -5594,7 +5607,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             });
             return true;
           }
-          const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
           try {
             const authorization = await captureAccountAuthorization();
             if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
@@ -5614,31 +5626,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             relayAccountOwnerUserId = attestation.userId;
             relayAccountExpiresAtMs = attestation.expiresAtMs;
-            if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
-              args.logger.warn("sync_host.account_existing_keyless_rejected", {
-                deviceId: accountAuth.deviceId,
-              });
-              return true;
-            }
-            // A known device is pinned to its existing key; only a genuinely new
-            // device id arriving through the authenticated relay bridge may
-            // TOFU-adopt the inline key. The account token is the challenge
-            // secret, binding that verified token to the device key.
-            const dpopFailure = evaluatePairedHelloDpop({
-              storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
-              deviceId: accountAuth.deviceId,
-              secret: accountAuth.accountToken,
-              proof: accountAuth.dpop ?? null,
-              requireDpop: true,
-              nonceCache: dpopNonceCache,
-            });
-            if (dpopFailure) {
-              args.logger.warn("sync_host.account_dpop_rejected", {
-                deviceId: accountAuth.deviceId,
-                reason: dpopFailure,
-              });
-              return true;
-            }
             const commitAuthorization = await captureAccountAuthorization();
             if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (
@@ -5651,26 +5638,65 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               });
               return true;
             }
-            const existingAccountOwner = toOptionalString(existingPairingRecord?.accountOwnerUserId);
-            if (existingPairingRecord && !existingAccountOwner) {
-              // A manual/PIN/SSH pairing stays local. Same-account Relay may
-              // use it, but account sign-in never converts or rotates it.
-              authenticatedPairingRecord = existingPairingRecord;
-              return false;
-            }
-            if (existingAccountOwner && existingAccountOwner !== authorization.userId) return true;
-            const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
-              // Reissue keeps the already-verified pinned key. The inline key
-              // is TOFU input only for a genuinely new account pairing.
-              dpopPublicKey: existingPairingRecord
-                ? null
-                : accountAuth.dpop?.publicKey ?? null,
-              runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
+            return await withHelloCommitLock(accountAuth.deviceId, async () => {
+              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
+              // The account can change while this candidate waits behind a
+              // concurrent route's commit. Re-capture inside the lock, before
+              // any pairing mutation or connection-attempt reservation.
+              const lockedAuthorization = await captureAccountAuthorization();
+              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
+              if (
+                !lockedAuthorization
+                || lockedAuthorization.userId !== authorization.userId
+                || lockedAuthorization.generation !== authorization.generation
+              ) return true;
+
+              const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
+              if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
+                args.logger.warn("sync_host.account_existing_keyless_rejected", {
+                  deviceId: accountAuth.deviceId,
+                });
+                return true;
+              }
+              const dpopFailure = evaluatePairedHelloDpop({
+                storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
+                deviceId: accountAuth.deviceId,
+                secret: accountAuth.accountToken,
+                proof: accountAuth.dpop ?? null,
+                requireDpop: true,
+                nonceCache: dpopNonceCache,
+              });
+              if (dpopFailure) {
+                args.logger.warn("sync_host.account_dpop_rejected", {
+                  deviceId: accountAuth.deviceId,
+                  reason: dpopFailure,
+                });
+                return true;
+              }
+              const existingAccountOwner = toOptionalString(existingPairingRecord?.accountOwnerUserId);
+              if (existingAccountOwner && existingAccountOwner !== authorization.userId) return true;
+              if (!arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer)) {
+                connectionAttemptRejected = true;
+                return false;
+              }
+              connectionAttemptReserved = true;
+              if (existingPairingRecord && !existingAccountOwner) {
+                // A manual/PIN/SSH pairing stays local. Same-account Relay may
+                // use it, but account sign-in never converts or rotates it.
+                authenticatedPairingRecord = existingPairingRecord;
+                return false;
+              }
+              const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
+                dpopPublicKey: existingPairingRecord
+                  ? null
+                  : accountAuth.dpop?.publicKey ?? null,
+                runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
+              });
+              if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
+              accountPairing = paired;
+              authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
+              return authenticatedPairingRecord == null;
             });
-            if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
-            accountPairing = paired;
-            authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
-            return authenticatedPairingRecord == null;
           } catch (error) {
             args.logger.warn("sync_host.account_auth_rejected", {
               deviceId: accountAuth.deviceId,
@@ -5707,7 +5733,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
 
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
-      if (!arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer)) {
+      if (
+        connectionAttemptRejected
+        || (!connectionAttemptReserved && !arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer))
+      ) {
         send(peer.ws, "hello_error", {
           code: "connection_attempt_superseded",
           message: "A newer connection route already won this connection attempt.",

@@ -346,6 +346,26 @@ describe("signed upgrade auth rejections", () => {
 });
 
 describe("durable socket lifecycle", () => {
+  it("closes an orphan pipe when the client disappears before ready", async () => {
+    const { durable, state } = makeDoHarness();
+    const id = "abcde123";
+    const control = state.addSocket("control", undefined, Date.now(), { epoch: CONTROL_EPOCH });
+    const client = state.addSocket("client", id, Date.now(), {
+      epoch: CONTROL_EPOCH,
+      readyVersion: RELAY_READY_VERSION,
+    });
+    const pipe = state.addSocket("pipe", id, Date.now(), { epoch: CONTROL_EPOCH });
+    client.close(1006, "client vanished");
+
+    await durable.webSocketMessage(control as unknown as WebSocket, JSON.stringify({
+      t: "ready",
+      id,
+      epoch: CONTROL_EPOCH,
+    }));
+
+    expect(pipe.closes).toContainEqual({ code: CLOSE_BRIDGE_REJECTED, reason: "relay client unavailable" });
+  });
+
   it("migrates a hibernated legacy control attachment without reporting host offline", async () => {
     const { durable, state, storage } = makeDoHarness();
     await storage.put("secret", SECRET);

@@ -95,6 +95,7 @@ type BrainProjectActionsSyncHandlerArgs = {
 
 type BrainPeerState = {
   ws: WebSocket;
+  lifecycleGeneration: number;
   authenticated: boolean;
   authKind: "bootstrap" | "paired" | null;
   authTimeout: ReturnType<typeof setTimeout> | null;
@@ -102,6 +103,7 @@ type BrainPeerState = {
   personalChatSubscriptions: Map<string, { transcriptPath: string; offset: number }>;
   pairingRecord: SyncPairingRecord | null;
   relayAuthorization: RelayAuthorizationLifecycle | null;
+  messageQueue: Promise<void>;
 };
 
 const WS_OPEN = 1;
@@ -532,15 +534,23 @@ export function createBrainProjectActionsSyncHandler(
   const verifyRelayAccountProof = async (
     token: string | null | undefined,
   ): Promise<VerifiedAccountAttestation | null> => {
-    const ownerUserId = await getAccountLeaseUserId();
+    const before = await captureAccountAuthorization();
     const relayAccountToken = token?.trim() ?? "";
-    if (!ownerUserId || !relayAccountToken) return null;
+    if (!before || !relayAccountToken) return null;
     try {
-      return await verifyAccountAttestation({
+      const attestation = await verifyAccountAttestation({
         token: relayAccountToken,
-        expectedUserId: ownerUserId,
+        expectedUserId: before.userId,
         config: getAccountAttestationConfig(),
       });
+      const after = await captureAccountAuthorization();
+      if (
+        !after
+        || after.userId !== before.userId
+        || after.generation !== before.generation
+        || attestation.userId !== before.userId
+      ) return null;
+      return attestation;
     } catch {
       return null;
     }
@@ -582,6 +592,7 @@ export function createBrainProjectActionsSyncHandler(
     unavailableMessage: string,
     payload: TPayload,
     action: ((payload: TPayload) => Promise<SyncMobileProjectSummary>) | undefined,
+    isCurrent: () => boolean,
   ): Promise<void> => {
     if (!action) {
       send(peer.ws, resultType, { ok: false, message: unavailableMessage }, requestId);
@@ -589,9 +600,13 @@ export function createBrainProjectActionsSyncHandler(
     }
     try {
       const project = await action(payload);
+      if (!isCurrent()) return;
       send(peer.ws, resultType, { ok: true, project }, requestId);
-      sendProjectCatalog(peer.ws, await projectCatalog(args.projectCatalogProvider, args.logger));
+      const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
+      if (!isCurrent()) return;
+      sendProjectCatalog(peer.ws, catalog);
     } catch (error) {
+      if (!isCurrent()) return;
       send(peer.ws, resultType, {
         ok: false,
         message: error instanceof Error ? error.message : String(error),
@@ -599,7 +614,11 @@ export function createBrainProjectActionsSyncHandler(
     }
   };
 
-  const handleAuthenticatedEnvelope = async (peer: BrainPeerState, envelope: ReturnType<typeof parseSyncEnvelope>): Promise<void> => {
+  const handleAuthenticatedEnvelope = async (
+    peer: BrainPeerState,
+    envelope: ReturnType<typeof parseSyncEnvelope>,
+    isCurrent: () => boolean,
+  ): Promise<void> => {
     if (isPairedRuntimeEnvelopeType(envelope.type)) {
       await pairedChannelService.handleEnvelope(
         peer.ws,
@@ -609,11 +628,14 @@ export function createBrainProjectActionsSyncHandler(
         // Runtime RPC channel + port-forward are desktop-runtime-host only.
         peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
       );
+      if (!isCurrent()) return;
       return;
     }
     switch (envelope.type) {
       case "project_catalog_request": {
-        sendProjectCatalog(peer.ws, await projectCatalog(args.projectCatalogProvider, args.logger), envelope.requestId);
+        const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
+        if (!isCurrent()) return;
+        sendProjectCatalog(peer.ws, catalog, envelope.requestId);
         break;
       }
       case "project_switch_request": {
@@ -624,6 +646,7 @@ export function createBrainProjectActionsSyncHandler(
           result = await args.projectCatalogProvider.prepareProjectConnection(
             (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,
           );
+          if (!isCurrent()) return;
           send(peer.ws, "project_switch_result", result, envelope.requestId);
           resultSent = true;
           completionAttempted = true;
@@ -631,7 +654,9 @@ export function createBrainProjectActionsSyncHandler(
             (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,
             result,
           );
+          if (!isCurrent()) return;
         } catch (error) {
+          if (!isCurrent()) return;
           args.logger.warn("sync_brain.project_switch_failed", {
             message: error instanceof Error ? error.message : String(error),
           });
@@ -641,6 +666,7 @@ export function createBrainProjectActionsSyncHandler(
                 (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,
                 result,
               );
+              if (!isCurrent()) return;
             } catch {
               // Best effort; the peer will retry selection if handoff fails.
             }
@@ -666,11 +692,15 @@ export function createBrainProjectActionsSyncHandler(
           const result = await args.projectCatalogProvider.forgetProject(
             (envelope.payload ?? {}) as SyncProjectForgetRequestPayload,
           );
+          if (!isCurrent()) return;
           send(peer.ws, "project_forget_result", result, envelope.requestId);
           if (result.ok) {
-            sendProjectCatalog(peer.ws, await projectCatalog(args.projectCatalogProvider, args.logger));
+            const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
+            if (!isCurrent()) return;
+            sendProjectCatalog(peer.ws, catalog);
           }
         } catch (error) {
+          if (!isCurrent()) return;
           send(peer.ws, "project_forget_result", {
             ok: false,
             message: error instanceof Error ? error.message : String(error),
@@ -683,10 +713,12 @@ export function createBrainProjectActionsSyncHandler(
           const result = await args.projectCatalogProvider.browseDirectories?.(
             (envelope.payload ?? {}) as ProjectBrowseInput,
           );
+          if (!isCurrent()) return;
           send(peer.ws, "project_browse_result", result
             ? { ok: true, result }
             : { ok: false, message: "Project browsing is not available from this machine." }, envelope.requestId);
         } catch (error) {
+          if (!isCurrent()) return;
           send(peer.ws, "project_browse_result", {
             ok: false,
             message: error instanceof Error ? error.message : String(error),
@@ -697,10 +729,12 @@ export function createBrainProjectActionsSyncHandler(
       case "project_default_parent_dir_request": {
         try {
           const parentDir = await args.projectCatalogProvider.getDefaultParentDir?.();
+          if (!isCurrent()) return;
           send(peer.ws, "project_default_parent_dir", parentDir
             ? { ok: true, parentDir }
             : { ok: false, message: "Default project directory is not available from this machine." }, envelope.requestId);
         } catch (error) {
+          if (!isCurrent()) return;
           send(peer.ws, "project_default_parent_dir", {
             ok: false,
             message: error instanceof Error ? error.message : String(error),
@@ -716,6 +750,7 @@ export function createBrainProjectActionsSyncHandler(
           "Opening projects is not available from this machine.",
           (envelope.payload ?? {}) as SyncProjectOpenRequestPayload,
           args.projectCatalogProvider.openProject,
+          isCurrent,
         );
         break;
       }
@@ -727,6 +762,7 @@ export function createBrainProjectActionsSyncHandler(
           "Creating projects is not available from this machine.",
           (envelope.payload ?? {}) as CreateProjectInput,
           args.projectCatalogProvider.createProject,
+          isCurrent,
         );
         break;
       }
@@ -738,6 +774,7 @@ export function createBrainProjectActionsSyncHandler(
           "Cloning projects is not available from this machine.",
           (envelope.payload ?? {}) as CloneProjectInput,
           args.projectCatalogProvider.cloneProject,
+          isCurrent,
         );
         break;
       }
@@ -746,10 +783,12 @@ export function createBrainProjectActionsSyncHandler(
           const result = await args.projectCatalogProvider.listMyGitHubRepos?.(
             (envelope.payload ?? {}) as ListMyGitHubReposInput,
           );
+          if (!isCurrent()) return;
           send(peer.ws, "project_list_my_github_repos_result", result
             ? { ok: true, result }
             : { ok: false, message: "GitHub repository listing is not available from this machine." }, envelope.requestId);
         } catch (error) {
+          if (!isCurrent()) return;
           send(peer.ws, "project_list_my_github_repos_result", {
             ok: false,
             message: error instanceof Error ? error.message : String(error),
@@ -762,6 +801,7 @@ export function createBrainProjectActionsSyncHandler(
         const sessionId = optionalString(payload?.sessionId);
         if (!sessionId || payload?.chatScope !== "personal" || !args.personalChatScope) break;
         const transcriptPath = await args.personalChatScope.transcriptPath(sessionId);
+        if (!isCurrent()) return;
         if (!transcriptPath) {
           send(peer.ws, "chat_subscribe", {
             sessionId,
@@ -781,17 +821,21 @@ export function createBrainProjectActionsSyncHandler(
         const offset = await fs.promises.stat(transcriptPath)
           .then((stat) => stat.size)
           .catch(() => 0);
+        if (!isCurrent()) return;
         const history = (await args.personalChatScope.call("getEventHistory", {
           sessionId,
           maxBytes,
         })).result as { events?: AgentChatEventEnvelope[]; truncated?: boolean };
+        if (!isCurrent()) return;
+        const turnActive = await args.personalChatScope.isTurnActive(sessionId);
+        if (!isCurrent()) return;
         peer.personalChatSubscriptions.set(sessionId, { transcriptPath, offset });
         send(peer.ws, "chat_subscribe", {
           sessionId,
           capturedAt: nowIso(),
           truncated: history.truncated === true,
           events: history.events ?? [],
-          turnActive: await args.personalChatScope.isTurnActive(sessionId),
+          turnActive,
         } satisfies SyncChatSubscribeSnapshotPayload, envelope.requestId);
         break;
       }
@@ -844,8 +888,10 @@ export function createBrainProjectActionsSyncHandler(
                   action.slice("personalChats.".length),
                   commandArgs,
                 )).result;
+            if (!isCurrent()) return;
             send(peer.ws, "command_result", { commandId, ok: true, result }, envelope.requestId);
           } catch (error) {
+            if (!isCurrent()) return;
             send(peer.ws, "command_result", {
               commandId,
               ok: false,
@@ -883,6 +929,7 @@ export function createBrainProjectActionsSyncHandler(
   return ({ ws, remoteAddress, transportOrigin }) => {
     const peer: BrainPeerState = {
       ws,
+      lifecycleGeneration: 0,
       authenticated: false,
       authKind: null,
       authTimeout: null,
@@ -890,7 +937,10 @@ export function createBrainProjectActionsSyncHandler(
       personalChatSubscriptions: new Map(),
       pairingRecord: null,
       relayAuthorization: null,
+      messageQueue: Promise.resolve(),
     };
+    const isPeerCurrent = (generation: number): boolean =>
+      peer.lifecycleGeneration === generation && peer.ws.readyState === WS_OPEN;
     const installRelayAuthorization = (initial: {
       ownerUserId: string;
       expiresAtMs: number;
@@ -937,6 +987,7 @@ export function createBrainProjectActionsSyncHandler(
     let personalChatPumpRunning = false;
     const personalChatPump = setInterval(() => {
       if (!peer.authenticated || peer.ws.readyState !== WS_OPEN || personalChatPumpRunning) return;
+      const lifecycleGeneration = peer.lifecycleGeneration;
       personalChatPumpRunning = true;
       void (async () => {
         const expectedOwner = optionalString(peer.pairingRecord?.accountOwnerUserId)
@@ -944,6 +995,7 @@ export function createBrainProjectActionsSyncHandler(
           ?? null;
         if (expectedOwner) {
           const currentOwner = await getAccountLeaseUserId();
+          if (!isPeerCurrent(lifecycleGeneration)) return;
           if (currentOwner !== expectedOwner) {
             pairingStore.revokeAccountOwnedExcept(currentOwner);
             peer.authenticated = false;
@@ -962,6 +1014,7 @@ export function createBrainProjectActionsSyncHandler(
         }
         for (const [sessionId, subscription] of peer.personalChatSubscriptions) {
           const next = await readPersonalChatEventsSince(subscription.transcriptPath, subscription.offset);
+          if (!isPeerCurrent(lifecycleGeneration)) return;
           for (const event of next.events) send(peer.ws, "chat_event", event);
           subscription.offset = next.nextOffset;
           peer.personalChatSubscriptions.set(sessionId, subscription);
@@ -989,33 +1042,42 @@ export function createBrainProjectActionsSyncHandler(
     }, authTimeoutMs);
     peer.authTimeout.unref?.();
     ws.on("message", (data: RawData) => {
-      void (async () => {
-        let envelope: ReturnType<typeof parseSyncEnvelope>;
-        try {
-          envelope = parseSyncEnvelope(wsDataToText(data));
-        } catch (error) {
-          args.logger.warn("sync_brain.invalid_envelope", {
-            error: error instanceof Error ? error.message : String(error),
-            remoteAddress: remoteAddress ?? null,
-          });
-          return;
-        }
+      const lifecycleGeneration = peer.lifecycleGeneration;
+      let envelope: ReturnType<typeof parseSyncEnvelope>;
+      try {
+        envelope = parseSyncEnvelope(wsDataToText(data));
+      } catch (error) {
+        args.logger.warn("sync_brain.invalid_envelope", {
+          error: error instanceof Error ? error.message : String(error),
+          remoteAddress: remoteAddress ?? null,
+        });
+        return;
+      }
 
-        if (peer.authenticated && envelope.type === "relay_reauthorize") {
-          if (!peer.relayAuthorization) {
-            send(peer.ws, "relay_reauthorize_result", {
-              ok: false,
-              error: {
-                code: "invalid_request",
-                message: "This connection does not have a refreshable Relay authorization lease.",
-                retryable: false,
-              },
-            }, envelope.requestId);
-            return;
-          }
-          await peer.relayAuthorization.handle(envelope.payload, envelope.requestId);
+      if (peer.authenticated && envelope.type === "relay_reauthorize") {
+        if (!peer.relayAuthorization) {
+          send(peer.ws, "relay_reauthorize_result", {
+            ok: false,
+            error: {
+              code: "invalid_request",
+              message: "This connection does not have a refreshable Relay authorization lease.",
+              retryable: false,
+            },
+          }, envelope.requestId);
           return;
         }
+        void peer.relayAuthorization.handle(envelope.payload, envelope.requestId).catch((error) => {
+          args.logger.warn("sync_brain.relay_reauthorization_failed", {
+            error: error instanceof Error ? error.message : String(error),
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+            requestId: envelope.requestId,
+          });
+        });
+        return;
+      }
+
+      peer.messageQueue = peer.messageQueue.catch(() => {}).then(async () => {
+        if (!isPeerCurrent(lifecycleGeneration)) return;
 
         if (!peer.authenticated) {
           if (envelope.type === "pairing_request") {
@@ -1036,6 +1098,7 @@ export function createBrainProjectActionsSyncHandler(
               transportOrigin === "relay-bridge"
               && !await verifyRelayAccountProof(payload.relayAccountToken)
             ) {
+              if (!isPeerCurrent(lifecycleGeneration)) return;
               send(ws, "pairing_result", {
                 ok: false,
                 error: {
@@ -1050,6 +1113,7 @@ export function createBrainProjectActionsSyncHandler(
               }
               return;
             }
+            if (!isPeerCurrent(lifecycleGeneration)) return;
             const cooldownMs = pairFailures.cooldownMsRemaining(remoteAddress ?? null);
             if (cooldownMs > 0) {
               const minutes = Math.ceil(cooldownMs / 60_000);
@@ -1135,6 +1199,7 @@ export function createBrainProjectActionsSyncHandler(
               if (auth.deviceId !== hello.peer.deviceId) return true;
               if (transportOrigin === "relay-bridge") {
                 const attestation = await verifyRelayAccountProof(auth.relayAccountToken);
+                if (!isPeerCurrent(lifecycleGeneration)) return true;
                 if (!attestation) {
                   authFailure.code = "relay_account_required";
                   return true;
@@ -1148,6 +1213,7 @@ export function createBrainProjectActionsSyncHandler(
               const pairingOwner = optionalString(authenticatedPairingRecord.accountOwnerUserId);
               if (pairingOwner) {
                 const currentOwner = await getAccountLeaseUserId();
+                if (!isPeerCurrent(lifecycleGeneration)) return true;
                 if (currentOwner !== pairingOwner) {
                   pairingStore.revokeAccountOwnedExcept(currentOwner);
                   return true;
@@ -1192,6 +1258,7 @@ export function createBrainProjectActionsSyncHandler(
             }
             return !SYNC_HOST_BIND_LOOPBACK_ONLY && !pairingStore.hasPairingRecord(hello.peer.deviceId);
           })();
+          if (!isPeerCurrent(lifecycleGeneration)) return;
           if (authFailed) {
             // Same attribution as the project host's auth_failed: name the
             // rejecting machine so clients never drop a saved pairing over a
@@ -1233,6 +1300,7 @@ export function createBrainProjectActionsSyncHandler(
               : null,
           );
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
+          if (!isPeerCurrent(lifecycleGeneration)) return;
           const brain = brainMetadata();
           const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
           send(ws, "hello_ok", buildSyncHostHelloOkPayload({
@@ -1262,8 +1330,12 @@ export function createBrainProjectActionsSyncHandler(
           return;
         }
 
-        await handleAuthenticatedEnvelope(peer, envelope);
-      })().catch((error) => {
+        await handleAuthenticatedEnvelope(
+          peer,
+          envelope,
+          () => isPeerCurrent(lifecycleGeneration),
+        );
+      }).catch((error) => {
         args.logger.warn("sync_brain.envelope_failed", {
           error: error instanceof Error ? error.message : String(error),
           peerDeviceId: peer.metadata?.deviceId ?? null,
@@ -1277,6 +1349,7 @@ export function createBrainProjectActionsSyncHandler(
       });
     });
     ws.on("close", (code, reason) => {
+      peer.lifecycleGeneration += 1;
       clearAuthTimeout();
       peer.relayAuthorization?.dispose();
       peer.relayAuthorization = null;

@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { createSyncPairingStore } from "../sync/syncPairingStore";
 import { createSyncPinStore } from "../sync/syncPinStore";
-import { verifyClerkAccountAttestation } from "./accountAttestationVerifier";
+import { AccountAttestationError, verifyClerkAccountAttestation } from "./accountAttestationVerifier";
 
 const ISSUER = "https://clerk.test";
 const OAUTH_CLIENT_ID = "client_ade";
@@ -27,7 +27,18 @@ beforeAll(async () => {
   badSigningKey = bad.privateKey;
   const publicJwk = await exportJWK(primary.publicKey);
   const jwks = { keys: [{ ...publicJwk, alg: "RS256", kid: "test-key", use: "sig" }] };
-  jwksServer = createServer((_request, response) => {
+  jwksServer = createServer((request, response) => {
+    const mode = new URL(request.url ?? "/", "http://127.0.0.1").searchParams.get("mode");
+    if (mode === "500") {
+      response.writeHead(503, { "content-type": "text/plain" });
+      response.end("temporarily unavailable");
+      return;
+    }
+    if (mode === "malformed") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end("{not-json");
+      return;
+    }
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify(jwks));
   });
@@ -152,6 +163,25 @@ describe("verifyClerkAccountAttestation", () => {
       expectedUserId: OWNER_USER_ID,
       config: config(),
     })).rejects.toBeInstanceOf(Error);
+  });
+
+  it.each(["500", "malformed"] as const)("classifies remote JWKS %s responses as transient", async (mode) => {
+    const token = await mintToken({ audience: OAUTH_CLIENT_ID });
+    await expect(verifyClerkAccountAttestation({
+      token,
+      expectedUserId: OWNER_USER_ID,
+      config: { ...config(), jwksUrl: `${jwksUrl}?mode=${mode}` },
+    })).rejects.toMatchObject<AccountAttestationError>({
+      code: "verification_unavailable",
+    });
+  });
+
+  it("classifies a malformed compact JWT as terminal invalid_token", async () => {
+    await expect(verifyClerkAccountAttestation({
+      token: "not-a-jwt",
+      expectedUserId: OWNER_USER_ID,
+      config: config(),
+    })).rejects.toMatchObject<AccountAttestationError>({ code: "invalid_token" });
   });
 });
 

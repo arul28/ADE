@@ -29,6 +29,7 @@ function errorCode(error: unknown): string {
 
 function classifyJoseVerificationError(error: unknown): AccountAttestationErrorCode {
   const code = errorCode(error);
+  const message = error instanceof Error ? error.message : String(error ?? "");
   if (code === "ERR_JWT_EXPIRED") return "token_expired";
   if (
     code === "ERR_JWKS_TIMEOUT"
@@ -37,7 +38,12 @@ function classifyJoseVerificationError(error: unknown): AccountAttestationErrorC
     || code === "ECONNRESET"
     || code === "ECONNREFUSED"
     || code === "ETIMEDOUT"
-    || (error instanceof TypeError && /fetch|network|socket/i.test(error.message))
+    || code === "ERR_JWKS_INVALID"
+    || (
+      code === "ERR_JOSE_GENERIC"
+      && /jwks|fetch|http|response|status|json|parse|content-type|200 ok/i.test(message)
+    )
+    || (error instanceof TypeError && /fetch|network|socket/i.test(message))
   ) {
     return "verification_unavailable";
   }
