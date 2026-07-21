@@ -188,11 +188,7 @@ function hostSignatureBase(
   epoch: string,
 ): string {
   if (mode === "legacy") return buildHostSignatureBase(machineKey, timestamp);
-  return (buildHostSignatureBase as unknown as (
-    key: string,
-    controlEpoch: string,
-    ts: string,
-  ) => string)(machineKey, epoch, timestamp);
+  return buildHostSignatureBase(machineKey, epoch, timestamp);
 }
 
 function pipeSignatureBase(
@@ -202,12 +198,7 @@ function pipeSignatureBase(
   epoch: string | undefined,
 ): string {
   if (!epoch) return buildPipeSignatureBase(machineKey, connectionId, timestamp);
-  return (buildPipeSignatureBase as unknown as (
-    key: string,
-    id: string,
-    controlEpoch: string,
-    ts: string,
-  ) => string)(machineKey, connectionId, epoch, timestamp);
+  return buildPipeSignatureBase(machineKey, connectionId, epoch, timestamp);
 }
 
 const MAX_CLOSE_REASON_BYTES = 123;
@@ -533,7 +524,6 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       armOpenDeadline(socket, () => {
         if (control !== socket) return;
         const reason = "relay control socket connect timed out";
-        activateLegacyFallback("control registration timed out");
         socketState.failureReason = reason;
         recordControlFailure(reason);
       });
@@ -1287,12 +1277,19 @@ function forward(
   }
   bufferedTargets.add(target);
   const frameBytes = rawDataByteLength(data);
+  if (frameBytes > MAX_RELAY_WEBSOCKET_FRAME_BYTES) {
+    onFailure("bridge frame too large");
+    return false;
+  }
   let bufferedBytes = 0;
   for (const socket of bufferedTargets) {
     const amount = socket.bufferedAmount;
     if (Number.isFinite(amount) && amount > 0) bufferedBytes += amount;
   }
-  if (bufferedBytes > MAX_BUFFERED_TUNNEL_BYTES - frameBytes) {
+  const bufferWouldOverflow = frameBytes > MAX_BUFFERED_TUNNEL_BYTES
+    ? bufferedBytes > 0
+    : bufferedBytes > MAX_BUFFERED_TUNNEL_BYTES - frameBytes;
+  if (bufferWouldOverflow) {
     onFailure("bridge send buffer overflow");
     return false;
   }
@@ -1427,6 +1424,13 @@ export const MAX_PENDING_TUNNEL_FRAMES = 64;
 export const MAX_PENDING_TUNNEL_BYTES = 256 * 1024;
 /** Aggregate bytes queued by Node across both open tunnel targets. */
 export const MAX_BUFFERED_TUNNEL_BYTES = 4 * 1024 * 1024;
+/**
+ * Cloudflare Workers and Durable Objects reject received WebSocket messages
+ * above 32 MiB before ADE code can inspect them. Modern sync peers use
+ * `envelope_chunk` well below this boundary; legacy unchunked envelopes larger
+ * than this cannot be carried over Relay and must fail locally and explicitly.
+ */
+export const MAX_RELAY_WEBSOCKET_FRAME_BYTES = 32 * 1024 * 1024;
 
 /**
  * Forwards frames to a target socket, buffering (bounded, in order) while the

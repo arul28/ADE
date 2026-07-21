@@ -1895,6 +1895,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const writeBySessionId = vi.fn().mockReturnValue(true);
     const resizeBySessionId = vi.fn().mockReturnValue(true);
     const readTranscriptTail = vi.fn(async () => "prior output\n");
+    const readTranscriptSnapshot = vi.fn(async () => ({
+      data: "prior output\n",
+      startOffset: 0,
+      endOffset: Buffer.byteLength("prior output\n", "utf8"),
+    }));
     const updateSessionMeta = vi.fn();
 
     const host = createSyncHostService({
@@ -2033,6 +2038,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       ptyService: {
         create: createSpy,
         readTranscriptTail,
+        readTranscriptSnapshot,
         writeBySessionId,
         resizeBySessionId,
         hasLivePty: () => true,
@@ -2068,11 +2074,10 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     const snapshot = await client.queue.next("terminal_snapshot");
     expect(snapshot.requestId).toBe("sub-1");
     expect((snapshot.payload as { transcript: string }).transcript).toContain("prior output");
-    expect(readTranscriptTail).toHaveBeenCalledWith({
+    expect(readTranscriptSnapshot).toHaveBeenCalledWith({
       sessionId: "session-1",
       maxBytes: 32_000,
-      raw: true,
-      alignToLineBoundary: true,
+      alignStartToSafeBoundary: true,
     });
 
     client.ws.send(encodeSyncEnvelope({

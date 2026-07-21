@@ -115,6 +115,13 @@ class StaleSocketAttemptError extends Error {
   }
 }
 
+class RelayReadyNegotiationTimeoutError extends Error {
+  constructor() {
+    super("The Relay did not confirm ready-v2 support in time.");
+    this.name = "RelayReadyNegotiationTimeoutError";
+  }
+}
+
 export type AccountPairAndConnectArgs = {
   endpoints: BrowserDialCandidate[];
   peer: SyncPeerMetadata;
@@ -410,6 +417,20 @@ export class SyncConnection {
   }
 
   private async connectEndpoint(environment: WebClientEnvironmentRecord, candidate: BrowserDialCandidate): Promise<void> {
+    const throughRelay = browserEndpointRequiresRelayAccess(candidate);
+    try {
+      await this.connectEndpointAttempt(environment, candidate, throughRelay);
+    } catch (error) {
+      if (!throughRelay || !(error instanceof RelayReadyNegotiationTimeoutError)) throw error;
+      await this.connectEndpointAttempt(environment, candidate, false);
+    }
+  }
+
+  private async connectEndpointAttempt(
+    environment: WebClientEnvironmentRecord,
+    candidate: BrowserDialCandidate,
+    useRelayReadyV2: boolean,
+  ): Promise<void> {
     const generation = ++this.connectionGeneration;
     const endpoint = candidate.url;
     const throughRelay = browserEndpointRequiresRelayAccess(candidate);
@@ -421,7 +442,7 @@ export class SyncConnection {
     // rejection until onopen awaits the same promise so it cannot be reported
     // as unhandled while the transport is still opening.
     void preparedAuth.catch(() => undefined);
-    const socket = this.socketFactory(throughRelay ? withRelayReadyNegotiation(endpoint) : endpoint);
+    const socket = this.socketFactory(useRelayReadyV2 ? withRelayReadyNegotiation(endpoint) : endpoint);
     this.ws = socket;
     this.status.endpoint = endpoint;
     this.emit("statusChanged", this.getStatus());
@@ -475,15 +496,16 @@ export class SyncConnection {
         helloTimeout = setTimeout(() => {
           fail(new Error(`Timed out authenticating with ${endpoint}.`), "Authenticated hello timeout");
         }, this.authenticatedHelloTimeoutMs);
-        if (!throughRelay) {
+        if (!useRelayReadyV2) {
           startHello();
           return;
         }
         relayNegotiationTimeout = setTimeout(() => {
           relayNegotiationTimeout = null;
-          // Old Workers ignore ?ready=2 and provide no transport frame. Fall
-          // back on this same socket; the legacy Worker buffers the ADE hello.
-          startHello();
+          // Never send ADE data on a socket that requested ready-v2: a delayed
+          // accepted frame would make the Worker reject that data as pre-ready.
+          // Retry the same route on a fresh, explicitly legacy socket instead.
+          fail(new RelayReadyNegotiationTimeoutError(), "Relay readiness negotiation timeout");
         }, RELAY_READY_NEGOTIATION_WINDOW_MS);
       };
       socket.onmessage = (event) => {
@@ -553,10 +575,25 @@ export class SyncConnection {
     args: AccountPairAndConnectArgs,
     dpop: SyncDpopProof,
   ): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
+    const throughRelay = browserEndpointRequiresRelayAccess(candidate);
+    try {
+      return await this.pairWithAccountOnEndpointAttempt(candidate, args, dpop, throughRelay);
+    } catch (error) {
+      if (!throughRelay || !(error instanceof RelayReadyNegotiationTimeoutError)) throw error;
+      return this.pairWithAccountOnEndpointAttempt(candidate, args, dpop, false);
+    }
+  }
+
+  private async pairWithAccountOnEndpointAttempt(
+    candidate: BrowserDialCandidate,
+    args: AccountPairAndConnectArgs,
+    dpop: SyncDpopProof,
+    useRelayReadyV2: boolean,
+  ): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     const generation = ++this.connectionGeneration;
     const endpoint = candidate.url;
     const throughRelay = browserEndpointRequiresRelayAccess(candidate);
-    const socket = this.socketFactory(throughRelay ? withRelayReadyNegotiation(endpoint) : endpoint);
+    const socket = this.socketFactory(useRelayReadyV2 ? withRelayReadyNegotiation(endpoint) : endpoint);
     this.ws = socket;
     this.shouldReconnect = false;
     this.setStatus({ state: "connecting", endpoint, error: null });
@@ -624,13 +661,13 @@ export class SyncConnection {
         helloTimeout = setTimeout(() => {
           fail(new Error("Timed out authenticating with the account machine."), "Account hello timeout");
         }, this.authenticatedHelloTimeoutMs);
-        if (!throughRelay) {
+        if (!useRelayReadyV2) {
           startHello();
           return;
         }
         relayNegotiationTimeout = setTimeout(() => {
           relayNegotiationTimeout = null;
-          startHello();
+          fail(new RelayReadyNegotiationTimeoutError(), "Relay readiness negotiation timeout");
         }, RELAY_READY_NEGOTIATION_WINDOW_MS);
       };
       socket.onmessage = (event) => {
@@ -1200,17 +1237,9 @@ export class SyncConnection {
     if (this.backoffResetTimer) clearTimeout(this.backoffResetTimer);
     this.backoffResetTimer = setTimeout(() => {
       this.backoffResetTimer = null;
-      this.markConnectionHealthy(generation);
+      if (generation !== this.connectionGeneration || !this.isConnected()) return;
+      this.backoffMs = BACKOFF_MIN_MS;
     }, BACKOFF_STABLE_CONNECTED_MS);
-  }
-
-  private markConnectionHealthy(generation: number): void {
-    if (generation !== this.connectionGeneration || !this.isConnected()) return;
-    this.backoffMs = BACKOFF_MIN_MS;
-    if (this.backoffResetTimer) {
-      clearTimeout(this.backoffResetTimer);
-      this.backoffResetTimer = null;
-    }
   }
 
   private visibilityReconnectDelayMs(): number {

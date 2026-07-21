@@ -82,6 +82,8 @@ import type {
   SyncRelayAuthorizationLease,
   SyncTailnetDiscoveryStatus,
   SyncTerminalHistoryResponsePayload,
+  SyncTerminalDataPayload,
+  SyncTerminalExitPayload,
   SyncTerminalInputAckPayload,
   SyncTerminalInputPayload,
   SyncTerminalSnapshotPayload,
@@ -248,6 +250,9 @@ const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
 const DEFAULT_TERMINAL_HISTORY_PAGE_BYTES = 262_144;
 const MIN_TERMINAL_HISTORY_PAGE_BYTES = 4_096;
 const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
+const MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS = 256;
+const MAX_PENDING_TERMINAL_SNAPSHOT_BYTES = 2_000_000;
+const MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS = 4;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
@@ -255,6 +260,7 @@ const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
 const MAX_SYNC_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
+export const SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS = 2_000;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
@@ -277,7 +283,12 @@ const ROSTER_DIRTYING_COMMAND_ACTIONS = new Set<string>([
   "lanes.archive",
   "lanes.delete",
 ]);
-const MAX_CHANGESET_ACK_RETRIES = 6;
+const MAX_CHANGESET_SEND_ATTEMPTS = 6;
+const MIN_RECOVERY_CHANGESET_BATCH_ROWS = 16;
+const MIN_RECOVERY_CHANGESET_BATCH_BYTES = 16 * 1024;
+const MAX_CHANGESET_RECOVERY_LEVEL = 4;
+const CHANGESET_RECOVERY_BACKOFF_BASE_MS = 250;
+const CHANGESET_RECOVERY_BACKOFF_MAX_MS = 4_000;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 * 1024;
@@ -424,6 +435,28 @@ type LanePresenceEntry = {
 
 type ChatSubscriptionScope = "project" | "personal" | "foreign-project";
 
+type PendingTerminalSnapshotEvent =
+  | {
+      kind: "data";
+      payload: SyncTerminalDataPayload;
+      byteLength: number;
+    }
+  | {
+      kind: "exit";
+      payload: SyncTerminalExitPayload;
+      byteLength: 0;
+    };
+
+type PendingTerminalSnapshotBarrier = {
+  generation: number;
+  captureAttempt: number;
+  requiredCaptureAttempt: number;
+  requiredSnapshotEndOffset: number | null;
+  events: PendingTerminalSnapshotEvent[];
+  queuedBytes: number;
+  failed: boolean;
+};
+
 type PeerState = {
   ws: WebSocket;
   lifecycleGeneration: number;
@@ -441,11 +474,16 @@ type PeerState = {
   awaitingHeartbeatAt: string | null;
   missedHeartbeatCount: number;
   backpressuredSinceMs: number | null;
+  changesetChatDeferredSinceMs: number | null;
+  changesetRecoveryLevel: number;
+  changesetRecoveryNotBeforeMs: number;
   remoteAddress: string | null;
   remotePort: number | null;
   transportOrigin: SyncTransportOrigin;
   relayAuthorization: RelayAuthorizationLifecycle | null;
   subscribedSessionIds: Set<string>;
+  pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
+  nextTerminalSnapshotGeneration: number;
   subscribedChatSessionIds: Set<string>;
   chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
   chatTranscriptOffsets: Map<string, number>;
@@ -476,7 +514,8 @@ type PendingChangesetBatch = {
   changes: CrsqlChangeRow[];
   reason: SyncChangesetBatchPayload["reason"];
   sentAtMs: number;
-  retryCount: number;
+  attemptCount: number;
+  retryNotBeforeMs: number;
 };
 
 type CachedMobileCommandWaiter = {
@@ -872,22 +911,6 @@ export function syncHostChangesetBatchOptionsForChat(args: {
   };
 }
 
-/**
- * Flushed transcript size in bytes, or null when the session has no
- * transcript (file missing / untracked). The transcript WriteStream buffers,
- * so this can briefly lag the in-memory byte counter — offset consumers
- * tolerate that via gap detection.
- */
-function transcriptFileSizeOrNull(transcriptPath: string | null | undefined): number | null {
-  const filePath = toOptionalString(transcriptPath);
-  if (!filePath) return null;
-  try {
-    return Math.max(0, Number(fs.statSync(filePath).size) || 0);
-  } catch {
-    return null;
-  }
-}
-
 const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["type"]>([
   "changeset_batch",
   "changeset_ack",
@@ -962,6 +985,10 @@ export function resolveSyncHostInboundProjectScope(
   return { ok: true, projectId: host, usedSingleProjectFallback: false };
 }
 
+export function syncConnectionTransportForOrigin(origin: SyncTransportOrigin): "direct" | "relay" {
+  return origin === "relay-bridge" ? "relay" : "direct";
+}
+
 export function buildSyncHostHelloOkPayload(args: {
   peer: SyncPeerMetadata;
   brain: SyncPeerMetadata;
@@ -980,6 +1007,7 @@ export function buildSyncHostHelloOkPayload(args: {
   maxProjectCatalogEnvelopeBytes?: number;
   cloudRelayWssUrl?: string | null;
   relayAuthorization?: SyncRelayAuthorizationLease | null;
+  connectionTransport?: "direct" | "relay";
   /** Advertise only when this concrete handler accepts terminal_input. */
   terminalInputAckEnabled?: boolean;
   /**
@@ -1017,6 +1045,7 @@ export function buildSyncHostHelloOkPayload(args: {
     // the argument at all.
     ...(args.cloudRelayWssUrl !== undefined ? { cloudRelayWssUrl: args.cloudRelayWssUrl } : {}),
     ...(args.relayAuthorization ? { relayAuthorization: args.relayAuthorization } : {}),
+    ...(args.connectionTransport ? { connectionTransport: args.connectionTransport } : {}),
     ...(args.accountPairing ? { accountPairing: args.accountPairing } : {}),
     features: {
       fileAccess: true,
@@ -1951,7 +1980,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       verifyAccountToken: async (token, expectedUserId) => {
         const config = args.getAccountAttestationConfig?.();
         if (!config) throw new Error("Relay account attestation is unavailable.");
-        return await verifyAccountAttestation({ token, expectedUserId, config });
+        return verifyAccountAttestation({ token, expectedUserId, config });
       },
       sendResult: (payload, requestId) => {
         sendRequired(peer, "relay_reauthorize_result", payload, requestId);
@@ -2580,6 +2609,186 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       && peer.ws.readyState === WebSocket.OPEN;
   }
 
+  function isCurrentTerminalSnapshotBarrier(
+    peer: PeerState,
+    sessionId: string,
+    barrier: PendingTerminalSnapshotBarrier,
+    lifecycleGeneration: number,
+  ): boolean {
+    const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
+    return isPeerLifecycleCurrent(peer, lifecycleGeneration)
+      && currentBarrier === barrier
+      && !barrier.failed;
+  }
+
+  function clearTerminalSnapshotBarrier(
+    peer: PeerState,
+    sessionId: string,
+    barrier?: PendingTerminalSnapshotBarrier,
+  ): void {
+    const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
+    if (barrier && currentBarrier !== barrier) return;
+    peer.pendingTerminalSnapshots.delete(sessionId);
+  }
+
+  function requireFreshTerminalSnapshot(
+    barrier: PendingTerminalSnapshotBarrier,
+    endOffset?: number | null,
+  ): void {
+    barrier.requiredCaptureAttempt = Math.max(
+      barrier.requiredCaptureAttempt,
+      barrier.captureAttempt + 1,
+    );
+    if (typeof endOffset === "number" && Number.isSafeInteger(endOffset) && endOffset >= 0) {
+      barrier.requiredSnapshotEndOffset = Math.max(
+        barrier.requiredSnapshotEndOffset ?? 0,
+        endOffset,
+      );
+    }
+  }
+
+  function discardTrackedTerminalDataForRecapture(barrier: PendingTerminalSnapshotBarrier): void {
+    const retained: PendingTerminalSnapshotEvent[] = [];
+    let queuedBytes = 0;
+    for (const event of barrier.events) {
+      if (event.kind === "data" && event.payload.offset != null) {
+        requireFreshTerminalSnapshot(barrier, event.payload.offset);
+        continue;
+      }
+      retained.push(event);
+      queuedBytes += event.byteLength;
+    }
+    barrier.events = retained;
+    barrier.queuedBytes = queuedBytes;
+  }
+
+  function failTerminalSnapshotBarrier(
+    peer: PeerState,
+    sessionId: string,
+    barrier: PendingTerminalSnapshotBarrier,
+    reason: string,
+  ): void {
+    if (barrier.failed) return;
+    barrier.failed = true;
+    args.logger.warn("sync_host.terminal_snapshot_barrier_failed", {
+      sessionId,
+      reason,
+      captureAttempt: barrier.captureAttempt,
+      queuedEvents: barrier.events.length,
+      queuedBytes: barrier.queuedBytes,
+      peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+    });
+    try {
+      peer.ws.close(4001, "Terminal snapshot catch-up failed");
+    } catch {
+      // The failed barrier still prevents an out-of-order or lossy flush.
+    }
+  }
+
+  function enqueueTerminalSnapshotEvent(
+    peer: PeerState,
+    sessionId: string,
+    event: PendingTerminalSnapshotEvent,
+  ): boolean {
+    const barrier = peer.pendingTerminalSnapshots.get(sessionId);
+    if (!barrier) return false;
+    if (barrier.failed) return true;
+
+    const exceedsBudget = (): boolean => (
+      barrier.events.length >= MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS
+      || barrier.queuedBytes + event.byteLength > MAX_PENDING_TERMINAL_SNAPSHOT_BYTES
+    );
+    if (exceedsBudget()) {
+      // Numeric-offset data is durably represented by a fresh authoritative
+      // transcript snapshot, so shed only those queued events and require the
+      // next capture to cover their highest end offset. Offsetless data and
+      // exits are not reconstructable and must remain explicitly queued.
+      discardTrackedTerminalDataForRecapture(barrier);
+    }
+    if (exceedsBudget()) {
+      if (event.kind === "data" && event.payload.offset != null) {
+        requireFreshTerminalSnapshot(barrier, event.payload.offset);
+        return true;
+      }
+      failTerminalSnapshotBarrier(peer, sessionId, barrier, "unreconstructable_queue_overflow");
+      return true;
+    }
+
+    if (event.kind === "data" && event.payload.offset == null) {
+      requireFreshTerminalSnapshot(barrier);
+    }
+    barrier.events.push(event);
+    barrier.queuedBytes += event.byteLength;
+    return true;
+  }
+
+  function planTerminalSnapshotFlush(
+    barrier: PendingTerminalSnapshotBarrier,
+    snapshotEndOffset: number | null,
+  ): { needsRecapture: boolean; events: PendingTerminalSnapshotEvent[] } {
+    if (
+      barrier.requiredCaptureAttempt > barrier.captureAttempt
+      || (
+        barrier.requiredSnapshotEndOffset != null
+        && (snapshotEndOffset == null || snapshotEndOffset < barrier.requiredSnapshotEndOffset)
+      )
+    ) {
+      return { needsRecapture: true, events: [] };
+    }
+
+    const planned: PendingTerminalSnapshotEvent[] = [];
+    let watermark = snapshotEndOffset;
+    let offsetsAreContinuous = watermark != null;
+    for (const event of barrier.events) {
+      if (event.kind === "exit") {
+        planned.push(event);
+        continue;
+      }
+      const endOffset = event.payload.offset;
+      const bytes = Buffer.from(event.payload.data, "utf8");
+      if (
+        !offsetsAreContinuous
+        || endOffset == null
+        || !Number.isSafeInteger(endOffset)
+        || endOffset < bytes.length
+      ) {
+        planned.push(event);
+        offsetsAreContinuous = false;
+        continue;
+      }
+      const startOffset = endOffset - bytes.length;
+      if (endOffset <= watermark!) {
+        continue;
+      }
+      if (startOffset > watermark!) {
+        requireFreshTerminalSnapshot(barrier, endOffset);
+        discardTrackedTerminalDataForRecapture(barrier);
+        return { needsRecapture: true, events: [] };
+      }
+      const overlapBytes = watermark! - startOffset;
+      if (
+        overlapBytes > 0
+        && overlapBytes < bytes.length
+        && (bytes[overlapBytes]! & 0b1100_0000) === 0b1000_0000
+      ) {
+        requireFreshTerminalSnapshot(barrier, endOffset);
+        discardTrackedTerminalDataForRecapture(barrier);
+        return { needsRecapture: true, events: [] };
+      }
+      const suffix = overlapBytes === 0 ? bytes : bytes.subarray(overlapBytes);
+      planned.push({
+        ...event,
+        payload: {
+          ...event.payload,
+          data: suffix.toString("utf8"),
+        },
+        byteLength: suffix.length,
+      });
+      watermark = endOffset;
+    }
+    return { needsRecapture: false, events: planned };
+  }
+
   async function withHelloCommitLock<T>(deviceId: string, work: () => Promise<T> | T): Promise<T> {
     const prior = helloCommitQueueByDevice.get(deviceId) ?? Promise.resolve();
     let release!: () => void;
@@ -2620,11 +2829,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       awaitingHeartbeatAt: null,
       missedHeartbeatCount: 0,
       backpressuredSinceMs: null,
+      changesetChatDeferredSinceMs: null,
+      changesetRecoveryLevel: 0,
+      changesetRecoveryNotBeforeMs: 0,
       remoteAddress,
       remotePort,
       transportOrigin,
       relayAuthorization: null,
       subscribedSessionIds: new Set(),
+      pendingTerminalSnapshots: new Map(),
+      nextTerminalSnapshotGeneration: 0,
       subscribedChatSessionIds: new Set(),
       chatSubscriptionScopes: new Map(),
       chatTranscriptOffsets: new Map(),
@@ -2693,6 +2907,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     ws.on("close", (code, reason) => {
       peer.lifecycleGeneration += 1;
+      peer.pendingTerminalSnapshots.clear();
       clearPeerAuthTimeout(peer);
       releaseConnectionAttemptWinner(peer);
       peer.relayAuthorization?.dispose();
@@ -3690,24 +3905,92 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       fromDbVersion,
       toDbVersion: payload.toDbVersion,
       changes: payload.changes,
-      sentAtMs: Date.now(),
-      retryCount: 0,
+      sentAtMs: 0,
+      attemptCount: 0,
+      retryNotBeforeMs: 0,
     };
     const sent = send(peer, "changeset_batch", payload);
-    return sent ? batch : null;
+    if (!sent) return null;
+    batch.sentAtMs = Date.now();
+    batch.attemptCount = 1;
+    return batch;
   }
 
   function resendPendingChangesetBatch(peer: PeerState): boolean {
     const batch = peer.pendingChangesetBatch;
     if (!batch) return false;
-    batch.sentAtMs = Date.now();
-    batch.retryCount += 1;
-    return send(peer, "changeset_batch", {
+    const sent = send(peer, "changeset_batch", {
       batchId: batch.batchId,
       reason: batch.reason,
       fromDbVersion: batch.fromDbVersion,
       toDbVersion: batch.toDbVersion,
       changes: batch.changes,
+    });
+    if (!sent) return false;
+    batch.sentAtMs = Date.now();
+    batch.attemptCount += 1;
+    batch.retryNotBeforeMs = 0;
+    return true;
+  }
+
+  function changesetRecoveryBackoffMs(level: number): number {
+    const boundedLevel = Math.max(1, Math.min(MAX_CHANGESET_RECOVERY_LEVEL, Math.floor(level)));
+    return Math.min(
+      CHANGESET_RECOVERY_BACKOFF_MAX_MS,
+      CHANGESET_RECOVERY_BACKOFF_BASE_MS * (2 ** (boundedLevel - 1)),
+    );
+  }
+
+  function changesetBatchLimits(peer: PeerState): { maxRows: number; maxBytes: number } {
+    const divisor = 2 ** Math.max(0, peer.changesetRecoveryLevel);
+    return {
+      maxRows: Math.max(MIN_RECOVERY_CHANGESET_BATCH_ROWS, Math.floor(maxChangesetBatchRows / divisor)),
+      maxBytes: Math.max(MIN_RECOVERY_CHANGESET_BATCH_BYTES, Math.floor(maxChangesetBatchBytes / divisor)),
+    };
+  }
+
+  function finishChangesetChatDeferral(
+    peer: PeerState,
+    reason: "pressure_relieved" | "no_changes" | "batch_admitted",
+    nowMs: number,
+  ): void {
+    if (peer.changesetChatDeferredSinceMs == null) return;
+    args.logger.debug("sync_host.changeset_chat_deferral_ended", {
+      peerDeviceId: peer.metadata?.deviceId ?? null,
+      reason,
+      deferredMs: Math.max(0, nowMs - peer.changesetChatDeferredSinceMs),
+    });
+    peer.changesetChatDeferredSinceMs = null;
+  }
+
+  function abandonPendingChangesetBatch(
+    peer: PeerState,
+    reason: "ack_timeout" | "ack_failed",
+    nowMs: number,
+    error: string | null = null,
+  ): void {
+    const pending = peer.pendingChangesetBatch;
+    if (!pending) return;
+    peer.pendingChangesetBatch = null;
+    peer.changesetRecoveryLevel = Math.min(
+      MAX_CHANGESET_RECOVERY_LEVEL,
+      peer.changesetRecoveryLevel + 1,
+    );
+    const backoffMs = changesetRecoveryBackoffMs(peer.changesetRecoveryLevel);
+    peer.changesetRecoveryNotBeforeMs = nowMs + backoffMs;
+    const limits = changesetBatchLimits(peer);
+    args.logger.warn("sync_host.changeset_recovery_started", {
+      peerDeviceId: peer.metadata?.deviceId ?? null,
+      abandonedBatchId: pending.batchId,
+      fromDbVersion: pending.fromDbVersion,
+      toDbVersion: pending.toDbVersion,
+      attemptCount: pending.attemptCount,
+      reason,
+      error,
+      recoveryLevel: peer.changesetRecoveryLevel,
+      backoffMs,
+      maxRows: limits.maxRows,
+      maxBytes: limits.maxBytes,
     });
   }
 
@@ -4386,46 +4669,64 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // the gate so a phone/browser cannot suppress its normal CRDT stream by
       // spoofing the hello capability.
       if (isRuntimeOnlyPairedHost(peer)) continue;
+      // The 4 MiB gate is a hard socket-safety boundary. Fair scheduling may
+      // override only the lower chat-priority watermark below.
       if (isPeerBackpressured(peer)) continue;
       if (peer.pendingChangesetBatch) {
-        if (nowMs - peer.pendingChangesetBatch.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
-          const pending = peer.pendingChangesetBatch;
-          if (pending.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
-            args.logger.warn("sync_host.changeset_ack_timeout", {
+        const pending = peer.pendingChangesetBatch;
+        const rejectedRetryDue = pending.retryNotBeforeMs > 0 && nowMs >= pending.retryNotBeforeMs;
+        const ackTimedOut = pending.retryNotBeforeMs === 0
+          && nowMs - pending.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS;
+        if (rejectedRetryDue || ackTimedOut) {
+          if (pending.attemptCount >= MAX_CHANGESET_SEND_ATTEMPTS) {
+            abandonPendingChangesetBatch(peer, ackTimedOut ? "ack_timeout" : "ack_failed", nowMs);
+            continue;
+          }
+          const resent = resendPendingChangesetBatch(peer);
+          if (resent) {
+            args.logger.debug("sync_host.changeset_ack_retry", {
               peerDeviceId: peer.metadata.deviceId,
               batchId: pending.batchId,
               fromDbVersion: pending.fromDbVersion,
               toDbVersion: pending.toDbVersion,
-              retryCount: pending.retryCount,
+              attemptCount: pending.attemptCount,
+              trigger: ackTimedOut ? "timeout" : "rejected",
             });
-            try {
-              peer.ws.close(4000, "Changeset acknowledgement timed out");
-            } catch {
-              // ignore close failures
-            }
-            continue;
           }
-          const resent = resendPendingChangesetBatch(peer);
-          args.logger.debug("sync_host.changeset_ack_retry", {
-            peerDeviceId: peer.metadata.deviceId,
-            batchId: pending.batchId,
-            fromDbVersion: pending.fromDbVersion,
-            toDbVersion: pending.toDbVersion,
-            retryCount: pending.retryCount,
-            resent,
-          });
         }
         continue;
       }
-      if (shouldDeferBackgroundChangesForChat(peer)) {
-        args.logger.debug("sync_host.changeset_deferred_chat_backpressure", {
-          peerDeviceId: peer.metadata?.deviceId ?? null,
-          bufferedAmount: peer.ws.bufferedAmount,
-          thresholdBytes: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
-        });
+      if (currentDbVersion <= peer.lastKnownServerDbVersion) {
+        finishChangesetChatDeferral(peer, "no_changes", nowMs);
         continue;
       }
-      if (currentDbVersion <= peer.lastKnownServerDbVersion) continue;
+      if (nowMs < peer.changesetRecoveryNotBeforeMs) continue;
+      if (shouldDeferBackgroundChangesForChat(peer)) {
+        if (peer.changesetChatDeferredSinceMs == null) {
+          peer.changesetChatDeferredSinceMs = nowMs;
+          args.logger.debug("sync_host.changeset_chat_deferral_started", {
+            peerDeviceId: peer.metadata.deviceId,
+            bufferedAmount: peer.ws.bufferedAmount,
+            thresholdBytes: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+            maxDeferMs: SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS,
+          });
+        }
+        if (nowMs - peer.changesetChatDeferredSinceMs < SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS) {
+          continue;
+        }
+      } else {
+        finishChangesetChatDeferral(peer, "pressure_relieved", nowMs);
+      }
+      const recoveryLimits = changesetBatchLimits(peer);
+      const chatLimits = syncHostChangesetBatchOptionsForChat({
+        subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
+        maxRows: recoveryLimits.maxRows,
+        maxBytes: recoveryLimits.maxBytes,
+      });
+      const batchLimits = {
+        maxRows: chatLimits?.maxRows ?? recoveryLimits.maxRows,
+        maxBytes: chatLimits?.maxBytes ?? recoveryLimits.maxBytes,
+      };
       // Bounded export: scan a db_version WINDOW, not the whole backlog. The
       // crsql_changes vtab pushes version-range constraints down to indexed
       // clock tables, while an open-ended ORDER BY scan materializes the full
@@ -4439,7 +4740,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       );
       const exported = args.db.sync.exportChangesSince(
         peer.lastKnownServerDbVersion,
-        { maxRows: maxChangesetBatchRows * 4, throughDbVersion: scanThroughDbVersion },
+        { maxRows: batchLimits.maxRows * 4, throughDbVersion: scanThroughDbVersion },
       );
       const exportedThroughDbVersion = exported.length > 0
         ? Number(exported[exported.length - 1].db_version)
@@ -4460,6 +4761,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           toDbVersion: exportedThroughDbVersion,
           reason: "peer_owned_changes_only",
         });
+        finishChangesetChatDeferral(peer, "no_changes", nowMs);
         continue;
       }
       const pending = sendNextChangesetBatch(
@@ -4468,26 +4770,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.lastKnownServerDbVersion,
         exportedThroughDbVersion,
         changes,
-        syncHostChangesetBatchOptionsForChat({
-          subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
-          maxRows: maxChangesetBatchRows,
-          maxBytes: maxChangesetBatchBytes,
-        }),
+        batchLimits,
       );
       if (pending) {
+        peer.changesetRecoveryNotBeforeMs = 0;
         if (peerSupportsChangesetAck(peer)) {
           peer.pendingChangesetBatch = pending;
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
         }
+        finishChangesetChatDeferral(peer, "batch_admitted", nowMs);
         lastBroadcastAt = nowIso();
-      } else {
-        args.logger.debug("sync_host.changeset_deferred_backpressure", {
-          peerDeviceId: peer.metadata?.deviceId ?? null,
-          fromDbVersion: peer.lastKnownServerDbVersion,
-          toDbVersion: currentDbVersion,
-          bufferedAmount: peer.ws.bufferedAmount,
-        });
       }
     }
   }
@@ -4504,28 +4797,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     if (!payload.ok) {
-      pending.retryCount += 1;
-      pending.sentAtMs = Date.now();
+      const nowMs = Date.now();
+      const message = payload.error?.message ?? "Changeset apply failed.";
+      if (pending.attemptCount >= MAX_CHANGESET_SEND_ATTEMPTS) {
+        abandonPendingChangesetBatch(peer, "ack_failed", nowMs, message);
+        return;
+      }
+      const retryInMs = changesetRecoveryBackoffMs(pending.attemptCount);
+      pending.retryNotBeforeMs = nowMs + retryInMs;
       args.logger.warn("sync_host.changeset_ack_failed", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
         batchId: pending.batchId,
         fromDbVersion: pending.fromDbVersion,
         toDbVersion: pending.toDbVersion,
-        retryCount: pending.retryCount,
-        error: payload.error?.message ?? "Changeset apply failed.",
+        attemptCount: pending.attemptCount,
+        retryInMs,
+        error: message,
       });
-      if (pending.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
-        try {
-          peer.ws.close(4000, "Changeset apply failed repeatedly");
-        } catch {
-          // ignore close failures
-        }
-      }
       return;
     }
     if (payload.toDbVersion < pending.toDbVersion) return;
+    const recoveryLevel = peer.changesetRecoveryLevel;
     peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
     peer.pendingChangesetBatch = null;
+    peer.changesetRecoveryLevel = 0;
+    peer.changesetRecoveryNotBeforeMs = 0;
     peer.lastAppliedAt = nowIso();
     lastChangesetAckLatencyMs = Math.max(0, Date.now() - pending.sentAtMs);
     args.logger.debug("sync_host.changeset_ack_applied", {
@@ -4535,6 +4831,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       toDbVersion: pending.toDbVersion,
       latencyMs: lastChangesetAckLatencyMs,
     });
+    if (recoveryLevel > 0) {
+      args.logger.debug("sync_host.changeset_recovery_reset", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+        previousRecoveryLevel: recoveryLevel,
+      });
+    }
     broadcastBrainStatus();
   }
 
@@ -5825,6 +6127,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         maxProjectCatalogEnvelopeBytes,
         cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
         relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
+        connectionTransport: syncConnectionTransportForOrigin(peer.transportOrigin),
         terminalInputAckEnabled: true,
         // Runtime RPC channel + port-forward are desktop-runtime-host only,
         // even after successful pairing (phones/browsers stay on the mobile
@@ -6018,78 +6321,131 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceOffset?: number } | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
+        const barrier: PendingTerminalSnapshotBarrier = {
+          generation: ++peer.nextTerminalSnapshotGeneration,
+          captureAttempt: 0,
+          requiredCaptureAttempt: 0,
+          requiredSnapshotEndOffset: null,
+          events: [],
+          queuedBytes: 0,
+          failed: false,
+        };
+        peer.pendingTerminalSnapshots.set(sessionId, barrier);
         peer.subscribedSessionIds.add(sessionId);
-        const session = args.sessionService.get(sessionId);
         const maxBytes = Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES)));
-        const transcriptSize = transcriptFileSizeOrNull(session?.transcriptPath);
         const sinceOffset = typeof payload?.sinceOffset === "number" && Number.isInteger(payload.sinceOffset)
           ? payload.sinceOffset
           : null;
-        // Resume fast-path: when the client's byte watermark falls inside the
-        // transcript and the missed span fits the snapshot budget, send only
-        // the delta so reconnects do not re-transfer the whole tail.
-        if (
-          sinceOffset != null
-          && transcriptSize != null
-          && sinceOffset >= 0
-          && sinceOffset <= transcriptSize
-          && transcriptSize - sinceOffset <= maxBytes
-        ) {
-          const range = await args.ptyService.readTranscriptRange({
-            sessionId,
-            startOffset: sinceOffset,
-            endOffset: transcriptSize,
-          });
-          if (range) {
-            sendRequired(peer, "terminal_snapshot", {
+        let forceReplacement = false;
+        let barrierCompleted = false;
+        try {
+          while (barrier.captureAttempt < MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS) {
+            if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            barrier.captureAttempt += 1;
+            const session = args.sessionService.get(sessionId);
+            const transcriptSnapshot = session
+              ? await args.ptyService.readTranscriptSnapshot({
+                  sessionId,
+                  maxBytes,
+                  alignStartToSafeBoundary: true,
+                })
+              : null;
+            if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+
+            const flush = planTerminalSnapshotFlush(
+              barrier,
+              transcriptSnapshot?.endOffset ?? null,
+            );
+            if (flush.needsRecapture) {
+              forceReplacement = true;
+              continue;
+            }
+
+            let snapshot: SyncTerminalSnapshotPayload | null = null;
+            // Resume fast-path: the PTY snapshot is an exact logical suffix and
+            // includes buffered live bytes beyond the flushed file. Slice that
+            // authoritative suffix instead of re-reading the physical transcript,
+            // otherwise a reconnect can silently miss output that arrived before
+            // this subscription while the WriteStream was still draining.
+            if (
+              !forceReplacement
+              && sinceOffset != null
+              && transcriptSnapshot
+              && sinceOffset >= transcriptSnapshot.startOffset
+              // Equality has no delta to deliver. Send the replacing snapshot
+              // below so a remounted controller cannot hydrate to an empty screen.
+              && sinceOffset < transcriptSnapshot.endOffset
+            ) {
+              const snapshotBytes = Buffer.from(transcriptSnapshot.data, "utf8");
+              const byteStart = sinceOffset - transcriptSnapshot.startOffset;
+              const startsAtUtf8Boundary = byteStart >= 0
+                && byteStart <= snapshotBytes.length
+                && (byteStart === snapshotBytes.length || (snapshotBytes[byteStart]! & 0b1100_0000) !== 0b1000_0000);
+              if (
+                startsAtUtf8Boundary
+                && snapshotBytes.length === transcriptSnapshot.endOffset - transcriptSnapshot.startOffset
+              ) {
+                snapshot = {
+                  sessionId,
+                  transcript: snapshotBytes.subarray(byteStart).toString("utf8"),
+                  status: session?.status ?? null,
+                  runtimeState: session?.runtimeState ?? null,
+                  lastOutputPreview: session?.lastOutputPreview ?? null,
+                  capturedAt: nowIso(),
+                  startOffset: sinceOffset,
+                  endOffset: transcriptSnapshot.endOffset,
+                  delta: true,
+                  live: args.ptyService.hasLivePty(sessionId),
+                };
+              }
+            }
+            snapshot ??= {
               sessionId,
-              transcript: range.data,
+              transcript: transcriptSnapshot?.data ?? "",
               status: session?.status ?? null,
               runtimeState: session?.runtimeState ?? null,
               lastOutputPreview: session?.lastOutputPreview ?? null,
               capturedAt: nowIso(),
-              startOffset: range.startOffset,
-              endOffset: range.endOffset,
-              delta: true,
+              startOffset: transcriptSnapshot?.startOffset ?? null,
+              endOffset: transcriptSnapshot?.endOffset ?? null,
               live: args.ptyService.hasLivePty(sessionId),
-            } satisfies SyncTerminalSnapshotPayload, envelope.requestId);
+            };
+            if (!sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId)) break;
+            barrierCompleted = true;
+            for (const event of flush.events) {
+              const sent = event.kind === "data"
+                ? sendRequired(peer, "terminal_data", event.payload)
+                : sendRequired(peer, "terminal_exit", event.payload);
+              if (!sent) {
+                barrierCompleted = false;
+                break;
+              }
+            }
             break;
           }
+          if (
+            !barrierCompleted
+            && isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)
+            && barrier.captureAttempt >= MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS
+          ) {
+            failTerminalSnapshotBarrier(peer, sessionId, barrier, "capture_did_not_reach_stable_offset");
+          }
+        } catch (error) {
+          if (peer.pendingTerminalSnapshots.get(sessionId) === barrier) {
+            peer.subscribedSessionIds.delete(sessionId);
+            restoreDesktopTerminalSizeIfUnwatched(sessionId);
+          }
+          throw error;
+        } finally {
+          clearTerminalSnapshotBarrier(peer, sessionId, barrier);
         }
-        const transcript = session
-          ? await args.ptyService.readTranscriptTail({
-              sessionId,
-              maxBytes,
-              raw: true,
-              alignToLineBoundary: true,
-            })
-          : "";
-        // The tail read can merge still-buffered live output that is not
-        // reflected in the flushed file size yet. Only advertise offsets when
-        // the returned bytes fit inside the flushed transcript.
-        const transcriptBytes = Buffer.byteLength(transcript, "utf8");
-        const snapshotStartOffset = transcriptSize != null && transcriptBytes <= transcriptSize
-          ? transcriptSize - transcriptBytes
-          : null;
-        const snapshotEndOffset = snapshotStartOffset != null ? transcriptSize : null;
-        const snapshot: SyncTerminalSnapshotPayload = {
-          sessionId,
-          transcript,
-          status: session?.status ?? null,
-          runtimeState: session?.runtimeState ?? null,
-          lastOutputPreview: session?.lastOutputPreview ?? null,
-          capturedAt: nowIso(),
-          startOffset: snapshotStartOffset,
-          endOffset: snapshotEndOffset,
-          live: args.ptyService.hasLivePty(sessionId),
-        };
-        sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
         break;
       }
       case "terminal_unsubscribe": {
         const payload = envelope.payload as { sessionId?: string } | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (sessionId) {
+          clearTerminalSnapshotBarrier(peer, sessionId);
           peer.subscribedSessionIds.delete(sessionId);
           restoreDesktopTerminalSizeIfUnwatched(sessionId);
         }
@@ -6125,11 +6481,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_HISTORY_PAGE_BYTES),
           ),
         );
-        const transcriptSize = transcriptFileSizeOrNull(session.transcriptPath);
-        const endOffset = Math.min(beforeOffset, transcriptSize ?? 0);
+        const transcriptWindow = args.ptyService.getTranscriptWindow(sessionId);
+        if (!transcriptWindow) {
+          sendRequired(peer, "terminal_history", refused, envelope.requestId);
+          break;
+        }
+        const endOffset = Math.max(
+          transcriptWindow.startOffset,
+          Math.min(beforeOffset, transcriptWindow.endOffset),
+        );
+        const requestedStartOffset = Math.max(transcriptWindow.startOffset, endOffset - pageBytes);
         const range = await args.ptyService.readTranscriptRange({
           sessionId,
-          startOffset: Math.max(0, endOffset - pageBytes),
+          startOffset: requestedStartOffset,
           endOffset,
           alignStartToSafeBoundary: true,
         });
@@ -6142,7 +6506,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           data: range.data,
           startOffset: range.startOffset,
           endOffset: range.endOffset,
-          atStart: range.startOffset === 0,
+          // Alignment can move the returned start past the retained base. The
+          // unaligned/clamped request still tells the client whether any older
+          // bytes exist; using the returned boundary causes an empty paging
+          // loop after transcript rollover.
+          atStart: requestedStartOffset <= transcriptWindow.startOffset,
         } satisfies SyncTerminalHistoryResponsePayload, envelope.requestId);
         break;
       }
@@ -6620,9 +6988,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         data: event.data,
         at: nowIso(),
         offset: event.offset ?? null,
-      };
+      } satisfies SyncTerminalDataPayload;
       for (const peer of peers) {
         if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
+        if (enqueueTerminalSnapshotEvent(peer, event.sessionId, {
+          kind: "data",
+          payload,
+          byteLength: Buffer.byteLength(event.data, "utf8"),
+        })) continue;
         if (isPeerBackpressured(peer)) continue;
         send(peer.ws, "terminal_data", payload);
       }
@@ -6634,9 +7007,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         ptyId: event.ptyId,
         exitCode: event.exitCode,
         at: nowIso(),
-      };
+      } satisfies SyncTerminalExitPayload;
       for (const peer of peers) {
         if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
+        if (enqueueTerminalSnapshotEvent(peer, event.sessionId, {
+          kind: "exit",
+          payload,
+          byteLength: 0,
+        })) continue;
         if (isPeerBackpressured(peer)) continue;
         send(peer.ws, "terminal_exit", payload);
       }

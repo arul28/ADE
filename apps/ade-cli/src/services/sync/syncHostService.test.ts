@@ -12,6 +12,8 @@ import type {
   CrsqlChangeRow,
   PersonalChatAction,
   PersonalChatScopeContract,
+  SyncChangesetAckPayload,
+  SyncChangesetBatchPayload,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
@@ -28,6 +30,7 @@ import {
   CHAT_EVENT_REPLAY_MAX_EVENTS,
   CONNECTION_ATTEMPT_RESERVATION_TTL_MS,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+  SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   compactChatEventEnvelopeForSync,
@@ -40,6 +43,7 @@ import {
   recordChatEventInReplayBuffer,
   resolveSyncHostInboundProjectScope,
   selectChangesetBatchChunk,
+  syncConnectionTransportForOrigin,
 } from "./syncHostService";
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
 import { buildChangesetBatchPayload } from "./changesetPump";
@@ -178,6 +182,11 @@ describe("resolveSyncHostInboundProjectScope", () => {
 });
 
 describe("buildSyncHostHelloOkPayload", () => {
+  it("reports the host-observed connection transport", () => {
+    expect(syncConnectionTransportForOrigin("direct")).toBe("direct");
+    expect(syncConnectionTransportForOrigin("relay-bridge")).toBe("relay");
+  });
+
   it("advertises daemon-hosted project catalog support in hello_ok without desktop", () => {
     const peer = {
       deviceId: "ios-phone-1",
@@ -231,11 +240,13 @@ describe("buildSyncHostHelloOkPayload", () => {
       remoteCommandDescriptors: [remoteCommand],
       localCommandDescriptors: [localPresenceCommand],
       compressionThresholdBytes: 100_000,
+      connectionTransport: "relay",
     });
 
     expect(payload.peer).toBe(peer);
     expect(payload.brain).toBe(brain);
     expect(payload.serverDbVersion).toBe(7);
+    expect(payload.connectionTransport).toBe("relay");
     expect(payload.projects).toEqual([project]);
     expect(payload.features.projectCatalog).toEqual({ enabled: true });
     expect(payload.features.projectActions).toEqual({ enabled: false });
@@ -3802,6 +3813,38 @@ describe("outbound changeset ack retries", () => {
     } as unknown as Parameters<typeof createSyncHostService>[0]);
   }
 
+  function createControlledChangesetHost(
+    projectRoot: string,
+    state: { dbVersion: number; changes: CrsqlChangeRow[] },
+    logger = createDiscoveryLogger(),
+  ) {
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      pollIntervalMs: 25,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-controlled",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince: (fromDbVersion: number, options?: { maxRows?: number; throughDbVersion?: number }) =>
+            state.changes
+              .filter((change) => Number(change.db_version) > fromDbVersion)
+              .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+              .slice(0, options?.maxRows ?? state.changes.length),
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    return { host, logger };
+  }
+
   it("processes pending ACK retries before active-chat background deferral", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const host = createAckRetryHost(projectRoot);
@@ -3858,6 +3901,225 @@ describe("outbound changeset ack retries", () => {
       cleanup();
     }
   });
+
+  it("admits one bounded changeset after the active-chat soft defer ages out", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = { dbVersion: 0, changes: [makeChange(1, 0)] };
+    const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-fairness", {
+        capabilities: ["changesetAck"],
+      });
+      expect(peer.envelopes.find((envelope) => envelope.type === "hello_ok")?.payload).toMatchObject({
+        connectionTransport: "direct",
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-fairness-subscribe",
+        payload: { sessionId: "session-1" },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-fairness-subscribe");
+
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockReturnValue(SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES);
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      state.dbVersion = 1;
+
+      await waitForValue(
+        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_chat_deferral_started"),
+        "chat changeset deferral transition",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(peer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+
+      clockOffsetMs += SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 25;
+      const batch = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "fair changeset admission",
+      );
+      expect((batch.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
+      expect(logger.debug.mock.calls.filter(([event]) => event === "sync_host.changeset_chat_deferral_started")).toHaveLength(1);
+      expect(logger.debug).toHaveBeenCalledWith(
+        "sync_host.changeset_chat_deferral_ended",
+        expect.objectContaining({ reason: "batch_admitted" }),
+      );
+    } finally {
+      dateNowSpy?.mockRestore();
+      bufferedAmountSpy?.mockRestore();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps the 4 MiB hard gate even after the fairness deadline", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = { dbVersion: 0, changes: [makeChange(1, 0)] };
+    const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    let bufferedAmount = 4 * 1024 * 1024;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-hard-gate", {
+        capabilities: ["changesetAck"],
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-hard-gate-subscribe",
+        payload: { sessionId: "session-1" },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-hard-gate-subscribe");
+
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockImplementation(() => bufferedAmount);
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 5_000;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      state.dbVersion = 1;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(peer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(logger.debug.mock.calls.some(([event]) => event === "sync_host.changeset_chat_deferral_started")).toBe(false);
+
+      bufferedAmount = SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES;
+      await waitForValue(
+        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_chat_deferral_started"),
+        "soft deferral after hard pressure clears",
+      );
+      clockOffsetMs += SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 25;
+      await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "changeset after hard pressure clears",
+      );
+    } finally {
+      dateNowSpy?.mockRestore();
+      bufferedAmountSpy?.mockRestore();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("rewindows an exhausted batch without closing or advancing, ignores its late ACK, then resets", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 0,
+      changes: Array.from({ length: 600 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-ack-recovery", {
+        capabilities: ["changesetAck"],
+      });
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      state.dbVersion = 600;
+
+      const firstBatch = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "initial recovery batch",
+      );
+      const firstPayload = firstBatch.payload as SyncChangesetBatchPayload;
+      expect(firstPayload.fromDbVersion).toBe(0);
+      expect(firstPayload.changes).toHaveLength(250);
+
+      for (let attemptCount = 2; attemptCount <= 6; attemptCount += 1) {
+        clockOffsetMs += 11_000;
+        await waitForValue(
+          () => peer?.envelopes.filter((envelope) =>
+            envelope.type === "changeset_batch"
+            && (envelope.payload as SyncChangesetBatchPayload).batchId === firstPayload.batchId
+          )[attemptCount - 1],
+          `changeset send attempt ${attemptCount}`,
+        );
+      }
+      clockOffsetMs += 11_000;
+      await waitForValue(
+        () => logger.warn.mock.calls.find(([event]) => event === "sync_host.changeset_recovery_started"),
+        "host changeset recovery",
+      );
+      expect(peer.ws.readyState).toBe(WebSocket.OPEN);
+      expect(peer.closeEvents).toEqual([]);
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(peer.envelopes.filter((envelope) =>
+        envelope.type === "changeset_batch"
+        && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstPayload.batchId
+      )).toHaveLength(0);
+
+      clockOffsetMs += 500;
+      const recoveredBatch = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstPayload.batchId),
+        "rewindowed changeset batch",
+      );
+      const recoveredPayload = recoveredBatch.payload as SyncChangesetBatchPayload;
+      expect(recoveredPayload.batchId).not.toBe(firstPayload.batchId);
+      expect(recoveredPayload.fromDbVersion).toBe(0);
+      expect(recoveredPayload.changes).toHaveLength(125);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: firstPayload.batchId,
+        payload: {
+          batchId: firstPayload.batchId,
+          fromDbVersion: firstPayload.fromDbVersion,
+          toDbVersion: firstPayload.toDbVersion,
+          appliedDbVersion: firstPayload.toDbVersion,
+          appliedCount: firstPayload.changes.length,
+          ok: true,
+        } satisfies SyncChangesetAckPayload,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(peer.envelopes.filter((envelope) => envelope.type === "changeset_batch")).toHaveLength(7);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: recoveredPayload.batchId,
+        payload: {
+          batchId: recoveredPayload.batchId,
+          fromDbVersion: recoveredPayload.fromDbVersion,
+          toDbVersion: recoveredPayload.toDbVersion,
+          appliedDbVersion: recoveredPayload.toDbVersion,
+          appliedCount: recoveredPayload.changes.length,
+          ok: true,
+        } satisfies SyncChangesetAckPayload,
+      }));
+      const resetBatch = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && ![firstPayload.batchId, recoveredPayload.batchId]
+            .includes((envelope.payload as SyncChangesetBatchPayload).batchId)),
+        "normal-window batch after recovery ACK",
+      );
+      const resetPayload = resetBatch.payload as SyncChangesetBatchPayload;
+      expect(resetPayload.fromDbVersion).toBe(recoveredPayload.toDbVersion);
+      expect(resetPayload.changes).toHaveLength(250);
+      expect(logger.debug).toHaveBeenCalledWith(
+        "sync_host.changeset_recovery_reset",
+        expect.objectContaining({ previousRecoveryLevel: 1 }),
+      );
+    } finally {
+      dateNowSpy?.mockRestore();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  }, 15_000);
 });
 
 describe("mobile command result ledger", () => {
@@ -4397,7 +4659,9 @@ describe("sync host handoff over a shared listener", () => {
         ptyService: {
           create: vi.fn(),
           readTranscriptTail: vi.fn(async () => ""),
+          readTranscriptSnapshot: vi.fn(async () => ({ data: "", startOffset: 0, endOffset: 0 })),
           readTranscriptRange: vi.fn(async () => null),
+          getTranscriptWindow: vi.fn(() => ({ startOffset: 0, endOffset: 0, retainedBytes: 0 })),
           writeBySessionId,
           resizeBySessionId: vi.fn().mockReturnValue(true),
           restoreDesktopSizeBySessionId: vi.fn().mockReturnValue(true),
@@ -6153,10 +6417,24 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       lastOutputPreview: "preview",
     };
     const readTranscriptTail = vi.fn(async () => "tail-snapshot");
+    const readTranscriptSnapshot = vi.fn(async (args: { sessionId: string; maxBytes: number }) => {
+      const endOffset = Buffer.byteLength(TRANSCRIPT_CONTENT, "utf8");
+      const startOffset = Math.max(0, endOffset - args.maxBytes);
+      return {
+        data: TRANSCRIPT_CONTENT.slice(startOffset),
+        startOffset,
+        endOffset,
+      };
+    });
     const readTranscriptRange = vi.fn(async (args: { sessionId: string; startOffset: number; endOffset: number }) => ({
       data: TRANSCRIPT_CONTENT.slice(args.startOffset, args.endOffset),
       startOffset: args.startOffset,
       endOffset: args.endOffset,
+    }));
+    const getTranscriptWindow = vi.fn(() => ({
+      startOffset: 0,
+      endOffset: Buffer.byteLength(TRANSCRIPT_CONTENT, "utf8"),
+      retainedBytes: Buffer.byteLength(TRANSCRIPT_CONTENT, "utf8"),
     }));
     const resizeBySessionId = vi.fn().mockReturnValue(true);
     const restoreDesktopSizeBySessionId = vi.fn().mockReturnValue(true);
@@ -6188,7 +6466,9 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       ptyService: {
         create: vi.fn(),
         readTranscriptTail,
+        readTranscriptSnapshot,
         readTranscriptRange,
+        getTranscriptWindow,
         writeBySessionId,
         resizeBySessionId,
         restoreDesktopSizeBySessionId,
@@ -6199,7 +6479,9 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
     return {
       host,
       readTranscriptTail,
+      readTranscriptSnapshot,
       readTranscriptRange,
+      getTranscriptWindow,
       writeBySessionId,
       resizeBySessionId,
       restoreDesktopSizeBySessionId,
@@ -6245,7 +6527,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
 
   it("answers terminal_subscribe with a delta when sinceOffset fits the budget, else a tail snapshot with offsets", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
-    const { host, readTranscriptTail, readTranscriptRange } = createTerminalHost(projectRoot);
+    const { host, readTranscriptTail, readTranscriptSnapshot, readTranscriptRange } = createTerminalHost(projectRoot);
     let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
     try {
       const port = await host.waitUntilListening();
@@ -6264,11 +6546,12 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         startOffset: 4_988,
         endOffset: 5_000,
       });
-      expect(readTranscriptRange).toHaveBeenCalledWith({
+      expect(readTranscriptSnapshot).toHaveBeenCalledWith({
         sessionId: "session-1",
-        startOffset: 4_988,
-        endOffset: 5_000,
+        maxBytes: 32_000,
+        alignStartToSafeBoundary: true,
       });
+      expect(readTranscriptRange).not.toHaveBeenCalled();
       expect(readTranscriptTail).not.toHaveBeenCalled();
 
       // Gap larger than the budget → full tail snapshot (delta omitted).
@@ -6280,17 +6563,12 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       const full = await nextResponse(client.envelopes, "terminal_snapshot", "sub-full");
       expect(full.payload).toMatchObject({
         sessionId: "session-1",
-        transcript: "tail-snapshot",
-        startOffset: 5_000 - Buffer.byteLength("tail-snapshot", "utf8"),
+        transcript: TRANSCRIPT_CONTENT.slice(5_000 - 1_024),
+        startOffset: 5_000 - 1_024,
         endOffset: 5_000,
       });
       expect((full.payload as { delta?: boolean }).delta).toBeUndefined();
-      expect(readTranscriptTail).toHaveBeenCalledWith({
-        sessionId: "session-1",
-        maxBytes: 1_024,
-        raw: true,
-        alignToLineBoundary: true,
-      });
+      expect(readTranscriptTail).not.toHaveBeenCalled();
 
       // sinceOffset beyond the transcript end (host restarted with a fresh
       // file, client watermark stale) → full snapshot, not a delta.
@@ -6301,9 +6579,13 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       }));
       const stale = await nextResponse(client.envelopes, "terminal_snapshot", "sub-stale");
       expect((stale.payload as { delta?: boolean }).delta).toBeUndefined();
-      expect((stale.payload as { transcript: string }).transcript).toBe("tail-snapshot");
+      expect((stale.payload as { transcript: string }).transcript).toBe(TRANSCRIPT_CONTENT);
 
-      readTranscriptTail.mockResolvedValueOnce(`${TRANSCRIPT_CONTENT}buffered`);
+      readTranscriptSnapshot.mockResolvedValueOnce({
+        data: `${TRANSCRIPT_CONTENT}buffered`,
+        startOffset: 0,
+        endOffset: 5_008,
+      });
       client.ws.send(encodeSyncEnvelope({
         type: "terminal_subscribe",
         requestId: "sub-buffered",
@@ -6313,8 +6595,8 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       expect(buffered.payload).toMatchObject({
         sessionId: "session-1",
         transcript: `${TRANSCRIPT_CONTENT}buffered`,
-        startOffset: null,
-        endOffset: null,
+        startOffset: 0,
+        endOffset: 5_008,
       });
     } finally {
       try {
@@ -6322,6 +6604,452 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("replaces with a tail snapshot when sinceOffset already equals the transcript end", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptTail, readTranscriptSnapshot, readTranscriptRange } = createTerminalHost(projectRoot);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      client = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-terminal-current-offset");
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-current-offset",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: 5_000 },
+      }));
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "sub-current-offset");
+      expect(snapshot.payload).toMatchObject({
+        sessionId: "session-1",
+        transcript: TRANSCRIPT_CONTENT,
+        startOffset: 0,
+        endOffset: 5_000,
+      });
+      expect((snapshot.payload as { delta?: boolean }).delta).toBeUndefined();
+      expect(readTranscriptRange).not.toHaveBeenCalled();
+      expect(readTranscriptSnapshot).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        maxBytes: 32_000,
+        alignStartToSafeBoundary: true,
+      });
+      expect(readTranscriptTail).not.toHaveBeenCalled();
+    } finally {
+      client?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("sends a deferred terminal snapshot before newer data and exit events", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot.mockImplementationOnce(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-order",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "ordered-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "deferred terminal snapshot capture",
+      );
+
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "new",
+        offset: 5_003,
+      });
+      host.handlePtyExit({ sessionId: "session-1", ptyId: "pty-1", exitCode: 0 });
+      expect(client.envelopes.some((envelope) => (
+        envelope.type === "terminal_snapshot" || envelope.type === "terminal_data" || envelope.type === "terminal_exit"
+      ))).toBe(false);
+
+      resolveSnapshot({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+      await nextResponse(client.envelopes, "terminal_snapshot", "ordered-subscribe");
+      await waitForValue(
+        () => client!.envelopes.find((envelope) => envelope.type === "terminal_exit"),
+        "queued terminal exit",
+      );
+      const streamed = client.envelopes.filter((envelope) => (
+        envelope.type === "terminal_snapshot" || envelope.type === "terminal_data" || envelope.type === "terminal_exit"
+      ));
+      expect(streamed.map((envelope) => envelope.type)).toEqual([
+        "terminal_snapshot",
+        "terminal_data",
+        "terminal_exit",
+      ]);
+      expect(streamed[1]!.payload).toMatchObject({ data: "new", offset: 5_003 });
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("does not replay terminal data already covered by a deferred snapshot", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot.mockImplementationOnce(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-dedupe",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "covered-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "covered terminal snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "!",
+        offset: 5_001,
+      });
+      resolveSnapshot({ data: `${TRANSCRIPT_CONTENT}!`, startOffset: 0, endOffset: 5_001 });
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "covered-subscribe");
+      expect(snapshot.payload).toMatchObject({ transcript: `${TRANSCRIPT_CONTENT}!`, endOffset: 5_001 });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(client.envelopes.filter((envelope) => envelope.type === "terminal_data")).toEqual([]);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("trims a UTF-8-safe overlap before flushing data queued behind a snapshot", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot.mockImplementationOnce(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-utf8-overlap",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "utf8-overlap-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "UTF-8 overlap snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "🙂!",
+        offset: 5_005,
+      });
+      resolveSnapshot({ data: `${TRANSCRIPT_CONTENT}🙂`, startOffset: 0, endOffset: 5_004 });
+
+      await nextResponse(client.envelopes, "terminal_snapshot", "utf8-overlap-subscribe");
+      const streamed = await waitForValue(
+        () => client!.envelopes.find((envelope) => envelope.type === "terminal_data"),
+        "trimmed terminal data",
+      );
+      expect(streamed.payload).toMatchObject({ data: "!", offset: 5_005 });
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("recaptures before flushing offsetless data queued during a terminal snapshot", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveFirstSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot
+      .mockImplementationOnce(() => new Promise<{
+        data: string;
+        startOffset: number;
+        endOffset: number;
+      }>((resolve) => {
+        resolveFirstSnapshot = resolve;
+      }))
+      .mockResolvedValueOnce({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-offsetless",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "offsetless-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: 4_990 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "offsetless terminal snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "untracked",
+        offset: null,
+      });
+      resolveFirstSnapshot({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "offsetless-subscribe");
+      await waitForValue(
+        () => client!.envelopes.find((envelope) => envelope.type === "terminal_data"),
+        "queued offsetless terminal data",
+      );
+      expect(readTranscriptSnapshot).toHaveBeenCalledTimes(2);
+      expect((snapshot.payload as { delta?: boolean }).delta).toBeUndefined();
+      const streamed = client.envelopes.filter((envelope) => (
+        envelope.type === "terminal_snapshot" || envelope.type === "terminal_data"
+      ));
+      expect(streamed.map((envelope) => envelope.type)).toEqual(["terminal_snapshot", "terminal_data"]);
+      expect(streamed[1]!.payload).toMatchObject({ data: "untracked", offset: null });
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("recaptures an authoritative tail instead of retaining an oversized queued chunk", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    const oversizedChunk = "x".repeat(2_000_001);
+    const oversizedEndOffset = 5_000 + Buffer.byteLength(oversizedChunk, "utf8");
+    let resolveFirstSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot
+      .mockImplementationOnce(() => new Promise<{
+        data: string;
+        startOffset: number;
+        endOffset: number;
+      }>((resolve) => {
+        resolveFirstSnapshot = resolve;
+      }))
+      .mockResolvedValueOnce({
+        data: oversizedChunk.slice(-2_000_000),
+        startOffset: oversizedEndOffset - 2_000_000,
+        endOffset: oversizedEndOffset,
+      });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-overflow",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "overflow-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 2_000_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "overflow terminal snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: oversizedChunk,
+        offset: oversizedEndOffset,
+      });
+      resolveFirstSnapshot({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "overflow-subscribe");
+      expect(readTranscriptSnapshot).toHaveBeenCalledTimes(2);
+      expect(snapshot.payload).toMatchObject({
+        startOffset: oversizedEndOffset - 2_000_000,
+        endOffset: oversizedEndOffset,
+      });
+      expect(client.envelopes.filter((envelope) => envelope.type === "terminal_data")).toEqual([]);
+      expect(client.ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps subscribe deltas and history paging inside a rolled logical window", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const {
+      host,
+      readTranscriptSnapshot,
+      readTranscriptRange,
+      getTranscriptWindow,
+    } = createTerminalHost(projectRoot);
+    const logicalBase = 10_000;
+    const logicalEnd = logicalBase + Buffer.byteLength(TRANSCRIPT_CONTENT, "utf8");
+    getTranscriptWindow.mockReturnValue({
+      startOffset: logicalBase,
+      endOffset: logicalEnd,
+      retainedBytes: logicalEnd - logicalBase,
+    });
+    readTranscriptSnapshot.mockResolvedValue({
+      data: TRANSCRIPT_CONTENT,
+      startOffset: logicalBase,
+      endOffset: logicalEnd,
+    });
+    readTranscriptRange.mockImplementation(async (args: {
+      sessionId: string;
+      startOffset: number;
+      endOffset: number;
+    }) => {
+      const clampedStartOffset = Math.max(logicalBase, Math.min(args.startOffset, logicalEnd));
+      const endOffset = Math.max(clampedStartOffset, Math.min(args.endOffset, logicalEnd));
+      // Model the real UTF-8/screen-safe range reader moving a retained-base
+      // request forward to the first safe terminal boundary.
+      const startOffset = clampedStartOffset === logicalBase && endOffset > logicalBase
+        ? Math.min(logicalBase + 8, endOffset)
+        : clampedStartOffset;
+      return {
+        data: TRANSCRIPT_CONTENT.slice(startOffset - logicalBase, endOffset - logicalBase),
+        startOffset,
+        endOffset,
+      };
+    });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-rolled-window",
+      );
+
+      // A watermark older than the retained base cannot be resumed. Replace
+      // with the authoritative retained suffix and its logical offsets.
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "rolled-stale-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: 5_000 },
+      }));
+      await expect(nextResponse(
+        client.envelopes,
+        "terminal_snapshot",
+        "rolled-stale-subscribe",
+      )).resolves.toMatchObject({
+        payload: {
+          transcript: TRANSCRIPT_CONTENT,
+          startOffset: logicalBase,
+          endOffset: logicalEnd,
+        },
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "rolled-delta-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: logicalEnd - 12 },
+      }));
+      await expect(nextResponse(
+        client.envelopes,
+        "terminal_snapshot",
+        "rolled-delta-subscribe",
+      )).resolves.toMatchObject({
+        payload: {
+          transcript: TRANSCRIPT_CONTENT.slice(-12),
+          startOffset: logicalEnd - 12,
+          endOffset: logicalEnd,
+          delta: true,
+        },
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "rolled-history",
+        payload: { sessionId: "session-1", beforeOffset: logicalEnd, maxBytes: 4_096 },
+      }));
+      const history = await nextResponse(client.envelopes, "terminal_history", "rolled-history");
+      expect(readTranscriptRange).toHaveBeenLastCalledWith({
+        sessionId: "session-1",
+        startOffset: logicalEnd - 4_096,
+        endOffset: logicalEnd,
+        alignStartToSafeBoundary: true,
+      });
+      expect(history.payload).toMatchObject({
+        startOffset: logicalEnd - 4_096,
+        endOffset: logicalEnd,
+        atStart: false,
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "rolled-history-start",
+        payload: { sessionId: "session-1", beforeOffset: logicalBase },
+      }));
+      await expect(nextResponse(
+        client.envelopes,
+        "terminal_history",
+        "rolled-history-start",
+      )).resolves.toMatchObject({
+        payload: {
+          data: "",
+          startOffset: logicalBase,
+          endOffset: logicalBase,
+          atStart: true,
+        },
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "rolled-history-aligned-start",
+        payload: { sessionId: "session-1", beforeOffset: logicalBase + 128, maxBytes: 4_096 },
+      }));
+      await expect(nextResponse(
+        client.envelopes,
+        "terminal_history",
+        "rolled-history-aligned-start",
+      )).resolves.toMatchObject({
+        payload: {
+          startOffset: logicalBase + 8,
+          endOffset: logicalBase + 128,
+          atStart: true,
+        },
+      });
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
       await host.dispose();
       cleanup();
     }

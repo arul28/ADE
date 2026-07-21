@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
 import {
   BRIDGE_VALIDATION_LEASE_MS,
+  CONNECT_DEADLINE_MS,
   CONTROL_PING_INTERVAL_MS,
   CONTROL_PONG_DEADLINE_MS,
   computeBackoffMs,
@@ -11,6 +12,7 @@ import {
   makeBufferedForwarder,
   MAX_BUFFERED_TUNNEL_BYTES,
   MAX_PENDING_TUNNEL_BYTES,
+  MAX_RELAY_WEBSOCKET_FRAME_BYTES,
   parseControlMessage,
   RELAY_CLOSE_BRIDGE_REJECTED,
   RELAY_CLOSE_FORWARD_FAILED,
@@ -215,6 +217,52 @@ describe("makeBufferedForwarder", () => {
     expect(flushFailure).toHaveBeenCalledOnce();
     expect(flushFailure).toHaveBeenCalledWith("bridge send buffer overflow");
     expect(connecting.sent).toEqual([]);
+  });
+
+  it("passes through one protocol-legal frame larger than the steady-state send budget", () => {
+    const target = new StubWebSocket("ws://large-frame");
+    target.open();
+    const onFailure = vi.fn();
+    const forward = makeBufferedForwarder(onFailure);
+    const frame = Buffer.alloc(MAX_BUFFERED_TUNNEL_BYTES + 1);
+
+    forward(target as unknown as WebSocket, frame, true);
+
+    expect(onFailure).not.toHaveBeenCalled();
+    expect(target.sent).toHaveLength(1);
+  });
+
+  it("rejects a large frame behind queued bytes and any frame above the protocol limit", () => {
+    const queuedTarget = new StubWebSocket("ws://queued-large-frame");
+    queuedTarget.open();
+    queuedTarget.bufferedAmount = 1;
+    const queuedFailure = vi.fn();
+    const forwardQueued = makeBufferedForwarder(queuedFailure);
+
+    forwardQueued(
+      queuedTarget as unknown as WebSocket,
+      Buffer.alloc(MAX_BUFFERED_TUNNEL_BYTES + 1),
+      true,
+    );
+
+    expect(queuedFailure).toHaveBeenCalledOnce();
+    expect(queuedFailure).toHaveBeenCalledWith("bridge send buffer overflow");
+    expect(queuedTarget.sent).toEqual([]);
+
+    const oversizedTarget = new StubWebSocket("ws://oversized-frame");
+    oversizedTarget.open();
+    const oversizedFailure = vi.fn();
+    const forwardOversized = makeBufferedForwarder(oversizedFailure);
+
+    forwardOversized(
+      oversizedTarget as unknown as WebSocket,
+      Buffer.alloc(MAX_RELAY_WEBSOCKET_FRAME_BYTES + 1),
+      true,
+    );
+
+    expect(oversizedFailure).toHaveBeenCalledOnce();
+    expect(oversizedFailure).toHaveBeenCalledWith("bridge frame too large");
+    expect(oversizedTarget.sent).toEqual([]);
   });
 });
 
@@ -865,6 +913,46 @@ describe("createSyncTunnelClientService", () => {
       random.mockRestore();
       globalThis.fetch = originalFetch;
       await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("retries epoch registration after a control connect timeout", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const logger = { info: vi.fn() };
+    const service = createSyncTunnelClientService({
+      logger,
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      reconnectBackoffMs: () => 0,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      expect(sockets).toHaveLength(1);
+      expect(new URL(sockets[0].url).searchParams.has("epoch")).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(CONNECT_DEADLINE_MS);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(sockets).toHaveLength(2);
+      expect(new URL(sockets[1].url).searchParams.has("epoch")).toBe(true);
+      expect(logger.info).not.toHaveBeenCalledWith(
+        "sync_tunnel.transport_fallback",
+        expect.anything(),
+      );
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
     }
   });
 

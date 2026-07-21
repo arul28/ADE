@@ -17,6 +17,7 @@ import type {
   SyncTerminalDataPayload,
   SyncTerminalHistoryRequestPayload,
   SyncTerminalHistoryResponsePayload,
+  SyncTerminalInputAckPayload,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../shared/types/account";
@@ -119,6 +120,7 @@ type TerminalSubscription = {
   maxBytes?: number;
   handlers: TerminalHandlers;
   sinceOffset: number | null;
+  recoveryInFlight: boolean;
 };
 
 type TerminalInputOperation = {
@@ -135,25 +137,6 @@ type TerminalInputOperation = {
   resolve: () => void;
   reject: (error: Error) => void;
 };
-
-type TerminalInputAckPayload =
-  | {
-      sessionId: string;
-      inputId: string;
-      ok: true;
-      duplicate: boolean;
-    }
-  | {
-      sessionId: string | null;
-      inputId?: string;
-      ok: false;
-      duplicate: false;
-      error: {
-        code: string;
-        message: string;
-        retryable: boolean;
-      };
-    };
 
 type ClientEvents = {
   status: AdeSyncClientStatus;
@@ -177,6 +160,38 @@ const MAX_QUEUED_TERMINAL_INPUT_BYTES = 512 * 1024;
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+const terminalTextEncoder = new TextEncoder();
+const terminalTextDecoder = new TextDecoder();
+
+function terminalUtf8Bytes(value: string): Uint8Array {
+  return terminalTextEncoder.encode(value);
+}
+
+function trimTerminalUtf8Prefix(value: string, byteCount: number): { value: string; trimmedBytes: number } {
+  const bytes = terminalUtf8Bytes(value);
+  let start = Math.max(0, Math.min(bytes.byteLength, Math.floor(byteCount)));
+  while (start < bytes.byteLength && (bytes[start]! & 0b1100_0000) === 0b1000_0000) start += 1;
+  return {
+    value: terminalTextDecoder.decode(bytes.subarray(start)),
+    trimmedBytes: start,
+  };
+}
+
+function terminalPayloadRange(
+  data: string,
+  startOffset: number | null | undefined,
+  endOffset: number | null | undefined,
+): { startOffset: number; endOffset: number } | null {
+  if (!Number.isSafeInteger(endOffset) || (endOffset as number) < 0) return null;
+  const byteLength = terminalUtf8Bytes(data).byteLength;
+  const inferredStart = (endOffset as number) - byteLength;
+  if (inferredStart < 0) return null;
+  if (Number.isSafeInteger(startOffset) && startOffset === inferredStart) {
+    return { startOffset, endOffset: endOffset as number };
+  }
+  return { startOffset: inferredStart, endOffset: endOffset as number };
 }
 
 function openProjectFromCatalog(projects: SyncMobileProjectSummary[] | undefined): string | null {
@@ -711,6 +726,7 @@ export class AdeSyncClient {
       maxBytes: opts.maxBytes,
       handlers,
       sinceOffset: existing?.sinceOffset ?? null,
+      recoveryInFlight: existing?.recoveryInFlight ?? false,
     };
     this.terminalSubscriptions.set(sessionId, subscription);
     if (!this.streamSubscriptionsPaused) this.sendTerminalSubscribe(subscription);
@@ -740,7 +756,7 @@ export class AdeSyncClient {
       return;
     }
 
-    const byteLength = new TextEncoder().encode(data).byteLength;
+    const byteLength = terminalUtf8Bytes(data).byteLength;
     if (
       this.terminalInputQueue.length >= MAX_QUEUED_TERMINAL_INPUTS
       || this.terminalInputQueueBytes + byteLength > MAX_QUEUED_TERMINAL_INPUT_BYTES
@@ -992,14 +1008,10 @@ export class AdeSyncClient {
   }
 
   private handleEnvelope(envelope: SyncEnvelope): void {
-    // This case is written structurally so this renderer-only commit remains
-    // compatible with the preceding shared union. The sibling protocol commit
-    // adds the canonical terminal_input_ack envelope to that union.
-    if (String(envelope.type) === "terminal_input_ack") {
-      this.handleTerminalInputAck(envelope.payload as unknown as TerminalInputAckPayload);
-      return;
-    }
     switch (envelope.type) {
+      case "terminal_input_ack":
+        this.handleTerminalInputAck(envelope.payload as SyncTerminalInputAckPayload);
+        break;
       case "command_ack":
         this.handleCommandAck(envelope.payload as SyncCommandAckPayload);
         break;
@@ -1100,18 +1112,88 @@ export class AdeSyncClient {
   private handleTerminalSnapshot(payload: SyncTerminalSnapshotPayload): void {
     const subscription = this.terminalSubscriptions.get(payload.sessionId);
     if (!subscription) return;
-    if (typeof payload.endOffset === "number") subscription.sinceOffset = payload.endOffset;
-    subscription.handlers.snapshot?.(payload);
+    subscription.recoveryInFlight = false;
+
+    // A non-delta snapshot is authoritative even when its end offset equals
+    // our watermark. The adapter uses it to replace xterm state after a host
+    // restart or when the missed range fell outside the snapshot budget.
+    if (payload.delta !== true) {
+      subscription.sinceOffset = Number.isSafeInteger(payload.endOffset) && (payload.endOffset as number) >= 0
+        ? payload.endOffset as number
+        : null;
+      subscription.handlers.snapshot?.(payload);
+      return;
+    }
+
+    const range = terminalPayloadRange(payload.transcript, payload.startOffset, payload.endOffset);
+    if (!range) {
+      // Older hosts may omit offsets. Preserve their append-only behavior,
+      // but do not invent a reconnect watermark that could skip later bytes.
+      subscription.handlers.snapshot?.(payload);
+      return;
+    }
+
+    const watermark = subscription.sinceOffset;
+    if (watermark == null) {
+      subscription.sinceOffset = range.endOffset;
+      subscription.handlers.snapshot?.({
+        ...payload,
+        startOffset: range.startOffset,
+        endOffset: range.endOffset,
+      });
+      return;
+    }
+    if (range.endOffset <= watermark) return;
+    if (range.startOffset > watermark) {
+      this.requestTerminalRecovery(subscription);
+      return;
+    }
+
+    const trimmed = trimTerminalUtf8Prefix(payload.transcript, watermark - range.startOffset);
+    subscription.sinceOffset = range.endOffset;
+    if (!trimmed.value) return;
+    subscription.handlers.snapshot?.({
+      ...payload,
+      transcript: trimmed.value,
+      startOffset: range.startOffset + trimmed.trimmedBytes,
+      endOffset: range.endOffset,
+    });
   }
 
   private handleTerminalData(payload: SyncTerminalDataPayload): void {
     const subscription = this.terminalSubscriptions.get(payload.sessionId);
     if (!subscription) return;
-    if (typeof payload.offset === "number") subscription.sinceOffset = payload.offset;
-    subscription.handlers.data?.(payload);
+    const range = terminalPayloadRange(payload.data, null, payload.offset);
+    if (!range) {
+      // Offsets are optional for legacy/untracked streams. Deliver those
+      // chunks as before, without allowing them to corrupt a numeric watermark.
+      subscription.handlers.data?.(payload);
+      return;
+    }
+
+    const watermark = subscription.sinceOffset;
+    if (watermark == null) {
+      subscription.sinceOffset = range.endOffset;
+      subscription.handlers.data?.(payload);
+      return;
+    }
+    if (range.endOffset <= watermark) return;
+    if (range.startOffset > watermark) {
+      this.requestTerminalRecovery(subscription);
+      return;
+    }
+
+    const trimmed = trimTerminalUtf8Prefix(payload.data, watermark - range.startOffset);
+    subscription.sinceOffset = range.endOffset;
+    if (!trimmed.value) return;
+    subscription.handlers.data?.({
+      ...payload,
+      data: trimmed.value,
+      offset: range.endOffset,
+    });
   }
 
-  private handleTerminalInputAck(payload: TerminalInputAckPayload): void {
+  private handleTerminalInputAck(payload: SyncTerminalInputAckPayload): void {
     const operation = this.terminalInputQueue[0];
     if (
       !operation
@@ -1211,27 +1293,30 @@ export class AdeSyncClient {
     }
   }
 
+  private requestTerminalRecovery(subscription: TerminalSubscription): void {
+    if (subscription.recoveryInFlight || !this.connection.isConnected()) return;
+    subscription.recoveryInFlight = true;
+    try {
+      this.sendTerminalSubscribe(subscription, true);
+    } catch {
+      subscription.recoveryInFlight = false;
+    }
+  }
+
   private resubscribeStreams(): void {
     for (const subscription of this.chatSubscriptions.values()) this.sendChatSubscribe(subscription, true);
-    for (const subscription of this.terminalSubscriptions.values()) this.sendTerminalSubscribe(subscription, true);
+    for (const subscription of this.terminalSubscriptions.values()) {
+      subscription.recoveryInFlight = false;
+      this.sendTerminalSubscribe(subscription, true);
+    }
   }
 
   private terminalInputAcksSupported(): boolean {
-    const features = this.latestHello?.features as SyncHelloOkPayload["features"] & {
-      terminalInputAck?: {
-        enabled: boolean;
-        retryWindowMs?: number;
-        maxOutstanding?: number;
-      };
-    } | undefined;
-    return features?.terminalInputAck?.enabled === true;
+    return this.latestHello?.features.terminalInputAck?.enabled === true;
   }
 
   private terminalInputRetryWindowMs(): number {
-    const features = this.latestHello?.features as SyncHelloOkPayload["features"] & {
-      terminalInputAck?: { retryWindowMs?: number };
-    } | undefined;
-    const advertised = features?.terminalInputAck?.retryWindowMs;
+    const advertised = this.latestHello?.features.terminalInputAck?.retryWindowMs;
     return typeof advertised === "number" && Number.isFinite(advertised) && advertised > 0
       ? Math.floor(advertised)
       : DEFAULT_TERMINAL_INPUT_RETRY_WINDOW_MS;
@@ -1345,6 +1430,7 @@ export class AdeSyncClient {
     }
     for (const subscription of this.terminalSubscriptions.values()) {
       subscription.sinceOffset = null;
+      subscription.recoveryInFlight = false;
     }
   }
 

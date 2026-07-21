@@ -576,18 +576,19 @@ describe("durable socket lifecycle", () => {
     expect(normalPipe.closes).toEqual([{ code: CLOSE_PARTNER_CLOSED, reason: "partner closed" }]);
   });
 
-  it("logs and propagates a host pipe 4003 close without frame or token data", async () => {
+  it("logs a host pipe 4003 without peer text while preserving the close for its partner", async () => {
     const { durable, state } = makeDoHarness();
     const client = state.addSocket("client", "abcdef01", Date.now(), { established: true });
     const pipe = state.addSocket("pipe", "abcdef01", Date.now(), { established: true });
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    await durable.webSocketClose(pipe as unknown as WebSocket, 4003, "account proof expired", true);
+    await durable.webSocketClose(pipe as unknown as WebSocket, 4003, "private network detail", true);
 
-    expect(client.closes).toEqual([{ code: 4003, reason: "account proof expired" }]);
+    expect(client.closes).toEqual([{ code: 4003, reason: "private network detail" }]);
     expect(log).toHaveBeenCalledWith(expect.stringMatching(
-      /"kind":"socket_closed".*"role":"pipe".*"epochMode":"epoch".*"code":4003.*"reason":"account proof expired".*"established":true/,
+      /"kind":"socket_closed".*"role":"pipe".*"epochMode":"epoch".*"code":4003.*"established":true/,
     ));
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("private network detail"));
     log.mockRestore();
   });
 

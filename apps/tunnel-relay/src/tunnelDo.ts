@@ -632,16 +632,16 @@ export class TunnelDurableObject implements DurableObject {
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
-    this.logSocketTerminal(ws, "socket_closed", code, reason || "peer closed");
+    this.logSocketTerminal(ws, "socket_closed", code);
     this.teardownPartner(ws, code, reason);
   }
 
   async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
-    this.logSocketTerminal(ws, "socket_error", CLOSE_PARTNER_CLOSED, "websocket error");
+    this.logSocketTerminal(ws, "socket_error", CLOSE_PARTNER_CLOSED);
     this.teardownPartner(ws, CLOSE_PARTNER_CLOSED, "partner error");
   }
 
-  private logSocketTerminal(ws: WebSocket, kind: "socket_closed" | "socket_error", code: number, reason: string): void {
+  private logSocketTerminal(ws: WebSocket, kind: "socket_closed" | "socket_error", code: number): void {
     if (this.terminalSocketLogs.has(ws)) return;
     this.terminalSocketLogs.add(ws);
     const attachment = this.normalizedAttachment(ws);
@@ -650,7 +650,6 @@ export class TunnelDurableObject implements DurableObject {
       connectionId: attachment?.id ?? null,
       epochMode: this.epochOf(attachment) === LEGACY_CONTROL_EPOCH ? "legacy" : "epoch",
       code,
-      reason: sanitizedCloseReason(reason, kind === "socket_error" ? "websocket error" : "peer closed"),
       established: attachment?.established === true,
     });
   }

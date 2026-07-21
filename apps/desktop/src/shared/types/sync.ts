@@ -745,6 +745,12 @@ export type SyncHelloOkPayload = {
   brain: SyncPeerMetadata;
   serverDbVersion: number;
   /**
+   * Transport observed by the authenticated host. Clients may race several
+   * advertised routes, so this is the source of truth for whether the winning
+   * socket actually traversed ADE Relay.
+   */
+  connectionTransport?: "direct" | "relay";
+  /**
    * cr-sqlite site id of the project DB this host is currently serving.
    * Clients key their inbound changeset cursor on it so a cursor built
    * against one project's DB is never replayed against another's.

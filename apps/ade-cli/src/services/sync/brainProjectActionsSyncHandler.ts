@@ -628,7 +628,6 @@ export function createBrainProjectActionsSyncHandler(
         // Runtime RPC channel + port-forward are desktop-runtime-host only.
         peer.authKind === "paired" && isRuntimeHostPairingRecord(peer.pairingRecord),
       );
-      if (!isCurrent()) return;
       return;
     }
     switch (envelope.type) {
@@ -956,7 +955,7 @@ export function createBrainProjectActionsSyncHandler(
         deviceId: () => peer.metadata?.deviceId ?? null,
         pinnedPublicKey: () => peer.pairingRecord?.dpopPublicKey ?? null,
         captureHostAuthorization: captureAccountAuthorization,
-        verifyAccountToken: async (token, expectedUserId) => await verifyAccountAttestation({
+        verifyAccountToken: (token, expectedUserId) => verifyAccountAttestation({
           token,
           expectedUserId,
           config: getAccountAttestationConfig(),
