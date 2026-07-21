@@ -317,6 +317,13 @@ batched into `changeset_batch` envelopes. Because the replication
 watermark is the integer `db_version`, the transport must not split
 rows that share one `db_version` across separate host batches.
 
+Normal host/desktop-peer batches target 250 rows / 256 KB. A peer with
+active chat subscriptions gets a 64 KB byte target, and the host may defer
+background changesets while its socket buffer is above 512 KB — but for at
+most 2 seconds, so a busy chat cannot starve CRR convergence. The byte/row
+limits are split targets rather than hard transaction caps: one complete
+`db_version` group is admitted even when that group alone exceeds a target.
+
 ### Apply
 
 ```sql
@@ -356,10 +363,22 @@ After apply, ADE runs post-hooks:
 - The host applies each `changeset_batch` envelope as a single SQL
   transaction. Partial application is impossible; the entire batch
   either lands or rolls back.
-- On failure (usually schema mismatch during a rolling upgrade), the
-  batch is dropped with a logged error; the next version-based
-  catch-up after both sides are on the same schema re-applies the
-  missed changes.
+- Senders keep exactly one batch pending and advance their durable outbound
+  cursor only after a successful `changeset_ack`. A NACK or 10-second ack
+  timeout retries the identical batch; cursor state never moves speculatively.
+- After six failed send attempts, host and desktop-peer senders discard the
+  encoded pending envelope but retain its `fromDbVersion`. They back off
+  (250 ms up to 4 s), re-export from that same cursor, and halve the batch
+  targets by recovery level down to 16 rows / 16 KB. A successful ack advances
+  the cursor and restores normal limits. This re-windowing lets a poisonously
+  large or transiently failing batch make bounded progress without skipping
+  CRR rows.
+- iOS persists both its last-acked per-project/site cursor and pending outbound
+  batch. It retries at 10-second acknowledgement intervals; after its retry
+  budget it rebuilds from the same cursor with progressively smaller windows
+  (64 rows / 64 KB down to one row / 4 KB) and 1–30 second backoff. Reconnect or
+  project switching reloads the persisted batch/cursor rather than claiming
+  unacknowledged phone writes were delivered.
 
 ## Implementation status
 

@@ -74,13 +74,20 @@ Browser sync client:
   sync client. Adopts a machine through the verified account relay, reconnects
   saved environments, stores only the resulting paired credentials, sends
   remote commands, requests files, subscribes to chat and terminal streams,
-  switches projects, and treats `changeset_batch` as invalidation input.
+  switches projects, and treats `changeset_batch` as invalidation input. Its
+  terminal subscriptions keep logical UTF-8 byte watermarks, drop duplicates,
+  trim overlaps, and perform one guarded `sinceOffset` resubscribe when a gap
+  appears. Delta snapshots append only the missing suffix; full snapshots are
+  authoritative replacements even when their end offset equals the watermark.
 - `apps/desktop/src/renderer/webclient/sync/connection.ts` - WebSocket
   lifecycle, account adoption, paired hello, DPoP proof on reconnect,
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
   attribution. DPoP/token preparation begins in parallel with the socket dial;
   transport open and authenticated hello have separate 8-second and 12-second
-  deadlines. While the page is visible, a 15-second watchdog closes a socket
+  deadlines. Relay sockets negotiate ready-v2 first: no ADE hello is sent
+  before `accepted` then `ready`; an old Worker that does not send `accepted`
+  within the short negotiation window is retried on a fresh legacy socket,
+  never downgraded in place. While the page is visible, a 15-second watchdog closes a socket
   after 75 seconds without inbound traffic; returning to a visible stale tab
   bypasses accumulated backoff. Relay application close codes are translated
   into stable offline/capacity/retry messages instead of exposing raw reasons.
@@ -169,7 +176,10 @@ Browser `window.ade` adapter:
   the non-conflict `listWithConflicts` are all derived from that one batched
   snapshot instead of separate per-call round-trips.
 - `apps/desktop/src/renderer/webclient/adapter/sessionsPty.ts` - terminal and
-  PTY APIs over `work.*`, `terminal_*`, and `terminal_history`.
+  PTY APIs over `work.*`, `terminal_*`, and `terminal_history`. Live subscribe
+  requests up to the same 2 MB used by `TerminalView` hydration. Recovery
+  snapshots re-enter the renderer as `PtyDataEvent`: deltas append, while a
+  full snapshot carries `replace: true` so xterm resets atomically.
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
   `personalChats.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
   web implementations of desktop renderer namespaces, mixing remote commands,
@@ -493,6 +503,14 @@ rules above.
 | Local dev loopback | `ws://127.0.0.1:<port>` or `ws://localhost:<port>` | No | Allowed only from `http:` / localhost pages. Use with `npm --prefix apps/desktop run dev:webclient` or local browser testing. |
 | Raw LAN / Tailscale IP | `ws://192.168.x.x:<port>` or `ws://100.x.x.x:<port>` | No | Works only from local/http contexts. Blocked from the hosted HTTPS page as mixed content. |
 
+For Relay, the browser first dials the endpoint with `ready=2`. A current Worker
+sends `accepted/v2` immediately and `ready/v2` only after the machine pipe and
+validated local listener are both open; the browser sends no ADE hello before
+that final readiness frame. If the Worker never advertises v2 during the short
+negotiation window, the browser abandons the socket and retries the exact route
+on a fresh legacy URL. It never reuses the ready-v2 socket for fallback, and it
+does not downgrade after `accepted`.
+
 The web client never talks to an ADE application server for project data. A
 Cloudflare Pages request serves static assets; after that all application state
 flows through the selected sync WebSocket transport to the machine runtime.
@@ -501,14 +519,24 @@ flows through the selected sync WebSocket transport to the machine runtime.
 
 ADE account sign-in is the only way to create a new hosted-web connection. The
 machine picker loads the user's machines from the Clerk-verified
-account-directory Worker. Offline machines remain listed with their last-seen
-state and cannot be selected. Saved pre-release direct environments are shown
-separately as a local compatibility path; they are not a pairing fallback.
+account-directory Worker. The directory's `online` value is a 90-second
+publisher-presence lease, not proof that a validated route disappeared. A row
+with an allowlisted, directory-verified secure Relay endpoint remains
+selectable after the presence lease expires; the ready-v2 bridge and
+authenticated hello decide current reachability. A row with no dialable secure
+endpoint remains listed with its last-seen state but cannot be selected. Saved
+pre-release direct environments are shown separately as a local compatibility
+path; they are not a pairing fallback.
 The Worker reads at most the owner's 500 most recently seen rows from D1 before
 computing online-first display order. Machine-list responses expose
 `Server-Timing` entries for Clerk authentication and the D1 query; CORS exposes
 that header to the hosted browser. These timings are diagnostics only and do
 not change the directory response contract.
+
+Machine-list requests retry exactly once after HTTP 401 by forcing an access
+token refresh. Only a repeated 401/403 becomes `auth_expired` and asks the user
+to sign in again; timeouts, server failures, and transient refresh/directory
+outages remain retryable and do not prune saved trust.
 
 Hosted builds use ADE's production Clerk application and production directory
 by default. Vite development uses the isolated development Clerk application
@@ -598,6 +626,15 @@ adapter then refreshes through the appropriate remote command or sub-protocol:
 - Personal chats: runtime-scoped `personalChats.*` commands plus
   `chat_subscribe` / `chat_event` carrying `chatScope: "personal"`. These are
   not inferred from, or stored in, the selected project's changeset stream.
+
+Terminal recovery is offset-based rather than best-effort append. The browser
+tracks the UTF-8 end byte from snapshots and `terminal_data`, drops complete
+replays, trims a partial overlap only at a code-point boundary, and withholds a
+chunk that starts after the watermark while one recovery subscribe is in
+flight. A delta snapshot fills the missing suffix; a full snapshot replaces
+the xterm buffer and invalidates older preview/transcript hydration promises so
+stale async work cannot repaint over recovery. Offsetless legacy/untracked
+streams keep append-only behavior without inventing a watermark.
 
 Browser-local persistence is limited to UI state and pairing state:
 `envStore.ts` stores paired environments in IndexedDB, and

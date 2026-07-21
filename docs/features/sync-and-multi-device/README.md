@@ -203,6 +203,29 @@ see your change.
 
 Runtime support files outside `services/sync/`:
 
+- `apps/ade-cli/src/services/account/accountAuthService.ts` and
+  `accountAttestationVerifier.ts` — the shared desktop/runtime Clerk session
+  and Relay-token verifier. Access tokens are used only while their signed
+  expiry is current; callers can force one refresh after an authenticated
+  service returns 401. Refresh-token rotation is cross-process safe: an
+  `invalid_grant` briefly waits for a desktop/runtime peer to publish its
+  rotated replacement, and stale credentials are compare-and-deleted only
+  when the store can prove that no peer replaced them. A successful rotation
+  is persisted before best-effort userinfo enrichment, and subject changes
+  across the old token, new token, or userinfo fail closed. Attestation errors
+  distinguish expired tokens and temporary verifier/JWKS outages from account
+  mismatch, invalid tokens, and configuration failures so lease owners retry
+  only transient failures.
+- `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
+  account-machine list/delete/adoption for ADE Code and the runtime. Directory
+  401 responses trigger one forced token refresh and exact request retry; a
+  final 401/403 is `auth_expired`, while transport/server failures remain
+  `unavailable`. Adoption fences persistence against the captured account
+  owner and session generation before and after pairing, rolling back a newly
+  written account-owned credential if sign-out or an account switch wins the
+  race. The directory's `online` field is a short presence lease, not a
+  transport verdict: a machine with a verified secure Relay endpoint remains
+  connectable after that presence bit expires.
 - `apps/ade-cli/src/services/account/accountMachinePublisherService.ts` — the
   single machine-brain publisher for the account directory. It derives the
   stable machine key from the cloud-relay store, publishes only currently
@@ -221,7 +244,10 @@ Runtime support files outside `services/sync/`:
   sets proactively (see `syncTunnelClientService.ts`) so the relay route appears
   in the directory without waiting for an external client to open the first
   tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
-  window without turning sync retries or status polling into product analytics.
+  window. Failed publications retry after 1, 2, 5, 10, then 20 seconds so a
+  short outage normally recovers within the lease, and a 401 forces one token
+  refresh before the publication is classified as expired. These operational
+  retries and status polls are local logs, not product analytics.
   Successful account sign-in also requests an immediate publish; the brain
   observes both its local auth event and cross-process credential-file changes
   from desktop sign-in. Separately, a lightweight 2-second observer computes a
@@ -270,9 +296,13 @@ Runtime support files outside `services/sync/`:
 - `apps/desktop/src/shared/accountDirectory.ts` — canonical account-directory
   origin, bounded success/error response decoding, route allowlisting, machine
   selection, and paired endpoint validation shared by desktop, the brain, ADE
-  Code, and hosted web. A 401/403 becomes `auth_expired` with the Worker's short
-  fixed reason preserved for CLI and desktop diagnostics; oversized or
-  unrecognized bodies fall back to the generic session-expired message.
+  Code, and hosted web. List calls can force-refresh once after a 401; a final
+  401/403 becomes `auth_expired` with the Worker's short fixed reason preserved
+  for CLI and desktop diagnostics, while oversized or unrecognized bodies fall
+  back to the generic session-expired message. `accountMachineConnectionState`
+  reports `available` whenever a directory-verified secure endpoint exists,
+  even if the short-lived `online` heartbeat expired; only a row with no
+  dialable endpoint is `offline`/`unreachable`.
 
 - `apps/ade-cli/src/eventBuffer.ts` — bounded runtime-event replay buffer
   used by multi-project RPC and desktop/TUI event streams. Retains up to
@@ -396,11 +426,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `host: { deviceId, name }` — read from `readBrainMetadata()` — so a
   client can only ever drop a saved pairing when the rejection came from
   the machine it is actually paired with), per-peer state,
-  changeset fan-out + ack tracking (bounded, windowed exports — see
-  `crdt-model.md`), chat-first scheduling (chat events are pumped before
-  background changesets, and peers with active chat subscriptions get
-  smaller background batches / backpressure deferral when the WebSocket
-  send buffer is already backed up), mobile-chat inline-image compaction
+  changeset fan-out + ack tracking (bounded, windowed exports and smaller-batch
+  recovery from the last acknowledged cursor — see `crdt-model.md`), chat-first
+  scheduling (chat events are pumped before background changesets; peers with
+  active chat subscriptions get a 64 KB changeset target and may defer a
+  background batch above the 512 KB socket watermark, but only for 2 seconds
+  so replication cannot starve), mobile-chat inline-image compaction
   (`compactChatEventEnvelopeForSync`: data URIs above 64 KB are removed from
   live sends, snapshots, and replay entries while the desktop event remains
   unchanged and original/omitted byte counts are retained), the mobile changeset diet
@@ -420,8 +451,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   ack before any `applyChanges` so one giant batch cannot seize the DB
   inside its `BEGIN IMMEDIATE` transaction), the per-session chat-event seq
   + replay buffer, terminal/chat subscription bridging, offset-stamped
-  mobile terminal streams, `sinceOffset` delta snapshots, scrollback
-  paging via `terminal_history`, mobile terminal input/resize forwarding
+  terminal streams, a bounded snapshot barrier that queues live data until an
+  authoritative transcript snapshot is captured, `sinceOffset` delta
+  snapshots, scrollback paging via `terminal_history`, acknowledged/deduped
+  terminal input with legacy fallback, mobile terminal input/resize forwarding
   into subscribed PTYs, desktop-size restore after the last phone
   detaches, lane presence decoration, project catalog/switch envelopes,
   runtime-scoped project action envelopes (browse/open/create/clone/
@@ -702,6 +735,16 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   exposes `skipReason` / `lastControlError`, while
   `lastControlOpenAt` and `lastBridgeValidationAt` retain the two independent
   success histories.
+- `relayAuthorization.ts` — lease renewal for already-authenticated Relay
+  peers. A capable controller refreshes before expiry with a DPoP signature
+  bound to the exact token bytes, device id, host challenge, timestamp, and
+  nonce. The host checks account owner/generation on both sides of remote
+  verification and accepts only a later token expiry with at least 30 seconds
+  remaining. Expired tokens and verifier outages are retryable; account/key/
+  proof mismatches close the peer. Successful nonce receipts are bounded and
+  included in socket-handoff state so retrying a response lost during project
+  handoff is idempotent. Legacy peers that do not advertise renewal close at
+  token expiry; capable peers have only the advertised short grace window.
 
 Push publisher (`apps/ade-cli/src/services/push/`) — the APNs push +
 Live Activity pipeline (`pushPublisherService.ts`,
@@ -924,6 +967,33 @@ cluster is its own local ADE machine for execution — that is not the
 same as being part of the cluster. Multi-runtime active-active execution
 is not supported.
 
+## Account directory and connection leases
+
+The account directory is discovery, not durable liveness authority. The
+runtime publishes every 30 seconds into a 90-second directory presence lease;
+the `online` bit expires when those heartbeats stop, but a previously validated
+secure Relay endpoint is still worth an authenticated dial. Machine pickers
+therefore distinguish "no current heartbeat" from "no usable endpoint" and
+keep a row connectable while at least one directory-verified secure route
+remains. The authenticated hello is the final availability and identity check.
+
+Directory list, delete, and publish operations retry one 401 with a forced
+access-token refresh. Only a repeated 401/403 is classified as
+`auth_expired`; timeouts, server failures, and temporary token-verifier/JWKS
+failures remain retryable and do not erase pairing trust. Account adoption
+captures the account owner/session generation and rechecks it before and after
+credential persistence so a late result cannot recreate trust after sign-out
+or an account switch.
+
+Relay has two related but distinct leases. The machine's control tunnel may
+survive a transient refresh failure only until its last known account-token
+expiry; sign-out, owner change, or expiry closes the control and active pipes.
+Each paired Relay peer also carries its own short-lived account authorization.
+Peers advertising `relayReauthorizeV1` renew that authorization in place with
+a DPoP-bound fresh token; terminal identity/proof failures close the peer,
+while expiry/verifier-unavailable results can retry inside the advertised
+grace. Older peers close exactly when their initial token expires.
+
 ## Device discovery
 
 - **Machine-to-machine**: pair or connect from **Connections > Machines** with
@@ -1087,6 +1157,36 @@ raises its socket receive budget to 32 MiB, so chat / terminal
 snapshots, `file_response`, and large `command_result` payloads can
 no longer kill the connection with "Message too long".
 
+### Transport readiness and path truth
+
+Relay controllers negotiate bridge readiness before sending an ADE envelope.
+They first open `wss://…/connect/<machineKey>?ready=2`. A current Worker sends
+`{"t":"accepted","v":2}` immediately, then sends
+`{"t":"ready","v":2}` only after the runtime control pipe and validated
+loopback listener are both open. ADE `hello` is forbidden before `ready`.
+If no `accepted` arrives within the short negotiation window, the controller
+abandons that socket and retries the same route on a **fresh** URL without the
+`ready` parameter for an old Worker. It never sends a legacy hello on the
+ready-v2 socket: a delayed `accepted` would reinterpret that hello as illegal
+pre-ready data. Once `accepted` arrives there is no downgrade; the attempt
+waits for `ready` within the overall authenticated-hello budget or fails.
+
+The Worker and brain bind control, pipe, ready, and reject messages to a random
+connection epoch. A replacement control supersedes the old epoch, so a stale
+pipe cannot attach to a new controller. Legacy Workers retain only a bounded
+pre-ready buffer; ready-v2 paths buffer no ADE data before the bridge exists.
+
+iOS races authenticated candidates rather than declaring victory at TCP or
+WebSocket open: attempts are staggered by 250 ms, limited to three concurrent
+candidates and a 10-second overall budget, and the first successful
+`hello_ok` wins. Every candidate in one race carries the same monotonic
+`peer.connectionAttempt` id/start time. The host serializes commits for that
+device and rejects a late loser as `connection_attempt_superseded`, preventing
+a slower route from evicting the winner. Finally, `hello_ok.connectionTransport`
+is the host-observed `direct | relay` truth after authentication; controllers
+use it for diagnostics/policy rather than inferring the path solely from a
+cached candidate label.
+
 `SyncHelloErrorPayload.code` is trimmed to `auth_failed |
 invalid_hello`. An `auth_failed` payload also carries an optional
 `host: { deviceId, name }` naming the machine that rejected the hello —
@@ -1119,7 +1219,14 @@ one are decoded with a deterministic fallback so older desktops can
 still sync. The receiver replies with a `changeset_ack` once
 `applyChanges` commits (or with an error code on failure). The runtime and
 phone keep outbound batches pending until the ack lands, retransmitting
-on timeout so a dropped wifi blip cannot lose a batch.
+on timeout so a dropped wifi blip cannot lose a batch. After six failed sends
+or acknowledgements, the sender abandons only that encoded batch — it does
+**not** advance the last-acknowledged cursor. It backs off, rebuilds from the
+same `fromDbVersion` with progressively smaller row/byte windows, and resets
+normal limits only after a successful ack. Host and desktop-peer recovery
+bottom out at 16 rows / 16 KB with 250 ms–4 s backoff; iOS starts at 64 rows /
+64 KB, shrinks to one row / 4 KB, and backs off up to 30 seconds. A single
+`db_version` transaction may exceed a target, because it is never split.
 `pendingChangesetPeerCount` is surfaced through `brain_status` for
 diagnostics; `brain_status` is a legacy envelope name.
 
@@ -1140,7 +1247,7 @@ payload.
 |---|---|---|
 | Changeset sync | Bidirectional cr-sqlite row exchange | All devices |
 | File access | On-demand project/worktree file reads, listings, writes | iOS Files, desktop remote viewing |
-| Terminal stream/control | Subscribe to PTY output from the runtime; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
+| Terminal stream/control | Subscribe to a logical-offset transcript snapshot plus live PTY output. The host installs a snapshot barrier before capture, queues concurrent data/exit events (256 events / 2 MB), trims overlap at UTF-8 boundaries, and recaptures up to four times when the snapshot did not reach the queued watermark; it closes instead of flushing a gap or unreconstructable overflow. Web/iOS clients drop duplicate ranges, trim overlap, and issue one guarded `sinceOffset` recovery subscribe when a live chunk starts beyond their watermark. A delta appends only the missing suffix; a full snapshot is authoritative replacement even when its end equals the current watermark. ACK-capable input uses stable `inputId`s and a bounded host dedupe ledger so reconnect/timeout retry cannot type twice; legacy hosts receive one-shot input with no ambiguous retry. Viewport resize remains subscription-scoped and the last desktop size is restored after the last mobile viewer detaches | iOS Work tab, hosted web Work terminal |
 | Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session); per-session history is evicted with a 64-session LRU so a phone that has opened many chats cannot pin unbounded host memory. `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). Optional live sends are marked delivered only after the WebSocket accepts the frame; a backpressured peer keeps its transcript offset in place and the pump stops at the first failed event so later chunks cannot overtake the missing one. The snapshot is a byte-capped tail: `chat_subscribe` also carries the client's `maxBytes`, and the host clamps the snapshot's `getChatEventHistory` budget to `min(host cap, maxBytes)` — for a mobile-sized budget even the newest oversize event is dropped rather than force-included, so a phone never receives a snapshot larger than it asked for. Snapshot events are marked as already-sent to that peer, so the follow-on live pump does not re-deliver the overlap. The ack also carries `turnActive` from the live agent chat service — because the snapshot is a byte-capped tail, a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint). **Cross-project "quick look":** `chat_subscribe` / `chat_unsubscribe` accept an optional `projectId` / `projectRootPath` override. When it names a registered project OTHER than the socket's active one — and the host advertised the `crossProjectChat` feature flag — the host serves that session's transcript **read-only straight off the foreign project's `.ade` transcript JSONL** (byte-capped tail snapshot, then the pump tails the same file for live events), with no project switch and no runtime boot for that project. Such sessions have no live agent chat service here, so `turnActive` is omitted and the client derives turn state from the streamed `status` events. The transcript resolver is the security boundary — it validates the project is registered and confines the path to that project's transcripts dir. A host without a foreign-chat provider never sets `crossProjectChat`, so the phone falls back to a full project activation. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change also rides this stream, so a mode switch made on one client (desktop ↔ iOS) patches every subscribed client's cached summary and composer controls live without a refetch | iOS Work tab, iOS Hub, controller chat |
 | Chat roster | Machine-wide all-projects projection of every project's lanes + work sessions grouped by lane — agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions, live **and** ended (`run-shell` infrastructure rows excluded) — so the mobile Hub renders every project's sessions at once **without activating each project**. `roster_subscribe` (handshake mirrors `chat_subscribe`, with an optional `sinceSeq`) → `roster_snapshot` then incremental `roster_delta` (`changed` upserts whole project entries, `removed` lists dropped `projectId`s). Un-booted projects are read cheaply from disk — each project's `<root>/.ade/ade.db` (read-only, no cr-sqlite / no runtime boot) plus `.ade/cache/chat-sessions/*.json` — so their session status is limited to the last-persisted `idle`/`ended`/`awaiting`; live `running`/`awaiting` fidelity is overlaid only for scopes currently booted on the runtime (booted scopes also overlay PTY liveness so a live standalone CLI session reads `running`). `attentionCount` counts awaiting/failed **chat** rows and their attached shells only — standalone CLI failures never count, so a long-dead CLI exit can't pin a project to the top of the hub. Rows carry `toolType` so the phone routes chat rows to the chat surface and CLI rows to the terminal path. Transcripts are excluded from the roster (they load on demand when a chat opens): on a host advertising `crossProjectChat` the phone opens a foreign-project chat as a read-only cross-project quick look (see the Chat stream row) without activating that project; CLI rows never take the quick look (no chat JSONL — they always activate + open the terminal), and only on older hosts lacking the flag does opening a chat fall back to activating the project's full sync. Oversized snapshots ride the generic `envelope_chunk` path. A host without a roster provider (single-project desktop) simply never answers `roster_subscribe`, so the phone falls back to the active project only | iOS Hub |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, `work.listExternalSessions`, `work.importExternalSession`, etc.) | Controller devices |

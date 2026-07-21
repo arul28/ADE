@@ -201,13 +201,18 @@ apps/ios/
 │   │   │                               # quota snapshot + refresh state
 │   │   ├── SyncRecoveryPolicy.swift # deterministic reconnect, path-change,
 │   │   │                            # heartbeat-silence, and timeout policy
+│   │   ├── SyncConnectionRace.swift # authenticated direct/Relay candidate
+│   │   │                            # race, stagger/budget, and route truth
+│   │   ├── SyncTerminalInputQueue.swift # bounded ordered terminal input,
+│   │   │                                # ACK timeout/retry, stable input ids
 │   │   ├── Dictation/               # SpeechDictationService,
 │   │   │                            # DictationController, deterministic
 │   │   │                            # cleanup, VoiceGlossary loader
 │   │   └── SyncService.swift        # WebSocket client, command routing,
 │   │                                # PIN pairing, scoped projection
-│   │                                # revisions, lane presence, terminal
-│   │                                # subscribe/unsubscribe + input/resize,
+│   │                                # revisions, lane presence, logical-offset
+│   │                                # terminal snapshots, gap recovery,
+│   │                                # reliable input/resize,
 │   │                                # CLI launcher (startCliSession), chat push,
 │   │                                # provider-aware scheduled-work cancel,
 │   │                                # machine project browse/open/create/clone,
@@ -638,6 +643,13 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    routes; this prevents "Tailscale off" from waiting behind a dead
    tailnet sweep. Pairing uses the same endpoint ordering, so a phone
    without Tailscale can pair through relay without extra user setup.
+   Ordered endpoints then enter an **authenticated** race: candidates start
+   250 ms apart, at most three are active, the whole wave has a 10-second
+   budget, and only a completed `hello_ok` can win. The initial wave covers
+   the best candidate plus transport/route diversity, and failures admit the
+   next ranked route. Every socket in the wave sends the same monotonic
+   `peer.connectionAttempt` metadata; the host rejects a late losing socket as
+   superseded instead of letting it replace the winner.
    Relay routes arrive from the pairing QR and — for already-paired
    phones — from `hello_ok` /
    `brain_status`'s `cloudRelayWssUrl`, persisted into the host
@@ -662,6 +674,12 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    an already-live connection. The socket declares the
    `chunkedEnvelopes` capability and sets a 32 MiB
    `maximumMessageSize` receive budget.
+   Relay candidates first append `ready=2`. A new Worker sends `accepted/v2`
+   before bridge setup and `ready/v2` only after both pipe and validated local
+   listener exist; iOS sends no ADE hello before `ready`. If `accepted` does
+   not arrive within 350 ms, the phone closes that socket and retries the same
+   endpoint on a fresh legacy URL. It never downgrades in place, and after
+   `accepted` it waits within the overall hello budget instead of falling back.
    An `auth_failed` hello rejection drops the saved pairing **only**
    when the rejecting machine attributed itself (`hello_error.host`)
    and its identity matches the paired machine; unattributed or
@@ -675,6 +693,9 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    `appVersion` (`CFBundleShortVersionString`), `appBuild`
    (`CFBundleVersion`), and `bundleIdentifier` from `Bundle.main` — which
    the runtime persists into the peer's device-registry `metadata_json`.
+   `hello_ok.connectionTransport` is the host-observed post-authentication
+   `direct | relay` result. Connection diagnostics and Relay policy use that
+   value when present instead of trusting how the candidate URL was labelled.
 4. If no active project is selected, show the Hub (all-projects roster
    home) instead of hydrating lane/file/PR surfaces against the wrong row.
    The Hub subscribes to the roster feed (`roster_subscribe`) to render
@@ -688,6 +709,12 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    in detached tasks (the SQLite connection is FULLMUTEX). The receive
    loop awaits frames in order, so application order is unchanged —
    the UI just never freezes under sync load.
+   Phone-originated changesets are persisted as one pending batch and the
+   outbound cursor advances only on a successful ack. Ack timeout/NACK retries
+   the same batch; exhausting the retry budget re-exports from the unchanged
+   cursor with a smaller 64-row/64-KB window (down to one row/4 KB) after a
+   bounded 1–30 second backoff. A reconnect/project switch reloads the durable
+   pending batch rather than skipping unconfirmed phone writes.
 7. On transport disconnect: run a finite seven-attempt fast burst with
    1 s -> 16 s exponential backoff and jitter. During that window the
    connection health remains `connecting`, cached chat content stays mounted,
@@ -734,9 +761,9 @@ Implemented envelope types on iOS:
 | `command_ack` | Runtime → phone | Command receipt |
 | `command_result` | Runtime → phone | Execution result or error |
 | `file_request` / `file_response` | Bidirectional | On-demand file access |
-| `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions. `terminal_data` carries `offset` — the transcript's end byte offset after the chunk (null when the session has no transcript or hit the size cap) — so the phone can detect dropped chunks. `terminal_subscribe` accepts `sinceOffset`; when the runtime can serve exactly `sinceOffset → end` within the byte budget it replies with a `delta: true` snapshot (append, don't replace), giving exact back-fill after reconnects/gaps. Snapshots also report `startOffset`/`endOffset`, plus `live: false` when no PTY backs the session (ended, or orphaned by a brain restart while status still says running) so the phone shows a resume bar instead of silently accepting keystrokes |
-| `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC boundary; `atStart: true` at beginning of transcript). Requires an active `terminal_subscribe` |
-| `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY. Mobile resizes are non-authoritative: the runtime records the last desktop-originated size and restores it when the last subscribed phone detaches |
+| `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions. `terminal_data.offset` is the lifetime logical UTF-8 end offset (null only for untracked/no-transcript or failed-write streams), so physical transcript rollover does not rewind it. The phone drops duplicates, trims UTF-8 overlap, and on a gap launches one guarded resubscribe from its watermark instead of rendering out of order. `terminal_subscribe.sinceOffset` returns an append-only `delta: true` snapshot when the retained logical window still covers the request; otherwise a full snapshot replaces local state even when its end offset equals the watermark. The host's bounded snapshot barrier queues live data/exits during capture and recaptures rather than flushing a gap. Snapshots also report `startOffset`/`endOffset`, plus `live: false` when no PTY backs the session so the phone shows a resume bar instead of accepting keystrokes |
+| `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns retained transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC and UTF-8 boundary; `atStart: true` means the oldest **retained logical offset**, which may be greater than zero after rollover). Requires an active `terminal_subscribe` |
+| `terminal_input` / `terminal_input_ack` / `terminal_resize` | Phone ↔ runtime | Input is queued in order only after the terminal snapshot is ready. ACK-capable hosts receive a stable `inputId`; the phone sends one item at a time, waits 8 seconds, and retries with 0.5/1/2-second backoff within the host-advertised lease (four total attempts). The host dedupes `(device, session, inputId)` before writing, so a lost ack cannot type twice. `not_subscribed` is the only retryable rejection: iOS re-subscribes through the snapshot barrier and resends the same id. Other errors fail that item and continue the queue. Legacy hosts receive one-shot input without an id or ambiguous retry. Mobile resizes are non-authoritative: the runtime restores the last desktop size when the final phone detaches |
 | `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly. On strained relay connections, the Work detail view stays subscribed to `chat_event` but skips heavyweight `chat.getChatEventHistory` and fallback transcript fetches while the turn is active; idle refresh reconciles the canonical transcript. When the host advertises `crossProjectChat`, `chat_subscribe` / `chat_unsubscribe` also carry an optional `projectId` / `projectRootPath` override so the Hub can open a chat in a **foreign** project read-only (transcript streamed straight off that project's `.ade` JSONL) without switching the phone's active project — see the Hub and Lane-data-projection sections. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
 | `chat_subscribe` with `chatScope: "personal"` | Phone → runtime / runtime → phone | Explicit projectless transcript/event subscription. `SyncService` marks the session personal, omits project id/root, routes send/steer/approval/update/lifecycle and scheduled-work Cancel/Pause calls to `personalChats.*`, and loads image bytes through `personalChats.getImageDataUrl`. Missing project scope alone never selects this path. |
 | `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended (`run-shell` infrastructure rows are excluded). Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
@@ -823,6 +850,16 @@ This avoids
 cycling a healthy-but-slow connection (catalog/PR refreshes can take
 30 s+ on cellular) into a perpetual timeout→reconnect→re-request
 loop.
+
+Terminal input has a separate ambiguity-safe timeout. On hosts advertising
+`terminalInputAck`, iOS retains the exact `inputId`, allows only one in-flight
+item per session, and after 8 seconds retries within the advertised
+`retryWindowMs` (normally 60 seconds) for at most four attempts. Reconnect
+marks in-flight items unsent and waits for the terminal snapshot subscription
+to be ready before replay. If the attempt/window budget expires, iOS reports
+that delivery could not be confirmed and removes the item instead of typing it
+again forever. Older hosts receive a single unacknowledged write and are never
+automatically retried after an ambiguous outcome.
 
 `InitialHydrationGate` polls for the project row at 200ms intervals up
 to a 15s total budget. This covers the first sync-after-pairing gap
@@ -1628,7 +1665,12 @@ different machine's cached limits.
   a QR/Nearby/SSH profile account-owned just because the same Mac
   later appears in the account directory. On account loss, disconnect Relay
   and retry direct routes; delete only account-owned profiles. Treat transient
-  account/directory failures as retryable, not as logout.
+  account/directory failures as retryable, not as logout. The directory's
+  `online` flag is only its 90-second publisher lease: if a row still contains
+  a verified secure endpoint, the phone may dial it and let the authenticated
+  hello decide liveness. A final 401/403 after one forced refresh is the
+  credential-expired boundary; a timeout, server error, or temporary verifier
+  outage is not.
 - **The ADE iOS bootstrap SQL is generated.** When desktop `kvDb.ts`
   schema changes, regenerate `DatabaseBootstrap.sql`. Schema drift
   between desktop and iOS breaks the first-launch bootstrap.
