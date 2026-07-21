@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { createSyncPairingStore } from "../sync/syncPairingStore";
 import { createSyncPinStore } from "../sync/syncPinStore";
-import { AccountAttestationError, verifyClerkAccountAttestation } from "./accountAttestationVerifier";
+import { verifyClerkAccountAttestation } from "./accountAttestationVerifier";
 
 const ISSUER = "https://clerk.test";
 const OAUTH_CLIENT_ID = "client_ade";
@@ -171,7 +171,7 @@ describe("verifyClerkAccountAttestation", () => {
       token,
       expectedUserId: OWNER_USER_ID,
       config: { ...config(), jwksUrl: `${jwksUrl}?mode=${mode}` },
-    })).rejects.toMatchObject<AccountAttestationError>({
+    })).rejects.toMatchObject({
       code: "verification_unavailable",
     });
   });
@@ -181,7 +181,7 @@ describe("verifyClerkAccountAttestation", () => {
       token: "not-a-jwt",
       expectedUserId: OWNER_USER_ID,
       config: config(),
-    })).rejects.toMatchObject<AccountAttestationError>({ code: "invalid_token" });
+    })).rejects.toMatchObject({ code: "invalid_token" });
   });
 });
 
