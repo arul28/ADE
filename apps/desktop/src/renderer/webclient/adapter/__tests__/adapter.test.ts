@@ -852,7 +852,7 @@ describe("createAdeWebAdapter", () => {
     const offData = adapter.ade.pty.onData((event) => ptyData.push(event));
     await adapter.ade.pty.setDataSubscriptions({ ptyIds: ["pty-1"] });
 
-    expect(fake.terminalSubscribeCalls).toEqual([{ sessionId: "session-1", opts: { maxBytes: 1024 } }]);
+    expect(fake.terminalSubscribeCalls).toEqual([{ sessionId: "session-1", opts: { maxBytes: 2_000_000 } }]);
     fake.emitTerminalSnapshot("session-1", {
       sessionId: "session-1",
       transcript: "scrollback\n",
@@ -864,14 +864,41 @@ describe("createAdeWebAdapter", () => {
       endOffset: 11,
       live: true,
     });
-    expect(ptyData).toEqual([]);
+    expect(ptyData).toEqual([
+      {
+        ptyId: "pty-1",
+        sessionId: "session-1",
+        data: "scrollback\n",
+        offset: 11,
+        replace: true,
+      },
+    ]);
+
+    fake.emitTerminalSnapshot("session-1", {
+      sessionId: "session-1",
+      transcript: "recovered\n",
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "recovered",
+      capturedAt: "2026-07-07T00:00:01.500Z",
+      startOffset: 11,
+      endOffset: 21,
+      delta: true,
+      live: true,
+    });
+    expect(ptyData.at(-1)).toEqual({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      data: "recovered\n",
+      offset: 21,
+    });
 
     await expect(adapter.ade.terminal.preview({ terminalId: "session-1", maxBytes: 4096 })).resolves.toMatchObject({
       terminalId: "session-1",
       transcript: "scrollback\n",
       source: "transcript",
     });
-    expect(ptyData).toEqual([]);
+    expect(ptyData).toHaveLength(2);
 
     await expect(adapter.ade.sessions.readTranscriptTail({ sessionId: "session-1", maxBytes: 4096, raw: true })).resolves.toBe("scrollback\n");
     expect(fake.terminalSubscribeCalls).toHaveLength(1);
@@ -900,16 +927,14 @@ describe("createAdeWebAdapter", () => {
       ptyId: "pty-1",
       data: "live\n",
       at: "2026-07-07T00:00:02.000Z",
-      offset: 16,
+      offset: 26,
     });
-    expect(ptyData).toEqual([
-      {
-        ptyId: "pty-1",
-        sessionId: "session-1",
-        data: "live\n",
-        offset: 16,
-      },
-    ]);
+    expect(ptyData.at(-1)).toEqual({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      data: "live\n",
+      offset: 26,
+    });
 
     offData();
     adapter.dispose();

@@ -484,8 +484,18 @@ type PtyEntry = {
   tracked: boolean;
   transcriptPath: string;
   transcriptStream: fs.WriteStream | null;
+  /** Logical UTF-8 byte offset immediately after all output observed so far. */
   transcriptBytesWritten: number;
-  transcriptLimitReached: boolean;
+  /** Logical offset represented by byte zero of the retained transcript file. */
+  transcriptBaseOffset: number;
+  /** Bytes currently retained in the transcript file (including buffered writes). */
+  transcriptRetainedBytes: number;
+  transcriptRolloverInProgress: boolean;
+  transcriptRolloverPromise: Promise<void> | null;
+  transcriptRolloverPendingChunks: Buffer[];
+  transcriptRolloverPendingBytes: number;
+  transcriptRolloverPendingTrimmed: boolean;
+  transcriptPausedForRollover: boolean;
   transcriptWriteDisabled: boolean;
   transcriptLastErrorAt: number;
   lastPreviewWriteAt: number;
@@ -975,9 +985,259 @@ function resumeProviderDisplayName(provider: TerminalResumeProvider): string {
 }
 
 const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
-const TRANSCRIPT_LIMIT_NOTICE = "\n[ADE] transcript limit reached (16MB). Further output omitted.\n";
+const TRANSCRIPT_ROLLOVER_TARGET_BYTES = MAX_TRANSCRIPT_BYTES / 2;
+const TRANSCRIPT_ROLLOVER_STATE_VERSION = 1;
 const RESUME_TARGET_MISSING_COOLDOWN_MS = 10 * 60_000;
 const RESUME_SCAN_WINDOW_MS = 60_000;
+
+type TranscriptRolloverState = {
+  version: typeof TRANSCRIPT_ROLLOVER_STATE_VERSION;
+  baseOffset: number;
+  retainedBytes: number;
+};
+
+type TranscriptRolloverJournal = {
+  version: typeof TRANSCRIPT_ROLLOVER_STATE_VERSION;
+  previousBaseOffset: number;
+  previousRetainedBytes: number;
+  nextBaseOffset: number;
+  nextRetainedBytes: number;
+};
+
+type ResolvedTranscriptRolloverState = TranscriptRolloverState & {
+  recoveredJournal: boolean;
+};
+
+function transcriptRolloverStatePath(transcriptPath: string): string {
+  return `${transcriptPath}.rollover.json`;
+}
+
+function transcriptRolloverJournalPath(transcriptPath: string): string {
+  return `${transcriptPath}.rollover.pending.json`;
+}
+
+function transcriptRolloverBackupPath(transcriptPath: string): string {
+  return `${transcriptPath}.rollover.previous`;
+}
+
+function transcriptRolloverTempPattern(transcriptPath: string): RegExp {
+  const escapedName = path.basename(transcriptPath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `^${escapedName}(?:\\.rollover(?:\\.pending)?\\.json)?\\.\\d+\\.[^.]+\\.tmp$`,
+  );
+}
+
+function removeTranscriptRolloverTempFilesSync(transcriptPath: string): void {
+  const directory = path.dirname(transcriptPath);
+  const pattern = transcriptRolloverTempPattern(transcriptPath);
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!pattern.test(name)) continue;
+    try {
+      fs.unlinkSync(path.join(directory, name));
+    } catch {
+      // Best-effort cleanup of a temp file left by an interrupted atomic write.
+    }
+  }
+}
+
+function isSafeTranscriptOffset(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function parseTranscriptRolloverState(raw: unknown): TranscriptRolloverState | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<TranscriptRolloverState>;
+  if (
+    candidate.version !== TRANSCRIPT_ROLLOVER_STATE_VERSION
+    || !isSafeTranscriptOffset(candidate.baseOffset)
+    || !isSafeTranscriptOffset(candidate.retainedBytes)
+  ) return null;
+  return candidate as TranscriptRolloverState;
+}
+
+function parseTranscriptRolloverJournal(raw: unknown): TranscriptRolloverJournal | null {
+  if (!raw || typeof raw !== "object") return null;
+  const candidate = raw as Partial<TranscriptRolloverJournal>;
+  if (
+    candidate.version !== TRANSCRIPT_ROLLOVER_STATE_VERSION
+    || !isSafeTranscriptOffset(candidate.previousBaseOffset)
+    || !isSafeTranscriptOffset(candidate.previousRetainedBytes)
+    || !isSafeTranscriptOffset(candidate.nextBaseOffset)
+    || !isSafeTranscriptOffset(candidate.nextRetainedBytes)
+  ) return null;
+  return candidate as TranscriptRolloverJournal;
+}
+
+function readJsonFileBestEffort(filePath: string): unknown {
+  try {
+    return JSON.parse(String(fs.readFileSync(filePath, "utf8")));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the logical byte window represented by the retained file. Old
+ * transcripts have no sidecar and therefore retain the legacy [0, size)
+ * mapping. The small journal makes the file replacement + sidecar update
+ * recoverable if the process exits between those two atomic renames.
+ */
+function loadTranscriptRolloverStateSync(
+  transcriptPath: string,
+  retainedBytes: number,
+): ResolvedTranscriptRolloverState {
+  const state = parseTranscriptRolloverState(
+    readJsonFileBestEffort(transcriptRolloverStatePath(transcriptPath)),
+  );
+  const journal = parseTranscriptRolloverJournal(
+    readJsonFileBestEffort(transcriptRolloverJournalPath(transcriptPath)),
+  );
+
+  if (journal) {
+    if (state?.baseOffset === journal.nextBaseOffset) {
+      return { ...state, retainedBytes, recoveredJournal: true };
+    }
+    // During replacement the previous file is atomically renamed aside before
+    // the new retained tail takes its place. Presence of both files therefore
+    // identifies the new generation even when old/new byte sizes are equal.
+    if (fs.existsSync(transcriptRolloverBackupPath(transcriptPath)) && fs.existsSync(transcriptPath)) {
+      return {
+        version: TRANSCRIPT_ROLLOVER_STATE_VERSION,
+        baseOffset: journal.nextBaseOffset,
+        retainedBytes,
+        recoveredJournal: true,
+      };
+    }
+    return {
+      version: TRANSCRIPT_ROLLOVER_STATE_VERSION,
+      baseOffset: journal.previousBaseOffset,
+      retainedBytes,
+      recoveredJournal: true,
+    };
+  }
+
+  return {
+    version: TRANSCRIPT_ROLLOVER_STATE_VERSION,
+    baseOffset: state?.baseOffset ?? 0,
+    retainedBytes,
+    recoveredJournal: false,
+  };
+}
+
+async function writeFileDurableTemp(filePath: string, data: Buffer | string): Promise<string> {
+  const tmpPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(tmpPath, "wx", 0o600);
+    await handle.writeFile(data);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    return tmpPath;
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await fs.promises.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+}
+
+async function writeFileAtomicAsync(filePath: string, data: Buffer | string): Promise<void> {
+  const tmpPath = await writeFileDurableTemp(filePath, data);
+  try {
+    await fs.promises.rename(tmpPath, filePath);
+  } catch (error) {
+    await fs.promises.unlink(tmpPath).catch(() => {});
+    throw error;
+  }
+}
+
+async function restoreInterruptedTranscriptReplacement(transcriptPath: string): Promise<void> {
+  const journal = parseTranscriptRolloverJournal(
+    readJsonFileBestEffort(transcriptRolloverJournalPath(transcriptPath)),
+  );
+  if (!journal) return;
+  const backupPath = transcriptRolloverBackupPath(transcriptPath);
+  if (!fs.existsSync(backupPath) || fs.existsSync(transcriptPath)) return;
+  await fs.promises.rename(backupPath, transcriptPath);
+}
+
+async function clearCompletedTranscriptRolloverTransaction(transcriptPath: string): Promise<void> {
+  const backupPath = transcriptRolloverBackupPath(transcriptPath);
+  try {
+    await fs.promises.unlink(backupPath);
+  } catch {
+    // Keep the journal if a material backup still exists; the next process can
+    // retry cleanup without mistaking the backup for an active transaction.
+    if (fs.existsSync(backupPath)) return;
+  }
+  await fs.promises.unlink(transcriptRolloverJournalPath(transcriptPath)).catch(() => {});
+}
+
+async function readFileTailBuffer(filePath: string, maxBytes: number): Promise<{ tail: Buffer; size: number }> {
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(filePath, "r");
+    const stat = await handle.stat();
+    const size = Math.max(0, Number(stat.size) || 0);
+    const start = Math.max(0, size - Math.max(0, maxBytes));
+    const buffer = Buffer.alloc(size - start);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+    return { tail: buffer.subarray(0, Math.max(0, bytesRead)), size };
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+function utf8SafeTail(buffer: Buffer, maxBytes: number): Buffer {
+  let start = Math.max(0, buffer.length - Math.max(0, maxBytes));
+  while (start < buffer.length && (buffer[start]! & 0b1100_0000) === 0b1000_0000) {
+    start += 1;
+  }
+  return buffer.subarray(start);
+}
+
+function utf8CompletePrefixLength(buffer: Buffer): number {
+  if (buffer.length === 0) return 0;
+  let lead = buffer.length - 1;
+  while (lead >= 0 && (buffer[lead]! & 0b1100_0000) === 0b1000_0000) {
+    lead -= 1;
+  }
+  if (lead < 0) return 0;
+  const leadByte = buffer[lead]!;
+  const expectedLength = (leadByte & 0b1000_0000) === 0
+    ? 1
+    : (leadByte & 0b1110_0000) === 0b1100_0000
+      ? 2
+      : (leadByte & 0b1111_0000) === 0b1110_0000
+        ? 3
+        : (leadByte & 0b1111_1000) === 0b1111_0000
+          ? 4
+          : 1;
+  return lead + expectedLength <= buffer.length ? buffer.length : lead;
+}
+
+function decodeTranscriptPage(
+  page: Buffer,
+  startOffset: number,
+  boundary: number,
+): { data: string; startOffset: number; endOffset: number } {
+  const completeEnd = utf8CompletePrefixLength(page);
+  if (completeEnd <= boundary) {
+    const emptyOffset = startOffset + completeEnd;
+    return { data: "", startOffset: emptyOffset, endOffset: emptyOffset };
+  }
+  return {
+    data: page.subarray(boundary, completeEnd).toString("utf8"),
+    startOffset: startOffset + boundary,
+    endOffset: startOffset + completeEnd,
+  };
+}
 
 function isNoSpaceError(error: unknown): boolean {
   const code = typeof error === "object" && error != null && "code" in error
@@ -1717,10 +1977,12 @@ export function createPtyService({
   };
 
   const scheduleTranscriptDependentWork = (
-    entry: Pick<PtyEntry, "sessionId" | "toolTypeHint" | "transcriptStream" | "laneWorktreePath" | "boundCwd">,
+    entry: Pick<PtyEntry, "sessionId" | "toolTypeHint" | "transcriptStream" | "transcriptRolloverPromise" | "laneWorktreePath" | "boundCwd">,
     reason: "close" | "dispose" | "orphan-dispose",
   ): void => {
-    void endTranscriptStream(entry.transcriptStream)
+    void Promise.resolve(entry.transcriptRolloverPromise)
+      .catch(() => {})
+      .then(() => endTranscriptStream(entry.transcriptStream))
       .finally(() => {
         backfillResumeTargetFromTranscriptBestEffort(entry.sessionId, entry.toolTypeHint, reason, entry.boundCwd);
         summarizeSessionBestEffort(entry.sessionId, {
@@ -1733,9 +1995,16 @@ export function createPtyService({
   const disableTranscriptWrite = (entry: PtyEntry, err: unknown): void => {
     if (entry.transcriptWriteDisabled) return;
     entry.transcriptWriteDisabled = true;
-    entry.transcriptLimitReached = true;
     const stream = entry.transcriptStream;
     entry.transcriptStream = null;
+    if (entry.transcriptPausedForRollover) {
+      entry.transcriptPausedForRollover = false;
+      try {
+        entry.pty.resume();
+      } catch {
+        // Live output remains authoritative even when transcript persistence fails.
+      }
+    }
     const now = Date.now();
     if (now - entry.transcriptLastErrorAt > 10_000) {
       entry.transcriptLastErrorAt = now;
@@ -2708,31 +2977,180 @@ export function createPtyService({
     ptys.delete(ptyId);
   };
 
-  const writeTranscript = (entry: PtyEntry, data: string) => {
-    if (!entry.tracked || !entry.transcriptStream) return;
-    if (entry.transcriptWriteDisabled) return;
-    if (entry.transcriptStream.destroyed) {
-      disableTranscriptWrite(entry, new Error("Transcript stream is closed"));
-      return;
+  const attachTranscriptStreamErrorHandler = (entry: PtyEntry, stream: fs.WriteStream): void => {
+    stream.on("error", (err) => disableTranscriptWrite(entry, err));
+  };
+
+  const queueTranscriptRolloverChunk = (entry: PtyEntry, chunk: Buffer): void => {
+    entry.transcriptRolloverPendingChunks.push(chunk);
+    entry.transcriptRolloverPendingBytes += chunk.length;
+    if (entry.transcriptRolloverPendingBytes <= MAX_TRANSCRIPT_BYTES) return;
+
+    // pause() provides the normal backpressure path. Keep a bounded tail as a
+    // defensive fallback for a backend that cannot pause or has already
+    // queued callbacks; older pending bytes cannot be part of the retained
+    // contiguous window once they are dropped, so the rollover also drops the
+    // preceding file tail.
+    const tail = utf8SafeTail(
+      Buffer.concat(entry.transcriptRolloverPendingChunks, entry.transcriptRolloverPendingBytes),
+      MAX_TRANSCRIPT_BYTES,
+    );
+    entry.transcriptRolloverPendingChunks = [tail];
+    entry.transcriptRolloverPendingBytes = tail.length;
+    entry.transcriptRolloverPendingTrimmed = true;
+  };
+
+  const openTranscriptAppendStream = (entry: PtyEntry): fs.WriteStream => {
+    const stream = fs.createWriteStream(entry.transcriptPath, { flags: "a" });
+    attachTranscriptStreamErrorHandler(entry, stream);
+    return stream;
+  };
+
+  const rollTranscript = async (entry: PtyEntry): Promise<void> => {
+    try {
+      // Output is normally paused, but loop if a backend delivered already-
+      // queued chunks while the async file replacement was in flight.
+      while (!entry.transcriptWriteDisabled) {
+        const previousStream = entry.transcriptStream;
+        entry.transcriptStream = null;
+        await endTranscriptStream(previousStream);
+        if (entry.transcriptWriteDisabled) return;
+
+        const pendingChunks = entry.transcriptRolloverPendingChunks;
+        const pendingBytes = entry.transcriptRolloverPendingBytes;
+        const pendingTrimmed = entry.transcriptRolloverPendingTrimmed;
+        const rolloverEndOffset = entry.transcriptBytesWritten;
+        entry.transcriptRolloverPendingChunks = [];
+        entry.transcriptRolloverPendingBytes = 0;
+        entry.transcriptRolloverPendingTrimmed = false;
+
+        const pending = pendingChunks.length === 1
+          ? pendingChunks[0]!
+          : Buffer.concat(pendingChunks, pendingBytes);
+        const oldTailBudget = pendingTrimmed
+          ? 0
+          : Math.max(0, Math.min(
+              TRANSCRIPT_ROLLOVER_TARGET_BYTES,
+              MAX_TRANSCRIPT_BYTES - pending.length,
+            ));
+        const previous = await readFileTailBuffer(entry.transcriptPath, oldTailBudget);
+        const oldTail = utf8SafeTail(previous.tail, oldTailBudget);
+        const retained = oldTail.length > 0
+          ? Buffer.concat([oldTail, pending], oldTail.length + pending.length)
+          : pending;
+        const nextBaseOffset = Math.max(0, rolloverEndOffset - retained.length);
+        const state: TranscriptRolloverState = {
+          version: TRANSCRIPT_ROLLOVER_STATE_VERSION,
+          baseOffset: nextBaseOffset,
+          retainedBytes: retained.length,
+        };
+        const journal: TranscriptRolloverJournal = {
+          version: TRANSCRIPT_ROLLOVER_STATE_VERSION,
+          previousBaseOffset: entry.transcriptBaseOffset,
+          previousRetainedBytes: previous.size,
+          nextBaseOffset,
+          nextRetainedBytes: retained.length,
+        };
+
+        await writeFileAtomicAsync(
+          transcriptRolloverJournalPath(entry.transcriptPath),
+          `${JSON.stringify(journal)}\n`,
+        );
+        const retainedTmpPath = await writeFileDurableTemp(entry.transcriptPath, retained);
+        const backupPath = transcriptRolloverBackupPath(entry.transcriptPath);
+        await fs.promises.unlink(backupPath).catch(() => {});
+        await fs.promises.rename(entry.transcriptPath, backupPath);
+        try {
+          await fs.promises.rename(retainedTmpPath, entry.transcriptPath);
+        } catch (error) {
+          await fs.promises.rename(backupPath, entry.transcriptPath).catch(() => {});
+          await fs.promises.unlink(retainedTmpPath).catch(() => {});
+          throw error;
+        }
+        entry.transcriptBaseOffset = nextBaseOffset;
+        entry.transcriptRetainedBytes = retained.length;
+        await writeFileAtomicAsync(
+          transcriptRolloverStatePath(entry.transcriptPath),
+          `${JSON.stringify(state)}\n`,
+        );
+        await clearCompletedTranscriptRolloverTransaction(entry.transcriptPath);
+        if (entry.disposed) return;
+
+        // If output arrived despite pause(), either append it while the file
+        // still fits or run another bounded rollover without resuming first.
+        if (
+          entry.transcriptRolloverPendingTrimmed
+          || entry.transcriptRetainedBytes + entry.transcriptRolloverPendingBytes > MAX_TRANSCRIPT_BYTES
+        ) {
+          continue;
+        }
+
+        const stream = openTranscriptAppendStream(entry);
+        entry.transcriptStream = stream;
+        for (const chunk of entry.transcriptRolloverPendingChunks) {
+          stream.write(chunk);
+          entry.transcriptRetainedBytes += chunk.length;
+        }
+        entry.transcriptRolloverPendingChunks = [];
+        entry.transcriptRolloverPendingBytes = 0;
+        entry.transcriptRolloverPendingTrimmed = false;
+        entry.transcriptRolloverInProgress = false;
+        if (entry.transcriptPausedForRollover) {
+          entry.transcriptPausedForRollover = false;
+          try {
+            entry.pty.resume();
+          } catch (err) {
+            logger.warn("pty.transcript_rollover_resume_failed", {
+              sessionId: entry.sessionId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+        return;
+      }
+    } catch (err) {
+      disableTranscriptWrite(entry, err);
+    } finally {
+      entry.transcriptRolloverInProgress = false;
+      entry.transcriptRolloverPromise = null;
     }
-    if (entry.transcriptLimitReached) return;
+  };
+
+  const beginTranscriptRollover = (entry: PtyEntry, firstChunk: Buffer): void => {
+    entry.transcriptRolloverInProgress = true;
+    queueTranscriptRolloverChunk(entry, firstChunk);
+    // Publish the promise before pause(): a backend is allowed to surface an
+    // exit synchronously from pause, and close/dispose must still await the
+    // queued transcript replacement before transcript-dependent work starts.
+    entry.transcriptRolloverPromise = Promise.resolve().then(() => rollTranscript(entry));
+    try {
+      entry.pty.pause();
+      entry.transcriptPausedForRollover = true;
+    } catch {
+      // The bounded pending tail above is the fallback when pause is absent.
+    }
+  };
+
+  const writeTranscript = (entry: PtyEntry, data: string) => {
+    if (!entry.tracked || entry.transcriptWriteDisabled) return;
     try {
       const chunk = Buffer.from(data, "utf8");
-      const remaining = MAX_TRANSCRIPT_BYTES - entry.transcriptBytesWritten;
-      if (remaining <= 0) {
-        entry.transcriptLimitReached = true;
-        entry.transcriptStream.write(TRANSCRIPT_LIMIT_NOTICE);
-        return;
-      }
-      if (chunk.length > remaining) {
-        entry.transcriptStream.write(chunk.subarray(0, remaining));
-        entry.transcriptBytesWritten += remaining;
-        entry.transcriptLimitReached = true;
-        entry.transcriptStream.write(TRANSCRIPT_LIMIT_NOTICE);
-        return;
-      }
-      entry.transcriptStream.write(chunk);
       entry.transcriptBytesWritten += chunk.length;
+      if (entry.transcriptRolloverInProgress) {
+        queueTranscriptRolloverChunk(entry, chunk);
+        return;
+      }
+      const stream = entry.transcriptStream;
+      if (!stream || stream.destroyed) {
+        disableTranscriptWrite(entry, new Error("Transcript stream is closed"));
+        return;
+      }
+      if (entry.transcriptRetainedBytes + chunk.length > MAX_TRANSCRIPT_BYTES) {
+        beginTranscriptRollover(entry, chunk);
+        return;
+      }
+      stream.write(chunk);
+      entry.transcriptRetainedBytes += chunk.length;
     } catch (err) {
       disableTranscriptWrite(entry, err);
     }
@@ -2741,6 +3159,13 @@ export function createPtyService({
   const appendRecentOutput = (entry: PtyEntry, data: string) => {
     if (!data) return;
     entry.recentOutputTail = tailString(`${entry.recentOutputTail}${data}`, LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS);
+    // tailString counts UTF-16 code units. If truncation lands between a
+    // surrogate pair, drop the dangling low surrogate so re-encoding this
+    // exact live suffix cannot invent a replacement character/byte count.
+    const firstCodeUnit = entry.recentOutputTail.charCodeAt(0);
+    if (firstCodeUnit >= 0xdc00 && firstCodeUnit <= 0xdfff) {
+      entry.recentOutputTail = entry.recentOutputTail.slice(1);
+    }
   };
 
   const flushPreview = (entry: PtyEntry) => {
@@ -2884,13 +3309,10 @@ export function createPtyService({
     if (!data) return;
     ptyDataBatchCount += 1;
     ptyDataMaxBatchChars = Math.max(ptyDataMaxBatchChars, data.length);
-    // writeTranscript runs synchronously in the same onData tick that enqueued
-    // each chunk, so transcriptBytesWritten here is exactly the transcript end
-    // offset of this batch. Offsets go null once the transcript stops
-    // mirroring the stream (byte cap reached, write failure, untracked).
+    // writeTranscript advances the logical UTF-8 byte counter synchronously in
+    // the same onData tick. Rollover may move the retained file's byte zero,
+    // but the live end offset therefore remains monotonic for dedupe/recovery.
     const offset = entry.tracked
-      && entry.transcriptStream
-      && !entry.transcriptLimitReached
       && !entry.transcriptWriteDisabled
       ? entry.transcriptBytesWritten
       : null;
@@ -3541,18 +3963,42 @@ export function createPtyService({
 
       let transcriptStream: fs.WriteStream | null = null;
       let transcriptBytesWritten = 0;
+      let transcriptBaseOffset = 0;
+      let transcriptRetainedBytes = 0;
+      let transcriptJournalRecovered = false;
       let transcriptWriteDisabled = false;
       let transcriptLastErrorAt = 0;
       if (tracked) {
         try {
           fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+          await restoreInterruptedTranscriptReplacement(transcriptPath);
           reinflateHistoryFileSync(transcriptPath, (targetPath, data) => {
             writeFileAtomic(targetPath, data, { fsync: true });
           });
           try {
-            transcriptBytesWritten = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath).size : 0;
+            transcriptRetainedBytes = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath).size : 0;
+            const rolloverState = loadTranscriptRolloverStateSync(transcriptPath, transcriptRetainedBytes);
+            transcriptBaseOffset = rolloverState.baseOffset;
+            transcriptBytesWritten = transcriptBaseOffset + transcriptRetainedBytes;
+            transcriptJournalRecovered = rolloverState.recoveredJournal;
           } catch {
             transcriptBytesWritten = 0;
+            transcriptBaseOffset = 0;
+            transcriptRetainedBytes = 0;
+          }
+          if (transcriptJournalRecovered) {
+            await writeFileAtomicAsync(
+              transcriptRolloverStatePath(transcriptPath),
+              `${JSON.stringify({
+                version: TRANSCRIPT_ROLLOVER_STATE_VERSION,
+                baseOffset: transcriptBaseOffset,
+                retainedBytes: transcriptRetainedBytes,
+              } satisfies TranscriptRolloverState)}\n`,
+            );
+            await clearCompletedTranscriptRolloverTransaction(transcriptPath);
+          }
+          if (transcriptBaseOffset > 0 || transcriptJournalRecovered) {
+            removeTranscriptRolloverTempFilesSync(transcriptPath);
           }
           transcriptStream = fs.createWriteStream(transcriptPath, { flags: "a" });
           transcriptStream.on("error", (err) => {
@@ -3847,7 +4293,14 @@ export function createPtyService({
         transcriptPath,
         transcriptStream,
         transcriptBytesWritten,
-        transcriptLimitReached: transcriptBytesWritten >= MAX_TRANSCRIPT_BYTES,
+        transcriptBaseOffset,
+        transcriptRetainedBytes,
+        transcriptRolloverInProgress: false,
+        transcriptRolloverPromise: null,
+        transcriptRolloverPendingChunks: [],
+        transcriptRolloverPendingBytes: 0,
+        transcriptRolloverPendingTrimmed: false,
+        transcriptPausedForRollover: false,
         transcriptWriteDisabled,
         transcriptLastErrorAt,
         lastPreviewWriteAt: 0,
@@ -4856,16 +5309,145 @@ export function createPtyService({
     },
 
     /**
-     * Read an exact byte range of a session transcript (mobile history
-     * paging / delta resume). The transcript WriteStream buffers, so disk can
-     * lag `transcriptBytesWritten` (and any offset derived from it) by a few
-     * ms — both offsets are clamped to the flushed file size and the achieved
-     * range is reported back; clients detect the gap and re-request. When
+     * Logical UTF-8 byte window currently represented by the retained file.
+     * `startOffset` advances after rollover; `endOffset` never rewinds. The
+     * end is based on flushed bytes, so it can briefly trail live pty_data
+     * offsets while the WriteStream is draining.
+     */
+    getTranscriptWindow(sessionId: string): {
+      startOffset: number;
+      endOffset: number;
+      retainedBytes: number;
+    } | null {
+      const normalizedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
+      if (!normalizedSessionId) return null;
+      const session = sessionService.get(normalizedSessionId);
+      const transcriptPath = session?.transcriptPath?.trim();
+      if (!transcriptPath) return null;
+      try {
+        const readablePath = fs.existsSync(transcriptPath)
+          ? transcriptPath
+          : fs.existsSync(`${transcriptPath}.gz`)
+            ? `${transcriptPath}.gz`
+            : transcriptPath;
+        const retainedBytes = readablePath.endsWith(".gz")
+          ? readHistoryFileSync(readablePath).length
+          : Math.max(0, Number(fs.statSync(readablePath).size) || 0);
+        const live = liveEntryBySessionId(normalizedSessionId)?.[1] ?? null;
+        const baseOffset = live?.transcriptBaseOffset
+          ?? loadTranscriptRolloverStateSync(transcriptPath, retainedBytes).baseOffset;
+        return {
+          startOffset: baseOffset,
+          endOffset: baseOffset + retainedBytes,
+          retainedBytes,
+        };
+      } catch {
+        return null;
+      }
+    },
+
+    /**
+     * Return one exact contiguous transcript suffix with logical offsets.
+     * For a live PTY, the recent-output buffer is authoritative through the
+     * in-memory logical end even while WriteStream bytes are unflushed. For an
+     * inactive/no-output PTY, this falls back to the flushed retained range.
+     * The result may contain fewer than maxBytes; callers must use the
+     * returned offsets rather than infer them from a file size.
+     */
+    async readTranscriptSnapshot(args: {
+      sessionId: string;
+      maxBytes: number;
+      alignStartToSafeBoundary?: boolean;
+    }): Promise<{ data: string; startOffset: number; endOffset: number } | null> {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) return null;
+      const session = sessionService.get(sessionId);
+      if (!session?.transcriptPath?.trim()) return null;
+      const maxBytes = Number.isFinite(args.maxBytes)
+        ? Math.max(1, Math.min(MAX_TRANSCRIPT_BYTES, Math.floor(args.maxBytes)))
+        : DEFAULT_TERMINAL_READ_MAX_BYTES;
+      const live = liveEntryBySessionId(sessionId)?.[1] ?? null;
+      if (
+        live
+        && live.tracked
+        && !live.transcriptWriteDisabled
+        && live.recentOutputTail.length > 0
+      ) {
+        const encoded = Buffer.from(live.recentOutputTail, "utf8");
+        const logicalEnd = live.transcriptBytesWritten;
+        const recentStart = Math.max(0, logicalEnd - encoded.length);
+        const window = service.getTranscriptWindow(sessionId);
+        const requestedStart = Math.max(
+          window?.startOffset ?? recentStart,
+          logicalEnd - maxBytes,
+        );
+
+        let suffix: Buffer;
+        let logicalStart: number;
+        const flushedEnd = Math.min(window?.endOffset ?? recentStart, logicalEnd);
+        if (requestedStart < recentStart && flushedEnd >= recentStart) {
+          const disk = await service.readTranscriptRange({
+            sessionId,
+            startOffset: requestedStart,
+            endOffset: flushedEnd,
+          });
+          if (disk && disk.endOffset >= recentStart) {
+            const liveStart = Math.min(encoded.length, disk.endOffset - recentStart);
+            suffix = Buffer.concat([
+              Buffer.from(disk.data, "utf8"),
+              encoded.subarray(liveStart),
+            ]);
+            logicalStart = disk.startOffset;
+          } else {
+            // The WriteStream is farther behind than the bounded live tail.
+            // Returning only the exact contiguous tail is safer than claiming
+            // a snapshot that silently contains a logical gap.
+            suffix = utf8SafeTail(encoded, maxBytes);
+            logicalStart = Math.max(recentStart, logicalEnd - suffix.length);
+          }
+        } else {
+          suffix = utf8SafeTail(encoded, maxBytes);
+          logicalStart = Math.max(recentStart, logicalEnd - suffix.length);
+        }
+        if (suffix.length > maxBytes) {
+          suffix = utf8SafeTail(suffix, maxBytes);
+          logicalStart = logicalEnd - suffix.length;
+        }
+        let boundary = logicalStart > 0 && args.alignStartToSafeBoundary
+          ? scanToTranscriptPageBoundary(suffix)
+          : 0;
+        while (boundary < suffix.length && (suffix[boundary]! & 0b1100_0000) === 0b1000_0000) {
+          boundary += 1;
+        }
+        return {
+          data: suffix.subarray(boundary).toString("utf8"),
+          startOffset: logicalStart + boundary,
+          endOffset: logicalEnd,
+        };
+      }
+
+      const window = service.getTranscriptWindow(sessionId);
+      if (!window) return null;
+      return service.readTranscriptRange({
+        sessionId,
+        startOffset: Math.max(window.startOffset, window.endOffset - maxBytes),
+        endOffset: window.endOffset,
+        alignStartToSafeBoundary: args.alignStartToSafeBoundary,
+      });
+    },
+
+    /**
+     * Read an exact logical byte range of a session transcript (mobile history
+     * paging / delta resume). After rollover, logical byte zero is no longer
+     * retained: requested offsets are clamped to the retained [base, end)
+     * window and the achieved logical offsets are reported back. The
+     * transcript WriteStream buffers, so the retained end can briefly lag live
+     * pty_data offsets. When
      * `alignStartToSafeBoundary` is set, a non-zero start is scanned forward
      * to the byte after a `\n` or to an ESC byte so a page never begins
-     * mid-escape-sequence. A non-zero start always skips UTF-8 continuation
-     * bytes so decoding never splits a code point. Returns null when the
-     * session is unknown or has no transcript.
+     * mid-escape-sequence. Both ends are adjusted to UTF-8 code-point
+     * boundaries. Returns null when the session is unknown or has no
+     * transcript.
      */
     async readTranscriptRange(args: {
       sessionId: string;
@@ -4887,29 +5469,34 @@ export function createPtyService({
             : transcriptPath;
         if (readablePath.endsWith(".gz")) {
           const full = readHistoryFileSync(readablePath);
-          const end = Math.max(0, Math.min(Math.floor(args.endOffset), full.length));
-          const start = Math.min(Math.max(0, Math.floor(args.startOffset)), end);
+          const rolloverState = loadTranscriptRolloverStateSync(transcriptPath, full.length);
+          const retainedStart = rolloverState.baseOffset;
+          const retainedEnd = retainedStart + full.length;
+          const end = Math.max(retainedStart, Math.min(Math.floor(args.endOffset), retainedEnd));
+          const start = Math.min(Math.max(retainedStart, Math.floor(args.startOffset)), end);
           if (end <= start) return { data: "", startOffset: end, endOffset: end };
-          const page = full.subarray(start, end);
+          const physicalStart = start - retainedStart;
+          const physicalEnd = end - retainedStart;
+          const page = full.subarray(physicalStart, physicalEnd);
           let boundary = start > 0 && args.alignStartToSafeBoundary
             ? scanToTranscriptPageBoundary(page)
             : 0;
           while (boundary < page.length && (page[boundary]! & 0b1100_0000) === 0b1000_0000) {
             boundary += 1;
           }
-          return {
-            data: page.subarray(boundary).toString("utf8"),
-            startOffset: start + boundary,
-            endOffset: end,
-          };
+          return decodeTranscriptPage(page, start, boundary);
         }
         const fileSize = Math.max(0, Number(fs.statSync(transcriptPath).size) || 0);
-        const end = Math.max(0, Math.min(Math.floor(args.endOffset), fileSize));
-        const start = Math.min(Math.max(0, Math.floor(args.startOffset)), end);
+        const live = liveEntryBySessionId(sessionId)?.[1] ?? null;
+        const retainedStart = live?.transcriptBaseOffset
+          ?? loadTranscriptRolloverStateSync(transcriptPath, fileSize).baseOffset;
+        const retainedEnd = retainedStart + fileSize;
+        const end = Math.max(retainedStart, Math.min(Math.floor(args.endOffset), retainedEnd));
+        const start = Math.min(Math.max(retainedStart, Math.floor(args.startOffset)), end);
         if (end <= start) return { data: "", startOffset: end, endOffset: end };
         fd = fs.openSync(transcriptPath, "r");
         const buf = Buffer.alloc(end - start);
-        const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
+        const bytesRead = fs.readSync(fd, buf, 0, buf.length, start - retainedStart);
         const page = buf.subarray(0, Math.max(0, bytesRead));
         let boundary = 0;
         if (start > 0) {
@@ -4920,11 +5507,7 @@ export function createPtyService({
             boundary += 1;
           }
         }
-        return {
-          data: page.subarray(boundary).toString("utf8"),
-          startOffset: start + boundary,
-          endOffset: start + page.length,
-        };
+        return decodeTranscriptPage(page, start, boundary);
       } catch {
         return null;
       } finally {
@@ -5145,6 +5728,24 @@ export function createPtyService({
         if (!entry.disposed && path.resolve(entry.transcriptPath) === normalized) return true;
       }
       return false;
+    },
+
+    /** Remove rollover bookkeeping after the owning transcript is deleted. */
+    removeTranscriptRolloverArtifacts(transcriptPath: string): void {
+      const normalized = typeof transcriptPath === "string" ? transcriptPath.trim() : "";
+      if (!normalized) return;
+      for (const artifactPath of [
+        transcriptRolloverStatePath(normalized),
+        transcriptRolloverJournalPath(normalized),
+        transcriptRolloverBackupPath(normalized),
+      ]) {
+        try {
+          fs.unlinkSync(artifactPath);
+        } catch {
+          // Deletion is best effort and idempotent.
+        }
+      }
+      removeTranscriptRolloverTempFilesSync(normalized);
     },
 
     getResourceAttribution,

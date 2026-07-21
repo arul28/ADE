@@ -13,7 +13,9 @@ import type {
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { chatTerminalFromSummary } from "./infra/registries";
 
-const LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES = 1_024;
+// Full snapshots replace xterm state, so they must be at least as complete as
+// TerminalView's initial hydration. The host caps this at the same 2 MB.
+const LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES = 2_000_000;
 
 export type SessionsPtyNamespaces = {
   sessions: AdeNamespace<"sessions">;
@@ -32,6 +34,18 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       sessionId,
       { maxBytes: LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES },
       {
+        snapshot: (payload) => {
+          const resolvedPtyId = terminalRegistry.ptyForSession(payload.sessionId) ?? ptyId;
+          if (!resolvedPtyId) return;
+          terminalRegistry.register(payload.sessionId, resolvedPtyId);
+          events.emit("ptyData", {
+            ptyId: resolvedPtyId,
+            sessionId: payload.sessionId,
+            data: payload.transcript,
+            offset: payload.endOffset,
+            ...(payload.delta === true ? {} : { replace: true }),
+          });
+        },
         data: (payload) => {
           terminalRegistry.register(payload.sessionId, payload.ptyId);
           events.emit("ptyData", {
