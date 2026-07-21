@@ -15,6 +15,7 @@ export const MACHINE_KEY_PATTERN = /^[a-f0-9]{32,64}$/i;
 // Connection ids are minted by the relay, never trusted from a peer; keep them
 // short and hex so they round-trip cleanly through the signed pipe path.
 export const CONNECTION_ID_PATTERN = /^[a-f0-9]{8,32}$/i;
+export const CONTROL_EPOCH_PATTERN = /^[a-f0-9]{32}$/i;
 export const SIGNATURE_TIMESTAMP_SKEW_SECONDS = 5 * 60;
 export const DEFAULT_MAX_TUNNELS_PER_MACHINE = 16;
 
@@ -66,12 +67,16 @@ export async function hmacSha256Hex(secret: string, message: string): Promise<st
  * captured signature from being replayed against a different role/id or after
  * the skew window closes. Identical shape to apps/push-relay's HMAC design.
  */
-export function buildHostSignatureBase(machineKey: string, timestamp: string): string {
-  return `host:${machineKey}:${timestamp}`;
+export function buildHostSignatureBase(machineKey: string, epoch: string, timestamp?: string): string {
+  return timestamp == null
+    ? `host:${machineKey}:${epoch}`
+    : `host:${machineKey}:${epoch}:${timestamp}`;
 }
 
-export function buildPipeSignatureBase(machineKey: string, id: string, timestamp: string): string {
-  return `pipe:${machineKey}:${id}:${timestamp}`;
+export function buildPipeSignatureBase(machineKey: string, id: string, epoch: string, timestamp?: string): string {
+  return timestamp == null
+    ? `pipe:${machineKey}:${id}:${epoch}`
+    : `pipe:${machineKey}:${id}:${epoch}:${timestamp}`;
 }
 
 export function parseTimestampSeconds(raw: string): number | null {

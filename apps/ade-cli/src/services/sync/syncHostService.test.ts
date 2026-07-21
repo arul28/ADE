@@ -17,6 +17,7 @@ import type {
   SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
+import { SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY } from "../../../../desktop/src/shared/types";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
@@ -31,6 +32,7 @@ import {
   compactChatEventEnvelopeForSync,
   createChatEventReplayBuffer,
   createSyncHostService,
+  createTerminalInputDedupeLedger,
   isRuntimeOnlySyncPeer,
   isRuntimeHostPairingRecord,
   planChatEventResume,
@@ -45,6 +47,10 @@ import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
 import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
+import {
+  buildRelayReauthorizationChallenge,
+  sha256RelayToken,
+} from "./relayAuthorization";
 import { encodeSyncEnvelope, parseSyncEnvelope, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
@@ -1390,6 +1396,32 @@ describe("sync host account authentication", () => {
     };
   }
 
+  function signRelayReauthorization(args: {
+    privateKey: ReturnType<typeof makeDpopKeyPair>["privateKey"];
+    deviceId: string;
+    relayAccountToken: string;
+    challenge: string;
+    nonce?: string;
+  }) {
+    const timestamp = Math.floor(Date.now() / 1_000);
+    const nonce = args.nonce ?? `relay-${args.deviceId}-${Math.random()}`;
+    const canonical = buildRelayReauthorizationChallenge({
+      deviceId: args.deviceId,
+      relayAccountTokenSha256: sha256RelayToken(args.relayAccountToken),
+      challenge: args.challenge,
+      timestamp,
+      nonce,
+    });
+    return {
+      timestamp,
+      nonce,
+      signature: createSign("sha256")
+        .update(canonical, "utf8")
+        .sign(args.privateKey)
+        .toString("base64"),
+    };
+  }
+
   function accountDependencies(signedIn = true) {
     return {
       accountAuthService: {
@@ -2165,6 +2197,124 @@ describe("sync host account authentication", () => {
     }
   });
 
+  it("processes Relay reauthorization while an ordinary peer handler is blocked", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const keys = makeDpopKeyPair();
+    const peer = {
+      deviceId: "relay-fast-control-peer",
+      deviceName: "Relay fast control peer",
+      platform: "Web",
+      deviceType: "browser",
+      siteId: "relay-fast-control-site",
+      dbVersion: 0,
+      capabilities: [SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY],
+    } satisfies SyncPeerMetadata;
+    const initialToken = await mintAccountToken(ownerUserId, 300);
+    const freshToken = await mintAccountToken(ownerUserId, 900);
+    const initialAttestation = await verifyClerkAccountAttestation({
+      token: initialToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    const pairing = pairingStore.pairPeerViaAccount(peer, initialAttestation, {
+      dpopPublicKey: keys.publicKeyX963,
+    });
+    let blockCatalog = false;
+    let markCatalogStarted!: () => void;
+    let releaseCatalog!: () => void;
+    const catalogStarted = new Promise<void>((resolve) => { markCatalogStarted = resolve; });
+    const catalogReleased = new Promise<void>((resolve) => { releaseCatalog = resolve; });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => {
+          if (blockCatalog) {
+            markCatalogStarted();
+            await catalogReleased;
+          }
+          return { projects: [] };
+        }),
+        prepareProjectConnection: vi.fn(),
+      },
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: Awaited<ReturnType<typeof openAccountClient>> | null = null;
+    try {
+      client = await openAccountClient(await host.waitUntilListening(), listener.getRelayBridgeProof());
+      sendPairedHello({
+        ws: client.ws,
+        peer,
+        secret: pairing.secret,
+        relayAccountToken: initialToken,
+        dpop: signPairedDpop({
+          privateKey: keys.privateKey,
+          publicKeyX963: keys.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret: pairing.secret,
+        }),
+      });
+      const hello = await waitForValue(
+        () => client?.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "refreshable Relay hello_ok",
+      );
+      const lease = (hello.payload as {
+        relayAuthorization?: { challenge: string };
+      }).relayAuthorization;
+      expect(lease?.challenge).toEqual(expect.any(String));
+
+      blockCatalog = true;
+      client.ws.send(encodeSyncEnvelope({
+        type: "project_catalog_request",
+        requestId: "slow-catalog",
+        payload: {},
+      }));
+      await catalogStarted;
+      client.ws.send(encodeSyncEnvelope({
+        type: "relay_reauthorize",
+        requestId: "reauth-while-slow",
+        payload: {
+          deviceId: peer.deviceId,
+          relayAccountToken: freshToken,
+          proof: signRelayReauthorization({
+            privateKey: keys.privateKey,
+            deviceId: peer.deviceId,
+            relayAccountToken: freshToken,
+            challenge: lease!.challenge,
+          }),
+        },
+      }));
+
+      await expect(waitForEnvelope(
+        client.envelopes,
+        "relay_reauthorize_result",
+        "reauth-while-slow",
+      )).resolves.toMatchObject({ payload: { ok: true } });
+      expect(client.envelopes.some((envelope) => envelope.requestId === "slow-catalog")).toBe(false);
+      releaseCatalog();
+      await waitForEnvelope(client.envelopes, "project_catalog", "slow-catalog");
+    } finally {
+      releaseCatalog();
+      client?.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
   it("revokes account-owned trust and closes Relay plus account peers when the host lease expires", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
@@ -2206,8 +2356,8 @@ describe("sync host account authentication", () => {
       ...baseArgs,
       accountAuthService: {
         getStatus: () => ({
-          signedIn: true,
-          userId: ownerUserId,
+          signedIn: leaseValid,
+          userId: leaseValid ? ownerUserId : null,
           email: null,
           name: null,
           expiresAt: null,
@@ -2946,6 +3096,169 @@ async function connectPeer(
   );
   return { ws, ...tracked };
 }
+
+async function openPeerHello(
+  port: number,
+  token: string,
+  deviceId: string,
+  peerOverrides: Partial<SyncPeerMetadata> = {},
+) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const tracked = trackClientEnvelopes(ws);
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", resolve);
+    ws.once("error", reject);
+  });
+  ws.send(encodeSyncEnvelope({
+    type: "hello",
+    requestId: `hello-${deviceId}`,
+    payload: {
+      peer: {
+        deviceId,
+        deviceName: deviceId,
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: `${deviceId}-site`,
+        dbVersion: 0,
+        ...peerOverrides,
+      },
+      auth: { kind: "bootstrap", token },
+    },
+  }));
+  return { ws, ...tracked };
+}
+
+describe("connection-attempt arbitration", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  function createAttemptHost(projectRoot: string) {
+    const base = createHostArgs(projectRoot, []);
+    return createSyncHostService({
+      ...base,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+  }
+
+  it("rejects a slow loser from the winning race without evicting the winner", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let winner: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let loser: Awaited<ReturnType<typeof openPeerHello>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      const attempt = { id: "race-one", startedAtMs: Date.now() };
+      winner = await connectPeer(port, host.getBootstrapToken(), "race-device", {
+        connectionAttempt: attempt,
+      });
+      loser = await openPeerHello(port, host.getBootstrapToken(), "race-device", {
+        connectionAttempt: attempt,
+      });
+
+      await expect(waitForValue(
+        () => loser?.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "same-attempt loser rejection",
+      )).resolves.toMatchObject({
+        payload: { code: "connection_attempt_superseded" },
+      });
+      await waitForValue(() => loser?.closeEvents[0], "same-attempt loser close");
+      expect(winner.closeEvents).toEqual([]);
+      expect(winner.ws.readyState).toBe(WebSocket.OPEN);
+      expect(host.getPeerStates()).toHaveLength(1);
+    } finally {
+      try { winner?.ws.close(); } catch { /* ignore */ }
+      try { loser?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("rejects an older race after a newer attempt has authenticated", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let winner: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let older: Awaited<ReturnType<typeof openPeerHello>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      const newestStartedAt = Date.now();
+      winner = await connectPeer(port, host.getBootstrapToken(), "race-order-device", {
+        connectionAttempt: { id: "new-race", startedAtMs: newestStartedAt },
+      });
+      older = await openPeerHello(port, host.getBootstrapToken(), "race-order-device", {
+        connectionAttempt: { id: "old-race", startedAtMs: newestStartedAt - 1 },
+      });
+      await expect(waitForValue(
+        () => older?.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "older attempt rejection",
+      )).resolves.toMatchObject({ payload: { code: "connection_attempt_superseded" } });
+      expect(winner.ws.readyState).toBe(WebSocket.OPEN);
+      expect(winner.closeEvents).toEqual([]);
+    } finally {
+      try { winner?.ws.close(); } catch { /* ignore */ }
+      try { older?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("lets a candidate from the same race claim ownership after its winner closes", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let first: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let replacement: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      const attempt = { id: "recover-race", startedAtMs: Date.now() };
+      first = await connectPeer(port, host.getBootstrapToken(), "race-recover-device", {
+        connectionAttempt: attempt,
+      });
+      first.ws.close();
+      await waitForValue(
+        () => (host.getPeerStates().length === 0 ? true : null),
+        "winner ownership release",
+      );
+
+      replacement = await connectPeer(port, host.getBootstrapToken(), "race-recover-device", {
+        connectionAttempt: attempt,
+      });
+      expect(replacement.ws.readyState).toBe(WebSocket.OPEN);
+      expect(host.getPeerStates()).toHaveLength(1);
+    } finally {
+      try { first?.ws.close(); } catch { /* ignore */ }
+      try { replacement?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps last-authenticated-hello-wins behavior for legacy clients", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let first: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let second: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      first = await connectPeer(port, host.getBootstrapToken(), "legacy-race-device");
+      second = await connectPeer(port, host.getBootstrapToken(), "legacy-race-device");
+      await waitForValue(() => first?.closeEvents[0], "legacy peer superseded close");
+      expect(second.ws.readyState).toBe(WebSocket.OPEN);
+      expect(host.getPeerStates()).toHaveLength(1);
+    } finally {
+      try { first?.ws.close(); } catch { /* ignore */ }
+      try { second?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
 
 describe("PR snapshot invalidation push", () => {
   beforeEach(() => {
@@ -5334,6 +5647,8 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
     const resizeBySessionId = vi.fn().mockReturnValue(true);
     const restoreDesktopSizeBySessionId = vi.fn().mockReturnValue(true);
     const hasLivePty = vi.fn().mockReturnValue(true);
+    const writeBySessionId = vi.fn().mockReturnValue(true);
+    let sessionAvailable = true;
     const base = createHostArgs(projectRoot, []);
     const host = createSyncHostService({
       ...base,
@@ -5353,21 +5668,30 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       },
       sessionService: {
         list: () => [session],
-        get: (id: string) => (id === "session-1" ? session : null),
+        get: (id: string) => (sessionAvailable && id === "session-1" ? session : null),
         readTranscriptTail: async () => "",
       },
       ptyService: {
         create: vi.fn(),
         readTranscriptTail,
         readTranscriptRange,
-        writeBySessionId: vi.fn().mockReturnValue(true),
+        writeBySessionId,
         resizeBySessionId,
         restoreDesktopSizeBySessionId,
         hasLivePty,
         enrichSessions: (rows: unknown[]) => rows,
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
-    return { host, readTranscriptTail, readTranscriptRange, resizeBySessionId, restoreDesktopSizeBySessionId, hasLivePty };
+    return {
+      host,
+      readTranscriptTail,
+      readTranscriptRange,
+      writeBySessionId,
+      resizeBySessionId,
+      restoreDesktopSizeBySessionId,
+      hasLivePty,
+      setSessionAvailable: (available: boolean) => { sessionAvailable = available; },
+    };
   }
 
   async function connectTerminalPeer(port: number, token: string, deviceId: string) {
@@ -5588,6 +5912,219 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       await host.dispose();
       cleanup();
     }
+  });
+
+  it("ACKs terminal input success, duplicates, collisions, and every typed rejection", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const {
+      host,
+      writeBySessionId,
+      hasLivePty,
+      setSessionAvailable,
+    } = createTerminalHost(projectRoot);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    const ack = (requestId: string) => waitForEnvelope(
+      client!.envelopes,
+      "terminal_input_ack",
+      requestId,
+    );
+    const sendInput = (
+      requestId: string,
+      inputId: string | undefined,
+      data = "x",
+      projectId: string | null = "project-1",
+    ): void => {
+      client!.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId,
+        projectId,
+        payload: {
+          sessionId: "session-1",
+          data,
+          ...(inputId !== undefined ? { inputId } : {}),
+        },
+      }));
+    };
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-input-contract",
+      );
+
+      sendInput("invalid-id", " ");
+      await expect(ack("invalid-id")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          duplicate: false,
+          error: { code: "invalid_input_id", retryable: false },
+        },
+      });
+
+      sendInput("not-subscribed", "input-not-subscribed");
+      await expect(ack("not-subscribed")).resolves.toMatchObject({
+        payload: {
+          inputId: "input-not-subscribed",
+          ok: false,
+          error: { code: "not_subscribed", retryable: true },
+        },
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "input-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await nextResponse(client.envelopes, "terminal_snapshot", "input-subscribe");
+
+      sendInput("wrong-project", "input-wrong-project", "x", "project-2");
+      await expect(ack("wrong-project")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          error: { code: "project_mismatch", retryable: false },
+        },
+      });
+
+      setSessionAvailable(false);
+      sendInput("missing-session", "input-missing-session");
+      await expect(ack("missing-session")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          error: { code: "project_mismatch", retryable: false },
+        },
+      });
+      setSessionAvailable(true);
+
+      hasLivePty.mockReturnValue(false);
+      sendInput("dead-session", "input-dead-session");
+      await expect(ack("dead-session")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          error: { code: "session_not_live", retryable: false },
+        },
+      });
+      hasLivePty.mockReturnValue(true);
+
+      writeBySessionId.mockReturnValueOnce(false);
+      sendInput("exit-race", "input-exit-race");
+      await expect(ack("exit-race")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          error: { code: "session_not_live", retryable: false },
+        },
+      });
+
+      sendInput("written", "input-written", "hello");
+      await expect(ack("written")).resolves.toMatchObject({
+        payload: {
+          sessionId: "session-1",
+          inputId: "input-written",
+          ok: true,
+          duplicate: false,
+        },
+      });
+      sendInput("duplicate", "input-written", "hello");
+      await expect(ack("duplicate")).resolves.toMatchObject({
+        payload: { ok: true, duplicate: true },
+      });
+      sendInput("collision", "input-written", "different");
+      await expect(ack("collision")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          duplicate: false,
+          error: { code: "input_id_conflict", retryable: false },
+        },
+      });
+
+      // Old clients remain write-only: no inputId means no ACK requirement.
+      sendInput("legacy-input", undefined, "legacy");
+      sendInput("legacy-fence", "input-fence", "fence");
+      await ack("legacy-fence");
+      expect(client.envelopes.some((envelope) =>
+        envelope.type === "terminal_input_ack" && envelope.requestId === "legacy-input"
+      )).toBe(false);
+      expect(writeBySessionId.mock.calls).toEqual([
+        ["session-1", "x"],
+        ["session-1", "hello"],
+        ["session-1", "legacy"],
+        ["session-1", "fence"],
+      ]);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("does not starve terminal writes and ACKs behind a slow queued history command", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptRange, writeBySessionId } = createTerminalHost(projectRoot);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    let releaseHistory!: () => void;
+    let historyStarted!: () => void;
+    const started = new Promise<void>((resolve) => { historyStarted = resolve; });
+    const released = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-fast-input",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "fast-input-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await nextResponse(client.envelopes, "terminal_snapshot", "fast-input-subscribe");
+
+      readTranscriptRange.mockImplementationOnce(async () => {
+        historyStarted();
+        await released;
+        return { data: "history", startOffset: 0, endOffset: 7 };
+      });
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "slow-history",
+        payload: { sessionId: "session-1", beforeOffset: 100 },
+      }));
+      await started;
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "fast-input",
+        payload: { sessionId: "session-1", data: "x", inputId: "fast-input-id" },
+      }));
+
+      await expect(waitForEnvelope(
+        client.envelopes,
+        "terminal_input_ack",
+        "fast-input",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: false } });
+      expect(writeBySessionId).toHaveBeenCalledWith("session-1", "x");
+      expect(client.envelopes.some((envelope) => envelope.requestId === "slow-history")).toBe(false);
+      releaseHistory();
+      await nextResponse(client.envelopes, "terminal_history", "slow-history");
+    } finally {
+      releaseHistory();
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("retains eligible dedupe receipts instead of evicting them at the bound", () => {
+    let now = 10_000;
+    const ledger = createTerminalInputDedupeLedger({
+      maxEntries: 2,
+      retryWindowMs: 1_000,
+      now: () => now,
+    });
+    expect(ledger.remember("device", "session", "a", "a".repeat(64))).toBe("recorded");
+    expect(ledger.remember("device", "session", "b", "b".repeat(64))).toBe("recorded");
+    expect(ledger.remember("device", "session", "c", "c".repeat(64))).toBe("capacity");
+    expect(ledger.fingerprint("device", "session", "a")).toBe("a".repeat(64));
+    now += 1_001;
+    expect(ledger.remember("device", "session", "c", "c".repeat(64))).toBe("recorded");
+    expect(ledger.size).toBe(1);
   });
 
   it("restores the desktop terminal size only after the last subscribed peer detaches", async () => {

@@ -62,12 +62,16 @@ export function deriveRelayWssConnectUrl(relayUrl: string, machineKey: string): 
 }
 
 /** Canonical signing strings — identical to the worker's (apps/tunnel-relay). */
-export function buildHostSignatureBase(machineKey: string, timestamp: string): string {
-  return `host:${machineKey}:${timestamp}`;
+export function buildHostSignatureBase(machineKey: string, epoch: string, timestamp?: string): string {
+  return timestamp == null
+    ? `host:${machineKey}:${epoch}`
+    : `host:${machineKey}:${epoch}:${timestamp}`;
 }
 
-export function buildPipeSignatureBase(machineKey: string, id: string, timestamp: string): string {
-  return `pipe:${machineKey}:${id}:${timestamp}`;
+export function buildPipeSignatureBase(machineKey: string, id: string, epoch: string, timestamp?: string): string {
+  return timestamp == null
+    ? `pipe:${machineKey}:${id}:${epoch}`
+    : `pipe:${machineKey}:${id}:${epoch}:${timestamp}`;
 }
 
 export function signRelayHmacHex(secret: string, base: string): string {

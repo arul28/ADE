@@ -46,6 +46,53 @@ export type ApplyRemoteChangesResult = {
 
 export type SyncProtocolVersion = 1;
 
+/** Additive hello capability for in-place ADE Relay account reauthorization. */
+export const SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY = "relayReauthorizeV1" as const;
+
+/** Relay transport readiness protocol used before the ADE sync hello. */
+export const SYNC_RELAY_READY_VERSION = 2 as const;
+
+/**
+ * Random 32-hex generation minted for each brain control socket. The Worker
+ * binds every open/pipe/ready/reject to this epoch so a stale pipe cannot pair
+ * with a client admitted by a replacement control.
+ */
+export type SyncRelayControlEpoch = string;
+
+export type SyncRelayControlOpen = {
+  t: "open";
+  id: string;
+  epoch: SyncRelayControlEpoch;
+  /** Present when the client connected with `?ready=2`. */
+  readyVersion?: typeof SYNC_RELAY_READY_VERSION;
+};
+
+export type SyncRelayControlReady = {
+  t: "ready";
+  id: string;
+  epoch: SyncRelayControlEpoch;
+};
+
+export type SyncRelayControlReject = {
+  t: "reject";
+  id: string;
+  epoch: SyncRelayControlEpoch;
+  code: number;
+  reason: string;
+};
+
+/** Immediate negotiation frame from a Worker that understands `?ready=2`. */
+export type SyncRelayClientAccepted = {
+  t: "accepted";
+  v: typeof SYNC_RELAY_READY_VERSION;
+};
+
+/** Final client-visible frame after both Relay pipe and local bridge are OPEN. */
+export type SyncRelayClientReady = {
+  t: "ready";
+  v: typeof SYNC_RELAY_READY_VERSION;
+};
+
 export type SyncCompressionCodec = "none" | "gzip";
 
 export type SyncPayloadEncoding = "json" | "base64";
@@ -69,6 +116,16 @@ export type SyncPeerMetadata = {
    * back to `dbVersion` for older clients.
    */
   dbVersionBySite?: Record<string, number>;
+  /**
+   * One id/timestamp shared by every route candidate in a single connection
+   * race. Hosts use it to prevent a late losing route from evicting the winner.
+   * Older clients omit it and retain last-successful-hello behavior.
+   */
+  connectionAttempt?: {
+    id: string;
+    /** Strictly monotonic per device, expressed as Unix epoch milliseconds. */
+    startedAtMs: number;
+  };
   /**
    * Additive hello capabilities. `runtimeOnly` means the client consumes only
    * rpc/fwd envelopes; hosts honor it only for an authenticated pairing record
@@ -382,6 +439,18 @@ export type SyncFeatureFlags = {
   changesetAck: {
     enabled: boolean;
   };
+  /**
+   * Reliable terminal input delivery. When enabled, clients may attach an
+   * `inputId` to `terminal_input` and retry until the host replies with
+   * `terminal_input_ack`. Older hosts omit this field.
+   */
+  terminalInputAck?: {
+    enabled: boolean;
+    /** Client retry eligibility window; receipts are never evicted sooner. */
+    retryWindowMs?: number;
+    /** Maximum unacknowledged input operations a client may pipeline. */
+    maxOutstanding?: number;
+  };
   bootstrapAuth: true;
   pairingAuth: {
     enabled: true;
@@ -605,6 +674,53 @@ export type SyncDpopProof = {
   signature: string;
 };
 
+/**
+ * Host-issued lease for a Relay-origin sync connection. Timestamps are Unix
+ * epoch milliseconds. Capable clients refresh at or after `refreshAfter` and
+ * the host keeps the socket open through `expiresAt + graceMs` while transient
+ * token-verifier failures are retried.
+ */
+export type SyncRelayAuthorizationLease = {
+  expiresAt: number;
+  refreshAfter: number;
+  challenge: string;
+  graceMs: number;
+};
+
+/**
+ * Device-bound refresh of the short-lived Relay account proof. The signature
+ * covers `ade-relay-reauth-v1`, deviceId, SHA-256 of the exact token bytes,
+ * the connection challenge, timestamp, and nonce in that order.
+ */
+export type SyncRelayReauthorizePayload = {
+  deviceId: string;
+  relayAccountToken: string;
+  proof: SyncDpopProof;
+};
+
+export type SyncRelayReauthorizeResultPayload =
+  | {
+      ok: true;
+      relayAuthorization: SyncRelayAuthorizationLease;
+    }
+  | {
+      ok: false;
+      error: {
+        code:
+          | "invalid_request"
+          | "invalid_proof"
+          | "stale_proof"
+          | "replayed_nonce"
+          | "relay_account_changed"
+          | "token_expired"
+          | "token_not_advanced"
+          | "token_too_short"
+          | "verification_failed";
+        message: string;
+        retryable: boolean;
+      };
+    };
+
 export type SyncHelloAuth =
   | { kind: "bootstrap"; token: string }
   | {
@@ -645,6 +761,8 @@ export type SyncHelloOkPayload = {
    * off-LAN route over the live connection and persist it for reconnects.
    */
   cloudRelayWssUrl?: string | null;
+  /** Present only for capable clients authenticated through ADE Relay. */
+  relayAuthorization?: SyncRelayAuthorizationLease;
   /**
    * Fresh paired credential minted only when a verified account hello adopts a
    * genuinely new device. Existing devices keep their stored pairing record,
@@ -657,7 +775,7 @@ export type SyncHelloOkPayload = {
 };
 
 export type SyncHelloErrorPayload = {
-  code: "auth_failed" | "invalid_hello" | "relay_account_required";
+  code: "auth_failed" | "invalid_hello" | "relay_account_required" | "connection_attempt_superseded";
   message: string;
   /**
    * Identity of the machine that rejected this hello. Lets a client tell
@@ -930,7 +1048,50 @@ export type SyncTerminalExitPayload = {
 export type SyncTerminalInputPayload = {
   sessionId: string;
   data: string;
+  /**
+   * Stable id for this input operation. Hosts advertising terminalInputAck
+   * write each id at most once per device/session/retry window and ACK every
+   * accepted first delivery, duplicate retry, or terminal rejection. Reusing
+   * an id with different data is a protocol conflict.
+   */
+  inputId?: string;
 };
+
+export type SyncTerminalInputAckErrorCode =
+  | "invalid_input_id"
+  | "not_subscribed"
+  | "session_not_live"
+  | "project_mismatch"
+  | "input_id_conflict"
+  | "dedupe_capacity";
+
+export type SyncTerminalInputAckPayload =
+  | {
+      sessionId: string;
+      inputId: string;
+      ok: true;
+      /** True when this ACK answers a retry whose exact input was already written. */
+      duplicate: boolean;
+    }
+  | {
+      sessionId: string | null;
+      /** Omitted only when the supplied id was not a bounded non-empty string. */
+      inputId?: string;
+      ok: false;
+      duplicate: false;
+      error:
+        | {
+            /** Re-subscribe, then resend the exact same inputId and bytes. */
+            code: "not_subscribed";
+            message: string;
+            retryable: true;
+          }
+        | {
+            code: Exclude<SyncTerminalInputAckErrorCode, "not_subscribed">;
+            message: string;
+            retryable: false;
+          };
+    };
 
 // Sent by mobile clients when the visible terminal viewport changes
 // (rotation, split view, font-size). Cols/rows are characters; the host
@@ -1442,6 +1603,8 @@ type SyncEnvelopeWithPayload<TType extends string, TPayload> =
 export type SyncHelloEnvelope = SyncEnvelopeWithPayload<"hello", SyncHelloPayload>;
 export type SyncHelloOkEnvelope = SyncEnvelopeWithPayload<"hello_ok", SyncHelloOkPayload>;
 export type SyncHelloErrorEnvelope = SyncEnvelopeWithPayload<"hello_error", SyncHelloErrorPayload>;
+export type SyncRelayReauthorizeEnvelope = SyncEnvelopeWithPayload<"relay_reauthorize", SyncRelayReauthorizePayload>;
+export type SyncRelayReauthorizeResultEnvelope = SyncEnvelopeWithPayload<"relay_reauthorize_result", SyncRelayReauthorizeResultPayload>;
 export type SyncProjectCatalogRequestEnvelope = SyncEnvelopeWithPayload<"project_catalog_request", Record<string, never>>;
 export type SyncProjectCatalogEnvelope = SyncEnvelopeWithPayload<"project_catalog", SyncProjectCatalogPayload>;
 export type SyncProjectCatalogChunkEnvelope = SyncEnvelopeWithPayload<"project_catalog_chunk", SyncProjectCatalogChunkPayload>;
@@ -1474,6 +1637,7 @@ export type SyncTerminalSnapshotEnvelope = SyncEnvelopeWithPayload<"terminal_sna
 export type SyncTerminalDataEnvelope = SyncEnvelopeWithPayload<"terminal_data", SyncTerminalDataPayload>;
 export type SyncTerminalExitEnvelope = SyncEnvelopeWithPayload<"terminal_exit", SyncTerminalExitPayload>;
 export type SyncTerminalInputEnvelope = SyncEnvelopeWithPayload<"terminal_input", SyncTerminalInputPayload>;
+export type SyncTerminalInputAckEnvelope = SyncEnvelopeWithPayload<"terminal_input_ack", SyncTerminalInputAckPayload>;
 export type SyncTerminalResizeEnvelope = SyncEnvelopeWithPayload<"terminal_resize", SyncTerminalResizePayload>;
 export type SyncTerminalHistoryEnvelope = SyncEnvelopeWithPayload<"terminal_history", SyncTerminalHistoryRequestPayload | SyncTerminalHistoryResponsePayload>;
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
@@ -1506,6 +1670,8 @@ export type SyncEnvelope =
   | SyncHelloEnvelope
   | SyncHelloOkEnvelope
   | SyncHelloErrorEnvelope
+  | SyncRelayReauthorizeEnvelope
+  | SyncRelayReauthorizeResultEnvelope
   | SyncProjectCatalogRequestEnvelope
   | SyncProjectCatalogEnvelope
   | SyncProjectCatalogChunkEnvelope
@@ -1538,6 +1704,7 @@ export type SyncEnvelope =
   | SyncTerminalDataEnvelope
   | SyncTerminalExitEnvelope
   | SyncTerminalInputEnvelope
+  | SyncTerminalInputAckEnvelope
   | SyncTerminalResizeEnvelope
   | SyncTerminalHistoryEnvelope
   | SyncChatSubscribeEnvelope

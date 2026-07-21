@@ -9,7 +9,12 @@ import type {
 } from "../../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../../shared/types/account";
 import { AdeSyncClient } from "../client";
-import { SyncConnection, type WebSocketLike } from "../connection";
+import {
+  BACKOFF_STABLE_CONNECTED_MS,
+  RELAY_READY_NEGOTIATION_WINDOW_MS,
+  SyncConnection,
+  type WebSocketLike,
+} from "../connection";
 import { deriveBrowserSyncEndpoints } from "../endpoints";
 import {
   IndexedDbOpenError,
@@ -22,7 +27,13 @@ import {
   type WebClientStorageTransaction,
 } from "../envStore";
 import { WebRelayAuthRequiredError, type WebRelayAccess } from "../relayPolicy";
-import { generateDpopKeyPair, exportPublicKeyX963Base64, rawEcdsaSignatureToDer, signDpopProof } from "../dpop";
+import {
+  generateDpopKeyPair,
+  exportPublicKeyX963Base64,
+  rawEcdsaSignatureToDer,
+  signDpopProof,
+  signRelayReauthorizationProof,
+} from "../dpop";
 import { randomHex } from "../ids";
 import {
   assembleProjectCatalogChunks,
@@ -38,6 +49,7 @@ import {
   encodeSyncEnvelope,
   parseSyncEnvelope,
 } from "../../../../../../ade-cli/src/services/sync/syncProtocol";
+import { verifyRelayReauthorizationProof } from "../../../../../../ade-cli/src/services/sync/relayAuthorization";
 import {
   accountLeaseOwnerForActiveConnection,
   reconcileActiveAccountLease,
@@ -129,6 +141,28 @@ function helloOk(projectId = "project-1"): SyncHelloOkPayload {
   };
 }
 
+function relayHelloOk(nowMs: number, options: {
+  refreshAfterMs?: number;
+  expiresAfterMs?: number;
+  challenge?: string;
+} = {}): SyncHelloOkPayload {
+  return {
+    ...helloOk(),
+    relayAuthorization: {
+      expiresAt: nowMs + (options.expiresAfterMs ?? 60_000),
+      refreshAfter: nowMs + (options.refreshAfterMs ?? 1_000),
+      challenge: options.challenge ?? "relay-challenge-1",
+      graceMs: 10_000,
+    },
+  };
+}
+
+const relayReauthorizationSigner = vi.fn(async () => ({
+  timestamp: Math.floor(Date.now() / 1_000),
+  nonce: "relay-reauth-test-nonce",
+  signature: "relay-reauth-test-signature",
+}));
+
 function helloOkWithoutProjects(): SyncHelloOkPayload {
   const payload = helloOk();
   delete payload.projects;
@@ -173,6 +207,10 @@ class ScriptedSocket implements WebSocketLike {
 
   serverSend(input: Parameters<typeof encodeEnvelopeText>[0]): void {
     this.onmessage?.({ data: encodeEnvelopeText(input) } as MessageEvent<string>);
+  }
+
+  serverTransportSend(input: unknown): void {
+    this.onmessage?.({ data: JSON.stringify(input) } as MessageEvent<string>);
   }
 }
 
@@ -342,6 +380,45 @@ describe("browser sync DPoP", () => {
       proof,
       nowSeconds: 1_700_001_000,
     })).toEqual({ ok: false, reason: "stale_timestamp" });
+  });
+
+  it("binds Relay refresh proofs to the exact token bytes and host challenge", async () => {
+    const keys = await generateDpopKeyPair({ extractable: true });
+    const publicKey = await exportPublicKeyX963Base64(keys.publicKey);
+    const relayAccountToken = " token-with-exact-bytes ";
+    const proof = await signRelayReauthorizationProof({
+      privateKey: keys.privateKey,
+      deviceId: "browser-device",
+      relayAccountToken,
+      challenge: "host-connection-challenge",
+      nowSeconds: 1_700_000_000,
+      nonce: "relay-nonce-1",
+    });
+
+    expect(verifyRelayReauthorizationProof({
+      publicKeyX963Base64: publicKey,
+      deviceId: "browser-device",
+      relayAccountToken,
+      challenge: "host-connection-challenge",
+      proof,
+      nowSeconds: 1_700_000_001,
+    })).toEqual({ ok: true });
+    expect(verifyRelayReauthorizationProof({
+      publicKeyX963Base64: publicKey,
+      deviceId: "browser-device",
+      relayAccountToken: relayAccountToken.trim(),
+      challenge: "host-connection-challenge",
+      proof,
+      nowSeconds: 1_700_000_001,
+    })).toEqual({ ok: false, reason: "invalid_signature" });
+    expect(verifyRelayReauthorizationProof({
+      publicKeyX963Base64: publicKey,
+      deviceId: "browser-device",
+      relayAccountToken,
+      challenge: "different-connection-challenge",
+      proof,
+      nowSeconds: 1_700_000_001,
+    })).toEqual({ ok: false, reason: "invalid_signature" });
   });
 
   it("DER-encodes high-bit and leading-zero P-256 signature integers", () => {
@@ -646,6 +723,126 @@ describe("browser sync connection and client", () => {
     vi.unstubAllGlobals();
   });
 
+  it("falls back to ADE hello on the same relay socket when an old Worker sends no accepted frame", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    );
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS - 1);
+    expect(script.sockets[0]?.sent).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+
+    await connecting;
+    expect(script.sockets).toHaveLength(1);
+    expect(script.sockets[0]?.sent.map((envelope) => envelope.type)).toEqual(["hello"]);
+    expect(script.sockets[0]?.url).toContain("ready=2");
+    connection.dispose();
+  });
+
+  it("waits after accepted for a slow new-Worker pipe and consumes accepted/ready as transport frames", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS * 4);
+    expect(script.sockets[0]?.sent).toEqual([]);
+
+    script.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
+    await connecting;
+    expect(script.sockets[0]?.sent.map((envelope) => envelope.type)).toEqual(["hello"]);
+    expect(connection.getStatus().state).toBe("connected");
+    connection.dispose();
+  });
+
+  it("fails a ready-v2 relay attempt when control closes after accepted but before ready", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const script = createSocketFactory(() => undefined);
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const outcome = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    ).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    script.sockets[0]?.close(4501, "host offline");
+
+    await expect(outcome).resolves.toMatchObject({
+      message: expect.stringContaining("offline"),
+    });
+    expect(script.sockets[0]?.sent).toEqual([]);
+    expect(connection.getStatus().state).toBe("reconnecting");
+    connection.dispose();
+  });
+
+  it("preserves reconnect backoff across short hello_ok flaps and resets after a stable session", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: "ws://127.0.0.1:8787", kind: "lan", dialable: true }],
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await connecting;
+
+    script.sockets[0]!.close(4505, "short flap one");
+    await vi.advanceTimersByTimeAsync(999);
+    expect(script.sockets).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(script.sockets).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connection.getStatus().state).toBe("connected");
+
+    script.sockets[1]!.close(4505, "short flap two");
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(script.sockets).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(script.sockets).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connection.getStatus().state).toBe("connected");
+
+    await vi.advanceTimersByTimeAsync(BACKOFF_STABLE_CONNECTED_MS);
+    script.sockets[2]!.close(4505, "stable session ended");
+    await vi.advanceTimersByTimeAsync(999);
+    expect(script.sockets).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(script.sockets).toHaveLength(4);
+    connection.dispose();
+  });
+
   it("closes a stale visible connection and enters the normal reconnect path", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });
@@ -875,6 +1072,320 @@ describe("browser sync connection and client", () => {
         dpop: expect.any(Object),
         relayAccountToken: "relay-account-token",
       },
+    });
+    connection.dispose();
+  });
+
+  it("advertises reauthorization support and refreshes on the host lease schedule", async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const relayTokenProvider = vi.fn(async () => `relay-token-${relayTokenProvider.mock.calls.length}`);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+      } else if (envelope.type === "relay_reauthorize") {
+        socket.serverSend({
+          type: "relay_reauthorize_result",
+          requestId: envelope.requestId,
+          payload: {
+            ok: true,
+            relayAuthorization: {
+              expiresAt: nowMs + 120_000,
+              refreshAfter: nowMs + 90_000,
+              challenge: "relay-challenge-2",
+              graceMs: 10_000,
+            },
+          },
+        });
+      }
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: null,
+      relayReauthorizationSigner,
+    });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      relayTokenProvider,
+    );
+    await vi.advanceTimersByTimeAsync(750);
+    await connecting;
+    const hello = script.sockets[0]?.sent.find((envelope) => envelope.type === "hello");
+    expect((hello?.payload as { peer?: SyncPeerMetadata }).peer?.capabilities).toContain("relayReauthorizeV1");
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+
+    const refreshes = script.sockets[0]?.sent.filter((envelope) => envelope.type === "relay_reauthorize") ?? [];
+    expect(refreshes).toHaveLength(1);
+    expect(refreshes[0]?.payload).toMatchObject({
+      deviceId: environment.pairedDeviceId,
+      relayAccountToken: "relay-token-2",
+      proof: { nonce: expect.any(String), signature: expect.any(String) },
+    });
+    expect(connection.getHelloOk()?.relayAuthorization?.challenge).toBe("relay-challenge-2");
+    connection.dispose();
+  });
+
+  it("deduplicates refresh preparation and retries an identical request after a lost ACK", async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const relayTokenProvider = vi.fn(async () => `relay-token-${relayTokenProvider.mock.calls.length}`);
+    let refreshFrames = 0;
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+      } else if (envelope.type === "relay_reauthorize") {
+        refreshFrames += 1;
+        if (refreshFrames === 2) {
+          socket.serverSend({
+            type: "relay_reauthorize_result",
+            requestId: envelope.requestId,
+            payload: {
+              ok: true,
+              relayAuthorization: {
+                expiresAt: nowMs + 120_000,
+                refreshAfter: nowMs + 90_000,
+                challenge: "relay-challenge-2",
+                graceMs: 10_000,
+              },
+            },
+          });
+        }
+      }
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: null,
+      relayReauthorizationSigner,
+    });
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      relayTokenProvider,
+    );
+    await vi.advanceTimersByTimeAsync(750);
+    await connecting;
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+    expect(refreshFrames).toBe(1);
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(refreshFrames).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+
+    const refreshes = script.sockets[0]?.sent.filter((envelope) => envelope.type === "relay_reauthorize") ?? [];
+    expect(refreshes).toHaveLength(2);
+    expect(refreshes[1]).toEqual(refreshes[0]);
+    expect(relayTokenProvider).toHaveBeenCalledTimes(2);
+    expect(connection.getHelloOk()?.relayAuthorization?.challenge).toBe("relay-challenge-2");
+    connection.dispose();
+  });
+
+  it("retries transient Relay verification failures at 1/2/4/8 seconds within grace", async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const relayTokenProvider = vi.fn(async () => `relay-token-${relayTokenProvider.mock.calls.length}`);
+    const refreshTimes: number[] = [];
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 90_000 }),
+        });
+      } else if (envelope.type === "relay_reauthorize") {
+        refreshTimes.push(Date.now());
+        socket.serverSend({
+          type: "relay_reauthorize_result",
+          requestId: envelope.requestId,
+          payload: refreshTimes.length < 5
+            ? {
+                ok: false,
+                error: {
+                  code: "verification_failed",
+                  message: "Relay account verification is temporarily unavailable.",
+                  retryable: true,
+                },
+              }
+            : {
+                ok: true,
+                relayAuthorization: {
+                  expiresAt: nowMs + 180_000,
+                  refreshAfter: nowMs + 150_000,
+                  challenge: "relay-challenge-after-retry",
+                  graceMs: 10_000,
+                },
+              },
+        });
+      }
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: null,
+      relayReauthorizationSigner,
+    });
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      relayTokenProvider,
+    );
+    await vi.advanceTimersByTimeAsync(750);
+    await connecting;
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+    expect(refreshTimes).toHaveLength(1);
+    for (const [index, delayMs] of [1_000, 2_000, 4_000, 8_000].entries()) {
+      await vi.advanceTimersByTimeAsync(delayMs);
+      await flushMicrotasks();
+      expect(refreshTimes).toHaveLength(index + 2);
+    }
+
+    expect(refreshTimes.map((time, index) => index === 0 ? 0 : time - refreshTimes[index - 1]!))
+      .toEqual([0, 1_000, 2_000, 4_000, 8_000]);
+    expect(relayTokenProvider).toHaveBeenCalledTimes(2);
+    expect(connection.getHelloOk()?.relayAuthorization?.challenge).toBe("relay-challenge-after-retry");
+    connection.dispose();
+  });
+
+  it("retains legacy reconnect behavior when an old host omits Relay lease metadata", async () => {
+    vi.useFakeTimers();
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage, { dpopPublicKeyX963: null });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-token",
+    );
+    await vi.advanceTimersByTimeAsync(750);
+    await connecting;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(script.sockets[0]?.sent.some((envelope) => envelope.type === "relay_reauthorize")).toBe(false);
+
+    script.sockets.at(-1)?.close(4003, "ADE Relay account proof expired");
+    expect(connection.getStatus().state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(1_500);
+    await flushMicrotasks();
+    expect(script.sockets).toHaveLength(2);
+    connection.dispose();
+  });
+
+  it("scopes refresh timers to the active socket generation", async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    let helloCount = 0;
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type !== "hello") return;
+      helloCount += 1;
+      socket.serverSend({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: relayHelloOk(nowMs, { refreshAfterMs: helloCount === 1 ? 1_000 : 5_000 }),
+      });
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: null,
+      relayReauthorizationSigner,
+    });
+    const firstConnect = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-token",
+    );
+    await vi.advanceTimersByTimeAsync(750);
+    await firstConnect;
+    const secondConnect = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-token",
+    );
+    await vi.advanceTimersByTimeAsync(750);
+    await secondConnect;
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushMicrotasks();
+    expect(script.sockets.flatMap((socket) => socket.sent).filter((envelope) => envelope.type === "relay_reauthorize"))
+      .toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(4_000);
+    await flushMicrotasks();
+    expect(script.sockets[1]?.sent.filter((envelope) => envelope.type === "relay_reauthorize"))
+      .toHaveLength(1);
+    connection.dispose();
+  });
+
+  it("wakes an overdue hidden refresh on visibility and treats account change as terminal", async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const visibility = new VisibilityDocument();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+      } else if (envelope.type === "relay_reauthorize") {
+        socket.serverSend({
+          type: "relay_reauthorize_result",
+          requestId: envelope.requestId,
+          payload: {
+            ok: false,
+            error: {
+              code: "relay_account_changed",
+              message: "The ADE account session changed.",
+              retryable: false,
+            },
+          },
+        });
+      }
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: visibility.document,
+      relayReauthorizationSigner,
+    });
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-token",
+    );
+    await vi.advanceTimersByTimeAsync(750);
+    await connecting;
+    visibility.setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(script.sockets[0]?.sent.filter((envelope) => envelope.type === "relay_reauthorize"))
+      .toHaveLength(0);
+
+    visibility.setVisibility("visible");
+    await flushMicrotasks();
+
+    expect(script.sockets[0]?.sent.filter((envelope) => envelope.type === "relay_reauthorize"))
+      .toHaveLength(1);
+    expect(connection.getStatus()).toMatchObject({
+      state: "auth_failed",
+      error: "The ADE account session changed.",
     });
     connection.dispose();
   });

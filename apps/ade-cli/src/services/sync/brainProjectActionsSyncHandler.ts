@@ -25,6 +25,7 @@ import type {
   SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
 } from "../../../../desktop/src/shared/types";
+import { SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY } from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import { isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
@@ -34,6 +35,11 @@ import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
+import {
+  createRelayAuthorizationLifecycle,
+  SYNC_RELAY_AUTHORIZATION_CLOSE_CODE,
+  type RelayAuthorizationLifecycle,
+} from "./relayAuthorization";
 import {
   createSyncPairedChannelService,
   isPairedRuntimeEnvelopeType,
@@ -48,6 +54,7 @@ import {
   wsDataToText,
 } from "./syncProtocol";
 import {
+  ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   isRuntimeHostPairingRecord,
@@ -94,9 +101,7 @@ type BrainPeerState = {
   metadata: SyncPeerMetadata | null;
   personalChatSubscriptions: Map<string, { transcriptPath: string; offset: number }>;
   pairingRecord: SyncPairingRecord | null;
-  relayAccountOwnerUserId: string | null;
-  relayAccountExpiresAtMs: number | null;
-  relayAccountExpiryTimer: ReturnType<typeof setTimeout> | null;
+  relayAuthorization: RelayAuthorizationLifecycle | null;
 };
 
 const WS_OPEN = 1;
@@ -460,22 +465,69 @@ export function createBrainProjectActionsSyncHandler(
     getSharedAccountAttestationConfig({ secretsDir: accountSecretsDir }));
   const verifyAccountAttestation = args.verifyAccountAttestation
     ?? verifyClerkAccountAttestation;
-  const getAccountLeaseUserId = async (): Promise<string | null> => {
+  let accountAuthorizationUserId: string | null = null;
+  let accountAuthorizationGeneration = 0;
+  let accountAuthorizationInitialized = false;
+  let accountAuthorizationContinuityUserId: string | null = null;
+  let accountAuthorizationContinuityUntilMs = 0;
+  const readExplicitAccountStatus = (): { userId: string | null; expiresAtMs: number | null } => {
     const status = accountAuthService.getStatus();
-    const ownerUserId = status.signedIn ? status.userId?.trim() || null : null;
+    const userId = status.signedIn ? status.userId?.trim() || null : null;
+    const expiresAtMs = status.expiresAt ? Date.parse(status.expiresAt) : Number.NaN;
+    return { userId, expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null };
+  };
+  const applyExplicitAccountUserId = (userId: string | null): void => {
+    if (accountAuthorizationInitialized && accountAuthorizationUserId === userId) return;
+    accountAuthorizationInitialized = true;
+    accountAuthorizationUserId = userId;
+    accountAuthorizationGeneration += 1;
+    accountAuthorizationContinuityUserId = null;
+    accountAuthorizationContinuityUntilMs = 0;
+    pairingStore.revokeAccountOwnedExcept(userId);
+  };
+  const seedAccountContinuity = (userId: string, expiresAtMs: number | null): void => {
+    const nowMs = Date.now();
+    const localExpiry = expiresAtMs != null && expiresAtMs > nowMs
+      ? expiresAtMs
+      : nowMs + ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS;
+    accountAuthorizationContinuityUserId = userId;
+    accountAuthorizationContinuityUntilMs = Math.min(
+      localExpiry,
+      nowMs + ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
+    );
+  };
+  const getAccountLeaseUserId = async (): Promise<string | null> => {
+    const initialStatus = readExplicitAccountStatus();
+    const ownerUserId = initialStatus.userId;
+    applyExplicitAccountUserId(ownerUserId);
     if (!ownerUserId) return null;
+    if (accountAuthorizationContinuityUserId !== ownerUserId) {
+      seedAccountContinuity(ownerUserId, initialStatus.expiresAtMs);
+    }
     try {
       const hostToken = (await accountAuthService.getAccessToken()).trim();
-      const refreshedStatus = accountAuthService.getStatus();
-      if (!hostToken || !refreshedStatus.signedIn || refreshedStatus.userId?.trim() !== ownerUserId) {
-        pairingStore.revokeAccountOwnedExcept(null);
-        return null;
-      }
+      const refreshedStatus = readExplicitAccountStatus();
+      const refreshedUserId = refreshedStatus.userId;
+      if (refreshedUserId !== accountAuthorizationUserId) applyExplicitAccountUserId(refreshedUserId);
+      if (!hostToken || refreshedUserId !== ownerUserId) return null;
+      seedAccountContinuity(ownerUserId, refreshedStatus.expiresAtMs);
       return ownerUserId;
     } catch {
-      pairingStore.revokeAccountOwnedExcept(null);
-      return null;
+      const refreshedUserId = readExplicitAccountStatus().userId;
+      if (refreshedUserId !== accountAuthorizationUserId) applyExplicitAccountUserId(refreshedUserId);
+      return refreshedUserId === ownerUserId
+        && accountAuthorizationContinuityUserId === ownerUserId
+        && Date.now() <= accountAuthorizationContinuityUntilMs
+        ? ownerUserId
+        : null;
     }
+  };
+  const captureAccountAuthorization = async (): Promise<{
+    userId: string;
+    generation: number;
+  } | null> => {
+    const userId = await getAccountLeaseUserId();
+    return userId ? { userId, generation: accountAuthorizationGeneration } : null;
   };
   const verifyRelayAccountProof = async (
     token: string | null | undefined,
@@ -837,37 +889,50 @@ export function createBrainProjectActionsSyncHandler(
       metadata: null,
       personalChatSubscriptions: new Map(),
       pairingRecord: null,
-      relayAccountOwnerUserId: null,
-      relayAccountExpiresAtMs: null,
-      relayAccountExpiryTimer: null,
+      relayAuthorization: null,
     };
-    const clearRelayAccountExpiry = (): void => {
-      if (peer.relayAccountExpiryTimer) clearTimeout(peer.relayAccountExpiryTimer);
-      peer.relayAccountExpiryTimer = null;
-    };
-    const armRelayAccountExpiry = (): void => {
-      clearRelayAccountExpiry();
-      const expiresAtMs = peer.relayAccountExpiresAtMs;
-      if (expiresAtMs == null || transportOrigin !== "relay-bridge") return;
-      const delayMs = Math.max(0, Math.min(2_147_483_647, expiresAtMs - Date.now()));
-      peer.relayAccountExpiryTimer = setTimeout(() => {
-        peer.relayAccountExpiryTimer = null;
-        if (Date.now() < expiresAtMs) {
-          armRelayAccountExpiry();
-          return;
-        }
-        peer.authenticated = false;
-        peer.metadata = null;
-        peer.authKind = null;
-        peer.pairingRecord = null;
-        peer.relayAccountOwnerUserId = null;
-        try {
-          peer.ws.close(4003, "ADE Relay account proof expired");
-        } catch {
-          // ignore close failures
-        }
-      }, delayMs);
-      peer.relayAccountExpiryTimer.unref?.();
+    const installRelayAuthorization = (initial: {
+      ownerUserId: string;
+      expiresAtMs: number;
+      challenge: string;
+    } | null): void => {
+      peer.relayAuthorization?.dispose();
+      peer.relayAuthorization = null;
+      if (!initial || transportOrigin !== "relay-bridge") return;
+      const lifecycle = createRelayAuthorizationLifecycle({
+        capable: Boolean(
+          peer.metadata?.capabilities?.includes(SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY),
+        ),
+        deviceId: () => peer.metadata?.deviceId ?? null,
+        pinnedPublicKey: () => peer.pairingRecord?.dpopPublicKey ?? null,
+        captureHostAuthorization: captureAccountAuthorization,
+        verifyAccountToken: async (token, expectedUserId) => await verifyAccountAttestation({
+          token,
+          expectedUserId,
+          config: getAccountAttestationConfig(),
+        }),
+        sendResult: (payload, requestId) => {
+          send(peer.ws, "relay_reauthorize_result", payload, requestId);
+        },
+        close: (reason) => {
+          args.logger.warn("sync_brain.relay_authorization_closed", {
+            reason,
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+            peerDeviceName: peer.metadata?.deviceName ?? null,
+            remoteAddress: remoteAddress ?? null,
+          });
+          pairedChannelService.closePeer(peer.ws, reason, true);
+          peer.authenticated = false;
+          try {
+            peer.ws.close(SYNC_RELAY_AUTHORIZATION_CLOSE_CODE, reason);
+          } catch {
+            // ignore close failures
+          }
+        },
+        logger: args.logger,
+      });
+      lifecycle.initialize(initial);
+      peer.relayAuthorization = lifecycle;
     };
     let personalChatPumpRunning = false;
     const personalChatPump = setInterval(() => {
@@ -875,7 +940,8 @@ export function createBrainProjectActionsSyncHandler(
       personalChatPumpRunning = true;
       void (async () => {
         const expectedOwner = optionalString(peer.pairingRecord?.accountOwnerUserId)
-          ?? peer.relayAccountOwnerUserId;
+          ?? peer.relayAuthorization?.snapshot()?.ownerUserId
+          ?? null;
         if (expectedOwner) {
           const currentOwner = await getAccountLeaseUserId();
           if (currentOwner !== expectedOwner) {
@@ -884,9 +950,10 @@ export function createBrainProjectActionsSyncHandler(
             peer.metadata = null;
             peer.authKind = null;
             peer.pairingRecord = null;
-            peer.relayAccountOwnerUserId = null;
+            peer.relayAuthorization?.dispose();
+            peer.relayAuthorization = null;
             try {
-              peer.ws.close(4003, "ADE account session changed");
+              peer.ws.close(SYNC_RELAY_AUTHORIZATION_CLOSE_CODE, "ADE account session changed");
             } catch {
               // ignore close failures
             }
@@ -931,6 +998,22 @@ export function createBrainProjectActionsSyncHandler(
             error: error instanceof Error ? error.message : String(error),
             remoteAddress: remoteAddress ?? null,
           });
+          return;
+        }
+
+        if (peer.authenticated && envelope.type === "relay_reauthorize") {
+          if (!peer.relayAuthorization) {
+            send(peer.ws, "relay_reauthorize_result", {
+              ok: false,
+              error: {
+                code: "invalid_request",
+                message: "This connection does not have a refreshable Relay authorization lease.",
+                retryable: false,
+              },
+            }, envelope.requestId);
+            return;
+          }
+          await peer.relayAuthorization.handle(envelope.payload, envelope.requestId);
           return;
         }
 
@@ -1138,11 +1221,17 @@ export function createBrainProjectActionsSyncHandler(
           clearAuthTimeout();
           peer.metadata = hello.peer;
           peer.pairingRecord = auth?.kind === "paired" ? authenticatedPairingRecord : null;
-          peer.relayAccountOwnerUserId = transportOrigin === "relay-bridge"
-            ? relayAccountOwnerUserId
-            : null;
-          peer.relayAccountExpiresAtMs = relayAccountExpiresAtMs;
-          armRelayAccountExpiry();
+          installRelayAuthorization(
+            transportOrigin === "relay-bridge"
+              && relayAccountOwnerUserId
+              && relayAccountExpiresAtMs != null
+              ? {
+                  ownerUserId: relayAccountOwnerUserId,
+                  expiresAtMs: relayAccountExpiresAtMs,
+                  challenge: randomBytes(24).toString("base64url"),
+                }
+              : null,
+          );
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           const brain = brainMetadata();
           const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
@@ -1163,6 +1252,8 @@ export function createBrainProjectActionsSyncHandler(
             cloudRelayWssUrl: accountAuthService.getStatus().signedIn
               ? args.getCloudRelayWssUrl?.() ?? null
               : null,
+            relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
+            terminalInputAckEnabled: false,
             // Advertise the runtime RPC channel + port-forward only to paired
             // desktop runtime-hosts (phones/browsers stay on the allowlist).
             runtimeChannelEnabled:
@@ -1185,12 +1276,21 @@ export function createBrainProjectActionsSyncHandler(
         peerDeviceId: peer.metadata?.deviceId ?? null,
       });
     });
-    ws.on("close", () => {
+    ws.on("close", (code, reason) => {
       clearAuthTimeout();
-      clearRelayAccountExpiry();
+      peer.relayAuthorization?.dispose();
+      peer.relayAuthorization = null;
       clearInterval(personalChatPump);
       peer.personalChatSubscriptions.clear();
       pairedChannelService.closePeer(ws, "Sync socket closed.", false);
+      args.logger.info("sync_brain.peer_closed", {
+        code,
+        reason: reason.toString("utf8") || null,
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+        peerDeviceName: peer.metadata?.deviceName ?? null,
+        remoteAddress: remoteAddress ?? null,
+        authenticated: peer.authenticated,
+      });
     });
   };
 }

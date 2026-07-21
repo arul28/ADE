@@ -4,6 +4,46 @@ import type { AccountAttestationConfig } from "./sharedAccountAuthService";
 const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 const VERIFIED_ACCOUNT_ATTESTATION = Symbol("verified-account-attestation");
 
+export type AccountAttestationErrorCode =
+  | "account_mismatch"
+  | "token_expired"
+  | "invalid_token"
+  | "verification_unavailable"
+  | "configuration_error";
+
+export class AccountAttestationError extends Error {
+  readonly code: AccountAttestationErrorCode;
+
+  constructor(code: AccountAttestationErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "AccountAttestationError";
+    this.code = code;
+  }
+}
+
+function errorCode(error: unknown): string {
+  return typeof (error as { code?: unknown } | null)?.code === "string"
+    ? (error as { code: string }).code
+    : "";
+}
+
+function classifyJoseVerificationError(error: unknown): AccountAttestationErrorCode {
+  const code = errorCode(error);
+  if (code === "ERR_JWT_EXPIRED") return "token_expired";
+  if (
+    code === "ERR_JWKS_TIMEOUT"
+    || code === "ERR_JWKS_FETCH_FAILED"
+    || code === "ENOTFOUND"
+    || code === "ECONNRESET"
+    || code === "ECONNREFUSED"
+    || code === "ETIMEDOUT"
+    || (error instanceof TypeError && /fetch|network|socket/i.test(error.message))
+  ) {
+    return "verification_unavailable";
+  }
+  return "invalid_token";
+}
+
 export type VerifiedAccountAttestation = {
   readonly userId: string;
   /** JWT expiry used only to bound the live Relay socket authorization. */
@@ -47,20 +87,35 @@ export async function verifyClerkAccountAttestation(args: {
   const issuer = args.config.issuer.trim();
   const jwksUrl = args.config.jwksUrl.trim();
   const oauthClientId = args.config.oauthClientId.trim();
-  if (!token || !expectedUserId) throw new Error("Account attestation is missing required identity data");
-  if (!issuer || !jwksUrl || !oauthClientId) throw new Error("Clerk account attestation is not configured");
+  if (!token || !expectedUserId) {
+    throw new AccountAttestationError("invalid_token", "Account attestation is missing required identity data");
+  }
+  if (!issuer || !jwksUrl || !oauthClientId) {
+    throw new AccountAttestationError("configuration_error", "Clerk account attestation is not configured");
+  }
 
-  const { payload } = await jwtVerify(token, getRemoteJwks(jwksUrl), {
-    issuer,
-    algorithms: ["RS256"],
-    clockTolerance: 5,
-    requiredClaims: ["sub", "exp"],
-  });
+  let payload: JWTPayload;
+  try {
+    ({ payload } = await jwtVerify(token, getRemoteJwks(jwksUrl), {
+      issuer,
+      algorithms: ["RS256"],
+      clockTolerance: 5,
+      requiredClaims: ["sub", "exp"],
+    }));
+  } catch (error) {
+    const code = classifyJoseVerificationError(error);
+    throw new AccountAttestationError(code, "Account attestation verification failed", { cause: error });
+  }
   const subject = typeof payload.sub === "string" ? payload.sub.trim() : "";
-  if (!subject) throw new Error("Account attestation subject is required");
-  if (subject !== expectedUserId) throw new Error("Account attestation subject does not match this machine owner");
+  if (!subject) throw new AccountAttestationError("invalid_token", "Account attestation subject is required");
+  if (subject !== expectedUserId) {
+    throw new AccountAttestationError(
+      "account_mismatch",
+      "Account attestation subject does not match this machine owner",
+    );
+  }
   if (!isAllowedCallerToken(payload, oauthClientId)) {
-    throw new Error("Account attestation audience is not allowed");
+    throw new AccountAttestationError("invalid_token", "Account attestation audience is not allowed");
   }
   return Object.freeze({
     userId: subject,
