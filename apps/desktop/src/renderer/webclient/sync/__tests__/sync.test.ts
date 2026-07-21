@@ -836,7 +836,7 @@ describe("browser sync connection and client", () => {
     script.sockets[0]?.close(4501, "host offline");
 
     await expect(outcome).resolves.toMatchObject({
-      message: expect.stringContaining("offline"),
+      message: expect.stringContaining("Can't reach this Mac"),
     });
     expect(script.sockets[0]?.sent).toEqual([]);
     expect(connection.getStatus().state).toBe("reconnecting");
@@ -1587,6 +1587,9 @@ describe("browser sync connection and client", () => {
     client.subscribe((status) => states.push(status.state));
 
     const connecting = client.connect(environment.envId, signedInRelayAccess);
+    for (let attempt = 0; attempt < 20 && script.sockets[0]?.readyState !== 1; attempt += 1) await flush();
+    script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    script.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
     for (let attempt = 0; attempt < 20 && !catalogRequestId; attempt += 1) await flush();
 
     expect(client.getStatus()).toMatchObject({ state: "restoring", readiness: "restoring" });
@@ -2666,6 +2669,8 @@ describe("browser sync connection and client", () => {
     });
     const connecting = client.connect(environment.envId, signedInRelayAccess);
     await vi.advanceTimersByTimeAsync(0);
+    script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    script.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
     await connecting;
 
     const first = client.sendTerminalInput("term-1", "first");
@@ -2702,6 +2707,8 @@ describe("browser sync connection and client", () => {
     });
     const oldHostConnect = oldHostClient.connect(oldHostEnvironment.envId, signedInRelayAccess);
     await vi.advanceTimersByTimeAsync(0);
+    oldHostScript.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    oldHostScript.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
     await oldHostConnect;
     await oldHostClient.sendTerminalInput("term-old", "legacy");
     await flushMicrotasks();
@@ -2754,6 +2761,8 @@ describe("browser sync connection and client", () => {
     });
     const connecting = client.connect(environment.envId, signedInRelayAccess);
     await vi.advanceTimersByTimeAsync(0);
+    script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    script.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
     await connecting;
 
     client.subscribeTerminal("term-1", {}, {});
@@ -2763,6 +2772,8 @@ describe("browser sync connection and client", () => {
 
     await vi.advanceTimersByTimeAsync(1_001);
     await vi.advanceTimersByTimeAsync(0);
+    script.sockets[1]?.serverTransportSend({ t: "accepted", v: 2 });
+    script.sockets[1]?.serverTransportSend({ t: "ready", v: 2 });
     await flushMicrotasks();
     expect(script.sockets).toHaveLength(2);
     await input;
@@ -2794,6 +2805,8 @@ describe("browser sync connection and client", () => {
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
     const connecting = client.connect(environment.envId, signedInRelayAccess);
     await vi.advanceTimersByTimeAsync(0);
+    script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    script.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
     await connecting;
 
     const input = client.sendTerminalInput("term-1", "date\n");
@@ -2857,7 +2870,11 @@ describe("browser sync connection and client", () => {
       }
     });
     const cachedClient = new AdeSyncClient({ storage: cachedStorage, socketFactory: cachedScript.factory, document: null });
-    await cachedClient.connect(cachedEnvironment.envId, signedInRelayAccess);
+    const cachedConnecting = cachedClient.connect(cachedEnvironment.envId, signedInRelayAccess);
+    for (let attempt = 0; attempt < 20 && cachedScript.sockets[0]?.readyState !== 1; attempt += 1) await flush();
+    cachedScript.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    cachedScript.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
+    await cachedConnecting;
 
     await expect(cachedClient.getProjectCatalog()).resolves.toMatchObject({
       projects: [{ id: "project-1" }],
@@ -2880,6 +2897,9 @@ describe("browser sync connection and client", () => {
     });
     const uncachedClient = new AdeSyncClient({ storage: uncachedStorage, socketFactory: uncachedScript.factory, document: null });
     const connecting = uncachedClient.connect(uncachedEnvironment.envId, signedInRelayAccess);
+    for (let attempt = 0; attempt < 20 && uncachedScript.sockets[0]?.readyState !== 1; attempt += 1) await flush();
+    uncachedScript.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    uncachedScript.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
     for (let attempt = 0; attempt < 20 && catalogRequests === 0; attempt += 1) await flush();
     expect(catalogRequests).toBe(1);
     expect(uncachedClient.getStatus()).toMatchObject({ state: "restoring", readiness: "restoring" });
@@ -2915,6 +2935,13 @@ describe("browser sync connection and client", () => {
       document: null,
     });
     const interruptedConnect = interruptedClient.connect(interruptedEnvironment.envId, signedInRelayAccess);
+    for (
+      let attempt = 0;
+      attempt < 20 && interruptedScript.sockets[0]?.readyState !== 1;
+      attempt += 1
+    ) await flush();
+    interruptedScript.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    interruptedScript.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
     for (
       let attempt = 0;
       attempt < 20 && !interruptedScript.sockets[0]?.sent.some((envelope) => envelope.type === "project_catalog_request");
