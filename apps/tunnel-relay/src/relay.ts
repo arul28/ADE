@@ -3,6 +3,8 @@ import { TunnelDurableObject } from "./tunnelDo";
 export type TunnelRelayEnv = {
   /** Durable Object namespace; one instance per machineKey via idFromName. */
   TUNNEL: DurableObjectNamespace;
+  /** Safe deployment identity exposed by Cloudflare's version metadata binding. */
+  CF_VERSION_METADATA: WorkerVersionMetadata;
   /** Optional override for the max concurrent tunnels per machine. */
   MAX_TUNNELS_PER_MACHINE?: string;
 };
@@ -163,7 +165,13 @@ function validKey(value: string | undefined): value is string {
 export async function handleRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
-    return jsonResponse({ ok: true, service: "ade-tunnel-relay" });
+    const { id, tag, timestamp } = env.CF_VERSION_METADATA;
+    return jsonResponse({
+      ok: true,
+      service: "ade-tunnel-relay",
+      protocolVersion: 2,
+      workerVersion: { id, tag, timestamp },
+    });
   }
 
   const route = routeTunnelPath(url.pathname);

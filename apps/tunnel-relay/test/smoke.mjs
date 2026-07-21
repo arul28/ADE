@@ -9,8 +9,9 @@
 // via wrangler's deps) for the server + sockets.
 import { WebSocket, WebSocketServer } from "ws";
 import { createHmac, randomBytes } from "node:crypto";
+import { requireLoopbackRelayUrl } from "./smoke-url.mjs";
 
-const BASE = (process.env.ADE_TUNNEL_RELAY_URL || "http://127.0.0.1:8787").replace(/\/+$/, "");
+const BASE = requireLoopbackRelayUrl(process.env.ADE_TUNNEL_RELAY_URL || "http://127.0.0.1:8787");
 const WS_BASE = BASE.replace(/^http/, "ws");
 const KEY = randomBytes(16).toString("hex");
 const SECRET = randomBytes(24).toString("hex");

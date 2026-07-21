@@ -5,8 +5,8 @@
     "moduleResolution": "Bundler",
     "strict": true,
     "noEmit": true,
-    "types": ["@cloudflare/workers-types", "node", "vitest/globals"],
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types", "node", "vitest/globals"],
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.*.config.ts"]
 }

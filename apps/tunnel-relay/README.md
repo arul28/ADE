@@ -90,10 +90,12 @@ What the relay's position does **not** grant:
   authorizes after transport setup), so anyone who learns a `machineKey` can hold up to the 16
   concurrent-tunnel cap until the 10-minute idle sweep closes them — a bounded,
   self-healing DoS. They still cannot authenticate to the brain.
-- Early phone frames are buffered in DO memory (bounded, 64 frames) while the
-  host dials the pipe socket. The same per-connection buffer also has a 256 KiB
-  total-byte cap. A hibernation eviction inside that sub-second window drops
-  the frames; the phone's reconnect/resync path recovers.
+- Legacy phone frames are buffered in DO memory (bounded, 64 frames / 256 KiB)
+  while the host dials the pipe socket. If that volatile legacy buffer is lost
+  to hibernation, the relay closes the pair explicitly so the phone reconnects
+  instead of silently losing a protocol frame. Ready-v2 phones do not send ADE
+  frames until the relay confirms the pipe and local bridge are ready, so their
+  first frame never depends on volatile DO memory.
 
 Treat the relay like any other network hop you don't fully control: fine for
 transport, not a place to rely on for confidentiality until E2E payload
@@ -179,18 +181,27 @@ claims are needed.
 test lives at `test/smoke.mjs`: it starts a local WS echo server (a fake sync
 host), a fake brain that holds the control socket and bridges pipes to the echo
 server, connects a phone WS to `/connect/<key>`, and asserts an echo round-trip.
+The script rejects every non-loopback relay URL before doing network work, so
+it cannot be pointed at production.
 
 ```bash
 npm run dev            # terminal 1: wrangler dev on 127.0.0.1:8787
 node test/smoke.mjs    # terminal 2: drives claim → host → connect → echo
 ```
 
-The DO socket-pairing/hibernation logic that can't be unit-tested without a
-runtime (accept, pipe forwarding, alarm sweep) is exercised by this smoke test;
-the pure helpers (signature verify, route parsing, id generation, claim
-idempotency/conflict) are covered by `npm test`.
+`npm test` runs both the cheap FakeState/FakeSocket suite and Cloudflare's
+supported workerd Vitest pool. The workerd suite uses the real Wrangler config,
+Durable Object namespace, `WebSocketPair`, attachment serialization, and
+old/new relay compatibility. The full `evictDurableObject()` hibernation proof
+is checked in but skipped: with the pinned pool 0.18.6/runtime it does not
+return for this SQLite-backed namespace even when isolated to a claimed DO with
+no WebSockets. The active workerd cases still prove the real attachment and
+routing behavior on both sides of that upstream helper limitation. The manual
+smoke remains useful for a full local Wrangler-dev round trip.
 
 ```bash
-npm test        # vitest — route/auth helpers + claim idempotency/conflict
+npm test              # fake unit tests, then real workerd tests
+npm run test:unit     # FakeState/FakeSocket + pure helpers
+npm run test:workerd  # Cloudflare workerd Durable Object/WebSocket tests
 npm run typecheck
 ```

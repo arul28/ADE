@@ -291,7 +291,8 @@ jobs:
         with:
           node-version: 22
       - run: cd apps/tunnel-relay && npm ci
-      - run: cd apps/tunnel-relay && npm test
+      - name: Run fake and workerd relay tests
+        run: cd apps/tunnel-relay && npm test
 
   # The account directory is an independently deployed Worker with its own
   # lockfile. Keep auth/device-flow verification isolated from the shared app

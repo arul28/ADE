@@ -4,6 +4,7 @@ import {
   buildPipeSignatureBase,
   CONNECTION_ID_PATTERN,
   generateConnectionId,
+  handleRequest,
   hmacSha256Hex,
   routeTunnelPath,
   verifySignedQuery,
@@ -253,6 +254,32 @@ describe("generateConnectionId", () => {
       const id = generateConnectionId();
       expect(CONNECTION_ID_PATTERN.test(id)).toBe(true);
     }
+  });
+});
+
+describe("health", () => {
+  it("reports protocol and Worker version metadata without touching the Durable Object namespace", async () => {
+    const workerVersion = {
+      id: "00000000-0000-0000-0000-000000000002",
+      tag: "0123456789abcdef",
+      timestamp: "2026-07-21T12:34:56.000Z",
+    };
+    const env = {
+      CF_VERSION_METADATA: workerVersion,
+      get TUNNEL(): DurableObjectNamespace {
+        throw new Error("health must not look up or wake a Durable Object");
+      },
+    } as TunnelRelayEnv;
+
+    const response = await handleRequest(new Request("https://relay.test/health"), env);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      service: "ade-tunnel-relay",
+      protocolVersion: 2,
+      workerVersion,
+    });
   });
 });
 
