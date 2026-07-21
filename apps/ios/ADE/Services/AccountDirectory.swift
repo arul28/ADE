@@ -143,24 +143,39 @@ struct AccountDirectoryClient {
   /// Fetch the caller's machines. `baseURL` is the Worker origin (e.g.
   /// `https://ade-account-directory.example.workers.dev`); `token` is the
   /// ClerkKit session JWT presented as `Authorization: Bearer <jwt>`.
-  func fetchMachines(baseURL: URL, token: String) async throws -> [AccountMachine] {
-    var request = URLRequest(url: baseURL.appendingPathComponent("account/machines"))
-    request.httpMethod = "GET"
-    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.timeoutInterval = 12
-    request.cachePolicy = .reloadIgnoringLocalCacheData
+  func fetchMachines(
+    baseURL: URL,
+    token: String,
+    refreshToken: (() async -> String?)? = nil
+  ) async throws -> [AccountMachine] {
+    func request(using accessToken: String) async throws -> (Data, HTTPURLResponse) {
+      var request = URLRequest(url: baseURL.appendingPathComponent("account/machines"))
+      request.httpMethod = "GET"
+      request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      request.timeoutInterval = 12
+      request.cachePolicy = .reloadIgnoringLocalCacheData
 
-    let data: Data
-    let response: URLResponse
-    do {
-      (data, response) = try await session.data(for: request)
-    } catch {
-      throw DirectoryError.transport("Couldn't reach the machine directory.")
+      let data: Data
+      let response: URLResponse
+      do {
+        (data, response) = try await session.data(for: request)
+      } catch {
+        throw DirectoryError.transport("Couldn't reach the machine directory.")
+      }
+
+      guard let http = response as? HTTPURLResponse else {
+        throw DirectoryError.transport("The directory returned an unexpected response.")
+      }
+      return (data, http)
     }
 
-    guard let http = response as? HTTPURLResponse else {
-      throw DirectoryError.transport("The directory returned an unexpected response.")
+    var (data, http) = try await request(using: token)
+    if http.statusCode == 401,
+       let refreshToken,
+       let refreshedToken = await refreshToken()?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !refreshedToken.isEmpty {
+      (data, http) = try await request(using: refreshedToken)
     }
 
     switch http.statusCode {

@@ -107,6 +107,70 @@ describe("AccountMachineDirectoryService", () => {
       .get("authorization")).toBe("Bearer refreshed-account-token");
   });
 
+  it("force-refreshes and retries once when the directory first returns 401", async () => {
+    const getAccessToken = vi.fn(async (options?: { forceRefresh?: boolean }) =>
+      options?.forceRefresh ? "fresh-account-token" : "stale-account-token");
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization");
+      return authorization === "Bearer fresh-account-token"
+        ? new Response(JSON.stringify({ machines: [machine()] }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(JSON.stringify({ error: "expired" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+    }) as typeof fetch;
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({
+        signedIn: true,
+        userId: "user",
+        email: null,
+        name: null,
+        expiresAt: null,
+      }),
+      getAccessToken,
+    }, { directoryBaseUrl: () => "https://directory.example", fetchImpl });
+
+    await expect(service.listMachines()).resolves.toMatchObject({
+      state: "ok",
+      machines: [{ machineKey: "mk-studio" }],
+    });
+    expect(getAccessToken).toHaveBeenNthCalledWith(1);
+    expect(getAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("force-refreshes and retries a machine deletion only once after 401", async () => {
+    const getAccessToken = vi.fn(async (options?: { forceRefresh?: boolean }) =>
+      options?.forceRefresh ? "fresh-account-token" : "stale-account-token");
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Response(null, {
+        status: new Headers(init?.headers).get("authorization") === "Bearer fresh-account-token"
+          ? 204
+          : 401,
+      })) as typeof fetch;
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({
+        signedIn: true,
+        userId: "user",
+        email: null,
+        name: null,
+        expiresAt: null,
+      }),
+      getAccessToken,
+    }, { directoryBaseUrl: () => "https://directory.example", fetchImpl });
+
+    await expect(service.deleteMachine("mk-studio")).resolves.toEqual({
+      ok: true,
+      machineKey: "mk-studio",
+    });
+    expect(getAccessToken).toHaveBeenNthCalledWith(1);
+    expect(getAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it("deletes a machine through the authenticated account directory route", async () => {
     const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
       new Response(JSON.stringify({ ok: true, machineKey: "mk/studio" }), {
@@ -216,8 +280,8 @@ describe("AccountMachineDirectoryService", () => {
     }
   });
 
-  it("keeps offline machines visible but rejects connecting to them", async () => {
-    const offline = machine({ online: false, lastSeenAt: 1 });
+  it("keeps machines without a live presence or verified relay visible but rejects connecting", async () => {
+    const offline = machine({ online: false, lastSeenAt: 1, reachableEndpoints: [] });
     const service = new AccountMachineDirectoryService({
       getStatus: () => ({ signedIn: true, userId: "user", email: null, name: null, expiresAt: null }),
       getAccessToken: async () => "account-token",
@@ -260,7 +324,7 @@ describe("AccountMachineDirectoryService", () => {
     });
   });
 
-  it("pairs through the account relay and saves a paired target for ADE Code", async () => {
+  it("pairs stale directory presence through a verified account relay and saves an ADE Code target", async () => {
     const pairWithAccountMachine = vi.fn(async (): Promise<Pick<
       DesktopPairedMachineCredentials,
       "hostIdentity" | "endpoints"
@@ -294,7 +358,7 @@ describe("AccountMachineDirectoryService", () => {
       getAccessToken: async () => "account-token",
     }, {
       directoryBaseUrl: () => "https://directory.example",
-      fetchImpl: directoryFetch([machine()]),
+      fetchImpl: directoryFetch([machine({ online: false, lastSeenAt: 1 })]),
       deviceName: () => "ADE Code test",
       pairedStore: { pairWithAccountMachine },
       targetRegistry: { save },
@@ -309,7 +373,7 @@ describe("AccountMachineDirectoryService", () => {
       name: "Studio",
     });
     expect(pairWithAccountMachine).toHaveBeenCalledWith(
-      expect.objectContaining({ machineKey: "mk-studio" }),
+      expect.objectContaining({ machineKey: "mk-studio", online: false }),
       "account-token",
       "ADE Code test",
       {

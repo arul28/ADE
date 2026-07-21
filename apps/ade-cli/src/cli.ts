@@ -549,7 +549,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade auth status                               Show ADE account sign-in status
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
-    $ ade machines connect <id|name>                Connect ADE Code to an online account machine
+    $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
@@ -1087,8 +1087,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Machine keys and device ids are stable selectors. An exact display name is
   accepted only when it identifies one machine; ambiguous names fail with the
-  stable machine keys to choose from. Offline machines are listed but cannot be
-  connected.
+  stable machine keys to choose from. Directory presence is only a recent hint:
+  a verified relay route remains connectable after its heartbeat expires.
+  Machines without a verified route stay listed but cannot be connected.
 
   Sign in with \`ade login\`. \`connect\` and its \`hop\` alias securely save the
   selected machine for that account, then launch ADE Code. Signing out removes

@@ -577,7 +577,6 @@ export class DesktopPairedMachineStore {
     const accountOwnerUserId = options.accountOwnerUserId.trim();
     const deviceName = deviceNameValue.trim();
     const expectedHostDeviceId = machine.deviceId?.trim() ?? "";
-    if (!machine.online) throw new Error("That account machine is offline.");
     if (!accountToken) throw new Error("ADE account sign-in is required.");
     if (!accountOwnerUserId) throw new Error("ADE account identity is required.");
     if (!deviceName) throw new Error("Desktop device name is required.");

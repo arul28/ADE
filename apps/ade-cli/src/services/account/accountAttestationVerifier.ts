@@ -22,9 +22,8 @@ export class AccountAttestationError extends Error {
 }
 
 function errorCode(error: unknown): string {
-  return typeof (error as { code?: unknown } | null)?.code === "string"
-    ? (error as { code: string }).code
-    : "";
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : "";
 }
 
 function classifyJoseVerificationError(error: unknown): AccountAttestationErrorCode {

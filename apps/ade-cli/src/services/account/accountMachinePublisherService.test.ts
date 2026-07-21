@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_MACHINE_HEARTBEAT_MS,
   ACCOUNT_MACHINE_RELAY_STATE_POLL_MS,
+  ACCOUNT_MACHINE_RETRY_BACKOFF_MS,
   type AccountMachineRegistrationSnapshot,
   buildAccountMachineRegistration,
   createBrainAccountMachinePublisherService,
@@ -279,6 +280,75 @@ describe("account machine publisher health", () => {
       state: "timeout",
       lastHttpStatus: null,
     });
+  });
+
+  it("force-refreshes once after the directory rejects the first bearer", async () => {
+    const getAccessToken = vi.fn(async (options?: { forceRefresh?: boolean }) =>
+      options?.forceRefresh ? "fresh-token" : "stale-token");
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const token = new Headers(init?.headers).get("authorization");
+      return token === "Bearer fresh-token"
+        ? new Response(null, { status: 204 })
+        : new Response(JSON.stringify({ error: "expired bearer" }), {
+            status: 401,
+            headers: { "content-type": "application/json" },
+          });
+    });
+    const service = createAccountMachinePublisherService({
+      getAccessToken,
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+
+    expect(getAccessToken).toHaveBeenNthCalledWith(1);
+    expect(getAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "published",
+      lastHttpStatus: 204,
+    });
+  });
+
+  it("accelerates transient retries with bounded backoff and resets after success", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RETRY_BACKOFF_MS[0] - 1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RETRY_BACKOFF_MS[1] - 1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(service.getPublisherHealth().state).toBe("published");
+
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_HEARTBEAT_MS - 1);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    service.dispose();
   });
 
   it("publishes immediately on sign-in and still discovers a late token on heartbeat", async () => {

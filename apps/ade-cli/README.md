@@ -244,6 +244,9 @@ account directory; signed-out users get a local-first message and existing
 local, PIN, explicit-address, and saved SSH paths remain available. Machine keys
 and device IDs are stable selectors. A display name is accepted only when it is
 unambiguous; otherwise the command prints the matching stable machine keys.
+Directory presence is a short-lived hint: a machine with a directory-verified
+relay endpoint remains connectable after its most recent heartbeat expires.
+Machines without a verified route remain listed but unavailable.
 Targets and paired credentials created through `ade machines connect` belong to
 that account and are removed on sign-out or account switch. Direct PIN, SSH, and
 explicit-address pairings remain local and are not converted into account-owned

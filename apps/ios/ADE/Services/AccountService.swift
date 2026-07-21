@@ -478,19 +478,30 @@ final class AccountService: ObservableObject {
       machinesState = .unconfigured
       return
     }
-    guard let token = await sessionToken() else {
+    guard let initialSession = await pairingSession() else {
       guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
       machinesState = .unreachable("Sign in again to load your machines.")
       return
     }
-    guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
+    guard initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else { return }
 
     if machines.isEmpty {
       machinesState = .loading
     }
     do {
-      let fetched = try await directory.fetchMachines(baseURL: baseURL, token: token)
-      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
+      let fetched = try await directory.fetchMachines(
+        baseURL: baseURL,
+        token: initialSession.token,
+        refreshToken: { [weak self] in
+          guard let self,
+                self.isPairingCommitAuthorized(initialSession.authorization) else { return nil }
+          return try? await self.freshRelaySession(
+            expectedAuthorization: initialSession.authorization
+          ).token
+        }
+      )
+      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
       machines = fetched
       SyncService.shared?.adoptVerifiedAccountRelayMetadata(
         from: fetched,
@@ -498,10 +509,10 @@ final class AccountService: ObservableObject {
       )
       machinesState = .loaded
     } catch let error as AccountDirectoryClient.DirectoryError {
-      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
       machinesState = .unreachable(error.localizedDescription)
     } catch {
-      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
       machinesState = .unreachable("Couldn't load your machines.")
     }
   }

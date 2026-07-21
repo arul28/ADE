@@ -28,9 +28,13 @@ import type {
 } from "../../../desktop/src/shared/types/remoteRuntime";
 import type { AdeAccountMachine } from "../../../desktop/src/shared/types/account";
 import type { DesktopPairedMachineCredentials } from "../../../desktop/src/shared/types/pairedRuntime";
-import { accountMachineEndpointHost } from "../../../desktop/src/shared/accountDirectory";
+import {
+  accountMachineEndpointHost,
+  accountMachineSecureSyncEndpoints,
+} from "../../../desktop/src/shared/accountDirectory";
 import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { ChatTerminalSession } from "../../../desktop/src/shared/types/sessions";
+import { defaultRelayUrl } from "../services/sync/syncCloudRelayStore";
 import {
   ProcessJsonRpcClient,
   spawnRemoteRpcProcess,
@@ -1438,7 +1442,11 @@ export async function resolveRemoteTargetForLaunch(
   const machine = matches[0]!;
   const legacyAccountTarget = isLegacyAccountCreatedSshTarget(machine, target);
   if (!legacyAccountTarget) return target;
-  if (!machine.online) {
+  const hasVerifiedRelayRoute = accountMachineSecureSyncEndpoints(
+    machine,
+    [defaultRelayUrl()],
+  ).length > 0;
+  if (!machine.online && !hasVerifiedRelayRoute) {
     throw new PairedRuntimeTransportUnavailableError(
       `${machine.name ?? target.name} is offline. This account-created target is paired-only and will not downgrade to SSH.`,
     );
