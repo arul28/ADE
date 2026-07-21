@@ -703,6 +703,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         connected = false;
         control = null;
         advanceControlGeneration();
+        for (const pendingOpen of [...pendingBridgeOpens]) {
+          if (pendingOpen.controlSocket === socket) {
+            pendingOpen.reject(RELAY_CLOSE_BRIDGE_REJECTED, "relay control unavailable");
+          }
+        }
         if (socketTransportMode === "legacy" && !socketState.opened && epochFallbackUsed) {
           // The one legacy negotiation attempt did not establish a control.
           // Return to epoch mode without making another downgrade attempt.
@@ -845,7 +850,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       controlSocket.send(JSON.stringify(payload), (error) => {
         if (error) fail(error);
       });
-      return true;
+      return !failed;
     } catch (error) {
       fail(error);
       return false;
@@ -910,6 +915,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       );
       return;
     }
+    if (settled) return;
     if (control !== controlSocket) {
       rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "control superseded");
       return;
@@ -981,6 +987,16 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       if (control !== controlSocket || !accountSignedIn()) {
         rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "control superseded");
         closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "control superseded");
+        return;
+      }
+      if (
+        validatedBridgeKey !== validatedKey
+        || bridgeValidationIdentity().key !== validatedKey
+      ) {
+        clearBridgeValidation();
+        recordFailure("Relay bridge refused because the ADE sync listener changed before readiness.");
+        rejectOpen(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
+        closeBoth(RELAY_CLOSE_BRIDGE_REJECTED, "bridge identity changed");
         return;
       }
       if (epoch) {
@@ -1262,10 +1278,22 @@ function forward(
   target: WebSocket,
   data: RawData,
   isBinary: boolean,
+  bufferedTargets: Set<WebSocket>,
   onFailure: (reason: string) => void,
 ): boolean {
   if (target.readyState !== WebSocket.OPEN) {
     onFailure("bridge target unavailable");
+    return false;
+  }
+  bufferedTargets.add(target);
+  const frameBytes = rawDataByteLength(data);
+  let bufferedBytes = 0;
+  for (const socket of bufferedTargets) {
+    const amount = socket.bufferedAmount;
+    if (Number.isFinite(amount) && amount > 0) bufferedBytes += amount;
+  }
+  if (bufferedBytes > MAX_BUFFERED_TUNNEL_BYTES - frameBytes) {
+    onFailure("bridge send buffer overflow");
     return false;
   }
   try {
@@ -1397,6 +1425,8 @@ function safeCloseWebSocket(socket: WebSocket, code: number, reason: string): vo
 export const MAX_PENDING_TUNNEL_FRAMES = 64;
 /** Aggregate bytes buffered across both still-connecting tunnel targets. */
 export const MAX_PENDING_TUNNEL_BYTES = 256 * 1024;
+/** Aggregate bytes queued by Node across both open tunnel targets. */
+export const MAX_BUFFERED_TUNNEL_BYTES = 4 * 1024 * 1024;
 
 /**
  * Forwards frames to a target socket, buffering (bounded, in order) while the
@@ -1408,6 +1438,7 @@ export function makeBufferedForwarder(onFailure: (reason: string) => void) {
   const pending = new Map<WebSocket, Array<{ data: RawData; isBinary: boolean; bytes: number }>>();
   let pendingFrames = 0;
   let pendingBytes = 0;
+  const bufferedTargets = new Set<WebSocket>();
   let failed = false;
   const fail = (reason: string): void => {
     if (failed) return;
@@ -1420,7 +1451,7 @@ export function makeBufferedForwarder(onFailure: (reason: string) => void) {
   return (target: WebSocket, data: RawData, isBinary: boolean): void => {
     if (failed) return;
     if (target.readyState === WebSocket.OPEN) {
-      forward(target, data, isBinary, fail);
+      forward(target, data, isBinary, bufferedTargets, fail);
       return;
     }
     if (target.readyState !== WebSocket.CONNECTING) {
@@ -1437,7 +1468,7 @@ export function makeBufferedForwarder(onFailure: (reason: string) => void) {
         pendingFrames -= frames.length;
         pendingBytes -= frames.reduce((total, frame) => total + frame.bytes, 0);
         for (const frame of frames) {
-          if (!forward(target, frame.data, frame.isBinary, fail)) return;
+          if (!forward(target, frame.data, frame.isBinary, bufferedTargets, fail)) return;
         }
       });
     }

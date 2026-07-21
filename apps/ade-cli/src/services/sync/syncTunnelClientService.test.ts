@@ -9,6 +9,7 @@ import {
   computeBackoffMs,
   createSyncTunnelClientService,
   makeBufferedForwarder,
+  MAX_BUFFERED_TUNNEL_BYTES,
   MAX_PENDING_TUNNEL_BYTES,
   parseControlMessage,
   RELAY_CLOSE_BRIDGE_REJECTED,
@@ -61,7 +62,10 @@ function epochOpen(requestUrl: string | undefined, id: string): string {
 
 class StubWebSocket extends EventEmitter {
   readyState: number = WebSocket.CONNECTING;
+  bufferedAmount = 0;
   readonly sent: string[] = [];
+  readonly closes: Array<{ code: number; reason: string }> = [];
+  sendCallbackError: Error | null = null;
 
   constructor(readonly url: string) {
     super();
@@ -76,7 +80,9 @@ class StubWebSocket extends EventEmitter {
     this.emit("message", Buffer.from(value));
   }
 
-  remoteCloseWhileSendable(code = 4505, reason = "control replaced"): void {
+  remoteClose(code = 4505, reason = "control replaced"): void {
+    if (this.readyState === WebSocket.CLOSED) return;
+    this.readyState = WebSocket.CLOSED;
     this.emit("close", code, Buffer.from(reason));
   }
 
@@ -85,9 +91,12 @@ class StubWebSocket extends EventEmitter {
     optionsOrCallback?: unknown,
     callback?: (error?: Error) => void,
   ): void {
-    this.sent.push(String(data));
+    if (this.readyState !== WebSocket.OPEN) throw new Error("cannot send on a closed test socket");
     const done = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
-    (done as ((error?: Error) => void) | undefined)?.();
+    const error = this.sendCallbackError;
+    this.sendCallbackError = null;
+    if (!error) this.sent.push(String(data));
+    (done as ((error?: Error) => void) | undefined)?.(error ?? undefined);
   }
 
   ping(): void {}
@@ -95,6 +104,7 @@ class StubWebSocket extends EventEmitter {
   close(code = 1000, reason = ""): void {
     if (this.readyState === WebSocket.CLOSED) return;
     this.readyState = WebSocket.CLOSING;
+    this.closes.push({ code, reason });
     queueMicrotask(() => {
       this.readyState = WebSocket.CLOSED;
       this.emit("close", code, Buffer.from(reason));
@@ -174,6 +184,37 @@ describe("makeBufferedForwarder", () => {
     expect(onFailure).toHaveBeenCalledWith("bridge frame buffer overflow");
     expect(first.sent).toEqual([]);
     expect(second.sent).toEqual([]);
+  });
+
+  it("bounds Node send queues for live sends and pre-open flushes", () => {
+    const firstLive = new StubWebSocket("ws://first-live");
+    const secondLive = new StubWebSocket("ws://second-live");
+    firstLive.open();
+    secondLive.open();
+    firstLive.bufferedAmount = Math.floor(MAX_BUFFERED_TUNNEL_BYTES / 2);
+    secondLive.bufferedAmount = MAX_BUFFERED_TUNNEL_BYTES - firstLive.bufferedAmount;
+    const liveFailure = vi.fn();
+    const forwardLive = makeBufferedForwarder(liveFailure);
+
+    forwardLive(firstLive as unknown as WebSocket, Buffer.from([1]), true);
+    forwardLive(secondLive as unknown as WebSocket, Buffer.from([2]), true);
+
+    expect(liveFailure).toHaveBeenCalledOnce();
+    expect(liveFailure).toHaveBeenCalledWith("bridge send buffer overflow");
+    expect(firstLive.sent).toHaveLength(1);
+    expect(secondLive.sent).toEqual([]);
+
+    const connecting = new StubWebSocket("ws://connecting");
+    const flushFailure = vi.fn();
+    const forwardOnOpen = makeBufferedForwarder(flushFailure);
+    forwardOnOpen(connecting as unknown as WebSocket, Buffer.from("queued-before-open"), true);
+    connecting.bufferedAmount = MAX_BUFFERED_TUNNEL_BYTES;
+
+    connecting.open();
+
+    expect(flushFailure).toHaveBeenCalledOnce();
+    expect(flushFailure).toHaveBeenCalledWith("bridge send buffer overflow");
+    expect(connecting.sent).toEqual([]);
   });
 });
 
@@ -488,7 +529,7 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
-  it("rejects an open abandoned when its control is superseded during validation", async () => {
+  it("abandons an open immediately when its control closes during validation", async () => {
     const sockets: StubWebSocket[] = [];
     let finishProbe!: (result: SyncLoopbackProbeResult) => void;
     const probeResult = new Promise<SyncLoopbackProbeResult>((resolve) => {
@@ -518,7 +559,8 @@ describe("createSyncTunnelClientService", () => {
       sockets[0].receive(epochOpen(sockets[0].url, "abcdef01"));
       await vi.waitFor(() => expect(loopbackProbe).toHaveBeenCalledOnce());
 
-      sockets[0].remoteCloseWhileSendable();
+      sockets[0].remoteClose();
+      expect(sockets[0].readyState).toBe(WebSocket.CLOSED);
       await vi.waitFor(() => expect(sockets).toHaveLength(2));
       sockets[1].open();
       finishProbe({
@@ -531,13 +573,8 @@ describe("createSyncTunnelClientService", () => {
         reason: null,
       });
 
-      await vi.waitFor(() => {
-        expect(sockets[0].sent.map((raw) => JSON.parse(raw))).toContainEqual(expect.objectContaining({
-          t: "reject",
-          id: "abcdef01",
-          reason: "bridge validation failed",
-        }));
-      });
+      await vi.waitFor(() => expect(service.getStatus().relayBridgeValidated).toBe(true));
+      expect(sockets[0].sent).toEqual([]);
       expect(sockets.some((socket) => socket.url.includes("/pipe/"))).toBe(false);
       expect(service.getStatus().activeTunnels).toBe(0);
     } finally {
@@ -546,7 +583,7 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
-  it("rejects an open abandoned when control changes before bridge socket construction", async () => {
+  it("abandons an open when control closes before bridge socket construction", async () => {
     const sockets: StubWebSocket[] = [];
     const expectedNonce = "c".repeat(32);
     let replaceOnProof = false;
@@ -556,7 +593,7 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => 8787,
       getExpectedLoopbackNonce: () => expectedNonce,
       getRelayBridgeProof: () => {
-        if (replaceOnProof) sockets[0].remoteCloseWhileSendable();
+        if (replaceOnProof) sockets[0].remoteClose();
         return "e".repeat(43);
       },
       configStore: fakeStore(),
@@ -584,14 +621,203 @@ describe("createSyncTunnelClientService", () => {
       replaceOnProof = true;
       sockets[0].receive(epochOpen(sockets[0].url, "abcdef02"));
 
-      await vi.waitFor(() => {
-        expect(sockets[0].sent.map((raw) => JSON.parse(raw))).toContainEqual(expect.objectContaining({
-          t: "reject",
-          id: "abcdef02",
-          reason: "control or listener superseded",
-        }));
-      });
+      await vi.waitFor(() => expect(sockets).toHaveLength(2));
+      expect(sockets[0].readyState).toBe(WebSocket.CLOSED);
+      expect(sockets[0].sent).toEqual([]);
       expect(sockets.some((socket) => socket.url.includes("/pipe/"))).toBe(false);
+      expect(service.getStatus().activeTunnels).toBe(0);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not announce ready after the validated listener identity changes", async () => {
+    const sockets: StubWebSocket[] = [];
+    let nonce = "c".repeat(32);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => nonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(),
+      loopbackProbe: async (port, expectedNonce) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const control = sockets[0];
+      control.open();
+      await vi.waitFor(() => expect(service.getStatus().relayBridgeValidated).toBe(true));
+      control.receive(epochOpen(control.url, "abcdef03"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(3));
+      const pipe = sockets.find((socket) => socket.url.includes("/pipe/"));
+      const local = sockets.find((socket) => socket.url === "ws://127.0.0.1:8787");
+      expect(pipe).toBeTruthy();
+      expect(local).toBeTruthy();
+
+      nonce = "d".repeat(32);
+      pipe!.open();
+      local!.open();
+
+      await vi.waitFor(() => {
+        expect(pipe!.readyState).toBe(WebSocket.CLOSED);
+        expect(local!.readyState).toBe(WebSocket.CLOSED);
+      });
+      const lifecycle = control.sent.map((raw) => JSON.parse(raw) as { t?: string; reason?: string });
+      expect(lifecycle).toContainEqual(expect.objectContaining({
+        t: "reject",
+        reason: "bridge identity changed",
+      }));
+      expect(lifecycle.some((message) => message.t === "ready")).toBe(false);
+      expect(pipe!.closes).toContainEqual({ code: RELAY_CLOSE_BRIDGE_REJECTED, reason: "bridge identity changed" });
+      expect(local!.closes).toContainEqual({ code: RELAY_CLOSE_BRIDGE_REJECTED, reason: "bridge identity changed" });
+      expect(service.getStatus()).toMatchObject({ activeTunnels: 0, relayBridgeValidated: false });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not mark a tunnel ready when the control send callback fails synchronously", async () => {
+    const sockets: StubWebSocket[] = [];
+    const logger = { debug: vi.fn() };
+    const expectedNonce = "c".repeat(32);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      logger,
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(),
+      loopbackProbe: async (port) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+      reconnectBackoffMs: () => 0,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const control = sockets[0];
+      control.open();
+      await vi.waitFor(() => expect(service.getStatus().relayBridgeValidated).toBe(true));
+      control.receive(epochOpen(control.url, "abcdef04"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(3));
+      const pipe = sockets.find((socket) => socket.url.includes("/pipe/"));
+      const local = sockets.find((socket) => socket.url === "ws://127.0.0.1:8787");
+      expect(pipe).toBeTruthy();
+      expect(local).toBeTruthy();
+
+      control.sendCallbackError = new Error("injected ready send failure");
+      pipe!.open();
+      local!.open();
+
+      await vi.waitFor(() => {
+        expect(pipe!.readyState).toBe(WebSocket.CLOSED);
+        expect(local!.readyState).toBe(WebSocket.CLOSED);
+      });
+      expect(control.sent.map((raw) => JSON.parse(raw) as { t?: string }))
+        .not.toContainEqual(expect.objectContaining({ t: "ready" }));
+      expect(logger.debug).not.toHaveBeenCalledWith("sync_tunnel.ready", expect.anything());
+      expect(pipe!.closes).toContainEqual({
+        code: RELAY_CLOSE_BRIDGE_REJECTED,
+        reason: "relay readiness unavailable",
+      });
+      expect(local!.closes).toContainEqual({
+        code: RELAY_CLOSE_BRIDGE_REJECTED,
+        reason: "relay readiness unavailable",
+      });
+      expect(service.getStatus().activeTunnels).toBe(0);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("closes both tunnel sides with 4509 when Node's live send queue is full", async () => {
+    const sockets: StubWebSocket[] = [];
+    const expectedNonce = "c".repeat(32);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(),
+      loopbackProbe: async (port) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const control = sockets[0];
+      control.open();
+      await vi.waitFor(() => expect(service.getStatus().relayBridgeValidated).toBe(true));
+      control.receive(epochOpen(control.url, "abcdef05"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(3));
+      const pipe = sockets.find((socket) => socket.url.includes("/pipe/"));
+      const local = sockets.find((socket) => socket.url === "ws://127.0.0.1:8787");
+      expect(pipe).toBeTruthy();
+      expect(local).toBeTruthy();
+
+      pipe!.open();
+      local!.open();
+      expect(control.sent.map((raw) => JSON.parse(raw) as { t?: string }))
+        .toContainEqual(expect.objectContaining({ t: "ready" }));
+      local!.bufferedAmount = MAX_BUFFERED_TUNNEL_BYTES;
+      pipe!.receive("must-not-grow-the-node-queue");
+
+      await vi.waitFor(() => {
+        expect(pipe!.readyState).toBe(WebSocket.CLOSED);
+        expect(local!.readyState).toBe(WebSocket.CLOSED);
+      });
+      expect(pipe!.closes).toContainEqual({
+        code: RELAY_CLOSE_FORWARD_FAILED,
+        reason: "bridge send buffer overflow",
+      });
+      expect(local!.closes).toContainEqual({
+        code: RELAY_CLOSE_FORWARD_FAILED,
+        reason: "bridge send buffer overflow",
+      });
+      expect(local!.sent).toEqual([]);
       expect(service.getStatus().activeTunnels).toBe(0);
     } finally {
       await service.dispose();
@@ -684,15 +910,15 @@ describe("createSyncTunnelClientService", () => {
     try {
       await flapping.service.start();
       flapping.sockets[0].open();
-      flapping.sockets[0].remoteCloseWhileSendable();
+      flapping.sockets[0].remoteClose();
       await vi.waitFor(() => expect(flapping.sockets).toHaveLength(2));
       flapping.sockets[1].open();
-      flapping.sockets[1].remoteCloseWhileSendable();
+      flapping.sockets[1].remoteClose();
       await vi.waitFor(() => expect(flapping.attempts).toEqual([0, 1]));
 
       await stable.service.start();
       stable.sockets[0].open();
-      stable.sockets[0].remoteCloseWhileSendable();
+      stable.sockets[0].remoteClose();
       await vi.waitFor(() => expect(stable.sockets).toHaveLength(2));
       stable.sockets[1].open();
       await vi.waitFor(() => {
@@ -701,7 +927,7 @@ describe("createSyncTunnelClientService", () => {
           expect.objectContaining({ transportMode: "epoch" }),
         );
       });
-      stable.sockets[1].remoteCloseWhileSendable();
+      stable.sockets[1].remoteClose();
       await vi.waitFor(() => expect(stable.attempts).toEqual([0, 0]));
 
       expect(flapping.sockets.slice(0, 2).every((socket) => socket.url.includes("epoch="))).toBe(true);
@@ -1340,7 +1566,7 @@ describe("createSyncTunnelClientService", () => {
       await expect(service.validateCurrentBridge()).resolves.toBe(true);
       expect(loopbackProbe).toHaveBeenCalledTimes(4);
 
-      sockets[0].remoteCloseWhileSendable();
+      sockets[0].remoteClose();
       await vi.waitFor(() => expect(sockets).toHaveLength(2));
       sockets[1].open();
       await vi.waitFor(() => {
@@ -1628,7 +1854,7 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
-  it("falls back once to legacy control and pipe formats for an old Worker", async () => {
+  it("bridges a bare legacy open after one ready-v2 negotiation fallback", async () => {
     const local = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {
       local.once("listening", resolve);
@@ -1659,6 +1885,7 @@ describe("createSyncTunnelClientService", () => {
     const relayPort = typeof relayAddress === "object" && relayAddress ? relayAddress.port : 0;
     const upgradeUrls: string[] = [];
     const controlMessages: Array<{ t?: string }> = [];
+    const issuedControlOpens: Array<Record<string, unknown>> = [];
     let pipeSocket: WebSocket | null = null;
     server.on("upgrade", (request, socket, head) => {
       upgradeUrls.push(request.url ?? "");
@@ -1683,7 +1910,9 @@ describe("createSyncTunnelClientService", () => {
       socket.on("message", (raw) => {
         controlMessages.push(JSON.parse(raw.toString()) as { t?: string });
       });
-      socket.send(JSON.stringify({ t: "open", id: "abcdef01" }));
+      const bareLegacyOpen = { t: "open", id: "abcdef01" };
+      issuedControlOpens.push(bareLegacyOpen);
+      socket.send(JSON.stringify(bareLegacyOpen));
     });
 
     const expectedNonce = "c".repeat(32);
@@ -1717,6 +1946,7 @@ describe("createSyncTunnelClientService", () => {
       expect(new URL(upgradeUrls[0], "http://relay.invalid").searchParams.has("epoch")).toBe(true);
       expect(new URL(upgradeUrls[1], "http://relay.invalid").searchParams.has("epoch")).toBe(false);
       expect(new URL(upgradeUrls[2], "http://relay.invalid").searchParams.has("epoch")).toBe(false);
+      expect(issuedControlOpens).toEqual([{ t: "open", id: "abcdef01" }]);
       expect(controlMessages.some((message) => message.t === "ready")).toBe(false);
     } finally {
       await service.dispose();
