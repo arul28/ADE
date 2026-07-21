@@ -312,6 +312,20 @@ export function createRelayAuthorizationLifecycle(options: {
     options.sendResult(result, requestId);
   };
 
+  const respondAndClose = (
+    expectedGeneration: number,
+    result: SyncRelayReauthorizeResultPayload,
+    requestId: string | null,
+    reason: string,
+  ): void => {
+    if (!isCurrent(expectedGeneration)) return;
+    try {
+      respond(expectedGeneration, result, requestId);
+    } finally {
+      if (isCurrent(expectedGeneration)) closeExpired(reason);
+    }
+  };
+
   const handleOnce = async (
     rawPayload: unknown,
     requestId: string | null,
@@ -379,9 +393,7 @@ export function createRelayAuthorizationLifecycle(options: {
     if (!isCurrent(expectedGeneration)) return;
     if (!before || before.userId !== current.ownerUserId) {
       const result = failure("relay_account_changed", "The ADE account session changed.", false);
-      respond(expectedGeneration, result, requestId);
-      if (!isCurrent(expectedGeneration)) return;
-      closeExpired("ADE account session changed");
+      respondAndClose(expectedGeneration, result, requestId, "ADE account session changed");
       return;
     }
 
@@ -396,13 +408,11 @@ export function createRelayAuthorizationLifecycle(options: {
         reason: verifierCode || "verification_failed",
       });
       if (verifierCode === "account_mismatch") {
-        respond(expectedGeneration, failure(
+        respondAndClose(expectedGeneration, failure(
           "relay_account_changed",
           "The Relay account token belongs to a different ADE account.",
           false,
-        ), requestId);
-        if (!isCurrent(expectedGeneration)) return;
-        closeExpired("ADE account session changed");
+        ), requestId, "ADE account session changed");
         return;
       }
       if (verifierCode === "token_expired") {
@@ -441,9 +451,7 @@ export function createRelayAuthorizationLifecycle(options: {
       || after.generation !== before.generation
     ) {
       const result = failure("relay_account_changed", "The ADE account session changed.", false);
-      respond(expectedGeneration, result, requestId);
-      if (!isCurrent(expectedGeneration)) return;
-      closeExpired("ADE account session changed");
+      respondAndClose(expectedGeneration, result, requestId, "ADE account session changed");
       return;
     }
     if (!Number.isFinite(attestation.expiresAtMs) || attestation.expiresAtMs <= current.expiresAtMs) {

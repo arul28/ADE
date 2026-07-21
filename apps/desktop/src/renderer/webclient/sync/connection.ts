@@ -748,7 +748,6 @@ export class SyncConnection {
     }
     this.routeEnvelope(envelope);
     if (this.isConnected()) {
-      if (envelope.type !== "hello_ok") this.markConnectionHealthy(this.connectionGeneration);
       this.scheduleHeartbeatFallback();
     }
   }
@@ -925,8 +924,10 @@ export class SyncConnection {
   private scheduleRelayAuthorizationRetry(generation: number, reuseAttempt: boolean): void {
     if (generation !== this.connectionGeneration || this.relayRefreshRetryTimer) return;
     const lease = this.latestHello?.relayAuthorization ?? null;
-    const delayMs = RELAY_REAUTH_RETRY_DELAYS_MS[this.relayRefreshRetryCount];
-    if (!lease || delayMs == null || Date.now() + delayMs > lease.expiresAt + lease.graceMs) return;
+    const delayMs = RELAY_REAUTH_RETRY_DELAYS_MS[
+      Math.min(this.relayRefreshRetryCount, RELAY_REAUTH_RETRY_DELAYS_MS.length - 1)
+    ];
+    if (!lease || Date.now() + delayMs > lease.expiresAt + lease.graceMs) return;
     this.relayRefreshRetryCount += 1;
     const attempt = reuseAttempt ? this.relayRefreshAttempt : null;
     if (attempt?.responseTimer) {

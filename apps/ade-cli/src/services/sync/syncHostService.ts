@@ -5076,9 +5076,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const ownershipBarrier = peer.pendingTerminalOwnershipChanges > 0
         ? peer.messageQueue.catch(() => {})
         : Promise.resolve();
-      const work = Promise.all([priorInput, ownershipBarrier]).then(() => {
+      const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
         if (disposed || !peers.has(peer) || !peer.authenticated) return;
-        handleTerminalInputEnvelope(peer, envelope);
+        await handleTerminalInputSerialized(peer, envelope);
       });
       peer.terminalInputQueue = work.catch((error) => {
         args.logger.warn("sync_host.terminal_input_failed", {
@@ -5093,6 +5093,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const heartbeatAwaitedAt = markPeerMessageSeen(peer);
     handleHeartbeatEnvelope(peer, envelope, heartbeatAwaitedAt);
     return true;
+  }
+
+  async function handleTerminalInputSerialized(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+    const payload = envelope.payload as Partial<SyncTerminalInputPayload> | null;
+    const deviceId = toOptionalString(peer.pairedDeviceId) ?? toOptionalString(peer.metadata?.deviceId);
+    const sessionId = toOptionalString(payload?.sessionId);
+    const inputId = normalizeTerminalInputId(payload?.inputId);
+    if (!deviceId || !sessionId || !inputId) {
+      handleTerminalInputEnvelope(peer, envelope);
+      return;
+    }
+    const key = `${deviceId}\0${sessionId}\0${inputId}`;
+    const prior = terminalInputOperationQueues.get(key) ?? Promise.resolve();
+    const operation = prior.catch(() => {}).then(() => {
+      if (disposed || !peers.has(peer) || !peer.authenticated) return;
+      handleTerminalInputEnvelope(peer, envelope);
+    });
+    terminalInputOperationQueues.set(key, operation);
+    try {
+      await operation;
+    } finally {
+      if (terminalInputOperationQueues.get(key) === operation) {
+        terminalInputOperationQueues.delete(key);
+      }
+    }
   }
 
   function handleTerminalInputEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): void {
@@ -5156,22 +5181,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       sendFailure("project_mismatch", "Terminal input does not belong to this hosted project.");
       return;
     }
-    if (!peer.subscribedSessionIds.has(sessionId)) {
-      args.logger.warn("sync.terminal_input_unsubscribed_session", { sessionId });
-      sendFailure("not_subscribed", "Subscribe to this terminal before sending input.");
-      return;
-    }
-    const session = args.sessionService.get(sessionId);
-    if (!session) {
-      args.logger.warn("sync.terminal_input_project_mismatch", { sessionId });
-      sendFailure("project_mismatch", "This terminal belongs to a different hosted project.");
-      return;
-    }
-    if (!args.ptyService.hasLivePty(sessionId)) {
-      args.logger.info("sync.terminal_input_no_active_pty", { sessionId });
-      sendFailure("session_not_live", "This terminal session is no longer live.");
-      return;
-    }
     const deviceId = toOptionalString(peer.pairedDeviceId) ?? toOptionalString(peer.metadata?.deviceId);
     const dataFingerprint = inputId
       ? createHash("sha256").update(data, "utf8").digest("hex")
@@ -5196,6 +5205,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         } satisfies SyncTerminalInputAckPayload);
         return;
       }
+    }
+    if (!peer.subscribedSessionIds.has(sessionId)) {
+      args.logger.warn("sync.terminal_input_unsubscribed_session", { sessionId });
+      sendFailure("not_subscribed", "Subscribe to this terminal before sending input.");
+      return;
+    }
+    const session = args.sessionService.get(sessionId);
+    if (!session) {
+      args.logger.warn("sync.terminal_input_project_mismatch", { sessionId });
+      sendFailure("project_mismatch", "This terminal belongs to a different hosted project.");
+      return;
+    }
+    if (!args.ptyService.hasLivePty(sessionId)) {
+      args.logger.info("sync.terminal_input_no_active_pty", { sessionId });
+      sendFailure("session_not_live", "This terminal session is no longer live.");
+      return;
+    }
+    if (inputId && deviceId && dataFingerprint) {
       if (!terminalInputDedupeLedger.hasCapacity()) {
         sendFailure("dedupe_capacity", "Too many terminal inputs are awaiting retry-window expiry.");
         return;
@@ -5244,6 +5271,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   async function handleMessage(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+    const lifecycleGeneration = peer.lifecycleGeneration;
+    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
     const heartbeatAwaitedAt = markPeerMessageSeen(peer);
 
     if (!peer.authenticated) {
@@ -5275,6 +5304,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         let relayPairingAuthorization: Awaited<ReturnType<typeof captureAccountAuthorization>> = null;
         if (peer.transportOrigin === "relay-bridge") {
           relayPairingAuthorization = await captureAccountAuthorization();
+          if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
           const ownerUserId = relayPairingAuthorization?.userId ?? null;
           const relayAccountToken = pairing.relayAccountToken?.trim() ?? "";
           const config = args.getAccountAttestationConfig?.();
@@ -5286,6 +5316,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 expectedUserId: ownerUserId!,
                 config: config!,
               });
+              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
             } catch (error) {
               accepted = false;
               args.logger.warn("sync_host.pairing_relay_account_rejected", {
@@ -5328,6 +5359,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         if (relayPairingAuthorization) {
           const commitAuthorization = await captureAccountAuthorization();
+          if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
           if (
             !commitAuthorization
             || commitAuthorization.userId !== relayPairingAuthorization.userId
@@ -5466,6 +5498,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           if (pairedAuth.deviceId !== hello.peer.deviceId) return true;
           if (peer.transportOrigin === "relay-bridge") {
             const authorization = await captureAccountAuthorization();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             const ownerUserId = authorization?.userId ?? null;
             const relayAccountToken = pairedAuth.relayAccountToken?.trim() ?? "";
             const config = args.getAccountAttestationConfig?.();
@@ -5485,6 +5518,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 expectedUserId: ownerUserId,
                 config,
               });
+              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
               relayAccountOwnerUserId = attestation.userId;
               relayAccountExpiresAtMs = attestation.expiresAtMs;
             } catch (error) {
@@ -5499,6 +5533,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               return true;
             }
             const commitAuthorization = await captureAccountAuthorization();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (
               !authorization
               || !commitAuthorization
@@ -5516,6 +5551,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           const pairingAccountOwner = toOptionalString(authenticatedPairingRecord.accountOwnerUserId);
           if (pairingAccountOwner) {
             const currentOwner = await refreshAccountLease();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (currentOwner !== pairingAccountOwner) return true;
           }
           const dpopFailure = evaluatePairedHelloDpop({
@@ -5561,6 +5597,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
           try {
             const authorization = await captureAccountAuthorization();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (!authorization) {
               args.logger.warn("sync_host.account_owner_missing", {
                 deviceId: accountAuth.deviceId,
@@ -5574,6 +5611,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               expectedUserId: authorization.userId,
               config,
             });
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             relayAccountOwnerUserId = attestation.userId;
             relayAccountExpiresAtMs = attestation.expiresAtMs;
             if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
@@ -5602,6 +5640,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               return true;
             }
             const commitAuthorization = await captureAccountAuthorization();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (
               !commitAuthorization
               || commitAuthorization.userId !== authorization.userId
@@ -5644,6 +5683,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         return true;
       })();
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       if (authFailed) {
         // Attribute the rejection: a phone dialing a stale/reused address can
         // reach a stranger machine whose auth check fails. Only when the
@@ -5666,6 +5706,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
 
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       if (!arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer)) {
         send(peer.ws, "hello_error", {
           code: "connection_attempt_superseded",
@@ -5712,6 +5753,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         lastPort: peer.remotePort,
       });
       const projectCatalog = await buildProjectCatalogPayload();
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       const projectActionsEnabled = Boolean(
         args.projectCatalogProvider?.browseDirectories
           && args.projectCatalogProvider.getDefaultParentDir
@@ -5748,6 +5790,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       broadcastBrainStatus();
       return;
     }

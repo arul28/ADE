@@ -686,6 +686,9 @@ export class TunnelDurableObject implements DurableObject {
       if (client) {
         const clientAttachment = client.deserializeAttachment() as SocketAttachment | null;
         this.closePair(client, clientAttachment, CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
+      } else if (pipe) {
+        const pipeAttachment = pipe.deserializeAttachment() as SocketAttachment | null;
+        this.closePair(pipe, pipeAttachment, CLOSE_BRIDGE_REJECTED, "relay client unavailable");
       }
       return;
     }
