@@ -192,12 +192,9 @@ node test/smoke.mjs    # terminal 2: drives claim → host → connect → echo
 `npm test` runs both the cheap FakeState/FakeSocket suite and Cloudflare's
 supported workerd Vitest pool. The workerd suite uses the real Wrangler config,
 Durable Object namespace, `WebSocketPair`, attachment serialization, and
-old/new relay compatibility. The full `evictDurableObject()` hibernation proof
-is checked in but skipped: with the pinned pool 0.18.6/runtime it does not
-return for this SQLite-backed namespace even when isolated to a claimed DO with
-no WebSockets. The active workerd cases still prove the real attachment and
-routing behavior on both sides of that upstream helper limitation. The manual
-smoke remains useful for a full local Wrangler-dev round trip.
+deterministic `evictDurableObject()` hibernation, ordered routing, and old/new
+relay compatibility. The manual smoke remains useful for a full local
+Wrangler-dev round trip.
 
 ```bash
 npm test              # fake unit tests, then real workerd tests

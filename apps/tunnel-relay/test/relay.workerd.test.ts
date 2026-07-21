@@ -53,6 +53,7 @@ async function claim(stub: DurableObjectStub, key: string): Promise<void> {
     body: JSON.stringify({ secret: SECRET }),
   });
   expect(response.status).toBe(201);
+  expect(await response.json()).toEqual({ ok: true, claimed: true });
 }
 
 async function upgrade(stub: DurableObjectStub, url: string): Promise<WebSocket> {
@@ -203,10 +204,7 @@ describe("TunnelDurableObject in workerd", () => {
     ]));
   });
 
-  // Cloudflare pool 0.18.6's supported helper currently does not return for
-  // this SQLite-backed namespace, even with no WebSockets. Keep the complete
-  // proof runnable in place without hanging local or CI test jobs.
-  it.skip("restores epoch-v2 attachments and routing across deterministic hibernation eviction", async () => {
+  it("restores epoch-v2 attachments and routing across deterministic hibernation eviction", async () => {
     const { stub, control, client, pipe, id } = await establishEpochV2("f");
 
     await evictDurableObject(stub, { webSockets: "hibernate" });
