@@ -585,14 +585,18 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     )
   }
 
-  func testRelayReadyV2NegotiatesLegacyAndSlowNewWorkersWithoutPrematureHello() {
+  func testRelayReadyV2NegotiatesSlowWorkersAndRequiresFreshSocketForLegacyFallback() {
     XCTAssertEqual(
       syncRelayReadyV2URL("wss://relay.ade.app/connect/mac?region=iad"),
       "wss://relay.ade.app/connect/mac?region=iad&ready=2"
     )
+    XCTAssertEqual(
+      syncRelayLegacyURL("wss://relay.ade.app/connect/mac?region=iad&ready=2"),
+      "wss://relay.ade.app/connect/mac?region=iad"
+    )
 
     let legacy = SyncRelayReadyNegotiation()
-    XCTAssertEqual(legacy.negotiationWindowExpired(), .sendHello)
+    XCTAssertEqual(legacy.negotiationWindowExpired(), .retryLegacySocket)
 
     var slowNewWorker = SyncRelayReadyNegotiation()
     XCTAssertEqual(slowNewWorker.receive(.accepted), .interceptedWaiting)
@@ -601,6 +605,277 @@ final class SyncRecoveryPolicyTests: XCTestCase {
 
     XCTAssertEqual(slowNewWorker.receive(.ready), .sendHello)
     XCTAssertTrue(slowNewWorker.ready)
+  }
+
+  func testHostObservedRelayOverridesAdvertisedTailnetRoute() {
+    XCTAssertEqual(
+      syncObservedConnectionRouteKind(
+        connectedHost: "studio.example.ts.net",
+        hostTransport: "relay"
+      ),
+      .relay
+    )
+    XCTAssertEqual(
+      syncObservedConnectionRouteKind(
+        connectedHost: "studio.example.ts.net",
+        hostTransport: "direct"
+      ),
+      .tailnet
+    )
+  }
+
+  @MainActor
+  func testTerminalSnapshotTimeoutIsScopedToRequest() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.beginOutboundEnvelopeCaptureForTesting()
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    let snapshotTask = Task {
+      try await service.refreshTerminalSnapshot(sessionId: "terminal-timeout")
+    }
+    var requestId: String?
+    for _ in 0..<20 where requestId == nil {
+      await Task.yield()
+      requestId = service.capturedOutboundRequestIdsForTesting(type: "terminal_subscribe").first
+    }
+    let capturedRequestId = try XCTUnwrap(requestId)
+    XCTAssertEqual(
+      service.pendingRequestDisconnectsOnTimeoutForTesting(requestId: capturedRequestId),
+      false
+    )
+    service.firePendingRequestTimeoutForTesting(requestId: capturedRequestId)
+    do {
+      try await snapshotTask.value
+      XCTFail("Expected the terminal snapshot request to time out.")
+    } catch {
+      XCTAssertTrue(isSyncRequestTimeoutError(error))
+    }
+  }
+
+  @MainActor
+  func testTerminalSnapshotTimeoutRetriesAndRestoresLiveStreamWithoutSocketTeardown() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.beginOutboundEnvelopeCaptureForTesting()
+    service.configureConnectedTransportForTesting()
+    service.setTerminalSnapshotRecoveryDelayForTesting(0)
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    let generation = service.connectionGenerationForTesting()
+    let snapshotTask = Task {
+      try await service.refreshTerminalSnapshot(sessionId: "terminal-retry")
+    }
+    var requestIds: [String] = []
+    for _ in 0..<50 where requestIds.isEmpty {
+      await Task.yield()
+      requestIds = service.capturedOutboundRequestIdsForTesting(type: "terminal_subscribe")
+    }
+    let initialRequestId = try XCTUnwrap(requestIds.first)
+    service.firePendingRequestTimeoutForTesting(requestId: initialRequestId)
+    do {
+      try await snapshotTask.value
+      XCTFail("Expected the explicit snapshot request to preserve its timeout result.")
+    } catch {
+      XCTAssertTrue(isSyncRequestTimeoutError(error))
+    }
+
+    for _ in 0..<100 where requestIds.count < 2 {
+      await Task.yield()
+      requestIds = service.capturedOutboundRequestIdsForTesting(type: "terminal_subscribe")
+    }
+    let retryRequestId = try XCTUnwrap(requestIds.dropFirst().first)
+    XCTAssertEqual(service.connectionGenerationForTesting(), generation)
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertTrue(service.hasTerminalSnapshotRecoveryForTesting(sessionId: "terminal-retry"))
+
+    service.completeTerminalSnapshotRequestForTesting(
+      requestId: retryRequestId,
+      sessionId: "terminal-retry",
+      transcript: "Mac% ",
+      startOffset: 0,
+      endOffset: 5
+    )
+    for _ in 0..<100 where !service.subscribedTerminalSessionIds.contains("terminal-retry") {
+      await Task.yield()
+    }
+    XCTAssertTrue(service.subscribedTerminalSessionIds.contains("terminal-retry"))
+    XCTAssertEqual(service.terminalBuffers["terminal-retry"], "Mac% ")
+    XCTAssertFalse(service.hasTerminalSnapshotRecoveryForTesting(sessionId: "terminal-retry"))
+
+    service.handleTerminalDataChunkForTesting(
+      sessionId: "terminal-retry",
+      chunk: "pwd\r\n",
+      endOffset: 10
+    )
+    XCTAssertEqual(service.terminalBuffers["terminal-retry"], "Mac% pwd\r\n")
+
+    // The original request already left the pending map. A late response from
+    // it cannot replace the snapshot accepted by the retry.
+    service.completeTerminalSnapshotRequestForTesting(
+      requestId: initialRequestId,
+      sessionId: "terminal-retry",
+      transcript: "stale",
+      startOffset: 0,
+      endOffset: 5
+    )
+    XCTAssertEqual(service.terminalBuffers["terminal-retry"], "Mac% pwd\r\n")
+    XCTAssertEqual(service.connectionGenerationForTesting(), generation)
+    XCTAssertEqual(service.connectionState, .connected)
+  }
+
+  @MainActor
+  func testTerminalSnapshotRetryIsCancelledWhenSessionUnsubscribes() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.beginOutboundEnvelopeCaptureForTesting()
+    service.configureConnectedTransportForTesting()
+    service.setTerminalSnapshotRecoveryDelayForTesting(60_000_000_000)
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    let snapshotTask = Task {
+      try await service.refreshTerminalSnapshot(sessionId: "terminal-cancel")
+    }
+    var requestId: String?
+    for _ in 0..<50 where requestId == nil {
+      await Task.yield()
+      requestId = service.capturedOutboundRequestIdsForTesting(type: "terminal_subscribe").first
+    }
+    let capturedRequestId = try XCTUnwrap(requestId)
+    service.firePendingRequestTimeoutForTesting(requestId: capturedRequestId)
+    do {
+      try await snapshotTask.value
+      XCTFail("Expected the initial snapshot request to time out.")
+    } catch {
+      XCTAssertTrue(isSyncRequestTimeoutError(error))
+    }
+    XCTAssertTrue(service.hasTerminalSnapshotRecoveryForTesting(sessionId: "terminal-cancel"))
+
+    try await service.unsubscribeTerminal(sessionId: "terminal-cancel")
+    XCTAssertFalse(service.hasTerminalSnapshotRecoveryForTesting(sessionId: "terminal-cancel"))
+    XCTAssertFalse(service.desiredTerminalSessionIdsForTesting().contains("terminal-cancel"))
+    for _ in 0..<20 { await Task.yield() }
+    XCTAssertEqual(
+      service.capturedOutboundEnvelopeCountForTesting(type: "terminal_subscribe"),
+      1
+    )
+
+    service.completeTerminalSnapshotRequestForTesting(
+      requestId: capturedRequestId,
+      sessionId: "terminal-cancel",
+      transcript: "stale",
+      startOffset: 0,
+      endOffset: 5
+    )
+    XCTAssertNil(service.terminalBuffers["terminal-cancel"])
+    XCTAssertFalse(service.subscribedTerminalSessionIds.contains("terminal-cancel"))
+  }
+
+  @MainActor
+  func testProjectScopeResetRestoresDefaultOutboundChangesetRecoveryWindow() throws {
+    let defaultsKeys = [
+      "ade.sync.activeProjectId",
+      "ade.sync.activeProjectRootPath",
+      "ade.sync.outboundSyncCursors",
+      "ade.sync.pendingOutboundChangesets",
+    ]
+    let defaultsSnapshot = snapshotDefaults(keys: defaultsKeys)
+    for key in defaultsKeys { UserDefaults.standard.removeObject(forKey: key) }
+    defer { restoreDefaults(defaultsSnapshot, keys: defaultsKeys) }
+
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    service.setActiveProjectForTesting(projectId: "project-one", rootPath: "/tmp/project-one")
+    service.scheduleOutboundChangesetRecoveryForTesting(now: 100)
+    XCTAssertEqual(service.outboundChangesetRecoveryWindowForTesting().level, 1)
+
+    service.setActiveProjectForTesting(projectId: "project-two", rootPath: "/tmp/project-two")
+    let resetWindow = service.outboundChangesetRecoveryWindowForTesting()
+    XCTAssertEqual(resetWindow.level, 0)
+    XCTAssertEqual(resetWindow.rowLimit, 64)
+    XCTAssertEqual(resetWindow.byteLimit, 64 * 1_024)
+    XCTAssertEqual(resetWindow.retryAt, 0)
+  }
+
+  func testLocalChangesetExportBoundsRowsAndKeepsFinalVersionTransactionWhole() throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    defer {
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+    let localSiteId = database.localSiteId()
+    let remoteSiteId = "ffffffffffffffffffffffffffffffff"
+    var statements = ["delete from crsql_changes"]
+    for version in 1...8 {
+      let localRowCount = version == 3 ? 10 : 2
+      for sequence in 0..<localRowCount {
+        statements.append("""
+          insert into crsql_changes (
+            [table], pk, cid, val, col_version, db_version, site_id, cl, seq
+          ) values (
+            'lanes', 'local-\(version)-\(sequence)', 'name', 'value', 1,
+            \(version), x'\(localSiteId)', 0, \(sequence)
+          )
+        """)
+      }
+      statements.append("""
+        insert into crsql_changes (
+          [table], pk, cid, val, col_version, db_version, site_id, cl, seq
+        ) values (
+          'lanes', 'remote-\(version)', 'name', 'remote', 1,
+          \(version), x'\(remoteSiteId)', 0, 100
+        )
+      """)
+    }
+    try database.executeSqlForTesting(statements.joined(separator: ";\n"))
+
+    let firstWindow = database.exportLocalChangesSince(version: 0, rowLimit: 5)
+    XCTAssertEqual(Set(firstWindow.map(\.dbVersion)), Set([1, 2, 3]))
+    XCTAssertEqual(firstWindow.count, 14)
+    XCTAssertTrue(firstWindow.allSatisfy { $0.siteId == localSiteId })
+    XCTAssertEqual(firstWindow.filter { $0.dbVersion == 3 }.count, 10)
+
+    let secondWindow = database.exportLocalChangesSince(version: 3, rowLimit: 3)
+    XCTAssertEqual(Set(secondWindow.map(\.dbVersion)), Set([4, 5]))
+    XCTAssertEqual(secondWindow.count, 4)
+    XCTAssertTrue(secondWindow.allSatisfy { $0.siteId == localSiteId })
   }
 
   func testRelayReadyV2ControlsAreInterceptedBeforeEnvelopeDecode() {
@@ -616,7 +891,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
   }
 
   @MainActor
-  func testLateAcceptedAndReadyAfterLegacyCutoffRemainTransportControls() throws {
+  func testLateAcceptedAfterLegacyCutoffCannotResumeAbandonedV2Socket() throws {
     let baseURL = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
@@ -630,11 +905,30 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       try? FileManager.default.removeItem(at: baseURL)
     }
 
-    XCTAssertEqual(service.expireRelayTransportNegotiationWindowForTesting(), .sendHello)
-    XCTAssertTrue(try service.handleRelayTransportControlForTesting(["t": "accepted", "v": 2]))
-    XCTAssertTrue(try service.handleRelayTransportControlForTesting(["t": "ready", "v": 2]))
-    XCTAssertEqual(service.relayTransportNegotiationForTesting()?.acceptedV2, true)
-    XCTAssertEqual(service.relayTransportNegotiationForTesting()?.ready, true)
+    XCTAssertEqual(service.expireRelayTransportNegotiationWindowForTesting(), .retryLegacySocket)
+    XCTAssertFalse(try service.handleRelayTransportControlForTesting(["t": "accepted", "v": 2]))
+    XCTAssertNil(service.relayTransportNegotiationForTesting())
+  }
+
+  @MainActor
+  func testRelayCandidateNegotiationTimeoutRequiresLegacyRetryInsteadOfHello() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    do {
+      try await service.awaitRelayCandidateReadyForTesting(frames: [])
+      XCTFail("A ready-v2 timeout must require a fresh legacy socket.")
+    } catch let error as SyncRelayReadyNegotiationError {
+      XCTAssertEqual(error, .retryLegacySocket)
+    }
   }
 
   @MainActor

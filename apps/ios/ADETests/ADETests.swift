@@ -6441,6 +6441,74 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testSyncServiceRewindowsUnacknowledgedPhoneChangesWithoutDroppingSocketOrCursor() throws {
+    let outboundCursorKey = "ade.sync.outboundSyncCursors"
+    let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    for key in [outboundCursorKey, pendingOutboundChangesetsKey, activeProjectIdKey, activeProjectRootPathKey] {
+      UserDefaults.standard.removeObject(forKey: key)
+    }
+    defer {
+      for key in [outboundCursorKey, pendingOutboundChangesetsKey, activeProjectIdKey, activeProjectRootPathKey] {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-rewindow', '/tmp/project-rewindow', 'Project Rewindow', 'main',
+        '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'
+      )
+    """)
+
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-rewindow", rootPath: "/tmp/project-rewindow")
+    service.configureConnectedTransportForTesting()
+    let initialCursor = service.outboundLocalDbVersionForTesting()
+    let generation = service.connectionGenerationForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+    }
+
+    try database.executeSqlForTesting("""
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref,
+        worktree_path, parent_lane_id, status, created_at, archived_at
+      ) values (
+        'lane-rewindow', 'project-rewindow', 'Rewindow proof', null, 'worktree',
+        'origin/main', 'feature/rewindow', '/tmp/rewindow', null, 'active',
+        '2026-07-21T00:00:00.000Z', null
+      )
+    """)
+
+    let original = try XCTUnwrap(service.stageNextOutboundChangesetForTesting())
+    service.scheduleOutboundChangesetRecoveryForTesting(now: 100)
+
+    let window = service.outboundChangesetRecoveryWindowForTesting()
+    XCTAssertEqual(window.level, 1)
+    XCTAssertEqual(window.rowLimit, 32)
+    XCTAssertEqual(window.byteLimit, 32 * 1_024)
+    XCTAssertEqual(window.retryAt, 101)
+    XCTAssertFalse(service.hasPendingOutboundChangesetForTesting())
+    XCTAssertEqual(service.outboundLocalDbVersionForTesting(), initialCursor)
+    XCTAssertEqual(service.connectionGenerationForTesting(), generation)
+    XCTAssertEqual(service.connectionState, .connected)
+
+    let rebuilt = try XCTUnwrap(service.stageNextOutboundChangesetForTesting())
+    XCTAssertNotEqual(rebuilt.batchId, original.batchId)
+    XCTAssertEqual(rebuilt.fromDbVersion, original.fromDbVersion)
+    XCTAssertLessThanOrEqual(rebuilt.toDbVersion, original.toDbVersion)
+    XCTAssertEqual(service.outboundLocalDbVersionForTesting(), initialCursor)
+  }
+
+  @MainActor
   func testSyncServicePreservesPendingOutboundChangesetAcrossProjectSwitch() throws {
     let outboundCursorKey = "ade.sync.outboundSyncCursors"
     let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"

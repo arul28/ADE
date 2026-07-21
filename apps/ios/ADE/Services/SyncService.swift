@@ -2290,6 +2290,24 @@ final class SyncService: ObservableObject {
   private var terminalInputQueues: [String: SyncTerminalInputQueue] = [:]
   private var terminalInputTimeoutTasks: [String: Task<Void, Never>] = [:]
   private var terminalGapRecoveryInFlight: Set<String> = []
+  private struct TerminalSnapshotRecoveryScope: Equatable {
+    let connectionGeneration: UInt64
+    let hostIdentity: String?
+    let projectId: String?
+    let projectRootPath: String?
+  }
+  private struct TerminalSnapshotRecoveryJob {
+    let id: UUID
+    let task: Task<Void, Never>
+  }
+  private let terminalSnapshotRecoveryMaximumAttempts = 5
+  private let terminalSnapshotRecoveryInitialDelayNanoseconds: UInt64 = 500_000_000
+  private let terminalSnapshotRecoveryMaximumDelayNanoseconds: UInt64 = 8_000_000_000
+  private var terminalSnapshotRecoveryJobs: [String: TerminalSnapshotRecoveryJob] = [:]
+  private var terminalSnapshotRequestTokens: [String: UUID] = [:]
+  #if DEBUG
+  private var terminalSnapshotRecoveryDelayOverrideForTesting: UInt64?
+  #endif
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
   /// Highest host-assigned `seq` applied per chat session. Sent back as
@@ -2342,6 +2360,9 @@ final class SyncService: ObservableObject {
   private let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
   private let outboundSyncStateMaxEntries = 128
   private let maxChangesetAckRetries = 6
+  private let defaultOutboundChangesetRowLimit = 64
+  private let defaultOutboundChangesetByteLimit = 64 * 1_024
+  private let minimumOutboundChangesetByteLimit = 4 * 1_024
   private let keychain = KeychainService()
   private let database: DatabaseService
   private let socketSessionDelegate: SyncSocketSessionDelegate
@@ -2399,6 +2420,10 @@ final class SyncService: ObservableObject {
 
   private var pending: [String: PendingRequest] = [:]
   private var pendingOutboundChangeset: PendingOutboundChangeset?
+  private var outboundChangesetRecoveryLevel = 0
+  private var outboundChangesetRowLimit = 64
+  private var outboundChangesetByteLimit = 64 * 1_024
+  private var nextOutboundChangesetAttemptAt: TimeInterval = 0
   private var pendingSocketOpen: [Int: CheckedContinuation<Void, Error>] = [:]
   private var pendingSocketOpenTimeoutTasks: [Int: Task<Void, Never>] = [:]
   private var relayTransportNegotiations: [Int: SyncRelayReadyNegotiation] = [:]
@@ -3418,6 +3443,8 @@ final class SyncService: ObservableObject {
         }
     let scopeChanged = previousProjectId != nextProjectId || previousRootPath != nextRootPath
     if scopeChanged {
+      cancelAllTerminalSnapshotRecovery()
+      terminalSnapshotRequestTokens.removeAll()
       prepareOutboundStateForProjectScopeChange()
       resetLanePayloadSignatures()
     }
@@ -6538,22 +6565,154 @@ final class SyncService: ObservableObject {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
     desiredTerminalSessionIds.insert(trimmedSessionId)
+    cancelTerminalSnapshotRecovery(sessionId: trimmedSessionId)
+    let scope = currentTerminalSnapshotRecoveryScope()
+    do {
+      try await performTerminalSnapshotRequest(
+        sessionId: trimmedSessionId,
+        maxBytes: maxBytes,
+        sinceOffset: sinceOffset,
+        scope: scope
+      )
+    } catch {
+      if isSyncRequestTimeoutError(error) {
+        scheduleTerminalSnapshotRecovery(
+          sessionId: trimmedSessionId,
+          maxBytes: maxBytes,
+          sinceOffset: sinceOffset,
+          scope: scope
+        )
+      }
+      throw error
+    }
+  }
+
+  private func performTerminalSnapshotRequest(
+    sessionId: String,
+    maxBytes: Int,
+    sinceOffset: Int?,
+    scope: TerminalSnapshotRecoveryScope
+  ) async throws {
     let requestId = makeRequestId()
+    let requestToken = UUID()
+    terminalSnapshotRequestTokens[sessionId] = requestToken
     var payload: [String: Any] = [
-      "sessionId": trimmedSessionId,
+      "sessionId": sessionId,
       "maxBytes": max(1_024, min(syncTerminalStreamMaxBytes, maxBytes)),
     ]
     if let sinceOffset, sinceOffset >= 0 {
       payload["sinceOffset"] = sinceOffset
     }
-    let raw = try await awaitResponse(requestId: requestId) {
-      self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: payload)
+    // A large transcript snapshot can legitimately outlive the generic request
+    // budget on a constrained Relay path. Fail this subscription without
+    // probing or replacing the shared sync socket; the caller can retry while
+    // chats, CRDT changes, and heartbeats keep flowing.
+    let raw: Any
+    do {
+      raw = try await awaitResponse(requestId: requestId, disconnectOnTimeout: false) {
+        self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: payload)
+      }
+    } catch {
+      if terminalSnapshotRequestTokens[sessionId] == requestToken {
+        terminalSnapshotRequestTokens.removeValue(forKey: sessionId)
+      }
+      throw error
     }
     let snapshot = try decode(raw, as: TerminalSnapshot.self)
-    guard desiredTerminalSessionIds.contains(trimmedSessionId) else { return }
-    applyTerminalSnapshot(snapshot, sessionId: trimmedSessionId)
-    subscribedTerminalSessionIds.insert(trimmedSessionId)
-    flushTerminalInputQueue(sessionId: trimmedSessionId)
+    guard terminalSnapshotRequestTokens[sessionId] == requestToken,
+          desiredTerminalSessionIds.contains(sessionId),
+          isCurrentTerminalSnapshotRecoveryScope(scope)
+    else { return }
+    applyTerminalSnapshot(snapshot, sessionId: sessionId)
+    subscribedTerminalSessionIds.insert(sessionId)
+    flushTerminalInputQueue(sessionId: sessionId)
+  }
+
+  private func currentTerminalSnapshotRecoveryScope() -> TerminalSnapshotRecoveryScope {
+    TerminalSnapshotRecoveryScope(
+      connectionGeneration: connectionGeneration,
+      hostIdentity: syncStableHostIdentity(activeHostProfile)
+        ?? syncNormalizedCommandScopeValue(activeProjectHostIdentity)?.lowercased(),
+      projectId: normalizedProjectId(activeProjectId),
+      projectRootPath: normalizedProjectRoot(activeProjectRootPath)
+    )
+  }
+
+  private func isCurrentTerminalSnapshotRecoveryScope(_ scope: TerminalSnapshotRecoveryScope) -> Bool {
+    !Task.isCancelled
+      && canSendLiveRequests()
+      && currentTerminalSnapshotRecoveryScope() == scope
+  }
+
+  private func terminalSnapshotRecoveryDelayNanoseconds(attempt: Int) -> UInt64 {
+    #if DEBUG
+    if let terminalSnapshotRecoveryDelayOverrideForTesting {
+      return terminalSnapshotRecoveryDelayOverrideForTesting
+    }
+    #endif
+    let exponent = min(max(0, attempt), 4)
+    return min(
+      terminalSnapshotRecoveryMaximumDelayNanoseconds,
+      terminalSnapshotRecoveryInitialDelayNanoseconds << exponent
+    )
+  }
+
+  private func scheduleTerminalSnapshotRecovery(
+    sessionId: String,
+    maxBytes: Int,
+    sinceOffset: Int?,
+    scope: TerminalSnapshotRecoveryScope
+  ) {
+    guard terminalSnapshotRecoveryJobs[sessionId] == nil,
+          desiredTerminalSessionIds.contains(sessionId),
+          isCurrentTerminalSnapshotRecoveryScope(scope)
+    else { return }
+
+    let jobId = UUID()
+    let task = Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer {
+        if self.terminalSnapshotRecoveryJobs[sessionId]?.id == jobId {
+          self.terminalSnapshotRecoveryJobs.removeValue(forKey: sessionId)
+        }
+      }
+      for attempt in 0..<self.terminalSnapshotRecoveryMaximumAttempts {
+        do {
+          try await Task.sleep(
+            nanoseconds: self.terminalSnapshotRecoveryDelayNanoseconds(attempt: attempt)
+          )
+        } catch {
+          return
+        }
+        guard self.terminalSnapshotRecoveryJobs[sessionId]?.id == jobId,
+              self.desiredTerminalSessionIds.contains(sessionId),
+              self.isCurrentTerminalSnapshotRecoveryScope(scope)
+        else { return }
+        do {
+          try await self.performTerminalSnapshotRequest(
+            sessionId: sessionId,
+            maxBytes: maxBytes,
+            sinceOffset: sinceOffset,
+            scope: scope
+          )
+          return
+        } catch {
+          guard isSyncRequestTimeoutError(error) else { return }
+        }
+      }
+    }
+    terminalSnapshotRecoveryJobs[sessionId] = TerminalSnapshotRecoveryJob(id: jobId, task: task)
+  }
+
+  private func cancelTerminalSnapshotRecovery(sessionId: String) {
+    terminalSnapshotRecoveryJobs.removeValue(forKey: sessionId)?.task.cancel()
+  }
+
+  private func cancelAllTerminalSnapshotRecovery() {
+    for job in terminalSnapshotRecoveryJobs.values {
+      job.task.cancel()
+    }
+    terminalSnapshotRecoveryJobs.removeAll()
   }
 
   /// Full-screen terminal subscribe: attaches at the 512K budget and resumes
@@ -6771,6 +6930,8 @@ final class SyncService: ObservableObject {
     guard desiredTerminalSessionIds.contains(trimmedSessionId) else { return }
     desiredTerminalSessionIds.remove(trimmedSessionId)
     subscribedTerminalSessionIds.remove(trimmedSessionId)
+    cancelTerminalSnapshotRecovery(sessionId: trimmedSessionId)
+    terminalSnapshotRequestTokens.removeValue(forKey: trimmedSessionId)
     terminalInputTimeoutTasks.removeValue(forKey: trimmedSessionId)?.cancel()
     terminalInputQueues.removeValue(forKey: trimmedSessionId)
     if canSendLiveRequests() {
@@ -9614,6 +9775,7 @@ final class SyncService: ObservableObject {
   }
 
   private func resetOutboundCursorStateForActiveProject(defaultVersion: Int? = nil) {
+    resetOutboundChangesetRecoveryWindow()
     let currentDbVersion = max(0, database.currentDbVersion())
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(
       defaultVersion: defaultVersion ?? currentDbVersion
@@ -9681,10 +9843,17 @@ final class SyncService: ObservableObject {
       pendingOutboundChangeset = nil
       return
     }
-    let localSiteId = database.localSiteId()
-    let changes = database.exportChangesSince(version: outboundLocalDbVersion).filter { $0.siteId == localSiteId }
-    guard !changes.isEmpty else {
+    let allChanges = database.exportLocalChangesSince(
+      version: outboundLocalDbVersion,
+      rowLimit: outboundChangesetRowLimit
+    )
+    guard !allChanges.isEmpty else {
       advanceOutboundCursorForActiveProject(to: currentDbVersion)
+      pendingOutboundChangeset = nil
+      return
+    }
+    let changes = boundedOutboundChanges(allChanges)
+    guard let batchEndVersion = changes.last?.dbVersion else {
       pendingOutboundChangeset = nil
       return
     }
@@ -9694,7 +9863,7 @@ final class SyncService: ObservableObject {
         batchId: makeRequestId(),
         reason: "relay",
         fromDbVersion: outboundLocalDbVersion,
-        toDbVersion: currentDbVersion,
+        toDbVersion: batchEndVersion,
         changes: changes
       ),
       sentAt: 0,
@@ -9805,6 +9974,7 @@ final class SyncService: ObservableObject {
 
   private func publishConnectTimingMetrics(
     connectedHost: String,
+    hostTransport: String?,
     generation: UInt64
   ) {
     guard isCurrentConnectAttempt(generation) else { return }
@@ -9814,7 +9984,10 @@ final class SyncService: ObservableObject {
     } else {
       lastConnectDurationMs = nil
     }
-    lastConnectedRouteKind = syncConnectionRouteKind(connectedHost)
+    lastConnectedRouteKind = syncObservedConnectionRouteKind(
+      connectedHost: connectedHost,
+      hostTransport: hostTransport
+    )
     self.connectAttemptStartedAt = nil
   }
 
@@ -10483,14 +10656,61 @@ final class SyncService: ObservableObject {
     let socketHost = parsed?.host ?? endpoint.address.trimmingCharacters(in: .whitespacesAndNewlines)
     let socketPort = parsed?.port ?? endpoint.port
     let urlHost = parsed?.scheme == nil ? socketHost : endpoint.address
-    guard var urlString = syncWebSocketURLString(host: urlHost, port: socketPort) else {
+    guard let rawURLString = syncWebSocketURLString(host: urlHost, port: socketPort) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
-    if isRelay { urlString = syncRelayReadyV2URL(urlString) }
-    guard let url = URL(string: urlString) else {
+    let legacyURLString = isRelay ? syncRelayLegacyURL(rawURLString) : rawURLString
+    guard let legacyURL = URL(string: legacyURLString) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
 
+    if isRelay {
+      guard let readyV2URL = URL(string: syncRelayReadyV2URL(legacyURLString)) else {
+        throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
+      }
+      do {
+        return try await authenticateConnectionCandidateSocket(
+          candidate,
+          url: readyV2URL,
+          isRelay: true,
+          awaitsRelayReadyV2: true,
+          profile: profile,
+          pairedSecret: pairedSecret,
+          connectAttemptGeneration: connectAttemptGeneration,
+          connectionAttempt: connectionAttempt
+        )
+      } catch SyncRelayReadyNegotiationError.retryLegacySocket {
+        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+          throw CancellationError()
+        }
+        syncConnectLog.info(
+          "ADE_SYNC_TRACE relay candidate did not negotiate ready-v2; retrying endpoint on a fresh legacy socket"
+        )
+      }
+    }
+
+    return try await authenticateConnectionCandidateSocket(
+      candidate,
+      url: legacyURL,
+      isRelay: isRelay,
+      awaitsRelayReadyV2: false,
+      profile: profile,
+      pairedSecret: pairedSecret,
+      connectAttemptGeneration: connectAttemptGeneration,
+      connectionAttempt: connectionAttempt
+    )
+  }
+
+  private func authenticateConnectionCandidateSocket(
+    _ candidate: SyncConnectionRaceScheduledCandidate,
+    url: URL,
+    isRelay: Bool,
+    awaitsRelayReadyV2: Bool,
+    profile: HostConnectionProfile,
+    pairedSecret: String,
+    connectAttemptGeneration: UInt64,
+    connectionAttempt: SyncConnectionAttemptMetadata
+  ) async throws -> AuthenticatedConnectionCandidate {
     let candidateTask = socketSession.webSocketTask(with: url)
     candidateTask.maximumMessageSize = 32 * 1_024 * 1_024
     return try await withTaskCancellationHandler {
@@ -10520,7 +10740,7 @@ final class SyncService: ObservableObject {
         }
         defer { reader.cancel() }
 
-        if isRelay {
+        if awaitsRelayReadyV2 {
           try await awaitRelayCandidateReady(mailbox: mailbox)
         }
         guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
@@ -10614,7 +10834,11 @@ final class SyncService: ObservableObject {
       )
       switch event {
       case .timeout:
-        return
+        // Never downgrade a socket that advertised `ready=2` in place. A
+        // delayed `accepted` would make the Worker interpret the following ADE
+        // hello as a protocol violation and close it with 4510. The caller
+        // abandons this socket and retries the same endpoint without `ready=2`.
+        throw SyncRelayReadyNegotiationError.retryLegacySocket
       case .frame(let text):
         guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
               let control = syncRelayTransportControl(from: object) else {
@@ -11212,34 +11436,61 @@ final class SyncService: ObservableObject {
     }
 
     let urlHost = endpoint?.scheme == nil ? socketHost : host
-    guard var urlString = syncWebSocketURLString(host: urlHost, port: socketPort) else {
+    guard let rawURLString = syncWebSocketURLString(host: urlHost, port: socketPort) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
     let isRelay = syncIsFullWebSocketRoute(host)
-    if isRelay { urlString = syncRelayReadyV2URL(urlString) }
-    guard
-          let url = URL(string: urlString) else {
-      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
-    }
-    let task = socketSession.webSocketTask(with: url)
-    // URLSession's default receive budget is ~1 MiB and exceeding it kills the
-    // connection with "Message too long". Current hosts chunk large envelopes
-    // (chunkedEnvelopes capability); the raised ceiling protects against older
-    // hosts and any future unchunked path.
-    task.maximumMessageSize = 32 * 1024 * 1024
-    socket = task
-    if isRelay { relayTransportNegotiations[task.taskIdentifier] = SyncRelayReadyNegotiation() }
-    try await awaitSocketOpen(task)
-    guard isCurrentConnectAttempt(connectAttemptGeneration) else {
-      if socket === task {
-        teardownSocket(reason: "Connection superseded.")
-      } else {
-        task.cancel(with: .goingAway, reason: nil)
+    let legacyURLString = isRelay ? syncRelayLegacyURL(rawURLString) : rawURLString
+    let socketAttempts: [(urlString: String, awaitsRelayReadyV2: Bool)] = isRelay
+      ? [(syncRelayReadyV2URL(legacyURLString), true), (legacyURLString, false)]
+      : [(legacyURLString, false)]
+
+    for socketAttempt in socketAttempts {
+      guard let url = URL(string: socketAttempt.urlString) else {
+        throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
       }
-      throw CancellationError()
+      let task = socketSession.webSocketTask(with: url)
+      // URLSession's default receive budget is ~1 MiB and exceeding it kills the
+      // connection with "Message too long". Current hosts chunk large envelopes
+      // (chunkedEnvelopes capability); the raised ceiling protects against older
+      // hosts and any future unchunked path.
+      task.maximumMessageSize = 32 * 1024 * 1024
+      socket = task
+      if socketAttempt.awaitsRelayReadyV2 {
+        relayTransportNegotiations[task.taskIdentifier] = SyncRelayReadyNegotiation()
+      }
+      do {
+        try await awaitSocketOpen(task)
+        guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+          if socket === task {
+            teardownSocket(reason: "Connection superseded.")
+          } else {
+            task.cancel(with: .goingAway, reason: nil)
+          }
+          throw CancellationError()
+        }
+        receiveLoop(for: task)
+        if socketAttempt.awaitsRelayReadyV2 {
+          try await awaitRelayTransportReady(task)
+        }
+        return
+      } catch SyncRelayReadyNegotiationError.retryLegacySocket
+          where socketAttempt.awaitsRelayReadyV2 {
+        abandonRelayReadyV2Socket(task)
+        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+          throw CancellationError()
+        }
+        syncConnectLog.info(
+          "ADE_SYNC_TRACE relay did not negotiate ready-v2; retrying endpoint on a fresh legacy socket"
+        )
+      }
     }
-    receiveLoop(for: task)
-    if isRelay { try await awaitRelayTransportReady(task) }
+
+    throw NSError(
+      domain: "ADE",
+      code: 35,
+      userInfo: [NSLocalizedDescriptionKey: "Unable to establish the Relay connection."]
+    )
   }
 
   private func publishSocketConnecting(to socketHost: String) {
@@ -11753,6 +12004,28 @@ final class SyncService: ObservableObject {
     return pending.payload
   }
 
+  func scheduleOutboundChangesetRecoveryForTesting(now: TimeInterval = 0) {
+    scheduleOutboundChangesetRecovery("Retrying phone changes for test.", now: now)
+  }
+
+  func outboundChangesetRecoveryWindowForTesting() -> (
+    level: Int,
+    rowLimit: Int,
+    byteLimit: Int,
+    retryAt: TimeInterval
+  ) {
+    (
+      outboundChangesetRecoveryLevel,
+      outboundChangesetRowLimit,
+      outboundChangesetByteLimit,
+      nextOutboundChangesetAttemptAt
+    )
+  }
+
+  func hasPendingOutboundChangesetForTesting() -> Bool {
+    pendingOutboundChangeset != nil
+  }
+
   func advanceOutboundCursorForTesting(to dbVersion: Int) {
     pendingOutboundChangeset = nil
     clearPendingOutboundChangesetForActiveProject()
@@ -11793,6 +12066,39 @@ final class SyncService: ObservableObject {
 
   func desiredTerminalSessionIdsForTesting() -> Set<String> {
     desiredTerminalSessionIds
+  }
+
+  func setTerminalSnapshotRecoveryDelayForTesting(_ nanoseconds: UInt64?) {
+    terminalSnapshotRecoveryDelayOverrideForTesting = nanoseconds
+  }
+
+  func hasTerminalSnapshotRecoveryForTesting(sessionId: String) -> Bool {
+    terminalSnapshotRecoveryJobs[sessionId] != nil
+  }
+
+  func completeTerminalSnapshotRequestForTesting(
+    requestId: String,
+    sessionId: String,
+    transcript: String,
+    startOffset: Int,
+    endOffset: Int,
+    delta: Bool = false,
+    live: Bool = true
+  ) {
+    resolve(requestId: requestId, result: .success([
+      "sessionId": sessionId,
+      "transcript": transcript,
+      "capturedAt": ISO8601DateFormatter().string(from: Date()),
+      "startOffset": startOffset,
+      "endOffset": endOffset,
+      "delta": delta,
+      "live": live,
+    ] as [String: Any]))
+  }
+
+  func handleTerminalDataChunkForTesting(sessionId: String, chunk: String, endOffset: Int?) {
+    guard subscribedTerminalSessionIds.contains(sessionId) else { return }
+    handleTerminalDataChunk(sessionId: sessionId, chunk: chunk, endOffset: endOffset)
   }
 
   func hasTerminalInputTimeoutForTesting(sessionId: String) -> Bool {
@@ -11893,8 +12199,13 @@ final class SyncService: ObservableObject {
     guard let socket,
           let negotiation = relayTransportNegotiations[socket.taskIdentifier] else { return nil }
     let decision = negotiation.negotiationWindowExpired()
-    if decision == .sendHello {
-      resolveRelayTransportReady(taskIdentifier: socket.taskIdentifier, result: .success(()))
+    if decision == .retryLegacySocket {
+      let taskIdentifier = socket.taskIdentifier
+      abandonRelayReadyV2Socket(socket)
+      resolveRelayTransportReady(
+        taskIdentifier: taskIdentifier,
+        result: .failure(SyncRelayReadyNegotiationError.retryLegacySocket)
+      )
     }
     return decision
   }
@@ -11941,6 +12252,10 @@ final class SyncService: ObservableObject {
 
   func firePendingRequestTimeoutForTesting(requestId: String) {
     firePendingRequestTimeout(requestId: requestId)
+  }
+
+  func pendingRequestDisconnectsOnTimeoutForTesting(requestId: String) -> Bool? {
+    pending[requestId]?.timeoutPolicy.disconnectOnTimeout
   }
 
   func connectionGenerationForTesting() -> UInt64 {
@@ -12208,6 +12523,7 @@ final class SyncService: ObservableObject {
     connectionState = .syncing
     publishConnectTimingMetrics(
       connectedHost: connectedHost,
+      hostTransport: payload["connectionTransport"] as? String,
       generation: connectAttemptGeneration
     )
     currentAddress = connectedHost
@@ -12793,12 +13109,15 @@ final class SyncService: ObservableObject {
       pendingOutboundChangeset = nil
       clearPendingOutboundChangesetForActiveProject()
       advanceOutboundCursorForActiveProject(to: pending.payload.toDbVersion)
+      resetOutboundChangesetRecoveryWindow()
       markSyncActivity(force: true)
       lastError = nil
       return
     }
     guard pending.retryCount < maxChangesetAckRetries else {
-      failPendingOutboundChangeset("The machine stopped accepting phone changes. Reconnecting now.")
+      scheduleOutboundChangesetRecovery(
+        "The machine is still catching up with phone changes. Retrying a smaller batch."
+      )
       return
     }
     pending.retryCount += 1
@@ -12816,6 +13135,7 @@ final class SyncService: ObservableObject {
   private func sendLocalChanges() {
     guard canSendLiveRequests() else { return }
     let now = ProcessInfo.processInfo.systemUptime
+    guard now >= nextOutboundChangesetAttemptAt else { return }
     if var pending = pendingOutboundChangeset {
       if !supportsChangesetAck {
         sendOutboundChangeset(pending)
@@ -12827,7 +13147,10 @@ final class SyncService: ObservableObject {
       }
       if now - pending.sentAt >= 10 {
         guard pending.retryCount < maxChangesetAckRetries else {
-          failPendingOutboundChangeset("The machine did not acknowledge phone changes in time. Reconnecting now.")
+          scheduleOutboundChangesetRecovery(
+            "The machine is still catching up with phone changes. Retrying a smaller batch.",
+            now: now
+          )
           return
         }
         pending.sentAt = now
@@ -12852,33 +13175,77 @@ final class SyncService: ObservableObject {
   private func makeNextOutboundChangeset(sentAt: TimeInterval) -> PendingOutboundChangeset? {
     let currentDbVersion = database.currentDbVersion()
     guard currentDbVersion > outboundLocalDbVersion else { return nil }
-    let localSiteId = database.localSiteId()
-    let changes = database.exportChangesSince(version: outboundLocalDbVersion).filter { $0.siteId == localSiteId }
+    let allChanges = database.exportLocalChangesSince(
+      version: outboundLocalDbVersion,
+      rowLimit: outboundChangesetRowLimit
+    )
     let previousDbVersion = outboundLocalDbVersion
-    guard !changes.isEmpty else {
+    guard !allChanges.isEmpty else {
       advanceOutboundCursorForActiveProject(to: currentDbVersion, persistImmediately: false)
       return nil
     }
+    let changes = boundedOutboundChanges(allChanges)
+    guard let batchEndVersion = changes.last?.dbVersion else { return nil }
 
     let payload = SyncChangesetBatchPayload(
       batchId: makeRequestId(),
       reason: "relay",
       fromDbVersion: previousDbVersion,
-      toDbVersion: currentDbVersion,
+      toDbVersion: batchEndVersion,
       changes: changes
     )
     return PendingOutboundChangeset(payload: payload, sentAt: sentAt, retryCount: 0)
   }
 
-  private func failPendingOutboundChangeset(_ message: String) {
+  private func boundedOutboundChanges(_ changes: [CrsqlChangeRow]) -> [CrsqlChangeRow] {
+    var selected: [CrsqlChangeRow] = []
+    var selectedBytes = 0
+    var groupStart = changes.startIndex
+    while groupStart < changes.endIndex {
+      let version = changes[groupStart].dbVersion
+      var groupEnd = changes.index(after: groupStart)
+      while groupEnd < changes.endIndex, changes[groupEnd].dbVersion == version {
+        groupEnd = changes.index(after: groupEnd)
+      }
+      let group = Array(changes[groupStart..<groupEnd])
+      let groupBytes = (try? encoder.encode(group).count) ?? group.count * 1_024
+      let exceedsWindow = selected.count + group.count > outboundChangesetRowLimit
+        || selectedBytes + groupBytes > outboundChangesetByteLimit
+      // A db_version is one logical CRDT transaction. Never split it: doing so
+      // and then advancing the version cursor would skip the remaining cells.
+      if !selected.isEmpty, exceedsWindow { break }
+      selected.append(contentsOf: group)
+      selectedBytes += groupBytes
+      groupStart = groupEnd
+    }
+    return selected
+  }
+
+  private func resetOutboundChangesetRecoveryWindow() {
+    outboundChangesetRecoveryLevel = 0
+    outboundChangesetRowLimit = defaultOutboundChangesetRowLimit
+    outboundChangesetByteLimit = defaultOutboundChangesetByteLimit
+    nextOutboundChangesetAttemptAt = 0
+  }
+
+  private func scheduleOutboundChangesetRecovery(
+    _ message: String,
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) {
     pendingOutboundChangeset = nil
     clearPendingOutboundChangesetForActiveProject()
-    beginAutomaticTransportRecovery(
-      NSError(
-        domain: "ADE",
-        code: 27,
-        userInfo: [NSLocalizedDescriptionKey: message]
-      )
+    outboundChangesetRecoveryLevel = min(outboundChangesetRecoveryLevel + 1, 6)
+    outboundChangesetRowLimit = max(1, defaultOutboundChangesetRowLimit >> outboundChangesetRecoveryLevel)
+    outboundChangesetByteLimit = max(
+      minimumOutboundChangesetByteLimit,
+      defaultOutboundChangesetByteLimit >> outboundChangesetRecoveryLevel
+    )
+    let delaySeconds = min(30.0, pow(2.0, Double(outboundChangesetRecoveryLevel - 1)))
+    nextOutboundChangesetAttemptAt = now + delaySeconds
+    markConnectionLoadStrained()
+    lastError = message
+    syncConnectLog.notice(
+      "changeset retry rewindowed level=\(self.outboundChangesetRecoveryLevel, privacy: .public) rows=\(self.outboundChangesetRowLimit, privacy: .public) bytes=\(self.outboundChangesetByteLimit, privacy: .public) delaySeconds=\(delaySeconds, privacy: .public)"
     )
   }
 
@@ -13013,7 +13380,11 @@ final class SyncService: ObservableObject {
         guard !Task.isCancelled,
               let self,
               self.relayTransportNegotiations[taskIdentifier]?.acceptedV2 != true else { return }
-        self.resolveRelayTransportReady(taskIdentifier: taskIdentifier, result: .success(()))
+        self.abandonRelayReadyV2Socket(task)
+        self.resolveRelayTransportReady(
+          taskIdentifier: taskIdentifier,
+          result: .failure(SyncRelayReadyNegotiationError.retryLegacySocket)
+        )
       }
       relayTransportOverallTimeoutTasks[taskIdentifier]?.cancel()
       relayTransportOverallTimeoutTasks[taskIdentifier] = Task { @MainActor [weak self] in
@@ -13029,6 +13400,18 @@ final class SyncService: ObservableObject {
         )
       }
     }
+  }
+
+  private func abandonRelayReadyV2Socket(_ task: URLSessionWebSocketTask) {
+    let taskIdentifier = task.taskIdentifier
+    relayTransportNegotiations.removeValue(forKey: taskIdentifier)
+    if socket === task {
+      // Clear ownership before cancellation so the delegate and receive-loop
+      // completions from this abandoned v2 socket cannot recover or mutate the
+      // fresh legacy replacement.
+      socket = nil
+    }
+    task.cancel(with: .goingAway, reason: nil)
   }
 
   private func handleRelayTransportControlFrame(
@@ -13174,6 +13557,8 @@ final class SyncService: ObservableObject {
   }
 
   private func resetTerminalTransportStateForReconnect() {
+    cancelAllTerminalSnapshotRecovery()
+    terminalSnapshotRequestTokens.removeAll()
     subscribedTerminalSessionIds.removeAll()
     supportsTerminalInputAcknowledgements = false
     terminalInputAcknowledgementRetryWindowMilliseconds = 0
@@ -14286,6 +14671,8 @@ final class SyncService: ObservableObject {
   }
 
   private func resetTerminalSubscriptionState(clearHistory: Bool) {
+    cancelAllTerminalSnapshotRecovery()
+    terminalSnapshotRequestTokens.removeAll()
     desiredTerminalSessionIds.removeAll()
     subscribedTerminalSessionIds.removeAll()
     for task in terminalInputTimeoutTasks.values { task.cancel() }

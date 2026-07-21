@@ -7,6 +7,16 @@ enum SyncConnectionRaceTiming {
   static let relayReadyNegotiationNanoseconds: UInt64 = 350_000_000
 }
 
+func syncObservedConnectionRouteKind(
+  connectedHost: String,
+  hostTransport: String?
+) -> SyncConnectionRouteKind {
+  if hostTransport?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "relay" {
+    return .relay
+  }
+  return syncConnectionRouteKind(connectedHost)
+}
+
 struct SyncConnectionAttemptMetadata: Equatable, Sendable {
   var id: String
   var startedAtMilliseconds: Int64
@@ -32,6 +42,13 @@ func syncRelayReadyV2URL(_ rawValue: String) -> String {
   return components.string ?? rawValue
 }
 
+func syncRelayLegacyURL(_ rawValue: String) -> String {
+  guard var components = URLComponents(string: rawValue) else { return rawValue }
+  let queryItems = (components.queryItems ?? []).filter { $0.name != "ready" }
+  components.queryItems = queryItems.isEmpty ? nil : queryItems
+  return components.string ?? rawValue
+}
+
 enum SyncRelayTransportControl: Equatable {
   case accepted
   case ready
@@ -51,7 +68,12 @@ func syncRelayTransportControl(from object: Any) -> SyncRelayTransportControl? {
 enum SyncRelayReadyNegotiationDecision: Equatable {
   case interceptedWaiting
   case sendHello
+  case retryLegacySocket
   case ignore
+}
+
+enum SyncRelayReadyNegotiationError: Error, Equatable {
+  case retryLegacySocket
 }
 
 struct SyncRelayReadyNegotiation: Equatable {
@@ -72,7 +94,7 @@ struct SyncRelayReadyNegotiation: Equatable {
   }
 
   func negotiationWindowExpired() -> SyncRelayReadyNegotiationDecision {
-    acceptedV2 ? .interceptedWaiting : .sendHello
+    acceptedV2 ? .interceptedWaiting : .retryLegacySocket
   }
 }
 
