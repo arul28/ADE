@@ -993,7 +993,7 @@ describe("browser sync connection and client", () => {
       [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
       async () => "relay-account-token",
     );
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await connecting;
 
     await vi.advanceTimersByTimeAsync(75_000);
@@ -1030,7 +1030,7 @@ describe("browser sync connection and client", () => {
       [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
       async () => "relay-account-token",
     );
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await connecting;
     visibility.setVisibility("hidden");
 
@@ -1063,17 +1063,18 @@ describe("browser sync connection and client", () => {
       [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
       async () => "relay-account-token",
     );
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await connecting;
     visibility.setVisibility("hidden");
     await vi.advanceTimersByTimeAsync(90_000);
 
     visibility.setVisibility("visible");
     expect(script.sockets[0]?.closedWith?.code).toBe(4008);
-    for (let attempt = 0; attempt < 20 && connection.getStatus().state !== "connected"; attempt += 1) {
-      await vi.advanceTimersByTimeAsync(1);
-      await flushMicrotasks();
-    }
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1);
+    script.sockets[1]?.serverTransportSend({ t: "accepted", v: 2 });
+    script.sockets[1]?.serverTransportSend({ t: "ready", v: 2 });
+    await flushMicrotasks();
 
     expect(script.sockets).toHaveLength(2);
     expect(connection.getStatus().state).toBe("connected");
@@ -1099,6 +1100,7 @@ describe("browser sync connection and client", () => {
     );
     await vi.advanceTimersByTimeAsync(5_000);
     expect(script.sockets[0]?.readyState).toBe(1);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await vi.advanceTimersByTimeAsync(11_000);
     await connecting;
 
@@ -1137,6 +1139,7 @@ describe("browser sync connection and client", () => {
       buildEnvironment: () => environment,
     });
     await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await vi.advanceTimersByTimeAsync(11_000);
 
     await expect(pairing).resolves.toMatchObject({ endpoint: pairingPayload.relayUrl });
@@ -1199,6 +1202,7 @@ describe("browser sync connection and client", () => {
     expect(relayTokenProvider).toHaveBeenCalledOnce();
 
     await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await connecting;
     expect(script.sockets[0]?.sent[0]?.payload).toMatchObject({
       auth: {
@@ -1617,7 +1621,7 @@ describe("browser sync connection and client", () => {
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
     const connecting = client.connect(environment.envId, signedInRelayAccess);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await connecting;
     const pending = [
       client.sendCommand("chat.send", { text: "once" }),
@@ -1718,7 +1722,7 @@ describe("browser sync connection and client", () => {
     const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
 
     const connecting = client.connect(environment.envId, signedInRelayAccess);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await flushMicrotasks();
     await connecting;
     const socket = script.sockets[0]!;
@@ -1761,7 +1765,7 @@ describe("browser sync connection and client", () => {
     expect(script.sockets).toHaveLength(0);
 
     await client.connect(environment.envId, signedInRelayAccess);
-    expect(script.sockets.map((socket) => socket.url)).toEqual([pairingPayload.relayUrl]);
+    expect(script.sockets.map((socket) => socket.url)).toEqual([`${pairingPayload.relayUrl}?ready=2`]);
     expect((await client.listEnvironments())[0]?.accountOwnerUserId).toBeNull();
     client.dispose();
   });
@@ -1899,7 +1903,7 @@ describe("browser sync connection and client", () => {
       port: 0,
     });
     const script = createSocketFactory((socket, envelope) => {
-      expect(socket.url).toBe(cachedRelayEndpoint);
+      expect(socket.url).toBe(`${cachedRelayEndpoint}?ready=2`);
       if (envelope.type === "hello") {
         expect(envelope.payload).toMatchObject({
           auth: { relayAccountToken: "relay-account-token" },
@@ -2089,8 +2093,8 @@ describe("browser sync connection and client", () => {
     });
 
     expect(accountScript.sockets.map((socket) => socket.url)).toEqual([
-      "wss://relay-one.example/connect/machine-key",
-      "wss://relay-two.example/connect/machine-key",
+      "wss://relay-one.example/connect/machine-key?ready=2",
+      "wss://relay-two.example/connect/machine-key?ready=2",
     ]);
     expect(accountDpopNonces).toHaveLength(2);
     expect(new Set(accountDpopNonces).size).toBe(2);
@@ -2107,11 +2111,13 @@ describe("browser sync connection and client", () => {
     accountScript.sockets[1]?.close(1006, "Connection dropped");
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.advanceTimersByTimeAsync(1);
+    accountScript.sockets[2]?.serverTransportSend({ t: "accepted", v: 2 });
+    accountScript.sockets[2]?.serverTransportSend({ t: "ready", v: 2 });
     vi.useRealTimers();
     for (let attempt = 0; attempt < 20 && !accountScript.sockets[2]?.sent[0]; attempt += 1) {
       await flush();
     }
-    expect(accountScript.sockets[2]?.url).toBe("wss://relay-two.example/connect/machine-key");
+    expect(accountScript.sockets[2]?.url).toBe("wss://relay-two.example/connect/machine-key?ready=2");
     expect(accountScript.sockets[2]?.sent[0]?.payload).toMatchObject({
       auth: {
         kind: "paired",
@@ -2235,6 +2241,10 @@ describe("browser sync connection and client", () => {
       relayBaseUrls: ["https://relay.example"],
     });
 
+    for (let attempt = 0; attempt < 20 && script.sockets[0]?.readyState !== 1; attempt += 1) await flush();
+    expect(script.sockets[0]?.readyState).toBe(1);
+    script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    script.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
     for (let attempt = 0; attempt < 20 && !releaseHello; attempt += 1) await flush();
     expect(releaseHello).not.toBeNull();
     currentLease = nextLease;
@@ -2345,7 +2355,11 @@ describe("browser sync connection and client", () => {
 
   it("drops stored pairing only for attributed auth failures", async () => {
     const attributedStorage = new MemoryStorage();
-    const attributedEnv = await makeEnvironment(attributedStorage);
+    const attributedEnv = await makeEnvironment(attributedStorage, {
+      addressCandidates: [],
+      lastGoodEndpoint: null,
+      port: 0,
+    });
     const attributedScript = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
         socket.serverSend({
@@ -2366,7 +2380,11 @@ describe("browser sync connection and client", () => {
     attributedClient.dispose();
 
     const ambiguousStorage = new MemoryStorage();
-    const ambiguousEnv = await makeEnvironment(ambiguousStorage);
+    const ambiguousEnv = await makeEnvironment(ambiguousStorage, {
+      addressCandidates: [],
+      lastGoodEndpoint: null,
+      port: 0,
+    });
     const ambiguousScript = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
         socket.serverSend({
@@ -2410,7 +2428,7 @@ describe("browser sync connection and client", () => {
     client.subscribe((status) => states.push(status.state));
 
     const initialConnect = client.connect(environment.envId, signedInRelayAccess).catch((error: unknown) => error);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS);
     await flushMicrotasks();
 
     await expect(initialConnect).resolves.toBeInstanceOf(Error);

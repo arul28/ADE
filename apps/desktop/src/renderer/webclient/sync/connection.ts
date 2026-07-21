@@ -515,7 +515,14 @@ export class SyncConnection {
           },
           onHelloError: (payload) => {
             if (settled || !this.isCurrentSocket(socket, generation)) return;
-            fail(this.handleAuthFailure(environment, payload));
+            const error = this.handleAuthFailure(environment, payload);
+            fail(error);
+            if (error.code === "attributed_auth_failed") {
+              this.emit("pairingRejected", {
+                envId: environment.envId,
+                hostDeviceId: environment.hostDeviceId,
+              });
+            }
           },
         }).catch((error) => {
           if (!this.isCurrentSocket(socket, generation)) return;
@@ -1026,7 +1033,6 @@ export class SyncConnection {
     if (attributedToPairing) {
       this.shouldReconnect = false;
       this.setStatus({ state: "auth_failed", error: payload.message });
-      this.emit("pairingRejected", { envId: environment.envId, hostDeviceId: environment.hostDeviceId });
       return new SyncConnectionError(payload.message, "attributed_auth_failed", payload);
     }
     if (this.consecutiveAuthFailures >= MAX_CONSECUTIVE_AUTH_FAILURES) {
