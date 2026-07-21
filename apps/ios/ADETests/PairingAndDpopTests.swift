@@ -2,6 +2,75 @@ import XCTest
 import Security
 @testable import ADE
 
+private final class AccountDirectoryURLProtocolStub: URLProtocol {
+  private static let lock = NSLock()
+  private static var handler: ((URLRequest) throws -> (HTTPURLResponse, Data))?
+
+  static func install(_ nextHandler: @escaping (URLRequest) throws -> (HTTPURLResponse, Data)) {
+    lock.lock()
+    handler = nextHandler
+    lock.unlock()
+  }
+
+  static func reset() {
+    lock.lock()
+    handler = nil
+    lock.unlock()
+  }
+
+  override class func canInit(with request: URLRequest) -> Bool { true }
+
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+  override func startLoading() {
+    Self.lock.lock()
+    let handler = Self.handler
+    Self.lock.unlock()
+
+    guard let handler else {
+      client?.urlProtocol(self, didFailWithError: URLError(.badServerResponse))
+      return
+    }
+    do {
+      let (response, data) = try handler(request)
+      client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+      client?.urlProtocol(self, didLoad: data)
+      client?.urlProtocolDidFinishLoading(self)
+    } catch {
+      client?.urlProtocol(self, didFailWithError: error)
+    }
+  }
+
+  override func stopLoading() {}
+}
+
+private final class AccountDirectoryRequestRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var authorizationValues: [String] = []
+
+  func append(_ value: String) -> Int {
+    lock.lock()
+    defer { lock.unlock() }
+    authorizationValues.append(value)
+    return authorizationValues.count
+  }
+
+  func snapshot() -> [String] {
+    lock.lock()
+    defer { lock.unlock() }
+    return authorizationValues
+  }
+}
+
+private actor AccountDirectoryRefreshRecorder {
+  private(set) var count = 0
+
+  func refresh() -> String {
+    count += 1
+    return "fresh-token"
+  }
+}
+
 /// Covers the pairing-QR codec (parity with `apps/desktop/src/shared/pairingQr.ts`)
 /// and the DPoP challenge/signature contract (parity with
 /// `apps/ade-cli/src/services/sync/syncDpop.ts`).
@@ -9,6 +78,41 @@ final class PairingAndDpopTests: XCTestCase {
   // A canonical smart URL produced by the TS `encodePairingQrUrl` (includes an
   // unknown extra field to prove lenient forward-compat parsing).
   private let canonicalPairingUrl = "https://ade-app.dev/pair#eyJ2ZXJzaW9uIjozLCJob3N0SWRlbnRpdHkiOnsiZGV2aWNlSWQiOiJkZXYtYWJjMTIzIiwic2l0ZUlkIjoic2l0ZS14eXoiLCJuYW1lIjoiQXJ1bCBNYWNCb29rIiwicGxhdGZvcm0iOiJtYWNPUyIsImRldmljZVR5cGUiOiJkZXNrdG9wIn0sInBvcnQiOjg3ODcsImFkZHJlc3NDYW5kaWRhdGVzIjpbeyJob3N0IjoiMTkyLjE2OC4xLjQyIiwia2luZCI6ImxhbiJ9LHsiaG9zdCI6IjEwMC4xMDEuMTAyLjEwMyIsImtpbmQiOiJ0YWlsc2NhbGUifSx7Imhvc3QiOiJ3c3M6Ly9yZWxheS5hZGUtYXBwLmRldi9jb25uZWN0L21hY2hpbmVrZXkxMjMiLCJraW5kIjoicmVsYXkifV0sInJlbGF5VXJsIjoid3NzOi8vcmVsYXkuYWRlLWFwcC5kZXYvY29ubmVjdC9tYWNoaW5la2V5MTIzIiwiZXh0cmFGdXR1cmVGaWVsZCI6Imlnbm9yZWQifQ"
+
+  // MARK: - Account directory
+
+  func testMachineDirectoryRetriesOnceWithFreshTokenAfterUnauthorized() async throws {
+    let requests = AccountDirectoryRequestRecorder()
+    let refreshes = AccountDirectoryRefreshRecorder()
+    AccountDirectoryURLProtocolStub.install { request in
+      let attempt = requests.append(request.value(forHTTPHeaderField: "Authorization") ?? "")
+      let status = attempt == 1 ? 401 : 200
+      let response = try XCTUnwrap(HTTPURLResponse(
+        url: request.url ?? URL(string: "https://directory.example")!,
+        statusCode: status,
+        httpVersion: nil,
+        headerFields: ["Content-Type": "application/json"]
+      ))
+      let data = status == 200 ? Data(#"{"machines":[]}"#.utf8) : Data()
+      return (response, data)
+    }
+    defer { AccountDirectoryURLProtocolStub.reset() }
+
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [AccountDirectoryURLProtocolStub.self]
+    let directory = AccountDirectoryClient(session: URLSession(configuration: configuration))
+
+    let machines = try await directory.fetchMachines(
+      baseURL: try XCTUnwrap(URL(string: "https://directory.example")),
+      token: "stale-token",
+      refreshToken: { await refreshes.refresh() }
+    )
+
+    let refreshCount = await refreshes.count
+    XCTAssertTrue(machines.isEmpty)
+    XCTAssertEqual(requests.snapshot(), ["Bearer stale-token", "Bearer fresh-token"])
+    XCTAssertEqual(refreshCount, 1)
+  }
 
   // MARK: - Pairing QR codec
 
@@ -174,5 +278,93 @@ final class PairingAndDpopTests: XCTestCase {
       &error
     )
     XCTAssertFalse(tampered)
+  }
+
+  func testRelayReauthorizationChallengeMatchesSharedCanonicalContext() {
+    let tokenHash = DpopKeyService.sha256Hex("exact-token-bytes")
+    XCTAssertEqual(
+      DpopKeyService.buildRelayReauthorizationChallenge(
+        deviceId: "phone-1",
+        relayAccountTokenSha256Hex: tokenHash,
+        challenge: "connection-challenge",
+        timestamp: 1_700_000_001,
+        nonce: "nonce-reauth"
+      ),
+      "ade-relay-reauth-v1\nphone-1\n\(tokenHash)\nconnection-challenge\n1700000001\nnonce-reauth"
+    )
+  }
+
+  func testRelayReauthorizationProofUsesFreshCryptographicallyBoundAttempt() throws {
+    let deviceId = "phone-1"
+    let token = "token-1"
+    let relayChallenge = "challenge-1"
+    let first = try XCTUnwrap(DpopKeyService.shared.buildRelayReauthorizationProof(
+      deviceId: deviceId,
+      relayAccountToken: token,
+      challenge: relayChallenge
+    ))
+    let second = try XCTUnwrap(DpopKeyService.shared.buildRelayReauthorizationProof(
+      deviceId: deviceId,
+      relayAccountToken: token,
+      challenge: relayChallenge
+    ))
+    XCTAssertNotEqual(first["nonce"] as? String, second["nonce"] as? String)
+    XCTAssertNotEqual(first["signature"] as? String, second["signature"] as? String)
+
+    let publicKeyBase64 = try XCTUnwrap(DpopKeyService.shared.publicKeyX963Base64())
+    let publicKeyData = try XCTUnwrap(Data(base64Encoded: publicKeyBase64))
+    let attributes: [String: Any] = [
+      kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrKeyClass as String: kSecAttrKeyClassPublic,
+      kSecAttrKeySizeInBits as String: 256,
+    ]
+    var keyError: Unmanaged<CFError>?
+    let publicKey = try XCTUnwrap(
+      SecKeyCreateWithData(publicKeyData as CFData, attributes as CFDictionary, &keyError)
+    )
+
+    for proof in [first, second] {
+      let timestamp = try XCTUnwrap(proof["timestamp"] as? Int)
+      let nonce = try XCTUnwrap(proof["nonce"] as? String)
+      let signature = try XCTUnwrap(
+        Data(base64Encoded: try XCTUnwrap(proof["signature"] as? String))
+      )
+      let canonical = DpopKeyService.buildRelayReauthorizationChallenge(
+        deviceId: deviceId,
+        relayAccountTokenSha256Hex: DpopKeyService.sha256Hex(token),
+        challenge: relayChallenge,
+        timestamp: timestamp,
+        nonce: nonce
+      )
+      func verifies(_ canonicalChallenge: String) -> Bool {
+        var verificationError: Unmanaged<CFError>?
+        return SecKeyVerifySignature(
+          publicKey,
+          .ecdsaSignatureMessageX962SHA256,
+          Data(canonicalChallenge.utf8) as CFData,
+          signature as CFData,
+          &verificationError
+        )
+      }
+      XCTAssertTrue(verifies(canonical))
+
+      let wrongTokenCanonical = DpopKeyService.buildRelayReauthorizationChallenge(
+        deviceId: deviceId,
+        relayAccountTokenSha256Hex: DpopKeyService.sha256Hex("different-token"),
+        challenge: relayChallenge,
+        timestamp: timestamp,
+        nonce: nonce
+      )
+      XCTAssertFalse(verifies(wrongTokenCanonical))
+
+      let wrongChallengeCanonical = DpopKeyService.buildRelayReauthorizationChallenge(
+        deviceId: deviceId,
+        relayAccountTokenSha256Hex: DpopKeyService.sha256Hex(token),
+        challenge: "different-challenge",
+        timestamp: timestamp,
+        nonce: nonce
+      )
+      XCTAssertFalse(verifies(wrongChallengeCanonical))
+    }
   }
 }

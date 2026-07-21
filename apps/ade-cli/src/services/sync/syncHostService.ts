@@ -79,10 +79,16 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   SyncRemoteCommandDescriptor,
+  SyncRelayAuthorizationLease,
   SyncTailnetDiscoveryStatus,
   SyncTerminalHistoryResponsePayload,
+  SyncTerminalDataPayload,
+  SyncTerminalExitPayload,
+  SyncTerminalInputAckPayload,
+  SyncTerminalInputPayload,
   SyncTerminalSnapshotPayload,
 } from "../../../../desktop/src/shared/types";
+import { SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY } from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -122,6 +128,12 @@ import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJson
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncDpopNonceCache, evaluatePairedHelloDpop } from "./syncDpop";
+import {
+  createRelayAuthorizationLifecycle,
+  SYNC_RELAY_AUTHORIZATION_CLOSE_CODE,
+  type RelayAuthorizationLifecycle,
+  type RelayAuthorizationSnapshot,
+} from "./relayAuthorization";
 import {
   createSyncPairedChannelService,
   isPairedRuntimeEnvelopeType,
@@ -238,6 +250,9 @@ const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
 const DEFAULT_TERMINAL_HISTORY_PAGE_BYTES = 262_144;
 const MIN_TERMINAL_HISTORY_PAGE_BYTES = 4_096;
 const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
+const MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS = 256;
+const MAX_PENDING_TERMINAL_SNAPSHOT_BYTES = 2_000_000;
+const MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS = 4;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
@@ -245,6 +260,7 @@ const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
 const MAX_SYNC_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
+export const SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS = 2_000;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
@@ -267,7 +283,12 @@ const ROSTER_DIRTYING_COMMAND_ACTIONS = new Set<string>([
   "lanes.archive",
   "lanes.delete",
 ]);
-const MAX_CHANGESET_ACK_RETRIES = 6;
+const MAX_CHANGESET_SEND_ATTEMPTS = 6;
+const MIN_RECOVERY_CHANGESET_BATCH_ROWS = 16;
+const MIN_RECOVERY_CHANGESET_BATCH_BYTES = 16 * 1024;
+const MAX_CHANGESET_RECOVERY_LEVEL = 4;
+const CHANGESET_RECOVERY_BACKOFF_BASE_MS = 250;
+const CHANGESET_RECOVERY_BACKOFF_MAX_MS = 4_000;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 * 1024;
@@ -414,8 +435,31 @@ type LanePresenceEntry = {
 
 type ChatSubscriptionScope = "project" | "personal" | "foreign-project";
 
+type PendingTerminalSnapshotEvent =
+  | {
+      kind: "data";
+      payload: SyncTerminalDataPayload;
+      byteLength: number;
+    }
+  | {
+      kind: "exit";
+      payload: SyncTerminalExitPayload;
+      byteLength: 0;
+    };
+
+type PendingTerminalSnapshotBarrier = {
+  generation: number;
+  captureAttempt: number;
+  requiredCaptureAttempt: number;
+  requiredSnapshotEndOffset: number | null;
+  events: PendingTerminalSnapshotEvent[];
+  queuedBytes: number;
+  failed: boolean;
+};
+
 type PeerState = {
   ws: WebSocket;
+  lifecycleGeneration: number;
   metadata: SyncPeerMetadata | null;
   authenticated: boolean;
   authTimeout: ReturnType<typeof setTimeout> | null;
@@ -430,12 +474,16 @@ type PeerState = {
   awaitingHeartbeatAt: string | null;
   missedHeartbeatCount: number;
   backpressuredSinceMs: number | null;
+  changesetChatDeferredSinceMs: number | null;
+  changesetRecoveryLevel: number;
+  changesetRecoveryNotBeforeMs: number;
   remoteAddress: string | null;
   remotePort: number | null;
   transportOrigin: SyncTransportOrigin;
-  relayAccountExpiresAtMs: number | null;
-  relayAccountExpiryTimer: ReturnType<typeof setTimeout> | null;
+  relayAuthorization: RelayAuthorizationLifecycle | null;
   subscribedSessionIds: Set<string>;
+  pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
+  nextTerminalSnapshotGeneration: number;
   subscribedChatSessionIds: Set<string>;
   chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
   chatTranscriptOffsets: Map<string, number>;
@@ -453,6 +501,8 @@ type PeerState = {
   rosterSeq: number;
   rosterBaseline: Map<string, string>;
   messageQueue: Promise<void>;
+  terminalInputQueue: Promise<void>;
+  pendingTerminalOwnershipChanges: number;
   /** Local consent for this browser/phone; never mutates machine-wide consent. */
   productAnalyticsEnabled: boolean;
 };
@@ -464,7 +514,8 @@ type PendingChangesetBatch = {
   changes: CrsqlChangeRow[];
   reason: SyncChangesetBatchPayload["reason"];
   sentAtMs: number;
-  retryCount: number;
+  attemptCount: number;
+  retryNotBeforeMs: number;
 };
 
 type CachedMobileCommandWaiter = {
@@ -681,6 +732,8 @@ type SyncHostServiceArgs = {
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   pinStore: SyncPinStore;
+  /** Test/integration seam for serialized pairing commit verification. */
+  pairingStore?: ReturnType<typeof createSyncPairingStore>;
   accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   /** Test seam for controlling an in-flight account attestation. */
@@ -858,22 +911,6 @@ export function syncHostChangesetBatchOptionsForChat(args: {
   };
 }
 
-/**
- * Flushed transcript size in bytes, or null when the session has no
- * transcript (file missing / untracked). The transcript WriteStream buffers,
- * so this can briefly lag the in-memory byte counter — offset consumers
- * tolerate that via gap detection.
- */
-function transcriptFileSizeOrNull(transcriptPath: string | null | undefined): number | null {
-  const filePath = toOptionalString(transcriptPath);
-  if (!filePath) return null;
-  try {
-    return Math.max(0, Number(fs.statSync(filePath).size) || 0);
-  } catch {
-    return null;
-  }
-}
-
 const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["type"]>([
   "changeset_batch",
   "changeset_ack",
@@ -948,6 +985,10 @@ export function resolveSyncHostInboundProjectScope(
   return { ok: true, projectId: host, usedSingleProjectFallback: false };
 }
 
+export function syncConnectionTransportForOrigin(origin: SyncTransportOrigin): "direct" | "relay" {
+  return origin === "relay-bridge" ? "relay" : "direct";
+}
+
 export function buildSyncHostHelloOkPayload(args: {
   peer: SyncPeerMetadata;
   brain: SyncPeerMetadata;
@@ -965,6 +1006,10 @@ export function buildSyncHostHelloOkPayload(args: {
   compressionThresholdBytes?: number;
   maxProjectCatalogEnvelopeBytes?: number;
   cloudRelayWssUrl?: string | null;
+  relayAuthorization?: SyncRelayAuthorizationLease | null;
+  connectionTransport?: "direct" | "relay";
+  /** Advertise only when this concrete handler accepts terminal_input. */
+  terminalInputAckEnabled?: boolean;
   /**
    * Whether this peer is authorized to use the paired runtime RPC channel and
    * loopback port-forwarding (paired AND a desktop runtime-host). Defaults to
@@ -999,6 +1044,8 @@ export function buildSyncHostHelloOkPayload(args: {
     // clear signal on that path. Omit only when the caller didn't supply
     // the argument at all.
     ...(args.cloudRelayWssUrl !== undefined ? { cloudRelayWssUrl: args.cloudRelayWssUrl } : {}),
+    ...(args.relayAuthorization ? { relayAuthorization: args.relayAuthorization } : {}),
+    ...(args.connectionTransport ? { connectionTransport: args.connectionTransport } : {}),
     ...(args.accountPairing ? { accountPairing: args.accountPairing } : {}),
     features: {
       fileAccess: true,
@@ -1018,6 +1065,15 @@ export function buildSyncHostHelloOkPayload(args: {
       changesetAck: {
         enabled: true,
       },
+      ...(args.terminalInputAckEnabled
+        ? {
+            terminalInputAck: {
+              enabled: true,
+              retryWindowMs: TERMINAL_INPUT_RETRY_WINDOW_MS,
+              maxOutstanding: TERMINAL_INPUT_MAX_OUTSTANDING,
+            },
+          }
+        : {}),
       bootstrapAuth: true,
       pairingAuth: {
         enabled: true,
@@ -1096,6 +1152,21 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       }
     }
   }
+  const rawConnectionAttempt = peer.connectionAttempt;
+  let connectionAttempt: SyncPeerMetadata["connectionAttempt"];
+  if (rawConnectionAttempt != null) {
+    const id = toOptionalString(rawConnectionAttempt.id);
+    const startedAtMs = Number(rawConnectionAttempt.startedAtMs);
+    if (
+      !id
+      || id.length > CONNECTION_ATTEMPT_ID_MAX_CHARS
+      || !/^[A-Za-z0-9._:-]+$/.test(id)
+      || !Number.isSafeInteger(startedAtMs)
+      || startedAtMs <= 0
+      || startedAtMs > Date.now() + CONNECTION_ATTEMPT_MAX_FUTURE_MS
+    ) return null;
+    connectionAttempt = { id, startedAtMs };
+  }
   return {
     peer: {
       deviceId: String(peer.deviceId).trim(),
@@ -1105,6 +1176,7 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       siteId: String(peer.siteId).trim(),
       dbVersion: Number(peer.dbVersion ?? 0),
       ...(Object.keys(dbVersionBySite).length > 0 ? { dbVersionBySite } : {}),
+      ...(connectionAttempt ? { connectionAttempt } : {}),
       capabilities: Array.isArray(peer.capabilities)
         ? peer.capabilities
           .filter((capability): capability is string => typeof capability === "string")
@@ -1235,6 +1307,14 @@ function looksLikePendingTailnetApproval(text: string): boolean {
 
 export const CHAT_EVENT_REPLAY_MAX_EVENTS = 500;
 export const CHAT_EVENT_REPLAY_MAX_BYTES = 2_000_000;
+export const TERMINAL_INPUT_DEDUPE_MAX_ENTRIES = 2_048;
+export const TERMINAL_INPUT_ID_MAX_CHARS = 128;
+export const TERMINAL_INPUT_RETRY_WINDOW_MS = 60_000;
+export const TERMINAL_INPUT_MAX_OUTSTANDING = 64;
+export const ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS = 5 * 60_000;
+export const CONNECTION_ATTEMPT_ID_MAX_CHARS = 128;
+export const CONNECTION_ATTEMPT_MAX_FUTURE_MS = 5 * 60_000;
+export const CONNECTION_ATTEMPT_RESERVATION_TTL_MS = 30_000;
 const SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES = 64 * 1024;
 // Delivery-key dedupe map cap. Must exceed CHAT_EVENT_REPLAY_MAX_EVENTS so a
 // buffered event's key cannot be evicted while the event itself is still in
@@ -1242,6 +1322,138 @@ const SYNC_INLINE_IMAGE_DATA_URL_MAX_BYTES = 64 * 1024;
 const CHAT_EVENT_REPLAY_MAX_KEYS = 1_500;
 // Bound the number of sessions with live replay buffers (LRU-evicted).
 const CHAT_EVENT_REPLAY_MAX_SESSIONS = 64;
+
+type TerminalInputDedupeEntry = {
+  deviceId: string;
+  sessionId: string;
+  inputId: string;
+  dataFingerprint: string;
+  recordedAtMs: number;
+};
+
+export function createTerminalInputDedupeLedger(options: {
+  maxEntries?: number;
+  retryWindowMs?: number;
+  now?: () => number;
+} = {}) {
+  const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? TERMINAL_INPUT_DEDUPE_MAX_ENTRIES));
+  const retryWindowMs = Math.max(1_000, Math.floor(options.retryWindowMs ?? TERMINAL_INPUT_RETRY_WINDOW_MS));
+  const now = options.now ?? Date.now;
+  const devices = new Map<string, Map<string, Map<string, TerminalInputDedupeEntry>>>();
+  const insertionOrder = new Set<TerminalInputDedupeEntry>();
+
+  const entriesFor = (deviceId: string, sessionId: string): Map<string, TerminalInputDedupeEntry> | undefined =>
+    devices.get(deviceId)?.get(sessionId);
+
+  const remove = (entry: TerminalInputDedupeEntry): void => {
+    const sessions = devices.get(entry.deviceId);
+    const entries = sessions?.get(entry.sessionId);
+    if (!sessions || !entries || entries.get(entry.inputId) !== entry) return;
+    entries.delete(entry.inputId);
+    insertionOrder.delete(entry);
+    if (entries.size === 0) sessions.delete(entry.sessionId);
+    if (sessions.size === 0) devices.delete(entry.deviceId);
+  };
+
+  const pruneExpired = (): void => {
+    const cutoff = now() - retryWindowMs;
+    for (const entry of insertionOrder) {
+      if (entry.recordedAtMs <= cutoff) remove(entry);
+    }
+  };
+
+  const remember = (
+    deviceId: string,
+    sessionId: string,
+    inputId: string,
+    dataFingerprint: string,
+    recordedAtMs = now(),
+  ): "recorded" | "duplicate" | "capacity" => {
+    pruneExpired();
+    if (entriesFor(deviceId, sessionId)?.has(inputId)) return "duplicate";
+    // Never evict a still-eligible receipt: if the bounded ledger is full, the
+    // new operation is explicitly rejected and the client keeps its ordered
+    // queue intact until an older retry window expires.
+    if (insertionOrder.size >= maxEntries) return "capacity";
+    let sessions = devices.get(deviceId);
+    if (!sessions) {
+      sessions = new Map();
+      devices.set(deviceId, sessions);
+    }
+    let entries = sessions.get(sessionId);
+    if (!entries) {
+      entries = new Map();
+      sessions.set(sessionId, entries);
+    }
+    const entry = { deviceId, sessionId, inputId, dataFingerprint, recordedAtMs };
+    entries.set(inputId, entry);
+    insertionOrder.add(entry);
+    return "recorded";
+  };
+
+  return {
+    fingerprint(deviceId: string, sessionId: string, inputId: string): string | null {
+      pruneExpired();
+      return entriesFor(deviceId, sessionId)?.get(inputId)?.dataFingerprint ?? null;
+    },
+
+    hasCapacity(): boolean {
+      pruneExpired();
+      return insertionOrder.size < maxEntries;
+    },
+
+    remember,
+
+    restore(entriesToRestore: TerminalInputDedupeEntry[]): void {
+      for (const entry of entriesToRestore) {
+        if (
+          !entry
+          || typeof entry.deviceId !== "string"
+          || !entry.deviceId
+          || typeof entry.sessionId !== "string"
+          || !entry.sessionId
+          || typeof entry.inputId !== "string"
+          || !entry.inputId
+          || typeof entry.dataFingerprint !== "string"
+          || !/^[a-f0-9]{64}$/i.test(entry.dataFingerprint)
+          || typeof entry.recordedAtMs !== "number"
+          || !Number.isFinite(entry.recordedAtMs)
+        ) continue;
+        if (entry.recordedAtMs <= now() - retryWindowMs) continue;
+        remember(
+          entry.deviceId,
+          entry.sessionId,
+          entry.inputId,
+          entry.dataFingerprint,
+          entry.recordedAtMs,
+        );
+      }
+    },
+
+    snapshotForDevice(deviceId: string): TerminalInputDedupeEntry[] {
+      pruneExpired();
+      const sessions = devices.get(deviceId);
+      if (!sessions) return [];
+      const snapshots: TerminalInputDedupeEntry[] = [];
+      for (const entries of sessions.values()) {
+        for (const entry of entries.values()) snapshots.push({ ...entry });
+      }
+      return snapshots;
+    },
+
+    get size(): number {
+      pruneExpired();
+      return insertionOrder.size;
+    },
+  };
+}
+
+function normalizeTerminalInputId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const inputId = value.trim();
+  if (!inputId || inputId.length > TERMINAL_INPUT_ID_MAX_CHARS) return null;
+  return inputId;
+}
 
 function inlineImageDataUrlBytes(value: string | null | undefined): number | null {
   if (!value || !/^data:image\//i.test(value.trim())) return null;
@@ -1501,7 +1713,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const pairingSecretsPath = args.pairingSecretsPath ?? path.join(layout.secretsDir, "sync-paired-devices.json");
   const commandLedgerPath = path.join(layout.cacheDir, "sync-mobile-command-ledger.json");
   const bootstrapToken = ensureBootstrapToken(bootstrapTokenPath);
-  const pairingStore = createSyncPairingStore({
+  const pairingStore = args.pairingStore ?? createSyncPairingStore({
     filePath: pairingSecretsPath,
     pinStore: args.pinStore,
   });
@@ -1608,47 +1820,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
 
   const peers = new Set<PeerState>();
+  const helloCommitQueueByDevice = new Map<string, Promise<void>>();
+  const connectionAttemptByDevice = new Map<string, {
+    id: string;
+    startedAtMs: number;
+    reservedAtMs: number;
+    winner: PeerState | null;
+  }>();
+  // Host-scoped rather than peer-scoped so a transport reconnect from the
+  // same authenticated device can retry a lost ACK without rewriting input.
+  const terminalInputDedupeLedger = createTerminalInputDedupeLedger();
+  const terminalInputOperationQueues = new Map<string, Promise<void>>();
   let accountLeaseUserId: string | null = null;
-  let accountLeaseTokenHash: string | null = null;
   let accountLeaseGeneration = 0;
   let accountLeaseInitialized = false;
-  let accountLeaseCheckInFlight: Promise<{
-    userId: string | null;
-    tokenHash: string | null;
-  }> | null = null;
-
-  const clearRelayAccountExpiry = (peer: PeerState): void => {
-    if (peer.relayAccountExpiryTimer) clearTimeout(peer.relayAccountExpiryTimer);
-    peer.relayAccountExpiryTimer = null;
-  };
-
-  const armRelayAccountExpiry = (peer: PeerState): void => {
-    clearRelayAccountExpiry(peer);
-    const expiresAtMs = peer.relayAccountExpiresAtMs;
-    if (expiresAtMs == null || peer.transportOrigin !== "relay-bridge") return;
-    const delayMs = Math.max(0, Math.min(2_147_483_647, expiresAtMs - Date.now()));
-    peer.relayAccountExpiryTimer = setTimeout(() => {
-      peer.relayAccountExpiryTimer = null;
-      if (Date.now() < expiresAtMs) {
-        armRelayAccountExpiry(peer);
-        return;
-      }
-      peer.authenticated = false;
-      peer.metadata = null;
-      peer.authKind = null;
-      peer.pairedDeviceId = null;
-      peer.pairingRecord = null;
-      try {
-        peer.ws.close(4003, "ADE Relay account proof expired");
-      } catch {
-        // ignore close failures
-      }
-    }, delayMs);
-    peer.relayAccountExpiryTimer.unref?.();
-  };
+  let accountLeaseContinuityUserId: string | null = null;
+  let accountLeaseContinuityUntilMs = 0;
+  let accountLeaseCheckInFlight: Promise<{ userId: string | null }> | null = null;
 
   const closePeerForAccountLease = (peer: PeerState, reason: string): void => {
-    clearRelayAccountExpiry(peer);
+    peer.relayAuthorization?.dispose();
+    peer.relayAuthorization = null;
     const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId;
     if (deviceId) removeAllPresenceForDevice(deviceId, "remote");
     pairedChannelService.closePeer(peer.ws, reason, true);
@@ -1658,21 +1850,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer.pairedDeviceId = null;
     peer.pairingRecord = null;
     try {
-      peer.ws.close(4003, reason);
+      peer.ws.close(SYNC_RELAY_AUTHORIZATION_CLOSE_CODE, reason);
     } catch {
       // ignore close failures
     }
   };
 
-  const applyAccountLease = (nextUserId: string | null, nextTokenHash: string | null): void => {
+  const applyAccountLease = (nextUserId: string | null): void => {
     const previousUserId = accountLeaseUserId;
     const changed = !accountLeaseInitialized
-      || previousUserId !== nextUserId
-      || accountLeaseTokenHash !== nextTokenHash;
+      || previousUserId !== nextUserId;
     accountLeaseInitialized = true;
     accountLeaseUserId = nextUserId;
-    accountLeaseTokenHash = nextTokenHash;
     if (!changed) return;
+    accountLeaseContinuityUserId = null;
+    accountLeaseContinuityUntilMs = 0;
     accountLeaseGeneration += 1;
     const revokedDeviceIds = new Set(pairingStore.revokeAccountOwnedExcept(nextUserId));
     let closedAny = false;
@@ -1700,29 +1892,57 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
+  const readExplicitAccountStatus = (): { userId: string | null; expiresAtMs: number | null } => {
+    const status = args.accountAuthService?.getStatus();
+    const userId = status?.signedIn ? status.userId?.trim() || null : null;
+    const expiresAtMs = status?.expiresAt ? Date.parse(status.expiresAt) : Number.NaN;
+    return {
+      userId,
+      expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : null,
+    };
+  };
+  const seedAccountContinuity = (userId: string, expiresAtMs: number | null): void => {
+    const nowMs = Date.now();
+    const localExpiry = expiresAtMs != null && expiresAtMs > nowMs
+      ? expiresAtMs
+      : nowMs + ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS;
+    accountLeaseContinuityUserId = userId;
+    accountLeaseContinuityUntilMs = Math.min(
+      localExpiry,
+      nowMs + ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
+    );
+  };
+
   const refreshAccountLease = async (): Promise<string | null> => {
     if (accountLeaseCheckInFlight) return (await accountLeaseCheckInFlight).userId;
-    const check = (async (): Promise<{
-      userId: string | null;
-      tokenHash: string | null;
-    }> => {
-      const status = args.accountAuthService?.getStatus();
-      const userId = status?.signedIn ? status.userId?.trim() || null : null;
-      if (!userId || !args.accountAuthService) return { userId: null, tokenHash: null };
+    const check = (async (): Promise<{ userId: string | null }> => {
+      const initialStatus = readExplicitAccountStatus();
+      const userId = initialStatus.userId;
+      applyAccountLease(userId);
+      if (!userId || !args.accountAuthService) return { userId: null };
+      if (accountLeaseContinuityUserId !== userId) {
+        seedAccountContinuity(userId, initialStatus.expiresAtMs);
+      }
       try {
         const token = (await args.accountAuthService.getAccessToken()).trim();
-        const refreshed = args.accountAuthService.getStatus();
-        return token && refreshed.signedIn && refreshed.userId?.trim() === userId
-          ? { userId, tokenHash: createHash("sha256").update(token).digest("hex") }
-          : { userId: null, tokenHash: null };
+        const refreshedStatus = readExplicitAccountStatus();
+        const refreshedUserId = refreshedStatus.userId;
+        if (refreshedUserId !== accountLeaseUserId) applyAccountLease(refreshedUserId);
+        if (!token || refreshedUserId !== userId) return { userId: null };
+        seedAccountContinuity(userId, refreshedStatus.expiresAtMs);
+        return { userId };
       } catch {
-        return { userId: null, tokenHash: null };
+        const refreshedUserId = readExplicitAccountStatus().userId;
+        if (refreshedUserId !== accountLeaseUserId) applyAccountLease(refreshedUserId);
+        const retainsLastKnownGood = refreshedUserId === userId
+          && accountLeaseContinuityUserId === userId
+          && Date.now() <= accountLeaseContinuityUntilMs;
+        return { userId: retainsLastKnownGood ? userId : null };
       }
     })();
     accountLeaseCheckInFlight = check;
     try {
       const lease = await check;
-      applyAccountLease(lease.userId, lease.tokenHash);
       return lease.userId;
     } finally {
       if (accountLeaseCheckInFlight === check) accountLeaseCheckInFlight = null;
@@ -1734,6 +1954,59 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   } | null> => {
     const userId = await refreshAccountLease();
     return userId ? { userId, generation: accountLeaseGeneration } : null;
+  };
+
+  const installRelayAuthorization = (
+    peer: PeerState,
+    initial: RelayAuthorizationSnapshot | null,
+    capableOverride?: boolean,
+  ): void => {
+    peer.relayAuthorization?.dispose();
+    peer.relayAuthorization = null;
+    if (!initial || peer.transportOrigin !== "relay-bridge") return;
+    const capable = capableOverride ?? Boolean(
+      peer.metadata?.capabilities?.includes(SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY),
+    );
+    const lifecycle = createRelayAuthorizationLifecycle({
+      capable,
+      deviceId: () => {
+        const metadataDeviceId = peer.metadata?.deviceId ?? null;
+        return metadataDeviceId && metadataDeviceId === peer.pairedDeviceId
+          ? metadataDeviceId
+          : null;
+      },
+      pinnedPublicKey: () => peer.pairingRecord?.dpopPublicKey ?? null,
+      captureHostAuthorization: captureAccountAuthorization,
+      verifyAccountToken: async (token, expectedUserId) => {
+        const config = args.getAccountAttestationConfig?.();
+        if (!config) throw new Error("Relay account attestation is unavailable.");
+        return verifyAccountAttestation({ token, expectedUserId, config });
+      },
+      sendResult: (payload, requestId) => {
+        sendRequired(peer, "relay_reauthorize_result", payload, requestId);
+      },
+      close: (reason) => {
+        const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null;
+        args.logger.warn("sync_host.relay_authorization_closed", {
+          reason,
+          peerDeviceId: deviceId,
+          peerDeviceName: peer.metadata?.deviceName ?? null,
+          remoteAddress: peer.remoteAddress ?? null,
+          connectedAt: peer.connectedAt,
+        });
+        if (deviceId) removeAllPresenceForDevice(deviceId, "remote");
+        pairedChannelService.closePeer(peer.ws, reason, true);
+        peer.authenticated = false;
+        try {
+          peer.ws.close(SYNC_RELAY_AUTHORIZATION_CLOSE_CODE, reason);
+        } catch {
+          // ignore close failures
+        }
+      },
+      logger: args.logger,
+    });
+    lifecycle.initialize(initial);
+    peer.relayAuthorization = lifecycle;
   };
   const mobileCommandResultCache = new Map<string, CachedMobileCommand>();
   let commandReplayCount = 0;
@@ -2329,6 +2602,210 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer.authTimeout = null;
   }
 
+  function isPeerLifecycleCurrent(peer: PeerState, generation: number): boolean {
+    return !disposed
+      && peers.has(peer)
+      && peer.lifecycleGeneration === generation
+      && peer.ws.readyState === WebSocket.OPEN;
+  }
+
+  function isCurrentTerminalSnapshotBarrier(
+    peer: PeerState,
+    sessionId: string,
+    barrier: PendingTerminalSnapshotBarrier,
+    lifecycleGeneration: number,
+  ): boolean {
+    const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
+    return isPeerLifecycleCurrent(peer, lifecycleGeneration)
+      && currentBarrier === barrier
+      && !barrier.failed;
+  }
+
+  function clearTerminalSnapshotBarrier(
+    peer: PeerState,
+    sessionId: string,
+    barrier?: PendingTerminalSnapshotBarrier,
+  ): void {
+    const currentBarrier = peer.pendingTerminalSnapshots.get(sessionId);
+    if (barrier && currentBarrier !== barrier) return;
+    peer.pendingTerminalSnapshots.delete(sessionId);
+  }
+
+  function requireFreshTerminalSnapshot(
+    barrier: PendingTerminalSnapshotBarrier,
+    endOffset?: number | null,
+  ): void {
+    barrier.requiredCaptureAttempt = Math.max(
+      barrier.requiredCaptureAttempt,
+      barrier.captureAttempt + 1,
+    );
+    if (typeof endOffset === "number" && Number.isSafeInteger(endOffset) && endOffset >= 0) {
+      barrier.requiredSnapshotEndOffset = Math.max(
+        barrier.requiredSnapshotEndOffset ?? 0,
+        endOffset,
+      );
+    }
+  }
+
+  function discardTrackedTerminalDataForRecapture(barrier: PendingTerminalSnapshotBarrier): void {
+    const retained: PendingTerminalSnapshotEvent[] = [];
+    let queuedBytes = 0;
+    for (const event of barrier.events) {
+      if (event.kind === "data" && event.payload.offset != null) {
+        requireFreshTerminalSnapshot(barrier, event.payload.offset);
+        continue;
+      }
+      retained.push(event);
+      queuedBytes += event.byteLength;
+    }
+    barrier.events = retained;
+    barrier.queuedBytes = queuedBytes;
+  }
+
+  function failTerminalSnapshotBarrier(
+    peer: PeerState,
+    sessionId: string,
+    barrier: PendingTerminalSnapshotBarrier,
+    reason: string,
+  ): void {
+    if (barrier.failed) return;
+    barrier.failed = true;
+    args.logger.warn("sync_host.terminal_snapshot_barrier_failed", {
+      sessionId,
+      reason,
+      captureAttempt: barrier.captureAttempt,
+      queuedEvents: barrier.events.length,
+      queuedBytes: barrier.queuedBytes,
+      peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+    });
+    try {
+      peer.ws.close(4001, "Terminal snapshot catch-up failed");
+    } catch {
+      // The failed barrier still prevents an out-of-order or lossy flush.
+    }
+  }
+
+  function enqueueTerminalSnapshotEvent(
+    peer: PeerState,
+    sessionId: string,
+    event: PendingTerminalSnapshotEvent,
+  ): boolean {
+    const barrier = peer.pendingTerminalSnapshots.get(sessionId);
+    if (!barrier) return false;
+    if (barrier.failed) return true;
+
+    const exceedsBudget = (): boolean => (
+      barrier.events.length >= MAX_PENDING_TERMINAL_SNAPSHOT_EVENTS
+      || barrier.queuedBytes + event.byteLength > MAX_PENDING_TERMINAL_SNAPSHOT_BYTES
+    );
+    if (exceedsBudget()) {
+      // Numeric-offset data is durably represented by a fresh authoritative
+      // transcript snapshot, so shed only those queued events and require the
+      // next capture to cover their highest end offset. Offsetless data and
+      // exits are not reconstructable and must remain explicitly queued.
+      discardTrackedTerminalDataForRecapture(barrier);
+    }
+    if (exceedsBudget()) {
+      if (event.kind === "data" && event.payload.offset != null) {
+        requireFreshTerminalSnapshot(barrier, event.payload.offset);
+        return true;
+      }
+      failTerminalSnapshotBarrier(peer, sessionId, barrier, "unreconstructable_queue_overflow");
+      return true;
+    }
+
+    if (event.kind === "data" && event.payload.offset == null) {
+      requireFreshTerminalSnapshot(barrier);
+    }
+    barrier.events.push(event);
+    barrier.queuedBytes += event.byteLength;
+    return true;
+  }
+
+  function planTerminalSnapshotFlush(
+    barrier: PendingTerminalSnapshotBarrier,
+    snapshotEndOffset: number | null,
+  ): { needsRecapture: boolean; events: PendingTerminalSnapshotEvent[] } {
+    if (
+      barrier.requiredCaptureAttempt > barrier.captureAttempt
+      || (
+        barrier.requiredSnapshotEndOffset != null
+        && (snapshotEndOffset == null || snapshotEndOffset < barrier.requiredSnapshotEndOffset)
+      )
+    ) {
+      return { needsRecapture: true, events: [] };
+    }
+
+    const planned: PendingTerminalSnapshotEvent[] = [];
+    let watermark = snapshotEndOffset;
+    let offsetsAreContinuous = watermark != null;
+    for (const event of barrier.events) {
+      if (event.kind === "exit") {
+        planned.push(event);
+        continue;
+      }
+      const endOffset = event.payload.offset;
+      const bytes = Buffer.from(event.payload.data, "utf8");
+      if (
+        !offsetsAreContinuous
+        || endOffset == null
+        || !Number.isSafeInteger(endOffset)
+        || endOffset < bytes.length
+      ) {
+        planned.push(event);
+        offsetsAreContinuous = false;
+        continue;
+      }
+      const startOffset = endOffset - bytes.length;
+      if (endOffset <= watermark!) {
+        continue;
+      }
+      if (startOffset > watermark!) {
+        requireFreshTerminalSnapshot(barrier, endOffset);
+        discardTrackedTerminalDataForRecapture(barrier);
+        return { needsRecapture: true, events: [] };
+      }
+      const overlapBytes = watermark! - startOffset;
+      if (
+        overlapBytes > 0
+        && overlapBytes < bytes.length
+        && (bytes[overlapBytes]! & 0b1100_0000) === 0b1000_0000
+      ) {
+        requireFreshTerminalSnapshot(barrier, endOffset);
+        discardTrackedTerminalDataForRecapture(barrier);
+        return { needsRecapture: true, events: [] };
+      }
+      const suffix = overlapBytes === 0 ? bytes : bytes.subarray(overlapBytes);
+      planned.push({
+        ...event,
+        payload: {
+          ...event.payload,
+          data: suffix.toString("utf8"),
+        },
+        byteLength: suffix.length,
+      });
+      watermark = endOffset;
+    }
+    return { needsRecapture: false, events: planned };
+  }
+
+  async function withHelloCommitLock<T>(deviceId: string, work: () => Promise<T> | T): Promise<T> {
+    const prior = helloCommitQueueByDevice.get(deviceId) ?? Promise.resolve();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const tail = prior.catch(() => {}).then(() => held);
+    helloCommitQueueByDevice.set(deviceId, tail);
+    await prior.catch(() => {});
+    try {
+      return await work();
+    } finally {
+      release();
+      if (helloCommitQueueByDevice.get(deviceId) === tail) {
+        helloCommitQueueByDevice.delete(deviceId);
+      }
+    }
+  }
+
   function registerPeer(
     ws: WebSocket,
     remoteAddress: string | null,
@@ -2337,6 +2814,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   ): PeerState {
     const peer: PeerState = {
       ws,
+      lifecycleGeneration: 0,
       metadata: null,
       authenticated: false,
       authTimeout: null,
@@ -2351,12 +2829,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       awaitingHeartbeatAt: null,
       missedHeartbeatCount: 0,
       backpressuredSinceMs: null,
+      changesetChatDeferredSinceMs: null,
+      changesetRecoveryLevel: 0,
+      changesetRecoveryNotBeforeMs: 0,
       remoteAddress,
       remotePort,
       transportOrigin,
-      relayAccountExpiresAtMs: null,
-      relayAccountExpiryTimer: null,
+      relayAuthorization: null,
       subscribedSessionIds: new Set(),
+      pendingTerminalSnapshots: new Map(),
+      nextTerminalSnapshotGeneration: 0,
       subscribedChatSessionIds: new Set(),
       chatSubscriptionScopes: new Map(),
       chatTranscriptOffsets: new Map(),
@@ -2367,6 +2849,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       rosterSeq: 0,
       rosterBaseline: new Map(),
       messageQueue: Promise.resolve(),
+      terminalInputQueue: Promise.resolve(),
+      pendingTerminalOwnershipChanges: 0,
       // Paired clients own their local preference. Fail closed on every new
       // connection until that client explicitly reasserts consent, so an
       // opted-out reconnect cannot leak an exportable first mutation.
@@ -2398,6 +2882,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (handleImmediateControlEnvelope(peer, envelope)) return;
+      const changesTerminalOwnership = envelope.type === "terminal_subscribe"
+        || envelope.type === "terminal_unsubscribe";
+      if (changesTerminalOwnership) peer.pendingTerminalOwnershipChanges += 1;
       peer.messageQueue = peer.messageQueue
         .catch(() => {})
         .then(() => handleMessageWithTimeout(peer, envelope))
@@ -2411,11 +2898,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             messageType: envelope.type,
             requestId: envelope.requestId ?? null,
           });
+        })
+        .finally(() => {
+          if (changesTerminalOwnership) {
+            peer.pendingTerminalOwnershipChanges = Math.max(0, peer.pendingTerminalOwnershipChanges - 1);
+          }
         });
     });
     ws.on("close", (code, reason) => {
+      peer.lifecycleGeneration += 1;
+      peer.pendingTerminalSnapshots.clear();
       clearPeerAuthTimeout(peer);
-      clearRelayAccountExpiry(peer);
+      releaseConnectionAttemptWinner(peer);
+      peer.relayAuthorization?.dispose();
+      peer.relayAuthorization = null;
       // The close frame is the only record of WHY a peer left: a deliberate
       // client teardown carries a code + reason string ("Network route
       // changed.", "The machine took too long to respond.", …) while 1006
@@ -2520,8 +3016,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.authKind = snapshot.authKind;
         peer.pairedDeviceId = snapshot.pairedDeviceId;
         peer.pairingRecord = pairingRecord;
-        peer.relayAccountExpiresAtMs = snapshot.relayAccountExpiresAtMs ?? null;
-        armRelayAccountExpiry(peer);
+        const handedOffAttempt = snapshot.metadata.connectionAttempt;
+        if (handedOffAttempt) {
+          const accepted = connectionAttemptByDevice.get(snapshot.metadata.deviceId);
+          if (!accepted || handedOffAttempt.startedAtMs > accepted.startedAtMs) {
+            connectionAttemptByDevice.set(snapshot.metadata.deviceId, {
+              ...handedOffAttempt,
+              reservedAtMs: Date.now(),
+              winner: peer,
+            });
+          }
+        }
+        const legacyRelayExpiry = typeof snapshot.relayAccountExpiresAtMs === "number"
+          && Number.isFinite(snapshot.relayAccountExpiresAtMs)
+          ? snapshot.relayAccountExpiresAtMs
+          : null;
+        const handedOffRelayAuthorization = snapshot.relayAuthorization
+          ?? (peer.transportOrigin === "relay-bridge" && legacyRelayExpiry != null
+            ? {
+                ownerUserId: pairingRecord?.accountOwnerUserId
+                  ?? accountLeaseUserId
+                  ?? "legacy-relay-handoff",
+                expiresAtMs: legacyRelayExpiry,
+                challenge: randomBytes(24).toString("base64url"),
+              }
+            : null);
+        installRelayAuthorization(
+          peer,
+          handedOffRelayAuthorization,
+          snapshot.relayAuthorization ? undefined : false,
+        );
+        terminalInputDedupeLedger.restore(snapshot.terminalInputDedupe ?? []);
         peer.connectedAt = snapshot.connectedAt;
         peer.lastKnownServerDbVersion = Math.max(
           0,
@@ -3302,6 +3827,52 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  function arbitrateConnectionAttempt(deviceId: string, currentPeer: PeerState, metadata: SyncPeerMetadata): boolean {
+    const attempt = metadata.connectionAttempt;
+    if (!attempt) {
+      // Backward compatibility: a legacy hello keeps the historical
+      // last-authenticated-hello-wins behavior.
+      connectionAttemptByDevice.delete(deviceId);
+      closeExistingPeersForDevice(deviceId, currentPeer);
+      return true;
+    }
+    const accepted = connectionAttemptByDevice.get(deviceId);
+    if (accepted) {
+      const sameAttempt = accepted.id === attempt.id;
+      // Arbitration may reserve a winner immediately before pairing/auth state
+      // is committed. Treat that OPEN, owned peer as live so a concurrent
+      // same-attempt candidate cannot steal the reservation in that gap.
+      const liveWinner = Boolean(
+        accepted.winner
+        && peers.has(accepted.winner)
+        && accepted.winner.ws.readyState === WebSocket.OPEN,
+      );
+      if (sameAttempt && !liveWinner) {
+        accepted.winner = currentPeer;
+        return true;
+      }
+      const olderOrEqualAttempt = attempt.startedAtMs <= accepted.startedAtMs;
+      const reservationFresh = Date.now() - accepted.reservedAtMs <= CONNECTION_ATTEMPT_RESERVATION_TTL_MS;
+      if (sameAttempt || (olderOrEqualAttempt && (liveWinner || reservationFresh))) return false;
+    }
+    // Authentication has already succeeded. Only now may a genuinely newer
+    // attempt supersede the previous winner.
+    closeExistingPeersForDevice(deviceId, currentPeer);
+    connectionAttemptByDevice.set(deviceId, {
+      id: attempt.id,
+      startedAtMs: attempt.startedAtMs,
+      reservedAtMs: Date.now(),
+      winner: currentPeer,
+    });
+    return true;
+  }
+
+  function releaseConnectionAttemptWinner(peer: PeerState): void {
+    for (const record of connectionAttemptByDevice.values()) {
+      if (record.winner === peer) record.winner = null;
+    }
+  }
+
   function peerSupportsChangesetAck(peer: PeerState): boolean {
     return Array.isArray(peer.metadata?.capabilities) && peer.metadata.capabilities.includes("changesetAck");
   }
@@ -3334,24 +3905,92 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       fromDbVersion,
       toDbVersion: payload.toDbVersion,
       changes: payload.changes,
-      sentAtMs: Date.now(),
-      retryCount: 0,
+      sentAtMs: 0,
+      attemptCount: 0,
+      retryNotBeforeMs: 0,
     };
     const sent = send(peer, "changeset_batch", payload);
-    return sent ? batch : null;
+    if (!sent) return null;
+    batch.sentAtMs = Date.now();
+    batch.attemptCount = 1;
+    return batch;
   }
 
   function resendPendingChangesetBatch(peer: PeerState): boolean {
     const batch = peer.pendingChangesetBatch;
     if (!batch) return false;
-    batch.sentAtMs = Date.now();
-    batch.retryCount += 1;
-    return send(peer, "changeset_batch", {
+    const sent = send(peer, "changeset_batch", {
       batchId: batch.batchId,
       reason: batch.reason,
       fromDbVersion: batch.fromDbVersion,
       toDbVersion: batch.toDbVersion,
       changes: batch.changes,
+    });
+    if (!sent) return false;
+    batch.sentAtMs = Date.now();
+    batch.attemptCount += 1;
+    batch.retryNotBeforeMs = 0;
+    return true;
+  }
+
+  function changesetRecoveryBackoffMs(level: number): number {
+    const boundedLevel = Math.max(1, Math.min(MAX_CHANGESET_RECOVERY_LEVEL, Math.floor(level)));
+    return Math.min(
+      CHANGESET_RECOVERY_BACKOFF_MAX_MS,
+      CHANGESET_RECOVERY_BACKOFF_BASE_MS * (2 ** (boundedLevel - 1)),
+    );
+  }
+
+  function changesetBatchLimits(peer: PeerState): { maxRows: number; maxBytes: number } {
+    const divisor = 2 ** Math.max(0, peer.changesetRecoveryLevel);
+    return {
+      maxRows: Math.max(MIN_RECOVERY_CHANGESET_BATCH_ROWS, Math.floor(maxChangesetBatchRows / divisor)),
+      maxBytes: Math.max(MIN_RECOVERY_CHANGESET_BATCH_BYTES, Math.floor(maxChangesetBatchBytes / divisor)),
+    };
+  }
+
+  function finishChangesetChatDeferral(
+    peer: PeerState,
+    reason: "pressure_relieved" | "no_changes" | "batch_admitted",
+    nowMs: number,
+  ): void {
+    if (peer.changesetChatDeferredSinceMs == null) return;
+    args.logger.debug("sync_host.changeset_chat_deferral_ended", {
+      peerDeviceId: peer.metadata?.deviceId ?? null,
+      reason,
+      deferredMs: Math.max(0, nowMs - peer.changesetChatDeferredSinceMs),
+    });
+    peer.changesetChatDeferredSinceMs = null;
+  }
+
+  function abandonPendingChangesetBatch(
+    peer: PeerState,
+    reason: "ack_timeout" | "ack_failed",
+    nowMs: number,
+    error: string | null = null,
+  ): void {
+    const pending = peer.pendingChangesetBatch;
+    if (!pending) return;
+    peer.pendingChangesetBatch = null;
+    peer.changesetRecoveryLevel = Math.min(
+      MAX_CHANGESET_RECOVERY_LEVEL,
+      peer.changesetRecoveryLevel + 1,
+    );
+    const backoffMs = changesetRecoveryBackoffMs(peer.changesetRecoveryLevel);
+    peer.changesetRecoveryNotBeforeMs = nowMs + backoffMs;
+    const limits = changesetBatchLimits(peer);
+    args.logger.warn("sync_host.changeset_recovery_started", {
+      peerDeviceId: peer.metadata?.deviceId ?? null,
+      abandonedBatchId: pending.batchId,
+      fromDbVersion: pending.fromDbVersion,
+      toDbVersion: pending.toDbVersion,
+      attemptCount: pending.attemptCount,
+      reason,
+      error,
+      recoveryLevel: peer.changesetRecoveryLevel,
+      backoffMs,
+      maxRows: limits.maxRows,
+      maxBytes: limits.maxBytes,
     });
   }
 
@@ -4030,46 +4669,64 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // the gate so a phone/browser cannot suppress its normal CRDT stream by
       // spoofing the hello capability.
       if (isRuntimeOnlyPairedHost(peer)) continue;
+      // The 4 MiB gate is a hard socket-safety boundary. Fair scheduling may
+      // override only the lower chat-priority watermark below.
       if (isPeerBackpressured(peer)) continue;
       if (peer.pendingChangesetBatch) {
-        if (nowMs - peer.pendingChangesetBatch.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
-          const pending = peer.pendingChangesetBatch;
-          if (pending.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
-            args.logger.warn("sync_host.changeset_ack_timeout", {
+        const pending = peer.pendingChangesetBatch;
+        const rejectedRetryDue = pending.retryNotBeforeMs > 0 && nowMs >= pending.retryNotBeforeMs;
+        const ackTimedOut = pending.retryNotBeforeMs === 0
+          && nowMs - pending.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS;
+        if (rejectedRetryDue || ackTimedOut) {
+          if (pending.attemptCount >= MAX_CHANGESET_SEND_ATTEMPTS) {
+            abandonPendingChangesetBatch(peer, ackTimedOut ? "ack_timeout" : "ack_failed", nowMs);
+            continue;
+          }
+          const resent = resendPendingChangesetBatch(peer);
+          if (resent) {
+            args.logger.debug("sync_host.changeset_ack_retry", {
               peerDeviceId: peer.metadata.deviceId,
               batchId: pending.batchId,
               fromDbVersion: pending.fromDbVersion,
               toDbVersion: pending.toDbVersion,
-              retryCount: pending.retryCount,
+              attemptCount: pending.attemptCount,
+              trigger: ackTimedOut ? "timeout" : "rejected",
             });
-            try {
-              peer.ws.close(4000, "Changeset acknowledgement timed out");
-            } catch {
-              // ignore close failures
-            }
-            continue;
           }
-          const resent = resendPendingChangesetBatch(peer);
-          args.logger.debug("sync_host.changeset_ack_retry", {
-            peerDeviceId: peer.metadata.deviceId,
-            batchId: pending.batchId,
-            fromDbVersion: pending.fromDbVersion,
-            toDbVersion: pending.toDbVersion,
-            retryCount: pending.retryCount,
-            resent,
-          });
         }
         continue;
       }
-      if (shouldDeferBackgroundChangesForChat(peer)) {
-        args.logger.debug("sync_host.changeset_deferred_chat_backpressure", {
-          peerDeviceId: peer.metadata?.deviceId ?? null,
-          bufferedAmount: peer.ws.bufferedAmount,
-          thresholdBytes: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
-        });
+      if (currentDbVersion <= peer.lastKnownServerDbVersion) {
+        finishChangesetChatDeferral(peer, "no_changes", nowMs);
         continue;
       }
-      if (currentDbVersion <= peer.lastKnownServerDbVersion) continue;
+      if (nowMs < peer.changesetRecoveryNotBeforeMs) continue;
+      if (shouldDeferBackgroundChangesForChat(peer)) {
+        if (peer.changesetChatDeferredSinceMs == null) {
+          peer.changesetChatDeferredSinceMs = nowMs;
+          args.logger.debug("sync_host.changeset_chat_deferral_started", {
+            peerDeviceId: peer.metadata.deviceId,
+            bufferedAmount: peer.ws.bufferedAmount,
+            thresholdBytes: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+            maxDeferMs: SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS,
+          });
+        }
+        if (nowMs - peer.changesetChatDeferredSinceMs < SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS) {
+          continue;
+        }
+      } else {
+        finishChangesetChatDeferral(peer, "pressure_relieved", nowMs);
+      }
+      const recoveryLimits = changesetBatchLimits(peer);
+      const chatLimits = syncHostChangesetBatchOptionsForChat({
+        subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
+        maxRows: recoveryLimits.maxRows,
+        maxBytes: recoveryLimits.maxBytes,
+      });
+      const batchLimits = {
+        maxRows: chatLimits?.maxRows ?? recoveryLimits.maxRows,
+        maxBytes: chatLimits?.maxBytes ?? recoveryLimits.maxBytes,
+      };
       // Bounded export: scan a db_version WINDOW, not the whole backlog. The
       // crsql_changes vtab pushes version-range constraints down to indexed
       // clock tables, while an open-ended ORDER BY scan materializes the full
@@ -4083,7 +4740,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       );
       const exported = args.db.sync.exportChangesSince(
         peer.lastKnownServerDbVersion,
-        { maxRows: maxChangesetBatchRows * 4, throughDbVersion: scanThroughDbVersion },
+        { maxRows: batchLimits.maxRows * 4, throughDbVersion: scanThroughDbVersion },
       );
       const exportedThroughDbVersion = exported.length > 0
         ? Number(exported[exported.length - 1].db_version)
@@ -4104,6 +4761,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           toDbVersion: exportedThroughDbVersion,
           reason: "peer_owned_changes_only",
         });
+        finishChangesetChatDeferral(peer, "no_changes", nowMs);
         continue;
       }
       const pending = sendNextChangesetBatch(
@@ -4112,26 +4770,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.lastKnownServerDbVersion,
         exportedThroughDbVersion,
         changes,
-        syncHostChangesetBatchOptionsForChat({
-          subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
-          maxRows: maxChangesetBatchRows,
-          maxBytes: maxChangesetBatchBytes,
-        }),
+        batchLimits,
       );
       if (pending) {
+        peer.changesetRecoveryNotBeforeMs = 0;
         if (peerSupportsChangesetAck(peer)) {
           peer.pendingChangesetBatch = pending;
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
         }
+        finishChangesetChatDeferral(peer, "batch_admitted", nowMs);
         lastBroadcastAt = nowIso();
-      } else {
-        args.logger.debug("sync_host.changeset_deferred_backpressure", {
-          peerDeviceId: peer.metadata?.deviceId ?? null,
-          fromDbVersion: peer.lastKnownServerDbVersion,
-          toDbVersion: currentDbVersion,
-          bufferedAmount: peer.ws.bufferedAmount,
-        });
       }
     }
   }
@@ -4148,28 +4797,31 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     if (!payload.ok) {
-      pending.retryCount += 1;
-      pending.sentAtMs = Date.now();
+      const nowMs = Date.now();
+      const message = payload.error?.message ?? "Changeset apply failed.";
+      if (pending.attemptCount >= MAX_CHANGESET_SEND_ATTEMPTS) {
+        abandonPendingChangesetBatch(peer, "ack_failed", nowMs, message);
+        return;
+      }
+      const retryInMs = changesetRecoveryBackoffMs(pending.attemptCount);
+      pending.retryNotBeforeMs = nowMs + retryInMs;
       args.logger.warn("sync_host.changeset_ack_failed", {
         peerDeviceId: peer.metadata?.deviceId ?? null,
         batchId: pending.batchId,
         fromDbVersion: pending.fromDbVersion,
         toDbVersion: pending.toDbVersion,
-        retryCount: pending.retryCount,
-        error: payload.error?.message ?? "Changeset apply failed.",
+        attemptCount: pending.attemptCount,
+        retryInMs,
+        error: message,
       });
-      if (pending.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
-        try {
-          peer.ws.close(4000, "Changeset apply failed repeatedly");
-        } catch {
-          // ignore close failures
-        }
-      }
       return;
     }
     if (payload.toDbVersion < pending.toDbVersion) return;
+    const recoveryLevel = peer.changesetRecoveryLevel;
     peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
     peer.pendingChangesetBatch = null;
+    peer.changesetRecoveryLevel = 0;
+    peer.changesetRecoveryNotBeforeMs = 0;
     peer.lastAppliedAt = nowIso();
     lastChangesetAckLatencyMs = Math.max(0, Date.now() - pending.sentAtMs);
     args.logger.debug("sync_host.changeset_ack_applied", {
@@ -4179,6 +4831,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       toDbVersion: pending.toDbVersion,
       latencyMs: lastChangesetAckLatencyMs,
     });
+    if (recoveryLevel > 0) {
+      args.logger.debug("sync_host.changeset_recovery_reset", {
+        peerDeviceId: peer.metadata?.deviceId ?? null,
+        previousRecoveryLevel: recoveryLevel,
+      });
+    }
     broadcastBrainStatus();
   }
 
@@ -4701,16 +5359,237 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function handleImmediateControlEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): boolean {
-    if (!peer.authenticated || envelope.type !== "heartbeat") return false;
+    if (!peer.authenticated) return false;
+    if (envelope.type === "relay_reauthorize") {
+      markPeerMessageSeen(peer);
+      if (!peer.relayAuthorization) {
+        sendRequired(peer, "relay_reauthorize_result", {
+          ok: false,
+          error: {
+            code: "invalid_request",
+            message: "This connection does not have a refreshable Relay authorization lease.",
+            retryable: false,
+          },
+        }, envelope.requestId);
+        return true;
+      }
+      void peer.relayAuthorization.handle(envelope.payload, envelope.requestId).catch((error) => {
+        args.logger.warn("sync_host.relay_reauthorization_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+          requestId: envelope.requestId,
+        });
+      });
+      return true;
+    }
+    if (envelope.type === "terminal_input") {
+      markPeerMessageSeen(peer);
+      const priorInput = peer.terminalInputQueue.catch(() => {});
+      // A subscribe/unsubscribe already received on this socket is an ownership
+      // barrier. Otherwise terminal input stays independent of the general
+      // peer queue, so a slow remote command cannot delay an attached shell.
+      const ownershipBarrier = peer.pendingTerminalOwnershipChanges > 0
+        ? peer.messageQueue.catch(() => {})
+        : Promise.resolve();
+      const work = Promise.all([priorInput, ownershipBarrier]).then(async () => {
+        if (disposed || !peers.has(peer) || !peer.authenticated) return;
+        await handleTerminalInputSerialized(peer, envelope);
+      });
+      peer.terminalInputQueue = work.catch((error) => {
+        args.logger.warn("sync_host.terminal_input_failed", {
+          error: error instanceof Error ? error.message : String(error),
+          peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+          requestId: envelope.requestId,
+        });
+      });
+      return true;
+    }
+    if (envelope.type !== "heartbeat") return false;
     const heartbeatAwaitedAt = markPeerMessageSeen(peer);
     handleHeartbeatEnvelope(peer, envelope, heartbeatAwaitedAt);
     return true;
   }
 
+  async function handleTerminalInputSerialized(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+    const payload = envelope.payload as Partial<SyncTerminalInputPayload> | null;
+    const deviceId = toOptionalString(peer.pairedDeviceId) ?? toOptionalString(peer.metadata?.deviceId);
+    const sessionId = toOptionalString(payload?.sessionId);
+    const inputId = normalizeTerminalInputId(payload?.inputId);
+    if (!deviceId || !sessionId || !inputId) {
+      handleTerminalInputEnvelope(peer, envelope);
+      return;
+    }
+    const key = `${deviceId}\0${sessionId}\0${inputId}`;
+    const prior = terminalInputOperationQueues.get(key) ?? Promise.resolve();
+    const operation = prior.catch(() => {}).then(() => {
+      if (disposed || !peers.has(peer) || !peer.authenticated) return;
+      handleTerminalInputEnvelope(peer, envelope);
+    });
+    terminalInputOperationQueues.set(key, operation);
+    try {
+      await operation;
+    } finally {
+      if (terminalInputOperationQueues.get(key) === operation) {
+        terminalInputOperationQueues.delete(key);
+      }
+    }
+  }
+
+  function handleTerminalInputEnvelope(peer: PeerState, envelope: ParsedSyncEnvelope): void {
+    // Forward keystrokes / pasted text from an attached client into the active
+    // PTY. An input id is exactly-once only for the same payload bytes; reusing
+    // an id for different bytes is a protocol conflict, never a duplicate ACK.
+    const payload = envelope.payload as Partial<SyncTerminalInputPayload> | null;
+    const sessionId = toOptionalString(payload?.sessionId);
+    const data = typeof payload?.data === "string" ? payload.data : null;
+    const hasInputId = payload?.inputId != null;
+    const inputId = normalizeTerminalInputId(payload?.inputId);
+    const sendAck = (ack: SyncTerminalInputAckPayload): void => {
+      try {
+        if (sendRequired(peer, "terminal_input_ack", ack, envelope.requestId)) return;
+        args.logger.warn("sync.terminal_input_ack_not_sent", {
+          sessionId: ack.sessionId,
+          inputId: ack.inputId ?? null,
+          peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+        });
+      } catch (error) {
+        args.logger.warn("sync.terminal_input_ack_send_failed", {
+          sessionId: ack.sessionId,
+          inputId: ack.inputId ?? null,
+          peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    const sendFailure = (
+      code: Extract<SyncTerminalInputAckPayload, { ok: false }>["error"]["code"],
+      message: string,
+    ): void => {
+      if (!hasInputId) return;
+      const error = code === "not_subscribed"
+        ? { code, message, retryable: true as const }
+        : { code, message, retryable: false as const };
+      sendAck({
+        sessionId,
+        ...(inputId ? { inputId } : {}),
+        ok: false,
+        duplicate: false,
+        error,
+      } satisfies SyncTerminalInputAckPayload);
+    };
+    if (hasInputId && !inputId) {
+      args.logger.warn("sync.terminal_input_invalid_input_id", { sessionId });
+      sendFailure("invalid_input_id", "Terminal input id must be a bounded non-empty string.");
+      return;
+    }
+    const projectScope = resolveSyncHostInboundProjectScope(
+      envelope.type,
+      envelope.projectId,
+      args.projectId,
+      hostProjectIdAliases,
+    );
+    if (!projectScope.ok) {
+      sendFailure("project_mismatch", "Terminal input does not belong to this hosted project.");
+      return;
+    }
+    if (!sessionId || data == null) {
+      sendFailure("project_mismatch", "Terminal input does not belong to this hosted project.");
+      return;
+    }
+    const deviceId = toOptionalString(peer.pairedDeviceId) ?? toOptionalString(peer.metadata?.deviceId);
+    const dataFingerprint = inputId
+      ? createHash("sha256").update(data, "utf8").digest("hex")
+      : null;
+    if (inputId && deviceId && dataFingerprint) {
+      const recordedFingerprint = terminalInputDedupeLedger.fingerprint(deviceId, sessionId, inputId);
+      if (recordedFingerprint) {
+        if (recordedFingerprint !== dataFingerprint) {
+          args.logger.warn("sync.terminal_input_id_conflict", {
+            sessionId,
+            peerDeviceId: deviceId,
+            inputId,
+          });
+          sendFailure("input_id_conflict", "This terminal input id was already used for different data.");
+          return;
+        }
+        sendAck({
+          sessionId,
+          inputId,
+          ok: true,
+          duplicate: true,
+        } satisfies SyncTerminalInputAckPayload);
+        return;
+      }
+    }
+    if (!peer.subscribedSessionIds.has(sessionId)) {
+      args.logger.warn("sync.terminal_input_unsubscribed_session", { sessionId });
+      sendFailure("not_subscribed", "Subscribe to this terminal before sending input.");
+      return;
+    }
+    const session = args.sessionService.get(sessionId);
+    if (!session) {
+      args.logger.warn("sync.terminal_input_project_mismatch", { sessionId });
+      sendFailure("project_mismatch", "This terminal belongs to a different hosted project.");
+      return;
+    }
+    if (!args.ptyService.hasLivePty(sessionId)) {
+      args.logger.info("sync.terminal_input_no_active_pty", { sessionId });
+      sendFailure("session_not_live", "This terminal session is no longer live.");
+      return;
+    }
+    if (inputId && deviceId && dataFingerprint) {
+      if (!terminalInputDedupeLedger.hasCapacity()) {
+        sendFailure("dedupe_capacity", "Too many terminal inputs are awaiting retry-window expiry.");
+        return;
+      }
+    }
+    const accepted = args.ptyService.writeBySessionId(sessionId, data);
+    if (!accepted) {
+      args.logger.info("sync.terminal_input_no_active_pty", { sessionId });
+      sendFailure("session_not_live", "This terminal session is no longer live.");
+      return;
+    }
+    if (inputId && deviceId && dataFingerprint) {
+      const remembered = terminalInputDedupeLedger.remember(deviceId, sessionId, inputId, dataFingerprint);
+      if (remembered !== "recorded") {
+        // Capacity and duplicate checks run synchronously before the PTY write,
+        // so this indicates an internal contract violation. Close rather than
+        // acknowledge an untracked write that a retry could duplicate.
+        args.logger.warn("sync.terminal_input_receipt_failed", { sessionId, remembered });
+        try {
+          peer.ws.close(4002, "Terminal input receipt failed");
+        } catch {
+          // ignore close failures
+        }
+        return;
+      }
+      sendAck({
+        sessionId,
+        inputId,
+        ok: true,
+        duplicate: false,
+      } satisfies SyncTerminalInputAckPayload);
+    }
+  }
+
   function handleMessageWithTimeout(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+    const operationGeneration = peer.lifecycleGeneration;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
+        if (peer.lifecycleGeneration === operationGeneration) {
+          // Promise.race does not cancel the handler. Invalidate its operation
+          // generation and close the peer so lifecycle-guarded auth, pairing,
+          // and host-state work cannot resume. Accepted commands intentionally
+          // keep running: their commandId ledger must capture the eventual
+          // result so a replacement peer can retry without executing twice.
+          peer.lifecycleGeneration += 1;
+          try {
+            peer.ws.close(4002, "Sync message timed out");
+          } catch {
+            // The generation barrier remains authoritative if close throws.
+          }
+        }
         reject(new Error(`Timed out handling sync message ${envelope.type} after ${messageTimeoutMs}ms.`));
       }, messageTimeoutMs);
       timer.unref?.();
@@ -4721,6 +5600,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   async function handleMessage(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+    const lifecycleGeneration = peer.lifecycleGeneration;
+    if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
     const heartbeatAwaitedAt = markPeerMessageSeen(peer);
 
     if (!peer.authenticated) {
@@ -4752,6 +5633,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         let relayPairingAuthorization: Awaited<ReturnType<typeof captureAccountAuthorization>> = null;
         if (peer.transportOrigin === "relay-bridge") {
           relayPairingAuthorization = await captureAccountAuthorization();
+          if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
           const ownerUserId = relayPairingAuthorization?.userId ?? null;
           const relayAccountToken = pairing.relayAccountToken?.trim() ?? "";
           const config = args.getAccountAttestationConfig?.();
@@ -4763,6 +5645,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 expectedUserId: ownerUserId!,
                 config: config!,
               });
+              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
             } catch (error) {
               accepted = false;
               args.logger.warn("sync_host.pairing_relay_account_rejected", {
@@ -4805,6 +5688,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         if (relayPairingAuthorization) {
           const commitAuthorization = await captureAccountAuthorization();
+          if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
           if (
             !commitAuthorization
             || commitAuthorization.userId !== relayPairingAuthorization.userId
@@ -4881,7 +5765,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
       let accountPairing: { deviceId: string; secret: string } | null = null;
+      let relayAccountOwnerUserId: string | null = null;
       let relayAccountExpiresAtMs: number | null = null;
+      let connectionAttemptReserved = false;
+      let connectionAttemptRejected = false;
       let authFailureCode: SyncHelloErrorPayload["code"] = "auth_failed";
       let authFailureMessage = "Sync authentication failed.";
       // Return semantics: `true` means authentication FAILED -> the caller below
@@ -4942,6 +5829,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           if (pairedAuth.deviceId !== hello.peer.deviceId) return true;
           if (peer.transportOrigin === "relay-bridge") {
             const authorization = await captureAccountAuthorization();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             const ownerUserId = authorization?.userId ?? null;
             const relayAccountToken = pairedAuth.relayAccountToken?.trim() ?? "";
             const config = args.getAccountAttestationConfig?.();
@@ -4961,6 +5849,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 expectedUserId: ownerUserId,
                 config,
               });
+              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
+              relayAccountOwnerUserId = attestation.userId;
               relayAccountExpiresAtMs = attestation.expiresAtMs;
             } catch (error) {
               authFailureCode = "relay_account_required";
@@ -4974,6 +5864,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               return true;
             }
             const commitAuthorization = await captureAccountAuthorization();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (
               !authorization
               || !commitAuthorization
@@ -4991,6 +5882,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           const pairingAccountOwner = toOptionalString(authenticatedPairingRecord.accountOwnerUserId);
           if (pairingAccountOwner) {
             const currentOwner = await refreshAccountLease();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (currentOwner !== pairingAccountOwner) return true;
           }
           const dpopFailure = evaluatePairedHelloDpop({
@@ -5012,6 +5904,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             });
             return true;
           }
+          // evaluatePairedHelloDpop may TOFU-pin the first DPoP key for a
+          // legacy keyless record. Reload it before installing Relay refresh;
+          // otherwise this first socket advertises reauthorization while its
+          // peer-local record still has no usable key.
+          authenticatedPairingRecord = pairingStore.getPairingRecord(pairedAuth.deviceId);
+          if (!authenticatedPairingRecord) return true;
           return false;
         }
         if (hello.auth?.kind === "account") {
@@ -5027,9 +5925,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             });
             return true;
           }
-          const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
           try {
             const authorization = await captureAccountAuthorization();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (!authorization) {
               args.logger.warn("sync_host.account_owner_missing", {
                 deviceId: accountAuth.deviceId,
@@ -5043,33 +5941,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               expectedUserId: authorization.userId,
               config,
             });
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
+            relayAccountOwnerUserId = attestation.userId;
             relayAccountExpiresAtMs = attestation.expiresAtMs;
-            if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
-              args.logger.warn("sync_host.account_existing_keyless_rejected", {
-                deviceId: accountAuth.deviceId,
-              });
-              return true;
-            }
-            // A known device is pinned to its existing key; only a genuinely new
-            // device id arriving through the authenticated relay bridge may
-            // TOFU-adopt the inline key. The account token is the challenge
-            // secret, binding that verified token to the device key.
-            const dpopFailure = evaluatePairedHelloDpop({
-              storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
-              deviceId: accountAuth.deviceId,
-              secret: accountAuth.accountToken,
-              proof: accountAuth.dpop ?? null,
-              requireDpop: true,
-              nonceCache: dpopNonceCache,
-            });
-            if (dpopFailure) {
-              args.logger.warn("sync_host.account_dpop_rejected", {
-                deviceId: accountAuth.deviceId,
-                reason: dpopFailure,
-              });
-              return true;
-            }
             const commitAuthorization = await captureAccountAuthorization();
+            if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
             if (
               !commitAuthorization
               || commitAuthorization.userId !== authorization.userId
@@ -5080,26 +5956,65 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               });
               return true;
             }
-            const existingAccountOwner = toOptionalString(existingPairingRecord?.accountOwnerUserId);
-            if (existingPairingRecord && !existingAccountOwner) {
-              // A manual/PIN/SSH pairing stays local. Same-account Relay may
-              // use it, but account sign-in never converts or rotates it.
-              authenticatedPairingRecord = existingPairingRecord;
-              return false;
-            }
-            if (existingAccountOwner && existingAccountOwner !== authorization.userId) return true;
-            const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
-              // Reissue keeps the already-verified pinned key. The inline key
-              // is TOFU input only for a genuinely new account pairing.
-              dpopPublicKey: existingPairingRecord
-                ? null
-                : accountAuth.dpop?.publicKey ?? null,
-              runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
+            return await withHelloCommitLock(accountAuth.deviceId, async () => {
+              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
+              // The account can change while this candidate waits behind a
+              // concurrent route's commit. Re-capture inside the lock, before
+              // any pairing mutation or connection-attempt reservation.
+              const lockedAuthorization = await captureAccountAuthorization();
+              if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return true;
+              if (
+                !lockedAuthorization
+                || lockedAuthorization.userId !== authorization.userId
+                || lockedAuthorization.generation !== authorization.generation
+              ) return true;
+
+              const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
+              if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
+                args.logger.warn("sync_host.account_existing_keyless_rejected", {
+                  deviceId: accountAuth.deviceId,
+                });
+                return true;
+              }
+              const dpopFailure = evaluatePairedHelloDpop({
+                storedPublicKey: existingPairingRecord?.dpopPublicKey ?? null,
+                deviceId: accountAuth.deviceId,
+                secret: accountAuth.accountToken,
+                proof: accountAuth.dpop ?? null,
+                requireDpop: true,
+                nonceCache: dpopNonceCache,
+              });
+              if (dpopFailure) {
+                args.logger.warn("sync_host.account_dpop_rejected", {
+                  deviceId: accountAuth.deviceId,
+                  reason: dpopFailure,
+                });
+                return true;
+              }
+              const existingAccountOwner = toOptionalString(existingPairingRecord?.accountOwnerUserId);
+              if (existingAccountOwner && existingAccountOwner !== authorization.userId) return true;
+              if (!arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer)) {
+                connectionAttemptRejected = true;
+                return false;
+              }
+              connectionAttemptReserved = true;
+              if (existingPairingRecord && !existingAccountOwner) {
+                // A manual/PIN/SSH pairing stays local. Same-account Relay may
+                // use it, but account sign-in never converts or rotates it.
+                authenticatedPairingRecord = existingPairingRecord;
+                return false;
+              }
+              const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
+                dpopPublicKey: existingPairingRecord
+                  ? null
+                  : accountAuth.dpop?.publicKey ?? null,
+                runtimeHostGrant: accountAuth.runtimeHostGrant ?? null,
+              });
+              if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
+              accountPairing = paired;
+              authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
+              return authenticatedPairingRecord == null;
             });
-            if (!pairingStore.authenticate(paired.deviceId, paired.secret)) return true;
-            accountPairing = paired;
-            authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
-            return authenticatedPairingRecord == null;
           } catch (error) {
             args.logger.warn("sync_host.account_auth_rejected", {
               deviceId: accountAuth.deviceId,
@@ -5112,6 +6027,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         return true;
       })();
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       if (authFailed) {
         // Attribute the rejection: a phone dialing a stale/reused address can
         // reach a stranger machine whose auth check fails. Only when the
@@ -5134,7 +6050,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
 
-      closeExistingPeersForDevice(hello.peer.deviceId, peer);
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+      if (
+        connectionAttemptRejected
+        || (!connectionAttemptReserved && !arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer))
+      ) {
+        send(peer.ws, "hello_error", {
+          code: "connection_attempt_superseded",
+          message: "A newer connection route already won this connection attempt.",
+        } satisfies SyncHelloErrorPayload, envelope.requestId);
+        try {
+          peer.ws.close(4000, "connection_attempt_superseded");
+        } catch {
+          // ignore close failures
+        }
+        return;
+      }
       peer.authenticated = true;
       clearPeerAuthTimeout(peer);
       peer.metadata = hello.peer;
@@ -5143,10 +6074,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const recordBackedAuth = auth.kind === "paired" || auth.kind === "account";
       peer.pairedDeviceId = recordBackedAuth ? auth.deviceId : null;
       peer.pairingRecord = recordBackedAuth ? authenticatedPairingRecord : null;
-      peer.relayAccountExpiresAtMs = peer.transportOrigin === "relay-bridge"
-        ? relayAccountExpiresAtMs
-        : null;
-      armRelayAccountExpiry(peer);
+      installRelayAuthorization(
+        peer,
+        peer.transportOrigin === "relay-bridge"
+          && relayAccountOwnerUserId
+          && relayAccountExpiresAtMs != null
+          ? {
+              ownerUserId: relayAccountOwnerUserId,
+              expiresAtMs: relayAccountExpiresAtMs,
+              challenge: randomBytes(24).toString("base64url"),
+            }
+          : null,
+      );
       // Prefer the client's cursor for THIS project DB. The legacy single
       // dbVersion is only meaningful when the client last synced this same
       // DB; after a hosted-project change it points into a different DB's
@@ -5161,6 +6100,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         lastPort: peer.remotePort,
       });
       const projectCatalog = await buildProjectCatalogPayload();
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       const projectActionsEnabled = Boolean(
         args.projectCatalogProvider?.browseDirectories
           && args.projectCatalogProvider.getDefaultParentDir
@@ -5186,6 +6126,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         compressionThresholdBytes,
         maxProjectCatalogEnvelopeBytes,
         cloudRelayWssUrl: args.getCloudRelayWssUrl?.() ?? null,
+        relayAuthorization: peer.relayAuthorization?.metadata() ?? null,
+        connectionTransport: syncConnectionTransportForOrigin(peer.transportOrigin),
+        terminalInputAckEnabled: true,
         // Runtime RPC channel + port-forward are desktop-runtime-host only,
         // even after successful pairing (phones/browsers stay on the mobile
         // command allowlist).
@@ -5195,6 +6138,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }), envelope.requestId);
       args.onStateChanged?.();
       await pumpChanges();
+      if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       broadcastBrainStatus();
       return;
     }
@@ -5377,78 +6321,131 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceOffset?: number } | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
+        const barrier: PendingTerminalSnapshotBarrier = {
+          generation: ++peer.nextTerminalSnapshotGeneration,
+          captureAttempt: 0,
+          requiredCaptureAttempt: 0,
+          requiredSnapshotEndOffset: null,
+          events: [],
+          queuedBytes: 0,
+          failed: false,
+        };
+        peer.pendingTerminalSnapshots.set(sessionId, barrier);
         peer.subscribedSessionIds.add(sessionId);
-        const session = args.sessionService.get(sessionId);
         const maxBytes = Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES)));
-        const transcriptSize = transcriptFileSizeOrNull(session?.transcriptPath);
         const sinceOffset = typeof payload?.sinceOffset === "number" && Number.isInteger(payload.sinceOffset)
           ? payload.sinceOffset
           : null;
-        // Resume fast-path: when the client's byte watermark falls inside the
-        // transcript and the missed span fits the snapshot budget, send only
-        // the delta so reconnects do not re-transfer the whole tail.
-        if (
-          sinceOffset != null
-          && transcriptSize != null
-          && sinceOffset >= 0
-          && sinceOffset <= transcriptSize
-          && transcriptSize - sinceOffset <= maxBytes
-        ) {
-          const range = await args.ptyService.readTranscriptRange({
-            sessionId,
-            startOffset: sinceOffset,
-            endOffset: transcriptSize,
-          });
-          if (range) {
-            sendRequired(peer, "terminal_snapshot", {
+        let forceReplacement = false;
+        let barrierCompleted = false;
+        try {
+          while (barrier.captureAttempt < MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS) {
+            if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+            barrier.captureAttempt += 1;
+            const session = args.sessionService.get(sessionId);
+            const transcriptSnapshot = session
+              ? await args.ptyService.readTranscriptSnapshot({
+                  sessionId,
+                  maxBytes,
+                  alignStartToSafeBoundary: true,
+                })
+              : null;
+            if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
+
+            const flush = planTerminalSnapshotFlush(
+              barrier,
+              transcriptSnapshot?.endOffset ?? null,
+            );
+            if (flush.needsRecapture) {
+              forceReplacement = true;
+              continue;
+            }
+
+            let snapshot: SyncTerminalSnapshotPayload | null = null;
+            // Resume fast-path: the PTY snapshot is an exact logical suffix and
+            // includes buffered live bytes beyond the flushed file. Slice that
+            // authoritative suffix instead of re-reading the physical transcript,
+            // otherwise a reconnect can silently miss output that arrived before
+            // this subscription while the WriteStream was still draining.
+            if (
+              !forceReplacement
+              && sinceOffset != null
+              && transcriptSnapshot
+              && sinceOffset >= transcriptSnapshot.startOffset
+              // Equality has no delta to deliver. Send the replacing snapshot
+              // below so a remounted controller cannot hydrate to an empty screen.
+              && sinceOffset < transcriptSnapshot.endOffset
+            ) {
+              const snapshotBytes = Buffer.from(transcriptSnapshot.data, "utf8");
+              const byteStart = sinceOffset - transcriptSnapshot.startOffset;
+              const startsAtUtf8Boundary = byteStart >= 0
+                && byteStart <= snapshotBytes.length
+                && (byteStart === snapshotBytes.length || (snapshotBytes[byteStart]! & 0b1100_0000) !== 0b1000_0000);
+              if (
+                startsAtUtf8Boundary
+                && snapshotBytes.length === transcriptSnapshot.endOffset - transcriptSnapshot.startOffset
+              ) {
+                snapshot = {
+                  sessionId,
+                  transcript: snapshotBytes.subarray(byteStart).toString("utf8"),
+                  status: session?.status ?? null,
+                  runtimeState: session?.runtimeState ?? null,
+                  lastOutputPreview: session?.lastOutputPreview ?? null,
+                  capturedAt: nowIso(),
+                  startOffset: sinceOffset,
+                  endOffset: transcriptSnapshot.endOffset,
+                  delta: true,
+                  live: args.ptyService.hasLivePty(sessionId),
+                };
+              }
+            }
+            snapshot ??= {
               sessionId,
-              transcript: range.data,
+              transcript: transcriptSnapshot?.data ?? "",
               status: session?.status ?? null,
               runtimeState: session?.runtimeState ?? null,
               lastOutputPreview: session?.lastOutputPreview ?? null,
               capturedAt: nowIso(),
-              startOffset: range.startOffset,
-              endOffset: range.endOffset,
-              delta: true,
+              startOffset: transcriptSnapshot?.startOffset ?? null,
+              endOffset: transcriptSnapshot?.endOffset ?? null,
               live: args.ptyService.hasLivePty(sessionId),
-            } satisfies SyncTerminalSnapshotPayload, envelope.requestId);
+            };
+            if (!sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId)) break;
+            barrierCompleted = true;
+            for (const event of flush.events) {
+              const sent = event.kind === "data"
+                ? sendRequired(peer, "terminal_data", event.payload)
+                : sendRequired(peer, "terminal_exit", event.payload);
+              if (!sent) {
+                barrierCompleted = false;
+                break;
+              }
+            }
             break;
           }
+          if (
+            !barrierCompleted
+            && isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)
+            && barrier.captureAttempt >= MAX_TERMINAL_SNAPSHOT_CAPTURE_ATTEMPTS
+          ) {
+            failTerminalSnapshotBarrier(peer, sessionId, barrier, "capture_did_not_reach_stable_offset");
+          }
+        } catch (error) {
+          if (peer.pendingTerminalSnapshots.get(sessionId) === barrier) {
+            peer.subscribedSessionIds.delete(sessionId);
+            restoreDesktopTerminalSizeIfUnwatched(sessionId);
+          }
+          throw error;
+        } finally {
+          clearTerminalSnapshotBarrier(peer, sessionId, barrier);
         }
-        const transcript = session
-          ? await args.ptyService.readTranscriptTail({
-              sessionId,
-              maxBytes,
-              raw: true,
-              alignToLineBoundary: true,
-            })
-          : "";
-        // The tail read can merge still-buffered live output that is not
-        // reflected in the flushed file size yet. Only advertise offsets when
-        // the returned bytes fit inside the flushed transcript.
-        const transcriptBytes = Buffer.byteLength(transcript, "utf8");
-        const snapshotStartOffset = transcriptSize != null && transcriptBytes <= transcriptSize
-          ? transcriptSize - transcriptBytes
-          : null;
-        const snapshotEndOffset = snapshotStartOffset != null ? transcriptSize : null;
-        const snapshot: SyncTerminalSnapshotPayload = {
-          sessionId,
-          transcript,
-          status: session?.status ?? null,
-          runtimeState: session?.runtimeState ?? null,
-          lastOutputPreview: session?.lastOutputPreview ?? null,
-          capturedAt: nowIso(),
-          startOffset: snapshotStartOffset,
-          endOffset: snapshotEndOffset,
-          live: args.ptyService.hasLivePty(sessionId),
-        };
-        sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
         break;
       }
       case "terminal_unsubscribe": {
         const payload = envelope.payload as { sessionId?: string } | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (sessionId) {
+          clearTerminalSnapshotBarrier(peer, sessionId);
           peer.subscribedSessionIds.delete(sessionId);
           restoreDesktopTerminalSizeIfUnwatched(sessionId);
         }
@@ -5484,11 +6481,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_HISTORY_PAGE_BYTES),
           ),
         );
-        const transcriptSize = transcriptFileSizeOrNull(session.transcriptPath);
-        const endOffset = Math.min(beforeOffset, transcriptSize ?? 0);
+        const transcriptWindow = args.ptyService.getTranscriptWindow(sessionId);
+        if (!transcriptWindow) {
+          sendRequired(peer, "terminal_history", refused, envelope.requestId);
+          break;
+        }
+        const endOffset = Math.max(
+          transcriptWindow.startOffset,
+          Math.min(beforeOffset, transcriptWindow.endOffset),
+        );
+        const requestedStartOffset = Math.max(transcriptWindow.startOffset, endOffset - pageBytes);
         const range = await args.ptyService.readTranscriptRange({
           sessionId,
-          startOffset: Math.max(0, endOffset - pageBytes),
+          startOffset: requestedStartOffset,
           endOffset,
           alignStartToSafeBoundary: true,
         });
@@ -5501,27 +6506,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           data: range.data,
           startOffset: range.startOffset,
           endOffset: range.endOffset,
-          atStart: range.startOffset === 0,
+          // Alignment can move the returned start past the retained base. The
+          // unaligned/clamped request still tells the client whether any older
+          // bytes exist; using the returned boundary causes an empty paging
+          // loop after transcript rollover.
+          atStart: requestedStartOffset <= transcriptWindow.startOffset,
         } satisfies SyncTerminalHistoryResponsePayload, envelope.requestId);
         break;
       }
       case "terminal_input": {
-        // Forward keystrokes / pasted text from a mobile client into the
-        // active PTY for the named session. We require a prior subscribe so
-        // only an attached peer can drive the shell — protects against an
-        // attacker who acquired a session id but is not actively viewing.
-        const payload = envelope.payload as { sessionId?: string; data?: string } | null;
-        const sessionId = toOptionalString(payload?.sessionId);
-        const data = typeof payload?.data === "string" ? payload.data : null;
-        if (!sessionId || data == null) break;
-        if (!peer.subscribedSessionIds.has(sessionId)) {
-          args.logger.warn("sync.terminal_input_unsubscribed_session", { sessionId });
-          break;
-        }
-        const accepted = args.ptyService.writeBySessionId(sessionId, data);
-        if (!accepted) {
-          args.logger.info("sync.terminal_input_no_active_pty", { sessionId });
-        }
+        handleTerminalInputEnvelope(peer, envelope);
         break;
       }
       case "terminal_resize": {
@@ -5994,9 +6988,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         data: event.data,
         at: nowIso(),
         offset: event.offset ?? null,
-      };
+      } satisfies SyncTerminalDataPayload;
       for (const peer of peers) {
         if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
+        if (enqueueTerminalSnapshotEvent(peer, event.sessionId, {
+          kind: "data",
+          payload,
+          byteLength: Buffer.byteLength(event.data, "utf8"),
+        })) continue;
         if (isPeerBackpressured(peer)) continue;
         send(peer.ws, "terminal_data", payload);
       }
@@ -6008,9 +7007,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         ptyId: event.ptyId,
         exitCode: event.exitCode,
         at: nowIso(),
-      };
+      } satisfies SyncTerminalExitPayload;
       for (const peer of peers) {
         if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
+        if (enqueueTerminalSnapshotEvent(peer, event.sessionId, {
+          kind: "exit",
+          payload,
+          byteLength: 0,
+        })) continue;
         if (isPeerBackpressured(peer)) continue;
         send(peer.ws, "terminal_exit", payload);
       }
@@ -6048,10 +7052,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         for (const peer of peers) {
           pairedChannelService.closePeer(peer.ws, "Sync host changed.", true);
           clearPeerAuthTimeout(peer);
-          clearRelayAccountExpiry(peer);
+          const relayAuthorizationSnapshot = peer.relayAuthorization?.snapshot() ?? null;
+          peer.relayAuthorization?.dispose();
+          peer.relayAuthorization = null;
           peer.ws.removeAllListeners("message");
           peer.ws.removeAllListeners("close");
           peer.ws.removeAllListeners("error");
+          // No new terminal input can enter after listener detachment. Drain
+          // the dedicated synchronous-input queue before exporting receipts so
+          // a write and its dedupe record move to the next host atomically.
+          await peer.terminalInputQueue.catch(() => {});
           if (peer.ws.readyState !== WebSocket.OPEN) {
             // Not handed off — re-attach a no-op error handler so a late
             // transport error on the dying socket cannot crash the process.
@@ -6077,7 +7087,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             authKind: peer.authKind,
             pairedDeviceId: peer.pairedDeviceId,
             connectedAt: peer.connectedAt,
-            relayAccountExpiresAtMs: peer.relayAccountExpiresAtMs,
+            relayAccountExpiresAtMs: relayAuthorizationSnapshot?.expiresAtMs ?? null,
+            relayAuthorization: relayAuthorizationSnapshot,
+            terminalInputDedupe: terminalInputDedupeLedger.snapshotForDevice(
+              peer.pairedDeviceId ?? peer.metadata?.deviceId ?? "",
+            ),
             serverDbSiteId: args.db.sync.getSiteId(),
             lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
             subscribedSessionIds: [...peer.subscribedSessionIds],

@@ -3,6 +3,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
+import type { RelayAuthorizationSnapshot } from "./relayAuthorization";
 import {
   assertAdeLoopbackListener,
   generateLoopbackNonce,
@@ -82,6 +83,19 @@ export type SyncPeerHandoffSnapshot = {
   connectedAt: string;
   /** Ephemeral Relay account-proof expiry; never contains the bearer. */
   relayAccountExpiresAtMs?: number | null;
+  /** Full in-place Relay authorization lease state for capable peer handoff. */
+  relayAuthorization?: RelayAuthorizationSnapshot | null;
+  /**
+   * Bounded terminal-input receipts for this device. Only SHA-256 payload
+   * fingerprints are retained; terminal bytes never enter handoff state.
+   */
+  terminalInputDedupe?: Array<{
+    deviceId: string;
+    sessionId: string;
+    inputId: string;
+    dataFingerprint: string;
+    recordedAtMs: number;
+  }>;
   /**
    * Site id of the project DB the depositing host was serving plus the peer's
    * live ack watermark on that DB. When the adopting host serves the SAME DB

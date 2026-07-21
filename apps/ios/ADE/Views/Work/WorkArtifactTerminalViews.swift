@@ -144,7 +144,7 @@ struct WorkTerminalSessionView: View {
   }
 
   private var canSendInput: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    syncService.canAcceptTerminalInput(sessionId: session.id)
   }
 
   var body: some View {

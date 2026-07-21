@@ -74,7 +74,7 @@ jobs:
       - name: Build web client
         run: cd apps/desktop && npm run build:webclient
       - name: Deploy to Cloudflare Pages
-        run: npx wrangler@4 pages deploy apps/desktop/dist/web-client --project-name ade-web-client --branch main --commit-hash "$GITHUB_SHA"
+        run: npx wrangler@4 pages deploy apps/desktop/dist/web-client --project-name ade-web-client --branch main --commit-hash "$GITHUB_SHA" --commit-dirty=false
       - name: Verify live bundle
         run: |
           built="$(basename apps/desktop/dist/web-client/assets/index-*.js)"
@@ -124,7 +124,31 @@ jobs:
           node-version: 22
       - run: cd apps/tunnel-relay && npm ci
       - name: Deploy Worker
-        run: cd apps/tunnel-relay && npx wrangler deploy
+        run: cd apps/tunnel-relay && npx wrangler deploy --tag "$GITHUB_SHA" --message "main $GITHUB_SHA"
+      - name: Verify deployed protocol and Worker version
+        run: |
+          for attempt in {1..18}; do
+            health="$(curl -fsS https://ade-tunnel-relay.arulsharma1028.workers.dev/health || true)"
+            if HEALTH_JSON="$health" EXPECTED_SHA="$GITHUB_SHA" node -e '
+              try {
+                const value = JSON.parse(process.env.HEALTH_JSON);
+                const valid = value.ok === true
+                  && value.service === "ade-tunnel-relay"
+                  && value.protocolVersion === 2
+                  && value.workerVersion?.tag === process.env.EXPECTED_SHA;
+                process.exit(valid ? 0 : 1);
+              } catch {
+                process.exit(1);
+              }
+            '; then
+              echo "verified tunnel relay protocol v2 at Worker tag $GITHUB_SHA"
+              exit 0
+            fi
+            echo "waiting for tunnel relay deployment propagation ($attempt/18)"
+            sleep 10
+          done
+          echo "::error::tunnel relay health did not reach protocol v2 at Worker tag $GITHUB_SHA"
+          exit 1
 
   push-relay:
     needs: changes

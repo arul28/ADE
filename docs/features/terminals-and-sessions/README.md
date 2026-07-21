@@ -54,14 +54,17 @@ desktop in-process path used before a binding exists, in diagnostics,
 and in tests.
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
-  transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 16 MB`), runtime
+  transcript capture with a 16 MiB physical retention ceiling and lifetime
+  logical byte offsets, runtime
   state, AI auto-titles, tool-type routing, continuation-target backfill,
   session-id based write/resize entry points used by mobile sync
   terminal control, `readTranscriptTail({ sessionId, ... })` which
   merges the on-disk transcript tail with the live PTY output tail so
   Work/TUI terminal hydration can replay output that is still buffered
-  in the transcript write stream, `readTranscriptRange({ sessionId,
-  startOffset, endOffset })` for mobile scrollback/delta resume,
+  in the transcript write stream, `getTranscriptWindow` /
+  `readTranscriptSnapshot` for authoritative logical-offset hydration, and
+  `readTranscriptRange({ sessionId, startOffset, endOffset })` for mobile
+  scrollback/delta resume across rollover,
   offset-stamped PTY data batches, desktop-size restore after
   mobile-driven resizes, agent CLI input protocol (bracketed paste,
   chunked writes, provider-specific submit delays), process tree
@@ -212,9 +215,11 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/sync.ts` — terminal stream/control
   envelopes (`terminal_subscribe`, `terminal_unsubscribe`,
   `terminal_snapshot`, `terminal_data`, `terminal_history`,
-  `terminal_exit`, `terminal_input`, `terminal_resize`) for iOS Work
-  surfaces, including transcript offsets, `sinceOffset` delta resume,
-  `live` backing-PTY status, and pull-to-load-older history pages, plus
+  `terminal_exit`, `terminal_input`, `terminal_input_ack`,
+  `terminal_resize`) for iOS/web Work surfaces, including logical transcript
+  offsets, `sinceOffset` delta resume, authoritative full snapshots,
+  input-id dedupe/ack metadata, `live` backing-PTY status, and
+  pull-to-load-older history pages, plus
   the mobile CLI launcher payload
   (`SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
   `SyncStartCliSessionResult`) consumed by the
@@ -222,6 +227,18 @@ Shared types and IPC:
   command aliases (`SyncListExternalSessionsArgs` /
   `SyncImportExternalSessionArgs`) consumed by
   `work.listExternalSessions` and `work.importExternalSession`.
+- `apps/desktop/src/renderer/webclient/sync/client.ts` and
+  `adapter/sessionsPty.ts` — hosted-web terminal watermark/recovery state and
+  the `window.ade` PTY bridge. Duplicate/overlapping live ranges are dropped or
+  UTF-8-trimmed, one gap resubscribe requests the missing suffix, and an
+  authoritative full snapshot is surfaced as `PtyDataEvent.replace`.
+- `apps/ade-cli/src/services/sync/syncHostService.ts` — remote terminal
+  subscription barrier and input boundary. It installs the barrier before
+  reading a logical transcript snapshot, queues concurrent data/exit events
+  within 256 events / 2 MB, trims snapshot overlap, and recaptures up to four
+  times rather than exposing a gap. Its terminal-input ledger deduplicates
+  stable input ids before PTY write and acknowledges success/duplicate/failure
+  to ACK-capable web/iOS clients.
 - `apps/desktop/src/shared/types/config.ts` — `ProcessDefinition`
   (now carries `groupIds: string[]`), `ProcessGroupDefinition`,
   `ProcessRuntime` (now carries `runId`), `ProcessRuntimeStatus`,
@@ -483,7 +500,10 @@ Renderer surfaces:
   fallback for previews). Shift+drag remains available for local text
   selection when a full-screen CLI enables terminal mouse tracking; on macOS,
   ADE translates that gesture to xterm's Option-based force-selection path so
-  remote and local CLI sessions behave the same.
+  remote and local CLI sessions behave the same. A recovery event with
+  `replace: true` invalidates the hydration generation, clears queued frame/
+  hydration writes, resets xterm, and writes the authoritative snapshot so an
+  older async preview cannot repaint stale bytes after a gap repair.
 - `apps/desktop/src/renderer/components/terminals/terminalMacShiftSelection.ts`
   — macOS-only capture bridge used by `TerminalView`. While terminal mouse
   tracking is active, it converts an unmodified left-button Shift+mousedown
@@ -688,8 +708,9 @@ iOS Work surfaces:
 - `apps/ios/ADE/Views/Work/TerminalSessionScreen.swift` and
   `SwiftTermSessionView.swift` — full-screen SwiftTerm-backed terminal
   surface for CLI sessions. It subscribes with `sinceOffset`, applies
-  offset-stamped `terminal_data`, pages older transcript bytes via
-  `terminal_history`, sends raw `terminal_input`, reports viewport
+  offset-stamped `terminal_data`, recovers gaps with a guarded delta/full
+  resubscribe, pages older retained transcript bytes via `terminal_history`,
+  sends ordered `terminal_input` through `SyncTerminalInputQueue`, reports viewport
   changes as `terminal_resize`, and unsubscribes on disappear.
 - `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
   terminal artifact/output views and inline preview cards; the older
@@ -824,11 +845,13 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    writes, provider-specific submit delay) after an optional
    `initialInputDelayMs` delay.
 
-2. **Stream** — PTY `data` events are written to the transcript
-   (capped at `MAX_TRANSCRIPT_BYTES = 16 MB`), throttled into a
-   `lastOutputPreview`, forwarded to `broadcastData` with the transcript
-   end offset when available, and scanned for runtime state signals
-   (OSC 133 prompt markers).
+2. **Stream** — PTY `data` events advance a lifetime logical UTF-8 byte
+   cursor and are written into a rolling retained transcript (16 MiB physical
+   ceiling, rollover target near 8 MiB), throttled into a
+   `lastOutputPreview`, forwarded to `broadcastData` with the logical transcript
+   end offset when available, and scanned for runtime state signals (OSC 133
+   prompt markers). Rollover changes only the retained base offset; live event
+   offsets remain monotonic.
 
 3. **Tag** — the tool type is inferred or passed by the renderer.
    Claude/Codex sessions also get a best-effort `--session-id` extraction
@@ -1019,10 +1042,14 @@ Processes (managed):
   directly is only allowed through `sessionService.setResumeCommand` or
   `updateMeta`, both of which re-derive the metadata; target-id refreshes merge
   the current metadata so tracked CLI spawn lineage is not discarded.
-- Transcript writes are capped at 16 MB; after the cap a notice line is
-  written once and further output is dropped. The runtime seeds
-  `transcriptBytesWritten` from the file size on attach, so the cap
-  survives resume.
+- Transcript output is not dropped at 16 MiB. When the retained physical file
+  would cross that ceiling, the PTY pauses when possible and atomically keeps a
+  UTF-8-safe recent window targeted near 8 MiB plus output that arrived during
+  replacement. `transcriptBytesWritten` is a lifetime logical cursor and never
+  rewinds; `.rollover.json` records the logical base of physical byte zero.
+  Crash journals/backups make an interrupted replacement recoverable on the
+  next attach. Range/history callers must honor returned logical offsets: old
+  bytes before the retained base are intentionally unavailable.
 - Preview updates are throttled (~900 ms) and the string is capped at
   220 chars via `derivePreviewFromChunk`.
 - Disk-pressure gating is enforced at the *start* boundary only:

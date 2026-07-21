@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildHostSignatureBase,
   buildPipeSignatureBase,
   CONNECTION_ID_PATTERN,
   generateConnectionId,
+  handleRequest,
   hmacSha256Hex,
   routeTunnelPath,
   verifySignedQuery,
@@ -11,14 +12,20 @@ import {
 } from "../src/relay";
 import {
   CLOSE_BRIDGE_REJECTED,
+  CLOSE_FORWARD_FAILED,
   CLOSE_HOST_OFFLINE,
+  CLOSE_NOT_READY,
   CLOSE_PARTNER_CLOSED,
   CLOSE_PRE_PIPE_BUFFER_OVERFLOW,
+  CLOSE_STALE_PIPE,
+  LEGACY_CONTROL_EPOCH,
+  RELAY_READY_VERSION,
   TunnelDurableObject,
 } from "../src/tunnelDo";
 
 const MACHINE_KEY = "a".repeat(48);
 const SECRET = "s".repeat(48);
+const CONTROL_EPOCH = "e".repeat(32);
 
 // Minimal Durable Object storage stand-in — enough to exercise the claim path
 // and the pre-upgrade auth rejections without a live runtime. Socket pairing
@@ -45,13 +52,23 @@ class FakeStorage {
 type TestSocketRole = "control" | "client" | "pipe";
 
 class FakeSocket {
+  readyState = 1;
   readonly sent: unknown[] = [];
   readonly closes: Array<{ code?: number; reason?: string }> = [];
   throwOnSend = false;
 
   constructor(
     readonly tags: string[],
-    private attachment: { role: TestSocketRole; id?: string; ts: number },
+    private attachment: {
+      role: TestSocketRole;
+      id?: string;
+      epoch?: string;
+      readyVersion?: typeof RELAY_READY_VERSION;
+      established?: boolean;
+      legacyBuffered?: true;
+      legacyStateUnknown?: true;
+      ts: number;
+    },
   ) {}
 
   deserializeAttachment(): unknown {
@@ -69,6 +86,7 @@ class FakeSocket {
 
   close(code?: number, reason?: string): void {
     this.closes.push({ code, reason });
+    this.readyState = 3;
   }
 }
 
@@ -76,9 +94,29 @@ class FakeState {
   readonly storage = new FakeStorage();
   readonly sockets: FakeSocket[] = [];
 
-  addSocket(role: TestSocketRole, id?: string, ts = Date.now()): FakeSocket {
-    const tags = [role, ...(id ? [`conn:${id}`] : [])];
-    const socket = new FakeSocket(tags, { role, id, ts });
+  addSocket(
+    role: TestSocketRole,
+    id?: string,
+    ts = Date.now(),
+    options: {
+      epoch?: string;
+      omitEpoch?: boolean;
+      readyVersion?: typeof RELAY_READY_VERSION;
+      established?: boolean;
+      legacyBuffered?: boolean;
+    } = {},
+  ): FakeSocket {
+    const epoch = options.epoch ?? CONTROL_EPOCH;
+    const tags = [role, ...(id ? [`conn:${id}`] : []), ...(options.omitEpoch ? [] : [`epoch:${epoch}`])];
+    const socket = new FakeSocket(tags, {
+      role,
+      id,
+      ...(!options.omitEpoch ? { epoch } : {}),
+      ...(options.readyVersion ? { readyVersion: options.readyVersion } : {}),
+      ...(options.established ? { established: true } : {}),
+      ...(options.legacyBuffered ? { legacyBuffered: true as const } : {}),
+      ts,
+    });
     this.sockets.push(socket);
     return socket;
   }
@@ -100,6 +138,44 @@ function makeDoHarness(): { durable: TunnelDurableObject; state: FakeState; stor
 function makeDo(): TunnelDurableObject {
   const { durable } = makeDoHarness();
   return durable;
+}
+
+function installAcceptSocketStub(durable: TunnelDurableObject, state: FakeState): void {
+  const testDurable = durable as unknown as {
+    acceptSocket: (
+      attachment: {
+        role: TestSocketRole;
+        id?: string;
+        epoch?: string;
+        readyVersion?: typeof RELAY_READY_VERSION;
+      },
+      afterAccept?: (socket: WebSocket) => void,
+    ) => Promise<Response>;
+  };
+  testDurable.acceptSocket = async (attachment, afterAccept) => {
+    const socket = state.addSocket(attachment.role, attachment.id, Date.now(), {
+      epoch: attachment.epoch,
+      readyVersion: attachment.readyVersion,
+    });
+    afterAccept?.(socket as unknown as WebSocket);
+    return new Response(null, { status: 200 });
+  };
+}
+
+async function signedPipeRequest(args: {
+  id: string;
+  epoch?: string;
+}): Promise<Request> {
+  const ts = String(Math.floor(Date.now() / 1_000));
+  const base = args.epoch
+    ? buildPipeSignatureBase(MACHINE_KEY, args.id, args.epoch, ts)
+    : buildPipeSignatureBase(MACHINE_KEY, args.id, ts);
+  const sig = await hmacSha256Hex(SECRET, base);
+  const query = new URLSearchParams({ ts, sig });
+  if (args.epoch) query.set("epoch", args.epoch);
+  return new Request(`https://relay.test/host/${MACHINE_KEY}/pipe/${args.id}?${query}`, {
+    headers: { Upgrade: "websocket" },
+  });
 }
 
 function claimRequest(secret: unknown): Request {
@@ -181,6 +257,32 @@ describe("generateConnectionId", () => {
   });
 });
 
+describe("health", () => {
+  it("reports protocol and Worker version metadata without touching the Durable Object namespace", async () => {
+    const workerVersion = {
+      id: "00000000-0000-0000-0000-000000000002",
+      tag: "0123456789abcdef",
+      timestamp: "2026-07-21T12:34:56.000Z",
+    };
+    const env = {
+      CF_VERSION_METADATA: workerVersion,
+      get TUNNEL(): DurableObjectNamespace {
+        throw new Error("health must not look up or wake a Durable Object");
+      },
+    } as TunnelRelayEnv;
+
+    const response = await handleRequest(new Request("https://relay.test/health"), env);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      service: "ade-tunnel-relay",
+      protocolVersion: 2,
+      workerVersion,
+    });
+  });
+});
+
 describe("machine claim", () => {
   it("claims once, is idempotent for the same secret, conflicts on a different one", async () => {
     const durable = makeDo();
@@ -242,9 +344,186 @@ describe("signed upgrade auth rejections", () => {
     );
     expect(res.status).toBe(401);
   });
+
+  it.each(["legacy", "epoch"] as const)("accepts %s host and pipe HMAC bases", async (mode) => {
+    const { durable, state, storage } = makeDoHarness();
+    installAcceptSocketStub(durable, state);
+    await storage.put("secret", SECRET);
+    const ts = String(Math.floor(Date.now() / 1_000));
+    const epoch = mode === "epoch" ? CONTROL_EPOCH : undefined;
+    const hostBase = epoch
+      ? buildHostSignatureBase(MACHINE_KEY, epoch, ts)
+      : buildHostSignatureBase(MACHINE_KEY, ts);
+    const hostSig = await hmacSha256Hex(SECRET, hostBase);
+    const hostQuery = new URLSearchParams({ ts, sig: hostSig });
+    if (epoch) hostQuery.set("epoch", epoch);
+    const hostResponse = await durable.fetch(new Request(
+      `https://relay.test/host/${MACHINE_KEY}?${hostQuery}`,
+      { headers: { Upgrade: "websocket" } },
+    ));
+    expect(hostResponse.status).toBe(200);
+
+    const controlEpoch = epoch ?? LEGACY_CONTROL_EPOCH;
+    const id = "abcdef01";
+    state.addSocket("client", id, Date.now(), { epoch: controlEpoch });
+    const pipeResponse = await durable.fetch(await signedPipeRequest({ id, epoch }));
+    expect(pipeResponse.status).toBe(200);
+    expect(state.sockets.some((socket) => socket.tags.includes("pipe"))).toBe(true);
+  });
 });
 
 describe("durable socket lifecycle", () => {
+  it("closes an orphan pipe when the client disappears before ready", async () => {
+    const { durable, state } = makeDoHarness();
+    const id = "abcde123";
+    const control = state.addSocket("control", undefined, Date.now(), { epoch: CONTROL_EPOCH });
+    const client = state.addSocket("client", id, Date.now(), {
+      epoch: CONTROL_EPOCH,
+      readyVersion: RELAY_READY_VERSION,
+    });
+    const pipe = state.addSocket("pipe", id, Date.now(), { epoch: CONTROL_EPOCH });
+    client.close(1006, "client vanished");
+
+    await durable.webSocketMessage(control as unknown as WebSocket, JSON.stringify({
+      t: "ready",
+      id,
+      epoch: CONTROL_EPOCH,
+    }));
+
+    expect(pipe.closes).toContainEqual({ code: CLOSE_BRIDGE_REJECTED, reason: "relay client unavailable" });
+  });
+
+  it("migrates a hibernated legacy control attachment without reporting host offline", async () => {
+    const { durable, state, storage } = makeDoHarness();
+    await storage.put("secret", SECRET);
+    installAcceptSocketStub(durable, state);
+    const control = state.addSocket("control", undefined, Date.now(), { omitEpoch: true });
+
+    const response = await durable.fetch(new Request(
+      `https://relay.test/connect/${MACHINE_KEY}?ready=2`,
+      { headers: { Upgrade: "websocket" } },
+    ));
+
+    expect(response.status).toBe(200);
+    expect(control.closes).toEqual([]);
+    expect(control.deserializeAttachment()).toMatchObject({ role: "control", epoch: LEGACY_CONTROL_EPOCH });
+    const open = JSON.parse(String(control.sent[0])) as { t: string; id: string };
+    expect(control.sent).toEqual([JSON.stringify({ t: "open", id: open.id })]);
+    const client = state.sockets.find((socket) => socket.tags.includes("client"))!;
+    expect(client.sent).toEqual([JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION })]);
+
+    const pipeResponse = await durable.fetch(await signedPipeRequest({ id: open.id }));
+    expect(pipeResponse.status).toBe(200);
+    expect(client.sent).toEqual([
+      JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION }),
+      JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }),
+    ]);
+  });
+
+  it.each([
+    { controlEpoch: LEGACY_CONTROL_EPOCH, readyV2: false, name: "old/old" },
+    { controlEpoch: LEGACY_CONTROL_EPOCH, readyV2: true, name: "old/new" },
+    { controlEpoch: CONTROL_EPOCH, readyV2: false, name: "new/old" },
+    { controlEpoch: CONTROL_EPOCH, readyV2: true, name: "new/new" },
+  ])("establishes the $name control/client compatibility path", async ({ controlEpoch, readyV2 }) => {
+    const { durable, state, storage } = makeDoHarness();
+    await storage.put("secret", SECRET);
+    installAcceptSocketStub(durable, state);
+    const control = state.addSocket("control", undefined, Date.now(), { epoch: controlEpoch });
+    await durable.fetch(new Request(
+      `https://relay.test/connect/${MACHINE_KEY}${readyV2 ? "?ready=2" : ""}`,
+      { headers: { Upgrade: "websocket" } },
+    ));
+    const open = JSON.parse(String(control.sent.at(-1))) as { id: string; epoch: string };
+    const client = state.sockets.find((socket) => socket.tags.includes("client"))!;
+    if (!readyV2) await durable.webSocketMessage(client as unknown as WebSocket, "ade-hello");
+
+    await durable.fetch(await signedPipeRequest({
+      id: open.id,
+      ...(controlEpoch === LEGACY_CONTROL_EPOCH ? {} : { epoch: controlEpoch }),
+    }));
+    const pipe = state.sockets.find((socket) => socket.tags.includes("pipe"))!;
+    if (controlEpoch !== LEGACY_CONTROL_EPOCH) {
+      if (readyV2) {
+        expect(client.sent).toEqual([JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION })]);
+      } else {
+        expect(pipe.sent).toEqual([]);
+      }
+      await durable.webSocketMessage(control as unknown as WebSocket, JSON.stringify({
+        t: "ready",
+        id: open.id,
+        epoch: controlEpoch,
+      }));
+    }
+
+    if (readyV2) {
+      expect(client.sent).toEqual([
+        JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION }),
+        JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }),
+      ]);
+    } else {
+      expect(pipe.sent).toEqual(["ade-hello"]);
+    }
+    expect(client.deserializeAttachment()).toMatchObject({ established: true, epoch: controlEpoch });
+    expect(pipe.deserializeAttachment()).toMatchObject({ established: true, epoch: controlEpoch });
+  });
+
+  it.each([
+    { name: "lost in-memory marker data", options: { epoch: LEGACY_CONTROL_EPOCH, legacyBuffered: true } },
+    { name: "pre-deploy unknown attachment", options: { omitEpoch: true } },
+  ])("closes a legacy pair when $name cannot be proven after hibernation", async ({ options }) => {
+    const { state, storage } = makeDoHarness();
+    await storage.put("secret", SECRET);
+    state.addSocket("control", undefined, Date.now(), { epoch: LEGACY_CONTROL_EPOCH });
+    const client = state.addSocket("client", "abcdef01", Date.now(), options);
+    const reconstructed = new TunnelDurableObject(
+      state as unknown as DurableObjectState,
+      {} as TunnelRelayEnv,
+    );
+    installAcceptSocketStub(reconstructed, state);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await reconstructed.fetch(await signedPipeRequest({ id: "abcdef01" }));
+
+    const pipe = state.sockets.find((socket) => socket.tags.includes("pipe"))!;
+    expect(client.closes).toEqual([{
+      code: CLOSE_FORWARD_FAILED,
+      reason: expect.stringContaining("legacy"),
+    }]);
+    expect(pipe.closes).toEqual([{
+      code: CLOSE_FORWARD_FAILED,
+      reason: expect.stringContaining("legacy"),
+    }]);
+    expect(client.sent).toEqual([]);
+    expect(client.deserializeAttachment()).not.toMatchObject({ established: true });
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"kind":"forward_failed"'));
+    log.mockRestore();
+  });
+
+  it("migrates a proven pre-deploy client/pipe pair after hibernation", async () => {
+    const { state } = makeDoHarness();
+    const client = state.addSocket("client", "abcdef01", Date.now(), { omitEpoch: true });
+    const pipe = state.addSocket("pipe", "abcdef01", Date.now(), { omitEpoch: true });
+    const reconstructed = new TunnelDurableObject(
+      state as unknown as DurableObjectState,
+      {} as TunnelRelayEnv,
+    );
+
+    await reconstructed.webSocketMessage(client as unknown as WebSocket, "hello");
+
+    expect(pipe.sent).toEqual(["hello"]);
+    expect(client.closes).toEqual([]);
+    expect(pipe.closes).toEqual([]);
+    expect(client.deserializeAttachment()).toMatchObject({
+      epoch: LEGACY_CONTROL_EPOCH,
+      established: true,
+    });
+    expect(pipe.deserializeAttachment()).toMatchObject({
+      epoch: LEGACY_CONTROL_EPOCH,
+      established: true,
+    });
+  });
+
   it("maps brain rejects to the waiting client and keeps unknown control types ignored", async () => {
     const { durable, state } = makeDoHarness();
     const control = state.addSocket("control");
@@ -255,6 +534,7 @@ describe("durable socket lifecycle", () => {
       JSON.stringify({
         t: "reject",
         id: "abcdef01",
+        epoch: CONTROL_EPOCH,
         code: 4555,
         reason: `bridge\u0000 refused ${"é".repeat(100)}`,
       }),
@@ -267,7 +547,7 @@ describe("durable socket lifecycle", () => {
     const secondClient = state.addSocket("client", "abcdef02");
     await durable.webSocketMessage(
       control as unknown as WebSocket,
-      JSON.stringify({ t: "reject", id: "abcdef02", code: 1006, reason: "bad code" }),
+      JSON.stringify({ t: "reject", id: "abcdef02", epoch: CONTROL_EPOCH, code: 1006, reason: "bad code" }),
     );
     expect(secondClient.closes).toEqual([{ code: CLOSE_BRIDGE_REJECTED, reason: "bad code" }]);
 
@@ -296,6 +576,22 @@ describe("durable socket lifecycle", () => {
     expect(normalPipe.closes).toEqual([{ code: CLOSE_PARTNER_CLOSED, reason: "partner closed" }]);
   });
 
+  it("logs a host pipe 4003 without peer text while preserving the close for its partner", async () => {
+    const { durable, state } = makeDoHarness();
+    const client = state.addSocket("client", "abcdef01", Date.now(), { established: true });
+    const pipe = state.addSocket("pipe", "abcdef01", Date.now(), { established: true });
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await durable.webSocketClose(pipe as unknown as WebSocket, 4003, "private network detail", true);
+
+    expect(client.closes).toEqual([{ code: 4003, reason: "private network detail" }]);
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(
+      /"kind":"socket_closed".*"role":"pipe".*"epochMode":"epoch".*"code":4003.*"established":true/,
+    ));
+    expect(log).not.toHaveBeenCalledWith(expect.stringContaining("private network detail"));
+    log.mockRestore();
+  });
+
   it("closes an early client when its buffered frames exceed 256 KiB", async () => {
     const { durable, state } = makeDoHarness();
     const client = state.addSocket("client", "abcdef01");
@@ -309,6 +605,40 @@ describe("durable socket lifecycle", () => {
       code: CLOSE_PRE_PIPE_BUFFER_OVERFLOW,
       reason: "pre-pipe buffer overflow",
     }]);
+  });
+
+  it("closes both established peers with a recoverable code when forwarding throws", async () => {
+    const { durable, state } = makeDoHarness();
+    const client = state.addSocket("client", "abcdef01", Date.now(), { established: true });
+    const pipe = state.addSocket("pipe", "abcdef01", Date.now(), { established: true });
+    pipe.throwOnSend = true;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await durable.webSocketMessage(client as unknown as WebSocket, "hello");
+
+    expect(client.closes).toEqual([{
+      code: CLOSE_FORWARD_FAILED,
+      reason: "relay forwarding failed",
+    }]);
+    expect(pipe.closes).toEqual([{
+      code: CLOSE_FORWARD_FAILED,
+      reason: "relay forwarding failed",
+    }]);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('"kind":"forward_failed"'));
+    log.mockRestore();
+  });
+
+  it("closes only unestablished clients when their host control socket is lost", async () => {
+    const { durable, state } = makeDoHarness();
+    const control = state.addSocket("control");
+    const pending = state.addSocket("client", "abcdef01");
+    const established = state.addSocket("client", "abcdef02", Date.now(), { established: true });
+    state.addSocket("pipe", "abcdef02", Date.now(), { established: true });
+
+    await durable.webSocketClose(control as unknown as WebSocket, 1006, "", false);
+
+    expect(pending.closes).toEqual([{ code: CLOSE_HOST_OFFLINE, reason: "host offline" }]);
+    expect(established.closes).toEqual([]);
   });
 
   it("reschedules alarms for data sockets but not for an idle control socket", async () => {
@@ -329,10 +659,10 @@ describe("durable socket lifecycle", () => {
     const control = state.addSocket("control");
     control.throwOnSend = true;
     const testDurable = durable as unknown as {
-      acceptSocket: (attachment: { role: TestSocketRole; id?: string }) => Promise<Response>;
+      acceptSocket: (attachment: { role: TestSocketRole; id?: string; epoch: string }) => Promise<Response>;
     };
     testDurable.acceptSocket = async (attachment) => {
-      state.addSocket(attachment.role, attachment.id);
+      state.addSocket(attachment.role, attachment.id, Date.now(), { epoch: attachment.epoch });
       return new Response(null, { status: 200 });
     };
 

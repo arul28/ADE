@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.33] - 2026-07-21
+
+### Connection reliability
+
+- Coordinated rotating account credentials across desktop and background runtimes, rejected invalid saved sessions cleanly, refreshed directory authorization after 401 responses, and kept verified secure routes usable when cloud presence was stale.
+- Made relay readiness, authorization renewal, reconnect fallback, and socket replacement atomic so a client cannot report connected before its data path is usable.
+- Scoped terminal snapshot timeouts to the request and re-windowed overdue change batches without closing the peer socket or losing its cursor.
+
+### Chats and sync
+
+- Replaced unbounded chat-active deferral with fair, aged stream budgets so chat traffic cannot indefinitely starve session and database changes on slow links.
+- Preserved late-ack safety and bounded database catch-up on iOS; surfaced the host-observed connection transport instead of a preferred-but-unused candidate.
+- Enforced Cloudflare's actual WebSocket frame ceiling and hibernation-safe relay socket handling.
+
+### Terminals
+
+- Replaced the fatal 16 MiB transcript cap with crash-safe rolling retention and monotonic logical UTF-8 offsets.
+- Added authoritative bounded terminal snapshots, ordering barriers, gap repair, overlap deduplication, and request-scoped recovery across the host, web client, and iOS.
+
 ## [1.2.32] - 2026-07-20
 
 ### Web client
@@ -888,7 +907,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.31...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.33...HEAD
+[1.2.33]: https://github.com/arul28/ADE/compare/v1.2.32...v1.2.33
 [1.2.32]: https://github.com/arul28/ADE/compare/v1.2.31...v1.2.32
 [1.2.31]: https://github.com/arul28/ADE/compare/v1.2.30...v1.2.31
 [1.2.30]: https://github.com/arul28/ADE/compare/v1.2.29...v1.2.30

@@ -73,7 +73,7 @@ const mocks = vi.hoisted(() => {
       openFiles.delete(fd);
     }),
     chmodSync: vi.fn(),
-    createWriteStream: vi.fn(() => {
+    createWriteStream: vi.fn((filePath: string, options?: { flags?: string }) => {
       const listeners: Record<"finish" | "error", Set<(err?: Error) => void>> = {
         finish: new Set<() => void>(),
         error: new Set<(err?: Error) => void>(),
@@ -81,7 +81,15 @@ const mocks = vi.hoisted(() => {
       const stream: any = {
         writableFinished: false,
         destroyed: false,
-        write: vi.fn(),
+        write: vi.fn((value: string | Buffer) => {
+          const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value, "utf8");
+          const previousSize = fileStats.get(filePath)?.size
+            ?? Buffer.byteLength(fileContents.get(filePath) ?? "", "utf8");
+          const previous = options?.flags === "a" ? (fileContents.get(filePath) ?? "") : "";
+          fileContents.set(filePath, `${previous}${chunk.toString("utf8")}`);
+          fileStats.set(filePath, { ...fileStats.get(filePath), size: previousSize + chunk.length });
+          return true;
+        }),
         on: vi.fn((event: "finish" | "error", cb: (err?: Error) => void) => {
           listeners[event].add(cb);
           return stream;
@@ -112,6 +120,47 @@ const mocks = vi.hoisted(() => {
       };
       return stream;
     }),
+    promises: {
+      open: vi.fn(async (filePath: string, flags: string) => {
+        if (flags === "wx" && (fileContents.has(filePath) || fileStats.has(filePath))) {
+          const error = new Error(`EEXIST: file already exists, open '${filePath}'`) as NodeJS.ErrnoException;
+          error.code = "EEXIST";
+          throw error;
+        }
+        return {
+          stat: vi.fn(async () => ({
+            size: fileStats.get(filePath)?.size
+              ?? Buffer.byteLength(fileContents.get(filePath) ?? "", "utf8"),
+          })),
+          read: vi.fn(async (buffer: Buffer, offset: number, length: number, position: number) => {
+            const content = Buffer.from(fileContents.get(filePath) ?? "", "utf8");
+            const slice = content.subarray(position, position + length);
+            slice.copy(buffer, offset);
+            return { bytesRead: slice.length, buffer };
+          }),
+          writeFile: vi.fn(async (value: string | Buffer) => {
+            const content = Buffer.isBuffer(value) ? value : Buffer.from(value, "utf8");
+            fileContents.set(filePath, content.toString("utf8"));
+            fileStats.set(filePath, { ...fileStats.get(filePath), size: content.length });
+          }),
+          sync: vi.fn(async () => {}),
+          close: vi.fn(async () => {}),
+        };
+      }),
+      rename: vi.fn(async (from: string, to: string) => {
+        if (fileContents.has(from)) fileContents.set(to, fileContents.get(from) ?? "");
+        if (fileStats.has(from)) fileStats.set(to, { ...fileStats.get(from) });
+        fileContents.delete(from);
+        fileStats.delete(from);
+        existsSyncResults.set(from, false);
+        existsSyncResults.set(to, true);
+      }),
+      unlink: vi.fn(async (filePath: string) => {
+        fileContents.delete(filePath);
+        fileStats.delete(filePath);
+        existsSyncResults.set(filePath, false);
+      }),
+    },
     readFileSync: vi.fn((p: string) => {
       if (!fileContents.has(p)) {
         const error = new Error(`ENOENT: no such file or directory, open '${p}'`) as NodeJS.ErrnoException;
@@ -161,6 +210,7 @@ vi.mock("node:fs", () => ({
     unlinkSync: mocks.unlinkSync,
     writeFileSync: mocks.writeFileSync,
     renameSync: mocks.renameSync,
+    promises: mocks.promises,
   },
   existsSync: mocks.existsSync,
   lstatSync: mocks.lstatSync,
@@ -177,6 +227,7 @@ vi.mock("node:fs", () => ({
   unlinkSync: mocks.unlinkSync,
   writeFileSync: mocks.writeFileSync,
   renameSync: mocks.renameSync,
+  promises: mocks.promises,
 }));
 
 vi.mock("node:crypto", () => ({
@@ -4724,6 +4775,115 @@ describe("ptyService", () => {
   });
 
   describe("PTY data offsets (mobile byte-offset streaming)", () => {
+    const flushTranscriptWork = async () => {
+      for (let index = 0; index < 200; index += 1) await Promise.resolve();
+    };
+
+    it("preserves a surrogate pair split across PTY callbacks", async () => {
+      vi.useFakeTimers();
+      try {
+        const transcriptPath = "/tmp/transcripts/surrogate-split.log";
+        const { service, mockPty, broadcastData } = createHarness();
+        const { ptyId, sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: "surrogate-split",
+        });
+
+        mockPty._emitter.emit("data", "\uD83D");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).not.toHaveBeenCalled();
+        expect(mocks.fileContents.get(transcriptPath) ?? "").toBe("");
+
+        mockPty._emitter.emit("data", "\uDE00!");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).toHaveBeenLastCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "😀!",
+          offset: 5,
+        });
+        expect(mocks.fileContents.get(transcriptPath)).toBe("😀!");
+        expect(mocks.fileStats.get(transcriptPath)?.size).toBe(5);
+        await expect(service.readTranscriptSnapshot({ sessionId, maxBytes: 64 })).resolves.toEqual({
+          data: "😀!",
+          startOffset: 0,
+          endOffset: 5,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(["exit", "dispose"] as const)(
+      "flushes one replacement character before PTY %s",
+      async (teardown) => {
+        const transcriptPath = `/tmp/transcripts/surrogate-${teardown}.log`;
+        const { service, mockPty, broadcastData, broadcastExit } = createHarness();
+        const { ptyId, sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: `surrogate-${teardown}`,
+        });
+
+        mockPty._emitter.emit("data", "A\uD83D");
+        if (teardown === "exit") {
+          mockPty._emitter.emit("exit", { exitCode: 0 });
+        } else {
+          service.dispose({ ptyId, sessionId });
+        }
+
+        expect(broadcastData).toHaveBeenCalledTimes(1);
+        expect(broadcastData).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "A�",
+          offset: 4,
+        });
+        expect(broadcastData.mock.invocationCallOrder[0]).toBeLessThan(
+          broadcastExit.mock.invocationCallOrder[0]!,
+        );
+        expect(mocks.fileContents.get(transcriptPath)).toBe("A�");
+        expect(mocks.fileStats.get(transcriptPath)?.size).toBe(4);
+      },
+    );
+
+    it("canonicalizes unpaired surrogates before persistence and broadcast", async () => {
+      vi.useFakeTimers();
+      try {
+        const transcriptPath = "/tmp/transcripts/surrogate-invalid.log";
+        const { service, mockPty, broadcastData } = createHarness();
+        const { ptyId, sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: "surrogate-invalid",
+        });
+
+        mockPty._emitter.emit("data", "\uDE00\uD83Dx");
+        await vi.advanceTimersByTimeAsync(50);
+
+        expect(broadcastData).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "��x",
+          offset: 7,
+        });
+        expect(mocks.fileContents.get(transcriptPath)).toBe("��x");
+        expect(mocks.fileStats.get(transcriptPath)?.size).toBe(7);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("attaches the transcript end offset across batched flushes", async () => {
       vi.useFakeTimers();
       try {
@@ -4751,12 +4911,96 @@ describe("ptyService", () => {
       }
     });
 
-    it("emits null offsets once the transcript byte cap is reached", async () => {
+    it("returns an exact live snapshot through the logical end while disk is behind", async () => {
+      const transcriptPath = "/tmp/transcripts/live-snapshot.log";
+      mocks.fileContents.set(transcriptPath, "disk");
+      mocks.fileStats.set(transcriptPath, { size: 4 });
+      const { service, mockPty } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "t",
+        cols: 80,
+        rows: 24,
+        sessionId: "live-snapshot",
+      });
+      mockPty._emitter.emit("data", "AéB");
+      // Model a buffered WriteStream: the in-memory logical offset is current,
+      // while stat/read still expose only the pre-output file.
+      mocks.fileContents.set(transcriptPath, "disk");
+      mocks.fileStats.set(transcriptPath, { size: 4 });
+
+      await expect(service.readTranscriptSnapshot({
+        sessionId: "live-snapshot",
+        maxBytes: 3,
+      })).resolves.toEqual({
+        data: "éB",
+        startOffset: 5,
+        endOffset: 8,
+      });
+    });
+
+    it("combines a retained transcript with new live output after recreating the PTY", async () => {
+      const transcriptPath = "/tmp/transcripts/recreated-live-snapshot.log";
+      mocks.fileContents.set(transcriptPath, "retained screen\n");
+      mocks.fileStats.set(transcriptPath, { size: Buffer.byteLength("retained screen\n") });
+      const { service, mockPty } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "t",
+        cols: 80,
+        rows: 24,
+        sessionId: "recreated-live-snapshot",
+      });
+      mockPty._emitter.emit("data", "new prompt");
+      // Keep the new output in the WriteStream buffer so the snapshot must
+      // compose the old disk tail with the exact in-memory continuation.
+      mocks.fileContents.set(transcriptPath, "retained screen\n");
+      mocks.fileStats.set(transcriptPath, { size: Buffer.byteLength("retained screen\n") });
+
+      await expect(service.readTranscriptSnapshot({
+        sessionId: "recreated-live-snapshot",
+        maxBytes: 64,
+      })).resolves.toEqual({
+        data: "retained screen\nnew prompt",
+        startOffset: 0,
+        endOffset: Buffer.byteLength("retained screen\nnew prompt"),
+      });
+    });
+
+    it("returns only the contiguous live suffix when the disk gap predates the bounded tail", async () => {
+      const transcriptPath = "/tmp/transcripts/live-snapshot-gap.log";
+      mocks.fileContents.set(transcriptPath, "disk");
+      mocks.fileStats.set(transcriptPath, { size: 4 });
+      const { service, mockPty } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "t",
+        cols: 80,
+        rows: 24,
+        sessionId: "live-snapshot-gap",
+      });
+      const output = "x".repeat(2_000_005);
+      mockPty._emitter.emit("data", output);
+      // The recent-output buffer keeps only 2,000,000 characters. Model disk
+      // still ending before that retained suffix, leaving an unreadable gap.
+      mocks.fileContents.set(transcriptPath, "disk");
+      mocks.fileStats.set(transcriptPath, { size: 4 });
+
+      const snapshot = await service.readTranscriptSnapshot({
+        sessionId: "live-snapshot-gap",
+        maxBytes: 2_000_010,
+      });
+      expect(snapshot).not.toBeNull();
+      expect(snapshot!.data).toHaveLength(2_000_000);
+      expect(snapshot!.data).toBe("x".repeat(2_000_000));
+      expect(snapshot!.startOffset).toBe(9);
+      expect(snapshot!.endOffset).toBe(2_000_009);
+    });
+
+    it("keeps logical offsets advancing while the retained transcript rolls over", async () => {
       vi.useFakeTimers();
       try {
         const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
-        // Pre-existing transcript 5 bytes under the cap: the next chunk
-        // overflows it, so the transcript stops mirroring the stream.
         mocks.fileStats.set("/tmp/transcripts/cap-session.log", { size: MAX_TRANSCRIPT_BYTES - 5 });
         const { service, mockPty, broadcastData } = createHarness();
         await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24, sessionId: "cap-session" });
@@ -4764,11 +5008,301 @@ describe("ptyService", () => {
         await vi.advanceTimersByTimeAsync(50);
         expect(broadcastData).toHaveBeenLastCalledWith(expect.objectContaining({
           data: "0123456789",
-          offset: null,
+          offset: MAX_TRANSCRIPT_BYTES + 5,
+        }));
+
+        await flushTranscriptWork();
+        mockPty._emitter.emit("data", "later");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).toHaveBeenLastCalledWith(expect.objectContaining({
+          data: "later",
+          offset: MAX_TRANSCRIPT_BYTES + 10,
+        }));
+        expect(mockPty.pause).toHaveBeenCalled();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("persists queued rollover bytes when the PTY exits during compaction", async () => {
+      const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+      const transcriptPath = "/tmp/transcripts/rollover-exit.log";
+      mocks.fileStats.set(transcriptPath, { size: MAX_TRANSCRIPT_BYTES });
+      const { service, mockPty } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "t",
+        cols: 80,
+        rows: 24,
+        sessionId: "rollover-exit",
+      });
+
+      mockPty._emitter.emit("data", "final");
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      await flushTranscriptWork();
+
+      const window = service.getTranscriptWindow("rollover-exit")!;
+      expect(window.endOffset).toBe(MAX_TRANSCRIPT_BYTES + 5);
+      await expect(service.readTranscriptRange({
+        sessionId: "rollover-exit",
+        startOffset: MAX_TRANSCRIPT_BYTES,
+        endOffset: MAX_TRANSCRIPT_BYTES + 5,
+      })).resolves.toEqual({
+        data: "final",
+        startOffset: MAX_TRANSCRIPT_BYTES,
+        endOffset: MAX_TRANSCRIPT_BYTES + 5,
+      });
+    });
+
+    it("persists queued rollover bytes when the session is disposed during compaction", async () => {
+      const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+      const transcriptPath = "/tmp/transcripts/rollover-dispose.log";
+      mocks.fileStats.set(transcriptPath, { size: MAX_TRANSCRIPT_BYTES });
+      const { service, mockPty } = createHarness();
+      const created = await service.create({
+        laneId: "lane-1",
+        title: "t",
+        cols: 80,
+        rows: 24,
+        sessionId: "rollover-dispose",
+      });
+
+      mockPty._emitter.emit("data", "saved");
+      service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+      await flushTranscriptWork();
+
+      const window = service.getTranscriptWindow("rollover-dispose")!;
+      expect(window.endOffset).toBe(MAX_TRANSCRIPT_BYTES + 5);
+      await expect(service.readTranscriptRange({
+        sessionId: "rollover-dispose",
+        startOffset: MAX_TRANSCRIPT_BYTES,
+        endOffset: MAX_TRANSCRIPT_BYTES + 5,
+      })).resolves.toEqual({
+        data: "saved",
+        startOffset: MAX_TRANSCRIPT_BYTES,
+        endOffset: MAX_TRANSCRIPT_BYTES + 5,
+      });
+    });
+
+    it("retains a bounded tail and maps it to logical snapshot offsets", async () => {
+      vi.useFakeTimers();
+      try {
+        const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+        const transcriptPath = "/tmp/transcripts/rollover-tail.log";
+        const initial = "a".repeat(MAX_TRANSCRIPT_BYTES - 4);
+        mocks.fileContents.set(transcriptPath, initial);
+        mocks.fileStats.set(transcriptPath, { size: Buffer.byteLength(initial) });
+        const { service, mockPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: "rollover-tail",
+        });
+
+        mockPty._emitter.emit("data", "éTAIL");
+        await flushTranscriptWork();
+
+        const window = service.getTranscriptWindow("rollover-tail");
+        expect(window).not.toBeNull();
+        expect(window!.startOffset).toBeGreaterThan(0);
+        expect(window!.retainedBytes).toBeLessThanOrEqual(MAX_TRANSCRIPT_BYTES);
+        expect(window!.endOffset).toBe(
+          Buffer.byteLength(initial, "utf8") + Buffer.byteLength("éTAIL", "utf8"),
+        );
+        const retained = await service.readTranscriptRange({
+          sessionId: "rollover-tail",
+          startOffset: 0,
+          endOffset: window!.endOffset,
+        });
+        expect(retained?.startOffset).toBe(window!.startOffset);
+        expect(retained?.endOffset).toBe(window!.endOffset);
+        expect(retained?.data.endsWith("éTAIL")).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("rolls the retained tail forward past a split UTF-8 code point", async () => {
+      const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+      const ROLLOVER_TARGET_BYTES = MAX_TRANSCRIPT_BYTES / 2;
+      const transcriptPath = "/tmp/transcripts/rollover-utf8.log";
+      // Put the second byte of é exactly where the 8 MiB tail read begins.
+      const initialBuffer = Buffer.concat([
+        Buffer.alloc(ROLLOVER_TARGET_BYTES - 1, 0x61),
+        Buffer.from("é", "utf8"),
+        Buffer.alloc(MAX_TRANSCRIPT_BYTES - ROLLOVER_TARGET_BYTES - 1, 0x62),
+      ]);
+      mocks.fileContents.set(transcriptPath, initialBuffer.toString("utf8"));
+      mocks.fileStats.set(transcriptPath, { size: initialBuffer.length });
+      const { service, mockPty } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "t",
+        cols: 80,
+        rows: 24,
+        sessionId: "rollover-utf8",
+      });
+
+      mockPty._emitter.emit("data", "!");
+      await flushTranscriptWork();
+
+      const window = service.getTranscriptWindow("rollover-utf8")!;
+      const retained = await service.readTranscriptRange({
+        sessionId: "rollover-utf8",
+        startOffset: window.startOffset,
+        endOffset: window.endOffset,
+      });
+      expect(retained?.data.startsWith("b")).toBe(true);
+      expect(retained?.data.endsWith("!")).toBe(true);
+      expect(retained?.data).not.toContain("�");
+      expect(Buffer.byteLength(retained?.data ?? "", "utf8")).toBe(window.retainedBytes);
+    });
+
+    it("recovers the logical offset from rollover metadata when a session restarts", async () => {
+      vi.useFakeTimers();
+      try {
+        const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+        const transcriptPath = "/tmp/transcripts/restart-rollover.log";
+        const initial = "x".repeat(MAX_TRANSCRIPT_BYTES);
+        mocks.fileContents.set(transcriptPath, initial);
+        mocks.fileStats.set(transcriptPath, { size: Buffer.byteLength(initial) });
+        const { service, mockPty, broadcastData } = createHarness();
+        const first = await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: "restart-rollover",
+        });
+        mockPty._emitter.emit("data", "first");
+        await flushTranscriptWork();
+        const beforeRestart = service.getTranscriptWindow(first.sessionId);
+        expect(beforeRestart?.endOffset).toBe(MAX_TRANSCRIPT_BYTES + 5);
+
+        mockPty._emitter.emit("exit", { exitCode: 0 });
+        await flushTranscriptWork();
+        await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: "restart-rollover",
+        });
+        mockPty._emitter.emit("data", "next");
+        await vi.advanceTimersByTimeAsync(50);
+
+        expect(broadcastData).toHaveBeenLastCalledWith(expect.objectContaining({
+          data: "next",
+          offset: MAX_TRANSCRIPT_BYTES + 9,
         }));
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("repairs and clears an interrupted rollover journal before accepting new output", async () => {
+      const transcriptPath = "/tmp/transcripts/journal-recovery.log";
+      const statePath = `${transcriptPath}.rollover.json`;
+      const journalPath = `${transcriptPath}.rollover.pending.json`;
+      const backupPath = `${transcriptPath}.rollover.previous`;
+      mocks.fileContents.set(transcriptPath, "TAIL");
+      mocks.fileStats.set(transcriptPath, { size: 4 });
+      mocks.fileContents.set(backupPath, "0123456789");
+      mocks.fileStats.set(backupPath, { size: 10 });
+      mocks.fileContents.set(statePath, JSON.stringify({
+        version: 1,
+        baseOffset: 0,
+        retainedBytes: 10,
+      }));
+      mocks.fileContents.set(journalPath, JSON.stringify({
+        version: 1,
+        previousBaseOffset: 0,
+        previousRetainedBytes: 10,
+        nextBaseOffset: 6,
+        nextRetainedBytes: 4,
+      }));
+      const { service } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "t",
+        cols: 80,
+        rows: 24,
+        sessionId: "journal-recovery",
+      });
+
+      expect(service.getTranscriptWindow("journal-recovery")).toEqual({
+        startOffset: 6,
+        endOffset: 10,
+        retainedBytes: 4,
+      });
+      expect(mocks.fileContents.has(journalPath)).toBe(false);
+      expect(mocks.fileContents.has(backupPath)).toBe(false);
+      expect(JSON.parse(mocks.fileContents.get(statePath) ?? "{}")).toMatchObject({
+        version: 1,
+        baseOffset: 6,
+        retainedBytes: 4,
+      });
+    });
+
+    it("restores the previous transcript when restart lands between the two file renames", async () => {
+      const transcriptPath = "/tmp/transcripts/journal-mid-rename.log";
+      const statePath = `${transcriptPath}.rollover.json`;
+      const journalPath = `${transcriptPath}.rollover.pending.json`;
+      const backupPath = `${transcriptPath}.rollover.previous`;
+      mocks.existsSyncResults.set(transcriptPath, false);
+      mocks.existsSyncResults.set(backupPath, true);
+      mocks.fileContents.set(backupPath, "0123456789");
+      mocks.fileStats.set(backupPath, { size: 10 });
+      mocks.fileContents.set(statePath, JSON.stringify({ version: 1, baseOffset: 0, retainedBytes: 10 }));
+      mocks.fileContents.set(journalPath, JSON.stringify({
+        version: 1,
+        previousBaseOffset: 0,
+        previousRetainedBytes: 10,
+        nextBaseOffset: 6,
+        nextRetainedBytes: 4,
+      }));
+      const { service } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "t",
+        cols: 80,
+        rows: 24,
+        sessionId: "journal-mid-rename",
+      });
+
+      expect(service.getTranscriptWindow("journal-mid-rename")).toEqual({
+        startOffset: 0,
+        endOffset: 10,
+        retainedBytes: 10,
+      });
+      expect(mocks.fileContents.get(transcriptPath)).toBe("0123456789");
+      expect(mocks.fileContents.has(backupPath)).toBe(false);
+      expect(mocks.fileContents.has(journalPath)).toBe(false);
+    });
+
+    it("removes rollover sidecars and interrupted atomic-write temps on transcript deletion", () => {
+      const transcriptPath = "/tmp/transcripts/delete-me.log";
+      mocks.dirEntries.set("/tmp/transcripts", [
+        "delete-me.log.123.uuid.tmp",
+        "delete-me.log.rollover.json.123.uuid.tmp",
+        "delete-me.log.rollover.pending.json.123.uuid.tmp",
+        "another-session.log.123.uuid.tmp",
+      ]);
+      const { service } = createHarness();
+
+      service.removeTranscriptRolloverArtifacts(transcriptPath);
+
+      expect(mocks.unlinkSync).toHaveBeenCalledWith(`${transcriptPath}.rollover.json`);
+      expect(mocks.unlinkSync).toHaveBeenCalledWith(`${transcriptPath}.rollover.pending.json`);
+      expect(mocks.unlinkSync).toHaveBeenCalledWith(`${transcriptPath}.rollover.previous`);
+      expect(mocks.unlinkSync).toHaveBeenCalledWith("/tmp/transcripts/delete-me.log.123.uuid.tmp");
+      expect(mocks.unlinkSync).toHaveBeenCalledWith("/tmp/transcripts/delete-me.log.rollover.json.123.uuid.tmp");
+      expect(mocks.unlinkSync).toHaveBeenCalledWith("/tmp/transcripts/delete-me.log.rollover.pending.json.123.uuid.tmp");
+      expect(mocks.unlinkSync).not.toHaveBeenCalledWith("/tmp/transcripts/another-session.log.123.uuid.tmp");
     });
 
     it("emits null offsets for untracked sessions", async () => {
@@ -4840,6 +5374,17 @@ describe("ptyService", () => {
         endOffset: 6,
       });
       expect(range).toEqual({ data: "llo", startOffset: 3, endOffset: 6 });
+    });
+
+    it("never ends a page in the middle of a UTF-8 code point", async () => {
+      // "AéB" = 41 C3 A9 42; offset 2 stops after the first byte of é.
+      const { service } = await createSessionWithTranscript("AéB");
+      const range = await service.readTranscriptRange({
+        sessionId: "range-session",
+        startOffset: 0,
+        endOffset: 2,
+      });
+      expect(range).toEqual({ data: "A", startOffset: 0, endOffset: 1 });
     });
 
     it("clamps the requested range to the flushed file size", async () => {

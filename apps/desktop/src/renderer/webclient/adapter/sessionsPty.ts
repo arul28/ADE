@@ -13,7 +13,9 @@ import type {
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { chatTerminalFromSummary } from "./infra/registries";
 
-const LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES = 1_024;
+// Full snapshots replace xterm state, so they must be at least as complete as
+// TerminalView's initial hydration. The host caps this at the same 2 MB.
+const LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES = 2_000_000;
 
 export type SessionsPtyNamespaces = {
   sessions: AdeNamespace<"sessions">;
@@ -32,6 +34,18 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       sessionId,
       { maxBytes: LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES },
       {
+        snapshot: (payload) => {
+          const resolvedPtyId = terminalRegistry.ptyForSession(payload.sessionId) ?? ptyId;
+          if (!resolvedPtyId) return;
+          terminalRegistry.register(payload.sessionId, resolvedPtyId);
+          events.emit("ptyData", {
+            ptyId: resolvedPtyId,
+            sessionId: payload.sessionId,
+            data: payload.transcript,
+            offset: payload.endOffset,
+            ...(payload.delta === true ? {} : { replace: true }),
+          });
+        },
         data: (payload) => {
           terminalRegistry.register(payload.sessionId, payload.ptyId);
           events.emit("ptyData", {
@@ -86,17 +100,13 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   async function captureSnapshot(sessionId: string, maxBytes?: number | null): Promise<SyncTerminalSnapshotPayload | null> {
     if (!sessionId) return null;
-    try {
-      const history = await client.requestTerminalHistory({
-        sessionId,
-        beforeOffset: Number.MAX_SAFE_INTEGER,
-        maxBytes: maxBytes ?? 128 * 1024,
-      });
-      terminalRegistry.register(history.sessionId, terminalRegistry.ptyForSession(history.sessionId));
-      return historyToSnapshot(history);
-    } catch {
-      return null;
-    }
+    const history = await client.requestTerminalHistory({
+      sessionId,
+      beforeOffset: Number.MAX_SAFE_INTEGER,
+      maxBytes: maxBytes ?? 128 * 1024,
+    });
+    terminalRegistry.register(history.sessionId, terminalRegistry.ptyForSession(history.sessionId));
+    return historyToSnapshot(history);
   }
 
   const sessions: Record<string, unknown> = {
@@ -109,6 +119,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     delete: async (args: unknown) => {
       await commands.call("work.deleteSession", asRecord(args), {
         fallback: undefined,
+        idempotent: false,
       });
       events.emit("sessionsChanged", {
         sessionId: stringField(asRecord(args), "sessionId"),
@@ -118,6 +129,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     updateMeta: async (args: unknown) => {
       const result = await commands.call<TerminalSessionSummary | null>("work.updateSessionMeta", asRecord(args), {
         fallback: null,
+        idempotent: false,
       });
       if (result) terminalRegistry.registerSummary(result);
       events.emit("sessionsChanged", {
@@ -132,17 +144,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       const maxBytes = numberField(record, "maxBytes");
       if (!sessionId) return "";
       const snapshot = await captureSnapshot(sessionId, maxBytes);
-      if (snapshot) return snapshot.transcript;
-      try {
-        const history = await client.requestTerminalHistory({
-          sessionId,
-          beforeOffset: Number.MAX_SAFE_INTEGER,
-          maxBytes: maxBytes ?? 128 * 1024,
-        });
-        return history.data;
-      } catch {
-        return "";
-      }
+      return snapshot?.transcript ?? "";
     },
     getDelta: (sessionId: string) =>
       commands.call("work.getSessionDelta", { sessionId }, {
@@ -171,6 +173,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         },
         {
           fallback: null,
+          idempotent: false,
         }
       );
       const sessionId = stringField(result ?? {}, "sessionId") || stringField(record, "sessionId");
@@ -186,6 +189,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     resumeSession: async (args: unknown): Promise<PtySendToSessionResult> => {
       const result = await commands.call<PtySendToSessionResult | null>("work.resumeCliSession", asRecord(args), {
         fallback: null,
+        idempotent: false,
       });
       if (result) {
         terminalRegistry.register(result.sessionId, result.ptyId);
@@ -196,6 +200,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     sendToSession: async (args: unknown): Promise<PtySendToSessionResult> => {
       const result = await commands.call<PtySendToSessionResult | null>("work.sendToSession", asRecord(args), {
         fallback: null,
+        idempotent: false,
       });
       if (result) {
         terminalRegistry.register(result.sessionId, result.ptyId);
@@ -221,6 +226,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       if (sessionId) unsubscribeSession(sessionId);
       return await commands.call<PtyDisposeResult>("work.stopRuntime", { sessionId }, {
         fallback: { disposed: false, reason: "missing" },
+        idempotent: false,
       });
     },
     setDataSubscriptions: async (args: unknown) => {
@@ -255,12 +261,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       if (!sessionId) return { terminalId: "", data: "", nextSince: 0 };
       const maxBytes = numberField(record, "maxBytes") ?? 128 * 1024;
       const beforeOffset = numberField(record, "since") ?? Number.MAX_SAFE_INTEGER;
-      try {
-        const history = await client.requestTerminalHistory({ sessionId, beforeOffset, maxBytes });
-        return { terminalId: sessionId, data: history.data, nextSince: history.endOffset };
-      } catch {
-        return { terminalId: sessionId, data: "", nextSince: beforeOffset };
-      }
+      const history = await client.requestTerminalHistory({ sessionId, beforeOffset, maxBytes });
+      return { terminalId: sessionId, data: history.data, nextSince: history.endOffset };
     },
     preview: async (args?: unknown): Promise<ChatTerminalPreviewResult> => {
       const record = asRecord(args);
@@ -312,6 +314,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     reattachChatCli: (args: unknown) =>
       commands.call("terminal.reattachChatCli", asRecord(args), {
         fallback: { terminalId: "", ptyId: "", pid: null, relaunched: false },
+        idempotent: false,
       }),
   };
 

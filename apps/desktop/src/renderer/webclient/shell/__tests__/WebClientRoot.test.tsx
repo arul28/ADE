@@ -41,6 +41,7 @@ const idleStatus: AdeSyncClientStatus = {
   error: null,
   activeProjectId: null,
   selectedEnvId: null,
+  readiness: "disconnected",
 };
 
 const accountMachine = {
@@ -196,7 +197,7 @@ describe("WebClientRoot entry routes", () => {
     currentSnapshot = signedInAccount();
     resolveDirectory(currentSnapshot);
 
-    expect(await screen.findByRole("button", { name: /Directory Studio.*Ready/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Directory Studio.*Connect/i })).toBeTruthy();
     expect(screen.getByText("Loading saved environments…")).toBeTruthy();
     expect(screen.queryByText("Previous account Mac")).toBeNull();
     expect(listEnvironments).not.toHaveBeenCalled();
@@ -219,7 +220,7 @@ describe("WebClientRoot entry routes", () => {
 
     render(<WebClientRoot client={client} accountClient={browserAccountClient(signedInAccount())} />);
 
-    expect(await screen.findByRole("button", { name: /Directory Studio.*Ready/i })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Directory Studio.*Connect/i })).toBeTruthy();
     expect(screen.queryByText("Previous account Mac")).toBeNull();
     expect(screen.queryByText("Current saved Mac")).toBeNull();
 
@@ -246,7 +247,7 @@ describe("WebClientRoot entry routes", () => {
     });
 
     render(<WebClientRoot client={client} accountClient={accountClient} />);
-    const machine = await screen.findByRole("button", { name: /Directory Studio.*Ready/i });
+    const machine = await screen.findByRole("button", { name: /Directory Studio.*Connect/i });
     fireEvent.click(machine);
 
     expect(await screen.findByRole("heading", { name: "Open a project" })).toBeTruthy();

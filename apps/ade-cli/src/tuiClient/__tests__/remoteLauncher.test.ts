@@ -288,6 +288,54 @@ describe("ade code remote launcher", () => {
     expect(pairListedMachine).not.toHaveBeenCalled();
   });
 
+  it("adopts a legacy offline account target when it has a verified secure Relay route", async () => {
+    const machine = {
+      machineKey: "machine-studio",
+      deviceId: "device-studio",
+      name: "Arul's Mac Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      reachableEndpoints: [
+        { kind: "tailnet" as const, host: "100.75.20.63", port: 8787 },
+        { kind: "lan" as const, host: "192.168.1.63", port: 8787 },
+        {
+          kind: "relay" as const,
+          url: "wss://ade-tunnel-relay.arulsharma1028.workers.dev/connect/machine-studio",
+        },
+      ],
+      lastSeenAt: Date.now() - 120_000,
+      online: false,
+    };
+    const pairedTarget: RemoteRuntimeTarget = {
+      ...legacyAccountTarget(),
+      id: "paired-account-studio",
+      hostname: "ade-tunnel-relay.arulsharma1028.workers.dev",
+      transport: "paired",
+      pairedMachine: { hostIdentity: "device-studio", machineKey: "machine-studio" },
+      routes: [],
+    };
+    const pairListedMachine = vi.fn(async () => ({
+      targetId: pairedTarget.id,
+      machineKey: machine.machineKey,
+      deviceId: machine.deviceId,
+      name: pairedTarget.name,
+    }));
+    const remove = vi.fn(() => true);
+
+    await expect(resolveRemoteTargetForLaunch(legacyAccountTarget(), {
+      accountMachines: {
+        listMachines: async () => ({ state: "ok", message: null, machines: [machine] }),
+        pairListedMachine,
+      },
+      registry: { get: (id) => id === pairedTarget.id ? pairedTarget : null, remove },
+    })).resolves.toEqual(pairedTarget);
+    expect(pairListedMachine).toHaveBeenCalledWith(
+      machine,
+      expect.objectContaining({ connectTimeoutMs: expect.any(Number) }),
+    );
+    expect(remove).toHaveBeenCalledWith("legacy-account-studio");
+  });
+
   it("keeps an explicit SSH-config target when only one account hostname overlaps", async () => {
     const target = {
       ...legacyAccountTarget(),

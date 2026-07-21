@@ -11,7 +11,7 @@ const mockState = vi.hoisted(() => ({
   nextFitDims: { cols: 120, rows: 40 },
   shouldThrowWebglAddon: false,
   lastContextLossHandler: null as (() => void) | null,
-  ptyDataListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string }) => void>(),
+  ptyDataListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string; replace?: boolean }) => void>(),
   ptyExitListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; exitCode: number | null }) => void>(),
   projectRoot: "/project/a" as string | null,
   projectRevision: 0,
@@ -95,6 +95,7 @@ vi.mock("@xterm/xterm", () => ({
       this.rows = rows;
     });
     scrollToBottom = vi.fn();
+    reset = vi.fn();
     buffer = {
       active: {
         baseY: 0,
@@ -182,7 +183,7 @@ function installWindowAde() {
       resize: vi.fn().mockResolvedValue(undefined),
       write: vi.fn().mockResolvedValue(undefined),
       setDataSubscriptions: vi.fn().mockResolvedValue(undefined),
-      onData: vi.fn((listener: (event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string }) => void) => {
+      onData: vi.fn((listener: (event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string; replace?: boolean }) => void) => {
         mockState.ptyDataListeners.add(listener);
         return () => {
           mockState.ptyDataListeners.delete(listener);
@@ -2330,6 +2331,73 @@ describe("TerminalView", () => {
 
     expect(terminal?.write).toHaveBeenCalledWith("live frame\n");
     expect(terminal?.write).not.toHaveBeenCalledWith("old transcript should not replay\n");
+  });
+
+  it("replaces terminal state during recovery without replaying stale hydration", async () => {
+    let resolveSession!: (value: null) => void;
+    const pendingSession = new Promise<null>((resolve) => {
+      resolveSession = resolve;
+    });
+    (window.ade.sessions.get as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(pendingSession);
+    (window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      terminalId: "session-replacement",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "stale hydration\n",
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-replacement" sessionId="session-replacement" isActive />);
+    await flushAnimationFrame();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      reset: ReturnType<typeof vi.fn>;
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    expect(window.ade.sessions.get).toHaveBeenCalledWith("session-replacement");
+    terminal?.write.mockClear();
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-replacement",
+        sessionId: "session-replacement",
+        data: "queued stale frame\n",
+      });
+      listener({
+        ptyId: "pty-replacement",
+        sessionId: "session-replacement",
+        data: "authoritative snapshot\n",
+        replace: true,
+      });
+    }
+
+    expect(terminal?.reset).toHaveBeenCalledTimes(1);
+    expect(terminal?.write).toHaveBeenCalledWith("authoritative snapshot\n");
+
+    resolveSession(null);
+    await flushPromises();
+    await flushAllTimers();
+
+    const recoveredWrites = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
+    expect(recoveredWrites).not.toContain("queued stale frame\n");
+    expect(recoveredWrites).not.toContain("stale hydration\n");
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-replacement",
+        sessionId: "session-replacement",
+        data: "delta suffix\n",
+      });
+    }
+    await flushAnimationFrame();
+
+    expect(terminal?.reset).toHaveBeenCalledTimes(1);
+    expect(terminal?.write).toHaveBeenLastCalledWith("delta suffix\n");
   });
 
   it("backfills a running terminal from preview when initial hydration was empty", async () => {

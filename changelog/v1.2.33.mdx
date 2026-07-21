@@ -1,0 +1,32 @@
+---
+title: "v1.2.33"
+description: "Release notes for ADE v1.2.33 - July 21, 2026"
+---
+
+v1.2.33 fixes the full connection and streaming chain behind Macs appearing offline, web sessions dropping after they connect, mobile reconnect loops, and blank terminals in long-running sessions.
+
+---
+
+## Connection reliability
+
+- **Signed-in Macs stay reachable.** ADE now coordinates rotating account credentials across the desktop app and its background runtime, rejects invalid saved sessions cleanly, and retries directory authorization without leaving a machine in a misleading signed-in-but-offline state.
+- **A stale presence flag no longer hides a working Mac.** If ADE still has a verified secure route, mobile, web, desktop, and ADE Code can try it instead of treating an old cloud "offline" value as final.
+- **Relay connections become usable before ADE reports success.** Readiness, authorization renewal, reconnect fallback, and socket replacement now share one consistent boundary, preventing the brief-connect-then-disconnect behavior seen in the web client.
+- **One slow request no longer resets everything.** Terminal snapshot timeouts and delayed acknowledgements recover their own stream instead of tearing down the entire phone or browser connection.
+
+## Chats and state sync
+
+- **Chats cannot starve the rest of the app.** Chat traffic still gets priority, but machine state is guaranteed regular bandwidth. New shells, sessions, and other changes now continue reaching a phone even on a slow relay connection.
+- **Slow peers catch up instead of reconnecting forever.** ADE re-windows overdue change batches while preserving the socket and cursor, and accepts late acknowledgements safely.
+- **Large relay messages are handled within Cloudflare's limits.** The relay enforces the real WebSocket frame ceiling and uses hibernation-friendly socket handling without requiring a more expensive Cloudflare plan.
+
+## Long-running terminals
+
+- **Terminal history no longer freezes at 16 MB.** ADE rolls old transcript bytes into a retained tail while keeping logical offsets moving forward, so live output remains resumable instead of becoming permanently blank on mobile.
+- **Missing output repairs itself.** Web and iOS clients detect gaps, deduplicate overlap, and request an authoritative bounded snapshot before resuming live output.
+- **Rollover is crash-safe.** Transaction journals and recovery metadata keep the retained terminal window consistent if ADE exits during transcript maintenance.
+
+## iOS and web
+
+- iOS bounds database catch-up work, retries terminal recovery without disconnecting the sync socket, refreshes expired directory authorization, and reports the transport the host actually observed.
+- The web client uses a fresh socket for legacy fallback and preserves terminal watermarks through reconnects so a recovered session cannot silently hydrate with zero bytes.

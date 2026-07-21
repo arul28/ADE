@@ -113,6 +113,38 @@ struct AccountPairingSession: Sendable {
   let token: String
 }
 
+struct AccountRelayTokenPolicy: Equatable {
+  static let production = AccountRelayTokenPolicy(expirationBuffer: 60, skipCache: true)
+
+  let expirationBuffer: Double
+  let skipCache: Bool
+}
+
+enum AccountRelayTokenError: Error, LocalizedError {
+  case authorizationChanged
+  case tokenUnavailable
+
+  var errorDescription: String? {
+    switch self {
+    case .authorizationChanged:
+      return "The signed-in account changed while Relay was connecting."
+    case .tokenUnavailable:
+      return "Sign in again to connect through Relay."
+    }
+  }
+}
+
+func accountFreshRelaySession(
+  requestedAuthorization: AccountPairingAuthorization,
+  currentAuthorization: AccountPairingAuthorization?,
+  token: String?
+) -> AccountPairingSession? {
+  guard currentAuthorization == requestedAuthorization,
+        let token = token?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !token.isEmpty else { return nil }
+  return AccountPairingSession(authorization: requestedAuthorization, token: token)
+}
+
 func accountPairingCommitIsAuthorized(
   _ authorization: AccountPairingAuthorization,
   currentGeneration: UInt64,
@@ -397,6 +429,37 @@ final class AccountService: ObservableObject {
     return AccountPairingSession(authorization: authorization, token: token)
   }
 
+  /// Fetch a server-fresh Clerk JWT at the instant Relay authentication is
+  /// about to be sent. Clerk JWTs have a one-minute TTL, so a token obtained
+  /// before route discovery can already be near expiry when Relay sees it.
+  /// The account generation is checked on both sides of the suspension point.
+  func freshRelaySession(
+    expectedAuthorization: AccountPairingAuthorization? = nil
+  ) async throws -> AccountPairingSession {
+    guard let authorization = currentPairingAuthorization,
+          expectedAuthorization == nil || expectedAuthorization == authorization else {
+      throw AccountRelayTokenError.authorizationChanged
+    }
+    let policy = AccountRelayTokenPolicy.production
+    let token = try await Clerk.shared.auth.getToken(
+      Session.GetTokenOptions(
+        expirationBuffer: policy.expirationBuffer,
+        skipCache: policy.skipCache
+      )
+    )
+    guard let session = accountFreshRelaySession(
+      requestedAuthorization: authorization,
+      currentAuthorization: currentPairingAuthorization,
+      token: token
+    ) else {
+      if currentPairingAuthorization != authorization {
+        throw AccountRelayTokenError.authorizationChanged
+      }
+      throw AccountRelayTokenError.tokenUnavailable
+    }
+    return session
+  }
+
   /// The current ClerkKit session token (JWT) for presenting to the directory
   /// Worker as a Bearer credential. `nil` when signed out.
   func sessionToken() async -> String? {
@@ -415,19 +478,30 @@ final class AccountService: ObservableObject {
       machinesState = .unconfigured
       return
     }
-    guard let token = await sessionToken() else {
+    guard let initialSession = await pairingSession() else {
       guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
       machinesState = .unreachable("Sign in again to load your machines.")
       return
     }
-    guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
+    guard initialSession.authorization.ownerId == requestedOwnerId,
+          isPairingCommitAuthorized(initialSession.authorization) else { return }
 
     if machines.isEmpty {
       machinesState = .loading
     }
     do {
-      let fetched = try await directory.fetchMachines(baseURL: baseURL, token: token)
-      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
+      let fetched = try await directory.fetchMachines(
+        baseURL: baseURL,
+        token: initialSession.token,
+        refreshToken: { [weak self] in
+          guard let self,
+                self.isPairingCommitAuthorized(initialSession.authorization) else { return nil }
+          return try? await self.freshRelaySession(
+            expectedAuthorization: initialSession.authorization
+          ).token
+        }
+      )
+      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
       machines = fetched
       SyncService.shared?.adoptVerifiedAccountRelayMetadata(
         from: fetched,
@@ -435,10 +509,10 @@ final class AccountService: ObservableObject {
       )
       machinesState = .loaded
     } catch let error as AccountDirectoryClient.DirectoryError {
-      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
       machinesState = .unreachable(error.localizedDescription)
     } catch {
-      guard identity?.userId == requestedOwnerId, phase == .signedIn else { return }
+      guard isPairingCommitAuthorized(initialSession.authorization) else { return }
       machinesState = .unreachable("Couldn't load your machines.")
     }
   }

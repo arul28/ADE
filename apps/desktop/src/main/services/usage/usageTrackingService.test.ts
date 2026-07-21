@@ -3822,7 +3822,13 @@ describe("usage reliability: non-destructive merge", () => {
     expect(first.providerStatus?.claude?.state).toBe("ok");
     expect(refreshed.providerStatus?.claude).toEqual(first.providerStatus?.claude);
     expect(refreshed.windows.filter((window) => window.provider === "claude")).toHaveLength(1);
-    expect(refreshed.windows.find((window) => window.provider === "claude")).toMatchObject(claudeWindow);
+    const preservedWindow = refreshed.windows.find((window) => window.provider === "claude");
+    expect(preservedWindow).toMatchObject({
+      ...claudeWindow,
+      resetsInMs: expect.any(Number),
+    });
+    expect(preservedWindow?.resetsInMs).toBeGreaterThan(weeklyMs - 1_000);
+    expect(preservedWindow?.resetsInMs).toBeLessThanOrEqual(weeklyMs);
     expect(refreshed.extraUsage).toEqual([claudeExtraUsage]);
     expect(refreshed.errors).toEqual([]);
 

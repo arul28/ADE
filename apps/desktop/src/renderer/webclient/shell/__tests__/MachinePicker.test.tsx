@@ -100,7 +100,7 @@ describe("MachinePicker account states", () => {
     expect(screen.queryByText(/pairing link/i)).toBeNull();
   });
 
-  it("lists reachable and offline account machines without making offline rows connectable", () => {
+  it("treats directory presence as a hint when a secure route is still available", () => {
     const available = {
       machineKey: "mk-online",
       deviceId: "device-online",
@@ -111,11 +111,20 @@ describe("MachinePicker account states", () => {
       lastSeenAt: 1_700_000_000_000,
       online: true,
     };
-    const offline = {
+    const stalePresence = {
       ...available,
-      machineKey: "mk-offline",
-      deviceId: "device-offline",
-      name: "Offline Studio",
+      machineKey: "mk-stale",
+      deviceId: "device-stale",
+      name: "Stale Presence Studio",
+      reachableEndpoints: [{ kind: "relay" as const, url: "wss://relay.example/connect/mk-stale" }],
+      online: false,
+    };
+    const unreachable = {
+      ...available,
+      machineKey: "mk-unreachable",
+      deviceId: "device-unreachable",
+      name: "Unreachable Studio",
+      reachableEndpoints: [],
       online: false,
     };
     const { onSelectAccountMachine } = renderPicker(account({
@@ -123,19 +132,22 @@ describe("MachinePicker account states", () => {
       userId: "user_3GYkSensitiveSubject",
       email: "owner@example.test",
       imageUrl: "https://img.clerk.com/avatar.png",
-      machines: [available, offline],
+      machines: [available, stalePresence, unreachable],
     }));
 
-    const onlineButton = screen.getByRole("button", { name: /Online Studio.*Ready/i });
-    const offlineButton = screen.getByRole("button", { name: /Offline Studio.*Offline/i });
+    const onlineButton = screen.getByRole("button", { name: /Online Studio.*Connect/i });
+    const staleButton = screen.getByRole("button", { name: /Stale Presence Studio.*Connect/i });
+    const unreachableButton = screen.getByRole("button", { name: /Unreachable Studio.*Can't reach this Mac/i });
     expect(screen.queryByText("mk-online")).toBeNull();
     expect((onlineButton as HTMLButtonElement).disabled).toBe(false);
-    expect((offlineButton as HTMLButtonElement).disabled).toBe(true);
+    expect((staleButton as HTMLButtonElement).disabled).toBe(false);
+    expect((unreachableButton as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText("Offline")).toBeNull();
     expect(screen.getByText("Signed in as owner@example.test")).toBeTruthy();
     expect(screen.queryByText("user_3GYkSensitiveSubject")).toBeNull();
     expect(document.querySelector('img[src="https://img.clerk.com/avatar.png"]')).toBeTruthy();
-    fireEvent.click(onlineButton);
-    expect(onSelectAccountMachine).toHaveBeenCalledWith(available);
+    fireEvent.click(staleButton);
+    expect(onSelectAccountMachine).toHaveBeenCalledWith(stalePresence);
   });
 
   it("offers reauthentication for an expired account session", () => {

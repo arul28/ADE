@@ -45,7 +45,10 @@ struct SettingsConnectionHeader: View {
           reduceMotion: reduceMotion
         )
         VStack(alignment: .leading, spacing: 1) {
-          Text(SettingsConnectionPresentation.statusLabel(for: health))
+          Text(SettingsConnectionPresentation.statusLabel(
+            for: health,
+            canReconnectToSavedHost: snapshot.canReconnectToSavedHost
+          ))
             .font(.system(.body, design: .rounded).weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
           if let detail = stateDetailLine {
@@ -66,25 +69,7 @@ struct SettingsConnectionHeader: View {
         .layoutPriority(1)
       }
 
-      if health.transport.isConnected {
-        VStack(alignment: .leading, spacing: 4) {
-          if let chipText = settingsConnectedRouteChipText(
-            durationMs: snapshot.lastConnectDurationMs,
-            routeKind: snapshot.lastConnectedRouteKind
-          ) {
-            ADEStatusPill(text: chipText, tint: ADEColor.success)
-          }
-          SettingsConnectedHostDetails(routeLine: snapshot.routeLine)
-          if snapshot.usingRelay {
-            // Quiet nudge: relay is a valid automatic path; Tailscale is only a
-            // recommendation for faster, steadier direct sync.
-            Text("Using ADE relay. For faster, more stable sync, connect both devices with Tailscale.")
-              .font(.caption)
-              .foregroundStyle(ADEColor.textSecondary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-        }
-      } else if let hostName = pendingHostName {
+      if !health.transport.isConnected, let hostName = pendingHostName {
         Text(pendingDescription(hostName: hostName))
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
@@ -108,9 +93,6 @@ struct SettingsConnectionHeader: View {
         SettingsHostCompatibilityBanner(message: compatibilityMessage)
       }
 
-      if snapshot.showTailscaleOffHint {
-        ADETailscaleOffHintCard()
-      }
     }
     .padding(18)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -257,22 +239,6 @@ private struct SettingsHostCompatibilityBanner: View {
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .strokeBorder(ADEColor.warning.opacity(0.25), lineWidth: 0.75)
     )
-  }
-}
-
-private struct SettingsConnectedHostDetails: View {
-  let routeLine: String?
-
-  var body: some View {
-    // The machine name now lives in the status caption above, so this block
-    // only carries the route line (Tailscale/LAN address · port).
-    if let routeLine {
-      Text(routeLine)
-        .font(.caption.monospaced())
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
-        .truncationMode(.middle)
-    }
   }
 }
 

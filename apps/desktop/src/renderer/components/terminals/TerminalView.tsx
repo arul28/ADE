@@ -84,6 +84,7 @@ type CachedRuntime = {
   hasFittedOnce: boolean;
   hydrationStarted: boolean;
   hydrationCompleted: boolean;
+  hydrationGeneration: number;
   hasAppliedTerminalContent: boolean;
   displayedLiveDataBeforeHydration: boolean;
   pendingHydrationChunks: string[];
@@ -823,6 +824,7 @@ function pauseRuntimePtyStream(runtime: CachedRuntime): void {
 function resumeRuntimePtyStream(runtime: CachedRuntime): void {
   if (!runtime.liveStreamPaused || !shouldRuntimeReceivePtyData(runtime)) return;
   runtime.liveStreamPaused = false;
+  runtime.hydrationGeneration += 1;
   runtime.displayedLiveDataBeforeHydration = false;
   runtime.hydrationStarted = false;
   runtime.hydrationCompleted = false;
@@ -1368,13 +1370,58 @@ function shouldDeliverPtyEvent(runtime: CachedRuntime, projectRoot: string | und
   return !(projectRoot && runtime.projectRoot && projectRoot !== runtime.projectRoot);
 }
 
+function replaceRuntimeTerminalData(runtime: CachedRuntime, data: string) {
+  // Recovery snapshots are authoritative. Invalidate every pending hydration
+  // read before clearing xterm so an older preview/transcript promise cannot
+  // replay stale output over the recovered state.
+  runtime.hydrationGeneration += 1;
+  clearRuntimeHydrationTimers(runtime);
+  discardScheduledFrameWrites(runtime);
+  runtime.pendingHydrationChunks.length = 0;
+  runtime.pendingHydrationBytes = 0;
+  runtime.hydrationStarted = true;
+  runtime.hydrationCompleted = true;
+  runtime.hydrationBackfillAttempts = 0;
+  runtime.displayedLiveDataBeforeHydration = false;
+  runtime.hasAppliedTerminalContent = false;
+  runtime.replayMode = false;
+  runtime.replayLoadedBytes = null;
+  runtime.bracketedPasteMode = false;
+  runtime.mouseTrackingModes.clear();
+  void takePendingTerminalOffsetAnchor(runtime.sessionId);
+
+  try {
+    runtime.term.reset();
+  } catch {
+    // A renderer can disappear during recovery; keep the stream usable.
+  }
+  if (data) {
+    updateTerminalInputModes(runtime, data);
+    try {
+      runtime.term.write(data);
+      runtime.hasAppliedTerminalContent = hasRenderableTerminalText(data);
+    } catch {
+      // ignore write errors after disposal
+    }
+  }
+  scheduleVisibleFrameRefresh(runtime, { scrollToBottom: true });
+  scheduleFit(runtime, true);
+}
+
 function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   if (!shouldDeliverPtyEvent(runtime, ev.projectRoot)) return;
-  updateTerminalInputModes(runtime, ev.data);
   if (!shouldRuntimeReceivePtyData(runtime)) {
+    updateTerminalInputModes(runtime, ev.data);
     pauseRuntimePtyStream(runtime);
     return;
   }
+
+  if (ev.replace === true) {
+    replaceRuntimeTerminalData(runtime, ev.data);
+    return;
+  }
+
+  updateTerminalInputModes(runtime, ev.data);
 
   if (!runtime.hydrationCompleted) {
     runtime.pendingHydrationChunks.push(ev.data);
@@ -1676,9 +1723,11 @@ function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBac
     if (!needsHydrationBackfill(runtime)) return;
     runtime.hydrationBackfillAttempts += 1;
     if (runtime.hydrationBackfillAttempts > HYDRATION_BACKFILL_MAX_ATTEMPTS) return;
+    const hydrationGeneration = runtime.hydrationGeneration;
 
     readPreviewHydrationData(runtime, { snapshotOnly })
       .then((data) => {
+        if (runtime.hydrationGeneration !== hydrationGeneration) return;
         if (!needsHydrationBackfill(runtime)) return;
         if (data.text.length > 0) {
           discardScheduledFrameWrites(runtime);
@@ -1689,6 +1738,7 @@ function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBac
         scheduleHydrationBackfill(runtime, { snapshotOnly });
       })
       .catch(() => {
+        if (runtime.hydrationGeneration !== hydrationGeneration) return;
         if (runtime.disposed || runtime.exitCode != null) return;
         scheduleHydrationBackfill(runtime, { snapshotOnly });
       });
@@ -1698,9 +1748,10 @@ function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBac
 function startHydration(runtime: CachedRuntime) {
   if (runtime.hydrationStarted || runtime.disposed) return;
   runtime.hydrationStarted = true;
+  const hydrationGeneration = runtime.hydrationGeneration;
 
   const finalizeHydration = (data: InitialHydrationData) => {
-    if (runtime.disposed) return;
+    if (runtime.disposed || runtime.hydrationGeneration !== hydrationGeneration) return;
     if (data.source === "replay") {
       // Replay mode: enlarge scrollback so the full transcript stays
       // scrollable, then write the stripped bytes in one pass. There is no
@@ -1757,7 +1808,7 @@ function startHydration(runtime: CachedRuntime) {
   };
 
   const waitForFitThenHydrate = (attempt: number) => {
-    if (runtime.disposed) return;
+    if (runtime.disposed || runtime.hydrationGeneration !== hydrationGeneration) return;
     if (runtime.hasFittedOnce || attempt >= 20) {
       hydrateTranscript();
       return;
@@ -1979,6 +2030,7 @@ function createRuntime(args: {
     hasFittedOnce: false,
     hydrationStarted: false,
     hydrationCompleted: false,
+    hydrationGeneration: 0,
     hasAppliedTerminalContent: false,
     displayedLiveDataBeforeHydration: false,
     pendingHydrationChunks: [],

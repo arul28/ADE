@@ -267,7 +267,7 @@ struct TerminalSessionScreen: View {
       if showReconnectingCaption || pasteboardHasStrings {
         HStack {
           if showReconnectingCaption {
-            Text("reconnecting…")
+            Text(controller.inputStatusMessage ?? "Reconnecting")
               .font(.caption2.weight(.medium))
               .foregroundStyle(ADEColor.warning)
           }

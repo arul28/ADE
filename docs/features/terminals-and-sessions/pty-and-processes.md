@@ -142,8 +142,11 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
 - `pty` (node-pty handle), `laneId`, `laneWorktreePath`, `boundCwd`,
   `sessionId`, `tracked`
 - transcript: `transcriptPath`, `transcriptStream`,
-  `transcriptBytesWritten`, `transcriptLimitReached` (16 MB cap from
-  `MAX_TRANSCRIPT_BYTES`)
+  `transcriptBytesWritten` (lifetime logical UTF-8 end),
+  `transcriptBaseOffset` (logical byte represented by physical byte zero),
+  `transcriptRetainedBytes`, rollover state/promise/pending chunks, and
+  `transcriptWriteDisabled` for a real write failure. The retained file has a
+  16 MiB ceiling; output itself is not capped.
 - preview: `lastPreviewWriteAt`, `previewCurrentLine`,
   `latestPreviewLine`, `lastPreviewWritten`
 - tool metadata: `toolTypeHint`, `resumeCommand`,
@@ -265,25 +268,39 @@ OpenCode rendering inside Work tabs.
 
 ### Data, preview, and runtime state
 
-`writeTranscript(entry, data)` writes to the append-mode write stream.
-Once the 16 MB cap (`MAX_TRANSCRIPT_BYTES`) is hit it writes a single
-notice line and drops further output. `transcriptBytesWritten` is
-seeded from the file size on (re)attach, so the cap survives resume.
+`writeTranscript(entry, data)` advances `transcriptBytesWritten`
+synchronously, then writes to the append stream. When the retained physical
+file plus the next chunk would exceed `MAX_TRANSCRIPT_BYTES` (16 MiB), the
+service pauses the PTY when supported, closes/flushed the stream, and atomically
+replaces the file with a UTF-8-safe recent window: up to an 8 MiB old-file tail
+plus the triggering/output-during-rollover chunks, always bounded to 16 MiB.
+It then reopens append and resumes the PTY. A backend that cannot pause keeps a
+bounded pending tail; if callbacks exceed that bound, the older pending/file
+portion is deliberately dropped so the retained range remains contiguous.
 
-`transcriptBytesWritten` doubles as the transcript byte cursor for
-mobile streaming: each batched PTY data emission carries `offset` —
-the transcript's end byte offset after the batch (null once the cap is
-reached, the write stream fails, or the session is untracked). The
-transcript write and the data-batch enqueue run in the same `onData`
-handler, so the cursor at flush time is exact. Note the fs.WriteStream
-buffers, so disk can lag the cursor by a few ms; range reads clamp to
-the flushed file size and report achieved offsets.
+Rollover is crash-recoverable. `<transcript>.rollover.pending.json` describes
+the old and new generations, `<transcript>.rollover.previous` is the atomic
+backup, temporary files are same-directory, and the completed
+`<transcript>.rollover.json` records `baseOffset` and retained size. Attach
+reconciles an interrupted transaction before reopening append. The logical end
+is seeded as `baseOffset + retainedBytes`, so it remains monotonic across
+resume even though physical byte zero advances.
 
-`readTranscriptRange({ sessionId, startOffset, endOffset })` reads a
-byte range from the transcript for scrollback paging (the sync host's
-`terminal_history`), scanning the page start forward to a newline/ESC
-boundary (and past UTF-8 continuation bytes) so a page never begins
-mid-escape-sequence.
+That logical end is the mobile/web cursor: each batched PTY data event carries
+`offset` after the batch (null only when the session is untracked/has no
+transcript or transcript writing failed). The transcript write and data-batch
+enqueue run in the same `onData` handler, so rollover never rewinds live
+offsets. The fs.WriteStream can still lag by a few ms.
+
+`getTranscriptWindow(sessionId)` returns the retained logical
+`[startOffset, endOffset)` range. `readTranscriptSnapshot` merges the flushed
+range with the bounded live output tail and returns one exact contiguous suffix
+through the in-memory logical end, which is the sync snapshot barrier's
+authoritative capture. `readTranscriptRange({ sessionId, startOffset,
+endOffset })` clamps requested logical offsets to the retained window and
+reports the achieved range; optional safe-boundary alignment scans forward to
+a newline/ESC and both ends avoid UTF-8 continuation bytes. Callers must not
+derive logical offsets from the current file size.
 
 Resize ownership: the ptyId-based `resize(...)` path (desktop
 renderer) records `lastDesktopCols/Rows` on the entry;

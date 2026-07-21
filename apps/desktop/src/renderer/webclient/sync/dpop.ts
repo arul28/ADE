@@ -2,6 +2,7 @@ import type { SyncDpopProof } from "../../../shared/types/sync";
 import { randomHex } from "./ids";
 
 const DPOP_CONTEXT = "ade-dpop-v1";
+const RELAY_REAUTH_CONTEXT = "ade-relay-reauth-v1";
 const P256_RAW_SIGNATURE_BYTES = 64;
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -134,6 +135,36 @@ export async function signDpopProof(args: {
   );
   return {
     publicKey: args.publicKeyX963Base64,
+    timestamp,
+    nonce,
+    signature: bytesToBase64(rawEcdsaSignatureToDer(rawSignature)),
+  };
+}
+
+export async function signRelayReauthorizationProof(args: {
+  privateKey: CryptoKey;
+  deviceId: string;
+  relayAccountToken: string;
+  challenge: string;
+  nowSeconds?: number;
+  nonce?: string;
+}): Promise<SyncDpopProof> {
+  const timestamp = Math.floor(args.nowSeconds ?? Date.now() / 1_000);
+  const nonce = (args.nonce ?? randomHex(16)).slice(0, 128);
+  const canonical = [
+    RELAY_REAUTH_CONTEXT,
+    args.deviceId,
+    await sha256Hex(args.relayAccountToken),
+    args.challenge,
+    String(timestamp),
+    nonce,
+  ].join("\n");
+  const rawSignature = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    args.privateKey,
+    toArrayBuffer(utf8Bytes(canonical)),
+  );
+  return {
     timestamp,
     nonce,
     signature: bytesToBase64(rawEcdsaSignatureToDer(rawSignature)),

@@ -23,6 +23,9 @@ import {
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
 export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
+// Keep outage recovery comfortably inside the directory's 90-second online
+// window while bounding sustained failures at a 20-second request cadence.
+export const ACCOUNT_MACHINE_RETRY_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 20_000] as const;
 const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
 
 export type AccountMachineRegistration = {
@@ -182,7 +185,7 @@ function relayPublishStateSignature(
 }
 
 export function createAccountMachinePublisherService(options: {
-  getAccessToken: () => Promise<string | null>;
+  getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
   getAccountStatus?: () => PublisherAccountStatus;
   getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
@@ -212,6 +215,7 @@ export function createAccountMachinePublisherService(options: {
   let triggeredPublishPending = false;
   let lastRelayPublishStateSignature: string | null = null;
   let lastWarning: string | null = null;
+  let transientFailureCount = 0;
   let unsubscribeSignIn: (() => void) | null = null;
   let health = createSyncAccountDirectoryHealth(
     "sync_disabled",
@@ -228,6 +232,17 @@ export function createAccountMachinePublisherService(options: {
     if (lastWarning === code) return;
     lastWarning = code;
     options.logger?.warn("account.machine_publish_failed", { code, ...meta });
+  };
+
+  const recordTransientFailure = (): void => {
+    transientFailureCount = Math.min(
+      transientFailureCount + 1,
+      ACCOUNT_MACHINE_RETRY_BACKOFF_MS.length,
+    );
+  };
+
+  const resetPublishCadence = (): void => {
+    transientFailureCount = 0;
   };
 
   const recordOutcome = (
@@ -413,13 +428,12 @@ export function createAccountMachinePublisherService(options: {
     const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
     timeout.unref?.();
     try {
-      const response = await (options.fetchImpl ?? fetch)(
-        `${baseUrl}/account/machines/register`,
-        {
+      const sendRegistration = (token: string): Promise<Response> =>
+        (options.fetchImpl ?? fetch)(`${baseUrl}/account/machines/register`, {
           method: "POST",
           headers: {
             accept: "application/json",
-            authorization: `Bearer ${accessToken}`,
+            authorization: `Bearer ${token}`,
             "content-type": "application/json",
           },
           body: JSON.stringify(registration),
@@ -428,10 +442,31 @@ export function createAccountMachinePublisherService(options: {
           cache: "no-store",
           redirect: "error",
           signal: controller.signal,
-        },
-      );
+        });
+
+      let response = await sendRegistration(accessToken);
+      let firstUnauthorizedReason: string | null = null;
+      if (response.status === 401) {
+        firstUnauthorizedReason = await readAccountDirectoryHttpReason(response).catch(() => null);
+        let refreshedToken: string | null = null;
+        try {
+          refreshedToken = (await options.getAccessToken({ forceRefresh: true }))?.trim() || null;
+        } catch {
+          // Preserve the first unauthorized response and its parsed reason.
+        }
+        if (disposed) return;
+        if (refreshedToken) response = await sendRegistration(refreshedToken);
+      }
       if (!response.ok) {
-        const httpReason = await readAccountDirectoryHttpReason(response).catch(() => null);
+        // Always drain the final response, even when the first 401 already
+        // supplied the user-facing reason. Leaving a replacement 401 body
+        // unread can prevent the HTTP connection from being reused.
+        const responseReason = await readAccountDirectoryHttpReason(response).catch(() => null);
+        const httpReason = response.status === 401 && firstUnauthorizedReason
+          ? firstUnauthorizedReason
+          : responseReason;
+        if (response.status >= 500) recordTransientFailure();
+        else resetPublishCadence();
         recordOutcome("http_error", {
           attemptAt,
           skipReason: httpReason
@@ -447,6 +482,7 @@ export function createAccountMachinePublisherService(options: {
       }
       await response.body?.cancel().catch(() => {});
       lastWarning = null;
+      resetPublishCadence();
       recordOutcome("published", {
         attemptAt,
         skipReason: null,
@@ -458,6 +494,7 @@ export function createAccountMachinePublisherService(options: {
     } catch (error) {
       if (disposed && controller.signal.aborted) return;
       const state = controller.signal.aborted ? "timeout" : "transport_error";
+      recordTransientFailure();
       recordOutcome(state, {
         attemptAt,
         skipReason: state === "timeout"
@@ -505,10 +542,15 @@ export function createAccountMachinePublisherService(options: {
 
   const schedule = (): void => {
     if (!started || disposed || heartbeatTimer) return;
+    const retryDelay = transientFailureCount > 0
+      ? ACCOUNT_MACHINE_RETRY_BACKOFF_MS[
+          Math.min(transientFailureCount, ACCOUNT_MACHINE_RETRY_BACKOFF_MS.length) - 1
+        ]
+      : heartbeatMs;
     heartbeatTimer = setTimeout(() => {
       heartbeatTimer = null;
       void publishNow().finally(schedule);
-    }, heartbeatMs);
+    }, retryDelay);
     heartbeatTimer.unref?.();
   };
 
@@ -643,7 +685,10 @@ export function createBrainAccountMachinePublisherService(options: {
     logger: options.logger,
   });
   return createAccountMachinePublisherService({
-    getAccessToken: () => getSignedInAccountAccessToken(accountAuthService),
+    getAccessToken: (tokenOptions) => getSignedInAccountAccessToken(
+      accountAuthService,
+      tokenOptions,
+    ),
     getAccountStatus: () => {
       const status = accountAuthService.getStatus();
       return {

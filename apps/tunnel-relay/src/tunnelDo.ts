@@ -2,6 +2,7 @@ import {
   buildHostSignatureBase,
   buildPipeSignatureBase,
   CONNECTION_ID_PATTERN,
+  CONTROL_EPOCH_PATTERN,
   constantTimeEqual,
   DEFAULT_MAX_TUNNELS_PER_MACHINE,
   generateConnectionId,
@@ -20,19 +21,25 @@ export const CLOSE_CLIENT_GONE = 4504; // pipe arrived but its phone had already
 export const CLOSE_CONTROL_REPLACED = 4505; // a newer host control socket took over
 export const CLOSE_PRE_PIPE_BUFFER_OVERFLOW = 4506; // bounded early-frame buffer overflow
 export const CLOSE_BRIDGE_REJECTED = 4507; // host rejected an open it could not service
+export const CLOSE_STALE_PIPE = 4508; // pipe epoch/id did not match one pending client
+export const CLOSE_FORWARD_FAILED = 4509; // one side could not receive a forwarded frame
+export const CLOSE_NOT_READY = 4510; // v2 client sent data before relay readiness
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const IDLE_MS = 10 * 60 * 1000;
 // Persisting last-activity into the socket attachment on every frame would be
 // wasteful; a 60s granularity is plenty against a 10-minute idle threshold.
 const ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
-// The phone is a sync client that sends its hello frame the instant it opens —
-// before the brain's pipe socket has attached (the brain only learns of the
-// tunnel via {t:"open"} and then dials the pipe). Buffer those first frames so
-// none are dropped, bounded so a phone that never gets a pipe can't grow it.
+// Legacy clients send hello before the bridge is ready. Keep a bounded,
+// in-memory-only fallback for them. Ready-v2 clients send no ADE frames until
+// the host confirms both relay pipe and local bridge are open, so hibernation
+// cannot lose their first protocol frame and no per-frame DO storage is needed.
 const MAX_BUFFERED_CLIENT_FRAMES = 64;
 const MAX_BUFFERED_CLIENT_BYTES = 256 * 1024;
+export const RELAY_READY_VERSION = 2;
+export const LEGACY_CONTROL_EPOCH = "legacy-v1";
 const MAX_CLOSE_REASON_BYTES = 123;
+const WS_OPEN = 1;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -73,6 +80,14 @@ type SocketRole = "control" | "client" | "pipe";
 type SocketAttachment = {
   role: SocketRole;
   id?: string;
+  /** Absent on sockets hibernated by the pre-epoch Worker. */
+  epoch?: string;
+  readyVersion?: typeof RELAY_READY_VERSION;
+  established?: boolean;
+  /** Legacy pre-ready bytes exist only in this instance's bounded memory. */
+  legacyBuffered?: true;
+  /** Pre-deploy data socket whose volatile pre-ready state cannot be proven. */
+  legacyStateUnknown?: true;
   ts: number;
 };
 
@@ -84,18 +99,38 @@ type SocketAttachment = {
  * WebSocket Hibernation API so idle tunnels don't burn wall-clock duration.
  */
 export class TunnelDurableObject implements DurableObject {
-  // Frames a phone sent before its pipe attached, keyed by connectionId. Held
-  // in memory only: the client + control sockets keep the object resident
-  // during the sub-second open handshake, so this survives until the flush.
+  // Bounded fallback only for clients that predate ready-v2. New clients never
+  // send ADE frames before ready, so hibernation does not depend on this map.
   private readonly pendingClientFrames = new Map<
     string,
     { frames: (string | ArrayBuffer)[]; bytes: number }
   >();
+  private readonly terminalSocketLogs = new WeakSet<WebSocket>();
 
   constructor(
     private readonly state: DurableObjectState,
     private readonly env: TunnelRelayEnv,
   ) {}
+
+  /** One-time deploy migration for hibernated pre-epoch socket attachments. */
+  private normalizedAttachment(ws: WebSocket): SocketAttachment | null {
+    const attachment = ws.deserializeAttachment() as SocketAttachment | null;
+    if (!attachment?.role) return null;
+    if (attachment.epoch) return attachment;
+    const migrated = {
+      ...attachment,
+      epoch: LEGACY_CONTROL_EPOCH,
+      ...(attachment.role !== "control" && !attachment.established
+        ? { legacyStateUnknown: true as const }
+        : {}),
+    } satisfies SocketAttachment;
+    ws.serializeAttachment(migrated);
+    return migrated;
+  }
+
+  private epochOf(attachment: SocketAttachment | null): string | null {
+    return attachment?.epoch ?? (attachment?.role ? LEGACY_CONTROL_EPOCH : null);
+  }
 
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -105,7 +140,7 @@ export class TunnelDurableObject implements DurableObject {
     if (route.kind === "claim") return this.handleClaim(request);
     if (route.kind === "host") return this.handleHost(request, url, route.machineKey);
     if (route.kind === "pipe") return this.handlePipe(request, url, route.machineKey, route.id);
-    if (route.kind === "connect") return this.handleConnect(request);
+    if (route.kind === "connect") return this.handleConnect(request, url);
     return new Response("not found", { status: 404 });
   }
 
@@ -153,9 +188,16 @@ export class TunnelDurableObject implements DurableObject {
     }
     const ts = url.searchParams.get("ts") ?? "";
     const sig = url.searchParams.get("sig") ?? "";
+    const requestedEpoch = url.searchParams.get("epoch")?.trim() ?? "";
+    if (requestedEpoch && !CONTROL_EPOCH_PATTERN.test(requestedEpoch)) {
+      return new Response("invalid epoch", { status: 401 });
+    }
+    const epoch = requestedEpoch || LEGACY_CONTROL_EPOCH;
     const verified = await verifySignedQuery({
       secret,
-      base: buildHostSignatureBase(machineKey, ts),
+      base: requestedEpoch
+        ? buildHostSignatureBase(machineKey, requestedEpoch, ts)
+        : buildHostSignatureBase(machineKey, ts),
       timestamp: ts,
       signature: sig,
     });
@@ -167,6 +209,14 @@ export class TunnelDurableObject implements DurableObject {
     // Only one control socket per machine; a fresh host connection supersedes a
     // stale one (e.g. after the brain restarted before the old socket dropped).
     for (const existing of this.state.getWebSockets("control")) {
+      const attachment = this.normalizedAttachment(existing);
+      if (attachment?.role === "control") {
+        this.closePendingForControlEpoch(
+          this.epochOf(attachment) ?? LEGACY_CONTROL_EPOCH,
+          CLOSE_CONTROL_REPLACED,
+          "control replaced",
+        );
+      }
       try {
         existing.close(CLOSE_CONTROL_REPLACED, "replaced by newer host");
       } catch {
@@ -174,7 +224,7 @@ export class TunnelDurableObject implements DurableObject {
       }
     }
     logTunnel("host_registered", { machineKey: machineKey.slice(0, 8) });
-    return this.acceptSocket({ role: "control" });
+    return this.acceptSocket({ role: "control", epoch });
   }
 
   private async handlePipe(request: Request, url: URL, machineKey: string, id: string): Promise<Response> {
@@ -187,50 +237,70 @@ export class TunnelDurableObject implements DurableObject {
     }
     const ts = url.searchParams.get("ts") ?? "";
     const sig = url.searchParams.get("sig") ?? "";
+    const requestedEpoch = url.searchParams.get("epoch")?.trim() ?? "";
+    if (requestedEpoch && !CONTROL_EPOCH_PATTERN.test(requestedEpoch)) {
+      return new Response("invalid epoch", { status: 401 });
+    }
+    const epoch = requestedEpoch || LEGACY_CONTROL_EPOCH;
     const verified = await verifySignedQuery({
       secret,
-      base: buildPipeSignatureBase(machineKey, id, ts),
+      base: requestedEpoch
+        ? buildPipeSignatureBase(machineKey, id, requestedEpoch, ts)
+        : buildPipeSignatureBase(machineKey, id, ts),
       timestamp: ts,
       signature: sig,
     });
     if (!verified.ok) return new Response(verified.reason, { status: 401 });
 
-    const client = this.clientForId(id);
+    const client = this.clientForId(id, epoch);
     if (!client) {
       // The phone hung up (or timed out) before the host's pipe arrived.
-      return this.acceptSocket({ role: "pipe", id }, (server) => {
+      return this.acceptSocket({ role: "pipe", id, epoch }, (server) => {
         try {
-          server.close(CLOSE_CLIENT_GONE, "client gone");
+          server.close(CLOSE_STALE_PIPE, "stale pipe");
         } catch {
           // already closing
         }
       });
     }
-    // Pipe paired with a live phone — flush any frames the phone sent while it
-    // waited for us, in order, then let live forwarding take over.
-    return this.acceptSocket({ role: "pipe", id }, (server) => {
-      const buffered = this.pendingClientFrames.get(id);
-      if (!buffered) return;
-      this.pendingClientFrames.delete(id);
-      for (const frame of buffered.frames) {
+    if (this.pipeForId(id, epoch)) {
+      return this.acceptSocket({ role: "pipe", id, epoch }, (server) => {
         try {
-          server.send(frame);
+          server.close(CLOSE_STALE_PIPE, "duplicate pipe");
         } catch {
-          // pipe already closing
+          // already closing
         }
-      }
-    });
+      });
+    }
+    const control = this.currentControl();
+    const controlAttachment = control ? this.normalizedAttachment(control) : null;
+    if (this.epochOf(controlAttachment) !== epoch) {
+      return this.acceptSocket({ role: "pipe", id, epoch }, (server) => {
+        try {
+          server.close(CLOSE_STALE_PIPE, "stale control epoch");
+        } catch {
+          // already closing
+        }
+      });
+    }
+    // Pairing is not data-ready until the brain confirms its local bridge is
+    // also OPEN with an epoch-matched control {t:"ready"} message. A legacy
+    // pipe arrival already proves its old Node bridge is OPEN, so that branch
+    // becomes ready immediately for both old and ready-v2 clients.
+    const response = await this.acceptSocket({ role: "pipe", id, epoch });
+    if (!requestedEpoch) this.markPairReady(id, epoch);
+    return response;
   }
 
-  private async handleConnect(request: Request): Promise<Response> {
+  private async handleConnect(request: Request, url: URL): Promise<Response> {
     const notWs = await this.requireWebSocket(request);
     if (notWs) return notWs;
-    const control = this.state.getWebSockets("control")[0];
+    const control = this.currentControl();
     if (!control) {
       // No host is registered — accept then close so the phone gets a clean,
       // distinguishable code rather than a bare handshake failure.
       logTunnel("connect_rejected", { reason: "host_offline" });
-      return this.acceptSocket({ role: "client" }, (server) => {
+      return this.acceptSocket({ role: "client", epoch: "offline" }, (server) => {
         try {
           server.close(CLOSE_HOST_OFFLINE, "host offline");
         } catch {
@@ -239,11 +309,15 @@ export class TunnelDurableObject implements DurableObject {
       });
     }
 
-    const activeClients = this.state.getWebSockets("client").length;
+    const activeClients = this.openSocketsForRole("client").length;
     const maxTunnels = this.maxTunnels();
     if (activeClients >= maxTunnels) {
       logTunnel("connect_rejected", { reason: "too_many", activeClients, maxTunnels });
-      return this.acceptSocket({ role: "client" }, (server) => {
+      const controlAttachment = this.normalizedAttachment(control);
+      return this.acceptSocket({
+        role: "client",
+        epoch: this.epochOf(controlAttachment) ?? LEGACY_CONTROL_EPOCH,
+      }, (server) => {
         try {
           server.close(CLOSE_TOO_MANY, "too many tunnels");
         } catch {
@@ -252,15 +326,56 @@ export class TunnelDurableObject implements DurableObject {
       });
     }
 
+    const controlAttachment = this.normalizedAttachment(control);
+    const controlEpoch = this.epochOf(controlAttachment);
+    if (!controlAttachment || !controlEpoch) {
+      return this.acceptSocket({ role: "client", epoch: "offline" }, (server) => {
+        try {
+          server.close(CLOSE_HOST_OFFLINE, "host offline");
+        } catch {
+          // already closing
+        }
+      });
+    }
+    const readyVersion = url.searchParams.get("ready") === String(RELAY_READY_VERSION)
+      ? RELAY_READY_VERSION
+      : undefined;
     const id = generateConnectionId();
-    const response = await this.acceptSocket({ role: "client", id });
+    let negotiationAccepted = true;
+    const response = await this.acceptSocket({
+      role: "client",
+      id,
+      epoch: controlEpoch,
+      ...(readyVersion ? { readyVersion } : {}),
+    }, (server) => {
+      if (!readyVersion) return;
+      try {
+        // This immediate frame distinguishes a ready-v2 Worker from an older
+        // Worker that ignores `?ready=2`. It must precede the control open.
+        server.send(JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION }));
+      } catch {
+        negotiationAccepted = false;
+        this.closePair(server, this.normalizedAttachment(server), CLOSE_FORWARD_FAILED, "relay negotiation failed");
+      }
+    });
+    if (!negotiationAccepted) return response;
     try {
-      control.send(JSON.stringify({ t: "open", id }));
+      // Released hosts (and the new Node client's legacy fallback) accept the
+      // historical open shape strictly. A migrated pre-epoch control must
+      // therefore never receive additive epoch/readiness fields.
+      control.send(JSON.stringify(controlEpoch === LEGACY_CONTROL_EPOCH
+        ? { t: "open", id }
+        : {
+            t: "open",
+            id,
+            epoch: controlEpoch,
+            ...(readyVersion ? { readyVersion } : {}),
+          }));
     } catch {
       // The control socket died between lookup and signaling. Do not leave the
       // phone occupying a tunnel slot while it waits for a pipe that cannot come.
       logTunnel("connect_rejected", { reason: "host_offline" });
-      const client = this.clientForId(id);
+      const client = this.clientForId(id, controlEpoch);
       try {
         client?.close(CLOSE_HOST_OFFLINE, "host offline");
       } catch {
@@ -280,28 +395,109 @@ export class TunnelDurableObject implements DurableObject {
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
+    const epoch = attachment.epoch ?? LEGACY_CONTROL_EPOCH;
     const tags: string[] = [attachment.role];
     if (attachment.id) tags.push(`conn:${attachment.id}`);
+    tags.push(`epoch:${epoch}`);
     this.state.acceptWebSocket(server, tags);
-    server.serializeAttachment({ ...attachment, ts: Date.now() } satisfies SocketAttachment);
+    server.serializeAttachment({ ...attachment, epoch, ts: Date.now() } satisfies SocketAttachment);
     if (afterAccept) afterAccept(server);
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private clientForId(id: string): WebSocket | null {
+  private isOpen(ws: WebSocket): boolean {
+    return ws.readyState === WS_OPEN;
+  }
+
+  private openSocketsForRole(role: SocketRole): WebSocket[] {
+    return this.state.getWebSockets(role).filter((ws) => {
+      if (!this.isOpen(ws)) return false;
+      const attachment = this.normalizedAttachment(ws);
+      return attachment?.role === role && Boolean(this.epochOf(attachment));
+    });
+  }
+
+  private currentControl(): WebSocket | null {
+    return this.openSocketsForRole("control").at(-1) ?? null;
+  }
+
+  private clientForId(id: string, epoch: string): WebSocket | null {
     for (const ws of this.state.getWebSockets(`conn:${id}`)) {
-      const att = ws.deserializeAttachment() as SocketAttachment | null;
-      if (att?.role === "client") return ws;
+      const att = this.normalizedAttachment(ws);
+      if (this.isOpen(ws) && att?.role === "client" && this.epochOf(att) === epoch) return ws;
+    }
+    return null;
+  }
+
+  private pipeForId(id: string, epoch: string): WebSocket | null {
+    for (const ws of this.state.getWebSockets(`conn:${id}`)) {
+      const att = this.normalizedAttachment(ws);
+      if (this.isOpen(ws) && att?.role === "pipe" && this.epochOf(att) === epoch) return ws;
     }
     return null;
   }
 
   private partnerOf(ws: WebSocket, att: SocketAttachment): WebSocket | null {
     if (!att.id) return null;
+    const partnerRole: SocketRole | null = att.role === "client"
+      ? "pipe"
+      : att.role === "pipe"
+        ? "client"
+        : null;
+    if (!partnerRole) return null;
     for (const candidate of this.state.getWebSockets(`conn:${att.id}`)) {
-      if (candidate !== ws) return candidate;
+      if (candidate === ws || !this.isOpen(candidate)) continue;
+      const candidateAttachment = this.normalizedAttachment(candidate);
+      if (
+        candidateAttachment?.role === partnerRole
+        && this.epochOf(candidateAttachment) === this.epochOf(att)
+      ) {
+        return candidate;
+      }
     }
     return null;
+  }
+
+  private controlMessageMatchesEpoch(messageEpoch: unknown, attachment: SocketAttachment): boolean {
+    const epoch = this.epochOf(attachment);
+    return epoch === LEGACY_CONTROL_EPOCH
+      ? messageEpoch == null || messageEpoch === LEGACY_CONTROL_EPOCH
+      : messageEpoch === epoch;
+  }
+
+  private migrateHibernatedLegacyPair(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    partner: WebSocket | null,
+  ): SocketAttachment | null {
+    if (!attachment.legacyStateUnknown || !attachment.id || !partner) return null;
+    const partnerAttachment = this.normalizedAttachment(partner);
+    if (
+      !partnerAttachment?.legacyStateUnknown
+      || partnerAttachment.id !== attachment.id
+      || this.epochOf(partnerAttachment) !== LEGACY_CONTROL_EPOCH
+    ) {
+      return null;
+    }
+    const now = Date.now();
+    const {
+      legacyBuffered: _sourceBuffered,
+      legacyStateUnknown: _sourceUnknown,
+      ...sourceAttachment
+    } = attachment;
+    const {
+      legacyBuffered: _partnerBuffered,
+      legacyStateUnknown: _partnerUnknown,
+      ...cleanPartnerAttachment
+    } = partnerAttachment;
+    const migratedSource = { ...sourceAttachment, established: true, ts: now } satisfies SocketAttachment;
+    ws.serializeAttachment(migratedSource);
+    partner.serializeAttachment({
+      ...cleanPartnerAttachment,
+      established: true,
+      ts: now,
+    } satisfies SocketAttachment);
+    return migratedSource;
   }
 
   private maxTunnels(): number {
@@ -310,7 +506,7 @@ export class TunnelDurableObject implements DurableObject {
   }
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
-    const att = ws.deserializeAttachment() as SocketAttachment | null;
+    let att = this.normalizedAttachment(ws);
     if (!att) return;
 
     if (att.role === "control") {
@@ -322,6 +518,7 @@ export class TunnelDurableObject implements DurableObject {
           const parsed = JSON.parse(message) as {
             t?: unknown;
             id?: unknown;
+            epoch?: unknown;
             code?: unknown;
             reason?: unknown;
           };
@@ -331,18 +528,25 @@ export class TunnelDurableObject implements DurableObject {
             parsed?.t === "reject"
             && typeof parsed.id === "string"
             && CONNECTION_ID_PATTERN.test(parsed.id)
+            && this.controlMessageMatchesEpoch(parsed.epoch, att)
           ) {
-            const client = this.clientForId(parsed.id);
+            const epoch = this.epochOf(att) ?? LEGACY_CONTROL_EPOCH;
+            const client = this.clientForId(parsed.id, epoch);
             if (!client) return;
+            const clientAttachment = client.deserializeAttachment() as SocketAttachment | null;
+            if (clientAttachment?.established) return;
             const code = applicationCloseCode(parsed.code, CLOSE_BRIDGE_REJECTED);
             const reason = sanitizedCloseReason(parsed.reason, "bridge rejected");
             this.pendingClientFrames.delete(parsed.id);
             logTunnel("connect_rejected", { reason: "bridge_rejected", code });
-            try {
-              client.close(code, reason);
-            } catch {
-              // already closing
-            }
+            this.closePair(client, clientAttachment, code, reason);
+          } else if (
+            parsed?.t === "ready"
+            && typeof parsed.id === "string"
+            && CONNECTION_ID_PATTERN.test(parsed.id)
+            && this.controlMessageMatchesEpoch(parsed.epoch, att)
+          ) {
+            this.markPairReady(parsed.id, this.epochOf(att) ?? LEGACY_CONTROL_EPOCH);
           }
         } catch {
           // ignore malformed control frames
@@ -351,14 +555,45 @@ export class TunnelDurableObject implements DurableObject {
       return;
     }
 
-    const partner = this.partnerOf(ws, att);
-    if (partner) {
+    let partner = this.partnerOf(ws, att);
+    if (att.legacyStateUnknown) {
+      const migrated = this.migrateHibernatedLegacyPair(ws, att, partner);
+      if (!migrated) {
+        this.closePair(ws, att, CLOSE_FORWARD_FAILED, "legacy relay state unavailable after deploy");
+        return;
+      }
+      att = migrated;
+      partner = this.partnerOf(ws, att);
+    }
+    // A pair hibernated by the legacy Worker has neither epoch nor established
+    // markers. The complementary socket itself proves that old pairing was
+    // complete, so migrate it before forwarding the first post-deploy frame.
+    if (!att.established && this.epochOf(att) === LEGACY_CONTROL_EPOCH && partner && att.id) {
+      this.markPairReady(att.id, LEGACY_CONTROL_EPOCH);
+      att = this.normalizedAttachment(ws);
+      if (!att || !this.isOpen(ws)) return;
+      partner = this.partnerOf(ws, att);
+    }
+    if (att.established) {
+      if (!partner) {
+        this.closePair(ws, att, CLOSE_FORWARD_FAILED, "relay partner unavailable");
+        return;
+      }
       try {
         partner.send(message);
       } catch {
-        // Partner is mid-close; the close handler will tear the pair down.
+        this.closePair(ws, att, CLOSE_FORWARD_FAILED, "relay forwarding failed");
+        return;
       }
     } else if (att.role === "client" && att.id) {
+      if (att.readyVersion === RELAY_READY_VERSION) {
+        this.closePair(ws, att, CLOSE_NOT_READY, "relay bridge not ready");
+        return;
+      }
+      if (att.legacyBuffered && !this.pendingClientFrames.has(att.id)) {
+        this.closePair(ws, att, CLOSE_FORWARD_FAILED, "legacy pre-ready buffer unavailable");
+        return;
+      }
       // Pipe not attached yet — hold the frame so the phone's hello isn't lost.
       const buffered = this.pendingClientFrames.get(att.id) ?? { frames: [], bytes: 0 };
       const nextBytes = buffered.bytes + bufferedFrameBytes(message);
@@ -376,6 +611,16 @@ export class TunnelDurableObject implements DurableObject {
       buffered.frames.push(message);
       buffered.bytes = nextBytes;
       this.pendingClientFrames.set(att.id, buffered);
+      if (!att.legacyBuffered) {
+        // One attachment write per legacy connection records only that volatile
+        // buffered data exists, never the ADE frame/token itself. A reconstructed
+        // instance can then fail loudly instead of silently losing the hello.
+        att = { ...att, legacyBuffered: true, ts: Date.now() };
+        ws.serializeAttachment(att satisfies SocketAttachment);
+      }
+    } else if (att.role === "pipe") {
+      this.closePair(ws, att, CLOSE_NOT_READY, "relay bridge not ready");
+      return;
     }
     this.touch(ws, att);
   }
@@ -387,16 +632,39 @@ export class TunnelDurableObject implements DurableObject {
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
+    this.logSocketTerminal(ws, "socket_closed", code);
     this.teardownPartner(ws, code, reason);
   }
 
   async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+    this.logSocketTerminal(ws, "socket_error", CLOSE_PARTNER_CLOSED);
     this.teardownPartner(ws, CLOSE_PARTNER_CLOSED, "partner error");
   }
 
+  private logSocketTerminal(ws: WebSocket, kind: "socket_closed" | "socket_error", code: number): void {
+    if (this.terminalSocketLogs.has(ws)) return;
+    this.terminalSocketLogs.add(ws);
+    const attachment = this.normalizedAttachment(ws);
+    logTunnel(kind, {
+      role: attachment?.role ?? null,
+      connectionId: attachment?.id ?? null,
+      epochMode: this.epochOf(attachment) === LEGACY_CONTROL_EPOCH ? "legacy" : "epoch",
+      code,
+      established: attachment?.established === true,
+    });
+  }
+
   private teardownPartner(ws: WebSocket, sourceCode: number, sourceReason: string): void {
-    const att = ws.deserializeAttachment() as SocketAttachment | null;
-    if (!att || att.role === "control") return;
+    const att = this.normalizedAttachment(ws);
+    if (!att) return;
+    if (att.role === "control") {
+      this.closePendingForControlEpoch(
+        this.epochOf(att) ?? LEGACY_CONTROL_EPOCH,
+        sourceCode === CLOSE_CONTROL_REPLACED ? CLOSE_CONTROL_REPLACED : CLOSE_HOST_OFFLINE,
+        sourceReason || "host offline",
+      );
+      return;
+    }
     if (att.id) this.pendingClientFrames.delete(att.id);
     const partner = this.partnerOf(ws, att);
     if (partner) {
@@ -410,9 +678,99 @@ export class TunnelDurableObject implements DurableObject {
     }
   }
 
+  private markPairReady(id: string, epoch: string): void {
+    const client = this.clientForId(id, epoch);
+    const pipe = this.pipeForId(id, epoch);
+    if (!client || !pipe) {
+      if (client) {
+        const clientAttachment = client.deserializeAttachment() as SocketAttachment | null;
+        this.closePair(client, clientAttachment, CLOSE_BRIDGE_REJECTED, "relay pipe unavailable");
+      } else if (pipe) {
+        const pipeAttachment = pipe.deserializeAttachment() as SocketAttachment | null;
+        this.closePair(pipe, pipeAttachment, CLOSE_BRIDGE_REJECTED, "relay client unavailable");
+      }
+      return;
+    }
+    const clientAttachment = this.normalizedAttachment(client);
+    const pipeAttachment = this.normalizedAttachment(pipe);
+    if (!clientAttachment || !pipeAttachment || clientAttachment.established || pipeAttachment.established) return;
+    if (clientAttachment.legacyStateUnknown || pipeAttachment.legacyStateUnknown) {
+      this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "legacy relay state unavailable after deploy");
+      return;
+    }
+    const buffered = this.pendingClientFrames.get(id);
+    if (clientAttachment.legacyBuffered && !buffered) {
+      this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "legacy pre-ready buffer unavailable");
+      return;
+    }
+    try {
+      if (clientAttachment.readyVersion === RELAY_READY_VERSION) {
+        client.send(JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }));
+      } else {
+        for (const frame of buffered?.frames ?? []) pipe.send(frame);
+      }
+    } catch {
+      this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "relay readiness forwarding failed");
+      return;
+    }
+    this.pendingClientFrames.delete(id);
+    const now = Date.now();
+    const {
+      legacyBuffered: _legacyBuffered,
+      legacyStateUnknown: _legacyStateUnknown,
+      ...cleanClientAttachment
+    } = clientAttachment;
+    client.serializeAttachment({ ...cleanClientAttachment, established: true, ts: now } satisfies SocketAttachment);
+    pipe.serializeAttachment({ ...pipeAttachment, established: true, ts: now } satisfies SocketAttachment);
+  }
+
+  private closePair(
+    socket: WebSocket,
+    attachment: SocketAttachment | null,
+    code: number,
+    reason: string,
+  ): void {
+    const closeCode = applicationCloseCode(code, CLOSE_FORWARD_FAILED);
+    const closeReason = sanitizedCloseReason(reason, "relay forwarding failed");
+    if (closeCode === CLOSE_FORWARD_FAILED) {
+      logTunnel("forward_failed", {
+        connectionId: attachment?.id ?? null,
+        sourceRole: attachment?.role ?? null,
+        reason: closeReason,
+      });
+    }
+    if (attachment?.id) this.pendingClientFrames.delete(attachment.id);
+    const partner = attachment ? this.partnerOf(socket, attachment) : null;
+    for (const candidate of [socket, partner]) {
+      if (!candidate) continue;
+      try {
+        candidate.close(closeCode, closeReason);
+      } catch {
+        // already closing
+      }
+    }
+  }
+
+  private closePendingForControlEpoch(epoch: string, code: number, reason: string): void {
+    for (const client of this.openSocketsForRole("client")) {
+      let attachment = this.normalizedAttachment(client);
+      if (
+        attachment?.id
+        && !attachment.established
+        && epoch === LEGACY_CONTROL_EPOCH
+        && this.pipeForId(attachment.id, epoch)
+      ) {
+        this.markPairReady(attachment.id, epoch);
+        attachment = this.normalizedAttachment(client);
+      }
+      if (!attachment || this.epochOf(attachment) !== epoch || attachment.established) continue;
+      this.closePair(client, attachment, code, reason);
+    }
+  }
+
   private async ensureSweepScheduled(): Promise<void> {
     const hasNonControlSocket = this.state.getWebSockets().some((ws) => {
-      const att = ws.deserializeAttachment() as SocketAttachment | null;
+      const att = this.normalizedAttachment(ws);
       return att?.role === "client" || att?.role === "pipe";
     });
     if (hasNonControlSocket && (await this.state.storage.getAlarm()) === null) {
@@ -425,7 +783,7 @@ export class TunnelDurableObject implements DurableObject {
     const byId = new Map<string, { sockets: WebSocket[]; maxTs: number }>();
     let remainingNonControl = 0;
     for (const ws of this.state.getWebSockets()) {
-      const att = ws.deserializeAttachment() as SocketAttachment | null;
+      const att = this.normalizedAttachment(ws);
       if (att?.role !== "client" && att?.role !== "pipe") continue;
       remainingNonControl += 1;
       if (!att?.id) continue;

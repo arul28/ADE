@@ -360,6 +360,7 @@ export async function readAccountDirectoryHttpReason(response: Response): Promis
 export async function fetchAccountMachines(args: {
   baseUrl: string | null | undefined;
   accessToken: string;
+  refreshAccessToken?: () => Promise<string | null>;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -386,18 +387,33 @@ export async function fetchAccountMachines(args: {
     controller.abort();
   }, timeoutMs);
   try {
-    const response = await (args.fetchImpl ?? fetch)(`${baseUrl}/account/machines`, {
-      method: "GET",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      credentials: "omit",
-      referrerPolicy: "no-referrer",
-      cache: "no-store",
-      redirect: "error",
-      signal: controller.signal,
-    });
+    const requestMachines = (accessToken: string): Promise<Response> =>
+      (args.fetchImpl ?? fetch)(`${baseUrl}/account/machines`, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${accessToken}`,
+        },
+        credentials: "omit",
+        referrerPolicy: "no-referrer",
+        cache: "no-store",
+        redirect: "error",
+        signal: controller.signal,
+      });
+    let response = await requestMachines(token);
+    if (response.status === 401 && args.refreshAccessToken) {
+      await response.body?.cancel().catch(() => {});
+      let refreshedToken: string | null = null;
+      try {
+        refreshedToken = (await args.refreshAccessToken())?.trim() || null;
+      } catch {
+        // Preserve the original 401 classification. The auth service owns any
+        // definitive session invalidation performed by the forced refresh.
+      }
+      if (refreshedToken) {
+        response = await requestMachines(refreshedToken);
+      }
+    }
     if (response.status === 401 || response.status === 403) {
       const reason = await readAccountDirectoryHttpReason(response).catch(() => null);
       return {
@@ -504,10 +520,13 @@ export function accountMachineConnectionState(
   machine: AdeAccountMachine,
   relayBaseUrls: readonly string[] = [],
 ): AccountMachineConnectionState {
-  if (!machine.online) return "offline";
-  return accountMachineSecureSyncEndpoints(machine, relayBaseUrls).length > 0
-    ? "available"
-    : "unreachable";
+  // Directory presence is a short-lived hint, not proof that the end-to-end
+  // relay route is gone. A verified secure endpoint remains worth dialing even
+  // when the most recent presence heartbeat has expired.
+  if (accountMachineSecureSyncEndpoints(machine, relayBaseUrls).length > 0) {
+    return "available";
+  }
+  return machine.online ? "unreachable" : "offline";
 }
 
 function isLanHostname(value: string): boolean {

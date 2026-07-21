@@ -20,6 +20,12 @@ const ACCESS_TOKEN_REFRESH_SKEW_MS = 2 * 60_000;
 const MAX_PENDING_LOGIN_SESSIONS = 5;
 const DEVICE_BRIDGE_REQUEST_TIMEOUT_MS = 15_000;
 const USERINFO_REQUEST_TIMEOUT_MS = 5_000;
+// The desktop and CLI brain can refresh the same rotating Clerk grant from
+// separate processes. Give the winning process enough time to receive and
+// durably compare-and-swap its replacement before a loser deletes the old
+// grant after invalid_grant. This path only runs after a definitive rejection.
+const REFRESH_ROTATION_WAIT_MS = 6_000;
+const REFRESH_ROTATION_POLL_MS = 50;
 const ACCOUNT_TOKEN_ENV_KEY = "ADE_ACCOUNT_TOKEN";
 const PROVISIONED_ACCOUNT_TOKEN_PREFIX = "ade_account_v1.";
 const SUCCESS_HTML = `<!doctype html>
@@ -177,7 +183,7 @@ export type AccountAuthService = {
   getStatus(): AccountAuthStatus;
   /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
   getSessionReadState(): AccountSessionReadState;
-  getAccessToken(): Promise<string>;
+  getAccessToken(options?: { forceRefresh?: boolean }): Promise<string>;
   createToken(): Promise<AccountTokenCreateResult>;
   cancelLogin(sessionId: string): void;
   signOut(): AccountAuthStatus;
@@ -200,11 +206,12 @@ export type AccountActionDomainService = {
 
 export async function getSignedInAccountAccessToken(
   service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
+  options?: { forceRefresh?: boolean },
 ): Promise<string | null> {
   const status = service.getStatus();
   if (!status.signedIn && status.source !== "env-token") return null;
   try {
-    const accessToken = (await service.getAccessToken()).trim();
+    const accessToken = (await service.getAccessToken(options)).trim();
     return accessToken && service.getStatus().userId ? accessToken : null;
   } catch {
     // Relay account credentials are additive. An unavailable refresh must not
@@ -545,6 +552,9 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
     const expiresAt = readNonEmptyString(parsed.expiresAt);
     const obtainedAt = readNonEmptyString(parsed.obtainedAt);
     if (!accessToken || !expiresAt || !obtainedAt) return null;
+    const claims = decodeAccountClaims(accessToken);
+    const storedUserId = readNonEmptyString(parsed.userId);
+    if (storedUserId && claims.userId && storedUserId !== claims.userId) return null;
     const storedOAuthConfig = asRecord(parsed.oauthConfig);
     const oauthConfig = normalizeOptionalOAuthConfig({
       present: Object.prototype.hasOwnProperty.call(parsed, "oauthConfig"),
@@ -557,7 +567,7 @@ function parseStoredSession(raw: string | null | undefined): AccountSessionRecor
       tokenType: readNonEmptyString(parsed.tokenType) ?? "Bearer",
       expiresAt,
       obtainedAt,
-      userId: readNonEmptyString(parsed.userId),
+      userId: storedUserId ?? claims.userId,
       email: readNonEmptyString(parsed.email),
       name: readNonEmptyString(parsed.name),
       provider: readIdentityProvider(parsed.provider),
@@ -606,18 +616,22 @@ async function postTokenForm(args: {
 }
 
 function toStatus(record: AccountSessionRecord | null): AccountAuthStatus {
+  const signedIn = Boolean(record?.accessToken && record.userId);
   const expiresAt = record
     ? accessTokenExpiresAt(record.accessToken) ?? record.expiresAt
     : null;
   return {
-    signedIn: Boolean(record?.accessToken),
-    userId: record?.userId ?? null,
-    email: record?.email ?? null,
-    name: record?.name ?? null,
-    expiresAt,
-    source: record ? record.authSource ?? "loopback" : null,
-    ...(record?.provider ? { provider: record.provider } : {}),
-    ...(record?.imageUrl ? { imageUrl: record.imageUrl } : {}),
+    // A usable account session always has a stable verified subject. Never
+    // expose a half-session as signed in: account-owned trust is keyed by this
+    // identity throughout the directory, relay, and pairing flows.
+    signedIn,
+    userId: signedIn ? record?.userId ?? null : null,
+    email: signedIn ? record?.email ?? null : null,
+    name: signedIn ? record?.name ?? null : null,
+    expiresAt: signedIn ? expiresAt : null,
+    source: signedIn && record ? record.authSource ?? "loopback" : null,
+    ...(signedIn && record?.provider ? { provider: record.provider } : {}),
+    ...(signedIn && record?.imageUrl ? { imageUrl: record.imageUrl } : {}),
   };
 }
 
@@ -688,6 +702,8 @@ export function createAccountAuthService(args: {
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
   deviceBridgeRequestTimeoutMs?: number;
   userinfoRequestTimeoutMs?: number;
+  refreshRotationWaitMs?: number;
+  refreshRotationPollMs?: number;
   env?: NodeJS.ProcessEnv;
   now?: () => number;
   randomBytes?: (size: number) => Buffer;
@@ -712,6 +728,16 @@ export function createAccountAuthService(args: {
     && requestedUserinfoTimeoutMs > 0
     ? Math.trunc(requestedUserinfoTimeoutMs)
     : USERINFO_REQUEST_TIMEOUT_MS;
+  const refreshRotationWaitMs = typeof args.refreshRotationWaitMs === "number"
+    && Number.isFinite(args.refreshRotationWaitMs)
+    && args.refreshRotationWaitMs >= 0
+    ? Math.trunc(args.refreshRotationWaitMs)
+    : REFRESH_ROTATION_WAIT_MS;
+  const refreshRotationPollMs = typeof args.refreshRotationPollMs === "number"
+    && Number.isFinite(args.refreshRotationPollMs)
+    && args.refreshRotationPollMs > 0
+    ? Math.trunc(args.refreshRotationPollMs)
+    : REFRESH_ROTATION_POLL_MS;
   const pendingSessions = new Map<string, PendingLoginSession>();
   const pendingDeviceSessions = new Map<string, PendingDeviceLoginSession>();
   const devicePollsInFlight = new Map<string, Promise<AccountDeviceLoginPollResult>>();
@@ -724,6 +750,7 @@ export function createAccountAuthService(args: {
   let authEpoch = 0;
   let sessionReadState: AccountSessionReadState = "missing";
   let lastObservedSignedIn: boolean | null = null;
+  let locallyRejectedSessionRaw: string | null = null;
   const signedInListeners = new Set<() => void>();
 
   const readRawEnvCredential = (): string | null => readNonEmptyString(env[ACCOUNT_TOKEN_ENV_KEY]);
@@ -783,7 +810,10 @@ export function createAccountAuthService(args: {
       : { userId: null, email: null, name: null, provider: null, imageUrl: null };
     const expiresAtMs = expiresAt ? Date.parse(expiresAt) : Number.NaN;
     return {
-      signedIn: isAccessToken && Number.isFinite(expiresAtMs) && expiresAtMs > now(),
+      signedIn: isAccessToken
+        && Boolean(claims.userId)
+        && Number.isFinite(expiresAtMs)
+        && expiresAtMs > now(),
       userId: claims.userId,
       email: claims.email,
       name: claims.name,
@@ -795,6 +825,7 @@ export function createAccountAuthService(args: {
   };
 
   const persistSession = (record: AccountSessionRecord | null): void => {
+    locallyRejectedSessionRaw = null;
     if (record) {
       args.credentialStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(record));
     } else {
@@ -824,18 +855,25 @@ export function createAccountAuthService(args: {
     warnDevelopmentClerkIgnored();
   };
 
-  const readSession = (): AccountSessionRecord | null => {
+  type AccountSessionSnapshot = {
+    raw: string | null;
+    session: AccountSessionRecord | null;
+  };
+
+  const readSessionSnapshot = (): AccountSessionSnapshot => {
     try {
       // A peer process may replace the credential between the read and the
       // atomic delete. Retry once so we never clear or surface that newer
       // session merely because an older development session was observed.
-      const readStoredSession = (): {
-        raw: string | null;
-        session: AccountSessionRecord | null;
-      } => {
+      const readStoredSession = (): AccountSessionSnapshot => {
         const stored = args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY);
-        const session = parseStoredSession(stored);
-        sessionReadState = stored == null
+        const locallyRejected = locallyRejectedSessionRaw != null && stored === locallyRejectedSessionRaw;
+        const session = locallyRejected
+          ? null
+          : parseStoredSession(stored);
+        sessionReadState = locallyRejected
+          ? "missing"
+          : stored == null
           ? args.credentialStore.getLastReadState?.() === "unreadable"
             ? "unreadable"
             : "missing"
@@ -846,33 +884,93 @@ export function createAccountAuthService(args: {
       };
 
       const observed = readStoredSession();
-      if (!observed.session || !observed.raw) return observed.session;
+      if (!observed.session || !observed.raw) return observed;
       if (!shouldRejectDevelopmentAccountMaterial({
         env,
         accessToken: observed.session.accessToken,
         oauthConfig: observed.session.oauthConfig,
       })) {
-        return observed.session;
+        return observed;
       }
 
       invalidateStoredSessionIfCurrent(observed.raw);
       const retry = readStoredSession();
-      if (!retry.session || !retry.raw) return null;
+      if (!retry.session || !retry.raw) return { raw: retry.raw, session: null };
       if (shouldRejectDevelopmentAccountMaterial({
         env,
         accessToken: retry.session.accessToken,
         oauthConfig: retry.session.oauthConfig,
       })) {
         sessionReadState = "missing";
-        return null;
+        return { raw: retry.raw, session: null };
       }
-      return retry.session;
+      return retry;
     } catch (error) {
       sessionReadState = "unreadable";
       logger.warn("account.session_read_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
-      return null;
+      return { raw: null, session: null };
+    }
+  };
+
+  const readSession = (): AccountSessionRecord | null => readSessionSnapshot().session;
+
+  const deleteStoredSessionIfExact = (raw: string): boolean => {
+    locallyRejectedSessionRaw = raw;
+    const updateSync = args.credentialStore.updateSync;
+    if (!updateSync) {
+      // The local process must stop surfacing a definitively rejected grant,
+      // but a store without compare-and-delete cannot safely erase it while a
+      // peer may be rotating the credential.
+      authEpoch += 1;
+      lastObservedSignedIn = false;
+      sessionReadState = "missing";
+      return false;
+    }
+    let deleted = false;
+    updateSync.call(args.credentialStore, (values) => {
+      if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== raw) return false;
+      delete values[ACCOUNT_SESSION_CREDENTIAL_KEY];
+      deleted = true;
+      return true;
+    });
+    if (deleted) {
+      authEpoch += 1;
+      lastObservedSignedIn = false;
+      sessionReadState = "missing";
+    }
+    return deleted;
+  };
+
+  const waitForRefreshRotation = async (
+    rejected: { raw: string; session: AccountSessionRecord },
+  ): Promise<
+    | { kind: "rotated"; snapshot: { raw: string; session: AccountSessionRecord } }
+    | { kind: "superseded" }
+    | { kind: "unchanged" }
+  > => {
+    let waitedMs = 0;
+    while (true) {
+      const latest = readSessionSnapshot();
+      if (latest.raw !== rejected.raw) {
+        if (
+          latest.raw
+          && latest.session?.refreshToken
+          && latest.session.refreshToken !== rejected.session.refreshToken
+          && latest.session.userId === rejected.session.userId
+        ) {
+          return {
+            kind: "rotated",
+            snapshot: { raw: latest.raw, session: latest.session },
+          };
+        }
+        return { kind: "superseded" };
+      }
+      if (waitedMs >= refreshRotationWaitMs) return { kind: "unchanged" };
+      const delayMs = Math.min(refreshRotationPollMs, refreshRotationWaitMs - waitedMs);
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      waitedMs += delayMs;
     }
   };
 
@@ -888,22 +986,20 @@ export function createAccountAuthService(args: {
 
   const persistRefreshedSessionIfCurrent = (
     refreshed: AccountSessionRecord,
-    refreshSource: AccountSessionRecord,
+    expectedRaw: string,
   ): boolean => {
-    const matchesRefreshSource = (candidate: AccountSessionRecord | null): boolean =>
-      candidate?.refreshToken === refreshSource.refreshToken
-      && candidate?.obtainedAt === refreshSource.obtainedAt;
     const updateSync = args.credentialStore.updateSync;
     if (!updateSync) {
-      if (!matchesRefreshSource(readSession())) return false;
+      if (args.credentialStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY) !== expectedRaw) {
+        return false;
+      }
       persistSession(refreshed);
       return true;
     }
 
     let persisted = false;
     updateSync.call(args.credentialStore, (values) => {
-      const latest = parseStoredSession(values[ACCOUNT_SESSION_CREDENTIAL_KEY]);
-      if (!matchesRefreshSource(latest)) return false;
+      if (values[ACCOUNT_SESSION_CREDENTIAL_KEY] !== expectedRaw) return false;
       values[ACCOUNT_SESSION_CREDENTIAL_KEY] = JSON.stringify(refreshed);
       persisted = true;
       return true;
@@ -997,6 +1093,7 @@ export function createAccountAuthService(args: {
     previous?: AccountSessionRecord | null,
     authSource: AccountSessionRecord["authSource"] = previous?.authSource ?? "loopback",
     oauthConfig: AccountOAuthConfig | null = previous?.oauthConfig ?? null,
+    options: { fetchUserinfo?: boolean; obtainedAtMs?: number } = {},
   ): Promise<AccountSessionRecord> => {
     if (shouldRejectDevelopmentAccountMaterial({
       env,
@@ -1008,10 +1105,32 @@ export function createAccountAuthService(args: {
         "ADE rejected development Clerk session material in this packaged build. Sign in again to use ADE production.",
       );
     }
-    const obtainedAtMs = now();
+    const obtainedAtMs = options.obtainedAtMs ?? now();
     const claims = decodeAccountClaims(token.accessToken);
     const claimedExpiresAt = accessTokenExpiresAt(token.accessToken);
-    const userinfo = await fetchUserinfoProfile(token, oauthConfig);
+    if (
+      previous?.userId
+      && claims.userId
+      && previous.userId !== claims.userId
+    ) {
+      throw new Error("ADE account refresh returned a different account identity. Sign in again.");
+    }
+    const userinfo = options.fetchUserinfo === false
+      ? null
+      : await fetchUserinfoProfile(token, oauthConfig);
+    if (
+      userinfo?.userId
+      && (
+        (previous?.userId && previous.userId !== userinfo.userId)
+        || (claims.userId && claims.userId !== userinfo.userId)
+      )
+    ) {
+      throw new Error("ADE account userinfo returned a different account identity. Sign in again.");
+    }
+    const userId = previous?.userId ?? claims.userId ?? userinfo?.userId ?? null;
+    if (!userId) {
+      throw new Error("ADE account sign-in did not return a stable user identity. Sign in again.");
+    }
     return {
       accessToken: token.accessToken,
       refreshToken: token.refreshToken ?? previous?.refreshToken ?? null,
@@ -1022,7 +1141,7 @@ export function createAccountAuthService(args: {
       expiresAt: claimedExpiresAt
         ?? new Date(obtainedAtMs + Math.trunc(token.expiresInSec * 1000)).toISOString(),
       obtainedAt: new Date(obtainedAtMs).toISOString(),
-      userId: claims.userId ?? userinfo?.userId ?? previous?.userId ?? null,
+      userId,
       email: claims.email ?? userinfo?.email ?? previous?.email ?? null,
       name: claims.name ?? userinfo?.name ?? previous?.name ?? null,
       provider: claims.provider ?? userinfo?.provider ?? previous?.provider ?? null,
@@ -1546,8 +1665,11 @@ export function createAccountAuthService(args: {
     return envCredential ? envCredentialStatus(envCredential.inspected) : toStatus(record);
   };
 
-  const getAccessToken = async (): Promise<string> => {
-    const record = readSession();
+  const getAccessToken = async (
+    options: { forceRefresh?: boolean } = {},
+  ): Promise<string> => {
+    const sessionSnapshot = readSessionSnapshot();
+    const record = sessionSnapshot.session;
     const acceptedEnvCredential = readAcceptedEnvCredential();
     if (acceptedEnvCredential && !record?.suppressEnvCredential) {
       const { credential: envCredential, inspected } = acceptedEnvCredential;
@@ -1566,12 +1688,19 @@ export function createAccountAuthService(args: {
           );
         }
         const expiresAtMs = Date.parse(directExpiresAt);
-        if (expiresAtMs > now()) return inspected.token;
+        if (expiresAtMs > now()) {
+          if (!decodeAccountClaims(inspected.token).userId) {
+            throw new Error(
+              "ADE_ACCOUNT_TOKEN access token does not contain a stable account identity.",
+            );
+          }
+          return inspected.token;
+        }
         throw new Error(
           `ADE_ACCOUNT_TOKEN access token expired at ${directExpiresAt}. Replace it with a current access token or a durable refresh token.`,
         );
       }
-      if (envSession) {
+      if (envSession && options.forceRefresh !== true) {
         const expiresAtMs = Date.parse(envSession.expiresAt);
         if (Number.isFinite(expiresAtMs) && expiresAtMs > now() + ACCESS_TOKEN_REFRESH_SKEW_MS) {
           return envSession.accessToken;
@@ -1617,6 +1746,9 @@ export function createAccountAuthService(args: {
             || readRawEnvCredential() !== credentialAtRefresh
             || envRefreshInFlight !== refreshPromise
           ) {
+            // The credential changed while this process was refreshing. The
+            // replacement is already newer than the request we started, so
+            // consume it normally instead of force-rotating it again.
             return getAccessToken();
           }
           envRefreshToken = token.refreshToken ?? refreshTokenAtRefresh;
@@ -1634,12 +1766,16 @@ export function createAccountAuthService(args: {
       }
     }
 
-    if (!record?.accessToken) {
+    if (!record?.accessToken || !record.userId) {
       throw new Error("ADE is not signed in. Run `ade login` to sign in.");
     }
     const claimedExpiresAt = accessTokenExpiresAt(record.accessToken);
     const expiresAtMs = Date.parse(claimedExpiresAt ?? record.expiresAt);
-    if (Number.isFinite(expiresAtMs) && expiresAtMs > now() + ACCESS_TOKEN_REFRESH_SKEW_MS) {
+    if (
+      options.forceRefresh !== true
+      && Number.isFinite(expiresAtMs)
+      && expiresAtMs > now() + ACCESS_TOKEN_REFRESH_SKEW_MS
+    ) {
       return record.accessToken;
     }
     if (!record.refreshToken) {
@@ -1649,10 +1785,15 @@ export function createAccountAuthService(args: {
     const epochAtJoin = authEpoch;
     if (!refreshInFlight) {
       refreshInFlight = (async () => {
-        let refreshRecord = record;
+        if (!sessionSnapshot.raw) return null;
+        let refreshSnapshot = {
+          raw: sessionSnapshot.raw,
+          session: record,
+        };
         let token: TokenResponse | null = null;
         let config: AccountOAuthConfig | null = null;
         for (let attempt = 0; attempt < 2; attempt += 1) {
+          const refreshRecord = refreshSnapshot.session;
           config = refreshRecord.oauthConfig
             ? normalizeOAuthConfig(refreshRecord.oauthConfig)
             : await resolveOAuthConfig();
@@ -1669,33 +1810,69 @@ export function createAccountAuthService(args: {
             break;
           } catch (error) {
             if (
-              attempt > 0
-              || !(error instanceof AccountTokenRequestError)
+              !(error instanceof AccountTokenRequestError)
               || error.oauthErrorCode !== "invalid_grant"
             ) {
               throw error;
             }
-            // The desktop and brain share this credential. If the peer won a
-            // rotating refresh-token exchange, retry once with the newer
-            // persisted token instead of treating the session as expired.
-            const latest = readSession();
-            if (
-              !latest?.refreshToken
-              || latest.refreshToken === refreshRecord.refreshToken
-            ) {
-              throw error;
+            // The desktop and brain share this credential. A peer that won a
+            // rotating refresh exchange may not have persisted its replacement
+            // by the time Clerk rejects our old token, so briefly poll before
+            // declaring the grant dead.
+            const rotation = await waitForRefreshRotation(refreshSnapshot);
+            if (rotation.kind === "rotated" && attempt === 0) {
+              refreshSnapshot = rotation.snapshot;
+              continue;
             }
-            refreshRecord = latest;
+            if (rotation.kind !== "unchanged") return null;
+            const deleted = deleteStoredSessionIfExact(refreshSnapshot.raw);
+            if (!deleted && readSessionSnapshot().raw !== refreshSnapshot.raw) {
+              return null;
+            }
+            throw error;
           }
         }
         if (!token || !config) {
           throw new Error("ADE account session expired. Run `ade login` again.");
         }
-        const refreshed = await buildSessionRecord(token, refreshRecord, undefined, config);
         if (authEpoch !== epochAtJoin) return null;
-        return persistRefreshedSessionIfCurrent(refreshed, refreshRecord)
-          ? refreshed
-          : null;
+        const obtainedAtMs = now();
+        const refreshed = await buildSessionRecord(
+          token,
+          refreshSnapshot.session,
+          undefined,
+          config,
+          { fetchUserinfo: false, obtainedAtMs },
+        );
+        if (authEpoch !== epochAtJoin) return null;
+        if (!persistRefreshedSessionIfCurrent(refreshed, refreshSnapshot.raw)) {
+          return null;
+        }
+
+        // The rotated access/refresh pair is durable before optional profile
+        // enrichment. Identity is carried from the previously verified subject,
+        // so avoidable userinfo latency cannot expose a stale refresh token to a
+        // second process.
+        let enriched: AccountSessionRecord;
+        try {
+          enriched = await buildSessionRecord(
+            token,
+            refreshSnapshot.session,
+            undefined,
+            config,
+            { obtainedAtMs },
+          );
+        } catch {
+          // The rotated credential and verified prior subject are already
+          // durable. Optional profile enrichment must not make that successful
+          // refresh unusable.
+          return readSession() ?? refreshed;
+        }
+        if (authEpoch !== epochAtJoin) return null;
+        const refreshedRaw = JSON.stringify(refreshed);
+        return persistRefreshedSessionIfCurrent(enriched, refreshedRaw)
+          ? enriched
+          : readSession();
       })().finally(() => {
         refreshInFlight = null;
       });
@@ -1703,6 +1880,10 @@ export function createAccountAuthService(args: {
 
     const refreshed = await refreshInFlight;
     if (authEpoch !== epochAtJoin || !refreshed) {
+      // A peer process may have won the refresh CAS. Its replacement token
+      // satisfies this forced refresh; forcing another exchange here would
+      // immediately consume the newly rotated refresh token and recreate the
+      // cross-process race this path is designed to avoid.
       return getAccessToken();
     }
     return refreshed.accessToken;

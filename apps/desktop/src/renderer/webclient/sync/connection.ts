@@ -10,6 +10,15 @@ import type {
   SyncPeerMetadata,
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
+  SyncRelayAuthorizationLease,
+  SyncRelayClientAccepted,
+  SyncRelayClientReady,
+  SyncRelayReauthorizePayload,
+  SyncRelayReauthorizeResultPayload,
+} from "../../../shared/types/sync";
+import {
+  SYNC_RELAY_READY_VERSION,
+  SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../shared/types/sync";
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
 import {
@@ -17,7 +26,8 @@ import {
   type BrowserDialCandidate,
 } from "./endpoints";
 import type { WebClientEnvironmentRecord } from "./envStore";
-import { signDpopProof } from "./dpop";
+import { signDpopProof, signRelayReauthorizationProof } from "./dpop";
+import { randomHex } from "./ids";
 import {
   createProjectCatalogChunkAssembler,
   decodeEnvelopeText,
@@ -33,8 +43,12 @@ const INBOUND_STALE_MS = 75_000;
 const INBOUND_STALE_CHECK_INTERVAL_MS = 15_000;
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
+export const BACKOFF_STABLE_CONNECTED_MS = 10_000;
 const MAX_CONSECUTIVE_AUTH_FAILURES = 5;
 const VISIBILITY_RECONNECT_DEBOUNCE_MS = 1_000;
+const RELAY_REAUTH_RESULT_TIMEOUT_MS = 4_000;
+const RELAY_REAUTH_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+export const RELAY_READY_NEGOTIATION_WINDOW_MS = 750;
 
 export type WebSocketLike = {
   readonly readyState: number;
@@ -52,6 +66,7 @@ export type SyncConnectionState =
   | "idle"
   | "connecting"
   | "connected"
+  | "restoring"
   | "reconnecting"
   | "disconnected"
   | "auth_failed"
@@ -85,6 +100,27 @@ type PreparedPairedHelloAuth = Promise<{
   dpop: SyncDpopProof | null;
   relayAccountToken: string;
 }>;
+
+type RelayRefreshAttempt = {
+  generation: number;
+  requestId: string;
+  payload: SyncRelayReauthorizePayload;
+  responseTimer: ReturnType<typeof setTimeout> | null;
+};
+
+class StaleSocketAttemptError extends Error {
+  constructor() {
+    super("Sync connection attempt was superseded.");
+    this.name = "StaleSocketAttemptError";
+  }
+}
+
+class RelayReadyNegotiationTimeoutError extends Error {
+  constructor() {
+    super("The Relay did not confirm ready-v2 support in time.");
+    this.name = "RelayReadyNegotiationTimeoutError";
+  }
+}
 
 export type AccountPairAndConnectArgs = {
   endpoints: BrowserDialCandidate[];
@@ -134,6 +170,25 @@ function asMessageEvent(data: unknown): MessageEvent<string> {
   return { data: dataToText(data) } as MessageEvent<string>;
 }
 
+function withRelayReadyNegotiation(endpoint: string): string {
+  const url = new URL(endpoint);
+  url.searchParams.set("ready", String(SYNC_RELAY_READY_VERSION));
+  return url.toString();
+}
+
+function relayTransportFrame(data: unknown): SyncRelayClientAccepted | SyncRelayClientReady | null {
+  if (typeof data !== "string") return null;
+  try {
+    const parsed = JSON.parse(data) as Record<string, unknown>;
+    if (parsed.v !== SYNC_RELAY_READY_VERSION) return null;
+    if (parsed.t === "accepted") return { t: "accepted", v: SYNC_RELAY_READY_VERSION };
+    if (parsed.t === "ready") return { t: "ready", v: SYNC_RELAY_READY_VERSION };
+  } catch {
+    // ADE envelopes and binary frames are handled by the normal decoder.
+  }
+  return null;
+}
+
 export class SyncConnection {
   private ws: WebSocketLike | null = null;
   private environment: WebClientEnvironmentRecord | null = null;
@@ -144,11 +199,21 @@ export class SyncConnection {
   private inboundStaleTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS;
   private backoffMs = BACKOFF_MIN_MS;
+  private backoffResetTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingAttemptCancel: (() => void) | null = null;
   private consecutiveAuthFailures = 0;
   private lastDialStartedAtMs = 0;
   private intentionalClose = false;
   private latestHello: SyncHelloOkPayload | null = null;
   private relayAccountTokenProvider: (() => Promise<string>) | null = null;
+  private connectionGeneration = 0;
+  private operationGeneration = 0;
+  private relayRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private relayRefreshRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private relayRefreshAttempt: RelayRefreshAttempt | null = null;
+  private relayRefreshPreparation: Promise<void> | null = null;
+  private relayRefreshRetryCount = 0;
+  private relayAuthorizationTerminalError: string | null = null;
   private readonly listeners: ListenerMap = {
     statusChanged: new Set(),
     envelope: new Set(),
@@ -176,12 +241,14 @@ export class SyncConnection {
   private readonly transportOpenTimeoutMs: number;
   private readonly authenticatedHelloTimeoutMs: number;
   private readonly documentRef: Document | null;
+  private readonly relayReauthorizationSigner: typeof signRelayReauthorizationProof;
 
   constructor(options: {
     socketFactory?: WebSocketFactory;
     transportOpenTimeoutMs?: number;
     authenticatedHelloTimeoutMs?: number;
     document?: Document | null;
+    relayReauthorizationSigner?: typeof signRelayReauthorizationProof;
   } = {}) {
     this.socketFactory = options.socketFactory ?? createDefaultSocket;
     this.transportOpenTimeoutMs = Math.max(
@@ -193,6 +260,8 @@ export class SyncConnection {
       Math.floor(options.authenticatedHelloTimeoutMs ?? DEFAULT_AUTHENTICATED_HELLO_TIMEOUT_MS),
     );
     this.documentRef = options.document ?? (typeof document === "undefined" ? null : document);
+    this.relayReauthorizationSigner = options.relayReauthorizationSigner
+      ?? signRelayReauthorizationProof;
     this.documentRef?.addEventListener("visibilitychange", this.handleVisibilityChange);
   }
 
@@ -229,6 +298,7 @@ export class SyncConnection {
 
   async pairWithAccount(args: AccountPairAndConnectArgs): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
     this.disconnect({ reconnect: false, code: 1000, reason: "Account pairing" });
+    const operationGeneration = this.operationGeneration;
     this.relayAccountTokenProvider = args.relayAccountTokenProvider ?? (() => Promise.resolve(args.accountToken));
     this.endpoints = args.endpoints;
     this.consecutiveAuthFailures = 0;
@@ -238,9 +308,16 @@ export class SyncConnection {
     for (const candidate of dialable) {
       try {
         const dpop = await args.createDpop();
-        return await this.pairWithAccountOnEndpoint(candidate.url, args, dpop);
+        if (operationGeneration !== this.operationGeneration) throw new StaleSocketAttemptError();
+        const result = await this.pairWithAccountOnEndpoint(candidate, args, dpop);
+        if (operationGeneration !== this.operationGeneration) throw new StaleSocketAttemptError();
+        return result;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+        if (
+          lastError instanceof StaleSocketAttemptError
+          || operationGeneration !== this.operationGeneration
+        ) throw new StaleSocketAttemptError();
         this.cleanupSocket();
       }
     }
@@ -255,8 +332,13 @@ export class SyncConnection {
   }
 
   disconnect(options: { reconnect?: boolean; code?: number; reason?: string } = {}): void {
+    this.operationGeneration += 1;
+    this.pendingAttemptCancel?.();
+    this.pendingAttemptCancel = null;
+    this.connectionGeneration += 1;
     this.shouldReconnect = options.reconnect ?? false;
     this.relayAccountTokenProvider = null;
+    this.relayAuthorizationTerminalError = null;
     this.intentionalClose = true;
     this.stopTimers();
     if (this.reconnectTimer) {
@@ -310,6 +392,7 @@ export class SyncConnection {
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
+        if (lastError instanceof StaleSocketAttemptError) throw lastError;
         this.cleanupSocket();
         if (
           error instanceof SyncConnectionError
@@ -334,30 +417,63 @@ export class SyncConnection {
   }
 
   private async connectEndpoint(environment: WebClientEnvironmentRecord, candidate: BrowserDialCandidate): Promise<void> {
+    const throughRelay = browserEndpointRequiresRelayAccess(candidate);
+    try {
+      await this.connectEndpointAttempt(environment, candidate, throughRelay);
+    } catch (error) {
+      if (!throughRelay || !(error instanceof RelayReadyNegotiationTimeoutError)) throw error;
+      await this.connectEndpointAttempt(environment, candidate, false);
+    }
+  }
+
+  private async connectEndpointAttempt(
+    environment: WebClientEnvironmentRecord,
+    candidate: BrowserDialCandidate,
+    useRelayReadyV2: boolean,
+  ): Promise<void> {
+    const generation = ++this.connectionGeneration;
     const endpoint = candidate.url;
+    const throughRelay = browserEndpointRequiresRelayAccess(candidate);
     const preparedAuth = this.preparePairedHelloAuth(
       environment,
-      browserEndpointRequiresRelayAccess(candidate),
+      throughRelay,
     );
     // Authentication preparation starts with the dial. Observe an early
     // rejection until onopen awaits the same promise so it cannot be reported
     // as unhandled while the transport is still opening.
     void preparedAuth.catch(() => undefined);
-    const socket = this.socketFactory(endpoint);
+    const socket = this.socketFactory(useRelayReadyV2 ? withRelayReadyNegotiation(endpoint) : endpoint);
     this.ws = socket;
     this.status.endpoint = endpoint;
     this.emit("statusChanged", this.getStatus());
+    if (!this.isCurrentSocket(socket, generation)) throw new StaleSocketAttemptError();
     let settled = false;
     await new Promise<void>((resolve, reject) => {
       let helloTimeout: ReturnType<typeof setTimeout> | null = null;
+      let relayNegotiationTimeout: ReturnType<typeof setTimeout> | null = null;
+      let helloStarted = false;
+      let relayAccepted = false;
+      let cancelAttempt: () => void = () => {};
       const clearDeadlines = () => {
         clearTimeout(openTimeout);
         if (helloTimeout) clearTimeout(helloTimeout);
+        if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
+      };
+      const startHello = () => {
+        if (settled || helloStarted || !this.isCurrentSocket(socket, generation)) return;
+        helloStarted = true;
+        if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
+        relayNegotiationTimeout = null;
+        void this.sendHello(socket, generation, environment, preparedAuth).catch((error) => {
+          if (!this.isCurrentSocket(socket, generation)) return;
+          fail(error instanceof Error ? error : new Error(String(error)), "Hello preparation failed");
+        });
       };
       const fail = (error: Error, closeReason?: string) => {
         if (settled) return;
         settled = true;
         clearDeadlines();
+        if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
         if (closeReason) {
           socket.onclose = null;
           try {
@@ -368,74 +484,161 @@ export class SyncConnection {
         }
         reject(error);
       };
+      cancelAttempt = () => fail(new StaleSocketAttemptError(), "Connection attempt superseded");
+      this.pendingAttemptCancel = cancelAttempt;
       const openTimeout = setTimeout(() => {
         fail(new Error(`Timed out opening ${endpoint}.`), "Transport open timeout");
       }, this.transportOpenTimeoutMs);
 
       socket.onopen = () => {
-        if (settled) return;
+        if (settled || !this.isCurrentSocket(socket, generation)) return;
         clearTimeout(openTimeout);
         helloTimeout = setTimeout(() => {
           fail(new Error(`Timed out authenticating with ${endpoint}.`), "Authenticated hello timeout");
         }, this.authenticatedHelloTimeoutMs);
-        void this.sendHello(socket, environment, preparedAuth).catch((error) => {
-          fail(error instanceof Error ? error : new Error(String(error)), "Hello preparation failed");
-        });
+        if (!useRelayReadyV2) {
+          startHello();
+          return;
+        }
+        relayNegotiationTimeout = setTimeout(() => {
+          relayNegotiationTimeout = null;
+          // Never send ADE data on a socket that requested ready-v2: a delayed
+          // accepted frame would make the Worker reject that data as pre-ready.
+          // Retry the same route on a fresh, explicitly legacy socket instead.
+          fail(new RelayReadyNegotiationTimeoutError(), "Relay readiness negotiation timeout");
+        }, RELAY_READY_NEGOTIATION_WINDOW_MS);
       };
       socket.onmessage = (event) => {
-        void this.handleMessage(asMessageEvent(event.data), {
+        if (!this.isCurrentSocket(socket, generation)) return;
+        const transport = throughRelay ? relayTransportFrame(event.data) : null;
+        if (transport) {
+          if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
+          relayNegotiationTimeout = null;
+          if (transport.t === "accepted") {
+            relayAccepted = true;
+          } else if (relayAccepted) {
+            startHello();
+          }
+          // accepted means this Worker enforces readiness. Keep waiting for
+          // final ready within the existing overall authenticated-hello budget.
+          return;
+        }
+        void this.handleMessage(asMessageEvent(event.data), socket, generation, {
           onHelloOk: (payload) => {
-            if (settled) return;
+            if (settled || !this.isCurrentSocket(socket, generation)) return;
             if (payload.brain?.deviceId?.trim() !== environment.hostDeviceId) {
               fail(new Error("Connected machine identity did not match the stored pairing."));
               return;
             }
+            if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
+              fail(new StaleSocketAttemptError(), "Connection attempt superseded");
+              return;
+            }
             settled = true;
             clearDeadlines();
-            this.finishConnected(environment, endpoint, payload);
+            if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
             resolve();
           },
           onHelloError: (payload) => {
-            if (settled) return;
-            fail(this.handleAuthFailure(environment, payload));
+            if (settled || !this.isCurrentSocket(socket, generation)) return;
+            const error = this.handleAuthFailure(environment, payload);
+            fail(error);
+            if (error.code === "attributed_auth_failed") {
+              this.emit("pairingRejected", {
+                envId: environment.envId,
+                hostDeviceId: environment.hostDeviceId,
+              });
+            }
           },
         }).catch((error) => {
+          if (!this.isCurrentSocket(socket, generation)) return;
           fail(error instanceof Error ? error : new Error(String(error)));
         });
       };
       socket.onerror = () => {
+        if (!this.isCurrentSocket(socket, generation)) return;
         fail(new Error(`WebSocket failed for ${endpoint}.`));
       };
       socket.onclose = (event) => {
+        if (!this.isCurrentSocket(socket, generation)) return;
         if (!settled) {
           fail(this.errorForClose(event));
           return;
         }
-        this.handleClose(event);
+        this.handleClose(event, false, socket, generation);
       };
     });
   }
 
   private async pairWithAccountOnEndpoint(
-    endpoint: string,
+    candidate: BrowserDialCandidate,
     args: AccountPairAndConnectArgs,
     dpop: SyncDpopProof,
   ): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
-    const socket = this.socketFactory(endpoint);
+    const throughRelay = browserEndpointRequiresRelayAccess(candidate);
+    try {
+      return await this.pairWithAccountOnEndpointAttempt(candidate, args, dpop, throughRelay);
+    } catch (error) {
+      if (!throughRelay || !(error instanceof RelayReadyNegotiationTimeoutError)) throw error;
+      return this.pairWithAccountOnEndpointAttempt(candidate, args, dpop, false);
+    }
+  }
+
+  private async pairWithAccountOnEndpointAttempt(
+    candidate: BrowserDialCandidate,
+    args: AccountPairAndConnectArgs,
+    dpop: SyncDpopProof,
+    useRelayReadyV2: boolean,
+  ): Promise<{ environment: WebClientEnvironmentRecord; helloOk: SyncHelloOkPayload; endpoint: string }> {
+    const generation = ++this.connectionGeneration;
+    const endpoint = candidate.url;
+    const throughRelay = browserEndpointRequiresRelayAccess(candidate);
+    const socket = this.socketFactory(useRelayReadyV2 ? withRelayReadyNegotiation(endpoint) : endpoint);
     this.ws = socket;
     this.shouldReconnect = false;
     this.setStatus({ state: "connecting", endpoint, error: null });
+    if (!this.isCurrentSocket(socket, generation)) throw new StaleSocketAttemptError();
     let settled = false;
     return await new Promise((resolve, reject) => {
       let helloTimeout: ReturnType<typeof setTimeout> | null = null;
+      let relayNegotiationTimeout: ReturnType<typeof setTimeout> | null = null;
+      let helloStarted = false;
+      let relayAccepted = false;
+      let cancelAttempt: () => void = () => {};
       const clearDeadlines = () => {
         clearTimeout(openTimeout);
         if (helloTimeout) clearTimeout(helloTimeout);
+        if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
+      };
+      const startHello = () => {
+        if (settled || helloStarted || !this.isCurrentSocket(socket, generation)) return;
+        helloStarted = true;
+        if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
+        relayNegotiationTimeout = null;
+        const payload: SyncHelloPayload = {
+          peer: {
+            ...args.peer,
+            capabilities: [
+              ...(args.peer.capabilities ?? []).filter(
+                (capability) => capability !== SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+              ),
+              SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+            ],
+          },
+          auth: {
+            kind: "account",
+            deviceId: args.peer.deviceId,
+            accountToken: args.accountToken,
+            dpop,
+          },
+        };
+        socket.send(encodeEnvelopeText({ type: "hello", requestId: "account-hello", payload }));
       };
       const fail = (error: Error, closeReason?: string) => {
         if (settled) return;
         settled = true;
         clearDeadlines();
+        if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
         if (closeReason) {
           socket.onclose = null;
           try {
@@ -446,31 +649,43 @@ export class SyncConnection {
         }
         reject(error);
       };
+      cancelAttempt = () => fail(new StaleSocketAttemptError(), "Connection attempt superseded");
+      this.pendingAttemptCancel = cancelAttempt;
       const openTimeout = setTimeout(() => {
         fail(new Error("Timed out opening the account machine connection."), "Account transport open timeout");
       }, this.transportOpenTimeoutMs);
 
       socket.onopen = () => {
-        if (settled) return;
+        if (settled || !this.isCurrentSocket(socket, generation)) return;
         clearTimeout(openTimeout);
         helloTimeout = setTimeout(() => {
           fail(new Error("Timed out authenticating with the account machine."), "Account hello timeout");
         }, this.authenticatedHelloTimeoutMs);
-        const payload: SyncHelloPayload = {
-          peer: args.peer,
-          auth: {
-            kind: "account",
-            deviceId: args.peer.deviceId,
-            accountToken: args.accountToken,
-            dpop,
-          },
-        };
-        socket.send(encodeEnvelopeText({ type: "hello", requestId: "account-hello", payload }));
+        if (!useRelayReadyV2) {
+          startHello();
+          return;
+        }
+        relayNegotiationTimeout = setTimeout(() => {
+          relayNegotiationTimeout = null;
+          fail(new RelayReadyNegotiationTimeoutError(), "Relay readiness negotiation timeout");
+        }, RELAY_READY_NEGOTIATION_WINDOW_MS);
       };
       socket.onmessage = (event) => {
-        void this.handleMessage(asMessageEvent(event.data), {
+        if (!this.isCurrentSocket(socket, generation)) return;
+        const transport = throughRelay ? relayTransportFrame(event.data) : null;
+        if (transport) {
+          if (relayNegotiationTimeout) clearTimeout(relayNegotiationTimeout);
+          relayNegotiationTimeout = null;
+          if (transport.t === "accepted") {
+            relayAccepted = true;
+          } else if (relayAccepted) {
+            startHello();
+          }
+          return;
+        }
+        void this.handleMessage(asMessageEvent(event.data), socket, generation, {
           onHelloOk: (payload) => {
-            if (settled) return;
+            if (settled || !this.isCurrentSocket(socket, generation)) return;
             const hostDeviceId = payload.brain?.deviceId?.trim();
             const pairing = resolveAccountHelloPairing({
               accountPairing: payload.accountPairing,
@@ -491,29 +706,36 @@ export class SyncConnection {
               fail(error instanceof Error ? error : new Error(String(error)));
               return;
             }
+            if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
+              fail(new StaleSocketAttemptError(), "Connection attempt superseded");
+              return;
+            }
             settled = true;
             clearDeadlines();
-            this.finishConnected(environment, endpoint, payload);
+            if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
             this.shouldReconnect = true;
             resolve({ environment, helloOk: payload, endpoint });
           },
           onHelloError: (payload) => {
-            if (settled) return;
+            if (settled || !this.isCurrentSocket(socket, generation)) return;
             fail(new Error(payload.message || "Account authentication was rejected."));
           },
         }).catch((error) => {
+          if (!this.isCurrentSocket(socket, generation)) return;
           fail(error instanceof Error ? error : new Error(String(error)));
         });
       };
       socket.onerror = () => {
+        if (!this.isCurrentSocket(socket, generation)) return;
         fail(new Error("The secure machine connection failed."));
       };
       socket.onclose = (event) => {
+        if (!this.isCurrentSocket(socket, generation)) return;
         if (!settled) {
           fail(this.errorForClose(event));
           return;
         }
-        this.handleClose(event);
+        this.handleClose(event, false, socket, generation);
       };
     });
   }
@@ -539,11 +761,12 @@ export class SyncConnection {
 
   private async sendHello(
     socket: WebSocketLike,
+    generation: number,
     environment: WebClientEnvironmentRecord,
     preparedAuth: PreparedPairedHelloAuth,
   ): Promise<void> {
     const { dpop, relayAccountToken } = await preparedAuth;
-    if (socket !== this.ws || socket.readyState !== SOCKET_OPEN) return;
+    if (!this.isCurrentSocket(socket, generation) || socket.readyState !== SOCKET_OPEN) return;
     const payload: SyncHelloPayload = {
       peer: {
         deviceId: environment.localDeviceId,
@@ -552,7 +775,7 @@ export class SyncConnection {
         deviceType: "browser" as SyncPeerMetadata["deviceType"],
         siteId: environment.siteId,
         dbVersion: 0,
-        capabilities: [],
+        capabilities: [SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY],
       },
       auth: {
         kind: "paired",
@@ -567,35 +790,44 @@ export class SyncConnection {
 
   private async getRelayAccountToken(throughRelay: boolean): Promise<string> {
     if (!throughRelay) return "";
-    const token = (await this.relayAccountTokenProvider?.() ?? "").trim();
-    if (!token) throw new Error("Sign in again to connect through ADE Relay.");
+    const token = await this.relayAccountTokenProvider?.() ?? "";
+    if (!token.trim()) throw new Error("Sign in again to connect through ADE Relay.");
     return token;
   }
 
   private async handleMessage(
     event: MessageEvent<string>,
+    socket: WebSocketLike,
+    generation: number,
     callbacks: {
       onHelloOk?: (payload: SyncHelloOkPayload) => void;
       onHelloError?: (payload: SyncHelloErrorPayload) => void;
     } = {},
   ): Promise<void> {
     const envelope = await decodeEnvelopeText(event.data);
+    if (!this.isCurrentSocket(socket, generation)) return;
     this.setStatus({ lastSeenAt: nowIso() });
     if (envelope.type === "hello_ok") {
       callbacks.onHelloOk?.(envelope.payload as SyncHelloOkPayload);
     } else if (envelope.type === "hello_error") {
       callbacks.onHelloError?.(envelope.payload as SyncHelloErrorPayload);
     }
-    this.routeEnvelope(envelope);
-    if (this.isConnected()) this.scheduleHeartbeatFallback();
+    if (!this.isCurrentSocket(socket, generation)) return;
+    this.routeEnvelope(envelope, socket, generation);
+    if (!this.isCurrentSocket(socket, generation)) return;
+    if (this.isConnected()) {
+      this.scheduleHeartbeatFallback();
+    }
   }
 
-  private routeEnvelope(envelope: SyncEnvelope): void {
+  private routeEnvelope(envelope: SyncEnvelope, socket: WebSocketLike, generation: number): void {
     this.emit("envelope", envelope);
+    if (!this.isCurrentSocket(socket, generation)) return;
     switch (envelope.type) {
       case "heartbeat": {
         const payload = envelope.payload as SyncHeartbeatPayload;
         if (payload.kind === "ping") {
+          if (!this.isCurrentSocket(socket, generation)) return;
           this.send({
             type: "heartbeat",
             requestId: envelope.requestId ?? null,
@@ -625,20 +857,33 @@ export class SyncConnection {
         if (catalog) this.emit("projectCatalog", catalog);
         break;
       }
+      case "relay_reauthorize_result":
+        this.handleRelayReauthorizeResult(
+          envelope.payload as SyncRelayReauthorizeResultPayload,
+          envelope.requestId ?? null,
+        );
+        break;
       default:
         break;
     }
   }
 
-  private finishConnected(environment: WebClientEnvironmentRecord, endpoint: string, helloOk: SyncHelloOkPayload): void {
+  private finishConnected(
+    socket: WebSocketLike,
+    environment: WebClientEnvironmentRecord,
+    endpoint: string,
+    helloOk: SyncHelloOkPayload,
+    generation: number,
+  ): boolean {
+    if (!this.isCurrentSocket(socket, generation)) return false;
     this.environment = environment;
     this.endpoints = [
       ...this.endpoints.filter((candidate) => candidate.url === endpoint),
       ...this.endpoints.filter((candidate) => candidate.url !== endpoint),
     ];
     this.latestHello = helloOk;
-    this.backoffMs = BACKOFF_MIN_MS;
     this.consecutiveAuthFailures = 0;
+    this.relayAuthorizationTerminalError = null;
     this.setStatus({
       state: "connected",
       endpoint,
@@ -648,10 +893,184 @@ export class SyncConnection {
       connectedAt: nowIso(),
       error: null,
     });
+    if (!this.isCurrentSocket(socket, generation)) return false;
     this.startHeartbeat(helloOk.heartbeatIntervalMs);
     this.startInboundStaleWatchdog();
+    this.scheduleStableBackoffReset(generation);
+    this.scheduleRelayAuthorizationRefresh(generation, helloOk.relayAuthorization ?? null, true);
     this.emit("helloOk", helloOk);
-    if (helloOk.projects) this.emit("projectCatalog", { projects: helloOk.projects });
+    if (!this.isCurrentSocket(socket, generation)) return false;
+    if (helloOk.projects) {
+      this.emit("projectCatalog", { projects: helloOk.projects });
+      if (!this.isCurrentSocket(socket, generation)) return false;
+    }
+    return true;
+  }
+
+  private scheduleRelayAuthorizationRefresh(
+    generation: number,
+    lease: SyncRelayAuthorizationLease | null,
+    resetRetries: boolean,
+  ): void {
+    if (this.relayRefreshTimer) clearTimeout(this.relayRefreshTimer);
+    this.relayRefreshTimer = null;
+    if (resetRetries) this.relayRefreshRetryCount = 0;
+    if (!lease || generation !== this.connectionGeneration) return;
+    const delayMs = Math.max(0, lease.refreshAfter - Date.now());
+    this.relayRefreshTimer = setTimeout(() => {
+      this.relayRefreshTimer = null;
+      if (!visible(this.documentRef)) return;
+      this.beginRelayAuthorizationRefresh(generation);
+    }, delayMs);
+  }
+
+  private beginRelayAuthorizationRefresh(generation: number): void {
+    if (
+      generation !== this.connectionGeneration
+      || !this.isConnected()
+      || this.relayRefreshAttempt
+      || this.relayRefreshPreparation
+    ) {
+      return;
+    }
+    const environment = this.environment;
+    const lease = this.latestHello?.relayAuthorization ?? null;
+    const provider = this.relayAccountTokenProvider;
+    if (!environment || !lease || !provider) return;
+
+    const preparation = (async () => {
+      try {
+        const relayAccountToken = await provider();
+        if (!relayAccountToken.trim()) throw new Error("Sign in again to continue through ADE Relay.");
+        const proof = await this.relayReauthorizationSigner({
+          privateKey: environment.dpopKeys.privateKey,
+          deviceId: environment.pairedDeviceId,
+          relayAccountToken,
+          challenge: lease.challenge,
+        });
+        if (generation !== this.connectionGeneration || !this.isConnected()) return;
+        const attempt: RelayRefreshAttempt = {
+          generation,
+          requestId: `relay-reauth-${generation}-${randomHex(8)}`,
+          payload: {
+            deviceId: environment.pairedDeviceId,
+            relayAccountToken,
+            proof,
+          },
+          responseTimer: null,
+        };
+        this.relayRefreshAttempt = attempt;
+        this.sendRelayAuthorizationAttempt(attempt);
+      } catch {
+        this.scheduleRelayAuthorizationRetry(generation, false);
+      }
+    })();
+    this.relayRefreshPreparation = preparation;
+    void preparation.finally(() => {
+      if (this.relayRefreshPreparation === preparation) this.relayRefreshPreparation = null;
+    });
+  }
+
+  private sendRelayAuthorizationAttempt(attempt: RelayRefreshAttempt): void {
+    if (
+      this.relayRefreshAttempt !== attempt
+      || attempt.generation !== this.connectionGeneration
+      || !this.isConnected()
+    ) {
+      return;
+    }
+    if (attempt.responseTimer) clearTimeout(attempt.responseTimer);
+    try {
+      this.send({
+        type: "relay_reauthorize",
+        requestId: attempt.requestId,
+        payload: attempt.payload,
+      });
+    } catch {
+      this.scheduleRelayAuthorizationRetry(attempt.generation, true);
+      return;
+    }
+    attempt.responseTimer = setTimeout(() => {
+      attempt.responseTimer = null;
+      if (this.relayRefreshAttempt !== attempt) return;
+      this.scheduleRelayAuthorizationRetry(attempt.generation, true);
+    }, RELAY_REAUTH_RESULT_TIMEOUT_MS);
+  }
+
+  private scheduleRelayAuthorizationRetry(generation: number, reuseAttempt: boolean): void {
+    if (generation !== this.connectionGeneration || this.relayRefreshRetryTimer) return;
+    const lease = this.latestHello?.relayAuthorization ?? null;
+    const delayMs = RELAY_REAUTH_RETRY_DELAYS_MS[
+      Math.min(this.relayRefreshRetryCount, RELAY_REAUTH_RETRY_DELAYS_MS.length - 1)
+    ];
+    if (!lease || Date.now() + delayMs > lease.expiresAt + lease.graceMs) return;
+    this.relayRefreshRetryCount += 1;
+    const attempt = reuseAttempt ? this.relayRefreshAttempt : null;
+    if (attempt?.responseTimer) {
+      clearTimeout(attempt.responseTimer);
+      attempt.responseTimer = null;
+    }
+    if (!reuseAttempt) this.relayRefreshAttempt = null;
+    this.relayRefreshRetryTimer = setTimeout(() => {
+      this.relayRefreshRetryTimer = null;
+      if (generation !== this.connectionGeneration || !this.isConnected()) return;
+      if (attempt && this.relayRefreshAttempt === attempt) {
+        this.sendRelayAuthorizationAttempt(attempt);
+        return;
+      }
+      this.beginRelayAuthorizationRefresh(generation);
+    }, delayMs);
+  }
+
+  private handleRelayReauthorizeResult(
+    payload: SyncRelayReauthorizeResultPayload,
+    requestId: string | null,
+  ): void {
+    const attempt = this.relayRefreshAttempt;
+    if (!attempt || requestId !== attempt.requestId || attempt.generation !== this.connectionGeneration) return;
+    if (attempt.responseTimer) clearTimeout(attempt.responseTimer);
+    attempt.responseTimer = null;
+    if (this.relayRefreshRetryTimer) clearTimeout(this.relayRefreshRetryTimer);
+    this.relayRefreshRetryTimer = null;
+
+    if (payload.ok) {
+      this.relayRefreshAttempt = null;
+      this.relayRefreshRetryCount = 0;
+      if (this.latestHello) {
+        this.latestHello = {
+          ...this.latestHello,
+          relayAuthorization: payload.relayAuthorization,
+        };
+      }
+      this.scheduleRelayAuthorizationRefresh(
+        attempt.generation,
+        payload.relayAuthorization,
+        true,
+      );
+      return;
+    }
+
+    if (payload.error.code === "relay_account_changed") {
+      const socket = this.ws;
+      this.relayRefreshAttempt = null;
+      this.shouldReconnect = false;
+      this.relayAuthorizationTerminalError = payload.error.message;
+      this.setStatus({ state: "auth_failed", error: payload.error.message });
+      try {
+        socket?.close(4003, "ADE account session changed");
+      } catch {
+        // The terminal state is already recorded even if close throws.
+      }
+      return;
+    }
+    if (!payload.error.retryable) {
+      this.relayRefreshAttempt = null;
+      return;
+    }
+    const requiresFreshToken = payload.error.code === "token_not_advanced"
+      || payload.error.code === "token_too_short"
+      || payload.error.code === "token_expired";
+    this.scheduleRelayAuthorizationRetry(attempt.generation, !requiresFreshToken);
   }
 
   private handleAuthFailure(environment: WebClientEnvironmentRecord, payload: SyncHelloErrorPayload): SyncConnectionError {
@@ -666,7 +1085,6 @@ export class SyncConnection {
     if (attributedToPairing) {
       this.shouldReconnect = false;
       this.setStatus({ state: "auth_failed", error: payload.message });
-      this.emit("pairingRejected", { envId: environment.envId, hostDeviceId: environment.hostDeviceId });
       return new SyncConnectionError(payload.message, "attributed_auth_failed", payload);
     }
     if (this.consecutiveAuthFailures >= MAX_CONSECUTIVE_AUTH_FAILURES) {
@@ -731,6 +1149,8 @@ export class SyncConnection {
     this.handleClose(
       { code: 4008, reason: "Inbound connection stale" } as CloseEvent,
       bypassBackoff,
+      socket,
+      this.connectionGeneration,
     );
     return true;
   }
@@ -738,9 +1158,15 @@ export class SyncConnection {
   private errorForClose(event: Pick<CloseEvent, "code" | "reason">): SyncConnectionError {
     switch (event.code) {
       case 4501:
-        return new SyncConnectionError("This Mac appears to be offline", "relay_host_offline");
+        return new SyncConnectionError("Can't reach this Mac. Retrying…", "relay_host_offline");
       case 4507:
         return new SyncConnectionError("Your Mac couldn't accept the connection. Retrying…", "relay_bridge_rejected");
+      case 4508:
+        return new SyncConnectionError("Connection setup expired. Reconnecting.", "relay_stale_pipe");
+      case 4509:
+        return new SyncConnectionError("Connection forwarding failed. Reconnecting.", "relay_forward_failed");
+      case 4510:
+        return new SyncConnectionError("Connection was not ready. Reconnecting.", "relay_not_ready");
       case 4503:
         return new SyncConnectionError("Too many active connections to this Mac", "relay_capacity");
       case 4502:
@@ -758,17 +1184,27 @@ export class SyncConnection {
     }
   }
 
-  private handleClose(event: CloseEvent, bypassBackoff = false): void {
+  private handleClose(
+    event: CloseEvent,
+    bypassBackoff = false,
+    socket: WebSocketLike | null = this.ws,
+    generation = this.connectionGeneration,
+  ): void {
+    if (!socket || !this.isCurrentSocket(socket, generation)) return;
+    const terminalError = this.relayAuthorizationTerminalError;
+    const closeGeneration = ++this.connectionGeneration;
     this.stopTimers();
     this.ws = null;
     this.latestHello = null;
     this.emit("close", { code: event.code, reason: event.reason });
+    if (this.connectionGeneration !== closeGeneration || this.ws !== null) return;
     if (this.intentionalClose) return;
     this.setStatus({
-      state: "disconnected",
+      state: terminalError ? "auth_failed" : "disconnected",
       connectedAt: null,
-      error: this.errorForClose(event).message,
+      error: terminalError ?? this.errorForClose(event).message,
     });
+    if (this.connectionGeneration !== closeGeneration || this.ws !== null) return;
     if (this.shouldReconnect) {
       this.scheduleReconnect(
         bypassBackoff ? this.visibilityReconnectDelayMs() : 0,
@@ -779,12 +1215,15 @@ export class SyncConnection {
 
   private scheduleReconnect(minimumDelayMs = 0, bypassBackoff = false): void {
     if (!this.environment || !visible(this.documentRef) || this.reconnectTimer) return;
+    const generation = this.connectionGeneration;
+    const socket = this.ws;
     const jitter = Math.floor(Math.random() * 350);
     const delay = bypassBackoff
       ? minimumDelayMs
       : Math.max(minimumDelayMs, Math.min(BACKOFF_MAX_MS, this.backoffMs) + jitter);
     if (!bypassBackoff) this.backoffMs = Math.min(BACKOFF_MAX_MS, this.backoffMs * 2);
     this.setStatus({ state: "reconnecting" });
+    if (this.connectionGeneration !== generation || this.ws !== socket) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (!this.environment || !this.shouldReconnect || !visible(this.documentRef)) return;
@@ -794,6 +1233,15 @@ export class SyncConnection {
     }, delay);
   }
 
+  private scheduleStableBackoffReset(generation: number): void {
+    if (this.backoffResetTimer) clearTimeout(this.backoffResetTimer);
+    this.backoffResetTimer = setTimeout(() => {
+      this.backoffResetTimer = null;
+      if (generation !== this.connectionGeneration || !this.isConnected()) return;
+      this.backoffMs = BACKOFF_MIN_MS;
+    }, BACKOFF_STABLE_CONNECTED_MS);
+  }
+
   private visibilityReconnectDelayMs(): number {
     const elapsedSinceDialMs = Date.now() - this.lastDialStartedAtMs;
     return elapsedSinceDialMs < VISIBILITY_RECONNECT_DEBOUNCE_MS
@@ -801,10 +1249,18 @@ export class SyncConnection {
       : 0;
   }
 
+  private isCurrentSocket(socket: WebSocketLike, generation: number): boolean {
+    return this.ws === socket && this.connectionGeneration === generation;
+  }
+
   private readonly handleVisibilityChange = () => {
     if (!visible(this.documentRef)) return;
     if (this.isConnected()) {
-      this.closeIfInboundStale(true);
+      if (this.closeIfInboundStale(true)) return;
+      const lease = this.latestHello?.relayAuthorization ?? null;
+      if (lease && Date.now() >= lease.refreshAfter) {
+        this.beginRelayAuthorizationRefresh(this.connectionGeneration);
+      }
       return;
     }
     if (!this.environment || !this.shouldReconnect) return;
@@ -813,6 +1269,7 @@ export class SyncConnection {
   };
 
   private cleanupSocket(): void {
+    this.connectionGeneration += 1;
     this.stopTimers();
     if (this.ws) {
       this.ws.onopen = null;
@@ -837,6 +1294,24 @@ export class SyncConnection {
       clearInterval(this.inboundStaleTimer);
       this.inboundStaleTimer = null;
     }
+    if (this.backoffResetTimer) {
+      clearTimeout(this.backoffResetTimer);
+      this.backoffResetTimer = null;
+    }
+    if (this.relayRefreshTimer) {
+      clearTimeout(this.relayRefreshTimer);
+      this.relayRefreshTimer = null;
+    }
+    if (this.relayRefreshRetryTimer) {
+      clearTimeout(this.relayRefreshRetryTimer);
+      this.relayRefreshRetryTimer = null;
+    }
+    if (this.relayRefreshAttempt?.responseTimer) {
+      clearTimeout(this.relayRefreshAttempt.responseTimer);
+    }
+    this.relayRefreshAttempt = null;
+    this.relayRefreshPreparation = null;
+    this.relayRefreshRetryCount = 0;
   }
 
   private setStatus(patch: Partial<SyncConnectionStatus>): void {

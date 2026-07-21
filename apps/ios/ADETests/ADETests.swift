@@ -1323,16 +1323,140 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testSyncConnectionHealthTreatsSyncingAsConnectedTransport() {
+  func testSyncConnectionHealthKeepsHelloInReconnectingUntilReady() {
     let health = syncConnectionHealth(
       connectionState: .syncing,
       prefersReducedSyncLoad: false,
       lastError: "Transient sync work"
     )
 
-    XCTAssertEqual(health.transport, .connected)
+    XCTAssertEqual(health.transport, .connecting)
     XCTAssertEqual(health.load, .normal)
     XCTAssertNil(health.lastFailureMessage)
+  }
+
+  func testPrimaryConnectionCopyUsesOnlySupportedStates() {
+    XCTAssertEqual(
+      SettingsConnectionPresentation.statusLabel(for: SyncConnectionHealth(
+        transport: .connected,
+        load: .strained,
+        lastFailureMessage: nil
+      )),
+      "Connected"
+    )
+    XCTAssertEqual(
+      SettingsConnectionPresentation.statusLabel(for: SyncConnectionHealth(
+        transport: .connecting,
+        load: .normal,
+        lastFailureMessage: nil
+      )),
+      "Reconnecting"
+    )
+    XCTAssertEqual(
+      SettingsConnectionPresentation.statusLabel(for: SyncConnectionHealth(
+        transport: .unreachable,
+        load: .normal,
+        lastFailureMessage: "timeout"
+      )),
+      "Can't reach this Mac"
+    )
+    XCTAssertEqual(
+      SettingsConnectionPresentation.statusLabel(for: SyncConnectionHealth(
+        transport: .disconnected,
+        load: .normal,
+        lastFailureMessage: nil
+      )),
+      "Not connected"
+    )
+    XCTAssertEqual(
+      SettingsConnectionPresentation.statusLabel(
+        for: SyncConnectionHealth(
+          transport: .disconnected,
+          load: .normal,
+          lastFailureMessage: nil
+        ),
+        canReconnectToSavedHost: true
+      ),
+      "Not connected"
+    )
+    XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
+    XCTAssertEqual(
+      machineRowVisualState(
+        isAuthenticatedCurrent: false,
+        directoryRecentlyReachable: true
+      ),
+      .saved
+    )
+    XCTAssertEqual(
+      machineRowVisualState(
+        isAuthenticatedCurrent: false,
+        directoryRecentlyReachable: false
+      ),
+      .saved
+    )
+    XCTAssertEqual(
+      machineRowVisualState(
+        isAuthenticatedCurrent: true,
+        directoryRecentlyReachable: false
+      ),
+      .authenticatedCurrent
+    )
+  }
+
+  func testStaleDirectoryPresenceDoesNotDisableKnownSecureMachine() {
+    XCTAssertTrue(syncKnownSecureMachineIsAttemptable(
+      directoryOnline: false,
+      hasStableIdentity: true
+    ))
+    XCTAssertFalse(syncKnownSecureMachineIsAttemptable(
+      directoryOnline: true,
+      hasStableIdentity: false
+    ))
+
+    let saved = DiscoveredSyncHost(
+      id: "saved-host",
+      serviceName: "Saved Mac",
+      hostName: "Saved Mac",
+      hostIdentity: "saved-identity",
+      port: 8787,
+      addresses: ["192.168.1.8"],
+      tailscaleAddress: nil,
+      lastResolvedAt: "2026-07-20T00:00:00.000Z"
+    )
+    XCTAssertFalse(hubSavedMachineIsRecentlyReachable(saved, liveHosts: []))
+    XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
+  }
+
+  func testAccountMachineRowHintStaysRouteNeutral() throws {
+    // A machine advertised over Tailscale/relay must not surface that route on
+    // the primary machine rows — the row hint is presence-only, and route kind
+    // is confined to the Connection details section.
+    let machineJSON = try XCTUnwrap("""
+      {
+        "machineKey": "machine-key",
+        "deviceId": "host-a",
+        "name": "Studio Mac",
+        "reachableEndpoints": [
+          { "kind": "tailnet", "host": "studio.tailnet.ts.net", "port": 8787 },
+          { "kind": "relay", "url": "wss://relay.ade.app/connect/machine-key" }
+        ],
+        "online": true
+      }
+      """.data(using: .utf8))
+    let machine = try JSONDecoder().decode(AccountMachine.self, from: machineJSON)
+
+    // routeLabel still knows the route (used only for diagnostics vocabulary)…
+    XCTAssertEqual(machine.routeLabel, "Tailscale")
+    // …but the string the rows actually render is route-neutral.
+    let rowHint = machineStatusHint(online: machine.online)
+    XCTAssertEqual(rowHint, "Recently reachable")
+    for routeWord in ["Tailscale", "relay", "Local network", "lan", "tailnet"] {
+      XCTAssertFalse(
+        rowHint.localizedCaseInsensitiveContains(routeWord),
+        "Primary machine row hint must not foreground the \(routeWord) route."
+      )
+    }
+    XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
   }
 
   func testSyncConnectionHealthSeparatesLoadStrainFromTransportFailure() {
@@ -2140,6 +2264,35 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(accountSessionStatusAllowsAccess(nil))
   }
 
+  func testFreshRelayTokenPolicySkipsClerkCacheAtMaximumExpirationBuffer() {
+    XCTAssertEqual(
+      AccountRelayTokenPolicy.production,
+      AccountRelayTokenPolicy(expirationBuffer: 60, skipCache: true)
+    )
+  }
+
+  func testFreshRelayTokenSeamDiscardsSignOutOrAccountSwitchAfterFetch() {
+    let requested = AccountPairingAuthorization(ownerId: "user-a", generation: 8)
+    XCTAssertEqual(
+      accountFreshRelaySession(
+        requestedAuthorization: requested,
+        currentAuthorization: requested,
+        token: "fresh-token"
+      )?.token,
+      "fresh-token"
+    )
+    XCTAssertNil(accountFreshRelaySession(
+      requestedAuthorization: requested,
+      currentAuthorization: AccountPairingAuthorization(ownerId: "user-b", generation: 9),
+      token: "stale-token"
+    ))
+    XCTAssertNil(accountFreshRelaySession(
+      requestedAuthorization: requested,
+      currentAuthorization: nil,
+      token: "stale-token"
+    ))
+  }
+
   func testMobileLaunchAccessRequiresAnExplicitChoiceAfterStartingSignedOut() {
     var signedOutLaunch = MobileLaunchAccessPolicy()
     signedOutLaunch.observeInitialAccountPhase(.loading)
@@ -2284,6 +2437,79 @@ final class ADETests: XCTestCase {
       XCTAssertTrue(error is AccountPairingAuthorizationChangedError)
     }
     XCTAssertFalse(didCommit)
+  }
+
+  @MainActor
+  func testAccountPairingSupersededDuringFreshTokenRefreshNeverSendsHello() async {
+    let freshToken = DeferredAccountPairingHello<String>()
+    var candidateIsCurrent = true
+    var helloWasSent = false
+
+    let pairing = Task { @MainActor in
+      try await performCurrentAccountPairingRelayHello(
+        refreshSession: { await freshToken.wait() },
+        isCurrentCandidate: { candidateIsCurrent },
+        sendHello: { token in
+          helloWasSent = true
+          return "hello-for-\(token)"
+        }
+      )
+    }
+
+    while !freshToken.isWaiting { await Task.yield() }
+    candidateIsCurrent = false
+    freshToken.resume(returning: "fresh-token")
+
+    do {
+      _ = try await pairing.value
+      XCTFail("A superseded candidate must stop after token refresh.")
+    } catch {
+      XCTAssertTrue(error is AccountPairingConnectionSupersededError)
+    }
+    XCTAssertFalse(helloWasSent)
+  }
+
+  @MainActor
+  func testAccountPairingSupersededDuringHelloNeverCommitsCredentials() async {
+    let hello = DeferredAccountPairingHello<String>()
+    var candidateIsCurrent = true
+    var helloWasSent = false
+    var credentialsCommitted = false
+
+    let pairing = Task { @MainActor in
+      let response = try await performCurrentAccountPairingRelayHello(
+        refreshSession: { "fresh-token" },
+        isCurrentCandidate: { candidateIsCurrent },
+        sendHello: { _ in
+          helloWasSent = true
+          return await hello.wait()
+        }
+      )
+      return try await performAuthorizedAccountPairingCommit(
+        authorization: AccountPairingAuthorization(ownerId: "user-a", generation: 1),
+        receiveHello: { response },
+        prepare: { $0 },
+        isAuthorized: { _ in true },
+        isCurrentCandidate: { candidateIsCurrent },
+        commit: { value in
+          credentialsCommitted = true
+          return value
+        }
+      )
+    }
+
+    while !hello.isWaiting { await Task.yield() }
+    candidateIsCurrent = false
+    hello.resume(returning: "hello_ok")
+
+    do {
+      _ = try await pairing.value
+      XCTFail("A superseded hello must not reach credential commit.")
+    } catch {
+      XCTAssertTrue(error is AccountPairingConnectionSupersededError)
+    }
+    XCTAssertTrue(helloWasSent)
+    XCTAssertFalse(credentialsCommitted)
   }
 
   func testSignedOutRelayPolicyKeepsDirectRoutesAndSkipsRelay() {
@@ -3220,7 +3446,7 @@ final class ADETests: XCTestCase {
       code: 2,
       userInfo: [NSLocalizedDescriptionKey: "The host is offline."]
     )
-    XCTAssertEqual(SyncUserFacingError.message(for: offlineError), "The machine is offline. Reconnect, then try again.")
+    XCTAssertEqual(SyncUserFacingError.message(for: offlineError), "Can’t reach this Mac right now.")
 
     let authError = NSError(
       domain: "ADE",
@@ -4032,14 +4258,255 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testTerminalBufferSurvivesCredentialClearingDisconnect() {
+  func testCredentialClearingRemovesHostBoundTerminalHistoryAndDeliveryState() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
+    try service.seedReliableTerminalInputForTesting(
+      sessionId: "terminal-1",
+      inputId: "queued-before-unpair",
+      data: Data("do not cross hosts".utf8)
+    )
     service.seedTerminalBufferForTesting(sessionId: "terminal-1", transcript: "full terminal history")
     service.disconnect(clearCredentials: true)
 
-    XCTAssertEqual(service.terminalBuffers["terminal-1"], "full terminal history")
-    XCTAssertEqual(service.subscribedTerminalSessionIds, Set(["terminal-1"]))
+    XCTAssertNil(service.terminalBuffers["terminal-1"])
+    XCTAssertTrue(service.desiredTerminalSessionIdsForTesting().isEmpty)
+    XCTAssertTrue(service.subscribedTerminalSessionIds.isEmpty)
+    XCTAssertNil(service.terminalInputQueueForTesting(sessionId: "terminal-1"))
+    XCTAssertFalse(service.hasTerminalInputTimeoutForTesting(sessionId: "terminal-1"))
+    XCTAssertFalse(service.canAcceptTerminalInput(sessionId: "terminal-1"))
+  }
+
+  @MainActor
+  func testReconnectKeepsActiveTerminalAttachmentAfterConfirmedSubscriptionsReset() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.attachTerminalStream(sessionId: "terminal-reconnect") { _ in }
+    service.seedTerminalBufferForTesting(
+      sessionId: "terminal-reconnect",
+      transcript: "Mac% "
+    )
+
+    service.teardownSocketForTesting()
+
+    XCTAssertTrue(service.desiredTerminalSessionIdsForTesting().contains("terminal-reconnect"))
+    XCTAssertFalse(service.subscribedTerminalSessionIds.contains("terminal-reconnect"))
+    XCTAssertTrue(service.hasTerminalStream(sessionId: "terminal-reconnect"))
+    service.disconnect(clearCredentials: false)
+  }
+
+  @MainActor
+  func testDifferentHostSessionIdCollisionCannotReuseClearedTerminalIntentOrBytes() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let oldHost = HostConnectionProfile(
+      hostIdentity: "old-host",
+      hostName: "Old Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "old-host",
+      lastSuccessfulAddress: "192.168.1.10",
+      savedAddressCandidates: ["192.168.1.10"],
+      discoveredLanAddresses: ["192.168.1.10"],
+      tailscaleAddress: nil
+    )
+    let newHost = HostConnectionProfile(
+      hostIdentity: "new-host",
+      hostName: "New Mac",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "new-host",
+      lastSuccessfulAddress: "192.168.1.20",
+      savedAddressCandidates: ["192.168.1.20"],
+      discoveredLanAddresses: ["192.168.1.20"],
+      tailscaleAddress: nil
+    )
+
+    service.installSavedProfileForTesting(oldHost, token: "old-secret", makeActive: true)
+    try service.seedReliableTerminalInputForTesting(
+      sessionId: "same-session-id",
+      inputId: "old-host-input",
+      data: Data("old host bytes".utf8)
+    )
+    service.seedTerminalBufferForTesting(sessionId: "same-session-id", transcript: "old host transcript")
+    service.disconnect(clearCredentials: true)
+
+    service.installSavedProfileForTesting(newHost, token: "new-secret", makeActive: true)
+    service.configureConnectedTransportForTesting()
+    let submission = service.sendTerminalInput(sessionId: "same-session-id", data: "new host input")
+
+    XCTAssertEqual(
+      submission,
+      .rejected(message: "Terminal input is waiting for the terminal snapshot.")
+    )
+    XCTAssertNil(service.terminalBuffers["same-session-id"])
+    XCTAssertTrue(service.desiredTerminalSessionIdsForTesting().isEmpty)
+    XCTAssertTrue(service.subscribedTerminalSessionIds.isEmpty)
+    XCTAssertNil(service.terminalInputQueueForTesting(sessionId: "same-session-id"))
+    XCTAssertFalse(service.hasTerminalInputTimeoutForTesting(sessionId: "same-session-id"))
+  }
+
+  @MainActor
+  func testStableHostSwitchClearsTranscriptWhileSameHostRouteUpdatePreservesIt() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let original = HostConnectionProfile(
+      hostIdentity: "stable-host-a",
+      hostName: "Mac A",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "stable-host-a",
+      lastSuccessfulAddress: "192.168.1.10",
+      savedAddressCandidates: ["192.168.1.10"],
+      discoveredLanAddresses: ["192.168.1.10"],
+      tailscaleAddress: nil
+    )
+    var sameHostNewRoute = original
+    sameHostNewRoute.lastSuccessfulAddress = "100.90.80.70"
+    sameHostNewRoute.savedAddressCandidates = ["192.168.1.10", "100.90.80.70"]
+    sameHostNewRoute.tailscaleAddress = "100.90.80.70"
+    let differentHost = HostConnectionProfile(
+      hostIdentity: "stable-host-b",
+      hostName: "Mac B",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "stable-host-b",
+      lastSuccessfulAddress: "192.168.1.20",
+      savedAddressCandidates: ["192.168.1.20"],
+      discoveredLanAddresses: ["192.168.1.20"],
+      tailscaleAddress: nil
+    )
+
+    service.installSavedProfileForTesting(original, token: "secret-a", makeActive: true)
+    service.seedTerminalBufferForTesting(sessionId: "shared-session", transcript: "host A transcript")
+    service.installSavedProfileForTesting(sameHostNewRoute, token: "secret-a", makeActive: true)
+    XCTAssertEqual(service.terminalBuffers["shared-session"], "host A transcript")
+
+    service.installSavedProfileForTesting(differentHost, token: "secret-b", makeActive: true)
+    XCTAssertNil(service.terminalBuffers["shared-session"])
+    XCTAssertTrue(service.desiredTerminalSessionIdsForTesting().isEmpty)
+    XCTAssertTrue(service.subscribedTerminalSessionIds.isEmpty)
+  }
+
+  @MainActor
+  func testPresenceHeartbeatDoesNotPerturbTerminalDeliveryState() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let data = Data("exact terminal bytes".utf8)
+    try service.seedReliableTerminalInputForTesting(
+      sessionId: "terminal-1",
+      inputId: "input-1",
+      data: data
+    )
+    let before = service.terminalInputQueueForTesting(sessionId: "terminal-1")
+
+    service.scheduleLanePresenceHeartbeatForTesting()
+
+    XCTAssertTrue(service.subscribedTerminalSessionIds.contains("terminal-1"))
+    XCTAssertTrue(service.supportsTerminalInputAcknowledgementsForTesting())
+    XCTAssertTrue(service.hasTerminalInputTimeoutForTesting(sessionId: "terminal-1"))
+    XCTAssertEqual(service.terminalInputQueueForTesting(sessionId: "terminal-1"), before)
+    service.disconnect(clearCredentials: false)
+  }
+
+  @MainActor
+  func testLateDuplicateAckForFirstInputDoesNotCancelSecondInputTimer() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.seedReliableTerminalInputForTesting(
+      sessionId: "terminal-1",
+      inputId: "input-a",
+      data: Data("A".utf8)
+    )
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+    }
+
+    let submission = service.sendTerminalInput(sessionId: "terminal-1", data: "B")
+    guard case .awaitingAcknowledgement(let inputB) = submission else {
+      return XCTFail("Expected the second input to queue behind input A.")
+    }
+    service.handleTerminalInputAcknowledgementForTesting([
+      "sessionId": "terminal-1",
+      "inputId": "input-a",
+      "ok": true,
+      "duplicate": false,
+    ])
+
+    let afterBSent = try XCTUnwrap(service.terminalInputQueueForTesting(sessionId: "terminal-1"))
+    XCTAssertNotNil(afterBSent.inFlightItem(
+      inputId: inputB,
+      generation: service.connectionGenerationForTesting()
+    ))
+    XCTAssertTrue(service.hasTerminalInputTimeoutForTesting(sessionId: "terminal-1"))
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "terminal_input"), 1)
+
+    service.handleTerminalInputAcknowledgementForTesting([
+      "sessionId": "terminal-1",
+      "inputId": "input-a",
+      "ok": true,
+      "duplicate": true,
+    ])
+
+    XCTAssertEqual(service.terminalInputQueueForTesting(sessionId: "terminal-1"), afterBSent)
+    XCTAssertTrue(service.hasTerminalInputTimeoutForTesting(sessionId: "terminal-1"))
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "terminal_input"), 1)
+  }
+
+  @MainActor
+  func testRelayReauthorizationLostSuccessRetriesExactSerializedFrame() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let frames = try service.relayReauthorizationExactRetryFramesForTesting(
+      requestId: "reauth-request-1",
+      payload: [
+        "relayAccountToken": "token-1",
+        "dpop": ["nonce": "nonce-1", "signature": "signature-1"],
+      ],
+      sendCount: 3
+    )
+
+    XCTAssertEqual(frames.count, 3)
+    XCTAssertEqual(Set(frames).count, 1, "A lost success response must retry byte-for-byte.")
+    let envelope = try XCTUnwrap(
+      JSONSerialization.jsonObject(with: Data(frames[0].utf8)) as? [String: Any]
+    )
+    XCTAssertEqual(envelope["requestId"] as? String, "reauth-request-1")
+    XCTAssertEqual(envelope["type"] as? String, "relay_reauthorize")
+  }
+
+  @MainActor
+  func testStaleRelayReauthorizationResultCannotInstallAfterSocketHandoff() throws {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.configureConnectedTransportForTesting()
+    let staleContext = try XCTUnwrap(service.relayReauthorizationContextForTesting())
+    service.teardownSocketForTesting()
+    service.configureConnectedTransportForTesting()
+    let lease = SyncRelayAuthorizationLease(
+      expiresAtMilliseconds: 20_000,
+      refreshAfterMilliseconds: 10_000,
+      challenge: "new-challenge",
+      graceMilliseconds: 5_000
+    )
+
+    XCTAssertThrowsError(try service.installRelayReauthorizationLeaseForTesting(
+      lease,
+      scheduledGeneration: staleContext.generation,
+      scheduledSocketIdentifier: staleContext.socketIdentifier
+    )) { error in
+      XCTAssertTrue(error is CancellationError)
+    }
+    XCTAssertNil(service.relayAuthorizationLeaseForTesting())
+    service.disconnect(clearCredentials: false)
   }
 
   @MainActor
@@ -5988,6 +6455,74 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(service.currentPeerDbVersionForTesting(), 0)
 
     database.close()
+  }
+
+  @MainActor
+  func testSyncServiceRewindowsUnacknowledgedPhoneChangesWithoutDroppingSocketOrCursor() throws {
+    let outboundCursorKey = "ade.sync.outboundSyncCursors"
+    let pendingOutboundChangesetsKey = "ade.sync.pendingOutboundChangesets"
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    for key in [outboundCursorKey, pendingOutboundChangesetsKey, activeProjectIdKey, activeProjectRootPathKey] {
+      UserDefaults.standard.removeObject(forKey: key)
+    }
+    defer {
+      for key in [outboundCursorKey, pendingOutboundChangesetsKey, activeProjectIdKey, activeProjectRootPathKey] {
+        UserDefaults.standard.removeObject(forKey: key)
+      }
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeProjectLaneForeignKeyDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-rewindow', '/tmp/project-rewindow', 'Project Rewindow', 'main',
+        '2026-07-21T00:00:00.000Z', '2026-07-21T00:00:00.000Z'
+      )
+    """)
+
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-rewindow", rootPath: "/tmp/project-rewindow")
+    service.configureConnectedTransportForTesting()
+    let initialCursor = service.outboundLocalDbVersionForTesting()
+    let generation = service.connectionGenerationForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+    }
+
+    try database.executeSqlForTesting("""
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref,
+        worktree_path, parent_lane_id, status, created_at, archived_at
+      ) values (
+        'lane-rewindow', 'project-rewindow', 'Rewindow proof', null, 'worktree',
+        'origin/main', 'feature/rewindow', '/tmp/rewindow', null, 'active',
+        '2026-07-21T00:00:00.000Z', null
+      )
+    """)
+
+    let original = try XCTUnwrap(service.stageNextOutboundChangesetForTesting())
+    service.scheduleOutboundChangesetRecoveryForTesting(now: 100)
+
+    let window = service.outboundChangesetRecoveryWindowForTesting()
+    XCTAssertEqual(window.level, 1)
+    XCTAssertEqual(window.rowLimit, 32)
+    XCTAssertEqual(window.byteLimit, 32 * 1_024)
+    XCTAssertEqual(window.retryAt, 101)
+    XCTAssertFalse(service.hasPendingOutboundChangesetForTesting())
+    XCTAssertEqual(service.outboundLocalDbVersionForTesting(), initialCursor)
+    XCTAssertEqual(service.connectionGenerationForTesting(), generation)
+    XCTAssertEqual(service.connectionState, .connected)
+
+    let rebuilt = try XCTUnwrap(service.stageNextOutboundChangesetForTesting())
+    XCTAssertNotEqual(rebuilt.batchId, original.batchId)
+    XCTAssertEqual(rebuilt.fromDbVersion, original.fromDbVersion)
+    XCTAssertLessThanOrEqual(rebuilt.toDbVersion, original.toDbVersion)
+    XCTAssertEqual(service.outboundLocalDbVersionForTesting(), initialCursor)
   }
 
   @MainActor
@@ -19273,6 +19808,35 @@ final class TerminalLiveTailPinningTests: XCTestCase {
     // Content shorter than the shrunken viewport can never leave the tail —
     // why short/new sessions always survived the keyboard.
     XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 0, viewportHeight: 460, contentHeight: 300))
+  }
+}
+
+@MainActor
+final class TerminalSessionInputStatusTests: XCTestCase {
+  func testSuccessfulInputAcceptanceClearsStaleFailureWithoutMaskingRejection() {
+    let controller = TerminalSessionController()
+    controller.handleStreamEventForTesting(.inputFailure(message: "The Mac did not confirm input."))
+    XCTAssertEqual(controller.inputStatusMessage, "The Mac did not confirm input.")
+
+    controller.handleInputSubmissionForTesting(.queuedUntilReady(inputId: "stable-input-id"))
+    XCTAssertNil(controller.inputStatusMessage)
+
+    controller.handleInputSubmissionForTesting(.rejected(message: "Terminal input is paused."))
+    XCTAssertEqual(controller.inputStatusMessage, "Terminal input is paused.")
+  }
+
+  func testStreamRehydrationClearsStaleInputFailure() {
+    let controller = TerminalSessionController()
+    controller.handleStreamEventForTesting(.inputFailure(message: "The Mac did not confirm input."))
+
+    controller.handleStreamEventForTesting(.hydrate(
+      text: "Mac% ",
+      replacing: true,
+      startOffset: 0,
+      endOffset: 5
+    ))
+
+    XCTAssertNil(controller.inputStatusMessage)
   }
 }
 

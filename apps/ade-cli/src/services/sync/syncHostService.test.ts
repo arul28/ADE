@@ -12,11 +12,14 @@ import type {
   CrsqlChangeRow,
   PersonalChatAction,
   PersonalChatScopeContract,
+  SyncChangesetAckPayload,
+  SyncChangesetBatchPayload,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
+import { SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY } from "../../../../desktop/src/shared/types";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
@@ -25,18 +28,22 @@ import {
 import {
   CHAT_EVENT_REPLAY_MAX_BYTES,
   CHAT_EVENT_REPLAY_MAX_EVENTS,
+  CONNECTION_ATTEMPT_RESERVATION_TTL_MS,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+  SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   compactChatEventEnvelopeForSync,
   createChatEventReplayBuffer,
   createSyncHostService,
+  createTerminalInputDedupeLedger,
   isRuntimeOnlySyncPeer,
   isRuntimeHostPairingRecord,
   planChatEventResume,
   recordChatEventInReplayBuffer,
   resolveSyncHostInboundProjectScope,
   selectChangesetBatchChunk,
+  syncConnectionTransportForOrigin,
 } from "./syncHostService";
 import { createBrainProjectActionsSyncHandler } from "./brainProjectActionsSyncHandler";
 import { buildChangesetBatchPayload } from "./changesetPump";
@@ -45,6 +52,10 @@ import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
 import { buildSyncDpopChallenge, sha256Hex } from "./syncDpop";
+import {
+  buildRelayReauthorizationChallenge,
+  sha256RelayToken,
+} from "./relayAuthorization";
 import { encodeSyncEnvelope, parseSyncEnvelope, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
@@ -171,6 +182,11 @@ describe("resolveSyncHostInboundProjectScope", () => {
 });
 
 describe("buildSyncHostHelloOkPayload", () => {
+  it("reports the host-observed connection transport", () => {
+    expect(syncConnectionTransportForOrigin("direct")).toBe("direct");
+    expect(syncConnectionTransportForOrigin("relay-bridge")).toBe("relay");
+  });
+
   it("advertises daemon-hosted project catalog support in hello_ok without desktop", () => {
     const peer = {
       deviceId: "ios-phone-1",
@@ -224,11 +240,13 @@ describe("buildSyncHostHelloOkPayload", () => {
       remoteCommandDescriptors: [remoteCommand],
       localCommandDescriptors: [localPresenceCommand],
       compressionThresholdBytes: 100_000,
+      connectionTransport: "relay",
     });
 
     expect(payload.peer).toBe(peer);
     expect(payload.brain).toBe(brain);
     expect(payload.serverDbVersion).toBe(7);
+    expect(payload.connectionTransport).toBe("relay");
     expect(payload.projects).toEqual([project]);
     expect(payload.features.projectCatalog).toEqual({ enabled: true });
     expect(payload.features.projectActions).toEqual({ enabled: false });
@@ -604,6 +622,150 @@ describe("buildChangesetBatchPayload", () => {
 });
 
 describe("brain project actions fallback handler", () => {
+  it.each(["close", "account-switch"] as const)(
+    "cancels deferred Relay verification on peer %s before fallback authentication commits",
+    async (mode) => {
+      const { projectRoot, cleanup } = createTempProjectRoot();
+      const secretsDir = path.join(projectRoot, "secrets");
+      const pairing = createSpoofedDesktopPairing(secretsDir);
+      let currentUserId = "account-a";
+      let resolveVerification!: (value: never) => void;
+      const verification = new Promise<never>((resolve) => { resolveVerification = resolve; });
+      const verify = vi.fn(async () => await verification);
+      const handler = createBrainProjectActionsSyncHandler({
+        logger: createDiscoveryLogger(),
+        projectCatalogProvider: {
+          listProjects: vi.fn(async () => ({ projects: [] })),
+          prepareProjectConnection: vi.fn(),
+        },
+        bootstrapCredentialStore: new EncryptedFileCredentialStore({
+          secretsDir,
+          keyMaterialProvider: () => null,
+        }),
+        pairingSecretsPath: pairing.pairingSecretsPath,
+        pinPath: pairing.pinPath,
+        localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+        localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+        accountAuthService: {
+          getStatus: () => ({
+            signedIn: true,
+            userId: currentUserId,
+            email: null,
+            name: null,
+            expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+          }),
+          getAccessToken: async () => "host-account-token",
+        },
+        getAccountAttestationConfig: () => ({
+          issuer: "https://issuer.example",
+          jwksUrl: "https://issuer.example/jwks",
+          oauthClientId: "client-id",
+        }),
+        verifyAccountAttestation: verify,
+      });
+      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+      server.on("connection", (ws, request) => handler({
+        ws,
+        remoteAddress: request.socket.remoteAddress ?? null,
+        remotePort: request.socket.remotePort ?? null,
+        transportOrigin: "relay-bridge",
+      }));
+      let client: WebSocket | null = null;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once("listening", resolve);
+          server.once("error", reject);
+        });
+        const port = (server.address() as AddressInfo).port;
+        client = new WebSocket(`ws://127.0.0.1:${port}`);
+        const { envelopes } = trackClientEnvelopes(client);
+        await new Promise<void>((resolve, reject) => {
+          client!.once("open", resolve);
+          client!.once("error", reject);
+        });
+        sendSpoofedPairedHello(client, pairing.helloPeer, pairing.secret, "client-account-token");
+        await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+        if (mode === "close") {
+          client.close();
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        } else currentUserId = "account-b";
+        resolveVerification({
+          userId: "account-a",
+          expiresAtMs: Date.now() + 60_000,
+        } as never);
+
+        if (mode === "account-switch") {
+          await expect(waitForEnvelope(envelopes, "hello_error", "spoofed-hello"))
+            .resolves.toMatchObject({ payload: { code: "relay_account_required" } });
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          expect(envelopes.some((entry) => entry.type === "hello_ok")).toBe(false);
+        }
+      } finally {
+        resolveVerification({ userId: "account-a", expiresAtMs: Date.now() + 60_000 } as never);
+        client?.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        cleanup();
+      }
+    },
+  );
+
+  it("does not send fallback hello_ok when the peer closes during deferred catalog load", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const credentials = new EncryptedFileCredentialStore({ secretsDir, keyMaterialProvider: () => null });
+    credentials.setSync("test.bootstrap", "bootstrap-token");
+    let resolveCatalog!: () => void;
+    const catalogGate = new Promise<void>((resolve) => { resolveCatalog = resolve; });
+    const listProjects = vi.fn(async () => {
+      await catalogGate;
+      return { projects: [] };
+    });
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: { listProjects, prepareProjectConnection: vi.fn() },
+      bootstrapCredentialStore: credentials,
+      bootstrapTokenKey: "test.bootstrap",
+      pairingSecretsPath: path.join(secretsDir, "pairings.json"),
+      pinPath: path.join(secretsDir, "pin.json"),
+      localDeviceIdPath: path.join(secretsDir, "device-id"),
+      localSiteIdPath: path.join(secretsDir, "site-id"),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "direct",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      client = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      sendHello(client, "bootstrap-token");
+      await vi.waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
+      client.close();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      resolveCatalog();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(envelopes.some((entry) => entry.type === "hello_ok")).toBe(false);
+    } finally {
+      resolveCatalog();
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
   it("closes a fallback Relay peer when its account proof expires", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
@@ -1390,6 +1552,32 @@ describe("sync host account authentication", () => {
     };
   }
 
+  function signRelayReauthorization(args: {
+    privateKey: ReturnType<typeof makeDpopKeyPair>["privateKey"];
+    deviceId: string;
+    relayAccountToken: string;
+    challenge: string;
+    nonce?: string;
+  }) {
+    const timestamp = Math.floor(Date.now() / 1_000);
+    const nonce = args.nonce ?? `relay-${args.deviceId}-${Math.random()}`;
+    const canonical = buildRelayReauthorizationChallenge({
+      deviceId: args.deviceId,
+      relayAccountTokenSha256: sha256RelayToken(args.relayAccountToken),
+      challenge: args.challenge,
+      timestamp,
+      nonce,
+    });
+    return {
+      timestamp,
+      nonce,
+      signature: createSign("sha256")
+        .update(canonical, "utf8")
+        .sign(args.privateKey)
+        .toString("base64"),
+    };
+  }
+
   function accountDependencies(signedIn = true) {
     return {
       accountAuthService: {
@@ -1468,6 +1656,174 @@ describe("sync host account authentication", () => {
       },
     }));
   }
+
+  it("commits exactly one concurrent account hello winner for the same connection attempt", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    let verifierCalls = 0;
+    let releaseVerifier!: () => void;
+    const verifierGate = new Promise<void>((resolve) => { releaseVerifier = resolve; });
+    const pairCommit = vi.spyOn(pairingStore, "pairPeerViaAccount");
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      verifyAccountAttestation: vi.fn(async () => {
+        verifierCalls += 1;
+        if (verifierCalls === 2) releaseVerifier();
+        await verifierGate;
+        return attestation;
+      }),
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    try {
+      const port = await host.waitUntilListening();
+      const keys = makeDpopKeyPair();
+      const attempt = { id: "parallel-account-race", startedAtMs: Date.now() };
+      const peer = {
+        deviceId: "parallel-account-device",
+        deviceName: "Parallel account device",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "parallel-account-site",
+        dbVersion: 0,
+        connectionAttempt: attempt,
+      } satisfies SyncPeerMetadata;
+      for (let index = 0; index < 2; index += 1) {
+        const client = await openAccountClient(port, listener.getRelayBridgeProof());
+        clients.push(client);
+        sendAccountHello({
+          ws: client.ws,
+          peer: { ...peer, siteId: `${peer.siteId}-${index}` },
+          accountToken,
+          dpop: signAccountDpop({
+            privateKey: keys.privateKey,
+            publicKeyX963: keys.publicKeyX963,
+            deviceId: peer.deviceId,
+            accountToken,
+          }),
+        });
+      }
+
+      await waitForValue(
+        () => clients.flatMap((client) => client.envelopes)
+          .filter((envelope) => envelope.type === "hello_ok" || envelope.type === "hello_error").length === 2
+          ? true
+          : null,
+        "concurrent account race results",
+      );
+      const helloOks = clients.flatMap((client) => client.envelopes)
+        .filter((envelope) => envelope.type === "hello_ok");
+      const helloErrors = clients.flatMap((client) => client.envelopes)
+        .filter((envelope) => envelope.type === "hello_error");
+      expect(helloOks).toHaveLength(1);
+      expect(helloErrors).toHaveLength(1);
+      expect(helloErrors[0]?.payload).toMatchObject({ code: "connection_attempt_superseded" });
+      expect(pairCommit).toHaveBeenCalledTimes(1);
+      const winnerSecret = (helloOks[0]?.payload as { accountPairing?: { secret?: string } }).accountPairing?.secret;
+      expect(winnerSecret).toEqual(expect.any(String));
+      expect(pairingStore.authenticate(peer.deviceId, winnerSecret!)).toBe(true);
+    } finally {
+      pairCommit.mockRestore();
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
+  it("invalidates a timed-out account hello before its deferred verifier can mutate pairing state", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    let releaseVerifier!: () => void;
+    const verifierGate = new Promise<void>((resolve) => { releaseVerifier = resolve; });
+    const verify = vi.fn(async () => {
+      await verifierGate;
+      return attestation;
+    });
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      messageTimeoutMs: 100,
+      verifyAccountAttestation: verify,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: Awaited<ReturnType<typeof openAccountClient>> | null = null;
+    try {
+      const peer = {
+        deviceId: "timed-out-account-device",
+        deviceName: "Timed out account device",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "timed-out-account-site",
+        dbVersion: 0,
+        connectionAttempt: { id: "timed-out-attempt", startedAtMs: Date.now() },
+      } satisfies SyncPeerMetadata;
+      const keys = makeDpopKeyPair();
+      client = await openAccountClient(await host.waitUntilListening(), listener.getRelayBridgeProof());
+      sendAccountHello({
+        ws: client.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: keys.privateKey,
+          publicKeyX963: keys.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      releaseVerifier();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      expect(pairingStore.getPairingRecord(peer.deviceId)).toBeNull();
+      expect(client.envelopes.some((envelope) => envelope.type === "hello_ok")).toBe(false);
+    } finally {
+      releaseVerifier();
+      client?.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
 
   it("keeps direct desktop PIN capability separate from Relay and phone pairing", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
@@ -2165,6 +2521,124 @@ describe("sync host account authentication", () => {
     }
   });
 
+  it("processes Relay reauthorization while an ordinary peer handler is blocked", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const keys = makeDpopKeyPair();
+    const peer = {
+      deviceId: "relay-fast-control-peer",
+      deviceName: "Relay fast control peer",
+      platform: "unknown",
+      deviceType: "browser",
+      siteId: "relay-fast-control-site",
+      dbVersion: 0,
+      capabilities: [SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY],
+    } satisfies SyncPeerMetadata;
+    const initialToken = await mintAccountToken(ownerUserId, 300);
+    const freshToken = await mintAccountToken(ownerUserId, 900);
+    const initialAttestation = await verifyClerkAccountAttestation({
+      token: initialToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    const pairing = pairingStore.pairPeerViaAccount(peer, initialAttestation, {
+      dpopPublicKey: keys.publicKeyX963,
+    });
+    let blockCatalog = false;
+    let markCatalogStarted!: () => void;
+    let releaseCatalog!: () => void;
+    const catalogStarted = new Promise<void>((resolve) => { markCatalogStarted = resolve; });
+    const catalogReleased = new Promise<void>((resolve) => { releaseCatalog = resolve; });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      projectCatalogProvider: {
+        listProjects: vi.fn(async () => {
+          if (blockCatalog) {
+            markCatalogStarted();
+            await catalogReleased;
+          }
+          return { projects: [] };
+        }),
+        prepareProjectConnection: vi.fn(),
+      },
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: Awaited<ReturnType<typeof openAccountClient>> | null = null;
+    try {
+      client = await openAccountClient(await host.waitUntilListening(), listener.getRelayBridgeProof());
+      sendPairedHello({
+        ws: client.ws,
+        peer,
+        secret: pairing.secret,
+        relayAccountToken: initialToken,
+        dpop: signPairedDpop({
+          privateKey: keys.privateKey,
+          publicKeyX963: keys.publicKeyX963,
+          deviceId: peer.deviceId,
+          secret: pairing.secret,
+        }),
+      });
+      const hello = await waitForValue(
+        () => client?.envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "refreshable Relay hello_ok",
+      );
+      const lease = (hello.payload as {
+        relayAuthorization?: { challenge: string };
+      }).relayAuthorization;
+      expect(lease?.challenge).toEqual(expect.any(String));
+
+      blockCatalog = true;
+      client.ws.send(encodeSyncEnvelope({
+        type: "project_catalog_request",
+        requestId: "slow-catalog",
+        payload: {},
+      }));
+      await catalogStarted;
+      client.ws.send(encodeSyncEnvelope({
+        type: "relay_reauthorize",
+        requestId: "reauth-while-slow",
+        payload: {
+          deviceId: peer.deviceId,
+          relayAccountToken: freshToken,
+          proof: signRelayReauthorization({
+            privateKey: keys.privateKey,
+            deviceId: peer.deviceId,
+            relayAccountToken: freshToken,
+            challenge: lease!.challenge,
+          }),
+        },
+      }));
+
+      await expect(waitForEnvelope(
+        client.envelopes,
+        "relay_reauthorize_result",
+        "reauth-while-slow",
+      )).resolves.toMatchObject({ payload: { ok: true } });
+      expect(client.envelopes.some((envelope) => envelope.requestId === "slow-catalog")).toBe(false);
+      releaseCatalog();
+      await waitForEnvelope(client.envelopes, "project_catalog", "slow-catalog");
+    } finally {
+      releaseCatalog();
+      client?.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
   it("revokes account-owned trust and closes Relay plus account peers when the host lease expires", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
@@ -2206,8 +2680,8 @@ describe("sync host account authentication", () => {
       ...baseArgs,
       accountAuthService: {
         getStatus: () => ({
-          signedIn: true,
-          userId: ownerUserId,
+          signedIn: leaseValid,
+          userId: leaseValid ? ownerUserId : null,
           email: null,
           name: null,
           expiresAt: null,
@@ -2947,6 +3421,232 @@ async function connectPeer(
   return { ws, ...tracked };
 }
 
+async function openPeerHello(
+  port: number,
+  token: string,
+  deviceId: string,
+  peerOverrides: Partial<SyncPeerMetadata> = {},
+) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const tracked = trackClientEnvelopes(ws);
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", resolve);
+    ws.once("error", reject);
+  });
+  ws.send(encodeSyncEnvelope({
+    type: "hello",
+    requestId: `hello-${deviceId}`,
+    payload: {
+      peer: {
+        deviceId,
+        deviceName: deviceId,
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: `${deviceId}-site`,
+        dbVersion: 0,
+        ...peerOverrides,
+      },
+      auth: { kind: "bootstrap", token },
+    },
+  }));
+  return { ws, ...tracked };
+}
+
+describe("connection-attempt arbitration", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  function createAttemptHost(projectRoot: string) {
+    const base = createHostArgs(projectRoot, []);
+    return createSyncHostService({
+      ...base,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+  }
+
+  it("rejects a slow loser from the winning race without evicting the winner", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let winner: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let loser: Awaited<ReturnType<typeof openPeerHello>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      const attempt = { id: "race-one", startedAtMs: Date.now() };
+      winner = await connectPeer(port, host.getBootstrapToken(), "race-device", {
+        connectionAttempt: attempt,
+      });
+      loser = await openPeerHello(port, host.getBootstrapToken(), "race-device", {
+        connectionAttempt: attempt,
+      });
+
+      await expect(waitForValue(
+        () => loser?.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "same-attempt loser rejection",
+      )).resolves.toMatchObject({
+        payload: { code: "connection_attempt_superseded" },
+      });
+      await waitForValue(() => loser?.closeEvents[0], "same-attempt loser close");
+      expect(winner.closeEvents).toEqual([]);
+      expect(winner.ws.readyState).toBe(WebSocket.OPEN);
+      expect(host.getPeerStates()).toHaveLength(1);
+    } finally {
+      try { winner?.ws.close(); } catch { /* ignore */ }
+      try { loser?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("rejects an older race after a newer attempt has authenticated", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let winner: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let older: Awaited<ReturnType<typeof openPeerHello>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      const newestStartedAt = Date.now();
+      winner = await connectPeer(port, host.getBootstrapToken(), "race-order-device", {
+        connectionAttempt: { id: "new-race", startedAtMs: newestStartedAt },
+      });
+      older = await openPeerHello(port, host.getBootstrapToken(), "race-order-device", {
+        connectionAttempt: { id: "old-race", startedAtMs: newestStartedAt - 1 },
+      });
+      await expect(waitForValue(
+        () => older?.envelopes.find((envelope) => envelope.type === "hello_error"),
+        "older attempt rejection",
+      )).resolves.toMatchObject({ payload: { code: "connection_attempt_superseded" } });
+      expect(winner.ws.readyState).toBe(WebSocket.OPEN);
+      expect(winner.closeEvents).toEqual([]);
+    } finally {
+      try { winner?.ws.close(); } catch { /* ignore */ }
+      try { older?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("lets a candidate from the same race claim ownership after its winner closes", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let first: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let replacement: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      const attempt = { id: "recover-race", startedAtMs: Date.now() };
+      first = await connectPeer(port, host.getBootstrapToken(), "race-recover-device", {
+        connectionAttempt: attempt,
+      });
+      first.ws.close();
+      await waitForValue(
+        () => (host.getPeerStates().length === 0 ? true : null),
+        "winner ownership release",
+      );
+
+      replacement = await connectPeer(port, host.getBootstrapToken(), "race-recover-device", {
+        connectionAttempt: attempt,
+      });
+      expect(replacement.ws.readyState).toBe(WebSocket.OPEN);
+      expect(host.getPeerStates()).toHaveLength(1);
+    } finally {
+      try { first?.ws.close(); } catch { /* ignore */ }
+      try { replacement?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("lets a genuinely newer authenticated attempt supersede the prior winner", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let first: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let newer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      const startedAtMs = Date.now();
+      first = await connectPeer(port, host.getBootstrapToken(), "newer-race-device", {
+        connectionAttempt: { id: "old-live-race", startedAtMs },
+      });
+      newer = await connectPeer(port, host.getBootstrapToken(), "newer-race-device", {
+        connectionAttempt: { id: "new-live-race", startedAtMs: startedAtMs + 1 },
+      });
+      await waitForValue(() => first?.closeEvents[0], "older live winner superseded");
+      expect(newer.ws.readyState).toBe(WebSocket.OPEN);
+      expect(host.getPeerStates()).toHaveLength(1);
+    } finally {
+      try { first?.ws.close(); } catch { /* ignore */ }
+      try { newer?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("retains a disconnected winner watermark briefly, then permits lower-clock recovery", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let winner: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let stale: Awaited<ReturnType<typeof openPeerHello>> | null = null;
+    let recovered: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      winner = await connectPeer(port, host.getBootstrapToken(), "clock-recovery-device", {
+        connectionAttempt: { id: "ahead-race", startedAtMs: now + 10_000 },
+      });
+      winner.ws.close();
+      await waitForValue(() => host.getPeerStates().length === 0 ? true : null, "ahead winner close");
+      stale = await openPeerHello(port, host.getBootstrapToken(), "clock-recovery-device", {
+        connectionAttempt: { id: "lower-race", startedAtMs: now },
+      });
+      await expect(waitForValue(
+        () => stale?.envelopes.find((entry) => entry.type === "hello_error"),
+        "fresh stale watermark rejection",
+      )).resolves.toMatchObject({ payload: { code: "connection_attempt_superseded" } });
+
+      now += CONNECTION_ATTEMPT_RESERVATION_TTL_MS + 1;
+      recovered = await connectPeer(port, host.getBootstrapToken(), "clock-recovery-device", {
+        connectionAttempt: { id: "lower-race-retry", startedAtMs: now - 60_000 },
+      });
+      expect(recovered.ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      nowSpy.mockRestore();
+      try { winner?.ws.close(); } catch { /* ignore */ }
+      try { stale?.ws.close(); } catch { /* ignore */ }
+      try { recovered?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps last-authenticated-hello-wins behavior for legacy clients", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let first: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let second: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      first = await connectPeer(port, host.getBootstrapToken(), "legacy-race-device");
+      second = await connectPeer(port, host.getBootstrapToken(), "legacy-race-device");
+      await waitForValue(() => first?.closeEvents[0], "legacy peer superseded close");
+      expect(second.ws.readyState).toBe(WebSocket.OPEN);
+      expect(host.getPeerStates()).toHaveLength(1);
+    } finally {
+      try { first?.ws.close(); } catch { /* ignore */ }
+      try { second?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
 describe("PR snapshot invalidation push", () => {
   beforeEach(() => {
     publishMock.mockReset();
@@ -3113,6 +3813,38 @@ describe("outbound changeset ack retries", () => {
     } as unknown as Parameters<typeof createSyncHostService>[0]);
   }
 
+  function createControlledChangesetHost(
+    projectRoot: string,
+    state: { dbVersion: number; changes: CrsqlChangeRow[] },
+    logger = createDiscoveryLogger(),
+  ) {
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      pollIntervalMs: 25,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-controlled",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince: (fromDbVersion: number, options?: { maxRows?: number; throughDbVersion?: number }) =>
+            state.changes
+              .filter((change) => Number(change.db_version) > fromDbVersion)
+              .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+              .slice(0, options?.maxRows ?? state.changes.length),
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    return { host, logger };
+  }
+
   it("processes pending ACK retries before active-chat background deferral", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const host = createAckRetryHost(projectRoot);
@@ -3169,6 +3901,225 @@ describe("outbound changeset ack retries", () => {
       cleanup();
     }
   });
+
+  it("admits one bounded changeset after the active-chat soft defer ages out", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = { dbVersion: 0, changes: [makeChange(1, 0)] };
+    const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-fairness", {
+        capabilities: ["changesetAck"],
+      });
+      expect(peer.envelopes.find((envelope) => envelope.type === "hello_ok")?.payload).toMatchObject({
+        connectionTransport: "direct",
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-fairness-subscribe",
+        payload: { sessionId: "session-1" },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-fairness-subscribe");
+
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockReturnValue(SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES);
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      state.dbVersion = 1;
+
+      await waitForValue(
+        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_chat_deferral_started"),
+        "chat changeset deferral transition",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(peer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+
+      clockOffsetMs += SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 25;
+      const batch = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "fair changeset admission",
+      );
+      expect((batch.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
+      expect(logger.debug.mock.calls.filter(([event]) => event === "sync_host.changeset_chat_deferral_started")).toHaveLength(1);
+      expect(logger.debug).toHaveBeenCalledWith(
+        "sync_host.changeset_chat_deferral_ended",
+        expect.objectContaining({ reason: "batch_admitted" }),
+      );
+    } finally {
+      dateNowSpy?.mockRestore();
+      bufferedAmountSpy?.mockRestore();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps the 4 MiB hard gate even after the fairness deadline", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = { dbVersion: 0, changes: [makeChange(1, 0)] };
+    const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    let bufferedAmount = 4 * 1024 * 1024;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-chat-hard-gate", {
+        capabilities: ["changesetAck"],
+      });
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-hard-gate-subscribe",
+        payload: { sessionId: "session-1" },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-hard-gate-subscribe");
+
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockImplementation(() => bufferedAmount);
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 5_000;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      state.dbVersion = 1;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(peer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(logger.debug.mock.calls.some(([event]) => event === "sync_host.changeset_chat_deferral_started")).toBe(false);
+
+      bufferedAmount = SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES;
+      await waitForValue(
+        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_chat_deferral_started"),
+        "soft deferral after hard pressure clears",
+      );
+      clockOffsetMs += SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 25;
+      await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "changeset after hard pressure clears",
+      );
+    } finally {
+      dateNowSpy?.mockRestore();
+      bufferedAmountSpy?.mockRestore();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("rewindows an exhausted batch without closing or advancing, ignores its late ACK, then resets", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 0,
+      changes: Array.from({ length: 600 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-ack-recovery", {
+        capabilities: ["changesetAck"],
+      });
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      state.dbVersion = 600;
+
+      const firstBatch = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "initial recovery batch",
+      );
+      const firstPayload = firstBatch.payload as SyncChangesetBatchPayload;
+      expect(firstPayload.fromDbVersion).toBe(0);
+      expect(firstPayload.changes).toHaveLength(250);
+
+      for (let attemptCount = 2; attemptCount <= 6; attemptCount += 1) {
+        clockOffsetMs += 11_000;
+        await waitForValue(
+          () => peer?.envelopes.filter((envelope) =>
+            envelope.type === "changeset_batch"
+            && (envelope.payload as SyncChangesetBatchPayload).batchId === firstPayload.batchId
+          )[attemptCount - 1],
+          `changeset send attempt ${attemptCount}`,
+        );
+      }
+      clockOffsetMs += 11_000;
+      await waitForValue(
+        () => logger.warn.mock.calls.find(([event]) => event === "sync_host.changeset_recovery_started"),
+        "host changeset recovery",
+      );
+      expect(peer.ws.readyState).toBe(WebSocket.OPEN);
+      expect(peer.closeEvents).toEqual([]);
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(peer.envelopes.filter((envelope) =>
+        envelope.type === "changeset_batch"
+        && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstPayload.batchId
+      )).toHaveLength(0);
+
+      clockOffsetMs += 500;
+      const recoveredBatch = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstPayload.batchId),
+        "rewindowed changeset batch",
+      );
+      const recoveredPayload = recoveredBatch.payload as SyncChangesetBatchPayload;
+      expect(recoveredPayload.batchId).not.toBe(firstPayload.batchId);
+      expect(recoveredPayload.fromDbVersion).toBe(0);
+      expect(recoveredPayload.changes).toHaveLength(125);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: firstPayload.batchId,
+        payload: {
+          batchId: firstPayload.batchId,
+          fromDbVersion: firstPayload.fromDbVersion,
+          toDbVersion: firstPayload.toDbVersion,
+          appliedDbVersion: firstPayload.toDbVersion,
+          appliedCount: firstPayload.changes.length,
+          ok: true,
+        } satisfies SyncChangesetAckPayload,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(peer.envelopes.filter((envelope) => envelope.type === "changeset_batch")).toHaveLength(7);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: recoveredPayload.batchId,
+        payload: {
+          batchId: recoveredPayload.batchId,
+          fromDbVersion: recoveredPayload.fromDbVersion,
+          toDbVersion: recoveredPayload.toDbVersion,
+          appliedDbVersion: recoveredPayload.toDbVersion,
+          appliedCount: recoveredPayload.changes.length,
+          ok: true,
+        } satisfies SyncChangesetAckPayload,
+      }));
+      const resetBatch = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && ![firstPayload.batchId, recoveredPayload.batchId]
+            .includes((envelope.payload as SyncChangesetBatchPayload).batchId)),
+        "normal-window batch after recovery ACK",
+      );
+      const resetPayload = resetBatch.payload as SyncChangesetBatchPayload;
+      expect(resetPayload.fromDbVersion).toBe(recoveredPayload.toDbVersion);
+      expect(resetPayload.changes).toHaveLength(250);
+      expect(logger.debug).toHaveBeenCalledWith(
+        "sync_host.changeset_recovery_reset",
+        expect.objectContaining({ previousRecoveryLevel: 1 }),
+      );
+    } finally {
+      dateNowSpy?.mockRestore();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  }, 15_000);
 });
 
 describe("mobile command result ledger", () => {
@@ -3674,6 +4625,113 @@ describe("sync host handoff over a shared listener", () => {
       seq,
     };
   }
+
+  it("carries terminal input receipts across host handoff so a lost ACK retry cannot rewrite", async () => {
+    const rootA = createTempProjectRoot();
+    const rootB = createTempProjectRoot();
+    const tokenPath = path.join(rootA.projectRoot, "shared-terminal-bootstrap-token");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const writeBySessionId = vi.fn().mockReturnValue(true);
+    const makeTerminalArgs = (projectRoot: string, sessionAvailable: boolean) => {
+      const base = createHandoffHostArgs(projectRoot, tokenPath, {
+        siteId: `site-${path.basename(projectRoot)}`,
+        dbVersion: 0,
+        changes: [],
+      });
+      const transcriptPath = path.join(projectRoot, "terminal.log");
+      fs.writeFileSync(transcriptPath, "", "utf8");
+      const session = {
+        id: "session-1",
+        laneId: "lane-1",
+        transcriptPath,
+        status: "running",
+        runtimeState: "running",
+      };
+      return {
+        ...base,
+        projectId: "project-1",
+        sharedListener: listener,
+        sessionService: {
+          list: () => sessionAvailable ? [session] : [],
+          get: (id: string) => sessionAvailable && id === session.id ? session : null,
+          readTranscriptTail: async () => "",
+        },
+        ptyService: {
+          create: vi.fn(),
+          readTranscriptTail: vi.fn(async () => ""),
+          readTranscriptSnapshot: vi.fn(async () => ({ data: "", startOffset: 0, endOffset: 0 })),
+          readTranscriptRange: vi.fn(async () => null),
+          getTranscriptWindow: vi.fn(() => ({ startOffset: 0, endOffset: 0, retainedBytes: 0 })),
+          writeBySessionId,
+          resizeBySessionId: vi.fn().mockReturnValue(true),
+          restoreDesktopSizeBySessionId: vi.fn().mockReturnValue(true),
+          hasLivePty: vi.fn().mockReturnValue(sessionAvailable),
+          enrichSessions: (rows: unknown[]) => rows,
+        },
+      };
+    };
+    let client: WebSocket | null = null;
+    let hostB: ReturnType<typeof createSyncHostService> | null = null;
+    try {
+      const port = await listener.ensureListening([0]);
+      const hostA = createSyncHostService(
+        makeTerminalArgs(rootA.projectRoot, true) as unknown as Parameters<typeof createSyncHostService>[0],
+      );
+      await hostA.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      sendHello(client, hostA.getBootstrapToken());
+      await waitForValue(() => envelopes.find((entry) => entry.type === "hello_ok"), "terminal handoff hello");
+      client.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "handoff-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: "session-1" },
+      }));
+      await waitForEnvelope(envelopes, "terminal_snapshot", "handoff-subscribe");
+      const inputPayload = { sessionId: "session-1", inputId: "handoff-input", data: "x" };
+      client.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "handoff-input-first",
+        projectId: "project-1",
+        payload: inputPayload,
+      }));
+      await expect(waitForEnvelope(
+        envelopes,
+        "terminal_input_ack",
+        "handoff-input-first",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: false } });
+      expect(writeBySessionId).toHaveBeenCalledTimes(1);
+
+      await hostA.dispose();
+      hostB = createSyncHostService(
+        makeTerminalArgs(rootB.projectRoot, false) as unknown as Parameters<typeof createSyncHostService>[0],
+      );
+      await hostB.waitUntilListening();
+      client.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "handoff-input-retry",
+        projectId: "project-1",
+        payload: inputPayload,
+      }));
+      await expect(waitForEnvelope(
+        envelopes,
+        "terminal_input_ack",
+        "handoff-input-retry",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: true } });
+      expect(writeBySessionId).toHaveBeenCalledTimes(1);
+    } finally {
+      try { client?.close(); } catch { /* ignore */ }
+      await hostB?.dispose();
+      await listener.close();
+      rootA.cleanup();
+      rootB.cleanup();
+    }
+  });
 
   it("keeps an authenticated peer connected across a host service swap and streams the new host's changesets", async () => {
     const rootA = createTempProjectRoot();
@@ -4589,10 +5647,12 @@ describe("sync host reliability guards", () => {
     }
   });
 
-  it("times out a hung queued message and continues with later messages", async () => {
+  it("closes a timed-out command peer while preserving exactly-once completion for a replacement", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const logger = createDiscoveryLogger();
-    const sendMessage = vi.fn((): Promise<void> => new Promise<void>(() => {}));
+    let releaseSendMessage!: () => void;
+    const sendMessageGate = new Promise<void>((resolve) => { releaseSendMessage = resolve; });
+    const sendMessage = vi.fn(async () => { await sendMessageGate; });
     const host = createReliabilityHost(projectRoot, {
       logger,
       messageTimeoutMs: 100,
@@ -4602,13 +5662,11 @@ describe("sync host reliability guards", () => {
       } as unknown as Parameters<typeof createSyncHostService>[0]["agentChatService"],
     });
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
-    try {
-      const port = await host.waitUntilListening();
-      peer = await connectPeer(port, host.getBootstrapToken(), "desktop-timeout");
-
-      peer.ws.send(encodeSyncEnvelope({
+    let replacement: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    const sendCommand = (client: Awaited<ReturnType<typeof connectPeer>>, requestId: string): void => {
+      client.ws.send(encodeSyncEnvelope({
         type: "command",
-        requestId: "hung-command",
+        requestId,
         projectId: "project-1",
         payload: {
           commandId: "hung-command",
@@ -4620,6 +5678,12 @@ describe("sync host reliability guards", () => {
           },
         },
       }));
+    };
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "desktop-timeout");
+
+      sendCommand(peer, "hung-command");
       await waitForEnvelope(peer.envelopes, "command_ack", "hung-command");
 
       peer.ws.send(encodeSyncEnvelope({
@@ -4628,8 +5692,8 @@ describe("sync host reliability guards", () => {
         payload: {},
       }));
 
-      const catalog = await waitForEnvelope(peer.envelopes, "project_catalog", "catalog-after-timeout");
-      expect((catalog.payload as SyncProjectCatalogPayload).projects.map((project) => project.id)).toEqual(["project-1"]);
+      await waitForValue(() => peer?.closeEvents[0], "mutating message timeout close");
+      expect(peer.envelopes.some((envelope) => envelope.requestId === "catalog-after-timeout")).toBe(false);
       await waitForValue(
         () => logger.warn.mock.calls.find(([event]) => event === "sync_host.message_failed") ?? null,
         "message timeout warning",
@@ -4640,10 +5704,37 @@ describe("sync host reliability guards", () => {
         peerDeviceId: "desktop-timeout",
         requestId: "hung-command",
       }));
+
+      replacement = await connectPeer(port, host.getBootstrapToken(), "desktop-timeout");
+      sendCommand(replacement, "hung-command-retry");
+      await waitForEnvelope(replacement.envelopes, "command_ack", "hung-command-retry");
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      releaseSendMessage();
+      await expect(waitForEnvelope(
+        replacement.envelopes,
+        "command_result",
+        "hung-command-retry",
+      )).resolves.toMatchObject({
+        payload: {
+          commandId: "hung-command",
+          ok: true,
+          result: { ok: true },
+        },
+      });
+
+      sendCommand(replacement, "hung-command-replay");
+      await waitForEnvelope(replacement.envelopes, "command_ack", "hung-command-replay");
+      await expect(waitForEnvelope(
+        replacement.envelopes,
+        "command_result",
+        "hung-command-replay",
+      )).resolves.toMatchObject({ payload: { commandId: "hung-command", ok: true } });
       expect(sendMessage).toHaveBeenCalledTimes(1);
     } finally {
+      releaseSendMessage();
       try {
         peer?.ws.close();
+        replacement?.ws.close();
       } catch {
         // ignore
       }
@@ -5326,14 +6417,30 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       lastOutputPreview: "preview",
     };
     const readTranscriptTail = vi.fn(async () => "tail-snapshot");
+    const readTranscriptSnapshot = vi.fn(async (args: { sessionId: string; maxBytes: number }) => {
+      const endOffset = Buffer.byteLength(TRANSCRIPT_CONTENT, "utf8");
+      const startOffset = Math.max(0, endOffset - args.maxBytes);
+      return {
+        data: TRANSCRIPT_CONTENT.slice(startOffset),
+        startOffset,
+        endOffset,
+      };
+    });
     const readTranscriptRange = vi.fn(async (args: { sessionId: string; startOffset: number; endOffset: number }) => ({
       data: TRANSCRIPT_CONTENT.slice(args.startOffset, args.endOffset),
       startOffset: args.startOffset,
       endOffset: args.endOffset,
     }));
+    const getTranscriptWindow = vi.fn(() => ({
+      startOffset: 0,
+      endOffset: Buffer.byteLength(TRANSCRIPT_CONTENT, "utf8"),
+      retainedBytes: Buffer.byteLength(TRANSCRIPT_CONTENT, "utf8"),
+    }));
     const resizeBySessionId = vi.fn().mockReturnValue(true);
     const restoreDesktopSizeBySessionId = vi.fn().mockReturnValue(true);
     const hasLivePty = vi.fn().mockReturnValue(true);
+    const writeBySessionId = vi.fn().mockReturnValue(true);
+    let sessionAvailable = true;
     const base = createHostArgs(projectRoot, []);
     const host = createSyncHostService({
       ...base,
@@ -5353,21 +6460,34 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       },
       sessionService: {
         list: () => [session],
-        get: (id: string) => (id === "session-1" ? session : null),
+        get: (id: string) => (sessionAvailable && id === "session-1" ? session : null),
         readTranscriptTail: async () => "",
       },
       ptyService: {
         create: vi.fn(),
         readTranscriptTail,
+        readTranscriptSnapshot,
         readTranscriptRange,
-        writeBySessionId: vi.fn().mockReturnValue(true),
+        getTranscriptWindow,
+        writeBySessionId,
         resizeBySessionId,
         restoreDesktopSizeBySessionId,
         hasLivePty,
         enrichSessions: (rows: unknown[]) => rows,
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
-    return { host, readTranscriptTail, readTranscriptRange, resizeBySessionId, restoreDesktopSizeBySessionId, hasLivePty };
+    return {
+      host,
+      readTranscriptTail,
+      readTranscriptSnapshot,
+      readTranscriptRange,
+      getTranscriptWindow,
+      writeBySessionId,
+      resizeBySessionId,
+      restoreDesktopSizeBySessionId,
+      hasLivePty,
+      setSessionAvailable: (available: boolean) => { sessionAvailable = available; },
+    };
   }
 
   async function connectTerminalPeer(port: number, token: string, deviceId: string) {
@@ -5407,7 +6527,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
 
   it("answers terminal_subscribe with a delta when sinceOffset fits the budget, else a tail snapshot with offsets", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
-    const { host, readTranscriptTail, readTranscriptRange } = createTerminalHost(projectRoot);
+    const { host, readTranscriptTail, readTranscriptSnapshot, readTranscriptRange } = createTerminalHost(projectRoot);
     let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
     try {
       const port = await host.waitUntilListening();
@@ -5426,11 +6546,12 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         startOffset: 4_988,
         endOffset: 5_000,
       });
-      expect(readTranscriptRange).toHaveBeenCalledWith({
+      expect(readTranscriptSnapshot).toHaveBeenCalledWith({
         sessionId: "session-1",
-        startOffset: 4_988,
-        endOffset: 5_000,
+        maxBytes: 32_000,
+        alignStartToSafeBoundary: true,
       });
+      expect(readTranscriptRange).not.toHaveBeenCalled();
       expect(readTranscriptTail).not.toHaveBeenCalled();
 
       // Gap larger than the budget → full tail snapshot (delta omitted).
@@ -5442,17 +6563,12 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       const full = await nextResponse(client.envelopes, "terminal_snapshot", "sub-full");
       expect(full.payload).toMatchObject({
         sessionId: "session-1",
-        transcript: "tail-snapshot",
-        startOffset: 5_000 - Buffer.byteLength("tail-snapshot", "utf8"),
+        transcript: TRANSCRIPT_CONTENT.slice(5_000 - 1_024),
+        startOffset: 5_000 - 1_024,
         endOffset: 5_000,
       });
       expect((full.payload as { delta?: boolean }).delta).toBeUndefined();
-      expect(readTranscriptTail).toHaveBeenCalledWith({
-        sessionId: "session-1",
-        maxBytes: 1_024,
-        raw: true,
-        alignToLineBoundary: true,
-      });
+      expect(readTranscriptTail).not.toHaveBeenCalled();
 
       // sinceOffset beyond the transcript end (host restarted with a fresh
       // file, client watermark stale) → full snapshot, not a delta.
@@ -5463,9 +6579,13 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       }));
       const stale = await nextResponse(client.envelopes, "terminal_snapshot", "sub-stale");
       expect((stale.payload as { delta?: boolean }).delta).toBeUndefined();
-      expect((stale.payload as { transcript: string }).transcript).toBe("tail-snapshot");
+      expect((stale.payload as { transcript: string }).transcript).toBe(TRANSCRIPT_CONTENT);
 
-      readTranscriptTail.mockResolvedValueOnce(`${TRANSCRIPT_CONTENT}buffered`);
+      readTranscriptSnapshot.mockResolvedValueOnce({
+        data: `${TRANSCRIPT_CONTENT}buffered`,
+        startOffset: 0,
+        endOffset: 5_008,
+      });
       client.ws.send(encodeSyncEnvelope({
         type: "terminal_subscribe",
         requestId: "sub-buffered",
@@ -5475,8 +6595,8 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       expect(buffered.payload).toMatchObject({
         sessionId: "session-1",
         transcript: `${TRANSCRIPT_CONTENT}buffered`,
-        startOffset: null,
-        endOffset: null,
+        startOffset: 0,
+        endOffset: 5_008,
       });
     } finally {
       try {
@@ -5484,6 +6604,452 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("replaces with a tail snapshot when sinceOffset already equals the transcript end", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptTail, readTranscriptSnapshot, readTranscriptRange } = createTerminalHost(projectRoot);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      client = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-terminal-current-offset");
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-current-offset",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: 5_000 },
+      }));
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "sub-current-offset");
+      expect(snapshot.payload).toMatchObject({
+        sessionId: "session-1",
+        transcript: TRANSCRIPT_CONTENT,
+        startOffset: 0,
+        endOffset: 5_000,
+      });
+      expect((snapshot.payload as { delta?: boolean }).delta).toBeUndefined();
+      expect(readTranscriptRange).not.toHaveBeenCalled();
+      expect(readTranscriptSnapshot).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        maxBytes: 32_000,
+        alignStartToSafeBoundary: true,
+      });
+      expect(readTranscriptTail).not.toHaveBeenCalled();
+    } finally {
+      client?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("sends a deferred terminal snapshot before newer data and exit events", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot.mockImplementationOnce(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-order",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "ordered-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "deferred terminal snapshot capture",
+      );
+
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "new",
+        offset: 5_003,
+      });
+      host.handlePtyExit({ sessionId: "session-1", ptyId: "pty-1", exitCode: 0 });
+      expect(client.envelopes.some((envelope) => (
+        envelope.type === "terminal_snapshot" || envelope.type === "terminal_data" || envelope.type === "terminal_exit"
+      ))).toBe(false);
+
+      resolveSnapshot({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+      await nextResponse(client.envelopes, "terminal_snapshot", "ordered-subscribe");
+      await waitForValue(
+        () => client!.envelopes.find((envelope) => envelope.type === "terminal_exit"),
+        "queued terminal exit",
+      );
+      const streamed = client.envelopes.filter((envelope) => (
+        envelope.type === "terminal_snapshot" || envelope.type === "terminal_data" || envelope.type === "terminal_exit"
+      ));
+      expect(streamed.map((envelope) => envelope.type)).toEqual([
+        "terminal_snapshot",
+        "terminal_data",
+        "terminal_exit",
+      ]);
+      expect(streamed[1]!.payload).toMatchObject({ data: "new", offset: 5_003 });
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("does not replay terminal data already covered by a deferred snapshot", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot.mockImplementationOnce(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-dedupe",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "covered-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "covered terminal snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "!",
+        offset: 5_001,
+      });
+      resolveSnapshot({ data: `${TRANSCRIPT_CONTENT}!`, startOffset: 0, endOffset: 5_001 });
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "covered-subscribe");
+      expect(snapshot.payload).toMatchObject({ transcript: `${TRANSCRIPT_CONTENT}!`, endOffset: 5_001 });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(client.envelopes.filter((envelope) => envelope.type === "terminal_data")).toEqual([]);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("trims a UTF-8-safe overlap before flushing data queued behind a snapshot", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot.mockImplementationOnce(() => new Promise<{
+      data: string;
+      startOffset: number;
+      endOffset: number;
+    }>((resolve) => {
+      resolveSnapshot = resolve;
+    }));
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-utf8-overlap",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "utf8-overlap-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "UTF-8 overlap snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "🙂!",
+        offset: 5_005,
+      });
+      resolveSnapshot({ data: `${TRANSCRIPT_CONTENT}🙂`, startOffset: 0, endOffset: 5_004 });
+
+      await nextResponse(client.envelopes, "terminal_snapshot", "utf8-overlap-subscribe");
+      const streamed = await waitForValue(
+        () => client!.envelopes.find((envelope) => envelope.type === "terminal_data"),
+        "trimmed terminal data",
+      );
+      expect(streamed.payload).toMatchObject({ data: "!", offset: 5_005 });
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("recaptures before flushing offsetless data queued during a terminal snapshot", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    let resolveFirstSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot
+      .mockImplementationOnce(() => new Promise<{
+        data: string;
+        startOffset: number;
+        endOffset: number;
+      }>((resolve) => {
+        resolveFirstSnapshot = resolve;
+      }))
+      .mockResolvedValueOnce({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-offsetless",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "offsetless-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: 4_990 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "offsetless terminal snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: "untracked",
+        offset: null,
+      });
+      resolveFirstSnapshot({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "offsetless-subscribe");
+      await waitForValue(
+        () => client!.envelopes.find((envelope) => envelope.type === "terminal_data"),
+        "queued offsetless terminal data",
+      );
+      expect(readTranscriptSnapshot).toHaveBeenCalledTimes(2);
+      expect((snapshot.payload as { delta?: boolean }).delta).toBeUndefined();
+      const streamed = client.envelopes.filter((envelope) => (
+        envelope.type === "terminal_snapshot" || envelope.type === "terminal_data"
+      ));
+      expect(streamed.map((envelope) => envelope.type)).toEqual(["terminal_snapshot", "terminal_data"]);
+      expect(streamed[1]!.payload).toMatchObject({ data: "untracked", offset: null });
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("recaptures an authoritative tail instead of retaining an oversized queued chunk", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptSnapshot } = createTerminalHost(projectRoot);
+    const oversizedChunk = "x".repeat(2_000_001);
+    const oversizedEndOffset = 5_000 + Buffer.byteLength(oversizedChunk, "utf8");
+    let resolveFirstSnapshot!: (snapshot: { data: string; startOffset: number; endOffset: number }) => void;
+    readTranscriptSnapshot
+      .mockImplementationOnce(() => new Promise<{
+        data: string;
+        startOffset: number;
+        endOffset: number;
+      }>((resolve) => {
+        resolveFirstSnapshot = resolve;
+      }))
+      .mockResolvedValueOnce({
+        data: oversizedChunk.slice(-2_000_000),
+        startOffset: oversizedEndOffset - 2_000_000,
+        endOffset: oversizedEndOffset,
+      });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-snapshot-overflow",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "overflow-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 2_000_000 },
+      }));
+      await waitForValue(
+        () => readTranscriptSnapshot.mock.calls.length > 0 ? true : null,
+        "overflow terminal snapshot capture",
+      );
+      host.handlePtyData({
+        sessionId: "session-1",
+        ptyId: "pty-1",
+        data: oversizedChunk,
+        offset: oversizedEndOffset,
+      });
+      resolveFirstSnapshot({ data: TRANSCRIPT_CONTENT, startOffset: 0, endOffset: 5_000 });
+
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "overflow-subscribe");
+      expect(readTranscriptSnapshot).toHaveBeenCalledTimes(2);
+      expect(snapshot.payload).toMatchObject({
+        startOffset: oversizedEndOffset - 2_000_000,
+        endOffset: oversizedEndOffset,
+      });
+      expect(client.envelopes.filter((envelope) => envelope.type === "terminal_data")).toEqual([]);
+      expect(client.ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps subscribe deltas and history paging inside a rolled logical window", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const {
+      host,
+      readTranscriptSnapshot,
+      readTranscriptRange,
+      getTranscriptWindow,
+    } = createTerminalHost(projectRoot);
+    const logicalBase = 10_000;
+    const logicalEnd = logicalBase + Buffer.byteLength(TRANSCRIPT_CONTENT, "utf8");
+    getTranscriptWindow.mockReturnValue({
+      startOffset: logicalBase,
+      endOffset: logicalEnd,
+      retainedBytes: logicalEnd - logicalBase,
+    });
+    readTranscriptSnapshot.mockResolvedValue({
+      data: TRANSCRIPT_CONTENT,
+      startOffset: logicalBase,
+      endOffset: logicalEnd,
+    });
+    readTranscriptRange.mockImplementation(async (args: {
+      sessionId: string;
+      startOffset: number;
+      endOffset: number;
+    }) => {
+      const clampedStartOffset = Math.max(logicalBase, Math.min(args.startOffset, logicalEnd));
+      const endOffset = Math.max(clampedStartOffset, Math.min(args.endOffset, logicalEnd));
+      // Model the real UTF-8/screen-safe range reader moving a retained-base
+      // request forward to the first safe terminal boundary.
+      const startOffset = clampedStartOffset === logicalBase && endOffset > logicalBase
+        ? Math.min(logicalBase + 8, endOffset)
+        : clampedStartOffset;
+      return {
+        data: TRANSCRIPT_CONTENT.slice(startOffset - logicalBase, endOffset - logicalBase),
+        startOffset,
+        endOffset,
+      };
+    });
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-rolled-window",
+      );
+
+      // A watermark older than the retained base cannot be resumed. Replace
+      // with the authoritative retained suffix and its logical offsets.
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "rolled-stale-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: 5_000 },
+      }));
+      await expect(nextResponse(
+        client.envelopes,
+        "terminal_snapshot",
+        "rolled-stale-subscribe",
+      )).resolves.toMatchObject({
+        payload: {
+          transcript: TRANSCRIPT_CONTENT,
+          startOffset: logicalBase,
+          endOffset: logicalEnd,
+        },
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "rolled-delta-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: logicalEnd - 12 },
+      }));
+      await expect(nextResponse(
+        client.envelopes,
+        "terminal_snapshot",
+        "rolled-delta-subscribe",
+      )).resolves.toMatchObject({
+        payload: {
+          transcript: TRANSCRIPT_CONTENT.slice(-12),
+          startOffset: logicalEnd - 12,
+          endOffset: logicalEnd,
+          delta: true,
+        },
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "rolled-history",
+        payload: { sessionId: "session-1", beforeOffset: logicalEnd, maxBytes: 4_096 },
+      }));
+      const history = await nextResponse(client.envelopes, "terminal_history", "rolled-history");
+      expect(readTranscriptRange).toHaveBeenLastCalledWith({
+        sessionId: "session-1",
+        startOffset: logicalEnd - 4_096,
+        endOffset: logicalEnd,
+        alignStartToSafeBoundary: true,
+      });
+      expect(history.payload).toMatchObject({
+        startOffset: logicalEnd - 4_096,
+        endOffset: logicalEnd,
+        atStart: false,
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "rolled-history-start",
+        payload: { sessionId: "session-1", beforeOffset: logicalBase },
+      }));
+      await expect(nextResponse(
+        client.envelopes,
+        "terminal_history",
+        "rolled-history-start",
+      )).resolves.toMatchObject({
+        payload: {
+          data: "",
+          startOffset: logicalBase,
+          endOffset: logicalBase,
+          atStart: true,
+        },
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "rolled-history-aligned-start",
+        payload: { sessionId: "session-1", beforeOffset: logicalBase + 128, maxBytes: 4_096 },
+      }));
+      await expect(nextResponse(
+        client.envelopes,
+        "terminal_history",
+        "rolled-history-aligned-start",
+      )).resolves.toMatchObject({
+        payload: {
+          startOffset: logicalBase + 8,
+          endOffset: logicalBase + 128,
+          atStart: true,
+        },
+      });
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
       await host.dispose();
       cleanup();
     }
@@ -5588,6 +7154,272 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       await host.dispose();
       cleanup();
     }
+  });
+
+  it("ACKs terminal input success, duplicates, collisions, and every typed rejection", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const {
+      host,
+      writeBySessionId,
+      hasLivePty,
+      setSessionAvailable,
+    } = createTerminalHost(projectRoot);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    const ack = (requestId: string) => waitForEnvelope(
+      client!.envelopes,
+      "terminal_input_ack",
+      requestId,
+    );
+    const sendInput = (
+      requestId: string,
+      inputId: string | undefined,
+      data = "x",
+      projectId: string | null = "project-1",
+    ): void => {
+      client!.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId,
+        projectId,
+        payload: {
+          sessionId: "session-1",
+          data,
+          ...(inputId !== undefined ? { inputId } : {}),
+        },
+      }));
+    };
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-input-contract",
+      );
+
+      sendInput("invalid-id", " ");
+      await expect(ack("invalid-id")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          duplicate: false,
+          error: { code: "invalid_input_id", retryable: false },
+        },
+      });
+
+      sendInput("not-subscribed", "input-not-subscribed");
+      await expect(ack("not-subscribed")).resolves.toMatchObject({
+        payload: {
+          inputId: "input-not-subscribed",
+          ok: false,
+          error: { code: "not_subscribed", retryable: true },
+        },
+      });
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "input-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await nextResponse(client.envelopes, "terminal_snapshot", "input-subscribe");
+
+      sendInput("wrong-project", "input-wrong-project", "x", "project-2");
+      await expect(ack("wrong-project")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          error: { code: "project_mismatch", retryable: false },
+        },
+      });
+
+      setSessionAvailable(false);
+      sendInput("missing-session", "input-missing-session");
+      await expect(ack("missing-session")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          error: { code: "project_mismatch", retryable: false },
+        },
+      });
+      setSessionAvailable(true);
+
+      hasLivePty.mockReturnValue(false);
+      sendInput("dead-session", "input-dead-session");
+      await expect(ack("dead-session")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          error: { code: "session_not_live", retryable: false },
+        },
+      });
+      hasLivePty.mockReturnValue(true);
+
+      writeBySessionId.mockReturnValueOnce(false);
+      sendInput("exit-race", "input-exit-race");
+      await expect(ack("exit-race")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          error: { code: "session_not_live", retryable: false },
+        },
+      });
+
+      sendInput("written", "input-written", "hello");
+      await expect(ack("written")).resolves.toMatchObject({
+        payload: {
+          sessionId: "session-1",
+          inputId: "input-written",
+          ok: true,
+          duplicate: false,
+        },
+      });
+      // Receipt identity is immutable and wins over mutable session state: a
+      // lost success ACK retried after the PTY exits is still a duplicate.
+      setSessionAvailable(false);
+      sendInput("duplicate", "input-written", "hello");
+      await expect(ack("duplicate")).resolves.toMatchObject({
+        payload: { ok: true, duplicate: true },
+      });
+      setSessionAvailable(true);
+      sendInput("collision", "input-written", "different");
+      await expect(ack("collision")).resolves.toMatchObject({
+        payload: {
+          ok: false,
+          duplicate: false,
+          error: { code: "input_id_conflict", retryable: false },
+        },
+      });
+
+      // Old clients remain write-only: no inputId means no ACK requirement.
+      sendInput("legacy-input", undefined, "legacy");
+      sendInput("legacy-fence", "input-fence", "fence");
+      await ack("legacy-fence");
+      expect(client.envelopes.some((envelope) =>
+        envelope.type === "terminal_input_ack" && envelope.requestId === "legacy-input"
+      )).toBe(false);
+      expect(writeBySessionId.mock.calls).toEqual([
+        ["session-1", "x"],
+        ["session-1", "hello"],
+        ["session-1", "legacy"],
+        ["session-1", "fence"],
+      ]);
+    } finally {
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("does not starve terminal writes and ACKs behind a slow queued history command", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptRange, writeBySessionId } = createTerminalHost(projectRoot);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    let releaseHistory!: () => void;
+    let historyStarted!: () => void;
+    const started = new Promise<void>((resolve) => { historyStarted = resolve; });
+    const released = new Promise<void>((resolve) => { releaseHistory = resolve; });
+    try {
+      client = await connectTerminalPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-terminal-fast-input",
+      );
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "fast-input-subscribe",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await nextResponse(client.envelopes, "terminal_snapshot", "fast-input-subscribe");
+
+      readTranscriptRange.mockImplementationOnce(async () => {
+        historyStarted();
+        await released;
+        return { data: "history", startOffset: 0, endOffset: 7 };
+      });
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "slow-history",
+        payload: { sessionId: "session-1", beforeOffset: 100 },
+      }));
+      await started;
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "fast-input",
+        payload: { sessionId: "session-1", data: "x", inputId: "fast-input-id" },
+      }));
+
+      await expect(waitForEnvelope(
+        client.envelopes,
+        "terminal_input_ack",
+        "fast-input",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: false } });
+      expect(writeBySessionId).toHaveBeenCalledWith("session-1", "x");
+      expect(client.envelopes.some((envelope) => envelope.requestId === "slow-history")).toBe(false);
+      releaseHistory();
+      await nextResponse(client.envelopes, "terminal_history", "slow-history");
+    } finally {
+      releaseHistory();
+      try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("ACKs an exact retry on a replacement socket without a second PTY write", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, writeBySessionId, hasLivePty } = createTerminalHost(projectRoot);
+    let first: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    let replacement: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    const input = { sessionId: "session-1", inputId: "cross-socket-input", data: "x" };
+    try {
+      const port = await host.waitUntilListening();
+      first = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-cross-socket-input");
+      first.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "cross-socket-sub-1",
+        payload: { sessionId: "session-1" },
+      }));
+      await nextResponse(first.envelopes, "terminal_snapshot", "cross-socket-sub-1");
+      first.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "cross-socket-first",
+        payload: input,
+      }));
+      await expect(waitForEnvelope(
+        first.envelopes,
+        "terminal_input_ack",
+        "cross-socket-first",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: false } });
+      first.ws.close();
+      await waitForValue(() => first?.closeEvents[0], "first terminal socket close");
+
+      replacement = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-cross-socket-input");
+      hasLivePty.mockReturnValue(false);
+      replacement.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "cross-socket-retry",
+        payload: input,
+      }));
+      await expect(waitForEnvelope(
+        replacement.envelopes,
+        "terminal_input_ack",
+        "cross-socket-retry",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: true } });
+      expect(writeBySessionId).toHaveBeenCalledTimes(1);
+    } finally {
+      try { first?.ws.close(); } catch { /* ignore */ }
+      try { replacement?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("retains eligible dedupe receipts instead of evicting them at the bound", () => {
+    let now = 10_000;
+    const ledger = createTerminalInputDedupeLedger({
+      maxEntries: 2,
+      retryWindowMs: 1_000,
+      now: () => now,
+    });
+    expect(ledger.remember("device", "session", "a", "a".repeat(64))).toBe("recorded");
+    expect(ledger.remember("device", "session", "b", "b".repeat(64))).toBe("recorded");
+    expect(ledger.remember("device", "session", "c", "c".repeat(64))).toBe("capacity");
+    expect(ledger.fingerprint("device", "session", "a")).toBe("a".repeat(64));
+    now += 1_001;
+    expect(ledger.remember("device", "session", "c", "c".repeat(64))).toBe("recorded");
+    expect(ledger.size).toBe(1);
   });
 
   it("restores the desktop terminal size only after the last subscribed peer detaches", async () => {

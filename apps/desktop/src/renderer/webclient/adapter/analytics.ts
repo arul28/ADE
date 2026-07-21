@@ -144,6 +144,7 @@ export function createAnalyticsNamespace(infra: AdapterInfra): WebAnalyticsNames
         {
           fallback: NOT_CONFIGURED,
           requireProject: false,
+          idempotent: false,
         },
       );
     },

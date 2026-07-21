@@ -551,6 +551,14 @@ Key behaviors:
   120 attempts) until the DOM reports renderable text. The backfill
   also re-arms whenever the tile becomes visible but the xterm rows
   are empty (e.g. after a webgl→dom fallback).
+- **Authoritative stream recovery** — the hosted-web PTY adapter marks only a
+  non-delta terminal snapshot as `PtyDataEvent.replace`. `TerminalView` then
+  increments its hydration generation, cancels hydration/backfill timers,
+  discards queued frame and hydration writes, resets xterm/input-mode state,
+  and writes the replacement before refitting. Every async preview/transcript
+  continuation captures the generation and no-ops if recovery changed it, so a
+  slow initial hydration cannot overwrite a newer gap-repair snapshot. Delta
+  snapshots and overlap-trimmed live chunks stay append-only.
 - **Mouse tracking and forced selection** — `TerminalView` tracks DECSET 1000 /
   1002 / 1003 mouse modes by scanning every PTY data chunk via
   `updateTerminalInputModes`, alongside xterm's own mouse-tracking state.

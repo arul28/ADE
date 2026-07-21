@@ -13,6 +13,7 @@ import type {
   AdeAccountMachinesResult,
 } from "../../../../desktop/src/shared/types/account";
 import {
+  accountMachineSecureSyncEndpoints,
   fetchAccountMachines,
   resolveTrustedAccountDirectoryBaseUrl,
   selectAccountMachine,
@@ -153,6 +154,7 @@ export class AccountMachineDirectoryService {
         ),
       ),
       accessToken: token,
+      refreshAccessToken: () => this.account.getAccessToken({ forceRefresh: true }),
       fetchImpl: this.options.fetchImpl,
       signal: options.signal,
       timeoutMs: options.timeoutMs,
@@ -201,21 +203,33 @@ export class AccountMachineDirectoryService {
     }, timeoutMs);
     timer.unref?.();
     try {
-      const response = await (this.options.fetchImpl ?? fetch)(
-        `${baseUrl}/account/machines/${encodeURIComponent(machineKey)}`,
-        {
-          method: "DELETE",
-          headers: {
-            accept: "application/json",
-            authorization: `Bearer ${token}`,
+      const sendDelete = (accessToken: string): Promise<Response> =>
+        (this.options.fetchImpl ?? fetch)(
+          `${baseUrl}/account/machines/${encodeURIComponent(machineKey)}`,
+          {
+            method: "DELETE",
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${accessToken}`,
+            },
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            cache: "no-store",
+            redirect: "error",
+            signal: controller.signal,
           },
-          credentials: "omit",
-          referrerPolicy: "no-referrer",
-          cache: "no-store",
-          redirect: "error",
-          signal: controller.signal,
-        },
-      );
+        );
+      let response = await sendDelete(token);
+      if (response.status === 401) {
+        await response.body?.cancel().catch(() => {});
+        let refreshedToken: string | null = null;
+        try {
+          refreshedToken = (await this.account.getAccessToken({ forceRefresh: true })).trim() || null;
+        } catch {
+          // Preserve the original auth-expired classification below.
+        }
+        if (refreshedToken) response = await sendDelete(refreshedToken);
+      }
       if (response.status === 401 || response.status === 403) {
         throw new Error("Your ADE account session expired. Sign in again.");
       }
@@ -256,7 +270,14 @@ export class AccountMachineDirectoryService {
     machine: AdeAccountMachine,
     options: AccountMachinePairOptions = {},
   ): Promise<AdeAccountMachinePairResult> {
-    if (!machine.online) throw new Error(`${machine.name ?? machine.machineKey} is offline and cannot be connected.`);
+    const relayBaseUrls = this.options.relayBaseUrls ?? [defaultRelayUrl()];
+    const hasVerifiedRelayRoute = accountMachineSecureSyncEndpoints(
+      machine,
+      relayBaseUrls,
+    ).length > 0;
+    if (!machine.online && !hasVerifiedRelayRoute) {
+      throw new Error(`${machine.name ?? machine.machineKey} is offline and cannot be connected.`);
+    }
     const hostDeviceId = machine.deviceId?.trim();
     if (!hostDeviceId) throw new Error(`${machine.name ?? machine.machineKey} is missing a stable device id.`);
 
@@ -303,7 +324,7 @@ export class AccountMachineDirectoryService {
       {
         ...options,
         appVersion: this.options.appVersion,
-        relayBaseUrls: this.options.relayBaseUrls ?? [defaultRelayUrl()],
+        relayBaseUrls,
         accountOwnerUserId,
         authorizeAccountCommit,
       },

@@ -292,7 +292,7 @@ describe("DesktopPairedMachineStore", () => {
     expect(store.list()).toEqual([manual]);
   });
 
-  it("uses account auth only on a verified WSS relay and preserves an existing paired secret", async () => {
+  it("uses a verified WSS relay despite stale presence and preserves an existing paired secret", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-account-pairing-"));
     process.env.ADE_HOME = adeHome;
     const openedEndpoints: string[] = [];
@@ -305,7 +305,7 @@ describe("DesktopPairedMachineStore", () => {
       name: "Account Studio",
       platform: "macOS",
       deviceType: "desktop",
-      online: true,
+      online: false,
       lastSeenAt: Date.now(),
       reachableEndpoints: [
         { kind: "relay", url: "ws://relay-one.example/connect/plaintext" },

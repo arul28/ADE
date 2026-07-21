@@ -4,38 +4,64 @@ struct SettingsDiagnosticsSection: View {
   let snapshot: SettingsDiagnosticsSnapshot
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      SettingsSectionHeader(label: "ABOUT")
+    VStack(alignment: .leading, spacing: 18) {
+      if snapshot.connectionRoute != nil || snapshot.connectionPerformance != nil {
+        VStack(alignment: .leading, spacing: 10) {
+          SettingsSectionHeader(label: "CONNECTION DETAILS")
 
-      VStack(spacing: 10) {
-        SettingsDetailRow(
-          symbol: "app.badge",
-          label: "ADE",
-          value: Self.appVersionString
-        )
+          VStack(spacing: 10) {
+            if let route = snapshot.connectionRoute {
+              SettingsDetailRow(
+                symbol: "point.3.connected.trianglepath.dotted",
+                label: "Route",
+                value: route
+              )
+            }
 
-        if let identity = snapshot.pairedMachineIdentity {
-          SettingsDetailRow(
-            symbol: "desktopcomputer.and.arrow.down",
-            label: "Paired machine",
-            value: identity
-          )
+            if let performance = snapshot.connectionPerformance {
+              SettingsDetailRow(
+                symbol: "timer",
+                label: "Last connection",
+                value: performance
+              )
+            }
+          }
         }
+      }
 
-        if let lastSync = snapshot.lastSyncDescription {
-          SettingsDetailRow(
-            symbol: "clock.arrow.circlepath",
-            label: "Last sync",
-            value: lastSync
-          )
-        }
+      VStack(alignment: .leading, spacing: 10) {
+        SettingsSectionHeader(label: "ABOUT")
 
-        if let deviceId = snapshot.deviceIdentity {
+        VStack(spacing: 10) {
           SettingsDetailRow(
-            symbol: "iphone",
-            label: "This device",
-            value: deviceId
+            symbol: "app.badge",
+            label: "ADE",
+            value: Self.appVersionString
           )
+
+          if let identity = snapshot.pairedMachineIdentity {
+            SettingsDetailRow(
+              symbol: "desktopcomputer.and.arrow.down",
+              label: "Paired machine",
+              value: identity
+            )
+          }
+
+          if let lastSync = snapshot.lastSyncDescription {
+            SettingsDetailRow(
+              symbol: "clock.arrow.circlepath",
+              label: "Last sync",
+              value: lastSync
+            )
+          }
+
+          if let deviceId = snapshot.deviceIdentity {
+            SettingsDetailRow(
+              symbol: "iphone",
+              label: "This device",
+              value: deviceId
+            )
+          }
         }
       }
     }

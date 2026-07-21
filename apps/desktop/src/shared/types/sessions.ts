@@ -263,6 +263,11 @@ export type PtyDataEvent = {
   projectRoot?: string;
   data: string;
   /**
+   * True when `data` is an authoritative terminal snapshot that must replace
+   * the renderer's current xterm state instead of being appended.
+   */
+  replace?: boolean;
+  /**
    * Transcript end offset (UTF-8 bytes) after this chunk was appended. null
    * when the transcript can no longer mirror the stream (untracked session,
    * transcript writes disabled, or the transcript byte cap was reached).

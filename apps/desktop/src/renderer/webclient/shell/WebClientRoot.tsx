@@ -315,12 +315,7 @@ export function WebClientRoot({
     const activeEnv = availableEnvironments.find(
       (environment) => environment.envId === client.getStatus().selectedEnvId,
     ) ?? null;
-    let projects: SyncMobileProjectSummary[] = [];
-    try {
-      projects = (await client.getProjectCatalog()).projects;
-    } catch {
-      projects = [];
-    }
+    const projects = (await client.getProjectCatalog()).projects;
     setCatalog(projects);
 
     if (isChatsRoute(window.location.pathname)) {
@@ -503,6 +498,7 @@ export function WebClientRoot({
     if (
       status.state !== "connecting"
       && status.state !== "connected"
+      && status.state !== "restoring"
       && status.state !== "reconnecting"
     ) {
       return;
@@ -682,7 +678,7 @@ export function WebClientRoot({
       );
     case "error":
       return (
-        <ScreenShell title="Connection problem" subtitle={phase.message}>
+        <ScreenShell title="Can't reach this Mac" subtitle={phase.message}>
           <div style={{ display: "flex", gap: 8 }}>
             {phase.canRetry && environments.length > 0 ? (
               <button type="button" style={primaryButton({ height: 36 })} onClick={() => void connectTo(environments[0])}>
@@ -757,7 +753,7 @@ function ProgressScreen({ title, message }: { title: string; message: string }) 
 function Connecting({ name }: { name: string }) {
   return (
     <ProgressScreen
-      title={`Connecting to ${name}…`}
+      title={`Reconnecting to ${name}…`}
       message="Establishing a secure connection…"
     />
   );

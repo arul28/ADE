@@ -19,6 +19,7 @@ final class DpopKeyService {
 
   /// Canonical challenge context string. Kept in sync with `SYNC_DPOP_CONTEXT`.
   static let context = "ade-dpop-v1"
+  static let relayReauthorizationContext = "ade-relay-reauth-v1"
 
   /// Keychain application tag identifying the single sync DPoP key.
   private let applicationTag = Data("com.ade.ios.sync.dpop.v1".utf8)
@@ -56,20 +57,7 @@ final class DpopKeyService {
       timestamp: timestamp,
       nonce: nonce
     )
-    guard let privateKey = ensureKey(),
-          let challengeData = challenge.data(using: .utf8) else {
-      return nil
-    }
-    var error: Unmanaged<CFError>?
-    guard let signature = SecKeyCreateSignature(
-      privateKey,
-      .ecdsaSignatureMessageX962SHA256,
-      challengeData as CFData,
-      &error
-    ) as Data? else {
-      return nil
-    }
-    return signature.base64EncodedString()
+    return signCanonicalChallenge(challenge)
   }
 
   /// Builds the whole DPoP proof dict attached to a paired `hello`. A fresh
@@ -97,6 +85,31 @@ final class DpopKeyService {
     ]
   }
 
+  /// Builds a fresh proof over the exact host-issued Relay reauthorization
+  /// challenge. The bearer token is only returned to callers alongside this
+  /// device-key signature; callers must not send it if this method fails.
+  func buildRelayReauthorizationProof(
+    deviceId: String,
+    relayAccountToken: String,
+    challenge: String
+  ) -> [String: Any]? {
+    let timestamp = Int(Date().timeIntervalSince1970)
+    let nonce = UUID().uuidString
+    let canonical = Self.buildRelayReauthorizationChallenge(
+      deviceId: deviceId,
+      relayAccountTokenSha256Hex: Self.sha256Hex(relayAccountToken),
+      challenge: challenge,
+      timestamp: timestamp,
+      nonce: nonce
+    )
+    guard let signature = signCanonicalChallenge(canonical) else { return nil }
+    return [
+      "timestamp": timestamp,
+      "nonce": nonce,
+      "signature": signature,
+    ]
+  }
+
   // MARK: - Pure helpers (testable)
 
   static func buildChallenge(
@@ -108,6 +121,23 @@ final class DpopKeyService {
     [context, deviceId, secretSha256Hex, String(timestamp), nonce].joined(separator: "\n")
   }
 
+  static func buildRelayReauthorizationChallenge(
+    deviceId: String,
+    relayAccountTokenSha256Hex: String,
+    challenge: String,
+    timestamp: Int,
+    nonce: String
+  ) -> String {
+    [
+      relayReauthorizationContext,
+      deviceId,
+      relayAccountTokenSha256Hex,
+      challenge,
+      String(timestamp),
+      nonce,
+    ].joined(separator: "\n")
+  }
+
   static func sha256Hex(_ value: String) -> String {
     SHA256.hash(data: Data(value.utf8))
       .map { String(format: "%02x", $0) }
@@ -115,6 +145,23 @@ final class DpopKeyService {
   }
 
   // MARK: - Key material
+
+  private func signCanonicalChallenge(_ challenge: String) -> String? {
+    guard let privateKey = ensureKey(),
+          let challengeData = challenge.data(using: .utf8) else {
+      return nil
+    }
+    var error: Unmanaged<CFError>?
+    guard let signature = SecKeyCreateSignature(
+      privateKey,
+      .ecdsaSignatureMessageX962SHA256,
+      challengeData as CFData,
+      &error
+    ) as Data? else {
+      return nil
+    }
+    return signature.base64EncodedString()
+  }
 
   private func ensureKey() -> SecKey? {
     lock.lock()

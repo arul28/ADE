@@ -328,6 +328,60 @@ final class DatabaseService {
     withLock { exportChangesSinceLocked(version: version) }
   }
 
+  /// Reads a bounded window of phone-authored changes without materializing
+  /// the entire local backlog. Once `rowLimit` is reached, finish the current
+  /// db_version transaction and stop before the next one so callers can safely
+  /// advance a version cursor without splitting a logical CRDT write.
+  func exportLocalChangesSince(version: Int, rowLimit: Int) -> [CrsqlChangeRow] {
+    withLock {
+      guard let db else { return [] }
+      let sql = """
+        select [table], pk, cid, val, col_version, db_version, site_id, cl, seq
+          from crsql_changes
+         where db_version > ? and site_id = ?
+         order by db_version asc, cl asc, seq asc
+      """
+      var statement: OpaquePointer?
+      guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK,
+            let statement else { return [] }
+      defer { sqlite3_finalize(statement) }
+      sqlite3_bind_int64(statement, 1, sqlite3_int64(version))
+      do {
+        try bindHexBlob(cachedSiteIdHex, to: statement, index: 2)
+      } catch {
+        return []
+      }
+
+      let boundedRowLimit = max(1, rowLimit)
+      var rows: [CrsqlChangeRow] = []
+      while sqlite3_step(statement) == SQLITE_ROW {
+        let dbVersion = Int(sqlite3_column_int64(statement, 5))
+        if rows.count >= boundedRowLimit,
+           let finalVersion = rows.last?.dbVersion,
+           dbVersion != finalVersion {
+          break
+        }
+        let table = stringValue(statement, index: 0) ?? ""
+        let rawPk = scalarValue(statement, index: 1)
+        let change = CrsqlChangeRow(
+          table: table,
+          pk: encodeOutgoingCrsqlPrimaryKey(table: table, pk: rawPk),
+          cid: stringValue(statement, index: 2) ?? "",
+          val: scalarValue(statement, index: 3),
+          colVersion: Int(sqlite3_column_int64(statement, 4)),
+          dbVersion: dbVersion,
+          siteId: blobHexValue(statement, index: 6) ?? "",
+          cl: Int(sqlite3_column_int64(statement, 7)),
+          seq: Int(sqlite3_column_int64(statement, 8)),
+        )
+        if !isLocalOnlyQueueWipeMarkerChange(change) {
+          rows.append(change)
+        }
+      }
+      return rows
+    }
+  }
+
   private func exportChangesSinceLocked(version: Int) -> [CrsqlChangeRow] {
     guard let db else { return [] }
     let sql = """

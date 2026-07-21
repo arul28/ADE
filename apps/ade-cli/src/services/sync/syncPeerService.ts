@@ -43,13 +43,19 @@ type PendingChangesetBatch = {
   batchId: string;
   payload: SyncChangesetBatchPayload;
   sentAtMs: number;
-  retryCount: number;
+  attemptCount: number;
+  retryNotBeforeMs: number;
 };
 
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
-const MAX_CHANGESET_ACK_RETRIES = 6;
+const MAX_CHANGESET_SEND_ATTEMPTS = 6;
 const MAX_OUTBOUND_CHANGESET_BATCH_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
 const MAX_OUTBOUND_CHANGESET_BATCH_ROWS = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
+const MIN_RECOVERY_CHANGESET_BATCH_BYTES = 16 * 1024;
+const MIN_RECOVERY_CHANGESET_BATCH_ROWS = 16;
+const MAX_CHANGESET_RECOVERY_LEVEL = 4;
+const CHANGESET_RECOVERY_BACKOFF_BASE_MS = 250;
+const CHANGESET_RECOVERY_BACKOFF_MAX_MS = 4_000;
 // See syncHostService SYNC_EXPORT_VERSION_WINDOW.
 const OUTBOUND_EXPORT_VERSION_WINDOW = 250_000;
 const DEFAULT_PEER_HEARTBEAT_INTERVAL_MS = 60_000;
@@ -69,6 +75,8 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
   let outboundLocalDbVersion = args.db.sync.getDbVersion();
   let latestRemoteDbVersion = 0;
   let pendingOutboundChangeset: PendingChangesetBatch | null = null;
+  let outboundChangesetRecoveryLevel = 0;
+  let outboundChangesetRecoveryNotBeforeMs = 0;
   const pendingRequests = new Map<string, PendingRequest>();
   let pendingConnect: { resolve: () => void; reject: (error: Error) => void } | null = null;
 
@@ -180,14 +188,71 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
 
   const sendOutboundChangeset = (pending: PendingChangesetBatch) => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(
-      encodeSyncEnvelope({
-        type: "changeset_batch",
-        requestId: pending.batchId,
-        payload: pending.payload,
-        compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
-      }),
+    try {
+      ws.send(
+        encodeSyncEnvelope({
+          type: "changeset_batch",
+          requestId: pending.batchId,
+          payload: pending.payload,
+          compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
+        }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const changesetRecoveryBackoffMs = (level: number): number => {
+    const boundedLevel = Math.max(1, Math.min(MAX_CHANGESET_RECOVERY_LEVEL, Math.floor(level)));
+    return Math.min(
+      CHANGESET_RECOVERY_BACKOFF_MAX_MS,
+      CHANGESET_RECOVERY_BACKOFF_BASE_MS * (2 ** (boundedLevel - 1)),
     );
+  };
+
+  const outboundChangesetBatchLimits = (): { maxRows: number; maxBytes: number } => {
+    const divisor = 2 ** Math.max(0, outboundChangesetRecoveryLevel);
+    return {
+      maxRows: Math.max(MIN_RECOVERY_CHANGESET_BATCH_ROWS, Math.floor(MAX_OUTBOUND_CHANGESET_BATCH_ROWS / divisor)),
+      maxBytes: Math.max(MIN_RECOVERY_CHANGESET_BATCH_BYTES, Math.floor(MAX_OUTBOUND_CHANGESET_BATCH_BYTES / divisor)),
+    };
+  };
+
+  const abandonPendingOutboundChangeset = (
+    reason: "ack_timeout" | "ack_failed",
+    nowMs: number,
+    error: string | null = null,
+  ): void => {
+    const pending = pendingOutboundChangeset;
+    if (!pending) return;
+    pendingOutboundChangeset = null;
+    outboundChangesetRecoveryLevel = Math.min(
+      MAX_CHANGESET_RECOVERY_LEVEL,
+      outboundChangesetRecoveryLevel + 1,
+    );
+    const backoffMs = changesetRecoveryBackoffMs(outboundChangesetRecoveryLevel);
+    outboundChangesetRecoveryNotBeforeMs = nowMs + backoffMs;
+    const limits = outboundChangesetBatchLimits();
+    args.logger.warn("sync_peer.changeset_recovery_started", {
+      abandonedBatchId: pending.batchId,
+      fromDbVersion: pending.payload.fromDbVersion,
+      toDbVersion: pending.payload.toDbVersion,
+      attemptCount: pending.attemptCount,
+      reason,
+      error,
+      recoveryLevel: outboundChangesetRecoveryLevel,
+      backoffMs,
+      maxRows: limits.maxRows,
+      maxBytes: limits.maxBytes,
+    });
+  };
+
+  const resendPendingOutboundChangeset = (pending: PendingChangesetBatch): boolean => {
+    if (!sendOutboundChangeset(pending)) return false;
+    pending.sentAtMs = Date.now();
+    pending.attemptCount += 1;
+    pending.retryNotBeforeMs = 0;
     return true;
   };
 
@@ -195,24 +260,30 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const nowMs = Date.now();
     if (pendingOutboundChangeset) {
-      if (nowMs - pendingOutboundChangeset.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
-        if (pendingOutboundChangeset.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
-          args.logger.warn("sync_peer.changeset_ack_timeout_exhausted", {
-            batchId: pendingOutboundChangeset.batchId,
-            retryCount: pendingOutboundChangeset.retryCount,
-          });
-          disconnectInternal("error", null, "Changeset acknowledgement timed out.");
+      const pending = pendingOutboundChangeset;
+      const rejectedRetryDue = pending.retryNotBeforeMs > 0 && nowMs >= pending.retryNotBeforeMs;
+      const ackTimedOut = pending.retryNotBeforeMs === 0
+        && nowMs - pending.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS;
+      if (rejectedRetryDue || ackTimedOut) {
+        if (pending.attemptCount >= MAX_CHANGESET_SEND_ATTEMPTS) {
+          abandonPendingOutboundChangeset(ackTimedOut ? "ack_timeout" : "ack_failed", nowMs);
           return;
         }
-        pendingOutboundChangeset.sentAtMs = nowMs;
-        pendingOutboundChangeset.retryCount += 1;
-        sendOutboundChangeset(pendingOutboundChangeset);
+        if (resendPendingOutboundChangeset(pending)) {
+          args.logger.debug("sync_peer.changeset_ack_retry", {
+            batchId: pending.batchId,
+            attemptCount: pending.attemptCount,
+            trigger: ackTimedOut ? "timeout" : "rejected",
+          });
+        }
       }
       return;
     }
+    if (nowMs < outboundChangesetRecoveryNotBeforeMs) return;
     const currentDbVersion = args.db.sync.getDbVersion();
     if (currentDbVersion <= outboundLocalDbVersion) return;
     const localSiteId = args.deviceRegistryService.getLocalSiteId();
+    const batchLimits = outboundChangesetBatchLimits();
     // Bounded export — scan a db_version window, not the whole backlog. An
     // open-ended scan of a deep backlog aborts under concurrent writes
     // (SQLITE_ABORT), permanently stalling the relay; empty windows advance
@@ -223,7 +294,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     );
     const exported = args.db.sync.exportChangesSince(
       outboundLocalDbVersion,
-      { maxRows: MAX_OUTBOUND_CHANGESET_BATCH_ROWS * 4, throughDbVersion: scanThroughDbVersion },
+      { maxRows: batchLimits.maxRows * 4, throughDbVersion: scanThroughDbVersion },
     );
     const exportedThroughDbVersion = exported.length > 0
       ? Number(exported[exported.length - 1].db_version)
@@ -240,17 +311,22 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       fromDbVersion: previousDbVersion,
       toDbVersion: exportedThroughDbVersion,
       changes,
-      maxRows: MAX_OUTBOUND_CHANGESET_BATCH_ROWS,
-      maxBytes: MAX_OUTBOUND_CHANGESET_BATCH_BYTES,
+      maxRows: batchLimits.maxRows,
+      maxBytes: batchLimits.maxBytes,
     });
     if (!payload) return;
-    pendingOutboundChangeset = {
+    const pending: PendingChangesetBatch = {
       batchId: payload.batchId,
       payload,
-      sentAtMs: nowMs,
-      retryCount: 0,
+      sentAtMs: 0,
+      attemptCount: 0,
+      retryNotBeforeMs: 0,
     };
-    sendOutboundChangeset(pendingOutboundChangeset);
+    if (!sendOutboundChangeset(pending)) return;
+    pending.sentAtMs = Date.now();
+    pending.attemptCount = 1;
+    outboundChangesetRecoveryNotBeforeMs = 0;
+    pendingOutboundChangeset = pending;
   };
 
   const startRelay = () => {
@@ -299,6 +375,8 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     }
     ws = null;
     pendingOutboundChangeset = null;
+    outboundChangesetRecoveryLevel = 0;
+    outboundChangesetRecoveryNotBeforeMs = 0;
     latestBrainStatus = null;
     status.state = state;
     status.connectedAt = null;
@@ -372,25 +450,24 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         const payload = envelope.payload as SyncChangesetAckPayload;
         if (!pendingOutboundChangeset || payload.batchId !== pendingOutboundChangeset.batchId) break;
         if (!payload.ok) {
-          if (pendingOutboundChangeset.retryCount >= MAX_CHANGESET_ACK_RETRIES) {
-            const message = payload.error?.message ?? "Changeset apply failed repeatedly.";
-            args.logger.warn("sync_peer.changeset_ack_failed_exhausted", {
-              batchId: pendingOutboundChangeset.batchId,
-              retryCount: pendingOutboundChangeset.retryCount,
-              error: message,
-            });
-            disconnectInternal("error", null, message);
+          const nowMs = Date.now();
+          const message = payload.error?.message ?? "Changeset apply failed.";
+          if (pendingOutboundChangeset.attemptCount >= MAX_CHANGESET_SEND_ATTEMPTS) {
+            abandonPendingOutboundChangeset("ack_failed", nowMs, message);
             break;
           }
-          pendingOutboundChangeset.sentAtMs = Date.now();
-          pendingOutboundChangeset.retryCount += 1;
+          const retryInMs = changesetRecoveryBackoffMs(pendingOutboundChangeset.attemptCount);
+          pendingOutboundChangeset.retryNotBeforeMs = nowMs + retryInMs;
           args.logger.warn("sync_peer.changeset_ack_failed", {
             batchId: pendingOutboundChangeset.batchId,
-            error: payload.error?.message ?? "Changeset apply failed.",
+            attemptCount: pendingOutboundChangeset.attemptCount,
+            retryInMs,
+            error: message,
           });
           break;
         }
         if (payload.toDbVersion < pendingOutboundChangeset.payload.toDbVersion) break;
+        const recoveryLevel = outboundChangesetRecoveryLevel;
         const acknowledgedRemoteVersion = Math.max(
           latestRemoteDbVersion,
           pendingOutboundChangeset.payload.toDbVersion,
@@ -402,6 +479,13 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         }
         outboundLocalDbVersion = Math.max(outboundLocalDbVersion, pendingOutboundChangeset.payload.toDbVersion);
         pendingOutboundChangeset = null;
+        outboundChangesetRecoveryLevel = 0;
+        outboundChangesetRecoveryNotBeforeMs = 0;
+        if (recoveryLevel > 0) {
+          args.logger.debug("sync_peer.changeset_recovery_reset", {
+            previousRecoveryLevel: recoveryLevel,
+          });
+        }
         emitStatus();
         break;
       }
@@ -583,6 +667,8 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
 
     acknowledgeLocalDbVersion(): void {
       pendingOutboundChangeset = null;
+      outboundChangesetRecoveryLevel = 0;
+      outboundChangesetRecoveryNotBeforeMs = 0;
       outboundLocalDbVersion = args.db.sync.getDbVersion();
     },
 
