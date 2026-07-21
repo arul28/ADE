@@ -294,18 +294,77 @@ final class PairingAndDpopTests: XCTestCase {
     )
   }
 
-  func testRelayReauthorizationProofUsesDistinctNoncePerAttempt() throws {
+  func testRelayReauthorizationProofUsesFreshCryptographicallyBoundAttempt() throws {
+    let deviceId = "phone-1"
+    let token = "token-1"
+    let relayChallenge = "challenge-1"
     let first = try XCTUnwrap(DpopKeyService.shared.buildRelayReauthorizationProof(
-      deviceId: "phone-1",
-      relayAccountToken: "token-1",
-      challenge: "challenge-1"
+      deviceId: deviceId,
+      relayAccountToken: token,
+      challenge: relayChallenge
     ))
     let second = try XCTUnwrap(DpopKeyService.shared.buildRelayReauthorizationProof(
-      deviceId: "phone-1",
-      relayAccountToken: "token-1",
-      challenge: "challenge-1"
+      deviceId: deviceId,
+      relayAccountToken: token,
+      challenge: relayChallenge
     ))
     XCTAssertNotEqual(first["nonce"] as? String, second["nonce"] as? String)
     XCTAssertNotEqual(first["signature"] as? String, second["signature"] as? String)
+
+    let publicKeyBase64 = try XCTUnwrap(DpopKeyService.shared.publicKeyX963Base64())
+    let publicKeyData = try XCTUnwrap(Data(base64Encoded: publicKeyBase64))
+    let attributes: [String: Any] = [
+      kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
+      kSecAttrKeyClass as String: kSecAttrKeyClassPublic,
+      kSecAttrKeySizeInBits as String: 256,
+    ]
+    var keyError: Unmanaged<CFError>?
+    let publicKey = try XCTUnwrap(
+      SecKeyCreateWithData(publicKeyData as CFData, attributes as CFDictionary, &keyError)
+    )
+
+    for proof in [first, second] {
+      let timestamp = try XCTUnwrap(proof["timestamp"] as? Int)
+      let nonce = try XCTUnwrap(proof["nonce"] as? String)
+      let signature = try XCTUnwrap(
+        Data(base64Encoded: try XCTUnwrap(proof["signature"] as? String))
+      )
+      let canonical = DpopKeyService.buildRelayReauthorizationChallenge(
+        deviceId: deviceId,
+        relayAccountTokenSha256Hex: DpopKeyService.sha256Hex(token),
+        challenge: relayChallenge,
+        timestamp: timestamp,
+        nonce: nonce
+      )
+      func verifies(_ canonicalChallenge: String) -> Bool {
+        var verificationError: Unmanaged<CFError>?
+        return SecKeyVerifySignature(
+          publicKey,
+          .ecdsaSignatureMessageX962SHA256,
+          Data(canonicalChallenge.utf8) as CFData,
+          signature as CFData,
+          &verificationError
+        )
+      }
+      XCTAssertTrue(verifies(canonical))
+
+      let wrongTokenCanonical = DpopKeyService.buildRelayReauthorizationChallenge(
+        deviceId: deviceId,
+        relayAccountTokenSha256Hex: DpopKeyService.sha256Hex("different-token"),
+        challenge: relayChallenge,
+        timestamp: timestamp,
+        nonce: nonce
+      )
+      XCTAssertFalse(verifies(wrongTokenCanonical))
+
+      let wrongChallengeCanonical = DpopKeyService.buildRelayReauthorizationChallenge(
+        deviceId: deviceId,
+        relayAccountTokenSha256Hex: DpopKeyService.sha256Hex(token),
+        challenge: "different-challenge",
+        timestamp: timestamp,
+        nonce: nonce
+      )
+      XCTAssertFalse(verifies(wrongChallengeCanonical))
+    }
   }
 }

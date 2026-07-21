@@ -259,9 +259,11 @@ final class TerminalSessionController: NSObject, ObservableObject {
 
   func handleConnectionChange(isConnected: Bool) {
     if isConnected, let syncService,
-       syncService.subscribedTerminalSessionIds.contains(sessionId) {
+       syncService.hasTerminalStream(sessionId: sessionId) {
       // The sync layer re-subscribes with sinceOffset on reconnect; we only
-      // need to re-assert the phone's PTY size.
+      // need to re-assert the phone's PTY size. The attached stream handler
+      // persists across transport teardown, unlike the confirmed-subscription
+      // set, and uniquely represents this active full-screen terminal.
       isSubscribed = true
       lastSentSize = nil
       if let terminal = terminalView?.getTerminal() {
@@ -351,6 +353,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private func applyStreamEvent(_ event: TerminalStreamEvent) {
     switch event {
     case .hydrate(let text, let replacing, let startOffset, let endOffset):
+      inputStatusMessage = nil
       isSubscribed = true
       noteHostOffsetCapability(endOffset != nil)
       if replacing {
@@ -555,12 +558,35 @@ final class TerminalSessionController: NSObject, ObservableObject {
     let buffered = pendingInput
     pendingInput = ""
     guard !buffered.isEmpty else { return }
-    let submission = syncService?.sendTerminalInput(sessionId: sessionId, data: buffered)
-    if case .some(.rejected(let message)) = submission {
+    guard let submission = syncService?.sendTerminalInput(
+      sessionId: sessionId,
+      data: buffered
+    ) else { return }
+    applyInputSubmission(submission)
+  }
+
+  private func applyInputSubmission(_ submission: SyncTerminalInputSubmission) {
+    switch submission {
+    case .rejected(let message):
       inputStatusMessage = message
       blockedInputPulse += 1
+    case .awaitingAcknowledgement, .queuedUntilReady, .sentToLegacyHost:
+      // A prior timeout/rejection should not label a later, unrelated blocked
+      // keystroke after the stream has recovered.
+      inputStatusMessage = nil
     }
   }
+
+  #if DEBUG
+  func handleStreamEventForTesting(_ event: TerminalStreamEvent) {
+    readyToFeed = true
+    handleStreamEvent(event)
+  }
+
+  func handleInputSubmissionForTesting(_ submission: SyncTerminalInputSubmission) {
+    applyInputSubmission(submission)
+  }
+  #endif
 
   private func sendResizeIfNeeded(cols: Int, rows: Int) {
     guard cols > 1, rows > 1 else { return }

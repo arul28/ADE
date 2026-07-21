@@ -1109,10 +1109,50 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     queue.markSent(inputId: "input-1", generation: 7, sentUptime: 10)
     XCTAssertNil(queue.nextSendableItem(reliableAcknowledgements: true))
     queue.prepareForReconnect()
-    XCTAssertEqual(queue.nextSendableItem(reliableAcknowledgements: true)?.inputId, "input-1")
+    let restored = try XCTUnwrap(queue.nextSendableItem(reliableAcknowledgements: true))
+    XCTAssertEqual(restored.inputId, "input-1")
+    XCTAssertEqual(restored.data, Data("a".utf8))
+    XCTAssertEqual(restored.delivery, .unsent)
+    XCTAssertNil(restored.firstSentUptime)
+    XCTAssertNil(restored.lastSentUptime)
+    XCTAssertEqual(restored.attemptCount, 0)
     queue.markSent(inputId: "input-1", generation: 8, sentUptime: 11)
+    XCTAssertEqual(queue.item(inputId: "input-1")?.firstSentUptime, 11)
+    XCTAssertEqual(queue.item(inputId: "input-1")?.lastSentUptime, 11)
+    XCTAssertEqual(queue.item(inputId: "input-1")?.attemptCount, 1)
     XCTAssertEqual(queue.acknowledge(inputId: "input-1")?.data, Data("a".utf8))
     XCTAssertEqual(queue.nextSendableItem(reliableAcknowledgements: true)?.inputId, "input-2")
+  }
+
+  func testTerminalInputReconnectRestoresFreshRetryBudget() throws {
+    var queue = SyncTerminalInputQueue()
+    _ = try queue.enqueue(data: Data("x".utf8), inputId: "stable-id")
+    for sentAt in [0.0, 1.0, 2.0, 3.0] {
+      queue.markSent(inputId: "stable-id", generation: 4, sentUptime: sentAt)
+    }
+    XCTAssertEqual(
+      syncTerminalInputRetryDecision(
+        item: try XCTUnwrap(queue.item(inputId: "stable-id")),
+        nowUptime: 4,
+        retryWindowMilliseconds: 60_000
+      ),
+      .attemptsExhausted
+    )
+
+    queue.prepareForReconnect()
+    queue.markSent(inputId: "stable-id", generation: 5, sentUptime: 100)
+    let freshAttempt = try XCTUnwrap(queue.item(inputId: "stable-id"))
+    XCTAssertEqual(freshAttempt.inputId, "stable-id")
+    XCTAssertEqual(freshAttempt.attemptCount, 1)
+    XCTAssertEqual(freshAttempt.firstSentUptime, 100)
+    XCTAssertEqual(
+      syncTerminalInputRetryDecision(
+        item: freshAttempt,
+        nowUptime: 101,
+        retryWindowMilliseconds: 60_000
+      ),
+      .retry(afterNanoseconds: 500_000_000)
+    )
   }
 
   func testTerminalInputQueueBoundsAreExplicit() throws {

@@ -1205,10 +1205,21 @@ export class AdeSyncClient {
     if (operation.timer) clearTimeout(operation.timer);
     operation.timer = null;
     if (!payload.ok) {
+      const rawError = (payload as { error?: unknown }).error;
+      if (!rawError || typeof rawError !== "object") {
+        this.failTerminalInput(operation, new AdeSyncError(
+          "This Mac returned an invalid terminal input response.",
+          "terminal_input_invalid_ack",
+        ));
+        return;
+      }
+      const inputError = rawError as { code?: unknown; message?: unknown; retryable?: unknown };
+      const code = typeof inputError.code === "string" ? inputError.code : "rejected";
+      const retryable = inputError.retryable === true;
       const subscription = this.terminalSubscriptions.get(operation.sessionId);
       if (
-        payload.error.retryable
-        && payload.error.code === "not_subscribed"
+        retryable
+        && code === "not_subscribed"
         && subscription
         && operation.attempts < this.terminalInputMaxAttempts
       ) {
@@ -1224,9 +1235,11 @@ export class AdeSyncClient {
         return;
       }
       this.failTerminalInput(operation, new AdeSyncError(
-        payload.error.message || "This Mac rejected terminal input.",
-        `terminal_input_${payload.error.code || "rejected"}`,
-        { retryable: payload.error.retryable },
+        typeof inputError.message === "string" && inputError.message.trim()
+          ? inputError.message
+          : "This Mac rejected terminal input.",
+        `terminal_input_${code}`,
+        { retryable },
       ));
       return;
     }

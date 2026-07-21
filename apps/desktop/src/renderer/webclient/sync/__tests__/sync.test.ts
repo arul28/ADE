@@ -3019,6 +3019,53 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
+  it("rejects a malformed terminal input acknowledgement and advances the queue", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const received: string[] = [];
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: helloOkWithTerminalInputAck(),
+        });
+      }
+      if (envelope.type !== "terminal_input") return;
+      const input = envelope.payload as { sessionId: string; data: string; inputId: string };
+      received.push(input.data);
+      socket.serverSend({
+        type: "terminal_input_ack",
+        requestId: envelope.requestId,
+        payload: input.data === "malformed"
+          ? {
+              sessionId: input.sessionId,
+              inputId: input.inputId,
+              ok: false,
+              duplicate: false,
+            }
+          : {
+              sessionId: input.sessionId,
+              inputId: input.inputId,
+              ok: true,
+              duplicate: false,
+            },
+      } as never);
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await connecting;
+
+    const malformed = client.sendTerminalInput("term-1", "malformed");
+    const next = client.sendTerminalInput("term-1", "next");
+    await expect(malformed).rejects.toMatchObject({ code: "terminal_input_invalid_ack" });
+    await expect(next).resolves.toBeUndefined();
+    expect(received).toEqual(["malformed", "next"]);
+
+    client.dispose();
+  });
+
   it("expires unconfirmed terminal input while the connection remains down", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);

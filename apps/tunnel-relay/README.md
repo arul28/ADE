@@ -124,6 +124,9 @@ protocol control frames handled at the Cloudflare edge: they do not become JSON
 | `4505` | host control | Replaced by a newer host control socket |
 | `4506` | phone `/connect` | Pre-pipe frame buffer exceeded 64 frames or 256 KiB |
 | `4507` | phone/pipe | Brain rejected the open because bridge validation/setup failed |
+| `4508` | pipe | Pipe epoch or id did not match a pending client |
+| `4509` | phone/pipe | One side could not receive a forwarded frame |
+| `4510` | phone | Ready-v2 client sent data before relay readiness |
 | `4000` | pipe/phone/local bridge | Partner closed without an application close code |
 
 For pipe/phone and brain pipe/local boundaries, application close codes in

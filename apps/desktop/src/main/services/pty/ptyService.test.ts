@@ -4779,6 +4779,111 @@ describe("ptyService", () => {
       for (let index = 0; index < 200; index += 1) await Promise.resolve();
     };
 
+    it("preserves a surrogate pair split across PTY callbacks", async () => {
+      vi.useFakeTimers();
+      try {
+        const transcriptPath = "/tmp/transcripts/surrogate-split.log";
+        const { service, mockPty, broadcastData } = createHarness();
+        const { ptyId, sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: "surrogate-split",
+        });
+
+        mockPty._emitter.emit("data", "\uD83D");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).not.toHaveBeenCalled();
+        expect(mocks.fileContents.get(transcriptPath) ?? "").toBe("");
+
+        mockPty._emitter.emit("data", "\uDE00!");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).toHaveBeenLastCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "😀!",
+          offset: 5,
+        });
+        expect(mocks.fileContents.get(transcriptPath)).toBe("😀!");
+        expect(mocks.fileStats.get(transcriptPath)?.size).toBe(5);
+        await expect(service.readTranscriptSnapshot({ sessionId, maxBytes: 64 })).resolves.toEqual({
+          data: "😀!",
+          startOffset: 0,
+          endOffset: 5,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(["exit", "dispose"] as const)(
+      "flushes one replacement character before PTY %s",
+      async (teardown) => {
+        const transcriptPath = `/tmp/transcripts/surrogate-${teardown}.log`;
+        const { service, mockPty, broadcastData, broadcastExit } = createHarness();
+        const { ptyId, sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: `surrogate-${teardown}`,
+        });
+
+        mockPty._emitter.emit("data", "A\uD83D");
+        if (teardown === "exit") {
+          mockPty._emitter.emit("exit", { exitCode: 0 });
+        } else {
+          service.dispose({ ptyId, sessionId });
+        }
+
+        expect(broadcastData).toHaveBeenCalledTimes(1);
+        expect(broadcastData).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "A�",
+          offset: 4,
+        });
+        expect(broadcastData.mock.invocationCallOrder[0]).toBeLessThan(
+          broadcastExit.mock.invocationCallOrder[0]!,
+        );
+        expect(mocks.fileContents.get(transcriptPath)).toBe("A�");
+        expect(mocks.fileStats.get(transcriptPath)?.size).toBe(4);
+      },
+    );
+
+    it("canonicalizes unpaired surrogates before persistence and broadcast", async () => {
+      vi.useFakeTimers();
+      try {
+        const transcriptPath = "/tmp/transcripts/surrogate-invalid.log";
+        const { service, mockPty, broadcastData } = createHarness();
+        const { ptyId, sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "t",
+          cols: 80,
+          rows: 24,
+          sessionId: "surrogate-invalid",
+        });
+
+        mockPty._emitter.emit("data", "\uDE00\uD83Dx");
+        await vi.advanceTimersByTimeAsync(50);
+
+        expect(broadcastData).toHaveBeenCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "��x",
+          offset: 7,
+        });
+        expect(mocks.fileContents.get(transcriptPath)).toBe("��x");
+        expect(mocks.fileStats.get(transcriptPath)?.size).toBe(7);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("attaches the transcript end offset across batched flushes", async () => {
       vi.useFakeTimers();
       try {

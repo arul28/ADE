@@ -148,6 +148,9 @@ struct SyncTerminalInputQueue: Equatable {
     items = items.map { item in
       var restored = item
       restored.delivery = .unsent
+      restored.firstSentUptime = nil
+      restored.lastSentUptime = nil
+      restored.attemptCount = 0
       return restored
     }
   }

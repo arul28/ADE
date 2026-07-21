@@ -521,6 +521,10 @@ type PtyEntry = {
   pendingDataChunks: string[];
   pendingDataChars: number;
   pendingDataTimer: ReturnType<typeof setTimeout> | null;
+  /** A trailing UTF-16 high surrogate held until the next PTY output chunk. */
+  pendingOutputHighSurrogate: string;
+  /** Routes canonical Unicode output through every live/transcript consumer. */
+  processOutputData: ((data: string) => void) | null;
   /** Epoch ms of the last user write; shortens the data batch window. */
   lastUserInputAt: number;
   terminalSnapshot: TerminalSnapshotMirror | null;
@@ -533,6 +537,45 @@ type PtyEntry = {
   cliUserTitleLineBuffer: string;
   cliUserTitleCommitted: boolean;
 };
+
+function isHighSurrogateCodeUnit(codeUnit: number): boolean {
+  return codeUnit >= 0xd800 && codeUnit <= 0xdbff;
+}
+
+function isLowSurrogateCodeUnit(codeUnit: number): boolean {
+  return codeUnit >= 0xdc00 && codeUnit <= 0xdfff;
+}
+
+function replaceUnpairedSurrogates(value: string): string {
+  let normalized = "";
+  let segmentStart = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (isHighSurrogateCodeUnit(codeUnit)) {
+      if (index + 1 < value.length && isLowSurrogateCodeUnit(value.charCodeAt(index + 1))) {
+        index += 1;
+        continue;
+      }
+    } else if (!isLowSurrogateCodeUnit(codeUnit)) {
+      continue;
+    }
+    normalized += `${value.slice(segmentStart, index)}\uFFFD`;
+    segmentStart = index + 1;
+  }
+  return segmentStart === 0 ? value : `${normalized}${value.slice(segmentStart)}`;
+}
+
+function takeCanonicalPtyOutput(entry: PtyEntry, data: string, final = false): string {
+  let value = entry.pendingOutputHighSurrogate
+    ? `${entry.pendingOutputHighSurrogate}${data}`
+    : data;
+  entry.pendingOutputHighSurrogate = "";
+  if (!final && value.length > 0 && isHighSurrogateCodeUnit(value.charCodeAt(value.length - 1))) {
+    entry.pendingOutputHighSurrogate = value.slice(-1);
+    value = value.slice(0, -1);
+  }
+  return replaceUnpairedSurrogates(value);
+}
 
 type HostReadyPty = IPty & {
   __adePtyHostReady?: Promise<void>;
@@ -693,7 +736,10 @@ function statusFromExit(exitCode: number | null): TerminalSessionStatus {
 
 function tailString(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
-  return value.slice(value.length - maxChars);
+  const tail = value.slice(value.length - maxChars);
+  return tail.length > 0 && isLowSurrogateCodeUnit(tail.charCodeAt(0))
+    ? tail.slice(1)
+    : tail;
 }
 
 function computeSuffixPrefixOverlap(left: string, right: string, maxChars = 12_000): number {
@@ -2883,10 +2929,17 @@ export function createPtyService({
     }, CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS));
   };
 
+  const flushPendingPtyOutput = (entry: PtyEntry): void => {
+    const trailing = takeCanonicalPtyOutput(entry, "", true);
+    if (trailing) entry.processOutputData?.(trailing);
+  };
+
   const closeEntry = (ptyId: string, exitCode: number | null) => {
     const entry = ptys.get(ptyId);
     if (!entry) return;
     if (entry.disposed) return;
+    flushPendingPtyOutput(entry);
+    entry.processOutputData = null;
     entry.disposed = true;
     if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       revokeBuiltInBrowserActorCapability(entry.sessionId);
@@ -3159,13 +3212,6 @@ export function createPtyService({
   const appendRecentOutput = (entry: PtyEntry, data: string) => {
     if (!data) return;
     entry.recentOutputTail = tailString(`${entry.recentOutputTail}${data}`, LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS);
-    // tailString counts UTF-16 code units. If truncation lands between a
-    // surrogate pair, drop the dangling low surrogate so re-encoding this
-    // exact live suffix cannot invent a replacement character/byte count.
-    const firstCodeUnit = entry.recentOutputTail.charCodeAt(0);
-    if (firstCodeUnit >= 0xdc00 && firstCodeUnit <= 0xdfff) {
-      entry.recentOutputTail = entry.recentOutputTail.slice(1);
-    }
   };
 
   const flushPreview = (entry: PtyEntry) => {
@@ -4325,6 +4371,8 @@ export function createPtyService({
         pendingDataChunks: [],
         pendingDataChars: 0,
         pendingDataTimer: null,
+        pendingOutputHighSurrogate: "",
+        processOutputData: null,
         lastUserInputAt: 0,
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
@@ -4348,7 +4396,7 @@ export function createPtyService({
       let titleOutputBuffer = "";
       let titleBufferFull = false;
 
-      pty.onData((data) => {
+      const processOutputData = (data: string): void => {
         // Late chunks can arrive after closeEntry()/dispose() has flushed the
         // final buffer and emitted ptyExit. Bail out so post-teardown data
         // can't re-arm pendingDataTimer, mutate previews/runtime state, or
@@ -4403,6 +4451,13 @@ export function createPtyService({
             titleBufferFull = true;
           }
         }
+      };
+      entry.processOutputData = processOutputData;
+
+      pty.onData((rawData) => {
+        if (entry.disposed) return;
+        const data = takeCanonicalPtyOutput(entry, rawData);
+        if (data) processOutputData(data);
       });
 
       pty.onExit(({ exitCode }) => {
@@ -5621,6 +5676,8 @@ export function createPtyService({
         return { disposed: false, reason: "session-mismatch" };
       }
       if (entry.disposed) return { disposed: false, reason: "already-disposed" };
+      flushPendingPtyOutput(entry);
+      entry.processOutputData = null;
       entry.disposed = true;
       if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
         revokeBuiltInBrowserActorCapability(entry.sessionId);

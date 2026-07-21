@@ -1377,7 +1377,7 @@ final class ADETests: XCTestCase {
         ),
         canReconnectToSavedHost: true
       ),
-      "Can't reach this Mac"
+      "Not connected"
     )
     XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
     XCTAssertEqual(
@@ -4275,6 +4275,23 @@ final class ADETests: XCTestCase {
     XCTAssertNil(service.terminalInputQueueForTesting(sessionId: "terminal-1"))
     XCTAssertFalse(service.hasTerminalInputTimeoutForTesting(sessionId: "terminal-1"))
     XCTAssertFalse(service.canAcceptTerminalInput(sessionId: "terminal-1"))
+  }
+
+  @MainActor
+  func testReconnectKeepsActiveTerminalAttachmentAfterConfirmedSubscriptionsReset() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.attachTerminalStream(sessionId: "terminal-reconnect") { _ in }
+    service.seedTerminalBufferForTesting(
+      sessionId: "terminal-reconnect",
+      transcript: "Mac% "
+    )
+
+    service.teardownSocketForTesting()
+
+    XCTAssertTrue(service.desiredTerminalSessionIdsForTesting().contains("terminal-reconnect"))
+    XCTAssertFalse(service.subscribedTerminalSessionIds.contains("terminal-reconnect"))
+    XCTAssertTrue(service.hasTerminalStream(sessionId: "terminal-reconnect"))
+    service.disconnect(clearCredentials: false)
   }
 
   @MainActor
@@ -19791,6 +19808,35 @@ final class TerminalLiveTailPinningTests: XCTestCase {
     // Content shorter than the shrunken viewport can never leave the tail —
     // why short/new sessions always survived the keyboard.
     XCTAssertTrue(TerminalSessionController.isAtLiveTail(offsetY: 0, viewportHeight: 460, contentHeight: 300))
+  }
+}
+
+@MainActor
+final class TerminalSessionInputStatusTests: XCTestCase {
+  func testSuccessfulInputAcceptanceClearsStaleFailureWithoutMaskingRejection() {
+    let controller = TerminalSessionController()
+    controller.handleStreamEventForTesting(.inputFailure(message: "The Mac did not confirm input."))
+    XCTAssertEqual(controller.inputStatusMessage, "The Mac did not confirm input.")
+
+    controller.handleInputSubmissionForTesting(.queuedUntilReady(inputId: "stable-input-id"))
+    XCTAssertNil(controller.inputStatusMessage)
+
+    controller.handleInputSubmissionForTesting(.rejected(message: "Terminal input is paused."))
+    XCTAssertEqual(controller.inputStatusMessage, "Terminal input is paused.")
+  }
+
+  func testStreamRehydrationClearsStaleInputFailure() {
+    let controller = TerminalSessionController()
+    controller.handleStreamEventForTesting(.inputFailure(message: "The Mac did not confirm input."))
+
+    controller.handleStreamEventForTesting(.hydrate(
+      text: "Mac% ",
+      replacing: true,
+      startOffset: 0,
+      endOffset: 5
+    ))
+
+    XCTAssertNil(controller.inputStatusMessage)
   }
 }
 

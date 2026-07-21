@@ -83,7 +83,7 @@ enum PinSetupRoute: Identifiable {
 enum SettingsConnectionPresentation {
   static func statusLabel(
     for health: SyncConnectionHealth,
-    canReconnectToSavedHost: Bool = false
+    canReconnectToSavedHost _: Bool = false
   ) -> String {
     switch health.transport {
     case .connected:
@@ -93,7 +93,7 @@ enum SettingsConnectionPresentation {
     case .unreachable:
       return "Can't reach this Mac"
     case .disconnected:
-      return canReconnectToSavedHost ? "Can't reach this Mac" : "Not connected"
+      return "Not connected"
     }
   }
 
