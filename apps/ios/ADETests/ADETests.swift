@@ -1380,6 +1380,27 @@ final class ADETests: XCTestCase {
       "Can't reach this Mac"
     )
     XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
+    XCTAssertEqual(
+      machineRowVisualState(
+        isAuthenticatedCurrent: false,
+        directoryRecentlyReachable: true
+      ),
+      .saved
+    )
+    XCTAssertEqual(
+      machineRowVisualState(
+        isAuthenticatedCurrent: false,
+        directoryRecentlyReachable: false
+      ),
+      .saved
+    )
+    XCTAssertEqual(
+      machineRowVisualState(
+        isAuthenticatedCurrent: true,
+        directoryRecentlyReachable: false
+      ),
+      .authenticatedCurrent
+    )
   }
 
   func testStaleDirectoryPresenceDoesNotDisableKnownSecureMachine() {
@@ -4237,7 +4258,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testTerminalBufferSurvivesCredentialClearingButDeliveryStateDoesNot() throws {
+  func testCredentialClearingRemovesHostBoundTerminalHistoryAndDeliveryState() throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
     try service.seedReliableTerminalInputForTesting(
@@ -4248,7 +4269,7 @@ final class ADETests: XCTestCase {
     service.seedTerminalBufferForTesting(sessionId: "terminal-1", transcript: "full terminal history")
     service.disconnect(clearCredentials: true)
 
-    XCTAssertEqual(service.terminalBuffers["terminal-1"], "full terminal history")
+    XCTAssertNil(service.terminalBuffers["terminal-1"])
     XCTAssertTrue(service.desiredTerminalSessionIdsForTesting().isEmpty)
     XCTAssertTrue(service.subscribedTerminalSessionIds.isEmpty)
     XCTAssertNil(service.terminalInputQueueForTesting(sessionId: "terminal-1"))
@@ -4305,11 +4326,58 @@ final class ADETests: XCTestCase {
       submission,
       .rejected(message: "Terminal input is waiting for the terminal snapshot.")
     )
-    XCTAssertEqual(service.terminalBuffers["same-session-id"], "old host transcript")
+    XCTAssertNil(service.terminalBuffers["same-session-id"])
     XCTAssertTrue(service.desiredTerminalSessionIdsForTesting().isEmpty)
     XCTAssertTrue(service.subscribedTerminalSessionIds.isEmpty)
     XCTAssertNil(service.terminalInputQueueForTesting(sessionId: "same-session-id"))
     XCTAssertFalse(service.hasTerminalInputTimeoutForTesting(sessionId: "same-session-id"))
+  }
+
+  @MainActor
+  func testStableHostSwitchClearsTranscriptWhileSameHostRouteUpdatePreservesIt() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.clearSavedProfilesForTesting()
+    defer { service.clearSavedProfilesForTesting() }
+    let original = HostConnectionProfile(
+      hostIdentity: "stable-host-a",
+      hostName: "Mac A",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "stable-host-a",
+      lastSuccessfulAddress: "192.168.1.10",
+      savedAddressCandidates: ["192.168.1.10"],
+      discoveredLanAddresses: ["192.168.1.10"],
+      tailscaleAddress: nil
+    )
+    var sameHostNewRoute = original
+    sameHostNewRoute.lastSuccessfulAddress = "100.90.80.70"
+    sameHostNewRoute.savedAddressCandidates = ["192.168.1.10", "100.90.80.70"]
+    sameHostNewRoute.tailscaleAddress = "100.90.80.70"
+    let differentHost = HostConnectionProfile(
+      hostIdentity: "stable-host-b",
+      hostName: "Mac B",
+      port: 8787,
+      authKind: "paired",
+      pairedDeviceId: "phone",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "stable-host-b",
+      lastSuccessfulAddress: "192.168.1.20",
+      savedAddressCandidates: ["192.168.1.20"],
+      discoveredLanAddresses: ["192.168.1.20"],
+      tailscaleAddress: nil
+    )
+
+    service.installSavedProfileForTesting(original, token: "secret-a", makeActive: true)
+    service.seedTerminalBufferForTesting(sessionId: "shared-session", transcript: "host A transcript")
+    service.installSavedProfileForTesting(sameHostNewRoute, token: "secret-a", makeActive: true)
+    XCTAssertEqual(service.terminalBuffers["shared-session"], "host A transcript")
+
+    service.installSavedProfileForTesting(differentHost, token: "secret-b", makeActive: true)
+    XCTAssertNil(service.terminalBuffers["shared-session"])
+    XCTAssertTrue(service.desiredTerminalSessionIdsForTesting().isEmpty)
+    XCTAssertTrue(service.subscribedTerminalSessionIds.isEmpty)
   }
 
   @MainActor

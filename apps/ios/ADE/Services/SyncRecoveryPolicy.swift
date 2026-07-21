@@ -241,23 +241,28 @@ func syncSocketCompletionAction(
 func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
   let message: String
   switch closeCodeRawValue {
-  case 4001:
-    message = "The machine stopped responding. Reconnecting now."
-  case 4506:
-    message = "The relay connection was interrupted. Reconnecting now."
-  case 4507:
-    message = "The machine couldn't accept the relay connection. Reconnecting now."
+  case 4003:
+    message = "This saved connection needs attention. Open Settings and reconnect."
+  case 4004:
+    message = "Connection attempts are paused briefly. Try again shortly."
+  case 4503:
+    message = "This Mac is handling too many connections. Try again shortly."
+  case 4000, 4001, 4002, 4008, 4501, 4502, 4505, 4506, 4507:
+    message = "Can’t reach this Mac right now. Reconnecting now."
   default:
-    if let trimmedReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
-       !trimmedReason.isEmpty {
-      message = trimmedReason
-    } else {
-      message = "The connection to the machine was interrupted. Reconnecting now."
-    }
+    message = "Can’t reach this Mac right now. Reconnecting now."
+  }
+  var userInfo: [String: Any] = [
+    NSLocalizedDescriptionKey: message,
+    "ADESocketCloseCode": closeCodeRawValue,
+  ]
+  if let diagnosticReason = reason?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !diagnosticReason.isEmpty {
+    userInfo["ADESocketCloseReason"] = diagnosticReason
   }
   return NSError(
     domain: "ADE",
     code: 24,
-    userInfo: [NSLocalizedDescriptionKey: message]
+    userInfo: userInfo
   )
 }

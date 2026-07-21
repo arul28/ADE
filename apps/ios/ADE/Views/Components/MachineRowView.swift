@@ -1,5 +1,20 @@
 import SwiftUI
 
+enum MachineRowVisualState: Equatable {
+  case authenticatedCurrent
+  case saved
+}
+
+func machineRowVisualState(
+  isAuthenticatedCurrent: Bool,
+  directoryRecentlyReachable: Bool
+) -> MachineRowVisualState {
+  // Directory presence is a heartbeat hint, not proof that this phone has an
+  // authenticated live connection. Only the current socket earns green.
+  _ = directoryRecentlyReachable
+  return isAuthenticatedCurrent ? .authenticatedCurrent : .saved
+}
+
 /// One shared machine row, used by every surface that lists Macs a phone can
 /// reach: the ACCOUNT section, the settings MACHINES list, and the hub
 /// no-machine quick-connect home. It renders the common anatomy — a device icon
@@ -17,22 +32,13 @@ struct MachineRowView: View {
   /// look, which leads with the name alone.
   enum StatusPill {
     case connected
-    case online
-    case offline
 
     var text: String {
-      switch self {
-      case .connected: return "CONNECTED"
-      case .online: return "ONLINE"
-      case .offline: return "OFFLINE"
-      }
+      "CONNECTED"
     }
 
     var tint: Color {
-      switch self {
-      case .connected, .online: return ADEColor.success
-      case .offline: return ADEColor.textMuted
-      }
+      ADEColor.success
     }
   }
 
@@ -49,6 +55,7 @@ struct MachineRowView: View {
   let title: String
   let routeHint: String
   let online: Bool
+  var isAuthenticatedCurrent = false
   var statusPill: StatusPill?
   var affordance: Affordance
   var surface: Surface = .row
@@ -85,7 +92,16 @@ struct MachineRowView: View {
     .modifier(MachineRowSurface(surface: surface, cornerRadius: cornerRadius))
   }
 
-  private var iconColor: Color { online ? ADEColor.success : ADEColor.textMuted }
+  private var visualState: MachineRowVisualState {
+    machineRowVisualState(
+      isAuthenticatedCurrent: isAuthenticatedCurrent,
+      directoryRecentlyReachable: online
+    )
+  }
+
+  private var iconColor: Color {
+    visualState == .authenticatedCurrent ? ADEColor.success : ADEColor.textMuted
+  }
 
   private var iconTile: some View {
     Image(systemName: deviceSymbol)
@@ -98,7 +114,10 @@ struct MachineRowView: View {
       )
       .overlay(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .strokeBorder((online ? ADEColor.success : ADEColor.border).opacity(0.3), lineWidth: 0.6)
+          .strokeBorder(
+            (visualState == .authenticatedCurrent ? ADEColor.success : ADEColor.border).opacity(0.3),
+            lineWidth: 0.6
+          )
       )
   }
 

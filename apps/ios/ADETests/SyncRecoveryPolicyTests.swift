@@ -275,57 +275,50 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     )
   }
 
-  func testRelayApplicationCloseCodesRemainTransportFailures() {
-    let byteCapped = syncSocketCloseError(
-      closeCodeRawValue: 4506,
-      reason: "pre-pipe buffer overflow"
-    )
-    XCTAssertEqual(
-      byteCapped.localizedDescription,
-      "The relay connection was interrupted. Reconnecting now."
-    )
-    XCTAssertNil(byteCapped.userInfo["ADEErrorCode"])
+  func testApplicationCloseCodeTableKeepsPrimaryCopyRouteNeutral() {
+    let interrupted = "Can’t reach this Mac right now. Reconnecting now."
+    let cases: [(code: Int, reason: String, expected: String)] = [
+      (4000, "partner closed", interrupted),
+      (4001, "heartbeat timed out", interrupted),
+      (4002, "sync host handoff buffer exceeded", interrupted),
+      (4003, "ADE Relay account proof expired", "This saved connection needs attention. Open Settings and reconnect."),
+      (4004, "pairing cooldown", "Connection attempts are paused briefly. Try again shortly."),
+      (4008, "inbound connection stale", interrupted),
+      (4501, "host offline", interrupted),
+      (4502, "relay idle", interrupted),
+      (4503, "relay capacity", "This Mac is handling too many connections. Try again shortly."),
+      (4505, "replaced by newer host", interrupted),
+      (4506, "pre-pipe buffer overflow", interrupted),
+      (4507, "bridge rejected", interrupted),
+      (4999, "unknown relay pipe failure", interrupted),
+    ]
+    let forbiddenPrimaryTerms = ["offline", "pipe", "bridge", "relay"]
 
-    let bridgeRejected = syncSocketCloseError(
-      closeCodeRawValue: 4507,
-      reason: "bridge rejected"
-    )
-    XCTAssertEqual(
-      bridgeRejected.localizedDescription,
-      "The machine couldn't accept the relay connection. Reconnecting now."
-    )
-    XCTAssertNil(bridgeRejected.userInfo["ADEErrorCode"])
-    XCTAssertNotEqual(
-      SyncUserFacingError.message(for: bridgeRejected),
-      "This phone is no longer paired with this machine. Pair again from Settings."
-    )
-    XCTAssertEqual(
-      syncSocketCompletionAction(
-        isCurrentSocket: true,
-        completedWhileOpening: false,
-        canSendLiveRequests: true,
-        closeCodeRawValue: 4507
-      ),
-      .recoverTransport(closeCodeRawValue: 4507)
-    )
-  }
-
-  func testUnknownApplicationCloseCodeDegradesToGenericTransportRecovery() {
-    let error = syncSocketCloseError(closeCodeRawValue: 4999, reason: nil)
-    XCTAssertEqual(
-      error.localizedDescription,
-      "The connection to the machine was interrupted. Reconnecting now."
-    )
-    XCTAssertNil(error.userInfo["ADEErrorCode"])
-    XCTAssertEqual(
-      syncSocketCompletionAction(
-        isCurrentSocket: true,
-        completedWhileOpening: false,
-        canSendLiveRequests: true,
-        closeCodeRawValue: 4999
-      ),
-      .recoverTransport(closeCodeRawValue: 4999)
-    )
+    for entry in cases {
+      let error = syncSocketCloseError(
+        closeCodeRawValue: entry.code,
+        reason: entry.reason
+      )
+      XCTAssertEqual(error.localizedDescription, entry.expected, "close code \(entry.code)")
+      XCTAssertEqual(error.userInfo["ADESocketCloseCode"] as? Int, entry.code)
+      XCTAssertEqual(error.userInfo["ADESocketCloseReason"] as? String, entry.reason)
+      XCTAssertNil(error.userInfo["ADEErrorCode"])
+      for term in forbiddenPrimaryTerms {
+        XCTAssertFalse(
+          error.localizedDescription.lowercased().contains(term),
+          "Primary close copy for \(entry.code) leaked diagnostic term '\(term)'."
+        )
+      }
+      XCTAssertEqual(
+        syncSocketCompletionAction(
+          isCurrentSocket: true,
+          completedWhileOpening: false,
+          canSendLiveRequests: true,
+          closeCodeRawValue: entry.code
+        ),
+        .recoverTransport(closeCodeRawValue: entry.code)
+      )
+    }
   }
 
   @MainActor
@@ -642,6 +635,26 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     XCTAssertTrue(try service.handleRelayTransportControlForTesting(["t": "ready", "v": 2]))
     XCTAssertEqual(service.relayTransportNegotiationForTesting()?.acceptedV2, true)
     XCTAssertEqual(service.relayTransportNegotiationForTesting()?.ready, true)
+  }
+
+  @MainActor
+  func testRelayCandidateRuntimeIgnoresReadyBeforeAccepted() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    try await service.awaitRelayCandidateReadyForTesting(frames: [
+      ["t": "ready", "v": 2],
+      ["t": "accepted", "v": 2],
+      ["t": "ready", "v": 2],
+    ])
   }
 
   func testRelayReauthorizationScheduleRetryGraceAndForegroundDue() {

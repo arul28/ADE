@@ -710,6 +710,26 @@ func syncKnownSecureMachineIsAttemptable(
   return hasStableIdentity
 }
 
+func syncStableHostIdentity(_ profile: HostConnectionProfile?) -> String? {
+  func normalized(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty else { return nil }
+    return trimmed.lowercased()
+  }
+  guard let value = normalized(profile?.hostIdentity)
+    ?? normalized(profile?.lastHostDeviceId) else { return nil }
+  return value
+}
+
+func syncStableHostIdentityChanged(
+  previous: HostConnectionProfile?,
+  next: HostConnectionProfile?
+) -> Bool {
+  guard let previousIdentity = syncStableHostIdentity(previous),
+        let nextIdentity = syncStableHostIdentity(next) else { return false }
+  return previousIdentity != nextIdentity
+}
+
 private func syncConnectionRouteKey(_ address: String) -> String {
   let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
   if syncIsFullWebSocketRoute(trimmed) { return trimmed }
@@ -5405,7 +5425,7 @@ final class SyncService: ObservableObject {
       saveRemoteCommandDescriptors([])
       clearPendingChatCreations()
       resetChatEventState(clearHistory: true)
-      resetTerminalSubscriptionState(clearHistory: false)
+      resetTerminalSubscriptionState(clearHistory: true)
       activeHostProfile = nil
       hostName = nil
     }
@@ -9187,7 +9207,13 @@ final class SyncService: ObservableObject {
 
   private func saveProfile(_ profile: HostConnectionProfile?) {
     let previousHostKey = activeHostStorageKey()
+    let previousProfile = activeHostProfile ?? UserDefaults.standard.data(forKey: profileKey).flatMap {
+      try? decoder.decode(HostConnectionProfile.self, from: $0)
+    }
     if let profile, let data = try? encoder.encode(profile) {
+      if syncStableHostIdentityChanged(previous: previousProfile, next: profile) {
+        resetTerminalSubscriptionState(clearHistory: true)
+      }
       UserDefaults.standard.set(data, forKey: profileKey)
       if let key = profileStorageKey(profile) {
         var profiles = loadSavedProfilesRaw()
@@ -10578,23 +10604,27 @@ final class SyncService: ObservableObject {
 
   private func awaitRelayCandidateReady(mailbox: SyncConnectionRaceTextMailbox) async throws {
     var negotiation = SyncRelayReadyNegotiation()
-    let initialEvent = try await withThrowingTaskGroup(of: RelayNegotiationEvent.self) { group in
-      group.addTask { .frame(try await mailbox.next()) }
-      group.addTask {
-        try await Task.sleep(nanoseconds: SyncConnectionRaceTiming.relayReadyNegotiationNanoseconds)
-        return .timeout
-      }
-      let event = try await group.next() ?? .timeout
-      group.cancelAll()
-      return event
-    }
-    switch initialEvent {
-    case .timeout:
-      return
-    case .frame(let text):
-      guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
-            negotiation.receive(syncRelayTransportControl(from: object)) == .interceptedWaiting else {
-        throw NSError(domain: "ADE", code: 36, userInfo: [NSLocalizedDescriptionKey: "Relay negotiation returned an invalid first frame."])
+    let negotiationDeadlineUptime = ProcessInfo.processInfo.systemUptime
+      + TimeInterval(SyncConnectionRaceTiming.relayReadyNegotiationNanoseconds) / 1_000_000_000
+
+    while !negotiation.acceptedV2 {
+      let event = try await nextRelayNegotiationEvent(
+        mailbox: mailbox,
+        deadlineUptime: negotiationDeadlineUptime
+      )
+      switch event {
+      case .timeout:
+        return
+      case .frame(let text):
+        guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
+              let control = syncRelayTransportControl(from: object) else {
+          throw NSError(domain: "ADE", code: 36, userInfo: [NSLocalizedDescriptionKey: "Relay negotiation returned an invalid first frame."])
+        }
+        // A reordered `ready` is a recognized transport control, but it is not
+        // authoritative until this socket's `accepted` arrives. Keep waiting
+        // inside the original legacy cutoff instead of decoding it as ADE or
+        // failing the candidate.
+        _ = negotiation.receive(control)
       }
     }
 
@@ -10602,6 +10632,25 @@ final class SyncService: ObservableObject {
       let text = try await mailbox.next()
       guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) else { continue }
       if negotiation.receive(syncRelayTransportControl(from: object)) == .sendHello { return }
+    }
+  }
+
+  private func nextRelayNegotiationEvent(
+    mailbox: SyncConnectionRaceTextMailbox,
+    deadlineUptime: TimeInterval
+  ) async throws -> RelayNegotiationEvent {
+    let remainingSeconds = deadlineUptime - ProcessInfo.processInfo.systemUptime
+    guard remainingSeconds > 0 else { return .timeout }
+    let remainingNanoseconds = UInt64((remainingSeconds * 1_000_000_000).rounded(.up))
+    return try await withThrowingTaskGroup(of: RelayNegotiationEvent.self) { group in
+      group.addTask { .frame(try await mailbox.next()) }
+      group.addTask {
+        try await Task.sleep(nanoseconds: remainingNanoseconds)
+        return .timeout
+      }
+      let event = try await group.next() ?? .timeout
+      group.cancelAll()
+      return event
     }
   }
 
@@ -11860,6 +11909,16 @@ final class SyncService: ObservableObject {
   func relayTransportNegotiationForTesting() -> SyncRelayReadyNegotiation? {
     guard let socket else { return nil }
     return relayTransportNegotiations[socket.taskIdentifier]
+  }
+
+  func awaitRelayCandidateReadyForTesting(frames: [[String: Any]]) async throws {
+    let mailbox = SyncConnectionRaceTextMailbox()
+    for frame in frames {
+      let data = try JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys])
+      guard let text = String(data: data, encoding: .utf8) else { continue }
+      await mailbox.deliver(text)
+    }
+    try await awaitRelayCandidateReady(mailbox: mailbox)
   }
 
   func completeCapturedRefreshRequestsForTesting() {

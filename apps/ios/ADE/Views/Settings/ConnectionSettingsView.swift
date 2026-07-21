@@ -819,6 +819,7 @@ struct SettingsMachinesSection: View {
           title: entry.name,
           routeHint: entry.routeHint,
           online: entry.online,
+          isAuthenticatedCurrent: entry.isCurrent,
           statusPill: entry.isCurrent ? .connected : nil,
           affordance: rowAffordance(entry, isConnecting: isConnecting),
           surface: .row
