@@ -129,14 +129,13 @@ struct MobileAccessGateView: View {
 
   private func connectToAccountMachine(_ machine: AccountMachine) {
     Task { @MainActor in
-      guard let session = await AccountService.shared.pairingSession() else {
+      guard let authorization = AccountService.shared.currentPairingAuthorization else {
         accountConnectionError = "Your account session ended. Sign in again, then choose your Mac."
         return
       }
       let connected = await syncService.pairWithAccountMachine(
         machine,
-        accountToken: session.token,
-        authorization: session.authorization
+        authorization: authorization
       )
       if connected {
         onContinue()

@@ -110,6 +110,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
   @Published private(set) var bellPulse = 0
   /// Bumped when typed input is dropped because the host is unreachable.
   @Published private(set) var blockedInputPulse = 0
+  @Published private(set) var inputStatusMessage: String?
   @Published private(set) var fontSize: CGFloat = TerminalSessionController.defaultFontSize
 
   static let defaultFontSize: CGFloat = 12
@@ -257,7 +258,8 @@ final class TerminalSessionController: NSObject, ObservableObject {
   }
 
   func handleConnectionChange(isConnected: Bool) {
-    if isConnected {
+    if isConnected, let syncService,
+       syncService.subscribedTerminalSessionIds.contains(sessionId) {
       // The sync layer re-subscribes with sinceOffset on reconnect; we only
       // need to re-assert the phone's PTY size.
       isSubscribed = true
@@ -349,6 +351,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private func applyStreamEvent(_ event: TerminalStreamEvent) {
     switch event {
     case .hydrate(let text, let replacing, let startOffset, let endOffset):
+      isSubscribed = true
       noteHostOffsetCapability(endOffset != nil)
       if replacing {
         let bytes = Data(text.utf8)
@@ -373,6 +376,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
       // Drop the keyboard: input has nowhere to go and the resume bar
       // replaces the key bar.
       _ = terminalView?.resignFirstResponder()
+    case .inputFailure(let message):
+      inputStatusMessage = message
+      blockedInputPulse += 1
     }
   }
 
@@ -478,7 +484,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
 
   var canSendInput: Bool {
     guard let syncService else { return false }
-    return (syncService.connectionState == .connected || syncService.connectionState == .syncing) && !hasExited
+    return syncService.canAcceptTerminalInput(sessionId: sessionId) && !hasExited
   }
 
   func enqueueInput(_ text: String) {
@@ -549,7 +555,11 @@ final class TerminalSessionController: NSObject, ObservableObject {
     let buffered = pendingInput
     pendingInput = ""
     guard !buffered.isEmpty else { return }
-    syncService?.sendTerminalInput(sessionId: sessionId, data: buffered)
+    let submission = syncService?.sendTerminalInput(sessionId: sessionId, data: buffered)
+    if case .some(.rejected(let message)) = submission {
+      inputStatusMessage = message
+      blockedInputPulse += 1
+    }
   }
 
   private func sendResizeIfNeeded(cols: Int, rows: Int) {

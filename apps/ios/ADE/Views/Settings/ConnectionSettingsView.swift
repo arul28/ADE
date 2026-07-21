@@ -183,13 +183,12 @@ struct ConnectionSettingsView: View {
   /// a device-bound secret. The user does not need to find or re-enter a PIN.
   private func connectToAccountMachine(_ machine: AccountMachine) {
     Task { @MainActor in
-      guard let session = await AccountService.shared.pairingSession() else {
+      guard let authorization = AccountService.shared.currentPairingAuthorization else {
         return
       }
       _ = await syncService.pairWithAccountMachine(
         machine,
-        accountToken: session.token,
-        authorization: session.authorization
+        authorization: authorization
       )
     }
   }
@@ -227,18 +226,10 @@ struct SettingsConnectionSnapshot: Equatable {
   var connectionState: RemoteConnectionState
   var hostDisplayName: String?
   var pendingHostName: String?
-  var routeLine: String?
-  var lastConnectDurationMs: Int?
-  var lastConnectedRouteKind: SyncConnectionRouteKind?
   var canReconnectToSavedHost: Bool
   var errorMessage: String?
-  var showTailscaleOffHint = false
   var hostCompatibilityMode: SyncHostCompatibilityMode = .unknown
   var hostCompatibilityMissingActions: [String] = []
-  /// True when the live, connected route is the cloud relay (a full wss:// URL)
-  /// rather than a direct LAN/Tailscale path. Drives the quiet "prefer
-  /// Tailscale" nudge in the header.
-  var usingRelay = false
 }
 
 struct SettingsPairingSnapshot: Equatable {
@@ -247,6 +238,8 @@ struct SettingsPairingSnapshot: Equatable {
 }
 
 struct SettingsDiagnosticsSnapshot: Equatable {
+  var connectionRoute: String?
+  var connectionPerformance: String?
   var pairedMachineIdentity: String?
   var lastSyncDescription: String?
   var deviceIdentity: String?
@@ -263,9 +256,6 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     connectionState: .disconnected,
     hostDisplayName: nil,
     pendingHostName: nil,
-    routeLine: nil,
-    lastConnectDurationMs: nil,
-    lastConnectedRouteKind: nil,
     canReconnectToSavedHost: false,
     errorMessage: nil
   )
@@ -319,16 +309,10 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         connectionState: syncService.connectionState,
         hostDisplayName: hostDisplayName,
         pendingHostName: health.transport == .connecting || health.transport == .unreachable ? hostDisplayName : nil,
-        routeLine: Self.routeLine(address: address, port: activeProfile?.port),
-        lastConnectDurationMs: syncService.lastConnectDurationMs,
-        lastConnectedRouteKind: syncService.lastConnectedRouteKind,
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
         errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
-        showTailscaleOffHint: syncService.tailscaleOffHintVisible,
         hostCompatibilityMode: syncService.hostCompatibilityMode,
-        hostCompatibilityMissingActions: syncService.hostCompatibilityMissingActions,
-        usingRelay: syncService.connectionState == .connected
-          && (address.map(syncIsFullWebSocketRoute) ?? false)
+        hostCompatibilityMissingActions: syncService.hostCompatibilityMissingActions
       )
     )
 
@@ -343,6 +327,11 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     update(
       &diagnosticsSnapshot,
       to: SettingsDiagnosticsSnapshot(
+        connectionRoute: Self.routeLine(address: address, port: activeProfile?.port),
+        connectionPerformance: settingsConnectedRouteChipText(
+          durationMs: syncService.lastConnectDurationMs,
+          routeKind: syncService.lastConnectedRouteKind
+        ),
         pairedMachineIdentity: activeProfile?.hostIdentity.map(Self.shortIdentity),
         lastSyncDescription: syncService.lastSyncAt.map(Self.relativeSyncDescription),
         deviceIdentity: activeProfile?.pairedDeviceId.map(Self.shortIdentity)
@@ -705,7 +694,7 @@ struct SettingsMachinesSection: View {
 
     // Reachable account routes are preferred, but stale directory rows must
     // not hide a currently-discovered saved route for the same Mac.
-    for candidate in accountEntries where candidate.entry.online || candidate.entry.isCurrent {
+    for candidate in accountEntries {
       guard seen.insert(candidate.key).inserted else { continue }
       result.append(candidate.entry)
     }
@@ -734,11 +723,6 @@ struct SettingsMachinesSection: View {
         isCurrent: current,
         kind: .saved(host)
       ))
-    }
-
-    for candidate in accountEntries where !candidate.entry.online && !candidate.entry.isCurrent {
-      guard seen.insert(candidate.key).inserted else { continue }
-      result.append(candidate.entry)
     }
 
     return result.sorted { lhs, rhs in
@@ -822,7 +806,7 @@ struct SettingsMachinesSection: View {
   @ViewBuilder
   private func machineRow(_ entry: Entry) -> some View {
     let isConnecting = connectingId == entry.id
-    let tappable = entry.online && !entry.isCurrent && connectingId == nil
+    let tappable = !entry.isCurrent && connectingId == nil
 
     VStack(alignment: .leading, spacing: 0) {
       Button {
@@ -833,7 +817,7 @@ struct SettingsMachinesSection: View {
           title: entry.name,
           routeHint: entry.routeHint,
           online: entry.online,
-          statusPill: entry.isCurrent ? .connected : (entry.online ? .online : .offline),
+          statusPill: entry.isCurrent ? .connected : nil,
           affordance: rowAffordance(entry, isConnecting: isConnecting),
           surface: .row
         )
@@ -841,9 +825,7 @@ struct SettingsMachinesSection: View {
       }
       .buttonStyle(ADEScaleButtonStyle())
       .disabled(!tappable)
-      // Offline machines gray out (desktop-style) and can't be tapped.
-      .opacity(entry.online || entry.isCurrent ? 1 : 0.5)
-      .accessibilityLabel("\(entry.name), \(entry.isCurrent ? "connected" : (entry.online ? "online" : "offline"))")
+      .accessibilityLabel("\(entry.name), \(entry.isCurrent ? "connected" : "saved connection")")
       .accessibilityHint(tappable ? "Connect." : "")
 
       if let error = rowErrors[entry.id] {
@@ -860,7 +842,7 @@ struct SettingsMachinesSection: View {
   private func rowAffordance(_ entry: Entry, isConnecting: Bool) -> MachineRowView.Affordance {
     if isConnecting { return .connecting }
     if entry.isCurrent { return .connected }
-    return entry.online ? .connect : .none
+    return .connect
   }
 
   private func deviceSymbol(_ entry: Entry) -> String {
@@ -879,15 +861,14 @@ struct SettingsMachinesSection: View {
     Task { @MainActor in
       switch entry.kind {
       case .account(let machine):
-        guard let session = await AccountService.shared.pairingSession() else {
+        guard let authorization = AccountService.shared.currentPairingAuthorization else {
           connectingId = nil
           rowErrors[entry.id] = "Your account session ended. Sign in again, then choose your Mac."
           return
         }
         let connected = await syncService.pairWithAccountMachine(
           machine,
-          accountToken: session.token,
-          authorization: session.authorization
+          authorization: authorization
         )
         connectingId = nil
         if connected {

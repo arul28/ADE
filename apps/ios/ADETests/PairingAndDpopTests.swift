@@ -175,4 +175,33 @@ final class PairingAndDpopTests: XCTestCase {
     )
     XCTAssertFalse(tampered)
   }
+
+  func testRelayReauthorizationChallengeMatchesSharedCanonicalContext() {
+    let tokenHash = DpopKeyService.sha256Hex("exact-token-bytes")
+    XCTAssertEqual(
+      DpopKeyService.buildRelayReauthorizationChallenge(
+        deviceId: "phone-1",
+        relayAccountTokenSha256Hex: tokenHash,
+        challenge: "connection-challenge",
+        timestamp: 1_700_000_001,
+        nonce: "nonce-reauth"
+      ),
+      "ade-relay-reauth-v1\nphone-1\n\(tokenHash)\nconnection-challenge\n1700000001\nnonce-reauth"
+    )
+  }
+
+  func testRelayReauthorizationProofUsesDistinctNoncePerAttempt() throws {
+    let first = try XCTUnwrap(DpopKeyService.shared.buildRelayReauthorizationProof(
+      deviceId: "phone-1",
+      relayAccountToken: "token-1",
+      challenge: "challenge-1"
+    ))
+    let second = try XCTUnwrap(DpopKeyService.shared.buildRelayReauthorizationProof(
+      deviceId: "phone-1",
+      relayAccountToken: "token-1",
+      challenge: "challenge-1"
+    ))
+    XCTAssertNotEqual(first["nonce"] as? String, second["nonce"] as? String)
+    XCTAssertNotEqual(first["signature"] as? String, second["signature"] as? String)
+  }
 }

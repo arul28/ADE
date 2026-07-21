@@ -1,16 +1,21 @@
 import SwiftUI
 
+func hubSavedMachineIsRecentlyReachable(
+  _ savedHost: DiscoveredSyncHost,
+  liveHosts: [DiscoveredSyncHost]
+) -> Bool {
+  liveHosts.contains { sameSyncHost(savedHost, $0) }
+}
+
 // One-tap connect cards shown on the hub's no-machine home. Split out of
 // HubComponents.swift so that large file stays focused on the project/lane/chat
 // list rendering.
 
 // MARK: - Quick-connect (no-machine home)
 
-/// One-tap connect cards shown on the no-machine home for machines that are
-/// reachable right now: online machines on the signed-in account, plus
-/// previously-paired machines currently visible on the local network. Tapping a
-/// whole card connects to it. When nothing is online it either shows a quiet
-/// grayed note (signed in / has saved machines) or nothing at all.
+/// One-tap connect cards shown on the no-machine home for account and saved
+/// machines. Directory/discovery presence is only a hint; saved secure records
+/// remain attemptable without claiming the Mac is currently reachable.
 struct HubQuickConnectSection: View {
   @EnvironmentObject private var syncService: SyncService
   @ObservedObject private var account = AccountService.shared
@@ -31,26 +36,22 @@ struct HubQuickConnectSection: View {
     }
   }
 
-  private var onlineAccountMachines: [AccountMachine] {
-    account.machines.filter(\.online)
+  private var accountMachines: [AccountMachine] {
+    account.machines
   }
 
-  /// Saved paired machines that a live discovery currently corroborates as
-  /// reachable — so a tap connects immediately rather than timing out.
-  private var onlinePairedHosts: [DiscoveredSyncHost] {
-    let live = syncService.discoveredHosts
-    return syncService.savedReconnectHosts.filter { saved in
-      live.contains { sameSyncHost(saved, $0) }
-    }
+  /// Saved secure records remain connectable even when discovery is stale.
+  private var savedHosts: [DiscoveredSyncHost] {
+    syncService.savedReconnectHosts
   }
 
   /// Account and saved records can describe the same Mac. Prefer the account
   /// card when both stable IDs match, while retaining a live saved card when
   /// the account directory currently considers that Mac offline.
   private var targets: [Target] {
-    let accountTargets = onlineAccountMachines.map(Target.account)
-    let accountIdentities = Set(onlineAccountMachines.compactMap { normalizedIdentity($0.deviceId) })
-    let savedTargets = onlinePairedHosts.compactMap { host -> Target? in
+    let accountTargets = accountMachines.map(Target.account)
+    let accountIdentities = Set(accountMachines.compactMap { normalizedIdentity($0.deviceId) })
+    let savedTargets = savedHosts.compactMap { host -> Target? in
       if let identity = normalizedIdentity(host.hostIdentity), accountIdentities.contains(identity) {
         return nil
       }
@@ -76,16 +77,22 @@ struct HubQuickConnectSection: View {
             case .account(let machine):
               HubQuickConnectCard(
                 title: machine.displayName,
-                routeHint: machine.routeLabel ?? machineStatusHint(online: true),
+                routeHint: machineStatusHint(online: machine.online),
                 deviceSymbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
+                online: machine.online,
                 isConnecting: connectingId == accountKey(machine),
                 isDisabled: connectingId != nil
               ) { connectAccount(machine) }
             case .saved(let host):
+              let online = hubSavedMachineIsRecentlyReachable(
+                host,
+                liveHosts: syncService.discoveredHosts
+              )
               HubQuickConnectCard(
                 title: host.hostName,
-                routeHint: machineStatusHint(online: true),
+                routeHint: machineStatusHint(online: online),
                 deviceSymbol: machineDeviceSymbol(deviceType: nil, platform: nil),
+                online: online,
                 isConnecting: connectingId == savedKey(host),
                 isDisabled: connectingId != nil
               ) { connectSaved(host) }
@@ -109,7 +116,7 @@ struct HubQuickConnectSection: View {
       } else if showsEmptyNote {
         HStack(spacing: 8) {
           Circle().fill(ADEColor.textMuted).frame(width: 7, height: 7)
-          Text("No machines online right now")
+          Text("No saved machines yet")
             .font(.system(.caption, design: .rounded).weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
         }
@@ -138,15 +145,14 @@ struct HubQuickConnectSection: View {
     connectingId = accountKey(machine)
     errorText = nil
     Task { @MainActor in
-      guard let session = await AccountService.shared.pairingSession() else {
+      guard let authorization = AccountService.shared.currentPairingAuthorization else {
         errorText = "Your account session ended. Sign in again, then choose your Mac."
         connectingId = nil
         return
       }
       let connected = await syncService.pairWithAccountMachine(
         machine,
-        accountToken: session.token,
-        authorization: session.authorization
+        authorization: authorization
       )
       connectingId = nil
       if connected {
@@ -181,6 +187,7 @@ struct HubQuickConnectCard: View {
   let title: String
   let routeHint: String
   var deviceSymbol: String = "laptopcomputer"
+  var online: Bool
   var isConnecting: Bool
   var isDisabled: Bool
   let onTap: () -> Void
@@ -191,7 +198,7 @@ struct HubQuickConnectCard: View {
         deviceSymbol: deviceSymbol,
         title: title,
         routeHint: routeHint,
-        online: true,
+        online: online,
         statusPill: nil,
         affordance: isConnecting ? .connecting : .chevron,
         surface: .card
@@ -201,6 +208,6 @@ struct HubQuickConnectCard: View {
     .buttonStyle(ADEScaleButtonStyle())
     .disabled(isDisabled)
     .opacity(isDisabled && !isConnecting ? 0.5 : 1)
-    .accessibilityLabel("Connect to \(title), online, \(routeHint)")
+    .accessibilityLabel("Connect to \(title), \(routeHint)")
   }
 }

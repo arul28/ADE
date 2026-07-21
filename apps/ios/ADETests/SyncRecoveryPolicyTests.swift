@@ -189,7 +189,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
         isPathSatisfied: true,
         hasLiveConnection: true
       ),
-      .scheduleForcedReset
+      .attemptAuthenticatedReplacement
     )
     XCTAssertEqual(
       syncNetworkPathRecoveryAction(
@@ -511,5 +511,422 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       1,
       "Hello must own one subscription replay even when route load mode changes."
     )
+  }
+
+  func testAuthenticatedRaceStartsLastGoodThenDifferentTransportsWithinBudget() {
+    let lastGood = SyncConnectionEndpointAttempt(address: "192.168.1.20", port: 8787)
+    let secondLan = SyncConnectionEndpointAttempt(address: "192.168.1.21", port: 8787)
+    let tailnet = SyncConnectionEndpointAttempt(address: "100.90.80.70", port: 8787)
+    let relay = SyncConnectionEndpointAttempt(address: "wss://relay.ade.app/connect/mac", port: 8787)
+    let plan = syncConnectionRacePlan(
+      rankedAttempts: [lastGood, secondLan, tailnet, relay]
+    )
+
+    XCTAssertEqual(plan.map(\.endpoint), [lastGood, tailnet, relay])
+    XCTAssertEqual(plan.map(\.delayNanoseconds), [0, 250_000_000, 500_000_000])
+    XCTAssertEqual(SyncConnectionRaceTiming.overallBudgetNanoseconds, 10_000_000_000)
+  }
+
+  func testAuthenticatedRaceAcceptsOneWinnerAndRejectsSlowLoser() {
+    var ownership = SyncConnectionRaceOwnership(candidateIds: [0, 1, 2])
+    XCTAssertEqual(
+      ownership.authenticated(candidateId: 1),
+      .acceptWinner(cancelCandidateIds: [0, 2])
+    )
+    XCTAssertEqual(ownership.authenticated(candidateId: 2), .rejectLateWinner)
+    XCTAssertEqual(ownership.failed(candidateId: 0), .ignored)
+  }
+
+  func testAuthenticatedRaceBudgetCancelsEveryRemainingCandidate() {
+    var ownership = SyncConnectionRaceOwnership(candidateIds: [0, 1, 2])
+    XCTAssertEqual(ownership.failed(candidateId: 1), .waiting)
+    XCTAssertEqual(
+      ownership.expireBudget(),
+      .budgetExpired(cancelCandidateIds: [0, 2])
+    )
+  }
+
+  func testAuthenticatedRaceContinuesWithRankFourSecondLanAndCancelsLosers() throws {
+    let lastGood = SyncConnectionEndpointAttempt(address: "192.168.1.20", port: 8787)
+    let secondLan = SyncConnectionEndpointAttempt(address: "192.168.1.21", port: 8788)
+    let tailnet = SyncConnectionEndpointAttempt(address: "100.90.80.70", port: 8787)
+    let relay = SyncConnectionEndpointAttempt(address: "wss://relay.ade.app/connect/mac", port: 8787)
+    let plan = syncConnectionRaceCandidatePlan(
+      rankedAttempts: [lastGood, secondLan, tailnet, relay]
+    )
+    XCTAssertEqual(plan.map(\.endpoint), [lastGood, tailnet, relay, secondLan])
+
+    var scheduler = SyncConnectionRaceWaveScheduler(candidates: plan)
+    var ownership = SyncConnectionRaceOwnership(candidateIds: Set(plan.map(\.id)))
+    let firstWave = scheduler.startInitialCandidates()
+    XCTAssertEqual(firstWave.map(\.endpoint), [lastGood, tailnet, relay])
+    XCTAssertEqual(scheduler.activeCandidateIds.count, 3)
+
+    XCTAssertEqual(ownership.failed(candidateId: firstWave[0].id), .waiting)
+    let rankFour = try XCTUnwrap(scheduler.candidateFinished(firstWave[0].id))
+    XCTAssertEqual(rankFour.endpoint, secondLan)
+    XCTAssertEqual(scheduler.activeCandidateIds.count, 3)
+
+    XCTAssertEqual(
+      ownership.authenticated(candidateId: rankFour.id),
+      .acceptWinner(cancelCandidateIds: Set(firstWave.dropFirst().map(\.id)))
+    )
+    scheduler.cancelAll()
+    XCTAssertTrue(scheduler.activeCandidateIds.isEmpty)
+  }
+
+  func testConnectionAttemptTimestampStrictlyIncreasesAcrossRaces() {
+    XCTAssertEqual(
+      syncNextConnectionAttemptStartedAtMilliseconds(
+        nowMilliseconds: 1_000,
+        previousMilliseconds: 1_500
+      ),
+      1_501
+    )
+    XCTAssertEqual(
+      syncNextConnectionAttemptStartedAtMilliseconds(
+        nowMilliseconds: 2_000,
+        previousMilliseconds: 1_500
+      ),
+      2_000
+    )
+  }
+
+  func testRelayReadyV2NegotiatesLegacyAndSlowNewWorkersWithoutPrematureHello() {
+    XCTAssertEqual(
+      syncRelayReadyV2URL("wss://relay.ade.app/connect/mac?region=iad"),
+      "wss://relay.ade.app/connect/mac?region=iad&ready=2"
+    )
+
+    let legacy = SyncRelayReadyNegotiation()
+    XCTAssertEqual(legacy.negotiationWindowExpired(), .sendHello)
+
+    var slowNewWorker = SyncRelayReadyNegotiation()
+    XCTAssertEqual(slowNewWorker.receive(.accepted), .interceptedWaiting)
+    XCTAssertEqual(slowNewWorker.negotiationWindowExpired(), .interceptedWaiting)
+    XCTAssertFalse(slowNewWorker.ready)
+
+    XCTAssertEqual(slowNewWorker.receive(.ready), .sendHello)
+    XCTAssertTrue(slowNewWorker.ready)
+  }
+
+  func testRelayReadyV2ControlsAreInterceptedBeforeEnvelopeDecode() {
+    XCTAssertEqual(
+      syncRelayTransportControl(from: ["t": "accepted", "v": 2]),
+      .accepted
+    )
+    XCTAssertEqual(
+      syncRelayTransportControl(from: ["t": "ready", "v": 2]),
+      .ready
+    )
+    XCTAssertNil(syncRelayTransportControl(from: ["type": "hello_ok", "version": 1]))
+  }
+
+  @MainActor
+  func testLateAcceptedAndReadyAfterLegacyCutoffRemainTransportControls() throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    service.beginRelayTransportNegotiationForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    XCTAssertEqual(service.expireRelayTransportNegotiationWindowForTesting(), .sendHello)
+    XCTAssertTrue(try service.handleRelayTransportControlForTesting(["t": "accepted", "v": 2]))
+    XCTAssertTrue(try service.handleRelayTransportControlForTesting(["t": "ready", "v": 2]))
+    XCTAssertEqual(service.relayTransportNegotiationForTesting()?.acceptedV2, true)
+    XCTAssertEqual(service.relayTransportNegotiationForTesting()?.ready, true)
+  }
+
+  func testRelayReauthorizationScheduleRetryGraceAndForegroundDue() {
+    let lease = SyncRelayAuthorizationLease(
+      expiresAtMilliseconds: 20_000,
+      refreshAfterMilliseconds: 10_000,
+      challenge: "challenge-1",
+      graceMilliseconds: 5_000
+    )
+    XCTAssertEqual(
+      syncRelayReauthorizationScheduleDelayNanoseconds(
+        lease: lease,
+        nowMilliseconds: 8_500
+      ),
+      1_500_000_000
+    )
+    XCTAssertTrue(syncRelayReauthorizationIsDue(lease: lease, nowMilliseconds: 10_000))
+    XCTAssertEqual(
+      syncRelayReauthorizationRetryDelayNanoseconds(
+        attempt: 0,
+        lease: lease,
+        nowMilliseconds: 23_000
+      ),
+      1_000_000_000
+    )
+    XCTAssertNil(
+      syncRelayReauthorizationRetryDelayNanoseconds(
+        attempt: 1,
+        lease: lease,
+        nowMilliseconds: 24_000
+      )
+    )
+  }
+
+  func testRelayReauthorizationRetriesExactAttemptAfterLostSuccessResponse() {
+    XCTAssertEqual(
+      syncRelayReauthorizationRetryAction(
+        receivedHostResult: false,
+        errorCode: nil,
+        retryable: false
+      ),
+      .retryExactAttempt
+    )
+    XCTAssertEqual(
+      syncRelayReauthorizationRetryAction(
+        receivedHostResult: true,
+        errorCode: "verification_failed",
+        retryable: true
+      ),
+      .retryExactAttempt
+    )
+    for code in ["token_expired", "token_not_advanced", "token_too_short"] {
+      XCTAssertEqual(
+        syncRelayReauthorizationRetryAction(
+          receivedHostResult: true,
+          errorCode: code,
+          retryable: false
+        ),
+        .rebuildAttempt
+      )
+    }
+    XCTAssertEqual(
+      syncRelayReauthorizationRetryAction(
+        receivedHostResult: true,
+        errorCode: "relay_account_changed",
+        retryable: false
+      ),
+      .accountChanged
+    )
+  }
+
+  func testMalformedRelayReauthorizationResultRetriesExactAttempt() {
+    XCTAssertThrowsError(try syncRelayReauthorizationLease(from: ["unexpected": true])) { error in
+      guard let failure = error as? RelayReauthorizationFailure else {
+        return XCTFail("Expected a typed reauthorization protocol failure.")
+      }
+      XCTAssertEqual(failure.code, "invalid_response")
+      XCTAssertFalse(failure.receivedHostResult)
+      XCTAssertEqual(
+        syncRelayReauthorizationRetryAction(
+          receivedHostResult: failure.receivedHostResult,
+          errorCode: failure.code,
+          retryable: failure.retryable
+        ),
+        .retryExactAttempt
+      )
+    }
+  }
+
+  @MainActor
+  func testShortHelloSessionsPreserveBackoffAndSustainedHealthResetsIt() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    XCTAssertEqual(service.nextReconnectDelayForTesting(), 1_000_000_000)
+    XCTAssertEqual(service.nextReconnectDelayForTesting(), 2_000_000_000)
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "backoff-host", "deviceName": "Mac Studio"],
+      "features": [:],
+    ])
+    XCTAssertEqual(service.reconnectAttemptCountForTesting(), 2)
+
+    service.scheduleReconnectStabilityResetForTesting(delayNanoseconds: 50_000_000)
+    service.teardownSocketForTesting()
+    XCTAssertEqual(service.nextReconnectDelayForTesting(), 4_000_000_000)
+
+    XCTAssertEqual(SyncSocketTiming.reconnectStabilityNanoseconds, 10_000_000_000)
+    service.configureConnectedTransportForTesting()
+    service.scheduleReconnectStabilityResetForTesting(delayNanoseconds: 1_000_000)
+    await service.awaitReconnectStabilityResetForTesting()
+    XCTAssertEqual(service.reconnectAttemptCountForTesting(), 0)
+    XCTAssertEqual(service.nextReconnectDelayForTesting(), 1_000_000_000)
+  }
+
+  @MainActor
+  func testStalePostHelloRestorationCannotRepublishConnected() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    let restoration = DeferredRecoveryWork()
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    let postHello = Task { @MainActor in
+      await service.performPostHelloRestorationForTesting {
+        await restoration.wait()
+      }
+    }
+    while !restoration.isWaiting { await Task.yield() }
+    service.teardownSocketForTesting()
+    restoration.resume()
+    await postHello.value
+
+    XCTAssertNotEqual(service.connectionState, .connected)
+  }
+
+  func testTerminalInputQueuePreservesOrderAckAndReconnectIds() throws {
+    var queue = SyncTerminalInputQueue(maximumItemCount: 3, maximumByteCount: 20)
+    let first = try queue.enqueue(data: Data("a".utf8), inputId: "input-1")
+    _ = try queue.enqueue(data: Data("b".utf8), inputId: "input-2")
+    XCTAssertEqual(queue.nextSendableItem(reliableAcknowledgements: true), first)
+
+    queue.markSent(inputId: "input-1", generation: 7, sentUptime: 10)
+    XCTAssertNil(queue.nextSendableItem(reliableAcknowledgements: true))
+    queue.prepareForReconnect()
+    XCTAssertEqual(queue.nextSendableItem(reliableAcknowledgements: true)?.inputId, "input-1")
+    queue.markSent(inputId: "input-1", generation: 8, sentUptime: 11)
+    XCTAssertEqual(queue.acknowledge(inputId: "input-1")?.data, Data("a".utf8))
+    XCTAssertEqual(queue.nextSendableItem(reliableAcknowledgements: true)?.inputId, "input-2")
+  }
+
+  func testTerminalInputQueueBoundsAreExplicit() throws {
+    var queue = SyncTerminalInputQueue(
+      maximumItemCount: 1,
+      maximumByteCount: 2,
+      maximumChunkByteCount: 2
+    )
+    _ = try queue.enqueue(data: Data("ab".utf8), inputId: "one")
+    XCTAssertThrowsError(try queue.enqueue(data: Data("c".utf8), inputId: "two")) { error in
+      XCTAssertEqual(error as? SyncTerminalInputQueueError, .overflow(maximumItems: 1, maximumBytes: 2))
+    }
+  }
+
+  func testTerminalInputAckUnionHandlesSuccessAndTypedSubscriptionFailure() {
+    XCTAssertEqual(
+      syncTerminalInputAcknowledgement(from: [
+        "sessionId": "s1", "inputId": "i1", "ok": true, "duplicate": true,
+      ]),
+      .success(sessionId: "s1", inputId: "i1", duplicate: true)
+    )
+    XCTAssertEqual(
+      syncTerminalInputAcknowledgement(from: [
+        "sessionId": "s1",
+        "inputId": "i1",
+        "ok": false,
+        "duplicate": false,
+        "error": ["code": "not_subscribed", "message": "Subscribe first.", "retryable": true],
+      ]),
+      .failure(
+        sessionId: "s1",
+        inputId: "i1",
+        code: "not_subscribed",
+        message: "Subscribe first.",
+        retryableSubscription: true
+      )
+    )
+  }
+
+  func testTerminalLostAckRetriesThenSuccessWithoutBreakingFIFO() throws {
+    var queue = SyncTerminalInputQueue(acknowledgementTimeout: 1)
+    _ = try queue.enqueue(data: Data("exact bytes".utf8), inputId: "same-id")
+    queue.markSent(inputId: "same-id", generation: 2, sentUptime: 10)
+    let timedOut = try XCTUnwrap(queue.item(inputId: "same-id"))
+    XCTAssertEqual(
+      syncTerminalInputRetryDecision(
+        item: timedOut,
+        nowUptime: 11,
+        retryWindowMilliseconds: 60_000
+      ),
+      .retry(afterNanoseconds: 500_000_000)
+    )
+    queue.markSent(inputId: "same-id", generation: 2, sentUptime: 11.5)
+    XCTAssertEqual(queue.item(inputId: "same-id")?.data, Data("exact bytes".utf8))
+    XCTAssertNotNil(queue.acknowledge(inputId: "same-id"))
+    XCTAssertTrue(queue.items.isEmpty)
+  }
+
+  func testTerminalAckRetryStopsAtAttemptBoundAndWindowExpiry() throws {
+    var queue = SyncTerminalInputQueue()
+    _ = try queue.enqueue(data: Data("x".utf8), inputId: "i")
+    for sentAt in [0.0, 1.0, 2.0, 3.0] {
+      queue.markSent(inputId: "i", generation: 1, sentUptime: sentAt)
+    }
+    let exhausted = try XCTUnwrap(queue.item(inputId: "i"))
+    XCTAssertEqual(
+      syncTerminalInputRetryDecision(
+        item: exhausted,
+        nowUptime: 4,
+        retryWindowMilliseconds: 60_000
+      ),
+      .attemptsExhausted
+    )
+
+    var expiring = SyncTerminalInputQueue()
+    _ = try expiring.enqueue(data: Data("x".utf8), inputId: "j")
+    expiring.markSent(inputId: "j", generation: 1, sentUptime: 0)
+    XCTAssertEqual(
+      syncTerminalInputRetryDecision(
+        item: try XCTUnwrap(expiring.item(inputId: "j")),
+        nowUptime: 1,
+        retryWindowMilliseconds: 1_200
+      ),
+      .retryWindowExpired
+    )
+  }
+
+  func testTerminalTimeoutUsesInjectedMonotonicUptimeAcrossWallClockBackstep() throws {
+    var queue = SyncTerminalInputQueue(acknowledgementTimeout: 8)
+    _ = try queue.enqueue(data: Data("x".utf8), inputId: "monotonic-input")
+    queue.markSent(inputId: "monotonic-input", generation: 9, sentUptime: 100)
+
+    let wallClockAtSend = Date(timeIntervalSince1970: 2_000_000)
+    let wallClockAfterJump = Date(timeIntervalSince1970: 1_000_000)
+    XCTAssertLessThan(wallClockAfterJump, wallClockAtSend)
+    XCTAssertEqual(
+      syncTerminalMonotonicElapsedSeconds(since: 100, nowUptime: 108),
+      8
+    )
+    XCTAssertEqual(
+      queue.timedOutInputId(nowUptime: 108, generation: 9),
+      "monotonic-input"
+    )
+  }
+}
+
+@MainActor
+private final class DeferredRecoveryWork {
+  private var continuation: CheckedContinuation<Void, Never>?
+
+  var isWaiting: Bool { continuation != nil }
+
+  func wait() async {
+    await withCheckedContinuation { continuation in
+      self.continuation = continuation
+    }
+  }
+
+  func resume() {
+    let pending = continuation
+    continuation = nil
+    pending?.resume()
   }
 }

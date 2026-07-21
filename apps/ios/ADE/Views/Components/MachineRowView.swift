@@ -172,9 +172,9 @@ func machineDeviceSymbol(deviceType: String?, platform: String?) -> String {
   }
 }
 
-/// The unified status word for a machine's route/hint line: "Available now" when
-/// it is reachable, "Paired · offline" when it is not. Callers that carry a
+/// The unified status hint for a saved machine. Directory presence is only a
+/// routing hint; absence never claims the Mac is powered off. Callers with a
 /// richer route label show that instead and fall back to this.
 func machineStatusHint(online: Bool) -> String {
-  online ? "Available now" : "Paired · offline"
+  online ? "Recently reachable" : "Saved connection"
 }

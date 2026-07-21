@@ -79,9 +79,9 @@ func syncConnectionHealth(
     switch connectionState {
     case .disconnected:
       return .disconnected
-    case .connecting:
+    case .connecting, .syncing:
       return .connecting
-    case .connected, .syncing:
+    case .connected:
       return .connected
     case .error:
       return .unreachable
@@ -355,6 +355,7 @@ enum SyncSocketTiming {
   static let transportProbeTimeoutNanoseconds: UInt64 = 5_000_000_000
   static let expensiveTransportProbeTimeoutNanoseconds: UInt64 = 8_000_000_000
   static let constrainedTransportProbeTimeoutNanoseconds: UInt64 = 12_000_000_000
+  static let reconnectStabilityNanoseconds: UInt64 = 10_000_000_000
 }
 
 enum SyncTailnetDiscoveryTiming {
@@ -697,6 +698,16 @@ func syncRelayAccountTokenForPairedHello(
         let token = accountToken?.trimmingCharacters(in: .whitespacesAndNewlines),
         !token.isEmpty else { return nil }
   return token
+}
+
+func syncKnownSecureMachineIsAttemptable(
+  directoryOnline: Bool,
+  hasStableIdentity: Bool
+) -> Bool {
+  // Directory presence is eventually consistent and never authorization.
+  // A verified stable machine record remains eligible for the route race.
+  _ = directoryOnline
+  return hasStableIdentity
 }
 
 private func syncConnectionRouteKey(_ address: String) -> String {
@@ -1525,7 +1536,7 @@ enum SyncUserFacingError {
       return "This phone no longer has a saved address for this machine. Open Settings to rediscover it or pair again."
     }
     if lowered.contains("the host is offline") || lowered.contains("requires a live connection to the host") {
-      return "The machine is offline. Reconnect, then try again."
+      return "Can’t reach this Mac right now."
     }
     if lowered.contains("the host returned incomplete") {
       return "The machine sent incomplete sync data. Retry the affected area or reconnect the machine."
@@ -1917,6 +1928,7 @@ enum TerminalStreamEvent {
   case hydrate(text: String, replacing: Bool, startOffset: Int?, endOffset: Int?)
   case chunk(text: String, endOffset: Int?)
   case exit(code: Int?)
+  case inputFailure(message: String)
 }
 
 struct WorkStartShellSessionRequest: Equatable {
@@ -1947,6 +1959,29 @@ struct AccountPairingAuthorizationChangedError: LocalizedError, Equatable {
   }
 }
 
+struct AccountPairingConnectionSupersededError: LocalizedError, Equatable {
+  var errorDescription: String? {
+    "A newer Mac connection replaced this attempt."
+  }
+}
+
+@MainActor
+func performCurrentAccountPairingRelayHello<Session, Hello>(
+  refreshSession: () async throws -> Session,
+  isCurrentCandidate: () -> Bool,
+  sendHello: (Session) async throws -> Hello
+) async throws -> Hello {
+  let session = try await refreshSession()
+  guard isCurrentCandidate() else {
+    throw AccountPairingConnectionSupersededError()
+  }
+  let hello = try await sendHello(session)
+  guard isCurrentCandidate() else {
+    throw AccountPairingConnectionSupersededError()
+  }
+  return hello
+}
+
 /// Treat the remote hello and the local credential write as one account
 /// authorization transaction. The first check rejects a response received
 /// after sign-out/switch; the second sits directly against the synchronous
@@ -1957,17 +1992,104 @@ func performAuthorizedAccountPairingCommit<Hello, Prepared, Committed>(
   receiveHello: () async throws -> Hello,
   prepare: (Hello) throws -> Prepared,
   isAuthorized: (AccountPairingAuthorization) -> Bool,
+  isCurrentCandidate: () -> Bool = { true },
   commit: (Prepared) throws -> Committed
 ) async throws -> Committed {
   let hello = try await receiveHello()
+  guard isCurrentCandidate() else {
+    throw AccountPairingConnectionSupersededError()
+  }
   guard isAuthorized(authorization) else {
     throw AccountPairingAuthorizationChangedError()
   }
   let prepared = try prepare(hello)
+  guard isCurrentCandidate() else {
+    throw AccountPairingConnectionSupersededError()
+  }
   guard isAuthorized(authorization) else {
     throw AccountPairingAuthorizationChangedError()
   }
   return try commit(prepared)
+}
+
+struct RelayReauthorizationFailure: Error, LocalizedError {
+  var code: String
+  var message: String
+  var retryable: Bool
+  var receivedHostResult: Bool
+
+  var errorDescription: String? { message }
+}
+
+func syncRelayReauthorizationLease(from raw: Any) throws -> SyncRelayAuthorizationLease {
+  guard let payload = raw as? [String: Any],
+        let ok = payload["ok"] as? Bool else {
+    throw RelayReauthorizationFailure(
+      code: "invalid_response",
+      message: "Relay authorization returned an invalid response.",
+      retryable: true,
+      receivedHostResult: false
+    )
+  }
+  if ok {
+    guard let leasePayload = payload["relayAuthorization"] as? [String: Any],
+          let refreshed = SyncRelayAuthorizationLease(leasePayload) else {
+      throw RelayReauthorizationFailure(
+        code: "invalid_response",
+        message: "Relay authorization returned an invalid lease.",
+        retryable: true,
+        receivedHostResult: false
+      )
+    }
+    return refreshed
+  }
+  guard let errorPayload = payload["error"] as? [String: Any],
+        let code = errorPayload["code"] as? String,
+        let message = errorPayload["message"] as? String,
+        let retryable = errorPayload["retryable"] as? Bool else {
+    throw RelayReauthorizationFailure(
+      code: "invalid_response",
+      message: "Relay authorization returned an invalid failure response.",
+      retryable: true,
+      receivedHostResult: false
+    )
+  }
+  throw RelayReauthorizationFailure(
+    code: code,
+    message: message,
+    retryable: retryable,
+    receivedHostResult: true
+  )
+}
+
+@MainActor
+func installRelayReauthorizationLeaseIfCurrent(
+  _ lease: SyncRelayAuthorizationLease,
+  scheduledGeneration: UInt64,
+  currentGeneration: UInt64,
+  scheduledSocketIdentifier: ObjectIdentifier,
+  currentSocketIdentifier: ObjectIdentifier?,
+  install: (SyncRelayAuthorizationLease) -> Void
+) throws {
+  guard syncRelayReauthorizationContextIsCurrent(
+    scheduledGeneration: scheduledGeneration,
+    currentGeneration: currentGeneration,
+    scheduledSocketIdentifier: scheduledSocketIdentifier,
+    currentSocketIdentifier: currentSocketIdentifier
+  ) else { throw CancellationError() }
+  install(lease)
+}
+
+@MainActor
+func performGenerationScopedPostHelloWork(
+  isCurrent: () -> Bool,
+  restore: () async -> Void,
+  complete: () -> Void
+) async {
+  guard isCurrent() else { return }
+  await restore()
+  guard isCurrent() else { return }
+  complete()
 }
 
 @MainActor
@@ -2141,6 +2263,12 @@ final class SyncService: ObservableObject {
   /// emit offsets; all gap/dedupe logic disables itself in that case.
   private(set) var terminalEndOffsets: [String: Int] = [:]
   private var terminalStreamHandlers: [String: (TerminalStreamEvent) -> Void] = [:]
+  private var desiredTerminalSessionIds: Set<String> = []
+  private var supportsTerminalInputAcknowledgements = false
+  private var terminalInputAcknowledgementRetryWindowMilliseconds: TimeInterval = 0
+  private var terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
+  private var terminalInputQueues: [String: SyncTerminalInputQueue] = [:]
+  private var terminalInputTimeoutTasks: [String: Task<Void, Never>] = [:]
   private var terminalGapRecoveryInFlight: Set<String> = []
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
@@ -2205,6 +2333,8 @@ final class SyncService: ObservableObject {
   #if DEBUG
   private var capturesOutboundEnvelopesForTesting = false
   private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?)] = []
+  private var capturesExactEnvelopesForTesting = false
+  private var capturedExactEnvelopesForTesting: [String] = []
   private var completesCapturedRefreshRequestsForTesting = false
   #endif
   private struct PendingRequestTimeoutPolicy {
@@ -2251,6 +2381,10 @@ final class SyncService: ObservableObject {
   private var pendingOutboundChangeset: PendingOutboundChangeset?
   private var pendingSocketOpen: [Int: CheckedContinuation<Void, Error>] = [:]
   private var pendingSocketOpenTimeoutTasks: [Int: Task<Void, Never>] = [:]
+  private var relayTransportNegotiations: [Int: SyncRelayReadyNegotiation] = [:]
+  private var pendingRelayTransportReady: [Int: CheckedContinuation<Void, Error>] = [:]
+  private var relayTransportNegotiationTimeoutTasks: [Int: Task<Void, Never>] = [:]
+  private var relayTransportOverallTimeoutTasks: [Int: Task<Void, Never>] = [:]
   private let decoder = JSONDecoder()
   private let encoder = JSONEncoder()
   private let syncDateFormatter = ISO8601DateFormatter()
@@ -2260,6 +2394,7 @@ final class SyncService: ObservableObject {
   private var hydrationTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
   private var networkPathReconnectTask: Task<Void, Never>?
+  private var reconnectStabilityTask: Task<Void, Never>?
   private var pendingOperationFlushTask: Task<Void, Never>?
   private var pendingOperationFlushInFlight = false
   private var lanePresenceHeartbeatTask: Task<Void, Never>?
@@ -2294,6 +2429,7 @@ final class SyncService: ObservableObject {
   private var activeRemoteDbSiteId: String?
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
+  private var lastConnectionAttemptStartedAtMilliseconds: Int64 = 0
   private var connectAttemptStartedAt: TimeInterval?
   private var projectSwitchTimingStartedAt: TimeInterval?
   private var projectSwitchTimingLastPhaseAt: TimeInterval?
@@ -2319,6 +2455,9 @@ final class SyncService: ObservableObject {
   private var supportsProjectActions = false
   private var supportsChatStreaming = false
   private var supportsChangesetAck = false
+  private var relayAuthorizationLease: SyncRelayAuthorizationLease?
+  private var relayReauthorizationTask: Task<Void, Never>?
+  private var relayReauthorizationTaskId: UUID?
   @Published private(set) var supportsPersonalChats = false
   /// Host advertises cross-project chat "quick look": a `chat_subscribe` (and
   /// the chat command actions) may carry a `projectId`/`projectRootPath`
@@ -2891,7 +3030,7 @@ final class SyncService: ObservableObject {
     }
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 14, userInfo: [
-        NSLocalizedDescriptionKey: "The machine is offline."
+        NSLocalizedDescriptionKey: "Can’t reach this Mac right now."
       ])
     }
   }
@@ -3577,6 +3716,7 @@ final class SyncService: ObservableObject {
     projectSelectionTask?.cancel()
     reconnectTask?.cancel()
     networkPathReconnectTask?.cancel()
+    reconnectStabilityTask?.cancel()
     pendingOperationFlushTask?.cancel()
     outboundCursorPersistTask?.cancel()
     remoteCursorProfilePersistTask?.cancel()
@@ -4196,19 +4336,20 @@ final class SyncService: ObservableObject {
   @discardableResult
   func pairWithAccountMachine(
     _ machine: AccountMachine,
-    accountToken: String,
     authorization: AccountPairingAuthorization
   ) async -> Bool {
     prepareForUserConnectionChange()
     ProductAnalytics.shared.captureQuickConnect(.accountMachine)
-    let token = accountToken.trimmingCharacters(in: .whitespacesAndNewlines)
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard machine.online, !token.isEmpty, !owner.isEmpty,
+    let expectedHostIdentity = syncNonEmpty(machine.deviceId)
+    guard !owner.isEmpty,
           AccountService.shared.isPairingCommitAuthorized(authorization),
-          let expectedHostIdentity = syncNonEmpty(machine.deviceId) else {
-      lastError = machine.online
-        ? "Sign in again, then try connecting."
-        : "That Mac is offline. Open ADE on the Mac, then try again."
+          syncKnownSecureMachineIsAttemptable(
+            directoryOnline: machine.online,
+            hasStableIdentity: expectedHostIdentity != nil
+          ),
+          let expectedHostIdentity else {
+      lastError = "Sign in again, then try connecting."
       connectionState = .error
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       return false
@@ -4257,26 +4398,22 @@ final class SyncService: ObservableObject {
       return false
     }
 
+    var pairingGeneration: UInt64?
     do {
       try ensureDatabaseReady()
-      guard let dpop = DpopKeyService.shared.buildProof(deviceId: deviceId, secret: token) else {
-        throw NSError(
-          domain: "ADE",
-          code: 31,
-          userInfo: [NSLocalizedDescriptionKey: "This iPhone could not create a secure pairing key."]
-        )
-      }
       refreshPhoneTailnetInterfaceState()
-      cancelReconnectLoop()
+      resetAndCancelReconnectLoop()
       allowAutoReconnect = false
       setAutoReconnectPausedByUser(false)
       disconnect(clearCredentials: false, suspendAutoReconnect: false)
       let generation = beginConnectAttempt()
+      pairingGeneration = generation
       resetChatEventState(clearHistory: true)
       connectionState = .connecting
 
       var lastFailure: Error?
       for relay in relayRoutes {
+        var candidateSocket: URLSessionWebSocketTask?
         do {
           guard AccountService.shared.isPairingCommitAuthorized(authorization) else {
             throw AccountPairingAuthorizationChangedError()
@@ -4286,11 +4423,38 @@ final class SyncService: ObservableObject {
             port: syncParseRouteEndpoint(relay)?.port ?? SyncDirectHostPorts.defaultPort,
             connectAttemptGeneration: generation
           )
-          let requestId = makeRequestId()
-          _ = try await performAuthorizedAccountPairingCommit(
-            authorization: authorization,
-            receiveHello: {
-              try await self.awaitResponse(
+          guard let openedSocket = socket else {
+            throw NSError(
+              domain: "ADE",
+              code: 31,
+              userInfo: [NSLocalizedDescriptionKey: "That Mac connection closed before account verification began."]
+            )
+          }
+          candidateSocket = openedSocket
+          let isCurrentCandidate = {
+            self.isCurrentConnectAttempt(generation) && self.socket === openedSocket
+          }
+          let raw = try await performCurrentAccountPairingRelayHello(
+            refreshSession: {
+              try await AccountService.shared.freshRelaySession(
+                expectedAuthorization: authorization
+              )
+            },
+            isCurrentCandidate: isCurrentCandidate,
+            sendHello: { relaySession in
+              guard relaySession.authorization.ownerId == owner,
+                    let dpop = DpopKeyService.shared.buildProof(
+                      deviceId: self.deviceId,
+                      secret: relaySession.token
+                    ) else {
+                throw NSError(
+                  domain: "ADE",
+                  code: 31,
+                  userInfo: [NSLocalizedDescriptionKey: "This iPhone could not create a secure account proof."]
+                )
+              }
+              let requestId = self.makeRequestId()
+              return try await self.awaitResponse(
                 requestId: requestId,
                 timeoutMessage: "That Mac did not finish account connection. Try again."
               ) {
@@ -4299,12 +4463,16 @@ final class SyncService: ObservableObject {
                   "auth": [
                     "kind": "account",
                     "deviceId": self.deviceId,
-                    "accountToken": token,
+                    "accountToken": relaySession.token,
                     "dpop": dpop,
                   ],
                 ])
               }
-            },
+            }
+          )
+          _ = try await performAuthorizedAccountPairingCommit(
+            authorization: authorization,
+            receiveHello: { raw },
             prepare: { raw in
               guard let payload = raw as? [String: Any],
                     let brain = payload["brain"] as? [String: Any],
@@ -4352,6 +4520,7 @@ final class SyncService: ObservableObject {
             isAuthorized: { candidate in
               AccountService.shared.isPairingCommitAuthorized(candidate)
             },
+            isCurrentCandidate: isCurrentCandidate,
             commit: { prepared in
               self.keychain.saveToken(prepared.pairedSecret)
               if let key = self.profileStorageKey(prepared.profile) {
@@ -4376,7 +4545,14 @@ final class SyncService: ObservableObject {
           return true
         } catch {
           lastFailure = error
-          teardownSocket()
+          if let candidateSocket, socket === candidateSocket {
+            teardownSocket()
+          }
+          if error is AccountPairingAuthorizationChangedError
+              || error is AccountPairingConnectionSupersededError
+              || !isCurrentConnectAttempt(generation) {
+            throw error
+          }
         }
       }
       throw lastFailure ?? NSError(
@@ -4385,8 +4561,12 @@ final class SyncService: ObservableObject {
         userInfo: [NSLocalizedDescriptionKey: "Could not reach that Mac."]
       )
     } catch {
+      if error is AccountPairingConnectionSupersededError
+          || pairingGeneration.map({ !isCurrentConnectAttempt($0) }) == true {
+        return false
+      }
       let message = SyncUserFacingError.message(for: error)
-      cancelReconnectLoop()
+      resetAndCancelReconnectLoop()
       allowAutoReconnect = false
       setAutoReconnectPausedByUser(true)
       teardownSocket(reason: message)
@@ -4819,11 +4999,13 @@ final class SyncService: ObservableObject {
       isPathSatisfied: snapshot.isSatisfied,
       hasLiveConnection: canSendLiveRequests()
     ) {
-    case .scheduleForcedReset:
-      scheduleNetworkPathReconnect(
-        forceSocketReset: true,
-        delayNanoseconds: snapshot.isSatisfied ? 250_000_000 : 750_000_000
-      )
+    case .attemptAuthenticatedReplacement:
+      networkPathReconnectTask?.cancel()
+      networkPathReconnectTask = Task { @MainActor [weak self] in
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        guard let self, !Task.isCancelled else { return }
+        await self.attemptAuthenticatedPathReplacement()
+      }
     case .cancelScheduledReconnect:
       networkPathReconnectTask?.cancel()
       networkPathReconnectTask = nil
@@ -4831,6 +5013,31 @@ final class SyncService: ObservableObject {
       scheduleNetworkPathReconnect(forceSocketReset: false)
     case .none:
       break
+    }
+  }
+
+  private func attemptAuthenticatedPathReplacement() async {
+    guard canSendLiveRequests(),
+          !reconnectConnectInFlight,
+          let profile = loadProfile(),
+          let token = tokenForProfile(profile) else { return }
+    let connectAttemptGeneration = beginConnectAttempt()
+    markReconnectConnectInFlight(connectAttemptGeneration)
+    defer { clearReconnectConnectInFlight(connectAttemptGeneration) }
+    do {
+      _ = try await connectUsingProfile(
+        profile,
+        token: token,
+        connectAttemptGeneration: connectAttemptGeneration,
+        preferLiveCandidatesOnly: false,
+        publishConnecting: false
+      )
+    } catch {
+      // The current authenticated socket remains authoritative when every
+      // replacement candidate fails. A path hint must never break healthy IO.
+      syncConnectLog.info(
+        "ADE_SYNC_TRACE authenticated path replacement kept live socket error=\(syncLogErrorSummary(error), privacy: .public)"
+      )
     }
   }
 
@@ -4875,6 +5082,13 @@ final class SyncService: ObservableObject {
     // no machine is paired.
     Task { await PushNotificationService.shared.enableIfPaired() }
     Task { await LiveActivityService.shared.handleForegroundTransition() }
+    if let relayAuthorizationLease,
+       syncRelayReauthorizationIsDue(
+         lease: relayAuthorizationLease,
+         nowMilliseconds: Date().timeIntervalSince1970 * 1_000
+       ), relayReauthorizationTask == nil {
+      scheduleRelayReauthorization(lease: relayAuthorizationLease, refreshImmediately: true)
+    }
     guard !reconnectConnectInFlight else { return }
     if canSendLiveRequests() {
       lastError = nil
@@ -4931,7 +5145,7 @@ final class SyncService: ObservableObject {
     do {
       refreshPhoneTailnetInterfaceState()
       let previousProfile = activeHostProfile ?? loadProfile()
-      cancelReconnectLoop()
+      resetAndCancelReconnectLoop()
       allowAutoReconnect = false
       setAutoReconnectPausedByUser(false)
       disconnect(clearCredentials: false, suspendAutoReconnect: false)
@@ -5117,7 +5331,7 @@ final class SyncService: ObservableObject {
     } catch {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
-      cancelReconnectLoop()
+      resetAndCancelReconnectLoop()
       allowAutoReconnect = false
       setAutoReconnectPausedByUser(true)
       teardownSocket(reason: friendlyMessage)
@@ -5163,7 +5377,7 @@ final class SyncService: ObservableObject {
     }
     allowAutoReconnect = false
     clearReconnectConnectInFlight()
-    cancelReconnectLoop()
+    resetAndCancelReconnectLoop()
     teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
     relayAuthorizationRequirement = nil
@@ -6296,14 +6510,14 @@ final class SyncService: ObservableObject {
     if subscribedTerminalSessionIds.contains(trimmedSessionId), terminalBuffers[trimmedSessionId] != nil {
       return
     }
-    subscribedTerminalSessionIds.insert(trimmedSessionId)
+    desiredTerminalSessionIds.insert(trimmedSessionId)
     try await refreshTerminalSnapshot(sessionId: trimmedSessionId)
   }
 
   func refreshTerminalSnapshot(sessionId: String, maxBytes: Int = syncTerminalSubscriptionMaxBytes, sinceOffset: Int? = nil) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    subscribedTerminalSessionIds.insert(trimmedSessionId)
+    desiredTerminalSessionIds.insert(trimmedSessionId)
     let requestId = makeRequestId()
     var payload: [String: Any] = [
       "sessionId": trimmedSessionId,
@@ -6316,8 +6530,10 @@ final class SyncService: ObservableObject {
       self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: payload)
     }
     let snapshot = try decode(raw, as: TerminalSnapshot.self)
-    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else { return }
+    guard desiredTerminalSessionIds.contains(trimmedSessionId) else { return }
     applyTerminalSnapshot(snapshot, sessionId: trimmedSessionId)
+    subscribedTerminalSessionIds.insert(trimmedSessionId)
+    flushTerminalInputQueue(sessionId: trimmedSessionId)
   }
 
   /// Full-screen terminal subscribe: attaches at the 512K budget and resumes
@@ -6532,8 +6748,11 @@ final class SyncService: ObservableObject {
   func unsubscribeTerminal(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
-    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else { return }
+    guard desiredTerminalSessionIds.contains(trimmedSessionId) else { return }
+    desiredTerminalSessionIds.remove(trimmedSessionId)
     subscribedTerminalSessionIds.remove(trimmedSessionId)
+    terminalInputTimeoutTasks.removeValue(forKey: trimmedSessionId)?.cancel()
+    terminalInputQueues.removeValue(forKey: trimmedSessionId)
     if canSendLiveRequests() {
       sendEnvelope(type: "terminal_unsubscribe", requestId: nil, payload: [
         "sessionId": trimmedSessionId,
@@ -6541,20 +6760,180 @@ final class SyncService: ObservableObject {
     }
   }
 
-  /// Forward keystrokes (or pasted text, or control sequences) from the
-  /// mobile UI into the live PTY for `sessionId`. Fire-and-forget — the
-  /// host echoes accepted bytes back as `terminal_data` so the user sees
-  /// confirmation by re-reading the buffer rather than waiting on an ack.
-  ///
-  /// Caller must have already issued `subscribeTerminal(sessionId:)` —
-  /// the host enforces the same gate to prevent unauthorized writes.
-  func sendTerminalInput(sessionId: String, data: String) {
-    guard !sessionId.isEmpty else { return }
-    guard canSendLiveRequests() else { return }
+  func canAcceptTerminalInput(sessionId: String) -> Bool {
+    desiredTerminalSessionIds.contains(sessionId) && terminalBuffers[sessionId] != nil
+  }
+
+  /// Queue terminal input in order. ACK-capable hosts keep the exact input id
+  /// until success, or retry it after a reconnect once the snapshot barrier is
+  /// ready again. Legacy hosts receive input without an id and are never
+  /// retried after an ambiguous send.
+  @discardableResult
+  func sendTerminalInput(sessionId: String, data: String) -> SyncTerminalInputSubmission {
+    let sessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !sessionId.isEmpty, !data.isEmpty else {
+      return .rejected(message: "Terminal input is empty.")
+    }
+    guard canAcceptTerminalInput(sessionId: sessionId) else {
+      let message = "Terminal input is waiting for the terminal snapshot."
+      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
+      return .rejected(message: message)
+    }
+    do {
+      var queue = terminalInputQueues[sessionId] ?? SyncTerminalInputQueue(
+        maximumItemCount: terminalInputMaximumOutstanding
+      )
+      let item = try queue.enqueue(data: Data(data.utf8))
+      terminalInputQueues[sessionId] = queue
+      let ready = canSendLiveRequests() && subscribedTerminalSessionIds.contains(sessionId)
+      if ready {
+        flushTerminalInputQueue(sessionId: sessionId)
+      }
+      if supportsTerminalInputAcknowledgements {
+        return ready
+          ? .awaitingAcknowledgement(inputId: item.inputId)
+          : .queuedUntilReady(inputId: item.inputId)
+      }
+      return ready ? .sentToLegacyHost : .queuedUntilReady(inputId: item.inputId)
+    } catch {
+      let message = error.localizedDescription
+      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
+      return .rejected(message: message)
+    }
+  }
+
+  private func flushTerminalInputQueue(sessionId: String) {
+    guard canSendLiveRequests(), subscribedTerminalSessionIds.contains(sessionId),
+          var queue = terminalInputQueues[sessionId],
+          let item = queue.nextSendableItem(
+            reliableAcknowledgements: supportsTerminalInputAcknowledgements
+          ) else { return }
+    guard let data = String(data: item.data, encoding: .utf8) else {
+      _ = queue.acknowledge(inputId: item.inputId)
+      terminalInputQueues[sessionId] = queue
+      terminalStreamHandlers[sessionId]?(.inputFailure(message: "Terminal input could not be encoded."))
+      flushTerminalInputQueue(sessionId: sessionId)
+      return
+    }
+    var payload: [String: Any] = ["sessionId": sessionId, "data": data]
+    if supportsTerminalInputAcknowledgements {
+      payload["inputId"] = item.inputId
+      queue.markSent(
+        inputId: item.inputId,
+        generation: connectionGeneration,
+        sentUptime: ProcessInfo.processInfo.systemUptime
+      )
+      terminalInputQueues[sessionId] = queue
+      scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
+    } else {
+      _ = queue.removeLegacyDelivery(inputId: item.inputId)
+      terminalInputQueues[sessionId] = queue
+    }
+    sendEnvelope(type: "terminal_input", requestId: nil, payload: payload)
+    if !supportsTerminalInputAcknowledgements {
+      flushTerminalInputQueue(sessionId: sessionId)
+    }
+  }
+
+  private func scheduleTerminalInputAcknowledgementTimeout(sessionId: String) {
+    terminalInputTimeoutTasks[sessionId]?.cancel()
+    let generation = connectionGeneration
+    terminalInputTimeoutTasks[sessionId] = Task { @MainActor [weak self] in
+      try? await Task.sleep(
+        nanoseconds: UInt64((SyncTerminalInputQueue.defaultAcknowledgementTimeout * 1_000_000_000).rounded())
+      )
+      guard let self, !Task.isCancelled,
+            var queue = self.terminalInputQueues[sessionId],
+            let inputId = queue.timedOutInputId(
+              nowUptime: ProcessInfo.processInfo.systemUptime,
+              generation: generation
+            ),
+            let item = queue.item(inputId: inputId) else { return }
+      switch syncTerminalInputRetryDecision(
+        item: item,
+        nowUptime: ProcessInfo.processInfo.systemUptime,
+        retryWindowMilliseconds: self.terminalInputAcknowledgementRetryWindowMilliseconds
+      ) {
+      case .retry(let afterNanoseconds):
+        try? await Task.sleep(nanoseconds: afterNanoseconds)
+        guard !Task.isCancelled,
+              self.connectionGeneration == generation,
+              self.subscribedTerminalSessionIds.contains(sessionId) else { return }
+        self.terminalInputTimeoutTasks[sessionId] = nil
+        self.resendTerminalInput(sessionId: sessionId, inputId: inputId)
+      case .attemptsExhausted, .retryWindowExpired:
+        _ = queue.acknowledge(inputId: inputId)
+        self.terminalInputQueues[sessionId] = queue
+        self.terminalInputTimeoutTasks[sessionId] = nil
+        self.terminalStreamHandlers[sessionId]?(.inputFailure(
+          message: "The Mac did not confirm whether that terminal input was applied. It was not retried again."
+        ))
+        self.flushTerminalInputQueue(sessionId: sessionId)
+      }
+    }
+  }
+
+  private func resendTerminalInput(sessionId: String, inputId: String) {
+    guard canSendLiveRequests(), subscribedTerminalSessionIds.contains(sessionId),
+          var queue = terminalInputQueues[sessionId],
+          let item = queue.item(inputId: inputId),
+          let data = String(data: item.data, encoding: .utf8) else { return }
+    queue.markSent(
+      inputId: inputId,
+      generation: connectionGeneration,
+      sentUptime: ProcessInfo.processInfo.systemUptime
+    )
+    terminalInputQueues[sessionId] = queue
     sendEnvelope(type: "terminal_input", requestId: nil, payload: [
       "sessionId": sessionId,
       "data": data,
+      "inputId": inputId,
     ])
+    scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
+  }
+
+  private func handleTerminalInputAcknowledgement(_ payload: [String: Any]) {
+    guard let acknowledgement = syncTerminalInputAcknowledgement(from: payload) else { return }
+    switch acknowledgement {
+    case .success(let sessionId, let inputId, _):
+      guard var queue = terminalInputQueues[sessionId],
+            queue.inFlightItem(inputId: inputId, generation: connectionGeneration) != nil else {
+        return
+      }
+      terminalInputTimeoutTasks.removeValue(forKey: sessionId)?.cancel()
+      _ = queue.acknowledge(inputId: inputId)
+      terminalInputQueues[sessionId] = queue
+      flushTerminalInputQueue(sessionId: sessionId)
+    case .failure(let sessionId, let inputId, _, let message, let retryableSubscription):
+      guard let sessionId, let inputId,
+            var queue = terminalInputQueues[sessionId],
+            queue.inFlightItem(inputId: inputId, generation: connectionGeneration) != nil else {
+        return
+      }
+      terminalInputTimeoutTasks.removeValue(forKey: sessionId)?.cancel()
+      if retryableSubscription {
+        queue.prepareForReconnect()
+        terminalInputQueues[sessionId] = queue
+        subscribedTerminalSessionIds.remove(sessionId)
+        Task { @MainActor [weak self] in
+          guard let self, self.desiredTerminalSessionIds.contains(sessionId) else { return }
+          do {
+            try await self.refreshTerminalSnapshot(
+              sessionId: sessionId,
+              maxBytes: syncTerminalStreamMaxBytes,
+              sinceOffset: self.terminalEndOffsets[sessionId]
+            )
+          } catch {
+            self.terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
+          }
+        }
+        return
+      }
+      _ = queue.acknowledge(inputId: inputId)
+      terminalInputQueues[sessionId] = queue
+      terminalStreamHandlers[sessionId]?(.inputFailure(message: message))
+      flushTerminalInputQueue(sessionId: sessionId)
+    }
   }
 
   /// Tell the host to reshape the active PTY for `sessionId` to a new
@@ -9792,6 +10171,23 @@ final class SyncService: ObservableObject {
     return deduplicatedAddresses(addressesAllowedByRelayPolicy(candidates, profile: profile))
   }
 
+  private struct AuthenticatedConnectionCandidate: @unchecked Sendable {
+    var scheduled: SyncConnectionRaceScheduledCandidate
+    var task: URLSessionWebSocketTask
+    var helloPayload: [String: Any]
+  }
+
+  private enum AuthenticatedConnectionRaceEvent: @unchecked Sendable {
+    case authenticated(AuthenticatedConnectionCandidate)
+    case failed(candidateId: Int, error: Error)
+    case budgetExpired
+  }
+
+  private enum RelayNegotiationEvent: Sendable {
+    case frame(String)
+    case timeout
+  }
+
   private func connectUsingProfile(
     _ profile: HostConnectionProfile,
     token: String,
@@ -9810,18 +10206,11 @@ final class SyncService: ObservableObject {
     let rawAddresses = preferLiveCandidatesOnly
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
-    // Relay routes (full wss:// URLs) carry their own path and port: keep them
-    // out of the TCP probe race and the port sweep — crossing one with the
-    // fallback port list would retry the identical URL once per port. The route
-    // walker ranks relay with direct candidates after the existing direct probe.
+    // Relay routes (full wss:// URLs) carry their own path and port. Keep them
+    // out of the direct port sweep, but race them as first-class authenticated
+    // candidates rather than waiting for stale direct timeouts.
     let relayRoutes = rawAddresses.filter(syncIsFullWebSocketRoute)
-    // Relay ingress requires a fresh account proof on every connection. Fetch
-    // it only when a relay is actually eligible, keep it in memory for this
-    // attempt, and never write it into the connection profile or keychain.
-    let relayAccountToken = relayRoutes.isEmpty
-      ? nil
-      : await AccountService.shared.sessionToken()
-    let usableRelayRoutes = relayAccountToken == nil ? [] : relayRoutes
+    let usableRelayRoutes = AccountService.shared.currentPairingAuthorization == nil ? [] : relayRoutes
     let addresses = connectableAddresses(from: rawAddresses.filter { !syncIsFullWebSocketRoute($0) })
     let portCandidates = syncConnectPortCandidates(
       primaryPort: primaryPort,
@@ -9832,7 +10221,7 @@ final class SyncService: ObservableObject {
       "ADE_SYNC_TRACE reconnect candidates preferLiveOnly=\(preferLiveCandidatesOnly) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public) profile=\(syncLogProfileSummary(profile), privacy: .public) raw=[\(syncLogAddressList(rawAddresses), privacy: .public)] ports=[\(portCandidates.map(String.init).joined(separator: ","), privacy: .public)] connectable=[\(syncLogAddressList(addresses), privacy: .public)] relay=[\(syncLogAddressList(usableRelayRoutes), privacy: .public)]"
     )
     guard !addresses.isEmpty || !usableRelayRoutes.isEmpty else {
-      if !relayRoutes.isEmpty, relayAccountToken == nil {
+      if !relayRoutes.isEmpty, AccountService.shared.currentPairingAuthorization == nil {
         throw SyncRelayAuthorizationRequirement.signInRequired
       }
       if case .requires(let requirement) = relayAuthorizationState(for: profile) {
@@ -9848,28 +10237,9 @@ final class SyncService: ObservableObject {
       matchingDiscovery.flatMap(\.addresses) + matchingDiscovery.compactMap(\.tailscaleAddress)
     )
     markConnectAttemptStarted(connectAttemptGeneration)
-    let probeStartedAt = ProcessInfo.processInfo.systemUptime
-    let racedAddresses = await syncRaceAddressCandidates(
-      addresses: addresses,
-      port: portCandidates.first ?? profile.port,
-      provenAddress: profile.lastSuccessfulAddress
-    )
-    if projectSwitchTimingStartedAt != nil {
-      let probeDurationMs = Int((max(0, ProcessInfo.processInfo.systemUptime - probeStartedAt) * 1_000).rounded())
-      syncConnectLog.notice(
-        "ADE_SYNC_TRACE project_switch phase=route_probe_finished durationMs=\(probeDurationMs)"
-      )
-      logProjectSwitchPhase("route_ranked")
-    }
-    if racedAddresses != addresses {
-      syncConnectLog.info(
-        "ADE_SYNC_TRACE reconnect probe reorder raced=[\(syncLogAddressList(racedAddresses), privacy: .public)]"
-      )
-    }
-
     let racedDirectAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
-      ? syncStalePortRecoveryEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
-      : syncConnectionEndpointAttempts(addresses: racedAddresses, ports: portCandidates)
+      ? syncStalePortRecoveryEndpointAttempts(addresses: addresses, ports: portCandidates)
+      : syncConnectionEndpointAttempts(addresses: addresses, ports: portCandidates)
     var orderedEndpointAttempts = syncRankedEndpointAttempts(
       directAttempts: racedDirectAttempts,
       relayRoutes: usableRelayRoutes,
@@ -9878,68 +10248,26 @@ final class SyncService: ObservableObject {
       lastSuccessfulAddress: profile.lastSuccessfulAddress,
       liveDirectAddresses: liveDirectAddressSet
     )
-    // Preserve a successful proven route+port ahead of broader kind/health
-    // ranking; otherwise that ranking can undo the fast probe result.
+    // Last-good starts immediately, but it does not block other transports.
     if let provenAddress = profile.lastSuccessfulAddress,
-       racedAddresses.first == provenAddress,
        let provenPort = portCandidates.first {
       let provenEndpoint = SyncConnectionEndpointAttempt(address: provenAddress, port: provenPort)
       orderedEndpointAttempts.removeAll { $0 == provenEndpoint }
       orderedEndpointAttempts.insert(provenEndpoint, at: 0)
     }
 
-    let connectedEndpoint: SyncConnectionEndpointAttempt
+    guard !orderedEndpointAttempts.isEmpty else { throw noConnectableAddressError() }
+    let racePlan = syncConnectionRaceCandidatePlan(rankedAttempts: orderedEndpointAttempts)
+    if publishConnecting, let first = racePlan.first {
+      publishSocketConnecting(to: first.endpoint.address)
+    }
+    let connectedCandidate: AuthenticatedConnectionCandidate
     do {
-      connectedEndpoint = try await syncFirstSuccessfulConnectionEndpoint(
-        orderedEndpointAttempts,
-        attempt: { attempt in
-        guard self.isCurrentConnectAttempt(connectAttemptGeneration) else {
-          return .failure(CancellationError())
-        }
-        let kind = self.addressCandidateKind(attempt.address, profile: profile, explicitTailscaleAddress: nil)
-        syncConnectLog.info("ADE_SYNC_TRACE reconnect attempt host=\(attempt.address, privacy: .public) port=\(attempt.port) kind=\(kind, privacy: .public)")
-        do {
-          try await self.openSocket(
-            host: attempt.address,
-            port: attempt.port,
-            connectAttemptGeneration: connectAttemptGeneration,
-            publishConnecting: publishConnecting
-          )
-          try await self.hello(
-            host: attempt.address,
-            port: attempt.port,
-            token: token,
-            authKind: profile.authKind,
-            pairedDeviceId: profile.pairedDeviceId,
-            relayAccountToken: syncIsFullWebSocketRoute(attempt.address) ? relayAccountToken : nil,
-            expectedHostIdentity: profile.hostIdentity,
-            connectAttemptGeneration: connectAttemptGeneration
-          )
-          guard self.isCurrentConnectAttempt(connectAttemptGeneration) else {
-            throw CancellationError()
-          }
-          syncConnectLog.info("ADE_SYNC_TRACE reconnect success host=\(attempt.address, privacy: .public) port=\(attempt.port)")
-          return .success(())
-        } catch {
-          let reconnectError = self.errorByMarkingAmbiguousRouteAuthFailure(
-            error,
-            attemptedAddress: attempt.address,
-            expectedHostIdentity: profile.hostIdentity
-          )
-          syncConnectLog.info("ADE_SYNC_TRACE reconnect failure host=\(attempt.address, privacy: .public) port=\(attempt.port) error=\(syncLogErrorSummary(reconnectError), privacy: .public)")
-          if self.shouldInvalidateSavedPairing(for: reconnectError) {
-            self.forgetHost()
-          } else {
-            // A TCP/WebSocket open is not a successful candidate until hello
-            // completes. Tear it down and keep walking after timeout/error.
-            self.teardownSocket()
-          }
-          return .failure(reconnectError)
-        }
-        },
-        shouldContinueAfterFailure: { error in
-          !self.shouldInvalidateSavedPairing(for: error)
-        }
+      connectedCandidate = try await raceAuthenticatedConnectionCandidates(
+        racePlan,
+        profile: profile,
+        pairedSecret: token,
+        connectAttemptGeneration: connectAttemptGeneration
       )
     } catch {
       if !shouldInvalidateSavedPairing(for: error),
@@ -9948,7 +10276,380 @@ final class SyncService: ObservableObject {
       }
       throw error
     }
+    guard isCurrentConnectAttempt(connectAttemptGeneration) else {
+      connectedCandidate.task.cancel(with: .goingAway, reason: nil)
+      throw CancellationError()
+    }
+    if socket != nil {
+      failPendingRequests(with: NSError(
+        domain: "ADE",
+        code: 26,
+        userInfo: [NSLocalizedDescriptionKey: "The network route changed while that request was running."]
+      ))
+    }
+    let connectedEndpoint = connectedCandidate.scheduled.endpoint
+    teardownSocket(closeCode: .goingAway)
+    socket = connectedCandidate.task
+    if syncIsFullWebSocketRoute(connectedEndpoint.address) {
+      relayTransportNegotiations[connectedCandidate.task.taskIdentifier] = SyncRelayReadyNegotiation()
+    }
+    receiveLoop(for: connectedCandidate.task)
+    try applyHelloPayload(
+      connectedCandidate.helloPayload,
+      connectedHost: connectedEndpoint.address,
+      port: connectedEndpoint.port,
+      authKind: profile.authKind,
+      pairedDeviceId: profile.pairedDeviceId,
+      expectedHostIdentity: profile.hostIdentity,
+      connectAttemptGeneration: connectAttemptGeneration
+    )
+    logProjectSwitchPhase("entered_connected")
+    schedulePostHelloWork(for: connectAttemptGeneration)
+    syncConnectLog.info(
+      "ADE_SYNC_TRACE reconnect race winner host=\(connectedEndpoint.address, privacy: .public) port=\(connectedEndpoint.port)"
+    )
     return (host: connectedEndpoint.address, port: connectedEndpoint.port)
+  }
+
+  private func raceAuthenticatedConnectionCandidates(
+    _ candidates: [SyncConnectionRaceScheduledCandidate],
+    profile: HostConnectionProfile,
+    pairedSecret: String,
+    connectAttemptGeneration: UInt64
+  ) async throws -> AuthenticatedConnectionCandidate {
+    guard !candidates.isEmpty else { throw noConnectableAddressError() }
+    let connectionAttempt = makeConnectionAttemptMetadata()
+    return try await withThrowingTaskGroup(of: AuthenticatedConnectionRaceEvent.self) { group in
+      var scheduler = SyncConnectionRaceWaveScheduler(candidates: candidates)
+      for candidate in scheduler.startInitialCandidates() {
+        group.addTask { @MainActor [weak self] in
+          guard let self else { return .failed(candidateId: candidate.id, error: CancellationError()) }
+          return await self.authenticatedConnectionRaceEvent(
+            candidate,
+            profile: profile,
+            pairedSecret: pairedSecret,
+            connectAttemptGeneration: connectAttemptGeneration,
+            connectionAttempt: connectionAttempt
+          )
+        }
+      }
+      group.addTask {
+        do {
+          try await Task.sleep(nanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds)
+          return .budgetExpired
+        } catch {
+          return .failed(candidateId: -1, error: error)
+        }
+      }
+
+      var ownership = SyncConnectionRaceOwnership(candidateIds: Set(candidates.map(\.id)))
+      var lastFailure: Error?
+      while let event = try await group.next() {
+        switch event {
+        case .authenticated(let candidate):
+          switch ownership.authenticated(candidateId: candidate.scheduled.id) {
+          case .acceptWinner:
+            group.cancelAll()
+            while let lateEvent = try await group.next() {
+              if case .authenticated(let lateCandidate) = lateEvent {
+                lateCandidate.task.cancel(with: .goingAway, reason: nil)
+              }
+            }
+            return candidate
+          default:
+            candidate.task.cancel(with: .goingAway, reason: nil)
+          }
+        case .failed(let candidateId, let error):
+          lastFailure = error
+          let endpoint = candidates.first(where: { $0.id == candidateId })?.endpoint
+          if let endpoint {
+            let marked = errorByMarkingAmbiguousRouteAuthFailure(
+              error,
+              attemptedAddress: endpoint.address,
+              expectedHostIdentity: profile.hostIdentity
+            )
+            lastFailure = marked
+            syncConnectLog.info(
+              "ADE_SYNC_TRACE reconnect race failure host=\(endpoint.address, privacy: .public) port=\(endpoint.port) error=\(syncLogErrorSummary(marked), privacy: .public)"
+            )
+            if shouldInvalidateSavedPairing(for: marked) {
+              group.cancelAll()
+              while let lateEvent = try await group.next() {
+                if case .authenticated(let lateCandidate) = lateEvent {
+                  lateCandidate.task.cancel(with: .goingAway, reason: nil)
+                }
+              }
+              throw marked
+            }
+          }
+          if ownership.failed(candidateId: candidateId) == .exhausted {
+            group.cancelAll()
+            throw lastFailure ?? noConnectableAddressError()
+          }
+          if let nextCandidate = scheduler.candidateFinished(candidateId) {
+            group.addTask { @MainActor [weak self] in
+              guard let self else {
+                return .failed(candidateId: nextCandidate.id, error: CancellationError())
+              }
+              return await self.authenticatedConnectionRaceEvent(
+                nextCandidate,
+                profile: profile,
+                pairedSecret: pairedSecret,
+                connectAttemptGeneration: connectAttemptGeneration,
+                connectionAttempt: connectionAttempt
+              )
+            }
+          }
+        case .budgetExpired:
+          _ = ownership.expireBudget()
+          group.cancelAll()
+          while let lateEvent = try await group.next() {
+            if case .authenticated(let lateCandidate) = lateEvent {
+              lateCandidate.task.cancel(with: .goingAway, reason: nil)
+            }
+          }
+          throw lastFailure ?? NSError(
+            domain: "ADE",
+            code: 35,
+            userInfo: [NSLocalizedDescriptionKey: "The secure connection attempt timed out."]
+          )
+        }
+      }
+      throw lastFailure ?? noConnectableAddressError()
+    }
+  }
+
+  private func authenticatedConnectionRaceEvent(
+    _ candidate: SyncConnectionRaceScheduledCandidate,
+    profile: HostConnectionProfile,
+    pairedSecret: String,
+    connectAttemptGeneration: UInt64,
+    connectionAttempt: SyncConnectionAttemptMetadata
+  ) async -> AuthenticatedConnectionRaceEvent {
+    do {
+      if candidate.delayNanoseconds > 0 {
+        try await Task.sleep(nanoseconds: candidate.delayNanoseconds)
+      }
+      let authenticated = try await authenticateConnectionCandidate(
+        candidate,
+        profile: profile,
+        pairedSecret: pairedSecret,
+        connectAttemptGeneration: connectAttemptGeneration,
+        connectionAttempt: connectionAttempt
+      )
+      return .authenticated(authenticated)
+    } catch {
+      return .failed(candidateId: candidate.id, error: error)
+    }
+  }
+
+  private func authenticateConnectionCandidate(
+    _ candidate: SyncConnectionRaceScheduledCandidate,
+    profile: HostConnectionProfile,
+    pairedSecret: String,
+    connectAttemptGeneration: UInt64,
+    connectionAttempt: SyncConnectionAttemptMetadata
+  ) async throws -> AuthenticatedConnectionCandidate {
+    guard isCurrentConnectAttempt(connectAttemptGeneration) else { throw CancellationError() }
+    let endpoint = candidate.endpoint
+    let isRelay = syncIsFullWebSocketRoute(endpoint.address)
+    let parsed = syncParseRouteEndpoint(endpoint.address)
+    let socketHost = parsed?.host ?? endpoint.address.trimmingCharacters(in: .whitespacesAndNewlines)
+    let socketPort = parsed?.port ?? endpoint.port
+    let urlHost = parsed?.scheme == nil ? socketHost : endpoint.address
+    guard var urlString = syncWebSocketURLString(host: urlHost, port: socketPort) else {
+      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
+    }
+    if isRelay { urlString = syncRelayReadyV2URL(urlString) }
+    guard let url = URL(string: urlString) else {
+      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
+    }
+
+    let candidateTask = socketSession.webSocketTask(with: url)
+    candidateTask.maximumMessageSize = 32 * 1_024 * 1_024
+    return try await withTaskCancellationHandler {
+      do {
+        try await awaitSocketOpen(candidateTask)
+        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+          throw CancellationError()
+        }
+
+        let mailbox = SyncConnectionRaceTextMailbox()
+        let reader = Task {
+          do {
+            while !Task.isCancelled {
+              let message = try await candidateTask.receive()
+              let text: String
+              switch message {
+              case .string(let value): text = value
+              case .data(let data): text = String(decoding: data, as: UTF8.self)
+              @unknown default: text = ""
+              }
+              await mailbox.deliver(text)
+              if self.isCandidateHelloTerminalFrame(text) { return }
+            }
+          } catch {
+            await mailbox.finish(message: error.localizedDescription)
+          }
+        }
+        defer { reader.cancel() }
+
+        if isRelay {
+          try await awaitRelayCandidateReady(mailbox: mailbox)
+        }
+        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+          throw CancellationError()
+        }
+
+        var auth: [String: Any]
+        if profile.authKind == "paired", let pairedDeviceId = profile.pairedDeviceId {
+          let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: pairedSecret)
+          if isRelay, proof == nil {
+            throw NSError(
+              domain: "ADE",
+              code: 31,
+              userInfo: [NSLocalizedDescriptionKey: "This iPhone could not prove its saved secure key for Relay."]
+            )
+          }
+          auth = [
+            "kind": "paired",
+            "deviceId": pairedDeviceId,
+            "secret": pairedSecret,
+          ]
+          if let proof { auth["dpop"] = proof }
+          if isRelay {
+            let relaySession = try await AccountService.shared.freshRelaySession()
+            guard profile.relayAccountOwnerId == nil
+              || profile.relayAccountOwnerId == relaySession.authorization.ownerId else {
+              throw SyncRelayAuthorizationRequirement.sameAccountRequired
+            }
+            // The bearer is added only after the pinned device-key proof exists.
+            auth["relayAccountToken"] = relaySession.token
+          }
+        } else {
+          auth = ["kind": "bootstrap", "token": pairedSecret]
+        }
+
+        let requestId = makeRequestId()
+        let helloText = try encodedCandidateEnvelope(
+          type: "hello",
+          requestId: requestId,
+          payload: [
+            "peer": currentPeerMetadata(connectionAttempt: connectionAttempt),
+            "auth": auth,
+          ]
+        )
+        try await candidateTask.send(.string(helloText))
+
+        while true {
+          let text = try await mailbox.next()
+          if let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
+             syncRelayTransportControl(from: object) != nil {
+            continue
+          }
+          guard let preprocessed = try await Task.detached(priority: .userInitiated, operation: {
+            try syncPreprocessIncoming(text)
+          }).value else { continue }
+          guard preprocessed.requestId == requestId else { continue }
+          switch preprocessed.type {
+          case "hello_ok":
+            guard let payload = preprocessed.payload as? [String: Any] else {
+              throw NSError(domain: "ADE", code: 4, userInfo: [NSLocalizedDescriptionKey: "Invalid hello response."])
+            }
+            return AuthenticatedConnectionCandidate(
+              scheduled: candidate,
+              task: candidateTask,
+              helloPayload: payload
+            )
+          case "hello_error":
+            throw candidateHelloError(preprocessed.payload, profile: profile)
+          default:
+            continue
+          }
+        }
+      } catch {
+        candidateTask.cancel(with: .goingAway, reason: nil)
+        throw error
+      }
+    } onCancel: {
+      candidateTask.cancel(with: .goingAway, reason: nil)
+    }
+  }
+
+  private func awaitRelayCandidateReady(mailbox: SyncConnectionRaceTextMailbox) async throws {
+    var negotiation = SyncRelayReadyNegotiation()
+    let initialEvent = try await withThrowingTaskGroup(of: RelayNegotiationEvent.self) { group in
+      group.addTask { .frame(try await mailbox.next()) }
+      group.addTask {
+        try await Task.sleep(nanoseconds: SyncConnectionRaceTiming.relayReadyNegotiationNanoseconds)
+        return .timeout
+      }
+      let event = try await group.next() ?? .timeout
+      group.cancelAll()
+      return event
+    }
+    switch initialEvent {
+    case .timeout:
+      return
+    case .frame(let text):
+      guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
+            negotiation.receive(syncRelayTransportControl(from: object)) == .interceptedWaiting else {
+        throw NSError(domain: "ADE", code: 36, userInfo: [NSLocalizedDescriptionKey: "Relay negotiation returned an invalid first frame."])
+      }
+    }
+
+    while !negotiation.ready {
+      let text = try await mailbox.next()
+      guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) else { continue }
+      if negotiation.receive(syncRelayTransportControl(from: object)) == .sendHello { return }
+    }
+  }
+
+  private func isCandidateHelloTerminalFrame(_ text: String) -> Bool {
+    guard let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+          let type = object["type"] as? String else { return false }
+    return type == "hello_ok" || type == "hello_error"
+  }
+
+  private func encodedCandidateEnvelope(
+    type: String,
+    requestId: String,
+    payload: Any
+  ) throws -> String {
+    let envelope: [String: Any] = [
+      "version": 1,
+      "type": type,
+      "requestId": requestId,
+      "compression": "none",
+      "payloadEncoding": "json",
+      "payload": payload,
+    ]
+    let data = try adeJSONData(withJSONObject: envelope)
+    guard let text = String(data: data, encoding: .utf8) else {
+      throw NSError(domain: "ADE", code: 4, userInfo: [NSLocalizedDescriptionKey: "Could not encode the secure hello."])
+    }
+    return text
+  }
+
+  private func candidateHelloError(_ payload: Any, profile: HostConnectionProfile) -> Error {
+    let errorPayload = payload as? [String: Any]
+    let code = (errorPayload?["code"] as? String) ?? "auth_failed"
+    let message = (errorPayload?["message"] as? String) ?? "Authentication failed."
+    if code == "relay_account_required" {
+      return syncRelayAuthorizationRequirementForHostRejection(
+        relayAccountOwnerId: profile.relayAccountOwnerId,
+        currentAccountOwnerId: AccountService.shared.identity?.userId
+      )
+    }
+    var userInfo: [String: Any] = [
+      NSLocalizedDescriptionKey: message,
+      "ADEErrorCode": code,
+    ]
+    if let respondingHostIdentity = ((errorPayload?["host"] as? [String: Any])?["deviceId"] as? String),
+       !respondingHostIdentity.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      userInfo[syncRespondingHostIdentityKey] = respondingHostIdentity
+    }
+    return NSError(domain: "ADE", code: 5, userInfo: userInfo)
   }
 
   private func handleReconnectFailure(
@@ -9985,7 +10686,7 @@ final class SyncService: ObservableObject {
     if shouldScheduleRetry {
       scheduleReconnectIfNeeded(after: reconnectDelay())
     } else {
-      cancelReconnectLoop()
+      resetAndCancelReconnectLoop()
     }
   }
 
@@ -10076,8 +10777,14 @@ final class SyncService: ObservableObject {
     return trimmed
   }
 
-  private func cancelReconnectLoop() {
+  private func resetAndCancelReconnectLoop() {
     reconnectState.reset()
+    cancelPendingReconnectTasks()
+    reconnectStabilityTask?.cancel()
+    reconnectStabilityTask = nil
+  }
+
+  private func cancelPendingReconnectTasks() {
     reconnectTask?.cancel()
     reconnectTask = nil
     networkPathReconnectTask?.cancel()
@@ -10388,7 +11095,9 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func currentPeerMetadata() -> [String: Any] {
+  private func currentPeerMetadata(
+    connectionAttempt: SyncConnectionAttemptMetadata? = nil
+  ) -> [String: Any] {
     let info = Bundle.main.infoDictionary ?? [:]
     var metadata: [String: Any] = [
       "deviceId": deviceId,
@@ -10397,7 +11106,7 @@ final class SyncService: ObservableObject {
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
-      "capabilities": ["changesetAck", "chunkedEnvelopes"],
+      "capabilities": ["changesetAck", "chunkedEnvelopes", "relayReauthorizeV1"],
     ]
     if let appVersion = (info["CFBundleShortVersionString"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -10414,6 +11123,9 @@ final class SyncService: ObservableObject {
       !bundleIdentifier.isEmpty {
       metadata["bundleIdentifier"] = bundleIdentifier
     }
+    if let connectionAttempt {
+      metadata["connectionAttempt"] = connectionAttempt.payload
+    }
     // Per-project-DB cursors: the host picks the entry for the DB it serves,
     // so a brain that switched hosted projects pumps the right backlog
     // instead of trusting the single legacy cursor from a different DB.
@@ -10421,6 +11133,19 @@ final class SyncService: ObservableObject {
       metadata["dbVersionBySite"] = bySite
     }
     return metadata
+  }
+
+  private func makeConnectionAttemptMetadata() -> SyncConnectionAttemptMetadata {
+    let nowMilliseconds = Int64((Date().timeIntervalSince1970 * 1_000).rounded(.down))
+    let startedAtMilliseconds = syncNextConnectionAttemptStartedAtMilliseconds(
+      nowMilliseconds: nowMilliseconds,
+      previousMilliseconds: lastConnectionAttemptStartedAtMilliseconds
+    )
+    lastConnectionAttemptStartedAtMilliseconds = startedAtMilliseconds
+    return SyncConnectionAttemptMetadata(
+      id: UUID().uuidString,
+      startedAtMilliseconds: startedAtMilliseconds
+    )
   }
 
   private func openSocket(
@@ -10438,7 +11163,12 @@ final class SyncService: ObservableObject {
     }
 
     let urlHost = endpoint?.scheme == nil ? socketHost : host
-    guard let urlString = syncWebSocketURLString(host: urlHost, port: socketPort),
+    guard var urlString = syncWebSocketURLString(host: urlHost, port: socketPort) else {
+      throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
+    }
+    let isRelay = syncIsFullWebSocketRoute(host)
+    if isRelay { urlString = syncRelayReadyV2URL(urlString) }
+    guard
           let url = URL(string: urlString) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
@@ -10449,12 +11179,18 @@ final class SyncService: ObservableObject {
     // hosts and any future unchunked path.
     task.maximumMessageSize = 32 * 1024 * 1024
     socket = task
+    if isRelay { relayTransportNegotiations[task.taskIdentifier] = SyncRelayReadyNegotiation() }
     try await awaitSocketOpen(task)
     guard isCurrentConnectAttempt(connectAttemptGeneration) else {
-      teardownSocket(reason: "Connection superseded.")
+      if socket === task {
+        teardownSocket(reason: "Connection superseded.")
+      } else {
+        task.cancel(with: .goingAway, reason: nil)
+      }
       throw CancellationError()
     }
     receiveLoop(for: task)
+    if isRelay { try await awaitRelayTransportReady(task) }
   }
 
   private func publishSocketConnecting(to socketHost: String) {
@@ -10536,14 +11272,255 @@ final class SyncService: ObservableObject {
   /// already running from `applyHelloPayload`; these two network refreshes can
   /// interleave with it on the main actor while their awaits are in flight.
   private func schedulePostHelloWork(for generation: UInt64) {
-    Task { @MainActor [weak self] in
-      guard let self, self.isCurrentConnectAttempt(generation) else { return }
-      async let lanePresence: Void = self.restoreTrackedOpenLanesAfterReconnect()
-      async let projectCatalog: Void = self.refreshRemoteProjectCatalog()
-      _ = await (lanePresence, projectCatalog)
-      guard self.isCurrentConnectAttempt(generation) else { return }
-      self.logProjectSwitchPhase("post_hello_ready", completed: true)
+    guard let expectedSocket = socket else { return }
+    let expectedConnectionGeneration = connectionGeneration
+    let isCurrent = {
+      self.isCurrentConnectAttempt(generation)
+        && self.connectionGeneration == expectedConnectionGeneration
+        && self.socket === expectedSocket
+        && self.canSendLiveRequests()
     }
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      await performGenerationScopedPostHelloWork(
+        isCurrent: isCurrent,
+        restore: {
+          async let lanePresence: Void = self.restoreTrackedOpenLanesAfterReconnect()
+          async let projectCatalog: Void = self.refreshRemoteProjectCatalog()
+          _ = await (lanePresence, projectCatalog)
+        },
+        complete: {
+          self.connectionState = .connected
+          self.logProjectSwitchPhase("post_hello_ready", completed: true)
+          self.scheduleReconnectStabilityReset(
+            generation: expectedConnectionGeneration,
+            socket: expectedSocket
+          )
+        }
+      )
+    }
+  }
+
+  private func scheduleReconnectStabilityReset(
+    generation: UInt64,
+    socket expectedSocket: URLSessionWebSocketTask,
+    delayNanoseconds: UInt64 = SyncSocketTiming.reconnectStabilityNanoseconds
+  ) {
+    reconnectStabilityTask?.cancel()
+    reconnectStabilityTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: delayNanoseconds)
+      guard let self, !Task.isCancelled,
+            self.connectionGeneration == generation,
+            self.socket === expectedSocket,
+            self.connectionState == .connected,
+            self.canSendLiveRequests() else { return }
+      self.reconnectState.reset()
+      self.reconnectStabilityTask = nil
+    }
+  }
+
+  private struct RelayReauthorizationAttempt: @unchecked Sendable {
+    var requestId: String
+    var payload: [String: Any]
+    var encodedEnvelope: String
+  }
+
+  private func scheduleRelayReauthorization(
+    lease: SyncRelayAuthorizationLease,
+    refreshImmediately: Bool = false
+  ) {
+    guard let scheduledSocket = socket,
+          syncIsFullWebSocketRoute(currentAddress ?? "") else { return }
+    let scheduledGeneration = connectionGeneration
+    let scheduledSocketIdentifier = ObjectIdentifier(scheduledSocket)
+    let taskId = UUID()
+    relayReauthorizationTask?.cancel()
+    relayReauthorizationTaskId = taskId
+    relayReauthorizationTask = Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer {
+        if self.relayReauthorizationTaskId == taskId {
+          self.relayReauthorizationTask = nil
+          self.relayReauthorizationTaskId = nil
+        }
+      }
+      var activeLease = lease
+      var activeAttempt: RelayReauthorizationAttempt?
+      var refreshNow = refreshImmediately
+      var retryAttempt = 0
+      while !Task.isCancelled {
+        guard syncRelayReauthorizationContextIsCurrent(
+          scheduledGeneration: scheduledGeneration,
+          currentGeneration: self.connectionGeneration,
+          scheduledSocketIdentifier: scheduledSocketIdentifier,
+          currentSocketIdentifier: self.socket.map(ObjectIdentifier.init)
+        ) else { return }
+
+        if !refreshNow {
+          let delay = syncRelayReauthorizationScheduleDelayNanoseconds(
+            lease: activeLease,
+            nowMilliseconds: Date().timeIntervalSince1970 * 1_000
+          )
+          if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
+          guard !Task.isCancelled else { return }
+        }
+        refreshNow = true
+
+        do {
+          if activeAttempt == nil {
+            activeAttempt = try await self.makeRelayReauthorizationAttempt(
+              lease: activeLease,
+              scheduledGeneration: scheduledGeneration,
+              scheduledSocketIdentifier: scheduledSocketIdentifier
+            )
+          }
+          guard let attemptToSend = activeAttempt else { throw CancellationError() }
+          let refreshed = try await self.performRelayReauthorization(attemptToSend)
+          try installRelayReauthorizationLeaseIfCurrent(
+            refreshed,
+            scheduledGeneration: scheduledGeneration,
+            currentGeneration: self.connectionGeneration,
+            scheduledSocketIdentifier: scheduledSocketIdentifier,
+            currentSocketIdentifier: self.socket.map(ObjectIdentifier.init)
+          ) { currentLease in
+            self.relayAuthorizationLease = currentLease
+          }
+          activeLease = refreshed
+          activeAttempt = nil
+          retryAttempt = 0
+          refreshNow = false
+        } catch is CancellationError {
+          return
+        } catch let failure as RelayReauthorizationFailure {
+          let retryAction = syncRelayReauthorizationRetryAction(
+            receivedHostResult: failure.receivedHostResult,
+            errorCode: failure.code,
+            retryable: failure.retryable
+          )
+          if retryAction == .accountChanged {
+            self.handleTerminalRelayAccountChange(failure)
+            return
+          }
+          if retryAction == .rebuildAttempt {
+            activeAttempt = nil
+          }
+          let nowMilliseconds = Date().timeIntervalSince1970 * 1_000
+          guard retryAction == .retryExactAttempt || retryAction == .rebuildAttempt,
+                let retryDelay = syncRelayReauthorizationRetryDelayNanoseconds(
+                  attempt: retryAttempt,
+                  lease: activeLease,
+                  nowMilliseconds: nowMilliseconds
+                ) else {
+            self.beginAutomaticTransportRecovery(failure)
+            return
+          }
+          retryAttempt += 1
+          try? await Task.sleep(nanoseconds: retryDelay)
+          guard !Task.isCancelled else { return }
+        } catch {
+          let nowMilliseconds = Date().timeIntervalSince1970 * 1_000
+          guard let retryDelay = syncRelayReauthorizationRetryDelayNanoseconds(
+            attempt: retryAttempt,
+            lease: activeLease,
+            nowMilliseconds: nowMilliseconds
+          ) else {
+            self.beginAutomaticTransportRecovery(error)
+            return
+          }
+          retryAttempt += 1
+          try? await Task.sleep(nanoseconds: retryDelay)
+          guard !Task.isCancelled else { return }
+        }
+      }
+    }
+  }
+
+  private func makeRelayReauthorizationAttempt(
+    lease: SyncRelayAuthorizationLease,
+    scheduledGeneration: UInt64,
+    scheduledSocketIdentifier: ObjectIdentifier
+  ) async throws -> RelayReauthorizationAttempt {
+    guard let pairedDeviceId = activeHostProfile?.pairedDeviceId else {
+      throw CancellationError()
+    }
+    let relaySession = try await AccountService.shared.freshRelaySession()
+    guard !Task.isCancelled,
+          syncRelayReauthorizationContextIsCurrent(
+            scheduledGeneration: scheduledGeneration,
+            currentGeneration: connectionGeneration,
+            scheduledSocketIdentifier: scheduledSocketIdentifier,
+            currentSocketIdentifier: socket.map(ObjectIdentifier.init)
+          ) else { throw CancellationError() }
+    guard let proof = DpopKeyService.shared.buildRelayReauthorizationProof(
+      deviceId: pairedDeviceId,
+      relayAccountToken: relaySession.token,
+      challenge: lease.challenge
+    ) else {
+      throw RelayReauthorizationFailure(
+        code: "invalid_proof",
+        message: "This iPhone could not refresh its secure Relay proof.",
+        retryable: false,
+        receivedHostResult: true
+      )
+    }
+
+    let requestId = makeRequestId()
+    let payload: [String: Any] = [
+      "deviceId": pairedDeviceId,
+      "relayAccountToken": relaySession.token,
+      "proof": proof,
+    ]
+    return RelayReauthorizationAttempt(
+      requestId: requestId,
+      payload: payload,
+      encodedEnvelope: try encodedCandidateEnvelope(
+        type: "relay_reauthorize",
+        requestId: requestId,
+        payload: payload
+      )
+    )
+  }
+
+  private func performRelayReauthorization(
+    _ attempt: RelayReauthorizationAttempt
+  ) async throws -> SyncRelayAuthorizationLease {
+    let raw = try await awaitResponse(
+      requestId: attempt.requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: "Relay authorization refresh timed out.",
+      timeoutNanoseconds: 6_000_000_000
+    ) {
+      self.sendExactEnvelope(attempt.encodedEnvelope)
+    }
+    guard !Task.isCancelled else { throw CancellationError() }
+    return try syncRelayReauthorizationLease(from: raw)
+  }
+
+  private func sendExactEnvelope(_ text: String) {
+    #if DEBUG
+    if capturesExactEnvelopesForTesting {
+      capturedExactEnvelopesForTesting.append(text)
+      return
+    }
+    #endif
+    guard let socket else { return }
+    let sendSocket = socket
+    sendSocket.send(.string(text)) { error in
+      guard let error else { return }
+      Task { @MainActor in
+        self.handleSocketFailure(sendSocket, error: error)
+      }
+    }
+  }
+
+  private func handleTerminalRelayAccountChange(_ failure: RelayReauthorizationFailure) {
+    relayAuthorizationLease = nil
+    updateProfile { profile in
+      // Disable only the account-scoped Relay route. The device-bound direct
+      // pairing remains intact and is immediately eligible for the next race.
+      profile.relayAccountOwnerId = nil
+    }
+    beginAutomaticTransportRecovery(failure)
   }
 
   #if DEBUG
@@ -10734,11 +11711,103 @@ final class SyncService: ObservableObject {
   }
 
   func seedTerminalBufferForTesting(sessionId: String, transcript: String) {
+    desiredTerminalSessionIds.insert(sessionId)
     subscribedTerminalSessionIds.insert(sessionId)
     terminalBuffers[sessionId] = transcript
     terminalBufferUpdatedAt[sessionId] = Date()
     terminalBufferRevisionsBySessionId[sessionId, default: 0] += 1
     terminalBufferRevision += 1
+  }
+
+  func seedReliableTerminalInputForTesting(
+    sessionId: String,
+    inputId: String,
+    data: Data
+  ) throws {
+    seedTerminalBufferForTesting(sessionId: sessionId, transcript: "ready")
+    supportsTerminalInputAcknowledgements = true
+    terminalInputAcknowledgementRetryWindowMilliseconds = 30_000
+    var queue = SyncTerminalInputQueue()
+    _ = try queue.enqueue(data: data, inputId: inputId)
+    queue.markSent(
+      inputId: inputId,
+      generation: connectionGeneration,
+      sentUptime: ProcessInfo.processInfo.systemUptime
+    )
+    terminalInputQueues[sessionId] = queue
+    scheduleTerminalInputAcknowledgementTimeout(sessionId: sessionId)
+  }
+
+  func terminalInputQueueForTesting(sessionId: String) -> SyncTerminalInputQueue? {
+    terminalInputQueues[sessionId]
+  }
+
+  func desiredTerminalSessionIdsForTesting() -> Set<String> {
+    desiredTerminalSessionIds
+  }
+
+  func hasTerminalInputTimeoutForTesting(sessionId: String) -> Bool {
+    terminalInputTimeoutTasks[sessionId] != nil
+  }
+
+  func supportsTerminalInputAcknowledgementsForTesting() -> Bool {
+    supportsTerminalInputAcknowledgements
+  }
+
+  func handleTerminalInputAcknowledgementForTesting(_ payload: [String: Any]) {
+    handleTerminalInputAcknowledgement(payload)
+  }
+
+  func scheduleLanePresenceHeartbeatForTesting() {
+    scheduleLanePresenceHeartbeatIfNeeded()
+  }
+
+  func relayReauthorizationExactRetryFramesForTesting(
+    requestId: String,
+    payload: [String: Any],
+    sendCount: Int
+  ) throws -> [String] {
+    let attempt = RelayReauthorizationAttempt(
+      requestId: requestId,
+      payload: payload,
+      encodedEnvelope: try encodedCandidateEnvelope(
+        type: "relay_reauthorize",
+        requestId: requestId,
+        payload: payload
+      )
+    )
+    capturedExactEnvelopesForTesting = []
+    capturesExactEnvelopesForTesting = true
+    defer { capturesExactEnvelopesForTesting = false }
+    for _ in 0..<max(0, sendCount) {
+      sendExactEnvelope(attempt.encodedEnvelope)
+    }
+    return capturedExactEnvelopesForTesting
+  }
+
+  func relayReauthorizationContextForTesting() -> (generation: UInt64, socketIdentifier: ObjectIdentifier)? {
+    guard let socket else { return nil }
+    return (connectionGeneration, ObjectIdentifier(socket))
+  }
+
+  func installRelayReauthorizationLeaseForTesting(
+    _ lease: SyncRelayAuthorizationLease,
+    scheduledGeneration: UInt64,
+    scheduledSocketIdentifier: ObjectIdentifier
+  ) throws {
+    try installRelayReauthorizationLeaseIfCurrent(
+      lease,
+      scheduledGeneration: scheduledGeneration,
+      currentGeneration: connectionGeneration,
+      scheduledSocketIdentifier: scheduledSocketIdentifier,
+      currentSocketIdentifier: socket.map(ObjectIdentifier.init)
+    ) { currentLease in
+      relayAuthorizationLease = currentLease
+    }
+  }
+
+  func relayAuthorizationLeaseForTesting() -> SyncRelayAuthorizationLease? {
+    relayAuthorizationLease
   }
 
   func pendingOperationsForTesting() -> [(id: String, kind: String, action: String, projectId: String?, projectRootPath: String?, fallbackToActiveProjectScope: Bool?)] {
@@ -10766,6 +11835,33 @@ final class SyncService: ObservableObject {
     connectionState = .connected
   }
 
+  func beginRelayTransportNegotiationForTesting() {
+    guard let socket else { return }
+    relayTransportNegotiations[socket.taskIdentifier] = SyncRelayReadyNegotiation()
+  }
+
+  func expireRelayTransportNegotiationWindowForTesting() -> SyncRelayReadyNegotiationDecision? {
+    guard let socket,
+          let negotiation = relayTransportNegotiations[socket.taskIdentifier] else { return nil }
+    let decision = negotiation.negotiationWindowExpired()
+    if decision == .sendHello {
+      resolveRelayTransportReady(taskIdentifier: socket.taskIdentifier, result: .success(()))
+    }
+    return decision
+  }
+
+  func handleRelayTransportControlForTesting(_ object: [String: Any]) throws -> Bool {
+    guard let socket else { return false }
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    guard let text = String(data: data, encoding: .utf8) else { return false }
+    return handleRelayTransportControlFrame(text, task: socket)
+  }
+
+  func relayTransportNegotiationForTesting() -> SyncRelayReadyNegotiation? {
+    guard let socket else { return nil }
+    return relayTransportNegotiations[socket.taskIdentifier]
+  }
+
   func completeCapturedRefreshRequestsForTesting() {
     completesCapturedRefreshRequestsForTesting = true
   }
@@ -10790,6 +11886,52 @@ final class SyncService: ObservableObject {
 
   func connectionGenerationForTesting() -> UInt64 {
     connectionGeneration
+  }
+
+  func nextReconnectDelayForTesting() -> UInt64 {
+    reconnectState.nextDelayNanoseconds()
+  }
+
+  func reconnectAttemptCountForTesting() -> Int {
+    reconnectState.attempts
+  }
+
+  func teardownSocketForTesting() {
+    teardownSocket(reason: "Test teardown.")
+  }
+
+  func scheduleReconnectStabilityResetForTesting(delayNanoseconds: UInt64) {
+    guard let socket else { return }
+    connectionState = .connected
+    scheduleReconnectStabilityReset(
+      generation: connectionGeneration,
+      socket: socket,
+      delayNanoseconds: delayNanoseconds
+    )
+  }
+
+  func awaitReconnectStabilityResetForTesting() async {
+    let scheduledTask = reconnectStabilityTask
+    await scheduledTask?.value
+  }
+
+  func performPostHelloRestorationForTesting(
+    restore: () async -> Void
+  ) async {
+    guard let expectedSocket = socket else { return }
+    let expectedConnectionGeneration = connectionGeneration
+    connectionState = .syncing
+    await performGenerationScopedPostHelloWork(
+      isCurrent: {
+        self.connectionGeneration == expectedConnectionGeneration
+          && self.socket === expectedSocket
+          && self.canSendLiveRequests()
+      },
+      restore: restore,
+      complete: {
+        self.connectionState = .connected
+      }
+    )
   }
 
   func completeTransportProbeForTesting(
@@ -10937,6 +12079,24 @@ final class SyncService: ObservableObject {
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
+    supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
+    if supportsTerminalInputAcknowledgements,
+       let terminalInputAck = features?["terminalInputAck"] as? [String: Any] {
+      terminalInputAcknowledgementRetryWindowMilliseconds = max(
+        1_000,
+        (terminalInputAck["retryWindowMs"] as? NSNumber)?.doubleValue ?? 60_000
+      )
+      terminalInputMaximumOutstanding = min(
+        SyncTerminalInputQueue.defaultMaximumItemCount,
+        max(1, (terminalInputAck["maxOutstanding"] as? NSNumber)?.intValue ?? 64)
+      )
+    } else {
+      terminalInputAcknowledgementRetryWindowMilliseconds = 0
+      terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
+    }
+    relayAuthorizationLease = syncIsFullWebSocketRoute(connectedHost)
+      ? (payload["relayAuthorization"] as? [String: Any]).flatMap(SyncRelayAuthorizationLease.init)
+      : nil
     remoteProjectCatalog = []
     pendingProjectCatalogChunks.removeAll()
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
@@ -10979,7 +12139,6 @@ final class SyncService: ObservableObject {
     // cycles it re-fired while they sat on the main page. Entering a project
     // is only ever a user action (selectProject / closeProjectHome).
 
-    reconnectState.reset()
     allowAutoReconnect = true
     setAutoReconnectPausedByUser(false)
     // Do NOT set latestRemoteDbVersion to the server's version here.
@@ -10987,7 +12146,7 @@ final class SyncService: ObservableObject {
     // changeset_batch. Setting it prematurely causes the desktop to skip
     // the full initial sync on reconnect (it thinks we already have the data).
     hostName = remoteHostName ?? activeHostProfile?.hostName
-    connectionState = .connected
+    connectionState = .syncing
     publishConnectTimingMetrics(
       connectedHost: connectedHost,
       generation: connectAttemptGeneration
@@ -11083,6 +12242,9 @@ final class SyncService: ObservableObject {
     restoreTerminalSubscriptions()
     restoreChatEventSubscriptions()
     subscribeRosterIfNeeded()
+    if let relayAuthorizationLease {
+      scheduleRelayReauthorization(lease: relayAuthorizationLease)
+    }
   }
 
   private func failPendingRequests(with error: Error) {
@@ -11113,6 +12275,9 @@ final class SyncService: ObservableObject {
             text = String(decoding: data, as: UTF8.self)
           @unknown default:
             text = ""
+          }
+          if self.handleRelayTransportControlFrame(text, task: task) {
+            continue
           }
           do {
             // CPU-heavy decode (envelope JSON, gunzip, payload JSON) runs off
@@ -11208,7 +12373,8 @@ final class SyncService: ObservableObject {
         }
       }
     case "hello_ok":
-      reconnectState.reset()
+      resolve(requestId: requestId, result: .success(payload))
+    case "relay_reauthorize_result":
       resolve(requestId: requestId, result: .success(payload))
     case "project_catalog":
       let catalog = try decode(payload, as: MobileProjectCatalogPayload.self)
@@ -11436,6 +12602,10 @@ final class SyncService: ObservableObject {
         guard subscribedTerminalSessionIds.contains(sessionId) else { break }
         handleTerminalDataChunk(sessionId: sessionId, chunk: chunk, endOffset: (dict["offset"] as? NSNumber)?.intValue)
       }
+    case "terminal_input_ack":
+      if let dict = payload as? [String: Any] {
+        handleTerminalInputAcknowledgement(dict)
+      }
     case "terminal_exit":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String {
         guard subscribedTerminalSessionIds.contains(sessionId) else { break }
@@ -11459,7 +12629,7 @@ final class SyncService: ObservableObject {
   }
 
   private func startRelayLoop() {
-    cancelReconnectLoop()
+    cancelPendingReconnectTasks()
     relayTask?.cancel()
     relayTask = Task { @MainActor in
       while !Task.isCancelled {
@@ -11772,6 +12942,64 @@ final class SyncService: ObservableObject {
     }
   }
 
+  private func awaitRelayTransportReady(_ task: URLSessionWebSocketTask) async throws {
+    let taskIdentifier = task.taskIdentifier
+    guard let negotiation = relayTransportNegotiations[taskIdentifier] else { return }
+    if negotiation.ready { return }
+    try await withCheckedThrowingContinuation { continuation in
+      pendingRelayTransportReady[taskIdentifier] = continuation
+      relayTransportNegotiationTimeoutTasks[taskIdentifier]?.cancel()
+      relayTransportNegotiationTimeoutTasks[taskIdentifier] = Task { @MainActor [weak self] in
+        try? await Task.sleep(nanoseconds: SyncConnectionRaceTiming.relayReadyNegotiationNanoseconds)
+        guard !Task.isCancelled,
+              let self,
+              self.relayTransportNegotiations[taskIdentifier]?.acceptedV2 != true else { return }
+        self.resolveRelayTransportReady(taskIdentifier: taskIdentifier, result: .success(()))
+      }
+      relayTransportOverallTimeoutTasks[taskIdentifier]?.cancel()
+      relayTransportOverallTimeoutTasks[taskIdentifier] = Task { @MainActor [weak self] in
+        try? await Task.sleep(nanoseconds: SyncConnectionRaceTiming.overallBudgetNanoseconds)
+        guard !Task.isCancelled, let self else { return }
+        self.resolveRelayTransportReady(
+          taskIdentifier: taskIdentifier,
+          result: .failure(NSError(
+            domain: "ADE",
+            code: 35,
+            userInfo: [NSLocalizedDescriptionKey: "Relay accepted the connection but its secure bridge was not ready in time."]
+          ))
+        )
+      }
+    }
+  }
+
+  private func handleRelayTransportControlFrame(
+    _ text: String,
+    task: URLSessionWebSocketTask
+  ) -> Bool {
+    let taskIdentifier = task.taskIdentifier
+    guard var negotiation = relayTransportNegotiations[taskIdentifier],
+          let object = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
+          let control = syncRelayTransportControl(from: object) else { return false }
+    let decision = negotiation.receive(control)
+    relayTransportNegotiations[taskIdentifier] = negotiation
+    if decision == .sendHello {
+      resolveRelayTransportReady(taskIdentifier: taskIdentifier, result: .success(()))
+    }
+    return true
+  }
+
+  private func resolveRelayTransportReady(
+    taskIdentifier: Int,
+    result: Result<Void, Error>
+  ) {
+    relayTransportNegotiationTimeoutTasks.removeValue(forKey: taskIdentifier)?.cancel()
+    relayTransportOverallTimeoutTasks.removeValue(forKey: taskIdentifier)?.cancel()
+    if case .failure = result {
+      relayTransportNegotiations.removeValue(forKey: taskIdentifier)
+    }
+    pendingRelayTransportReady.removeValue(forKey: taskIdentifier)?.resume(with: result)
+  }
+
   @discardableResult
   private func resolveSocketOpen(_ task: URLSessionWebSocketTask, result: Result<Void, Error>) -> Bool {
     let taskIdentifier = task.taskIdentifier
@@ -11782,7 +13010,6 @@ final class SyncService: ObservableObject {
   }
 
   fileprivate func handleSocketDidOpen(_ task: URLSessionWebSocketTask) {
-    guard socket === task else { return }
     resolveSocketOpen(task, result: .success(()))
   }
 
@@ -11843,6 +13070,10 @@ final class SyncService: ObservableObject {
     relayTask = nil
     clientHeartbeatTask?.cancel()
     clientHeartbeatTask = nil
+    relayReauthorizationTask?.cancel()
+    relayReauthorizationTask = nil
+    relayReauthorizationTaskId = nil
+    relayAuthorizationLease = nil
     hydrationTask?.cancel()
     hydrationTask = nil
     pendingOperationFlushTask?.cancel()
@@ -11850,7 +13081,18 @@ final class SyncService: ObservableObject {
     pendingOperationFlushInFlight = false
     lanePresenceHeartbeatTask?.cancel()
     lanePresenceHeartbeatTask = nil
+    reconnectStabilityTask?.cancel()
+    reconnectStabilityTask = nil
+    resetTerminalTransportStateForReconnect()
     if let socket {
+      resolveRelayTransportReady(
+        taskIdentifier: socket.taskIdentifier,
+        result: .failure(NSError(
+          domain: "ADE",
+          code: 26,
+          userInfo: [NSLocalizedDescriptionKey: reason ?? "Connection closed."]
+        ))
+      )
       resolveSocketOpen(
         socket,
         result: .failure(
@@ -11870,6 +13112,18 @@ final class SyncService: ObservableObject {
     pendingProjectCatalogChunks.removeAll()
     envelopeChunkAssembler.reset()
     connectionGeneration &+= 1
+  }
+
+  private func resetTerminalTransportStateForReconnect() {
+    subscribedTerminalSessionIds.removeAll()
+    supportsTerminalInputAcknowledgements = false
+    terminalInputAcknowledgementRetryWindowMilliseconds = 0
+    terminalInputMaximumOutstanding = SyncTerminalInputQueue.defaultMaximumItemCount
+    for task in terminalInputTimeoutTasks.values { task.cancel() }
+    terminalInputTimeoutTasks.removeAll()
+    for sessionId in Array(terminalInputQueues.keys) {
+      terminalInputQueues[sessionId]?.prepareForReconnect()
+    }
   }
 
   private func beginAutomaticTransportRecovery(
@@ -12423,7 +13677,7 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
     guard canSendLiveRequests() else {
-      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this Mac right now."])
     }
     let requestId = commandId ?? makeRequestId()
     let effectiveTimeoutNanoseconds = timeoutNanoseconds ?? SyncRequestTimeout.commandTimeoutNanoseconds(for: action)
@@ -12605,12 +13859,11 @@ final class SyncService: ObservableObject {
 
   private func restoreTerminalSubscriptions() {
     guard canSendLiveRequests() else { return }
-    let sessionIds = subscribedTerminalSessionIds.sorted()
+    let sessionIds = desiredTerminalSessionIds.sorted()
     guard !sessionIds.isEmpty else { return }
     Task { @MainActor [weak self] in
       guard let self else { return }
       for sessionId in sessionIds {
-        self.subscribedTerminalSessionIds.remove(sessionId)
         if self.terminalStreamHandlers[sessionId] != nil {
           // Active full-screen terminal: resume exactly after the last byte we
           // applied so the reconnect back-fills as an append, not a re-render.
@@ -12974,13 +14227,17 @@ final class SyncService: ObservableObject {
   }
 
   private func resetTerminalSubscriptionState(clearHistory: Bool) {
+    desiredTerminalSessionIds.removeAll()
+    subscribedTerminalSessionIds.removeAll()
+    for task in terminalInputTimeoutTasks.values { task.cancel() }
+    terminalInputTimeoutTasks.removeAll()
+    terminalInputQueues.removeAll()
+    terminalEndOffsets.removeAll()
+    terminalGapRecoveryInFlight.removeAll()
     if clearHistory {
-      subscribedTerminalSessionIds.removeAll()
       terminalBuffers.removeAll()
       terminalBufferUpdatedAt.removeAll()
       terminalBufferRevisionsBySessionId.removeAll()
-      terminalEndOffsets.removeAll()
-      terminalGapRecoveryInFlight.removeAll()
     }
     terminalBufferRevision += 1
   }
@@ -13088,7 +14345,7 @@ final class SyncService: ObservableObject {
 
   private func performFileRequest(action: String, args: [String: Any]) async throws -> Any {
     guard canSendLiveRequests() else {
-      throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "The machine is offline."])
+      throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this Mac right now."])
     }
     let requestId = makeRequestId()
     let raw = try await awaitResponse(requestId: requestId) {

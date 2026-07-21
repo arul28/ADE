@@ -292,12 +292,12 @@ struct AccountMachineRow: View {
         title: machine.displayName,
         routeHint: machine.routeLabel ?? machineStatusHint(online: machine.online),
         online: machine.online,
-        statusPill: machine.online ? .online : .offline,
+        statusPill: nil,
         affordance: .connect,
         surface: .row
       )
     }
     .buttonStyle(ADEScaleButtonStyle())
-    .accessibilityLabel("\(machine.displayName), \(machine.online ? "online" : "offline"). Connect.")
+    .accessibilityLabel("\(machine.displayName), saved connection. Connect.")
   }
 }
