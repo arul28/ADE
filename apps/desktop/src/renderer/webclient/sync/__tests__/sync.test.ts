@@ -764,7 +764,7 @@ describe("browser sync connection and client", () => {
       [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
       async () => "relay-account-token",
     );
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1);
     script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
     await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS * 4);
     expect(script.sockets[0]?.sent).toEqual([]);
@@ -773,6 +773,32 @@ describe("browser sync connection and client", () => {
     await connecting;
     expect(script.sockets[0]?.sent.map((envelope) => envelope.type)).toEqual(["hello"]);
     expect(connection.getStatus().state).toBe("connected");
+    connection.dispose();
+  });
+
+  it("does not downgrade when ready arrives before accepted", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-account-token",
+    );
+    await vi.advanceTimersByTimeAsync(1);
+    script.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
+    await vi.advanceTimersByTimeAsync(RELAY_READY_NEGOTIATION_WINDOW_MS * 2);
+    expect(script.sockets[0]?.sent).toEqual([]);
+    script.sockets[0]?.serverTransportSend({ t: "accepted", v: 2 });
+    expect(script.sockets[0]?.sent).toEqual([]);
+    script.sockets[0]?.serverTransportSend({ t: "ready", v: 2 });
+    await connecting;
+    expect(script.sockets[0]?.sent.map((entry) => entry.type)).toEqual(["hello"]);
     connection.dispose();
   });
 
@@ -800,6 +826,54 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
+  it.each(["connect", "dispose"] as const)(
+    "cancels deferred account DPoP creation when a newer %s operation wins",
+    async (supersedingOperation) => {
+      const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+      vi.useFakeTimers();
+      let resolveDpop!: (proof: { timestamp: number; nonce: string; signature: string }) => void;
+      const dpop = new Promise<{ timestamp: number; nonce: string; signature: string }>((resolve) => {
+        resolveDpop = resolve;
+      });
+      const script = createSocketFactory((socket, envelope) => {
+        if (envelope.type === "hello") {
+          socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+        }
+      });
+      const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+      const pairing = connection.pairWithAccount({
+        endpoints: [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+        peer: { ...hostPeer, deviceId: "deferred-dpop-browser", deviceType: "browser" },
+        accountToken: "account-token",
+        createDpop: async () => await dpop,
+        expectedHostDeviceId: hostPeer.deviceId,
+        existingPairing: null,
+        buildEnvironment: () => environment,
+      });
+      await flushMicrotasks();
+      expect(script.sockets).toHaveLength(0);
+
+      if (supersedingOperation === "connect") {
+        const connecting = connection.connect(
+          environment,
+          [{ url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true }],
+        );
+        await vi.advanceTimersByTimeAsync(0);
+        await connecting;
+      } else {
+        connection.dispose();
+      }
+      resolveDpop({ timestamp: 1, nonce: "nonce", signature: "signature" });
+
+      await expect(pairing).rejects.toThrow("superseded");
+      expect(script.sockets).toHaveLength(supersedingOperation === "connect" ? 1 : 0);
+      if (supersedingOperation === "connect") {
+        expect(connection.getStatus().state).toBe("connected");
+        connection.dispose();
+      }
+    },
+  );
+
   it("preserves reconnect backoff across short hello_ok flaps and resets after a stable session", async () => {
     const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
     vi.useFakeTimers();
@@ -813,25 +887,29 @@ describe("browser sync connection and client", () => {
 
     const connecting = connection.connect(
       environment,
-      [{ url: "ws://127.0.0.1:8787", kind: "lan", dialable: true }],
+      [{ url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true }],
     );
     await vi.advanceTimersByTimeAsync(0);
     await connecting;
 
+    script.sockets[0]!.serverSend({ type: "brain_status", payload: {} });
+    await flushMicrotasks();
     script.sockets[0]!.close(4505, "short flap one");
     await vi.advanceTimersByTimeAsync(999);
     expect(script.sockets).toHaveLength(1);
     await vi.advanceTimersByTimeAsync(1);
     expect(script.sockets).toHaveLength(2);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1);
     expect(connection.getStatus().state).toBe("connected");
 
+    script.sockets[1]!.serverSend({ type: "brain_status", payload: {} });
+    await flushMicrotasks();
     script.sockets[1]!.close(4505, "short flap two");
     await vi.advanceTimersByTimeAsync(1_999);
     expect(script.sockets).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(script.sockets).toHaveLength(3);
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1);
     expect(connection.getStatus().state).toBe("connected");
 
     await vi.advanceTimersByTimeAsync(BACKOFF_STABLE_CONNECTED_MS);
@@ -840,6 +918,44 @@ describe("browser sync connection and client", () => {
     expect(script.sockets).toHaveLength(3);
     await vi.advanceTimersByTimeAsync(1);
     expect(script.sockets).toHaveLength(4);
+    connection.dispose();
+  });
+
+  it("does not let an envelope listener reconnect make a stale ping send on the new socket", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    await vi.advanceTimersByTimeAsync(0);
+    const firstConnect = connection.connect(
+      environment,
+      [{ url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true }],
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await firstConnect;
+    let replacement: Promise<void> | null = null;
+    const unsubscribe = connection.on("envelope", (envelope) => {
+      if (envelope.type !== "heartbeat" || replacement) return;
+      replacement = connection.connect(
+        environment,
+        [{ url: "ws://127.0.0.1:8788", kind: "loopback", dialable: true }],
+      );
+    });
+
+    script.sockets[0]!.serverSend({
+      type: "heartbeat",
+      requestId: "stale-ping",
+      payload: { kind: "ping", sentAt: new Date().toISOString() },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await replacement;
+    expect(script.sockets).toHaveLength(2);
+    expect(script.sockets[1]!.sent.map((entry) => entry.type)).toEqual(["hello"]);
+    unsubscribe();
     connection.dispose();
   });
 
@@ -1082,7 +1198,8 @@ describe("browser sync connection and client", () => {
     vi.setSystemTime(nowMs);
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
-    const relayTokenProvider = vi.fn(async () => `relay-token-${relayTokenProvider.mock.calls.length}`);
+    let relayTokenSequence = 0;
+    const relayTokenProvider: () => Promise<string> = vi.fn(async () => `relay-token-${++relayTokenSequence}`);
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
         socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
@@ -1138,7 +1255,8 @@ describe("browser sync connection and client", () => {
     vi.setSystemTime(nowMs);
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
-    const relayTokenProvider = vi.fn(async () => `relay-token-${relayTokenProvider.mock.calls.length}`);
+    let relayTokenSequence = 0;
+    const relayTokenProvider: () => Promise<string> = vi.fn(async () => `relay-token-${++relayTokenSequence}`);
     let refreshFrames = 0;
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
@@ -1191,13 +1309,14 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
-  it("retries transient Relay verification failures at 1/2/4/8 seconds within grace", async () => {
+  it("keeps retrying transient Relay verification failures at capped 8s intervals until the lease deadline", async () => {
     const nowMs = 1_800_000_000_000;
     vi.useFakeTimers();
     vi.setSystemTime(nowMs);
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
-    const relayTokenProvider = vi.fn(async () => `relay-token-${relayTokenProvider.mock.calls.length}`);
+    let relayTokenSequence = 0;
+    const relayTokenProvider: () => Promise<string> = vi.fn(async () => `relay-token-${++relayTokenSequence}`);
     const refreshTimes: number[] = [];
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
@@ -1211,7 +1330,7 @@ describe("browser sync connection and client", () => {
         socket.serverSend({
           type: "relay_reauthorize_result",
           requestId: envelope.requestId,
-          payload: refreshTimes.length < 5
+          payload: refreshTimes.length < 8
             ? {
                 ok: false,
                 error: {
@@ -1248,14 +1367,17 @@ describe("browser sync connection and client", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await flushMicrotasks();
     expect(refreshTimes).toHaveLength(1);
-    for (const [index, delayMs] of [1_000, 2_000, 4_000, 8_000].entries()) {
+    for (const [index, delayMs] of [1_000, 2_000, 4_000, 8_000, 8_000, 8_000, 8_000].entries()) {
       await vi.advanceTimersByTimeAsync(delayMs);
       await flushMicrotasks();
       expect(refreshTimes).toHaveLength(index + 2);
     }
 
     expect(refreshTimes.map((time, index) => index === 0 ? 0 : time - refreshTimes[index - 1]!))
-      .toEqual([0, 1_000, 2_000, 4_000, 8_000]);
+      .toEqual([0, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000, 8_000]);
+    const refreshFrames = script.sockets[0]?.sent.filter((envelope) => envelope.type === "relay_reauthorize") ?? [];
+    expect(refreshFrames).toHaveLength(8);
+    expect(refreshFrames.every((frame) => JSON.stringify(frame) === JSON.stringify(refreshFrames[0]))).toBe(true);
     expect(relayTokenProvider).toHaveBeenCalledTimes(2);
     expect(connection.getHelloOk()?.relayAuthorization?.challenge).toBe("relay-challenge-after-retry");
     connection.dispose();

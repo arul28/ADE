@@ -1349,20 +1349,26 @@ export function createBrainProjectActionsSyncHandler(
       });
     });
     ws.on("close", (code, reason) => {
+      const closedMetadata = peer.metadata;
+      const wasAuthenticated = peer.authenticated;
       peer.lifecycleGeneration += 1;
       clearAuthTimeout();
       peer.relayAuthorization?.dispose();
       peer.relayAuthorization = null;
+      peer.authenticated = false;
+      peer.authKind = null;
+      peer.metadata = null;
+      peer.pairingRecord = null;
       clearInterval(personalChatPump);
       peer.personalChatSubscriptions.clear();
       pairedChannelService.closePeer(ws, "Sync socket closed.", false);
       args.logger.info("sync_brain.peer_closed", {
         code,
         reason: reason.toString("utf8") || null,
-        peerDeviceId: peer.metadata?.deviceId ?? null,
-        peerDeviceName: peer.metadata?.deviceName ?? null,
+        peerDeviceId: closedMetadata?.deviceId ?? null,
+        peerDeviceName: closedMetadata?.deviceName ?? null,
         remoteAddress: remoteAddress ?? null,
-        authenticated: peer.authenticated,
+        authenticated: wasAuthenticated,
       });
     });
   };

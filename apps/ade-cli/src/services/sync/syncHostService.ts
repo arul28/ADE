@@ -693,6 +693,8 @@ type SyncHostServiceArgs = {
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   pinStore: SyncPinStore;
+  /** Test/integration seam for serialized pairing commit verification. */
+  pairingStore?: ReturnType<typeof createSyncPairingStore>;
   accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   /** Test seam for controlling an in-flight account attestation. */
@@ -1682,7 +1684,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const pairingSecretsPath = args.pairingSecretsPath ?? path.join(layout.secretsDir, "sync-paired-devices.json");
   const commandLedgerPath = path.join(layout.cacheDir, "sync-mobile-command-ledger.json");
   const bootstrapToken = ensureBootstrapToken(bootstrapTokenPath);
-  const pairingStore = createSyncPairingStore({
+  const pairingStore = args.pairingStore ?? createSyncPairingStore({
     filePath: pairingSecretsPath,
     pinStore: args.pinStore,
   });
@@ -5269,9 +5271,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function handleMessageWithTimeout(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+    const operationGeneration = peer.lifecycleGeneration;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
+        if (peer.lifecycleGeneration === operationGeneration) {
+          // Promise.race does not cancel the handler. Invalidate its operation
+          // generation and close the peer so every post-await guard fails
+          // before pairing/arbitration/state mutation can resume.
+          peer.lifecycleGeneration += 1;
+          try {
+            peer.ws.close(4002, "Sync message timed out");
+          } catch {
+            // The generation barrier remains authoritative if close throws.
+          }
+        }
         reject(new Error(`Timed out handling sync message ${envelope.type} after ${messageTimeoutMs}ms.`));
       }, messageTimeoutMs);
       timer.unref?.();

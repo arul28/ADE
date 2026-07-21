@@ -26,6 +26,7 @@ import {
 import {
   CHAT_EVENT_REPLAY_MAX_BYTES,
   CHAT_EVENT_REPLAY_MAX_EVENTS,
+  CONNECTION_ATTEMPT_RESERVATION_TTL_MS,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
@@ -610,6 +611,150 @@ describe("buildChangesetBatchPayload", () => {
 });
 
 describe("brain project actions fallback handler", () => {
+  it.each(["close", "account-switch"] as const)(
+    "cancels deferred Relay verification on peer %s before fallback authentication commits",
+    async (mode) => {
+      const { projectRoot, cleanup } = createTempProjectRoot();
+      const secretsDir = path.join(projectRoot, "secrets");
+      const pairing = createSpoofedDesktopPairing(secretsDir);
+      let currentUserId = "account-a";
+      let resolveVerification!: (value: never) => void;
+      const verification = new Promise<never>((resolve) => { resolveVerification = resolve; });
+      const verify = vi.fn(async () => await verification);
+      const handler = createBrainProjectActionsSyncHandler({
+        logger: createDiscoveryLogger(),
+        projectCatalogProvider: {
+          listProjects: vi.fn(async () => ({ projects: [] })),
+          prepareProjectConnection: vi.fn(),
+        },
+        bootstrapCredentialStore: new EncryptedFileCredentialStore({
+          secretsDir,
+          keyMaterialProvider: () => null,
+        }),
+        pairingSecretsPath: pairing.pairingSecretsPath,
+        pinPath: pairing.pinPath,
+        localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
+        localSiteIdPath: path.join(secretsDir, "sync-site-id"),
+        accountAuthService: {
+          getStatus: () => ({
+            signedIn: true,
+            userId: currentUserId,
+            email: null,
+            name: null,
+            expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+          }),
+          getAccessToken: async () => "host-account-token",
+        },
+        getAccountAttestationConfig: () => ({
+          issuer: "https://issuer.example",
+          jwksUrl: "https://issuer.example/jwks",
+          oauthClientId: "client-id",
+        }),
+        verifyAccountAttestation: verify,
+      });
+      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+      server.on("connection", (ws, request) => handler({
+        ws,
+        remoteAddress: request.socket.remoteAddress ?? null,
+        remotePort: request.socket.remotePort ?? null,
+        transportOrigin: "relay-bridge",
+      }));
+      let client: WebSocket | null = null;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          server.once("listening", resolve);
+          server.once("error", reject);
+        });
+        const port = (server.address() as AddressInfo).port;
+        client = new WebSocket(`ws://127.0.0.1:${port}`);
+        const { envelopes } = trackClientEnvelopes(client);
+        await new Promise<void>((resolve, reject) => {
+          client!.once("open", resolve);
+          client!.once("error", reject);
+        });
+        sendSpoofedPairedHello(client, pairing.helloPeer, pairing.secret, "client-account-token");
+        await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+        if (mode === "close") {
+          client.close();
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        } else currentUserId = "account-b";
+        resolveVerification({
+          userId: "account-a",
+          expiresAtMs: Date.now() + 60_000,
+        } as never);
+
+        if (mode === "account-switch") {
+          await expect(waitForEnvelope(envelopes, "hello_error", "spoofed-hello"))
+            .resolves.toMatchObject({ payload: { code: "relay_account_required" } });
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          expect(envelopes.some((entry) => entry.type === "hello_ok")).toBe(false);
+        }
+      } finally {
+        resolveVerification({ userId: "account-a", expiresAtMs: Date.now() + 60_000 } as never);
+        client?.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        cleanup();
+      }
+    },
+  );
+
+  it("does not send fallback hello_ok when the peer closes during deferred catalog load", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, "secrets");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    const credentials = new EncryptedFileCredentialStore({ secretsDir, keyMaterialProvider: () => null });
+    credentials.setSync("test.bootstrap", "bootstrap-token");
+    let resolveCatalog!: () => void;
+    const catalogGate = new Promise<void>((resolve) => { resolveCatalog = resolve; });
+    const listProjects = vi.fn(async () => {
+      await catalogGate;
+      return { projects: [] };
+    });
+    const handler = createBrainProjectActionsSyncHandler({
+      logger: createDiscoveryLogger(),
+      projectCatalogProvider: { listProjects, prepareProjectConnection: vi.fn() },
+      bootstrapCredentialStore: credentials,
+      bootstrapTokenKey: "test.bootstrap",
+      pairingSecretsPath: path.join(secretsDir, "pairings.json"),
+      pinPath: path.join(secretsDir, "pin.json"),
+      localDeviceIdPath: path.join(secretsDir, "device-id"),
+      localSiteIdPath: path.join(secretsDir, "site-id"),
+    });
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    server.on("connection", (ws, request) => handler({
+      ws,
+      remoteAddress: request.socket.remoteAddress ?? null,
+      remotePort: request.socket.remotePort ?? null,
+      transportOrigin: "direct",
+    }));
+    let client: WebSocket | null = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("listening", resolve);
+        server.once("error", reject);
+      });
+      client = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      sendHello(client, "bootstrap-token");
+      await vi.waitFor(() => expect(listProjects).toHaveBeenCalledTimes(1));
+      client.close();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      resolveCatalog();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(envelopes.some((entry) => entry.type === "hello_ok")).toBe(false);
+    } finally {
+      resolveCatalog();
+      client?.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      cleanup();
+    }
+  });
+
   it("closes a fallback Relay peer when its account proof expires", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
@@ -1501,6 +1646,174 @@ describe("sync host account authentication", () => {
     }));
   }
 
+  it("commits exactly one concurrent account hello winner for the same connection attempt", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    let verifierCalls = 0;
+    let releaseVerifier!: () => void;
+    const verifierGate = new Promise<void>((resolve) => { releaseVerifier = resolve; });
+    const pairCommit = vi.spyOn(pairingStore, "pairPeerViaAccount");
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      verifyAccountAttestation: vi.fn(async () => {
+        verifierCalls += 1;
+        if (verifierCalls === 2) releaseVerifier();
+        await verifierGate;
+        return attestation;
+      }),
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    try {
+      const port = await host.waitUntilListening();
+      const keys = makeDpopKeyPair();
+      const attempt = { id: "parallel-account-race", startedAtMs: Date.now() };
+      const peer = {
+        deviceId: "parallel-account-device",
+        deviceName: "Parallel account device",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "parallel-account-site",
+        dbVersion: 0,
+        connectionAttempt: attempt,
+      } satisfies SyncPeerMetadata;
+      for (let index = 0; index < 2; index += 1) {
+        const client = await openAccountClient(port, listener.getRelayBridgeProof());
+        clients.push(client);
+        sendAccountHello({
+          ws: client.ws,
+          peer: { ...peer, siteId: `${peer.siteId}-${index}` },
+          accountToken,
+          dpop: signAccountDpop({
+            privateKey: keys.privateKey,
+            publicKeyX963: keys.publicKeyX963,
+            deviceId: peer.deviceId,
+            accountToken,
+          }),
+        });
+      }
+
+      await waitForValue(
+        () => clients.flatMap((client) => client.envelopes)
+          .filter((envelope) => envelope.type === "hello_ok" || envelope.type === "hello_error").length === 2
+          ? true
+          : null,
+        "concurrent account race results",
+      );
+      const helloOks = clients.flatMap((client) => client.envelopes)
+        .filter((envelope) => envelope.type === "hello_ok");
+      const helloErrors = clients.flatMap((client) => client.envelopes)
+        .filter((envelope) => envelope.type === "hello_error");
+      expect(helloOks).toHaveLength(1);
+      expect(helloErrors).toHaveLength(1);
+      expect(helloErrors[0]?.payload).toMatchObject({ code: "connection_attempt_superseded" });
+      expect(pairCommit).toHaveBeenCalledTimes(1);
+      const winnerSecret = (helloOks[0]?.payload as { accountPairing?: { secret?: string } }).accountPairing?.secret;
+      expect(winnerSecret).toEqual(expect.any(String));
+      expect(pairingStore.authenticate(peer.deviceId, winnerSecret!)).toBe(true);
+    } finally {
+      pairCommit.mockRestore();
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
+  it("invalidates a timed-out account hello before its deferred verifier can mutate pairing state", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const baseArgs = createHostArgs(projectRoot, []);
+    const accountToken = await mintAccountToken();
+    const attestation = await verifyClerkAccountAttestation({
+      token: accountToken,
+      expectedUserId: ownerUserId,
+      config: { issuer, jwksUrl, oauthClientId },
+    });
+    let releaseVerifier!: () => void;
+    const verifierGate = new Promise<void>((resolve) => { releaseVerifier = resolve; });
+    const verify = vi.fn(async () => {
+      await verifierGate;
+      return attestation;
+    });
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingSecretsPath,
+      sharedListener: listener,
+      discoveryEnabled: false,
+      messageTimeoutMs: 100,
+      verifyAccountAttestation: verify,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: Awaited<ReturnType<typeof openAccountClient>> | null = null;
+    try {
+      const peer = {
+        deviceId: "timed-out-account-device",
+        deviceName: "Timed out account device",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "timed-out-account-site",
+        dbVersion: 0,
+        connectionAttempt: { id: "timed-out-attempt", startedAtMs: Date.now() },
+      } satisfies SyncPeerMetadata;
+      const keys = makeDpopKeyPair();
+      client = await openAccountClient(await host.waitUntilListening(), listener.getRelayBridgeProof());
+      sendAccountHello({
+        ws: client.ws,
+        peer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: keys.privateKey,
+          publicKeyX963: keys.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      });
+      await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      releaseVerifier();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      expect(pairingStore.getPairingRecord(peer.deviceId)).toBeNull();
+      expect(client.envelopes.some((envelope) => envelope.type === "hello_ok")).toBe(false);
+    } finally {
+      releaseVerifier();
+      client?.ws.close();
+      await host.dispose();
+      await listener.close();
+      cleanup();
+    }
+  });
+
   it("keeps direct desktop PIN capability separate from Relay and phone pairing", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");
@@ -2207,7 +2520,7 @@ describe("sync host account authentication", () => {
     const peer = {
       deviceId: "relay-fast-control-peer",
       deviceName: "Relay fast control peer",
-      platform: "Web",
+      platform: "unknown",
       deviceType: "browser",
       siteId: "relay-fast-control-site",
       dbVersion: 0,
@@ -3234,6 +3547,69 @@ describe("connection-attempt arbitration", () => {
     } finally {
       try { first?.ws.close(); } catch { /* ignore */ }
       try { replacement?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("lets a genuinely newer authenticated attempt supersede the prior winner", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let first: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let newer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      const startedAtMs = Date.now();
+      first = await connectPeer(port, host.getBootstrapToken(), "newer-race-device", {
+        connectionAttempt: { id: "old-live-race", startedAtMs },
+      });
+      newer = await connectPeer(port, host.getBootstrapToken(), "newer-race-device", {
+        connectionAttempt: { id: "new-live-race", startedAtMs: startedAtMs + 1 },
+      });
+      await waitForValue(() => first?.closeEvents[0], "older live winner superseded");
+      expect(newer.ws.readyState).toBe(WebSocket.OPEN);
+      expect(host.getPeerStates()).toHaveLength(1);
+    } finally {
+      try { first?.ws.close(); } catch { /* ignore */ }
+      try { newer?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("retains a disconnected winner watermark briefly, then permits lower-clock recovery", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAttemptHost(projectRoot);
+    let now = Date.now();
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    let winner: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let stale: Awaited<ReturnType<typeof openPeerHello>> | null = null;
+    let recovered: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      winner = await connectPeer(port, host.getBootstrapToken(), "clock-recovery-device", {
+        connectionAttempt: { id: "ahead-race", startedAtMs: now + 10_000 },
+      });
+      winner.ws.close();
+      await waitForValue(() => host.getPeerStates().length === 0 ? true : null, "ahead winner close");
+      stale = await openPeerHello(port, host.getBootstrapToken(), "clock-recovery-device", {
+        connectionAttempt: { id: "lower-race", startedAtMs: now },
+      });
+      await expect(waitForValue(
+        () => stale?.envelopes.find((entry) => entry.type === "hello_error"),
+        "fresh stale watermark rejection",
+      )).resolves.toMatchObject({ payload: { code: "connection_attempt_superseded" } });
+
+      now += CONNECTION_ATTEMPT_RESERVATION_TTL_MS + 1;
+      recovered = await connectPeer(port, host.getBootstrapToken(), "clock-recovery-device", {
+        connectionAttempt: { id: "lower-race-retry", startedAtMs: now - 60_000 },
+      });
+      expect(recovered.ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      nowSpy.mockRestore();
+      try { winner?.ws.close(); } catch { /* ignore */ }
+      try { stale?.ws.close(); } catch { /* ignore */ }
+      try { recovered?.ws.close(); } catch { /* ignore */ }
       await host.dispose();
       cleanup();
     }
@@ -5007,7 +5383,7 @@ describe("sync host reliability guards", () => {
     }
   });
 
-  it("times out a hung queued message and continues with later messages", async () => {
+  it("closes a peer when a mutating queued message times out so its handler cannot resume", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const logger = createDiscoveryLogger();
     const sendMessage = vi.fn((): Promise<void> => new Promise<void>(() => {}));
@@ -5046,8 +5422,8 @@ describe("sync host reliability guards", () => {
         payload: {},
       }));
 
-      const catalog = await waitForEnvelope(peer.envelopes, "project_catalog", "catalog-after-timeout");
-      expect((catalog.payload as SyncProjectCatalogPayload).projects.map((project) => project.id)).toEqual(["project-1"]);
+      await waitForValue(() => peer?.closeEvents[0], "mutating message timeout close");
+      expect(peer.envelopes.some((envelope) => envelope.requestId === "catalog-after-timeout")).toBe(false);
       await waitForValue(
         () => logger.warn.mock.calls.find(([event]) => event === "sync_host.message_failed") ?? null,
         "message timeout warning",
@@ -6215,6 +6591,55 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
     } finally {
       releaseHistory();
       try { client?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("ACKs an exact retry on a replacement socket without a second PTY write", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, writeBySessionId, hasLivePty } = createTerminalHost(projectRoot);
+    let first: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    let replacement: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    const input = { sessionId: "session-1", inputId: "cross-socket-input", data: "x" };
+    try {
+      const port = await host.waitUntilListening();
+      first = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-cross-socket-input");
+      first.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "cross-socket-sub-1",
+        payload: { sessionId: "session-1" },
+      }));
+      await nextResponse(first.envelopes, "terminal_snapshot", "cross-socket-sub-1");
+      first.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "cross-socket-first",
+        payload: input,
+      }));
+      await expect(waitForEnvelope(
+        first.envelopes,
+        "terminal_input_ack",
+        "cross-socket-first",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: false } });
+      first.ws.close();
+      await waitForValue(() => first?.closeEvents[0], "first terminal socket close");
+
+      replacement = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-cross-socket-input");
+      hasLivePty.mockReturnValue(false);
+      replacement.ws.send(encodeSyncEnvelope({
+        type: "terminal_input",
+        requestId: "cross-socket-retry",
+        payload: input,
+      }));
+      await expect(waitForEnvelope(
+        replacement.envelopes,
+        "terminal_input_ack",
+        "cross-socket-retry",
+      )).resolves.toMatchObject({ payload: { ok: true, duplicate: true } });
+      expect(writeBySessionId).toHaveBeenCalledTimes(1);
+    } finally {
+      try { first?.ws.close(); } catch { /* ignore */ }
+      try { replacement?.ws.close(); } catch { /* ignore */ }
       await host.dispose();
       cleanup();
     }
