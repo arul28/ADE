@@ -206,6 +206,10 @@ jobs:
 
       - name: Build signed ${{ matrix.arch }} macOS release
         env:
+          # These archives were signed and notarized by their native
+          # build-runtime-binaries matrix jobs. Verify them here instead of
+          # re-signing and re-timestamping foreign-arch payloads.
+          ADE_RUNTIME_ARCHIVES_PRE_SIGNED: "1"
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
