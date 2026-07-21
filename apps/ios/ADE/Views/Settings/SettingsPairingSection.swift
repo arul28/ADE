@@ -57,9 +57,9 @@ struct SettingsPairingSection: View {
 
   private var awayFromMacHelp: String {
     if accountService.identity != nil {
-      return "You're signed in, so your Macs stay reachable from any network. Tailscale on both devices keeps it fastest."
+      return "You're signed in, so your Macs stay reachable from any network."
     }
-    return "Sign in to reach your Macs from any network, or use Tailscale on both devices."
+    return "Sign in to reach your Macs from any network."
   }
 
   private var discoverSubtitle: String? {

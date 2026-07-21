@@ -684,7 +684,9 @@ struct SettingsMachinesSection: View {
         entry: Entry(
           id: "account-\(machine.id)",
           name: machine.displayName,
-          routeHint: machine.routeLabel ?? machineStatusHint(online: machine.online),
+          // Route-neutral to match the saved rows below; the route kind stays
+          // in the Connection details section, never on the primary list.
+          routeHint: machineStatusHint(online: machine.online),
           online: machine.online,
           isCurrent: current,
           kind: .account(machine)

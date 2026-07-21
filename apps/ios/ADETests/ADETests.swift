@@ -1406,6 +1406,38 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
   }
 
+  func testAccountMachineRowHintStaysRouteNeutral() throws {
+    // A machine advertised over Tailscale/relay must not surface that route on
+    // the primary machine rows — the row hint is presence-only, and route kind
+    // is confined to the Connection details section.
+    let machineJSON = try XCTUnwrap("""
+      {
+        "machineKey": "machine-key",
+        "deviceId": "host-a",
+        "name": "Studio Mac",
+        "reachableEndpoints": [
+          { "kind": "tailnet", "host": "studio.tailnet.ts.net", "port": 8787 },
+          { "kind": "relay", "url": "wss://relay.ade.app/connect/machine-key" }
+        ],
+        "online": true
+      }
+      """.data(using: .utf8))
+    let machine = try JSONDecoder().decode(AccountMachine.self, from: machineJSON)
+
+    // routeLabel still knows the route (used only for diagnostics vocabulary)…
+    XCTAssertEqual(machine.routeLabel, "Tailscale")
+    // …but the string the rows actually render is route-neutral.
+    let rowHint = machineStatusHint(online: machine.online)
+    XCTAssertEqual(rowHint, "Recently reachable")
+    for routeWord in ["Tailscale", "relay", "Local network", "lan", "tailnet"] {
+      XCTAssertFalse(
+        rowHint.localizedCaseInsensitiveContains(routeWord),
+        "Primary machine row hint must not foreground the \(routeWord) route."
+      )
+    }
+    XCTAssertEqual(machineStatusHint(online: false), "Saved connection")
+  }
+
   func testSyncConnectionHealthSeparatesLoadStrainFromTransportFailure() {
     let health = syncConnectionHealth(
       connectionState: .connected,

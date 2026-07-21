@@ -290,7 +290,9 @@ struct AccountMachineRow: View {
       MachineRowView(
         deviceSymbol: machineDeviceSymbol(deviceType: machine.deviceType, platform: machine.platform),
         title: machine.displayName,
-        routeHint: machine.routeLabel ?? machineStatusHint(online: machine.online),
+        // Keep the route kind (lan/tailnet/relay) out of the primary row —
+        // presence is only a hint and route detail lives in Connection details.
+        routeHint: machineStatusHint(online: machine.online),
         online: machine.online,
         statusPill: nil,
         affordance: .connect,
