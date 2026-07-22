@@ -7,6 +7,7 @@ import type {
   RemoteRuntimeBufferedEvent,
 } from "../../../shared/types";
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
+import { chatEventDedupKey } from "./infra/chatEventDedup";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
 function fallbackFor(action: PersonalChatAction): unknown {
@@ -30,13 +31,7 @@ export function createPersonalChatsNamespace(infra: AdapterInfra): AdeNamespace<
   let nextEventId = 1;
 
   const pushEvent = (payload: SyncChatEventPayload) => {
-    const seq = typeof payload.seq === "number" ? payload.seq : null;
-    const eventType = payload.event && typeof payload.event === "object" && "type" in payload.event
-      ? String(payload.event.type)
-      : "";
-    const key = seq == null
-      ? `${payload.sessionId}:${payload.timestamp}:${eventType}`
-      : `${payload.sessionId}:${seq}`;
+    const key = chatEventDedupKey(payload);
     if (delivered.has(key)) return;
     delivered.add(key);
     deliveredOrder.push(key);
@@ -53,13 +48,30 @@ export function createPersonalChatsNamespace(infra: AdapterInfra): AdeNamespace<
     while (buffered.length > 2_000) buffered.shift();
   };
 
+  const resetDeliveredSyncEpoch = (sessionId: string) => {
+    const prefix = `${sessionId}:sync-seq:`;
+    let writeIndex = 0;
+    for (const key of deliveredOrder) {
+      if (key.startsWith(prefix)) {
+        delivered.delete(key);
+        continue;
+      }
+      deliveredOrder[writeIndex] = key;
+      writeIndex += 1;
+    }
+    deliveredOrder.length = writeIndex;
+  };
+
   const ensureSubscription = (sessionId: unknown) => {
     if (typeof sessionId !== "string" || !sessionId || subscriptions.has(sessionId)) return;
     subscriptions.set(sessionId, client.subscribeChat(
       sessionId,
       { chatScope: "personal", maxBytes: 4 * 1024 * 1024 },
       {
-        snapshot: (snapshot) => snapshot.events.forEach((event) => pushEvent(event as SyncChatEventPayload)),
+        snapshot: (snapshot) => {
+          if (snapshot.resumed !== true) resetDeliveredSyncEpoch(snapshot.sessionId);
+          snapshot.events.forEach((event) => pushEvent(event as SyncChatEventPayload));
+        },
         event: pushEvent,
       },
     ));

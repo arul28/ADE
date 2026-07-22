@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectInfo } from "../../../../shared/types";
 import type {
   SyncChatEventPayload,
+  SyncChatSubscribeSnapshotPayload,
   SyncFileBlob,
   SyncTerminalHistoryResponsePayload,
   SyncMobileProjectSummary,
@@ -21,6 +22,24 @@ const project: ProjectInfo = {
   displayName: "Repo",
   baseRef: "main",
 };
+
+function chatEvent(sessionId: string, seq: number, marker: string): SyncChatEventPayload {
+  return {
+    sessionId,
+    seq,
+    timestamp: `2026-07-20T00:00:${String(seq).padStart(2, "0")}.000Z`,
+    event: { type: "status", status: "started", marker } as never,
+  };
+}
+
+function transcriptChatEvent(sessionId: string, sequence: number, marker: string): SyncChatEventPayload {
+  return {
+    sessionId,
+    sequence,
+    timestamp: `2026-07-20T00:01:${String(sequence).padStart(2, "0")}.000Z`,
+    event: { type: "status", status: "started", marker } as never,
+  };
+}
 
 describe("createAdeWebAdapter", () => {
   let fake: FakeAdeSyncClient;
@@ -385,6 +404,50 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("accepts a restarted project chat seq before its non-resumed snapshot", async () => {
+    fake.descriptors = descriptors(["chat.getSummary"]);
+    fake.commandResults.set("chat.getSummary", { sessionId: "chat-restarted" });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-restarted" });
+    fake.commandResults.set("chat.getSummary", { sessionId: "chat-unrelated" });
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-unrelated" });
+    const received: SyncChatEventPayload[] = [];
+    adapter.ade.agentChat.onEvent((event) => received.push(event as SyncChatEventPayload));
+
+    const initialSnapshotEvent = transcriptChatEvent("chat-restarted", 1, "snapshot-source");
+    fake.emitChatSnapshot("chat-restarted", {
+      sessionId: "chat-restarted",
+      capturedAt: "2026-07-20T00:00:00.000Z",
+      truncated: false,
+      resumed: false,
+      events: [initialSnapshotEvent, { ...initialSnapshotEvent }],
+    });
+    fake.emitChat(chatEvent("chat-restarted", 1, "live-before-restart"));
+    const unrelatedEvent = chatEvent("chat-unrelated", 1, "old-unrelated");
+    fake.emitChat(unrelatedEvent);
+    const liveAfterRestart = chatEvent("chat-restarted", 1, "live-after-restart");
+    fake.emitChat(liveAfterRestart);
+    fake.emitChat({ ...liveAfterRestart });
+    fake.emitChatSnapshot("chat-restarted", {
+      sessionId: "chat-restarted",
+      capturedAt: "2026-07-20T00:00:01.000Z",
+      truncated: false,
+      resumed: false,
+      events: [transcriptChatEvent("chat-restarted", 1, "snapshot-after-restart")],
+    });
+    fake.emitChat({ ...unrelatedEvent });
+
+    expect(received.map((payload) => [payload.sessionId, payload.event])).toEqual([
+      ["chat-restarted", expect.objectContaining({ marker: "snapshot-source" })],
+      ["chat-restarted", expect.objectContaining({ marker: "live-before-restart" })],
+      ["chat-unrelated", expect.objectContaining({ marker: "old-unrelated" })],
+      ["chat-restarted", expect.objectContaining({ marker: "live-after-restart" })],
+      ["chat-restarted", expect.objectContaining({ marker: "snapshot-after-restart" })],
+    ]);
+    adapter.dispose();
+  });
+
   it("keeps the last successful read through a transport outage without caching it as fresh", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors(["lanes.list"]);
@@ -550,6 +613,72 @@ describe("createAdeWebAdapter", () => {
       opts: { projectId: null, timeoutMs: undefined },
     });
 
+    adapter.dispose();
+  });
+
+  it("accepts a restarted personal-chat seq before its non-resumed snapshot", async () => {
+    fake.descriptors = [{
+      action: "personalChats.list",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    }];
+    fake.commandResults.set("personalChats.list", [
+      { sessionId: "personal-restarted" },
+      { sessionId: "personal-unrelated" },
+    ]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    await adapter.ade.personalChats.call({ action: "list", args: {} });
+
+    const initialSnapshotEvent = transcriptChatEvent("personal-restarted", 1, "snapshot-source");
+    fake.emitChatSnapshot("personal-restarted", {
+      sessionId: "personal-restarted",
+      capturedAt: "2026-07-20T00:00:00.000Z",
+      truncated: false,
+      resumed: false,
+      events: [initialSnapshotEvent, { ...initialSnapshotEvent }],
+    });
+    fake.emitChat(chatEvent("personal-restarted", 1, "live-before-restart"));
+    const unrelatedEvent = chatEvent("personal-unrelated", 1, "old-unrelated");
+    fake.emitChat(unrelatedEvent);
+    await expect(adapter.ade.personalChats.streamEvents({ cursor: 0 })).resolves.toMatchObject({
+      nextCursor: 3,
+      events: [
+        { payload: { sessionId: "personal-restarted", event: { marker: "snapshot-source" } } },
+        { payload: { sessionId: "personal-restarted", event: { marker: "live-before-restart" } } },
+        { payload: { sessionId: "personal-unrelated", event: { marker: "old-unrelated" } } },
+      ],
+    });
+
+    const liveAfterRestart = chatEvent("personal-restarted", 1, "live-after-restart");
+    fake.emitChat(liveAfterRestart);
+    fake.emitChat({ ...liveAfterRestart });
+    fake.emitChatSnapshot("personal-restarted", {
+      sessionId: "personal-restarted",
+      capturedAt: "2026-07-20T00:00:01.000Z",
+      truncated: false,
+      resumed: false,
+      events: [transcriptChatEvent("personal-restarted", 1, "snapshot-after-restart")],
+    });
+    fake.emitChat({ ...unrelatedEvent });
+
+    await expect(adapter.ade.personalChats.streamEvents({ cursor: 3 })).resolves.toMatchObject({
+      nextCursor: 5,
+      hasMore: false,
+      events: [
+        {
+          payload: {
+            sessionId: "personal-restarted",
+            event: { marker: "live-after-restart" },
+          },
+        },
+        {
+          payload: {
+            sessionId: "personal-restarted",
+            event: { marker: "snapshot-after-restart" },
+          },
+        },
+      ],
+    });
     adapter.dispose();
   });
 
@@ -1519,6 +1648,10 @@ class FakeAdeSyncClient {
   emitChat(payload: SyncChatEventPayload): void {
     for (const listener of this.chatListeners) listener(payload);
     this.chatHandlers.get(payload.sessionId)?.event?.(payload);
+  }
+
+  emitChatSnapshot(sessionId: string, payload: SyncChatSubscribeSnapshotPayload): void {
+    this.chatHandlers.get(sessionId)?.snapshot?.(payload);
   }
 
   emitTerminalData(sessionId: string, payload: SyncTerminalDataPayload): void {

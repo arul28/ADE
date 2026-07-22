@@ -9,6 +9,7 @@ import type {
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
+import { chatEventDedupKey } from "./infra/chatEventDedup";
 
 // The browser gets the current chat tail through both chat_subscribe and
 // chat.getChatEventHistory. Keep each initial payload small: remote hosts
@@ -27,17 +28,29 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
   const deliveredEventSet = new Set<string>();
 
   function emitChatEvent(payload: SyncChatEventPayload): void {
-    const key = chatEventKey(payload);
-    if (key) {
-      if (deliveredEventSet.has(key)) return;
-      deliveredEventSet.add(key);
-      deliveredEvents.push(key);
-      while (deliveredEvents.length > 500) {
-        const oldest = deliveredEvents.shift();
-        if (oldest) deliveredEventSet.delete(oldest);
-      }
+    const key = chatEventDedupKey(payload);
+    if (deliveredEventSet.has(key)) return;
+    deliveredEventSet.add(key);
+    deliveredEvents.push(key);
+    while (deliveredEvents.length > 500) {
+      const oldest = deliveredEvents.shift();
+      if (oldest) deliveredEventSet.delete(oldest);
     }
     events.emit("agentChatEvent", payload);
+  }
+
+  function resetDeliveredSyncEpoch(sessionId: string): void {
+    const prefix = `${sessionId}:sync-seq:`;
+    let writeIndex = 0;
+    for (const key of deliveredEvents) {
+      if (key.startsWith(prefix)) {
+        deliveredEventSet.delete(key);
+        continue;
+      }
+      deliveredEvents[writeIndex] = key;
+      writeIndex += 1;
+    }
+    deliveredEvents.length = writeIndex;
   }
 
   function ensureChatSubscription(sessionId: string | null | undefined): void {
@@ -61,6 +74,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       { maxBytes: WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES },
       {
         snapshot: (payload) => {
+          if (payload.resumed !== true) resetDeliveredSyncEpoch(payload.sessionId);
           for (const event of payload.events) emitChatEvent(event as SyncChatEventPayload);
         },
         event: (payload) => {
@@ -317,11 +331,4 @@ function asRecord(args: unknown): Record<string, unknown> {
 function stringField(record: Record<string, unknown>, key: string): string {
   const value = record[key];
   return typeof value === "string" ? value : "";
-}
-
-function chatEventKey(payload: SyncChatEventPayload): string | null {
-  const seq = typeof payload.seq === "number" ? payload.seq : typeof payload.sequence === "number" ? payload.sequence : null;
-  if (seq !== null) return `${payload.sessionId}:seq:${seq}`;
-  const eventType = payload.event && typeof payload.event === "object" && "type" in payload.event ? String(payload.event.type) : "";
-  return `${payload.sessionId}:ts:${payload.timestamp}:${eventType}`;
 }
