@@ -1488,6 +1488,7 @@ function createRegisterAssetTool(
                 ...(input.externalRef
                   ? { externalRef: input.externalRef as OrchestrationAssetExternalRef }
                   : {}),
+                registeredBySessionId: ctx.sessionId,
               },
               ctx.bundlePath,
             );
@@ -1672,6 +1673,8 @@ function createRecordCodebaseIntakeTool(
     description:
       "Lead-only. Record the /context-style codebase intake — the FIRST gated planning step. " +
       "Read the repo first (CLAUDE.md/README, package manifests, CI config, git log/diff, top-level layout), planAppend a human-readable 'Codebase intake' section, then log the structured summary here. " +
+      "Set `touchesUiSurface: false` when the change has no user-facing UI — the UI design round is then auto-skipped (recorded as N/A) instead of forcing an empty round. " +
+      "Pass `goalSource` when you derived the goal from an attached Linear issue / PR / goal.md, so the run records where the goal came from. " +
       "askPlanningRound, model selection, and approval are all locked until this is recorded.",
     inputSchema: z.object({
       projectShape: z.string().min(1, "describe the project shape + primary languages"),
@@ -1680,18 +1683,40 @@ function createRecordCodebaseIntakeTool(
       ancillarySurfaces: z.array(z.string().min(1)).optional(),
       docMap: z.string().optional(),
       ciGates: z.array(z.string().min(1)).optional(),
+      touchesUiSurface: z.boolean().optional(),
+      goalSource: z
+        .object({
+          kind: z.enum(["linear", "pr", "goalMd", "user"]),
+          ref: z.string().optional(),
+        })
+        .optional(),
     }),
     execute: async (input) =>
       withHeartbeat(ctx, svc, async () => {
-        const res = await svc.recordPlanningIntake(ctx.runId, ctx.bundlePath, {
-          recordedAt: new Date().toISOString(),
-          projectShape: input.projectShape,
-          testStack: input.testStack,
-          inFlightWork: input.inFlightWork,
-          ancillarySurfaces: input.ancillarySurfaces ?? [],
-          ...(input.docMap ? { docMap: input.docMap } : {}),
-          ciGates: input.ciGates ?? [],
-        });
+        const res = await svc.recordPlanningIntake(
+          ctx.runId,
+          ctx.bundlePath,
+          {
+            recordedAt: new Date().toISOString(),
+            projectShape: input.projectShape,
+            testStack: input.testStack,
+            inFlightWork: input.inFlightWork,
+            ancillarySurfaces: input.ancillarySurfaces ?? [],
+            ...(input.docMap ? { docMap: input.docMap } : {}),
+            ciGates: input.ciGates ?? [],
+            ...(typeof input.touchesUiSurface === "boolean"
+              ? { touchesUiSurface: input.touchesUiSurface }
+              : {}),
+          },
+          input.goalSource
+            ? {
+                goalSource: {
+                  kind: input.goalSource.kind,
+                  ...(input.goalSource.ref ? { ref: input.goalSource.ref } : {}),
+                },
+              }
+            : undefined,
+        );
         if (!res.ok) {
           return { ok: false as const, error: res.error, missing: res.missing, message: res.message };
         }
@@ -1699,6 +1724,7 @@ function createRecordCodebaseIntakeTool(
           ok: true as const,
           etag: res.etag,
           nextStage: res.manifest.leadState.planning?.stage ?? "round_functional",
+          uiRoundSkipped: (res.manifest.leadState.planning?.autoSkippedRounds ?? []).includes("ui"),
         };
       }),
   });
@@ -1978,6 +2004,217 @@ function createRecordPlanningOverrideTool(
   });
 }
 
+function createOfferLightPlanTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+  universalOpts: UniversalToolSetOptions,
+) {
+  return tool({
+    description:
+      "Lead-only. Offer the lighter planning path for a small / low-risk / single-worker goal. " +
+      "Asks the user, in plain words, whether to skip the heavy planning rounds and do a simpler plan, or continue with the full one. " +
+      "On acceptance the run takes the condensed path (one plan → single approval → ready) with the same approval-gate rigor. " +
+      "Only offer this after codebase intake and before any deliberation round is recorded. You can expand back to the full plan any time before approval.",
+    inputSchema: z.object({
+      /** Optional plain-language framing shown above the choice. */
+      note: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const manifest = manifestOrThrow(svc, ctx.runId);
+        if (manifest.currentPhase !== "planning") {
+          return {
+            ok: false as const,
+            error: "not_planning",
+            message: "the lighter path can only be offered during planning",
+          };
+        }
+        if (!universalOpts.onAskUser) {
+          return {
+            ok: false as const,
+            error: "no_ask_user_handler",
+            message: "offerLightPlan requires an onAskUser handler — none configured.",
+          };
+        }
+        const questionId = "light-plan-choice";
+        const response = await universalOpts.onAskUser({
+          title: "How much planning?",
+          ...(input.note?.trim() ? { body: input.note.trim() } : {}),
+          question:
+            "This looks like a lighter task — want me to skip the heavy planning rounds and do a simpler plan, or continue with the full one?",
+          pendingInputKind: "structured_question",
+          providerMetadata: { orchestrationLightPlanOffer: true },
+          questions: [
+            {
+              id: questionId,
+              question:
+                "This looks like a lighter task — want me to skip the heavy planning rounds and do a simpler plan, or continue with the full one?",
+              multiSelect: false,
+              allowsFreeform: false,
+              options: [
+                {
+                  label: "Do a simpler plan",
+                  value: "light",
+                  description: "Skip the heavy rounds — one condensed plan, then approval.",
+                },
+                {
+                  label: "Continue with the full plan",
+                  value: "full",
+                  description: "Keep the full functional / UI / extras rounds.",
+                },
+              ],
+            },
+          ],
+        });
+        const result =
+          typeof response === "string"
+            ? { answers: undefined as Record<string, string[]> | undefined, decision: undefined as string | undefined }
+            : response;
+        if (result.decision === "cancel" || result.decision === "decline") {
+          return { ok: true as const, chosen: "full" as const, note: "user dismissed — staying on the full plan" };
+        }
+        const answer = result.answers?.[questionId]?.[0];
+        if (answer !== "light") {
+          return { ok: true as const, chosen: "full" as const };
+        }
+        const res = await svc.enterLightPlan(ctx.runId, ctx.bundlePath);
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return { ok: true as const, chosen: "light" as const, etag: res.etag };
+      }),
+  });
+}
+
+function createExpandToFullPlanTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Lead-only. Expand a condensed light plan back to the full deliberation sequence (functional → UI → extras). " +
+      "Only allowed before the plan is approved. Use this if the 'simpler plan' turns out to need the full rounds after all.",
+    inputSchema: z.object({}),
+    execute: async () =>
+      withHeartbeat(ctx, svc, async () => {
+        const res = await svc.expandToFullPlan(ctx.runId, ctx.bundlePath);
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return {
+          ok: true as const,
+          etag: res.etag,
+          nextStage: res.manifest.leadState.planning?.stage,
+        };
+      }),
+  });
+}
+
+function createChooseFinishingModeTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+  universalOpts: UniversalToolSetOptions,
+) {
+  return tool({
+    description:
+      "Lead-only. Ask the dedicated finishing question during planning (both the full and lighter paths): " +
+      "when this run finishes, stop at validated code in the worktree, or push the branch + open a PR + update Linear? " +
+      "Records the choice in manifest.finishing. When the choice is 'pr', after validation passes you spawn a finishing worker to push, open the PR, update Linear, and register the pr_link / linear_issue / deeplink assets.",
+    inputSchema: z.object({
+      /** Optional plain-language framing shown above the choice. */
+      note: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        if (!universalOpts.onAskUser) {
+          return {
+            ok: false as const,
+            error: "no_ask_user_handler",
+            message: "chooseFinishingMode requires an onAskUser handler — none configured.",
+          };
+        }
+        const questionId = "finishing-mode";
+        const response = await universalOpts.onAskUser({
+          title: "When this run finishes",
+          ...(input.note?.trim() ? { body: input.note.trim() } : {}),
+          question:
+            "When this run finishes: stop at validated code in the worktree, or push the branch + open a PR + update Linear?",
+          pendingInputKind: "structured_question",
+          providerMetadata: { orchestrationFinishingQuestion: true },
+          questions: [
+            {
+              id: questionId,
+              question:
+                "When this run finishes: stop at validated code in the worktree, or push the branch + open a PR + update Linear?",
+              multiSelect: false,
+              allowsFreeform: false,
+              options: [
+                {
+                  label: "Stop at the worktree",
+                  value: "worktree",
+                  description: "Leave validated code in the lane worktree — no push, no PR.",
+                },
+                {
+                  label: "Push + open a PR",
+                  value: "pr",
+                  description: "Push the branch, open/update a PR, and update the attached Linear issue.",
+                },
+              ],
+            },
+          ],
+        });
+        const result =
+          typeof response === "string"
+            ? { answers: undefined as Record<string, string[]> | undefined, decision: undefined as string | undefined }
+            : response;
+        if (result.decision === "cancel" || result.decision === "decline") {
+          return {
+            ok: false as const,
+            error: "finishing_unanswered",
+            message: "User dismissed the finishing question without answering.",
+          };
+        }
+        const answer = result.answers?.[questionId]?.[0];
+        const mode = answer === "pr" ? "pr" : "worktree";
+        const res = await svc.recordFinishingChoice(ctx.runId, ctx.bundlePath, { mode });
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return { ok: true as const, mode, etag: res.etag };
+      }),
+  });
+}
+
+function createRecordScheduledFollowupTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Record a durable follow-up scheduled for after the run (e.g. 're-check CI in 30m'). " +
+      "Do the actual scheduling with `ade actions run chat.createScheduledWork` from a shell, then record it here with the returned scheduledWorkId so the bundle owns the durable intent (manifest.scheduledFollowups).",
+    inputSchema: z.object({
+      summary: z.string().min(1, "plain-language description of the follow-up"),
+      scheduledFor: z.string().optional(),
+      scheduledWorkId: z.string().optional(),
+      status: z.enum(["pending", "scheduled", "fired", "cancelled"]).optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const res = await svc.recordScheduledFollowup(ctx.runId, ctx.bundlePath, {
+          summary: input.summary,
+          ...(input.scheduledFor ? { scheduledFor: input.scheduledFor } : {}),
+          ...(input.scheduledWorkId ? { scheduledWorkId: input.scheduledWorkId } : {}),
+          ...(input.status ? { status: input.status } : {}),
+        });
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return { ok: true as const, etag: res.etag };
+      }),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Lead read-only ADE capability tools
 // ---------------------------------------------------------------------------
@@ -2206,6 +2443,11 @@ export function createOrchestrationToolSet(
     tools.recordCodebaseIntake = createRecordCodebaseIntakeTool(sessionContext, svc);
     tools.askPlanningRound = createAskPlanningRoundTool(sessionContext, svc, universal);
     tools.recordPlanningOverride = createRecordPlanningOverrideTool(sessionContext, svc);
+    // Lifecycle: lighter plan path, finishing decision, durable follow-ups.
+    tools.offerLightPlan = createOfferLightPlanTool(sessionContext, svc, universal);
+    tools.expandToFullPlan = createExpandToFullPlanTool(sessionContext, svc);
+    tools.chooseFinishingMode = createChooseFinishingModeTool(sessionContext, svc, universal);
+    tools.recordScheduledFollowup = createRecordScheduledFollowupTool(sessionContext, svc);
     tools.proposeValidationSteps = createProposeValidationStepsTool(sessionContext, svc);
     tools.recoverStaleTasks = createRecoverStaleTasksTool(sessionContext, svc, chat);
     tools.registerAsset = createRegisterAssetTool(sessionContext, svc, chat);
@@ -2237,6 +2479,8 @@ export function createOrchestrationToolSet(
   });
   tools.getAgentTranscript = createGetAgentTranscriptTool(sessionContext, chat, svc);
   tools.registerAsset = createRegisterAssetTool(sessionContext, svc, chat);
+  // The finishing worker may record a durable follow-up it scheduled.
+  tools.recordScheduledFollowup = createRecordScheduledFollowupTool(sessionContext, svc);
 
   return tools;
 }

@@ -41,6 +41,10 @@ import {
   type PlanningStage,
   type PlanSpecApprovalState,
   type ValidationFinding,
+  type OrchestrationGoalSource,
+  type OrchestrationFinishing,
+  type OrchestrationFinishingMode,
+  type OrchestrationScheduledFollowup,
 } from "../../../shared/types/orchestration";
 import {
   checkPatchOp,
@@ -1179,6 +1183,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         version: req.version ?? 1,
         approval: req.approval ?? "pending",
         ...(req.externalRef ? { externalRef: req.externalRef } : {}),
+        ...(req.registeredBySessionId?.trim()
+          ? { registeredBySessionId: req.registeredBySessionId.trim() }
+          : {}),
       };
       const op: ManifestPatchOp = {
         op: "add",
@@ -2428,6 +2435,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     runId: string,
     bundlePath: string,
     intake: PlanningIntakeArtifact,
+    opts?: { goalSource?: OrchestrationGoalSource },
   ): Promise<PlanningMutationResult> {
     return runPlanningMutation(runId, bundlePath, async (runtime) => {
       const planning = planningOf(runtime.manifest!);
@@ -2458,24 +2466,297 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         ...(intake.docMap?.trim() ? { docMap: intake.docMap.trim() } : {}),
         inFlightWork: intake.inFlightWork.trim(),
         ciGates: dedupeStrings(intake.ciGates),
+        ...(typeof intake.touchesUiSurface === "boolean"
+          ? { touchesUiSurface: intake.touchesUiSurface }
+          : {}),
+      };
+      // Deterministic UI auto-skip: when intake reports no UI surface, mark the
+      // UI round skipped by the state machine so we don't force an empty round.
+      const autoSkipUi = intake.touchesUiSurface === false;
+      const nextAutoSkipped: PlanningRoundKind[] = autoSkipUi
+        ? Array.from(new Set([...(planning.autoSkippedRounds ?? []), "ui"]))
+        : (planning.autoSkippedRounds ?? []);
+      const userSkipped = (planning.overrides?.skippedRounds ?? []).filter((kind) =>
+        hasSkippedRoundUserOverride(runtime.manifest!, kind),
+      );
+      const effectiveSkip = Array.from(new Set([...userSkipped, ...nextAutoSkipped]));
+      const ops: ManifestPatchOp[] = [
+        { op: "replace", path: "/leadState/planning/intake", value: recorded },
+        {
+          op: "replace",
+          path: "/leadState/planning/stage",
+          value: advancePlanningStagePastSkipped("round_functional", effectiveSkip),
+        },
+      ];
+      if (autoSkipUi) {
+        ops.push({
+          op: "replace",
+          path: "/leadState/planning/autoSkippedRounds",
+          value: nextAutoSkipped,
+        });
+        ops.push({
+          op: "add",
+          path: "/decisions/-",
+          value: {
+            id: `DL-uiskip-${shortRand()}`,
+            at: nowIso(),
+            source: "lead",
+            summary:
+              "No UI surface in this change — skipping the UI design round.",
+          },
+        });
+      }
+      if (opts?.goalSource) {
+        ops.push({ op: "replace", path: "/goalSource", value: opts.goalSource });
+      }
+      const res = await directPatch(runtime, ops, "planning: codebase intake recorded");
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Merged "treat as skipped" set for the readiness gate: user-waived rounds
+   * (that carry a matching UserOverrideEntry) PLUS deterministic auto-skips.
+   */
+  function effectiveSkippedRounds(
+    manifest: OrchestrationManifest,
+    planning: NonNullable<OrchestrationManifest["leadState"]["planning"]>,
+  ): Set<PlanningRoundKind> {
+    const userSkipped = (planning.overrides?.skippedRounds ?? []).filter((kind) =>
+      hasSkippedRoundUserOverride(manifest, kind),
+    );
+    return new Set<PlanningRoundKind>([
+      ...userSkipped,
+      ...(planning.autoSkippedRounds ?? []),
+    ]);
+  }
+
+  /**
+   * Enter the condensed light-plan path: `intake → light_plan`. The lead offers
+   * this when a goal looks small enough that the full three rounds are overkill;
+   * on the user's acceptance we collapse to one condensed plan + single approval.
+   * Same approval-gate rigor applies (planContentHash re-approval, model routing,
+   * validation) — the readiness gate just requires the condensed essentials.
+   */
+  async function enterLightPlan(
+    runId: string,
+    bundlePath: string,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const manifest = runtime.manifest!;
+      const planning = planningOf(manifest);
+      if (manifest.planSpec?.approval.state === "approved") {
+        return {
+          ok: false,
+          error: "already_approved",
+          message: "the plan is already approved — cannot switch to the lighter path",
+        };
+      }
+      if (!planning.intake) {
+        return {
+          ok: false,
+          error: "no_intake",
+          message: "record codebase intake before choosing the lighter path",
+        };
+      }
+      if (planning.lightPlan) {
+        return { ok: true, manifest, etag: manifest.etag };
+      }
+      // Only offer the condensed path before any real deliberation round has been
+      // recorded — once rounds exist, the run is committed to the full sequence.
+      if (planning.rounds.some((r) => !r.cascadedFrom)) {
+        return {
+          ok: false,
+          error: "rounds_started",
+          message: "deliberation rounds have already started — cannot switch to the lighter path",
+        };
+      }
+      const enteredAt = nowIso();
+      const res = await directPatch(
+        runtime,
+        [
+          { op: "replace", path: "/leadState/planning/stage", value: "light_plan" },
+          { op: "replace", path: "/leadState/planning/lightPlan", value: { enteredAt } },
+          {
+            op: "add",
+            path: "/decisions/-",
+            value: {
+              id: `DL-light-${shortRand()}`,
+              at: enteredAt,
+              source: "user",
+              summary: "Chose the simpler plan (skip the heavy planning rounds).",
+            },
+          },
+        ],
+        "planning: entered light-plan path",
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Expand a condensed light plan back to the full deliberation sequence. Only
+   * allowed before approval. Resets the stage to the first non-skipped round and
+   * clears the lightPlan marker so the full readiness gate applies again.
+   */
+  async function expandToFullPlan(
+    runId: string,
+    bundlePath: string,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const manifest = runtime.manifest!;
+      const planning = planningOf(manifest);
+      if (manifest.planSpec?.approval.state === "approved") {
+        return {
+          ok: false,
+          error: "already_approved",
+          message: "the plan is already approved — cannot expand it back to the full plan",
+        };
+      }
+      if (!planning.lightPlan) {
+        return {
+          ok: false,
+          error: "not_light",
+          message: "this run is not on the lighter path",
+        };
+      }
+      const resumeStage = advancePlanningStagePastSkipped(
+        "round_functional",
+        [...effectiveSkippedRounds(manifest, planning)],
+      );
+      const res = await directPatch(
+        runtime,
+        [
+          { op: "replace", path: "/leadState/planning/stage", value: resumeStage },
+          { op: "remove", path: "/leadState/planning/lightPlan" },
+          {
+            op: "add",
+            path: "/decisions/-",
+            value: {
+              id: `DL-expand-${shortRand()}`,
+              at: nowIso(),
+              source: "lead",
+              summary: "Expanded back to the full planning rounds.",
+            },
+          },
+        ],
+        "planning: expanded to full plan",
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Record the per-run finishing decision (stop at the worktree, or push + open
+   * a PR + update Linear). Idempotent replace; logs a decision entry.
+   */
+  async function recordFinishingChoice(
+    runId: string,
+    bundlePath: string,
+    choice: { mode: OrchestrationFinishingMode; note?: string },
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      if (choice.mode !== "worktree" && choice.mode !== "pr") {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `finishing mode must be "worktree" or "pr" (got ${String(choice.mode)})`,
+        };
+      }
+      const finishing: OrchestrationFinishing = {
+        mode: choice.mode,
+        decidedAt: nowIso(),
+        ...(choice.note?.trim() ? { note: choice.note.trim() } : {}),
       };
       const res = await directPatch(
         runtime,
         [
-          { op: "replace", path: "/leadState/planning/intake", value: recorded },
+          { op: "replace", path: "/finishing", value: finishing },
           {
-            op: "replace",
-            path: "/leadState/planning/stage",
-            value: advancePlanningStagePastSkipped(
-              "round_functional",
-              (planning.overrides?.skippedRounds ?? []).filter((kind) =>
-                hasSkippedRoundUserOverride(runtime.manifest!, kind),
-              ),
-            ),
+            op: "add",
+            path: "/decisions/-",
+            value: {
+              id: `DL-finish-${shortRand()}`,
+              at: finishing.decidedAt!,
+              source: "user",
+              summary:
+                choice.mode === "pr"
+                  ? "When done: push the branch, open a PR, and update Linear."
+                  : "When done: stop at validated code in the worktree.",
+            },
           },
         ],
-        "planning: codebase intake recorded",
+        `planning: finishing choice → ${choice.mode}`,
       );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /** Record where the run's goal came from (Linear issue / PR / goal.md / user). */
+  async function recordGoalSource(
+    runId: string,
+    bundlePath: string,
+    goalSource: OrchestrationGoalSource,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const validKinds = new Set(["linear", "pr", "goalMd", "user"]);
+      if (!goalSource || !validKinds.has(goalSource.kind)) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `goalSource.kind must be one of linear, pr, goalMd, user (got ${String(goalSource?.kind)})`,
+        };
+      }
+      const value: OrchestrationGoalSource = {
+        kind: goalSource.kind,
+        ...(goalSource.ref?.trim() ? { ref: goalSource.ref.trim() } : {}),
+      };
+      const res = await directPatch(
+        runtime,
+        [{ op: "replace", path: "/goalSource", value }],
+        `planning: goal source → ${value.kind}`,
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Record a durable follow-up scheduled for after the run (e.g. "re-check CI in
+   * 30m"). The actual scheduling happens through `chat.createScheduledWork`
+   * (§13); this records it in `manifest.scheduledFollowups` so the bundle owns
+   * the durable intent. Available to the lead and to the finishing worker.
+   */
+  async function recordScheduledFollowup(
+    runId: string,
+    bundlePath: string,
+    followup: Omit<OrchestrationScheduledFollowup, "id" | "createdAt"> & { id?: string },
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      if (!followup.summary?.trim()) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: "scheduled follow-up requires a plain-language summary",
+        };
+      }
+      const entry: OrchestrationScheduledFollowup = {
+        id: followup.id?.trim() || `SF-${shortRand()}`,
+        summary: followup.summary.trim(),
+        ...(followup.scheduledFor?.trim() ? { scheduledFor: followup.scheduledFor.trim() } : {}),
+        ...(followup.scheduledWorkId?.trim()
+          ? { scheduledWorkId: followup.scheduledWorkId.trim() }
+          : {}),
+        createdAt: nowIso(),
+        status: followup.status ?? "scheduled",
+      };
+      const manifest = runtime.manifest!;
+      const ops: ManifestPatchOp[] = [];
+      if (!Array.isArray(manifest.scheduledFollowups)) {
+        ops.push({ op: "add", path: "/scheduledFollowups", value: [entry] });
+      } else {
+        ops.push({ op: "add", path: "/scheduledFollowups/-", value: entry });
+      }
+      const res = await directPatch(runtime, ops, "run: scheduled follow-up recorded");
       return { ok: true, manifest: res.manifest, etag: res.etag };
     });
   }
@@ -2551,7 +2832,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
               : "rounds_complete";
         const nextStage = advancePlanningStagePastSkipped(
           rawNextStage,
-          planning.overrides?.skippedRounds ?? [],
+          Array.from(
+            new Set([
+              ...(planning.overrides?.skippedRounds ?? []),
+              ...(planning.autoSkippedRounds ?? []),
+            ]),
+          ),
         );
         ops.push({ op: "replace", path: "/leadState/planning/stage", value: nextStage });
       }
@@ -2599,6 +2885,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const nextSkipped = Array.from(
         new Set([...(planning.overrides?.skippedRounds ?? []), ...skipped]),
       );
+      const skipForAdvance = Array.from(
+        new Set([...nextSkipped, ...(planning.autoSkippedRounds ?? [])]),
+      );
       const value = {
         ...(nextSkipped.length ? { skippedRounds: nextSkipped } : {}),
         ...(skipReason ? { skipReason } : {}),
@@ -2635,7 +2924,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           },
         });
       }
-      const stage = advancePlanningStagePastSkipped(planning.stage, nextSkipped);
+      const stage = advancePlanningStagePastSkipped(planning.stage, skipForAdvance);
       if (stage !== planning.stage) {
         ops.push({ op: "replace", path: "/leadState/planning/stage", value: stage });
       }
@@ -2648,15 +2937,16 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const planning = planningOf(manifest);
       const missing: string[] = [];
       if (!planning.intake) missing.push("codebase intake");
-      const skipped = new Set(
-        (planning.overrides?.skippedRounds ?? []).filter((kind) =>
-          hasSkippedRoundUserOverride(manifest, kind),
-        ),
-      );
-      for (const kind of ["functional", "ui", "extras"] as PlanningRoundKind[]) {
-        if (skipped.has(kind)) continue;
-        if (!planning.rounds.some((r) => r.kind === kind && !r.cascadedFrom)) {
-          missing.push(`${kind} deliberation round`);
+      // On the condensed light path the three deliberation rounds are collapsed
+      // into one plan, so they are not required — only the condensed essentials
+      // (intake + validation + model routing) gate approval.
+      if (!planning.lightPlan) {
+        const skipped = effectiveSkippedRounds(manifest, planning);
+        for (const kind of ["functional", "ui", "extras"] as PlanningRoundKind[]) {
+          if (skipped.has(kind)) continue;
+          if (!planning.rounds.some((r) => r.kind === kind && !r.cascadedFrom)) {
+            missing.push(`${kind} deliberation round`);
+          }
         }
       }
       const validationWaived = hasExplicitValidationWaiver(manifest);
@@ -2907,6 +3197,11 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     recordPlanningIntake,
     recordPlanningRound,
     recordPlanningOverride,
+    enterLightPlan,
+    expandToFullPlan,
+    recordFinishingChoice,
+    recordGoalSource,
+    recordScheduledFollowup,
     checkPlanningReady,
     markPlanningReady,
     setPlanApprovalState,

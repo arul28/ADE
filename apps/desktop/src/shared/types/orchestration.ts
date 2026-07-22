@@ -288,6 +288,13 @@ export type OrchestrationAsset = {
   approval?: "pending" | "approved" | "rejected";
   notes?: string;
   /**
+   * The orchestration session that registered this asset (the producing agent).
+   * Populated by `registerAsset` from the caller's session. Optional + additive:
+   * absent on legacy assets and on lead-registered planning specs. The evidence
+   * UI keys per-agent chips off this.
+   */
+  registeredBySessionId?: string;
+  /**
    * Optional pointer to the externally-visible artifact this asset records
    * (proof-drawer id, PR number/url, Linear id, deeplink url). Optional +
    * additive; absent on legacy html_spec/screenshot/test_log/doc assets.
@@ -331,6 +338,11 @@ export type OrchestrationHistoryEntry = {
 
 export type PlanningStage =
   | "intake"
+  // The condensed, lighter path: the lead classified the goal as low-risk /
+  // single-worker and the user accepted a simpler plan. From `intake` the state
+  // machine goes `intake → light_plan → ready`, collapsing the three deliberation
+  // rounds into one condensed plan while keeping the same approval-gate rigor.
+  | "light_plan"
   | "round_functional"
   | "round_ui"
   | "round_extras"
@@ -354,6 +366,13 @@ export type PlanningIntakeArtifact = {
   inFlightWork: string;
   /** Detected typecheck/lint/test/build commands. */
   ciGates: string[];
+  /**
+   * Whether intake determined the change touches a user-facing UI surface.
+   * When explicitly `false`, the state machine auto-skips the UI deliberation
+   * round (records it as N/A) instead of forcing an empty ceremony round.
+   * Absent = undetermined (the UI round runs normally).
+   */
+  touchesUiSurface?: boolean;
 };
 
 /** One option offered in a planning round-question (mirrors a pending-input option). */
@@ -396,6 +415,21 @@ export type PlanningState = {
     skippedRounds?: PlanningRoundKind[];
     skipReason?: string;
   };
+  /**
+   * Set once the lead offers the lighter path and the user accepts it. Presence
+   * = the run is on the condensed `light_plan` path; the readiness gate then
+   * requires the condensed essentials (goal, worker+model, steps, validation)
+   * instead of the full three rounds. Cleared if the lead expands back to the
+   * full plan before approval.
+   */
+  lightPlan?: { enteredAt: string };
+  /**
+   * Rounds the state machine skipped deterministically (NOT user-waived) — e.g.
+   * the UI round when intake reports no UI surface. Treated as satisfied by the
+   * readiness gate the same way a user-waived round is, but recorded separately
+   * so the manifest shows the skip was system-derived, not a user override.
+   */
+  autoSkippedRounds?: PlanningRoundKind[];
 };
 
 // ---------------------------------------------------------------------------
@@ -568,6 +602,26 @@ export type OrchestrationGoalSource = {
   ref?: string;
 };
 
+/** How a finished run leaves the work behind. */
+export type OrchestrationFinishingMode =
+  // Stop at validated code in the lane worktree (today's default behaviour).
+  | "worktree"
+  // Push the branch, open/update a PR, and update the attached Linear issue.
+  | "pr";
+
+/**
+ * The per-run finishing decision, locked during planning via its own question
+ * card. When `mode === "pr"`, after validation passes the lead spawns a
+ * finishing worker to push the branch, open the PR, update Linear, and register
+ * the resulting pr_link / linear_issue / deeplink assets.
+ */
+export type OrchestrationFinishing = {
+  mode: OrchestrationFinishingMode;
+  decidedAt?: string;
+  /** Plain-language note captured alongside the choice. */
+  note?: string;
+};
+
 /**
  * A durable follow-up scheduled for after the run (e.g. "re-check CI in 30m").
  * Placeholder shape in v1 — Unit F wires the durable scheduler
@@ -655,6 +709,12 @@ export type OrchestrationManifest = {
    * means "not recorded" (legacy runs, or a goal taken straight from askUser).
    */
   goalSource?: OrchestrationGoalSource;
+  /**
+   * The per-run finishing decision (stop at the worktree, or push + open a PR +
+   * update Linear). Recorded during planning via its own question card. Optional
+   * + additive; absent = the default `worktree` behaviour.
+   */
+  finishing?: OrchestrationFinishing;
   /** Durable follow-ups scheduled for after the run (Unit F wires the scheduler). */
   scheduledFollowups?: OrchestrationScheduledFollowup[];
   /** Declared ADE capability policy for this run (Unit F consumes/enforces). */
@@ -878,6 +938,8 @@ export type OrchestrationAssetRegisterRequest = {
   approval?: "pending" | "approved" | "rejected";
   /** Optional pointer to the externally-visible artifact this asset records. */
   externalRef?: OrchestrationAssetExternalRef;
+  /** The registering session (producing agent). Populated from the tool caller. */
+  registeredBySessionId?: string;
 };
 
 export type OrchestrationBundleReadResponse = {

@@ -59,12 +59,15 @@ export function isPhaseId(value: unknown): value is OrchestrationManifest["curre
 
 export const PLANNING_STAGES = new Set<string>([
   "intake",
+  "light_plan",
   "round_functional",
   "round_ui",
   "round_extras",
   "rounds_complete",
   "ready",
 ]);
+
+const PLANNING_ROUND_KINDS = new Set<string>(["functional", "ui", "extras"]);
 
 export function isPlanningStage(value: unknown): value is PlanningStage {
   return typeof value === "string" && PLANNING_STAGES.has(value);
@@ -133,6 +136,10 @@ function ensurePlanningAndSpec(manifest: OrchestrationManifest): void {
       rounds: Array.isArray(planning?.rounds) ? planning!.rounds : [],
       ...(planning?.intake ? { intake: planning.intake } : {}),
       ...(planning?.overrides ? { overrides: planning.overrides } : {}),
+      ...(planning?.lightPlan ? { lightPlan: planning.lightPlan } : {}),
+      ...(Array.isArray(planning?.autoSkippedRounds)
+        ? { autoSkippedRounds: planning!.autoSkippedRounds }
+        : {}),
     };
   }
   const spec = manifest.planSpec;
@@ -688,6 +695,26 @@ function validatePlanningState(
     }
     if (typeof round.lockedSummary !== "string" || !round.lockedSummary.trim()) {
       return `planning round ${round.id} must include a non-empty lockedSummary`;
+    }
+  }
+  if (planning.autoSkippedRounds !== undefined) {
+    if (!Array.isArray(planning.autoSkippedRounds)) {
+      return "manifest.leadState.planning.autoSkippedRounds must be an array";
+    }
+    for (const kind of planning.autoSkippedRounds) {
+      if (typeof kind !== "string" || !PLANNING_ROUND_KINDS.has(kind)) {
+        return `manifest.leadState.planning.autoSkippedRounds has invalid kind ${String(kind)}`;
+      }
+    }
+  }
+  if (planning.lightPlan !== undefined) {
+    if (
+      !planning.lightPlan ||
+      typeof planning.lightPlan !== "object" ||
+      typeof planning.lightPlan.enteredAt !== "string" ||
+      !planning.lightPlan.enteredAt.trim()
+    ) {
+      return "manifest.leadState.planning.lightPlan must include a non-empty enteredAt";
     }
   }
   return null;

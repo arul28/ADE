@@ -407,6 +407,192 @@ describe("planning state machine gates", () => {
     expect(m.leadState.planApprovedAt).toBeUndefined();
     expect(m.planSpec?.approval.state).toBe("ready");
   });
+  // ── Unit F: lighter plan path ────────────────────────────────────────────
+
+  it("light-plan path: intake → light_plan → ready without the three rounds", async () => {
+    expect((await recordIntake(s)).ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("round_functional");
+    const entered = await s.svc.enterLightPlan(s.runId, s.bundlePath);
+    expect(entered.ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("light_plan");
+    expect(manifestOf(s).leadState.planning?.lightPlan?.enteredAt).toBeTruthy();
+    // Same approval-gate rigor: validation + model routing still required, but
+    // the three deliberation rounds are collapsed and NOT required.
+    const noValidation = await s.svc.markPlanningReady(s.runId, s.bundlePath);
+    expect(noValidation.ok).toBe(false);
+    expect(noValidation.ok ? [] : noValidation.missing).not.toEqual(
+      expect.arrayContaining(["functional deliberation round"]),
+    );
+    await addValidationStepAndRouting(s);
+    const ready = await s.svc.markPlanningReady(s.runId, s.bundlePath);
+    expect(ready.ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("ready");
+  });
+
+  it("light-plan path is refused once deliberation rounds have started", async () => {
+    await recordIntake(s);
+    await recordRound(s, "functional");
+    const res = await s.svc.enterLightPlan(s.runId, s.bundlePath);
+    expect(res.ok).toBe(false);
+    expect(res.ok ? "" : res.error).toBe("rounds_started");
+  });
+
+  it("expandToFullPlan returns a light plan to the full sequence", async () => {
+    await recordIntake(s);
+    expect((await s.svc.enterLightPlan(s.runId, s.bundlePath)).ok).toBe(true);
+    const expanded = await s.svc.expandToFullPlan(s.runId, s.bundlePath);
+    expect(expanded.ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("round_functional");
+    expect(manifestOf(s).leadState.planning?.lightPlan).toBeUndefined();
+    await addValidationStepAndRouting(s);
+    // Full readiness again requires the three rounds.
+    const notReady = await s.svc.markPlanningReady(s.runId, s.bundlePath);
+    expect(notReady.ok).toBe(false);
+    expect(notReady.ok ? [] : notReady.missing).toEqual(
+      expect.arrayContaining(["functional deliberation round"]),
+    );
+  });
+
+  it("cannot switch to/from the light path after approval", async () => {
+    await recordIntake(s);
+    await s.svc.enterLightPlan(s.runId, s.bundlePath);
+    await addValidationStepAndRouting(s);
+    await s.svc.markPlanningReady(s.runId, s.bundlePath);
+    const approved = await s.svc.setPlanApprovalState(s.runId, s.bundlePath, {
+      state: "approved",
+      sessionId: "S-lead",
+    });
+    expect(approved.ok).toBe(true);
+    const expand = await s.svc.expandToFullPlan(s.runId, s.bundlePath);
+    expect(expand.ok).toBe(false);
+    expect(expand.ok ? "" : expand.error).toBe("already_approved");
+  });
+
+  it("light-plan readiness accepts a condensed plan.md", async () => {
+    await recordIntake(s);
+    await s.svc.enterLightPlan(s.runId, s.bundlePath);
+    await addValidationStepAndRouting(s);
+    const condensed = [
+      "# Plan",
+      "## Goal",
+      "Fix the flaky helper so the retry path stops throwing.",
+      "## Implementation order",
+      "Edit the helper, then run the focused tests.",
+      "## Agent plan",
+      "One worker (tag fix) with a picked model.",
+      "## Validation plan",
+      "Re-verify the change and run vitest on the touched file.",
+    ].join("\n\n");
+    const readiness = assessPlanReadiness(manifestOf(s), condensed);
+    expect(readiness.ok).toBe(true);
+  });
+
+  // ── Unit F: UI auto-skip ─────────────────────────────────────────────────
+
+  it("UI auto-skip: touchesUiSurface=false skips the UI round deterministically", async () => {
+    const res = await s.svc.recordPlanningIntake(s.runId, s.bundlePath, {
+      recordedAt: new Date().toISOString(),
+      projectShape: "monorepo · TS",
+      testStack: "vitest",
+      inFlightWork: "fresh lane",
+      ancillarySurfaces: [],
+      ciGates: [],
+      touchesUiSurface: false,
+    });
+    expect(res.ok).toBe(true);
+    const m = manifestOf(s);
+    expect(m.leadState.planning?.autoSkippedRounds).toEqual(["ui"]);
+    expect(m.leadState.planning?.intake?.touchesUiSurface).toBe(false);
+    expect(m.decisions.some((d) => /UI/i.test(d.summary))).toBe(true);
+    // functional then extras (ui is skipped) advances straight to rounds_complete.
+    expect((await recordRound(s, "functional")).ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("round_extras");
+    expect((await recordRound(s, "extras")).ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("rounds_complete");
+    // Readiness never lists the UI round as missing.
+    await addValidationStepAndRouting(s);
+    const ready = await s.svc.markPlanningReady(s.runId, s.bundlePath);
+    expect(ready.ok).toBe(true);
+  });
+
+  it("UI auto-skip drops the UI-decisions section from the plan gate", async () => {
+    await s.svc.recordPlanningIntake(s.runId, s.bundlePath, {
+      recordedAt: new Date().toISOString(),
+      projectShape: "monorepo · TS",
+      testStack: "vitest",
+      inFlightWork: "fresh lane",
+      ancillarySurfaces: [],
+      ciGates: [],
+      touchesUiSurface: false,
+    });
+    await addValidationStepAndRouting(s);
+    // FULL_PLAN_MD without the "## UI decisions" section still passes.
+    const noUiPlan = FULL_PLAN_MD.replace(
+      /## UI decisions[\s\S]*?(?=\n## )/,
+      "",
+    );
+    expect(noUiPlan).not.toMatch(/## UI decisions/);
+    const readiness = assessPlanReadiness(manifestOf(s), noUiPlan);
+    expect(readiness.ok).toBe(true);
+  });
+
+  // ── Unit F: finishing choice + goalSource + follow-ups ────────────────────
+
+  it("records the per-run finishing choice", async () => {
+    const worktree = await s.svc.recordFinishingChoice(s.runId, s.bundlePath, {
+      mode: "worktree",
+    });
+    expect(worktree.ok).toBe(true);
+    expect(manifestOf(s).finishing?.mode).toBe("worktree");
+    const pr = await s.svc.recordFinishingChoice(s.runId, s.bundlePath, {
+      mode: "pr",
+      note: "ship it",
+    });
+    expect(pr.ok).toBe(true);
+    expect(manifestOf(s).finishing?.mode).toBe("pr");
+    expect(manifestOf(s).finishing?.note).toBe("ship it");
+    expect(manifestOf(s).finishing?.decidedAt).toBeTruthy();
+    const bad = await s.svc.recordFinishingChoice(s.runId, s.bundlePath, {
+      mode: "nope" as never,
+    });
+    expect(bad.ok).toBe(false);
+  });
+
+  it("records goalSource from intake and standalone", async () => {
+    const res = await s.svc.recordPlanningIntake(
+      s.runId,
+      s.bundlePath,
+      {
+        recordedAt: new Date().toISOString(),
+        projectShape: "x",
+        testStack: "vitest",
+        inFlightWork: "fresh lane",
+        ancillarySurfaces: [],
+        ciGates: [],
+      },
+      { goalSource: { kind: "linear", ref: "ENG-42" } },
+    );
+    expect(res.ok).toBe(true);
+    expect(manifestOf(s).goalSource).toEqual({ kind: "linear", ref: "ENG-42" });
+    const updated = await s.svc.recordGoalSource(s.runId, s.bundlePath, {
+      kind: "pr",
+      ref: "1234",
+    });
+    expect(updated.ok).toBe(true);
+    expect(manifestOf(s).goalSource).toEqual({ kind: "pr", ref: "1234" });
+  });
+
+  it("records a durable follow-up in scheduledFollowups", async () => {
+    const res = await s.svc.recordScheduledFollowup(s.runId, s.bundlePath, {
+      summary: "re-check CI in 30m",
+      scheduledWorkId: "SW-1",
+    });
+    expect(res.ok).toBe(true);
+    const followups = manifestOf(s).scheduledFollowups;
+    expect(followups?.[0]?.summary).toBe("re-check CI in 30m");
+    expect(followups?.[0]?.scheduledWorkId).toBe("SW-1");
+    expect(followups?.[0]?.status).toBe("scheduled");
+  });
 });
 
 describe("assessPlanReadiness (structural, un-gameable)", () => {
