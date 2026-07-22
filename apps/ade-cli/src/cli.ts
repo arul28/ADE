@@ -15372,15 +15372,10 @@ async function runServe(
     if (!activeScope && sharedSyncListener) {
       await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
     }
-    if (activeScope) {
-      const prewarmTimer = setImmediate(() => {
-        void scopeRegistry.prewarmRecentScopes({
-          excludeProjectId: activeScope?.registryProjectId,
-          limit: 2,
-        });
-      });
-      prewarmTimer.unref?.();
-    }
+    // A ProjectScope is a complete runtime (DB, search, chat, automation,
+    // polling, PTY, and sync services), not a lightweight metadata cache.
+    // Keep non-host projects lazy; the sync-host handoff keeps the old host
+    // authoritative while a newly selected project boots on demand.
     return activeScope ?? null;
   };
   const disposeServeResources = async () => {

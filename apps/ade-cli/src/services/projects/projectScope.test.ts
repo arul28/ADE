@@ -113,7 +113,7 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
   });
 
-  it("prewarms only recent projects after starting an explicit system host", async () => {
+  it("keeps inactive recent projects cold after starting an explicit system host", async () => {
     const { registry, first, second } = createRegistry();
     const projectsRoot = path.dirname(first.rootPath);
     const thirdProjectRoot = path.join(projectsRoot, "third");
@@ -157,17 +157,13 @@ describe("ProjectScopeRegistry", () => {
     });
 
     await scopeRegistry.ensureSyncHost(first.projectId);
-    const warmed = await scopeRegistry.prewarmRecentScopes({
-      excludeProjectId: first.projectId,
-      limit: 2,
-    });
+    await new Promise((resolve) => setImmediate(resolve));
 
-    expect(warmed).toEqual([recentSecond.projectId, recentThird.projectId]);
     expect(createAdeRuntimeMock.mock.calls.map(([args]) => args.projectRoot)).toEqual([
       first.rootPath,
-      recentSecond.rootPath,
-      recentThird.rootPath,
     ]);
+    expect(scopeRegistry.getIfBooted(recentSecond.projectId)).toBeNull();
+    expect(scopeRegistry.getIfBooted(recentThird.projectId)).toBeNull();
     expect(createAdeRuntimeMock).not.toHaveBeenCalledWith(
       expect.objectContaining({ projectRoot: healthProbe.rootPath }),
     );
@@ -311,8 +307,6 @@ describe("ProjectScopeRegistry", () => {
       expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
       expect(firstSyncService.setHostDiscoveryEnabled).not.toHaveBeenCalledWith(false);
       expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
-      await expect(scopeRegistry.prewarmRecentScopes()).resolves.toEqual([]);
-
       targetRuntime.resolve({ dispose: vi.fn(), syncService: secondSyncService });
       await switching;
       expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(second.projectId);

@@ -139,7 +139,11 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   (64 icons / 12 MB per call), so a connected desktop can render real project
   logos without letting an oversized registry stall connection setup.
 - `apps/ade-cli/src/services/projects/` — machine project registry,
-  per-project service scope cache, and `projectIconResolver.ts`
+  lazy per-project service scope cache, and `projectIconResolver.ts`. Brain
+  startup boots only the authoritative sync-host project; other recent
+  projects stay cold until a project-scoped request or explicit handoff needs
+  them, because each scope owns a complete DB/search/chat/automation/PTY
+  runtime rather than lightweight catalog metadata. `projectIconResolver.ts`
   (`resolveRemoteProjectIcon`, an electron-free port of the desktop icon
   resolver: `.ade/ade.yaml` override + conventional icon/logo files +
   `index.html` `<link rel="icon">`, best-effort and capped at 2 MB to stay

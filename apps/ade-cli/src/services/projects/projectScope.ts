@@ -6,11 +6,6 @@ type SwitchSyncHostOptions = {
   deactivatePreviousHost?: boolean;
 };
 
-type PrewarmRecentScopesOptions = {
-  excludeProjectId?: ProjectId | null;
-  limit?: number;
-};
-
 export class ProjectScope {
   readonly registryProjectId: ProjectId;
   readonly record: ProjectRecord;
@@ -38,8 +33,6 @@ export class ProjectScopeRegistry {
   private syncHostTransitionDepth = 0;
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
   private latestSyncHostTransitionId = 0;
-  private prewarmStarted = false;
-  private disposed = false;
   private readonly remoteCommandExecutor = {
     execute: async (payload: SyncCommandPayload): Promise<unknown> => {
       return await this.executeRemoteCommand(payload);
@@ -134,48 +127,8 @@ export class ProjectScopeRegistry {
   }
 
   async disposeAll(): Promise<void> {
-    this.disposed = true;
     const projectIds = [...this.scopes.keys()];
     await Promise.all(projectIds.map((projectId) => this.dispose(projectId)));
-  }
-
-  /**
-   * One-shot background warm-up for at most two MRU project scopes. Warming
-   * never changes registry recency and never starts while a sync-host switch
-   * is active; the active host is already warm and should be excluded by the
-   * startup hook.
-   */
-  async prewarmRecentScopes(
-    options: PrewarmRecentScopesOptions = {},
-  ): Promise<ProjectId[]> {
-    if (this.prewarmStarted || this.disposed || this.syncHostTransitionDepth > 0) {
-      return [];
-    }
-    this.prewarmStarted = true;
-    const limit = Math.min(2, Math.max(0, Math.trunc(options.limit ?? 2)));
-    const candidates = this.projectRegistry
-      .list()
-      .filter((record) => record.catalogVisibility === "recent")
-      .filter((record) => record.projectId !== options.excludeProjectId)
-      .filter((record) => !this.scopes.has(record.projectId))
-      .sort((left, right) => {
-        const openedDelta = right.lastOpenedAt - left.lastOpenedAt;
-        return openedDelta !== 0 ? openedDelta : right.addedAt - left.addedAt;
-      })
-      .slice(0, limit);
-
-    const warmed: ProjectId[] = [];
-    for (const record of candidates) {
-      if (this.disposed || this.syncHostTransitionDepth > 0) break;
-      try {
-        await this.get(record.projectId, { touch: false });
-        warmed.push(record.projectId);
-      } catch {
-        // Prewarming is opportunistic. A later real project open retries get()
-        // normally and surfaces its own actionable error.
-      }
-    }
-    return warmed;
   }
 
   async ensureSyncHost(
