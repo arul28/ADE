@@ -17,7 +17,12 @@ import {
   type DbMaintenanceApi,
   type DbMaintenanceResult,
 } from "./dbMaintenanceApi";
-import type { ApplyRemoteChangesResult, CrsqlChangeRow, SyncScalar } from "../../../shared/types/sync";
+import {
+  CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE,
+  type ApplyRemoteChangesResult,
+  type CrsqlChangeRow,
+  type SyncScalar,
+} from "../../../shared/types/sync";
 
 type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean; readOnly?: boolean }) => DatabaseSyncType;
 
@@ -77,9 +82,16 @@ export type AdeDbSyncApi = {
    * scan of a deep backlog runs long enough that any concurrent write aborts
    * it (SQLITE_ABORT), permanently starving behind/fresh peers. `maxRows`
    * additionally truncates the result at a complete db_version boundary so a
-   * consumer's cursor watermark never lands inside a version group.
+   * consumer's cursor watermark never lands inside a version group. Callers
+   * building a bounded snapshot can exclude irrelevant tables in SQL and ask
+   * the export to reject a single version group that exceeds `maxRows`.
    */
-  exportChangesSince: (version: number, options?: { maxRows?: number; throughDbVersion?: number }) => CrsqlChangeRow[];
+  exportChangesSince: (version: number, options?: {
+    maxRows?: number;
+    throughDbVersion?: number;
+    excludeTables?: readonly string[];
+    rejectOversizedVersionGroup?: boolean;
+  }) => CrsqlChangeRow[];
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
   /**
    * Suppress unpublished local-site CRR rows for specific tables. Used when
@@ -3863,7 +3875,12 @@ export async function openKvDb(
       const row = get<{ db_version: number }>("select crsql_db_version() as db_version");
       return Number(row?.db_version ?? 0);
     },
-    exportChangesSince: (version: number, options?: { maxRows?: number; throughDbVersion?: number }) => {
+    exportChangesSince: (version: number, options?: {
+      maxRows?: number;
+      throughDbVersion?: number;
+      excludeTables?: readonly string[];
+      rejectOversizedVersionGroup?: boolean;
+    }) => {
       if (!crsqliteLoaded) return [];
       const suppressions = new Map<string, number>(
         allRows<{ table_name: string; through_db_version: number }>(
@@ -3889,10 +3906,20 @@ export async function openKvDb(
       const throughDbVersion = options?.throughDbVersion != null && Number.isFinite(options.throughDbVersion)
         ? Math.max(version, Math.floor(options.throughDbVersion))
         : null;
+      const excludedTables = [...new Set(
+        (options?.excludeTables ?? [])
+          .map((table) => table.trim())
+          .filter(Boolean),
+      )];
+      const tableFilterSql = excludedTables.length > 0
+        ? ` and [table] not in (${excludedTables.map(() => "?").join(", ")})`
+        : "";
       const rangeSql = throughDbVersion != null
-        ? "where db_version > ? and db_version <= ?"
-        : "where db_version > ?";
-      const rangeParams = throughDbVersion != null ? [version, throughDbVersion] : [version];
+        ? `where db_version > ? and db_version <= ?${tableFilterSql}`
+        : `where db_version > ?${tableFilterSql}`;
+      const rangeParams = throughDbVersion != null
+        ? [version, throughDbVersion, ...excludedTables]
+        : [version, ...excludedTables];
       const selectSql = `select [table] as table_name,
                 pk,
                 cid,
@@ -3942,7 +3969,9 @@ export async function openKvDb(
           // the truncation point.
           let scanFromVersion = version;
           for (;;) {
-            const scanParams = throughDbVersion != null ? [scanFromVersion, throughDbVersion] : [scanFromVersion];
+            const scanParams = throughDbVersion != null
+              ? [scanFromVersion, throughDbVersion, ...excludedTables]
+              : [scanFromVersion, ...excludedTables];
             let fetched = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...scanParams, maxRows + 1]);
             let truncated = false;
             if (fetched.length > maxRows) {
@@ -3955,6 +3984,12 @@ export async function openKvDb(
               if (cut > 0) {
                 fetched = fetched.slice(0, cut);
               } else {
+                if (options?.rejectOversizedVersionGroup === true) {
+                  throw codedError(
+                    `CRR version group ${tailVersion} exceeds the ${maxRows}-row export limit.`,
+                    CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE,
+                  );
+                }
                 // A single transaction touched more rows than maxRows. Fetch that
                 // one version group in full — bounded by the group itself.
                 fetched = allRows<ExportedChangeRow>(
@@ -3969,9 +4004,9 @@ export async function openKvDb(
                 cl,
                 seq
            from crsql_changes
-          where db_version > ? and db_version <= ?
+          where db_version > ? and db_version <= ?${tableFilterSql}
           order by db_version asc, cl asc, seq asc`,
-                  [scanFromVersion, tailVersion],
+                  [scanFromVersion, tailVersion, ...excludedTables],
                 );
               }
             }

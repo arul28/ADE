@@ -39,6 +39,7 @@ import {
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
   SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
   SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
+  SYNC_HOST_MOBILE_REPLICA_RESEED_GAP,
   SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS,
   buildSyncInvalidationBatchPayload,
   buildSyncHostHelloOkPayload,
@@ -68,7 +69,7 @@ import {
   buildRelayReauthorizationChallenge,
   sha256RelayToken,
 } from "./relayAuthorization";
-import { encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 
@@ -4599,6 +4600,19 @@ describe("outbound changeset ack retries", () => {
     logger = createDiscoveryLogger(),
   ) {
     const base = createHostArgs(projectRoot, []);
+    const exportChangesSince = vi.fn(
+      (fromDbVersion: number, options?: {
+        maxRows?: number;
+        throughDbVersion?: number;
+        excludeTables?: readonly string[];
+        rejectOversizedVersionGroup?: boolean;
+      }) =>
+        state.changes
+          .filter((change) => Number(change.db_version) > fromDbVersion)
+          .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+          .filter((change) => !options?.excludeTables?.includes(change.table))
+          .slice(0, options?.maxRows ?? state.changes.length),
+    );
     const host = createSyncHostService({
       ...base,
       logger,
@@ -4608,11 +4622,7 @@ describe("outbound changeset ack retries", () => {
         sync: {
           getSiteId: () => "site-host-controlled",
           getDbVersion: () => state.dbVersion,
-          exportChangesSince: (fromDbVersion: number, options?: { maxRows?: number; throughDbVersion?: number }) =>
-            state.changes
-              .filter((change) => Number(change.db_version) > fromDbVersion)
-              .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
-              .slice(0, options?.maxRows ?? state.changes.length),
+          exportChangesSince,
           applyChanges: () => ({ appliedCount: 0 }),
           discardUnpublishedChangesForTables: () => {},
         },
@@ -4622,8 +4632,241 @@ describe("outbound changeset ack retries", () => {
         upsertPeerMetadata: vi.fn(),
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
-    return { host, logger };
+    return { host, logger, exportChangesSince };
   }
+
+  it("reseeds a far-behind iOS replica once, then resumes incrementally from the acknowledged watermark", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      changes: Array.from({ length: 2_500 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host, exportChangesSince } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-far-behind", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+
+      const reseedEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "far-behind replica reseed",
+      );
+      const reseed = reseedEnvelope.payload as SyncChangesetBatchPayload;
+      expect(reseed.reason).toBe("catchup");
+      expect(reseed.fromDbVersion).toBe(0);
+      expect(reseed.toDbVersion).toBe(SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1);
+      expect(reseed.changes).toHaveLength(2_500);
+      expect(peer.envelopes.filter((envelope) => envelope.type === "changeset_batch")).toHaveLength(1);
+      expect(exportChangesSince.mock.calls.length).toBeGreaterThan(1);
+      expect(exportChangesSince.mock.calls.every(([, options]) => options?.maxRows === 1_000)).toBe(true);
+      expect(exportChangesSince.mock.calls.every(([, options]) => options?.rejectOversizedVersionGroup === true)).toBe(true);
+      expect(exportChangesSince.mock.calls[0]?.[1]?.excludeTables).toEqual(expect.arrayContaining([
+        "operations",
+        "attempt_transcripts",
+        "sync_cluster_state",
+      ]));
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: reseed.batchId,
+        payload: {
+          batchId: reseed.batchId,
+          fromDbVersion: reseed.fromDbVersion,
+          toDbVersion: reseed.toDbVersion,
+          appliedDbVersion: reseed.toDbVersion,
+          appliedCount: reseed.changes.length,
+          ok: true,
+        } satisfies SyncChangesetAckPayload,
+      }));
+
+      state.dbVersion += 1;
+      state.changes.push(makeChange(state.dbVersion, state.changes.length));
+      const incrementalEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== reseed.batchId),
+        "post-reseed incremental batch",
+      );
+      expect(incrementalEnvelope.payload).toMatchObject({
+        reason: "broadcast",
+        fromDbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+        toDbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 2,
+      });
+      expect((incrementalEnvelope.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("refreshes a shared reseed cache before it can leave another replica far behind", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const firstTarget = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+    const state = {
+      dbVersion: firstTarget,
+      changes: Array.from({ length: 10 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host } = createControlledChangesetHost(projectRoot, state);
+    let firstPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let secondPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      firstPeer = await connectPeer(port, host.getBootstrapToken(), "ios-first-reseed", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      const firstEnvelope = await waitForValue(
+        () => firstPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "first compact reseed",
+      );
+      expect((firstEnvelope.payload as SyncChangesetBatchPayload).toDbVersion).toBe(firstTarget);
+      firstPeer.ws.close();
+      firstPeer = null;
+
+      const secondTarget = firstTarget + SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+      state.dbVersion = secondTarget;
+      state.changes.push(makeChange(secondTarget, state.changes.length));
+      secondPeer = await connectPeer(port, host.getBootstrapToken(), "ios-later-reseed", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      const secondEnvelope = await waitForValue(
+        () => secondPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "refreshed compact reseed",
+      );
+      const secondReseed = secondEnvelope.payload as SyncChangesetBatchPayload;
+      expect(secondReseed.reason).toBe("catchup");
+      expect(secondReseed.toDbVersion).toBe(secondTarget);
+      expect(secondReseed.changes).toHaveLength(11);
+    } finally {
+      firstPeer?.ws.close();
+      secondPeer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("retargets a compact reseed when the database advances beyond the threshold during construction", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const firstTarget = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+    const secondTarget = firstTarget + SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+    const state = {
+      dbVersion: firstTarget,
+      changes: Array.from({ length: 2_500 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host, exportChangesSince } = createControlledChangesetHost(projectRoot, state);
+    let advancedDuringBuild = false;
+    exportChangesSince.mockImplementation((fromDbVersion, options) => {
+      const exported = state.changes
+        .filter((change) => Number(change.db_version) > fromDbVersion)
+        .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+        .filter((change) => !options?.excludeTables?.includes(change.table))
+        .slice(0, options?.maxRows ?? state.changes.length);
+      if (!advancedDuringBuild) {
+        advancedDuringBuild = true;
+        state.dbVersion = secondTarget;
+        state.changes.push(makeChange(secondTarget, state.changes.length));
+      }
+      return exported;
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-growing-reseed", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      const envelope = await waitForValue(
+        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        "retargeted compact reseed",
+      );
+      const reseed = envelope.payload as SyncChangesetBatchPayload;
+      expect(reseed.reason).toBe("catchup");
+      expect(reseed.toDbVersion).toBe(secondTarget);
+      expect(reseed.changes).toHaveLength(2_501);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("falls back to bounded incremental replay when the compact replica state exceeds the reseed row cap", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: (SYNC_HOST_MOBILE_REPLICA_RESEED_GAP * 2) + 1,
+      changes: Array.from({ length: 10_001 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const logger = createDiscoveryLogger();
+    const { host } = createControlledChangesetHost(projectRoot, state, logger);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-reseed-too-large", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      const batchEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "incremental fallback after oversized reseed",
+      );
+      const batch = batchEnvelope.payload as SyncChangesetBatchPayload;
+      expect(batch.reason).toBe("broadcast");
+      expect(batch.fromDbVersion).toBe(0);
+      expect(batch.toDbVersion).toBe(250);
+      expect(batch.changes).toHaveLength(250);
+      expect(logger.info).toHaveBeenCalledWith(
+        "sync_host.mobile_replica_reseed_fallback",
+        expect.objectContaining({
+          peerDeviceId: "ios-reseed-too-large",
+          reason: "compacted_state_too_large",
+        }),
+      );
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it.each([
+    {
+      name: "a replica at the reseed threshold",
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP,
+      capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+    },
+    {
+      name: "a legacy replica without chunked envelopes",
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      capabilities: ["changesetAck"],
+    },
+  ])("keeps $name on bounded incremental batches", async ({ dbVersion, capabilities }) => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion,
+      changes: Array.from({ length: 600 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), `ios-incremental-${dbVersion}`, {
+        capabilities,
+      });
+      const batchEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "bounded incremental changeset",
+      );
+      const batch = batchEnvelope.payload as SyncChangesetBatchPayload;
+      expect(batch.reason).toBe("broadcast");
+      expect(batch.fromDbVersion).toBe(0);
+      expect(batch.changes).toHaveLength(250);
+      expect(batch.toDbVersion).toBe(250);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
 
   it("processes pending ACK retries before active-chat background deferral", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();

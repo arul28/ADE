@@ -160,6 +160,15 @@ import {
   DEFAULT_MAX_CHANGESET_BATCH_ROWS,
 } from "./changesetPump";
 import {
+  MOBILE_REPLICA_RESEED_MAX_BYTES,
+  MOBILE_REPLICA_RESEED_MAX_ROWS,
+  SYNC_HOST_MOBILE_REPLICA_RESEED_GAP,
+  advanceMobileReplicaReseedCache,
+  buildMobileReplicaReseedPayload,
+  createMobileReplicaReseedCache,
+  type MobileReplicaReseedCache,
+} from "./mobileReplicaReseed";
+import {
   SYNC_HOST_BIND_HOST,
   SYNC_HOST_BIND_LOOPBACK_ONLY,
   SYNC_HOST_MAX_PAYLOAD_BYTES,
@@ -177,6 +186,7 @@ import {
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
 export { selectChangesetBatchChunk } from "./changesetPump";
+export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
 // db_version window per pump poll. Large enough to cross sparse version
 // ranges quickly (a few polls per million versions), small enough that the
@@ -211,6 +221,11 @@ const SYNC_HOST_AUTHORITATIVE_TABLES = new Set([
 // CRR boundary (peers neither receive nor author it over sync).
 const isHostAuthoritativeTable = (change: CrsqlChangeRow): boolean =>
   SYNC_HOST_AUTHORITATIVE_TABLES.has(change.table);
+
+const MOBILE_REPLICA_RESEED_EXCLUDED_TABLES = [
+  ...MOBILE_CHANGESET_EXCLUDED_TABLES,
+  ...SYNC_HOST_AUTHORITATIVE_TABLES,
+];
 
 // Inbound peer changeset_batch ceilings. The 25MB envelope is the only other
 // bound, so a single huge batch would block the DB inside one BEGIN IMMEDIATE
@@ -507,6 +522,7 @@ type PeerState = {
   // separate because only personal chats may survive a project-host handoff.
   resolvedChatTranscriptPaths: Map<string, string>;
   pendingChangesetBatch: PendingChangesetBatch | null;
+  mobileReplicaReseedDisabled: boolean;
   // All-projects roster (mobile hub): whether this peer is subscribed, the
   // monotonic seq last sent to THIS peer (per-peer so a peer that skips a
   // no-change flush never sees a seq gap), and the per-project serialized
@@ -2593,6 +2609,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // in-flight gate per peer prevents a slow transcript filesystem read from
   // blocking unrelated peers or their later ack retries.
   const pollPumpPeersInFlight = new Set<PeerState>();
+  // One bounded compact-state build can serve every far-behind phone. The
+  // cache is capped at 10k rows / 4 MiB and therefore cannot grow with the
+  // database; an oversized replica falls back to incremental replay.
+  let mobileReplicaReseedCache: MobileReplicaReseedCache | null = null;
+  let mobileReplicaReseedAdvancedPollGeneration = -1;
+  let pollPumpGeneration = 0;
   // All-projects roster (mobile hub) coalescing state. Each subscribed peer
   // carries its own monotonic seq (PeerState.rosterSeq); clients re-snapshot on
   // any seq discontinuity.
@@ -2633,6 +2655,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const runPollPump = (): void => {
     if (disposed) return;
+    const generation = ++pollPumpGeneration;
     for (const peer of peers) {
       if (pollPumpPeersInFlight.has(peer)) continue;
       pollPumpPeersInFlight.add(peer);
@@ -2648,7 +2671,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
         }
         try {
-          await pumpChanges(peer);
+          await pumpChanges(peer, generation);
         } catch (error) {
           args.logger.warn("sync_host.poll_failed", {
             peerDeviceId: peer.metadata?.deviceId ?? null,
@@ -2991,6 +3014,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       chatEventIdsSent: new Map(),
       resolvedChatTranscriptPaths: new Map(),
       pendingChangesetBatch: null,
+      mobileReplicaReseedDisabled: false,
       rosterSubscribed: false,
       rosterSeq: 0,
       rosterBaseline: new Map(),
@@ -4017,8 +4041,42 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return Array.isArray(peer.metadata?.capabilities) && peer.metadata.capabilities.includes("changesetAck");
   }
 
+  function peerSupportsMobileReplicaReseed(peer: PeerState): boolean {
+    return isMobileChangesetPeer(peer)
+      && peerSupportsChangesetAck(peer)
+      && peer.metadata?.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY) === true;
+  }
+
   function isRuntimeOnlyPairedHost(peer: PeerState): boolean {
     return isRuntimeOnlySyncPeer(peer);
+  }
+
+  function sendChangesetBatchPayload(
+    peer: PeerState,
+    payload: SyncChangesetBatchPayload,
+  ): PendingChangesetBatch | null {
+    const batch: PendingChangesetBatch = {
+      batchId: payload.batchId,
+      reason: payload.reason,
+      fromDbVersion: payload.fromDbVersion,
+      toDbVersion: payload.toDbVersion,
+      changes: payload.changes,
+      sentAtMs: 0,
+      attemptCount: 0,
+      retryNotBeforeMs: 0,
+    };
+    const sent = isCompactInvalidationBrowserPeer(peer.metadata)
+      ? send(peer, "invalidation_batch", buildSyncInvalidationBatchPayload({
+        fromDbVersion: payload.fromDbVersion,
+        toDbVersion: payload.toDbVersion,
+        changes: payload.changes,
+        compressionThresholdBytes,
+      }))
+      : send(peer, "changeset_batch", payload);
+    if (!sent) return null;
+    batch.sentAtMs = Date.now();
+    batch.attemptCount = 1;
+    return batch;
   }
 
   function sendNextChangesetBatch(
@@ -4038,29 +4096,92 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       maxRows: options.maxRows ?? maxChangesetBatchRows,
       maxBytes: options.maxBytes ?? maxChangesetBatchBytes,
     });
-    if (!payload) return null;
-    const batch: PendingChangesetBatch = {
-      batchId: payload.batchId,
-      reason,
-      fromDbVersion,
-      toDbVersion: payload.toDbVersion,
-      changes: payload.changes,
-      sentAtMs: 0,
-      attemptCount: 0,
-      retryNotBeforeMs: 0,
-    };
-    const sent = isCompactInvalidationBrowserPeer(peer.metadata)
-      ? send(peer, "invalidation_batch", buildSyncInvalidationBatchPayload({
+    return payload ? sendChangesetBatchPayload(peer, payload) : null;
+  }
+
+  function buildMobileReplicaReseedStep(
+    targetDbVersion: number,
+    peerDbVersion: number,
+    pollGeneration: number,
+  ): MobileReplicaReseedCache {
+    const cachedTargetLag = mobileReplicaReseedCache
+      ? targetDbVersion - mobileReplicaReseedCache.targetDbVersion
+      : 0;
+    if (
+      !mobileReplicaReseedCache
+      || mobileReplicaReseedCache.targetDbVersion <= peerDbVersion
+      || (
+        mobileReplicaReseedCache.status !== "too_large"
+        && cachedTargetLag > SYNC_HOST_MOBILE_REPLICA_RESEED_GAP
+      )
+    ) {
+      mobileReplicaReseedCache = createMobileReplicaReseedCache(targetDbVersion);
+      args.logger.info("sync_host.mobile_replica_reseed_started", {
+        targetDbVersion,
+        maxRows: MOBILE_REPLICA_RESEED_MAX_ROWS,
+        maxBytes: MOBILE_REPLICA_RESEED_MAX_BYTES,
+      });
+    }
+
+    const cache = mobileReplicaReseedCache;
+    if (cache.status !== "building") return cache;
+    if (pollGeneration <= mobileReplicaReseedAdvancedPollGeneration) return cache;
+    mobileReplicaReseedAdvancedPollGeneration = pollGeneration;
+    const advancedCache = advanceMobileReplicaReseedCache({
+      cache,
+      versionWindow: SYNC_EXPORT_VERSION_WINDOW,
+      exportChangesSince: args.db.sync.exportChangesSince,
+      excludeTables: MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
+      includeChange: (change) =>
+        !isHostAuthoritativeTable(change)
+        && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
+    });
+    if (advancedCache.status === "too_large") {
+      args.logger.info("sync_host.mobile_replica_reseed_skipped", {
+        targetDbVersion: advancedCache.targetDbVersion,
+        scanFromDbVersion: advancedCache.scanFromDbVersion,
+        reason: "compacted_state_too_large",
+        maxRows: MOBILE_REPLICA_RESEED_MAX_ROWS,
+        maxBytes: MOBILE_REPLICA_RESEED_MAX_BYTES,
+      });
+    } else if (advancedCache.status === "ready") {
+      args.logger.info("sync_host.mobile_replica_reseed_ready", {
+        targetDbVersion: advancedCache.targetDbVersion,
+        rows: advancedCache.changes.length,
+        approximateBytes: advancedCache.approximateBytes,
+        buildSteps: advancedCache.buildSteps,
+      });
+    }
+    return advancedCache;
+  }
+
+  function sendMobileReplicaReseed(
+    peer: PeerState,
+    cache: MobileReplicaReseedCache,
+  ):
+    | { status: "sent"; pending: PendingChangesetBatch }
+    | { status: "retry" }
+    | { status: "too_large" } {
+    const deviceId = peer.metadata?.deviceId ?? peer.pairedDeviceId ?? "peer";
+    const payload = buildMobileReplicaReseedPayload({
+      cache,
+      deviceId,
+      fromDbVersion: peer.lastKnownServerDbVersion,
+    });
+    if (!payload) {
+      return { status: "too_large" };
+    }
+    const pending = sendChangesetBatchPayload(peer, payload);
+    if (pending) {
+      args.logger.info("sync_host.mobile_replica_reseed_sent", {
+        peerDeviceId: deviceId,
         fromDbVersion: payload.fromDbVersion,
         toDbVersion: payload.toDbVersion,
-        changes: payload.changes,
-        compressionThresholdBytes,
-      }))
-      : send(peer, "changeset_batch", payload);
-    if (!sent) return null;
-    batch.sentAtMs = Date.now();
-    batch.attemptCount = 1;
-    return batch;
+        rows: payload.changes.length,
+      });
+      return { status: "sent", pending };
+    }
+    return { status: "retry" };
   }
 
   function resendPendingChangesetBatch(peer: PeerState): boolean {
@@ -4930,7 +5051,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     markRosterDirty();
   }
 
-  async function pumpChanges(peer: PeerState): Promise<void> {
+  async function pumpChanges(peer: PeerState, pollGeneration: number): Promise<void> {
     if (disposed) return;
     const currentDbVersion = args.db.sync.getDbVersion();
     const nowMs = Date.now();
@@ -4991,6 +5112,41 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
       } else {
         finishChangesetPriorityDeferral(peer, "pressure_relieved", nowMs);
+      }
+      const replicaLag = currentDbVersion - peer.lastKnownServerDbVersion;
+      if (
+        !peer.mobileReplicaReseedDisabled
+        && peerSupportsMobileReplicaReseed(peer)
+        && replicaLag > SYNC_HOST_MOBILE_REPLICA_RESEED_GAP
+      ) {
+        const reseed = buildMobileReplicaReseedStep(
+          currentDbVersion,
+          peer.lastKnownServerDbVersion,
+          pollGeneration,
+        );
+        if (reseed.status === "building") return;
+        if (reseed.status === "ready") {
+          const result = sendMobileReplicaReseed(peer, reseed);
+          if (result.status === "sent") {
+            peer.mobileReplicaReseedDisabled = true;
+            peer.pendingChangesetBatch = result.pending;
+            finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
+            lastBroadcastAt = nowIso();
+            return;
+          }
+          if (result.status === "retry") return;
+          reseed.status = "too_large";
+          reseed.changes = [];
+          reseed.approximateBytes = 0;
+        }
+        peer.mobileReplicaReseedDisabled = true;
+        args.logger.info("sync_host.mobile_replica_reseed_fallback", {
+          peerDeviceId: peer.metadata.deviceId,
+          currentDbVersion,
+          lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
+          replicaLag,
+          reason: "compacted_state_too_large",
+        });
       }
       const recoveryLimits = changesetBatchLimits(peer);
       const chatLimits = syncHostChangesetBatchOptionsForChat({
@@ -5106,6 +5262,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       batchId: pending.batchId,
       fromDbVersion: pending.fromDbVersion,
       toDbVersion: pending.toDbVersion,
+      reason: pending.reason,
       latencyMs: lastChangesetAckLatencyMs,
     });
     if (recoveryLevel > 0) {

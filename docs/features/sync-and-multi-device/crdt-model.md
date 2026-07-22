@@ -20,7 +20,8 @@ Every other service talks to plain SQLite (`run`, `get`, `all`,
 
 - `getSiteId(): string` — the local cr-sqlite site identifier.
 - `getDbVersion(): number` — the monotonic replication version.
-- `exportChangesSince(version, { maxRows?, throughDbVersion? }):
+- `exportChangesSince(version, { maxRows?, throughDbVersion?, excludeTables?,
+  rejectOversizedVersionGroup? }):
   CrsqlChangeRow[]` — the changes generated since the given version.
   Exports are **windowed and bounded**: callers constrain the scan to
   a `db_version` range (the sync pump and peer relay walk 250k-version
@@ -32,7 +33,10 @@ Every other service talks to plain SQLite (`run`, `get`, `all`,
   is materialized and sorted), and version-range constraints are the
   only thing that pushes down to the indexed clock tables. Truncation
   only happens at complete `db_version` groups so ack watermarks stay
-  correct.
+  correct. `excludeTables` applies inside the SQL query before limiting.
+  With `rejectOversizedVersionGroup`, a group larger than `maxRows` throws
+  `crsql_export_version_group_too_large` instead of materializing the whole
+  transaction in memory.
 - `applyChanges(rows: CrsqlChangeRow[]): ApplyRemoteChangesResult` —
   apply remote changes locally.
 - `discardUnpublishedChangesForTables(tableNames: string[]): void` —
@@ -341,6 +345,16 @@ confirm both contracts, preventing a historical replay or oversized live row
 from overflowing Relay. Older browsers that advertise only
 `invalidationOnlyV1` remain on their existing `changeset_batch` hint path.
 
+Replica iOS peers advertising both `changesetAck` and `chunkedEnvelopes` use a
+compact reseed when their host cursor is strictly more than 5,000 versions
+behind. The host fixes a target version and scans current CRR state from version
+0 in 250,000-version windows, at most 1,000 relevant rows per poll. Mobile-only
+exclusions and host-authoritative tables are removed in SQL. The shared build
+and logical payload are capped at 10,000 rows / 4 MiB; a larger state or version
+group falls back to normal incremental replay. A successful build is sent as
+one logical `reason: "catchup"` batch (using `envelope_chunk` frames as needed),
+and writes after its fixed target resume incrementally.
+
 ### Apply
 
 ```sql
@@ -383,6 +397,8 @@ After apply, ADE runs post-hooks:
 - Senders keep exactly one batch pending and advance their durable outbound
   cursor only after a successful `changeset_ack`. A NACK or 10-second ack
   timeout retries the identical batch; cursor state never moves speculatively.
+  The compact mobile reseed follows the same rule: its target becomes the
+  peer's watermark only after the reseed ACK commits.
 - After six failed send attempts, host and desktop-peer senders discard the
   encoded pending envelope but retain its `fromDbVersion`. They back off
   (250 ms up to 4 s), re-export from that same cursor, and halve the batch
