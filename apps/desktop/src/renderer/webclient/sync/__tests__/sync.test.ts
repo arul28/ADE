@@ -3023,9 +3023,17 @@ describe("browser sync connection and client", () => {
       && (envelope.payload as { sessionId?: string }).sessionId === "project-chat"
     ))).toEqual([expect.objectContaining({ projectId: "project-1" })]);
     expect(script.sockets[0].sent.filter((envelope) => (
+      envelope.type === "chat_unsubscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "project-chat"
+    ))).toEqual([expect.objectContaining({ projectId: "project-2" })]);
+    expect(script.sockets[0].sent.filter((envelope) => (
       envelope.type === "chat_subscribe"
       && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
     ))).toHaveLength(1);
+    expect(script.sockets[0].sent.some((envelope) => (
+      envelope.type === "chat_unsubscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+    ))).toBe(false);
     expect(script.sockets[0].sent.find((envelope) => (
       envelope.type === "chat_subscribe"
       && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
@@ -3045,8 +3053,18 @@ describe("browser sync connection and client", () => {
       projectRootPath: "/repo-foreign",
     });
     expect(foreignSubscriptions[1]?.payload).not.toHaveProperty("sinceSeq");
+    expect(script.sockets[0].sent.some((envelope) => (
+      envelope.type === "chat_unsubscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "foreign-chat"
+    ))).toBe(false);
     expect(script.sockets[0].sent.filter((envelope) => envelope.type === "terminal_subscribe")).toEqual([
       expect.objectContaining({ projectId: "project-1" }),
+    ]);
+    expect(script.sockets[0].sent.filter((envelope) => envelope.type === "terminal_unsubscribe")).toEqual([
+      expect.objectContaining({
+        projectId: "project-2",
+        payload: { sessionId: "project-terminal" },
+      }),
     ]);
 
     script.sockets[0]?.serverSend({

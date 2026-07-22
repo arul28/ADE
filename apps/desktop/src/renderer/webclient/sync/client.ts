@@ -1475,10 +1475,12 @@ export class AdeSyncClient {
   }
 
   private retireActiveProjectStreams(): void {
-    for (const [sessionId, subscription] of this.chatSubscriptions) {
-      if (subscription.bindsActiveProject) this.chatSubscriptions.delete(sessionId);
+    for (const [sessionId, subscription] of [...this.chatSubscriptions]) {
+      if (subscription.bindsActiveProject) this.unsubscribeChat(sessionId);
     }
-    this.terminalSubscriptions.clear();
+    for (const sessionId of [...this.terminalSubscriptions.keys()]) {
+      this.unsubscribeTerminal(sessionId);
+    }
   }
 
   private rebindForeignProjectStreams(): void {
