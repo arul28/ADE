@@ -88,7 +88,10 @@ import type {
   SyncTerminalInputPayload,
   SyncTerminalSnapshotPayload,
 } from "../../../../desktop/src/shared/types";
-import { SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY } from "../../../../desktop/src/shared/types";
+import {
+  SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+  SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+} from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -501,6 +504,7 @@ type PeerState = {
   rosterSeq: number;
   rosterBaseline: Map<string, string>;
   messageQueue: Promise<void>;
+  queuedMessageCount: number;
   terminalInputQueue: Promise<void>;
   pendingTerminalOwnershipChanges: number;
   /** Local consent for this browser/phone; never mutates machine-wide consent. */
@@ -889,6 +893,27 @@ export function syncHeartbeatMissLimitForPeerMetadata(metadata: Pick<SyncPeerMet
   return metadata?.platform === "iOS" || metadata?.deviceType === "phone"
     ? MOBILE_SYNC_HEARTBEAT_MISS_LIMIT
     : DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT;
+}
+
+export function initialSyncHostCursorForPeer(args: {
+  peer: Pick<SyncPeerMetadata, "deviceType" | "dbVersion" | "dbVersionBySite" | "capabilities">;
+  serverDbSiteId: string;
+  serverDbVersion: number;
+}): number {
+  // A browser may explicitly negotiate an invalidation-only contract: it has
+  // no SQLite replica, fully refetches its query domains after hello, and uses
+  // only post-connect changesets as invalidation hints. Starting that peer at
+  // the current watermark avoids replaying CRR history it cannot apply. Keep
+  // legacy browsers on replica semantics unless they declare the capability.
+  if (
+    args.peer.deviceType === "browser"
+    && args.peer.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY)
+  ) {
+    return Math.max(0, Math.floor(args.serverDbVersion));
+  }
+  const cursorForThisDb = args.peer.dbVersionBySite?.[args.serverDbSiteId]
+    ?? (args.peer.dbVersionBySite ? 0 : args.peer.dbVersion);
+  return Math.max(0, Math.floor(cursorForThisDb));
 }
 
 export function shouldDeferSyncHostBackgroundChangesForChat(args: {
@@ -2451,8 +2476,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let tailnetServePublishSequence = 0;
   let tailnetServeActivePublishToken = 0;
   let discoveryEnabled = args.discoveryEnabled !== false;
-  let chatPumpInFlight = false;
-  let changesPumpInFlight = false;
+  let pollPumpInFlight = false;
   // All-projects roster (mobile hub) coalescing state. Each subscribed peer
   // carries its own monotonic seq (PeerState.rosterSeq); clients re-snapshot on
   // any seq discontinuity.
@@ -2491,33 +2515,34 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     args.onStateChanged?.();
   });
 
-  const runChatPump = (): void => {
-    if (disposed || chatPumpInFlight) return;
-    chatPumpInFlight = true;
-    void pumpChatEvents()
-      .catch((error) => {
+  const runPollPump = (): void => {
+    if (disposed || pollPumpInFlight) return;
+    pollPumpInFlight = true;
+    void (async () => {
+      try {
+        // Transcript reads are asynchronous. Finish them before entering the
+        // synchronous CRR export scan so a large catch-up cannot overtake chat.
+        await pumpChatEvents();
+      } catch (error) {
         args.logger.warn("sync_host.chat_poll_failed", { error: error instanceof Error ? error.message : String(error) });
-      })
-      .finally(() => {
-        chatPumpInFlight = false;
-      });
-  };
-
-  const runChangesPump = (): void => {
-    if (disposed || changesPumpInFlight) return;
-    changesPumpInFlight = true;
-    void pumpChanges()
-      .catch((error) => {
+      }
+      // The per-peer message queue owns subscriptions, snapshots, and remote
+      // commands. A background export is synchronous and cannot be preempted,
+      // so never start one while any already-received foreground work remains
+      // queued or in flight.
+      if ([...peers].some((peer) => peer.queuedMessageCount > 0)) return;
+      try {
+        await pumpChanges();
+      } catch (error) {
         args.logger.warn("sync_host.poll_failed", { error: error instanceof Error ? error.message : String(error) });
-      })
-      .finally(() => {
-        changesPumpInFlight = false;
-      });
+      }
+    })().finally(() => {
+      pollPumpInFlight = false;
+    });
   };
 
   const pollTimer = setInterval(() => {
-    runChatPump();
-    runChangesPump();
+    runPollPump();
   }, pollIntervalMs);
   const heartbeatTimer = setInterval(() => {
     pruneExpiredPairFailures();
@@ -2849,6 +2874,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       rosterSeq: 0,
       rosterBaseline: new Map(),
       messageQueue: Promise.resolve(),
+      queuedMessageCount: 0,
       terminalInputQueue: Promise.resolve(),
       pendingTerminalOwnershipChanges: 0,
       // Paired clients own their local preference. Fail closed on every new
@@ -2882,6 +2908,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       if (handleImmediateControlEnvelope(peer, envelope)) return;
+      peer.queuedMessageCount += 1;
       const changesTerminalOwnership = envelope.type === "terminal_subscribe"
         || envelope.type === "terminal_unsubscribe";
       if (changesTerminalOwnership) peer.pendingTerminalOwnershipChanges += 1;
@@ -2900,6 +2927,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
         })
         .finally(() => {
+          peer.queuedMessageCount = Math.max(0, peer.queuedMessageCount - 1);
           if (changesTerminalOwnership) {
             peer.pendingTerminalOwnershipChanges = Math.max(0, peer.pendingTerminalOwnershipChanges - 1);
           }
@@ -3048,12 +3076,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         );
         terminalInputDedupeLedger.restore(snapshot.terminalInputDedupe ?? []);
         peer.connectedAt = snapshot.connectedAt;
-        peer.lastKnownServerDbVersion = Math.max(
-          0,
-          Math.floor(snapshot.metadata.dbVersionBySite?.[args.db.sync.getSiteId()] ?? 0),
-        );
+        const serverDbSiteId = args.db.sync.getSiteId();
+        peer.lastKnownServerDbVersion = initialSyncHostCursorForPeer({
+          peer: snapshot.metadata,
+          serverDbSiteId,
+          serverDbVersion: args.db.sync.getDbVersion(),
+        });
         if (
-          snapshot.serverDbSiteId === args.db.sync.getSiteId()
+          !(
+            snapshot.metadata.deviceType === "browser"
+            && snapshot.metadata.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY)
+          )
+          && snapshot.serverDbSiteId === serverDbSiteId
           && typeof snapshot.lastKnownServerDbVersion === "number"
           && Number.isFinite(snapshot.lastKnownServerDbVersion)
         ) {
@@ -3147,7 +3181,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
       }
     }
-    await pumpChanges();
+    runPollPump();
   }
 
   let detachSharedListener: (() => void) | null = null;
@@ -6091,9 +6125,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // DB; after a hosted-project change it points into a different DB's
       // version sequence and silently skips (or replays) the entire backlog.
       const ownSiteId = args.db.sync.getSiteId();
-      const cursorForThisDb = hello.peer.dbVersionBySite?.[ownSiteId]
-        ?? (hello.peer.dbVersionBySite ? 0 : hello.peer.dbVersion);
-      peer.lastKnownServerDbVersion = Math.max(0, Math.floor(cursorForThisDb));
+      const serverDbVersion = args.db.sync.getDbVersion();
+      peer.lastKnownServerDbVersion = initialSyncHostCursorForPeer({
+        peer: hello.peer,
+        serverDbSiteId: ownSiteId,
+        serverDbVersion,
+      });
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),
         lastHost: peer.remoteAddress,
@@ -6112,7 +6149,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       send(peer.ws, "hello_ok", buildSyncHostHelloOkPayload({
         peer: hello.peer,
         brain: readBrainMetadata(),
-        serverDbVersion: args.db.sync.getDbVersion(),
+        serverDbVersion,
         serverDbSiteId: ownSiteId,
         heartbeatIntervalMs,
         pollIntervalMs,
@@ -6137,7 +6174,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         accountPairing,
       }), envelope.requestId);
       args.onStateChanged?.();
-      await pumpChanges();
+      // Catch-up is background work. The periodic poll starts it after the
+      // serialized hello queue has had a chance to admit subscriptions.
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       broadcastBrainStatus();
       return;

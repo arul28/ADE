@@ -19,7 +19,10 @@ import type {
   SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
-import { SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY } from "../../../../desktop/src/shared/types";
+import {
+  SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+  SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+} from "../../../../desktop/src/shared/types";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
@@ -37,6 +40,7 @@ import {
   createChatEventReplayBuffer,
   createSyncHostService,
   createTerminalInputDedupeLedger,
+  initialSyncHostCursorForPeer,
   isRuntimeOnlySyncPeer,
   isRuntimeHostPairingRecord,
   planChatEventResume,
@@ -3774,6 +3778,230 @@ describe("CTO-gated Linear sync commands", () => {
       }
     } finally {
       peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
+describe("initial hydration priority", () => {
+  it("keeps historical catch-up for legacy browsers without the invalidation-only capability", () => {
+    expect(initialSyncHostCursorForPeer({
+      peer: {
+        deviceType: "browser",
+        dbVersion: 7,
+        dbVersionBySite: { "site-host": 11 },
+        capabilities: [],
+      },
+      serverDbSiteId: "site-host",
+      serverDbVersion: 99,
+    })).toBe(11);
+  });
+
+  it("admits a queued chat subscription before a replica peer's initial catch-up", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const exportChangesSince = vi.fn(() => [makeChange(1, 0)]);
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 60_000,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-queued-subscribe",
+          getDbVersion: () => 1,
+          exportChangesSince,
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      client.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "phone-hello",
+        payload: {
+          peer: {
+            deviceId: "phone-initial-hydration",
+            deviceName: "Phone",
+            platform: "iOS",
+            deviceType: "phone",
+            siteId: "phone-initial-hydration-site",
+            dbVersion: 0,
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      client.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "phone-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: "selected-chat" },
+      }));
+
+      await waitForEnvelope(envelopes, "chat_subscribe", "phone-chat-subscribe");
+      expect(exportChangesSince).not.toHaveBeenCalled();
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("hydrates the selected browser chat without replaying historical CRDT rows", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "selected-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    const event: AgentChatEventEnvelope = {
+      sessionId: "selected-chat",
+      timestamp: "2026-07-22T04:50:55.000Z",
+      sequence: 1,
+      event: { type: "text", text: "selected transcript" },
+    };
+    fs.writeFileSync(transcriptPath, `${JSON.stringify(event)}\n`, "utf8");
+
+    const state = {
+      dbVersion: 1,
+      changes: [makeChange(1, 0)],
+    };
+    const exportChangesSince = vi.fn(
+      (fromDbVersion: number, options?: { maxRows?: number; throughDbVersion?: number }) =>
+        state.changes
+          .filter((change) => Number(change.db_version) > fromDbVersion)
+          .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+          .slice(0, options?.maxRows ?? state.changes.length),
+    );
+    const getChatEventHistory = vi.fn(() => ({
+      sessionId: "selected-chat",
+      events: [event],
+      truncated: false,
+      transcriptTruncated: false,
+      windowTruncated: false,
+      sessionFound: true,
+    }));
+    let releaseSummary!: (summary: { status: string }) => void;
+    const summaryGate = new Promise<{ status: string }>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 100,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-initial-hydration",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince,
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      sessionService: {
+        list: () => [],
+        get: (sessionId: string) => sessionId === "selected-chat"
+          ? { id: sessionId, transcriptPath, status: "running" }
+          : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory,
+        getSessionSummary: vi.fn(() => summaryGate),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+
+      // Browsers send their selected-chat subscription as soon as hello_ok
+      // arrives. Queue both frames here to make the host ordering contract
+      // deterministic: foreground hydration must beat the initial backlog.
+      client.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "browser-hello",
+        payload: {
+          peer: {
+            deviceId: "browser-initial-hydration",
+            deviceName: "Browser",
+            platform: "macOS",
+            deviceType: "browser",
+            siteId: "browser-initial-hydration-site",
+            dbVersion: 0,
+            capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      client.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "selected-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: "selected-chat", maxBytes: 64 * 1024 },
+      }));
+
+      await waitForValue(
+        () => getChatEventHistory.mock.calls[0],
+        "selected chat history read",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(exportChangesSince).not.toHaveBeenCalled();
+      releaseSummary({ status: "idle" });
+
+      const snapshot = await waitForEnvelope(
+        envelopes,
+        "chat_subscribe",
+        "selected-chat-subscribe",
+      );
+      expect(snapshot.payload).toMatchObject({
+        sessionId: "selected-chat",
+        events: [event],
+        turnActive: false,
+      });
+      expect(getChatEventHistory).toHaveBeenCalledTimes(1);
+      expect(envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+
+      // A browser is invalidation-only: historical rows are skipped, while a
+      // mutation committed after hello still produces a normal live signal.
+      state.dbVersion = 2;
+      state.changes.push(makeChange(2, 1));
+      const liveInvalidation = await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "post-connect browser invalidation",
+      );
+      expect(exportChangesSince).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ throughDbVersion: 2 }),
+      );
+      expect((liveInvalidation.payload as SyncChangesetBatchPayload).changes.map((change) => change.db_version)).toEqual([2]);
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
       await host.dispose();
       cleanup();
     }

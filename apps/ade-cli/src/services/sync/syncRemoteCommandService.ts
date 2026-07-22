@@ -3934,7 +3934,15 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
     const maxEvents = asOptionalNumber(payload.maxEvents);
-    return agentChatService.getChatEventHistory(sessionId, maxEvents == null ? undefined : { maxEvents });
+    const maxBytes = asOptionalNumber(payload.maxBytes);
+    const options = {
+      ...(maxEvents != null ? { maxEvents } : {}),
+      ...(maxBytes != null ? { maxBytes } : {}),
+    };
+    return agentChatService.getChatEventHistory(
+      sessionId,
+      Object.keys(options).length > 0 ? options : undefined,
+    );
   });
   register("chat.getTranscript", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");

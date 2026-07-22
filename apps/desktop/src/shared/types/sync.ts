@@ -49,6 +49,13 @@ export type SyncProtocolVersion = 1;
 /** Additive hello capability for in-place ADE Relay account reauthorization. */
 export const SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY = "relayReauthorizeV1" as const;
 
+/**
+ * Additive hello capability for browser peers that keep no local CRR replica.
+ * Such peers fully refetch their query domains after hello and consume only
+ * post-connect changesets as invalidation hints.
+ */
+export const SYNC_INVALIDATION_ONLY_V1_CAPABILITY = "invalidationOnlyV1" as const;
+
 /** Relay transport readiness protocol used before the ADE sync hello. */
 export const SYNC_RELAY_READY_VERSION = 2 as const;
 

@@ -21867,6 +21867,84 @@ describe("createAgentChatService", () => {
       expect(page.hasMore).toBe(false);
     });
 
+    it("keeps a requested-byte snapshot seamless with its older page and unflushed ring events", async () => {
+      installRealTranscriptParser();
+      const emitted: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => emitted.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      // Create a normal committed event, then replace the files beneath it so
+      // the ring is one append ahead of the transcript snapshot (the same
+      // state as an fs.appendFile still in flight).
+      const pendingInput = service.requestChatInput({
+        chatSessionId: session.id,
+        title: "Live ring event",
+        body: "Choose one",
+        questions: [{
+          id: "choice",
+          question: "Choose one",
+          options: [{ label: "One" }, { label: "Two" }],
+        }],
+      });
+      const liveRingEvent = await waitForEvent(
+        emitted,
+        (entry): entry is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => entry.event.type === "approval_request",
+      );
+
+      const LINE_BYTES = 16 * 1024;
+      const LINE_COUNT = 24;
+      const lines = Array.from({ length: LINE_COUNT }, (_, index) => paddedLine({
+        sessionId: session.id,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        event: { type: "text", text: `persisted-${index}-` },
+        sequence: index,
+      }, LINE_BYTES));
+      const raw = lines.join("");
+      const legacyTranscript = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const durableTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.mkdirSync(path.dirname(legacyTranscript), { recursive: true });
+      fs.mkdirSync(path.dirname(durableTranscript), { recursive: true });
+      fs.writeFileSync(legacyTranscript, raw, "utf8");
+      fs.writeFileSync(durableTranscript, raw, "utf8");
+
+      const maxBytes = 128 * 1024;
+      const history = service.getChatEventHistory(session.id, { maxEvents: 512, maxBytes });
+      expect(history.events).toContainEqual(liveRingEvent);
+      expect(history.tailStartOffset).toEqual(expect.any(Number));
+      expect(history.tailStartOffset).toBeGreaterThan(0);
+      expect(history.events.reduce(
+        (total, entry) => total + Buffer.byteLength(JSON.stringify(entry), "utf8"),
+        0,
+      )).toBeLessThanOrEqual(maxBytes);
+
+      const snapshotSequences = history.events.flatMap((entry) =>
+        typeof entry.sequence === "number" && entry.event.type === "text" ? [entry.sequence] : []);
+      expect(snapshotSequences.length).toBeGreaterThan(0);
+      const firstSnapshotSequence = snapshotSequences[0]!;
+      expect(history.tailStartOffset).toBe(firstSnapshotSequence * LINE_BYTES);
+
+      const page = service.getChatEventHistoryPage(session.id, {
+        beforeOffset: history.tailStartOffset!,
+        maxBytes,
+      });
+      const pageSequences = page.events.flatMap((entry) =>
+        typeof entry.sequence === "number" && entry.event.type === "text" ? [entry.sequence] : []);
+      expect(pageSequences.at(-1)).toBe(firstSnapshotSequence - 1);
+      expect(new Set([...pageSequences, ...snapshotSequences]).size)
+        .toBe(pageSequences.length + snapshotSequences.length);
+
+      await service.respondToInput({
+        sessionId: session.id,
+        itemId: liveRingEvent.event.itemId,
+        decision: "decline",
+      });
+      await pendingInput;
+    });
+
     it("reports a null tailStartOffset when the transcript is fully hydrated", async () => {
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
