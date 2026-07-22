@@ -142,6 +142,52 @@ describe("startJsonRpcServer", () => {
     stop();
   });
 
+  it("keeps session and layout reads responsive during slow lane, GitHub, and mutation calls", async () => {
+    const transport = new MemoryTransport();
+    const slowSnapshot = deferred<void>();
+    const slowGithub = deferred<void>();
+    const slowDelete = deferred<void>();
+    const calls: string[] = [];
+    const handler = (async (request) => {
+      const params = request.params as { arguments?: { domain?: string; action?: string } } | undefined;
+      const action = params?.arguments?.action ?? request.method ?? "";
+      calls.push(action);
+      if (action === "listSnapshots") await slowSnapshot.promise;
+      if (action === "getStatus") await slowGithub.promise;
+      if (action === "delete") await slowDelete.promise;
+      return { ok: true, action };
+    }) as JsonRpcHandler;
+
+    const stop = startJsonRpcServer(handler, transport, { nonFatal: true });
+    const call = (id: number, domain: string, action: string) => transport.push({
+      jsonrpc: "2.0",
+      id,
+      method: "ade/actions/call",
+      params: { arguments: { domain, action } },
+    });
+
+    call(1, "lane", "listSnapshots");
+    call(2, "github", "getStatus");
+    call(3, "lane", "delete");
+    call(4, "session", "list");
+    call(5, "layout", "get");
+    await waitForDrain();
+
+    expect(calls).toHaveLength(5);
+    expect(calls).toEqual(expect.arrayContaining(["listSnapshots", "getStatus", "delete", "list", "get"]));
+    expect(jsonlResponses(transport)).toEqual([
+      { jsonrpc: "2.0", id: 4, result: { ok: true, action: "list" } },
+      { jsonrpc: "2.0", id: 5, result: { ok: true, action: "get" } },
+    ]);
+
+    slowDelete.resolve(undefined);
+    slowSnapshot.resolve(undefined);
+    slowGithub.resolve(undefined);
+    await stop.waitForIdle();
+    expect(calls.filter((action) => action === "delete")).toHaveLength(1);
+    stop();
+  });
+
   it("waits for active dispatches before reporting idle", async () => {
     const transport = new MemoryTransport();
     const slow = deferred<void>();

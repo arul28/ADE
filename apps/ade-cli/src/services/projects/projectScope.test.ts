@@ -8,6 +8,16 @@ import { ProjectScopeRegistry } from "./projectScope";
 
 const createAdeRuntimeMock = vi.fn();
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
 vi.mock("../../bootstrap", () => ({
   createAdeRuntime: createAdeRuntimeMock,
 }));
@@ -195,8 +205,8 @@ describe("ProjectScopeRegistry", () => {
       projectRoot: first.rootPath,
       syncRuntime: {
         enabled: true,
-        hostStartupEnabled: true,
-        hostDiscoveryEnabled: true,
+        hostStartupEnabled: false,
+        hostDiscoveryEnabled: false,
         initializeInBackground: true,
       },
     });
@@ -251,8 +261,8 @@ describe("ProjectScopeRegistry", () => {
       projectRoot: second.rootPath,
       syncRuntime: {
         enabled: true,
-        hostStartupEnabled: true,
-        hostDiscoveryEnabled: true,
+        hostStartupEnabled: false,
+        hostDiscoveryEnabled: false,
         initializeInBackground: true,
       },
     });
@@ -260,6 +270,138 @@ describe("ProjectScopeRegistry", () => {
     await scopeRegistry.disposeAll();
     expect(firstDispose).toHaveBeenCalledTimes(1);
     expect(secondDispose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the previous host active past parked-peer grace throughout a slow target boot", async () => {
+    vi.useFakeTimers();
+    try {
+      const { registry, first, second } = createRegistry();
+      const targetRuntime = deferred<any>();
+      const firstSyncService = {
+        initialize: vi.fn(async () => undefined),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn(async () => undefined),
+      };
+      const secondSyncService = {
+        initialize: vi.fn(async () => undefined),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn(async () => undefined),
+      };
+      createAdeRuntimeMock
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+        .mockImplementationOnce(() => targetRuntime.promise);
+      const scopeRegistry = new ProjectScopeRegistry(registry, {
+        syncRuntime: {
+          enabled: true,
+          hostStartupEnabled: true,
+          hostDiscoveryEnabled: true,
+          forceHostRole: false,
+          runtimeKind: "daemon",
+        },
+      });
+      await scopeRegistry.switchSyncHost(first.projectId);
+      firstSyncService.setHostDiscoveryEnabled.mockClear();
+      firstSyncService.setHostStartupEnabled.mockClear();
+
+      const switching = scopeRegistry.switchSyncHost(second.projectId);
+      await vi.advanceTimersByTimeAsync(30_001);
+
+      // Parked peers are closed after 30s. The previous listener must still own
+      // them even when cold target setup outlives that entire grace period.
+      expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+      expect(firstSyncService.setHostDiscoveryEnabled).not.toHaveBeenCalledWith(false);
+      expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
+      await expect(scopeRegistry.prewarmRecentScopes()).resolves.toEqual([]);
+
+      targetRuntime.resolve({ dispose: vi.fn(), syncService: secondSyncService });
+      await switching;
+      expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(second.projectId);
+      expect(firstSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(false);
+      expect(secondSyncService.setHostDiscoveryEnabled).toHaveBeenCalledWith(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restores the previous host when target activation fails", async () => {
+    const { registry, first, second } = createRegistry();
+    const firstSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    };
+    const secondSyncService = {
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async (enabled: boolean) => {
+        if (enabled) throw new Error("target activation failed");
+      }),
+    };
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+    await scopeRegistry.switchSyncHost(first.projectId);
+    firstSyncService.setHostDiscoveryEnabled.mockClear();
+    firstSyncService.setHostStartupEnabled.mockClear();
+
+    await expect(scopeRegistry.switchSyncHost(second.projectId)).rejects.toThrow("target activation failed");
+
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenNthCalledWith(1, false);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenNthCalledWith(2, true);
+    expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it("lets the newest concurrent sync-host selection win without flapping an intermediate host", async () => {
+    const { registry, first, second } = createRegistry();
+    const thirdRoot = path.join(path.dirname(first.rootPath), "third-concurrent");
+    fs.mkdirSync(thirdRoot, { recursive: true });
+    const third = registry.add(thirdRoot);
+    const secondRuntime = deferred<any>();
+    const makeSyncService = () => ({
+      initialize: vi.fn(async () => undefined),
+      setHostDiscoveryEnabled: vi.fn(),
+      setHostStartupEnabled: vi.fn(async () => undefined),
+    });
+    const firstSyncService = makeSyncService();
+    const secondSyncService = makeSyncService();
+    const thirdSyncService = makeSyncService();
+    createAdeRuntimeMock
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+      .mockImplementationOnce(() => secondRuntime.promise)
+      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: thirdSyncService });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: {
+        enabled: true,
+        hostStartupEnabled: true,
+        hostDiscoveryEnabled: true,
+        forceHostRole: false,
+        runtimeKind: "daemon",
+      },
+    });
+    await scopeRegistry.switchSyncHost(first.projectId);
+    firstSyncService.setHostStartupEnabled.mockClear();
+
+    const switchToSecond = scopeRegistry.switchSyncHost(second.projectId);
+    const switchToThird = scopeRegistry.switchSyncHost(third.projectId);
+    await new Promise((resolve) => setImmediate(resolve));
+    secondRuntime.resolve({ dispose: vi.fn(), syncService: secondSyncService });
+    await Promise.all([switchToSecond, switchToThird]);
+
+    expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(third.projectId);
+    expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+    expect(thirdSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledTimes(1);
+    expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
   });
 
   it("can prepare a new phone sync host before retiring the previous host", async () => {

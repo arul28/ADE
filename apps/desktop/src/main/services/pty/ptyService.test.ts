@@ -6424,6 +6424,7 @@ describe("ptyService", () => {
     });
 
     it("signalTerminal sends ^C for SIGINT and forwards SIGTERM to pty.kill", async () => {
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
       const { service, mockPty } = createChatHarness();
       await service.create({
         laneId: "lane-1",
@@ -6436,8 +6437,61 @@ describe("ptyService", () => {
       service.signalTerminal({ chatSessionId: "chat-signal", signal: "SIGINT" });
       expect(mockPty.write).toHaveBeenCalledWith("\x03");
 
+      mocks.spawnSync.mockClear();
       service.signalTerminal({ chatSessionId: "chat-signal", signal: "SIGTERM" });
       expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(kill).toHaveBeenCalledWith(-12345, "SIGTERM");
+      expect(mocks.spawnSync).not.toHaveBeenCalled();
+      kill.mockRestore();
+    });
+
+    it("uses node-pty's kill fallback without POSIX process-group signals on Windows", async () => {
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
+      setPlatform("win32");
+      try {
+        const { service, mockPty } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-windows",
+        });
+
+        service.signalTerminal({ chatSessionId: "chat-signal-windows", signal: "SIGTERM" });
+        expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+        expect(kill).not.toHaveBeenCalledWith(-12345, "SIGTERM");
+      } finally {
+        setPlatform(originalPlatform);
+        kill.mockRestore();
+      }
+    });
+
+    it("force-kills a live PTY process group after its leader exits", async () => {
+      vi.useFakeTimers();
+      const kill = vi.spyOn(process, "kill").mockImplementation(((pid: number, signal?: number | NodeJS.Signals) => {
+        if (pid === -12345 && signal === 0) return true;
+        return true;
+      }) as typeof process.kill);
+      try {
+        const { service } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-group",
+        });
+
+        service.signalTerminal({ chatSessionId: "chat-signal-group", signal: "SIGTERM" });
+        await vi.advanceTimersByTimeAsync(1_500);
+
+        expect(kill).toHaveBeenCalledWith(-12345, 0);
+        expect(kill).toHaveBeenCalledWith(-12345, "SIGKILL");
+      } finally {
+        kill.mockRestore();
+        vi.useRealTimers();
+      }
     });
 
     it("fails loudly when chat terminal calls cannot resolve a target", async () => {

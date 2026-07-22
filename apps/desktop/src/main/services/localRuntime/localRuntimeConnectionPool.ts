@@ -87,6 +87,12 @@ const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
 const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
+  // Lane deletion can legitimately include a 60s worktree removal followed by
+  // a 45s remote-branch deletion. The old 30s client budget reported failure
+  // while the daemon kept mutating state to a successful completion.
+  ["lane.delete", 4 * 60_000],
+  ["lane.archive", 120_000],
+  ["lane.unarchive", 120_000],
   ["chat.suggestLaneNameFromPrompt", 120_000],
   // Handoff = AI brief generation (bounded at 45s) + session creation +
   // provider dispatch of the first message; the 30s default fired a false
@@ -100,6 +106,12 @@ const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
 const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
   "chat.listSessions",
+  // Exact duplicate destructive requests share one in-flight result. This is
+  // not a retry: mutations still have maxAttempts=1, and different arguments
+  // or sequential invocations remain independent.
+  "lane.archive",
+  "lane.delete",
+  "lane.unarchive",
   "layout.get",
   "project_config.get",
   "pty.resize",

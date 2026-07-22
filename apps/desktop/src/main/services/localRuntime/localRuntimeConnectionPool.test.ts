@@ -954,6 +954,90 @@ describe("local runtime connection pool", () => {
     expect(call).toHaveBeenCalledTimes(2);
   });
 
+  it("single-flights an exact lane delete and keeps its client timeout above daemon work", async () => {
+    let resolveCall!: (value: unknown) => void;
+    const call = vi.fn(() => new Promise<unknown>((resolve) => {
+      resolveCall = resolve;
+    }));
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+    const request = {
+      domain: "lane",
+      action: "delete",
+      args: { laneId: "lane-1", force: true, deleteRemoteBranch: true },
+    };
+
+    const first = pool.callActionForRoot(rootPath, request);
+    const duplicate = pool.callActionForRoot(rootPath, {
+      ...request,
+      args: { deleteRemoteBranch: true, force: true, laneId: "lane-1" },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith(
+      "ade/actions/call",
+      expect.objectContaining({
+        arguments: expect.objectContaining({ domain: "lane", action: "delete" }),
+      }),
+      { timeoutMs: 4 * 60_000 },
+    );
+
+    resolveCall({ domain: "lane", action: "delete", result: null, statusHints: {} });
+    await expect(Promise.all([first, duplicate])).resolves.toHaveLength(2);
+    expect(call).toHaveBeenCalledTimes(1);
+  });
+
+  it("extends archive mutations while preserving a single delivery attempt", async () => {
+    const call = vi.fn().mockResolvedValue({
+      domain: "lane",
+      action: "archive",
+      result: null,
+      statusHints: {},
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1", rootPath, displayName: "repo", addedAt: 1, lastOpenedAt: 1, gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) }, child: null, socketPath: "/tmp/ade.sock",
+    });
+
+    await pool.callActionForRoot(rootPath, {
+      domain: "lane",
+      action: "archive",
+      args: { laneId: "lane-1" },
+    });
+
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith(
+      "ade/actions/call",
+      expect.anything(),
+      { timeoutMs: 120_000 },
+    );
+  });
+
   it("retries project registration when the cached runtime connection drops before a read action", async () => {
     const dropped = new Error("Remote ADE service connection closed.");
     const logger = {

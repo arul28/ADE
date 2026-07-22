@@ -52,11 +52,54 @@ type LaneListSnapshotServices = {
   logger: Pick<Logger, "info">;
 };
 
+type OptionalLaneListEnrichment = [
+  Array<NonNullable<LaneListSnapshot["rebaseSuggestion"]>>,
+  Array<NonNullable<LaneListSnapshot["autoRebaseStatus"]>>,
+  { lanes?: Array<NonNullable<LaneListSnapshot["conflictStatus"]>> } | null,
+];
+
+type OptionalLaneListEnrichmentCacheEntry = {
+  last: OptionalLaneListEnrichment;
+  inFlight: Promise<OptionalLaneListEnrichment> | null;
+};
+
+const OPTIONAL_LANE_ENRICHMENT_CACHE_MAX_ENTRIES = 8;
+const OPTIONAL_LANE_ENRICHMENT_RETRY_AFTER_MS = 2 * 60_000;
+const optionalEnrichmentByLaneService = new WeakMap<
+  object,
+  Map<string, OptionalLaneListEnrichmentCacheEntry>
+>();
+
+function optionalLaneEnrichmentKey(
+  lanes: LaneSummary[],
+  options: LaneListSnapshotOptions,
+): string {
+  return JSON.stringify({
+    lanes: lanes
+      .map((lane) => ({
+        id: lane.id,
+        parentLaneId: lane.parentLaneId,
+        branchRef: lane.branchRef,
+        baseRef: lane.baseRef,
+        worktreePath: lane.worktreePath,
+        archivedAt: lane.archivedAt,
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+    conflict: options.includeConflictStatus !== false,
+    rebase: options.includeRebaseSuggestions !== false,
+    autoRebase: options.includeAutoRebaseStatus !== false,
+  });
+}
+
 export type LaneListSnapshotOptions = {
   includeConflictStatus?: boolean;
   includeRebaseSuggestions?: boolean;
   includeAutoRebaseStatus?: boolean;
+  /** Test/diagnostic override; optional decorations must never gate core rows. */
+  optionalEnrichmentBudgetMs?: number;
 };
+
+export const OPTIONAL_LANE_ENRICHMENT_BUDGET_MS = 250;
 
 function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
@@ -242,31 +285,96 @@ export async function buildLaneListSnapshots(
     }
   };
 
-  const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
+  let optionalCache = optionalEnrichmentByLaneService.get(args.laneService);
+  if (!optionalCache) {
+    optionalCache = new Map();
+    optionalEnrichmentByLaneService.set(args.laneService, optionalCache);
+  }
+  const optionalCacheKey = optionalLaneEnrichmentKey(lanes, options);
+  let optionalEntry = optionalCache.get(optionalCacheKey);
+  if (!optionalEntry) {
+    optionalEntry = { last: [[], [], null], inFlight: null };
+    optionalCache.set(optionalCacheKey, optionalEntry);
+    while (optionalCache.size > OPTIONAL_LANE_ENRICHMENT_CACHE_MAX_ENTRIES) {
+      const oldestKey = optionalCache.keys().next().value as string | undefined;
+      if (!oldestKey) break;
+      optionalCache.delete(oldestKey);
+    }
+  }
+  const previousOptionalEnrichment = optionalEntry.last;
+  if (!optionalEntry.inFlight) {
+    const work: Promise<OptionalLaneListEnrichment> = Promise.all([
+      options.includeRebaseSuggestions === false
+        ? Promise.resolve([])
+        : timePhase("rebase_suggestions", () =>
+            Promise.resolve()
+              .then(() => args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? [])
+              .catch(() => previousOptionalEnrichment[0])),
+      options.includeAutoRebaseStatus === false
+        ? Promise.resolve([])
+        : timePhase("auto_rebase_statuses", () =>
+            Promise.resolve()
+              .then(() => args.autoRebaseService?.listStatuses({ lanes }) ?? [])
+              .catch(() => previousOptionalEnrichment[1])),
+      options.includeConflictStatus === false
+        ? Promise.resolve(null)
+        : timePhase("conflict_assessment", () =>
+            Promise.resolve()
+              .then(() => args.conflictService?.getBatchAssessment({ lanes }) ?? null)
+              .catch(() => previousOptionalEnrichment[2])),
+    ]);
+    optionalEntry.inFlight = work;
+    const retryTimer = setTimeout(() => {
+      if (optionalEntry?.inFlight === work) optionalEntry.inFlight = null;
+    }, OPTIONAL_LANE_ENRICHMENT_RETRY_AFTER_MS);
+    retryTimer.unref?.();
+    void work.then((result) => {
+      // A watchdog may release a genuinely hung probe so a newer scan can
+      // start. Never let that older probe overwrite newer last-known data if
+      // it eventually settles out of order.
+      if (optionalEntry?.inFlight === work) optionalEntry.last = result;
+    }).finally(() => {
+      clearTimeout(retryTimer);
+      if (optionalEntry?.inFlight === work) optionalEntry.inFlight = null;
+    });
+  }
+  const optionalEnrichment = optionalEntry.inFlight ?? Promise.resolve(optionalEntry.last);
+  const optionalBudgetMs = Math.max(
+    0,
+    Math.floor(options.optionalEnrichmentBudgetMs ?? OPTIONAL_LANE_ENRICHMENT_BUDGET_MS),
+  );
+  let optionalBudgetTimer: ReturnType<typeof setTimeout> | null = null;
+  const optionalWithinBudget: Promise<OptionalLaneListEnrichment | null> = Promise.race([
+    optionalEnrichment,
+    new Promise<null>((resolve) => {
+      optionalBudgetTimer = setTimeout(() => resolve(null), optionalBudgetMs);
+      optionalBudgetTimer.unref?.();
+    }),
+  ]);
+
+  const [sessions, stateSnapshots, optionalResult] = await Promise.all([
     timePhase("sessions", () => enrichSessionsForLaneList(args)),
-    options.includeRebaseSuggestions === false
-      ? Promise.resolve([])
-      : timePhase("rebase_suggestions", () =>
-          Promise.resolve()
-            .then(() => args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? [])
-            .catch(() => [])),
-    options.includeAutoRebaseStatus === false
-      ? Promise.resolve([])
-      : timePhase("auto_rebase_statuses", () =>
-          Promise.resolve()
-            .then(() => args.autoRebaseService?.listStatuses({ lanes }) ?? [])
-            .catch(() => [])),
     timePhase("state_snapshots", () =>
       Promise.resolve()
         .then(() => args.laneService.listStateSnapshots())
         .catch(() => [])),
-    options.includeConflictStatus === false
-      ? Promise.resolve(null)
-      : timePhase("conflict_assessment", () =>
-          Promise.resolve()
-            .then(() => args.conflictService?.getBatchAssessment({ lanes }) ?? null)
-            .catch(() => null)),
+    optionalWithinBudget,
   ]);
+  if (optionalBudgetTimer) clearTimeout(optionalBudgetTimer);
+  const [rebaseSuggestions, autoRebaseStatuses, batchAssessment] = optionalResult ?? [
+    previousOptionalEnrichment[0],
+    previousOptionalEnrichment[1],
+    previousOptionalEnrichment[2],
+  ];
+  if (optionalResult === null) {
+    args.logger.info("lanes.listSnapshots.optional_enrichment_deferred", {
+      laneCount: lanes.length,
+      budgetMs: optionalBudgetMs,
+      includeConflictStatus: options.includeConflictStatus !== false,
+      includeRebaseSuggestions: options.includeRebaseSuggestions !== false,
+      includeAutoRebaseStatus: options.includeAutoRebaseStatus !== false,
+    });
+  }
   const durationMs = Date.now() - startedAt;
   if (durationMs >= 120) {
     args.logger.info("lanes.listSnapshots.summary", {

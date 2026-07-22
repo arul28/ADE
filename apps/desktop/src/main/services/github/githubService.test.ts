@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
 
 // ---------------------------------------------------------------------------
 // vi.hoisted mock state
@@ -70,6 +71,7 @@ function resetMocks() {
   runGitMock.mockReset();
   delete process.env.GH_TOKEN;
   delete process.env.GITHUB_TOKEN;
+  delete process.env.GH_CONFIG_DIR;
   delete process.env.ADE_GITHUB_TOKEN;
   delete process.env.ADE_GITHUB_RELAY_API_BASE_URL;
   delete process.env.ADE_GITHUB_RELAY_ACCESS_TOKEN;
@@ -115,7 +117,9 @@ class MemoryCredentialStore {
 
 function makeService(options: {
   credentialStore?: MemoryCredentialStore;
-  ghAuthTokenProvider?: () => { token: string | null; ghCliPath: string | null; ghAuthError: string | null };
+  ghAuthTokenProvider?: () =>
+    | { token: string | null; ghCliPath: string | null; ghAuthError: string | null }
+    | Promise<{ token: string | null; ghCliPath: string | null; ghAuthError: string | null }>;
   githubRelaySecretReader?: (ref: string) => string | null;
   getAccountAccessToken?: () => Promise<string | null>;
 } = {}) {
@@ -701,6 +705,68 @@ describe("githubService.getStatus", () => {
     expect(status.connected).toBe(true);
     const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer gho_cli_token");
+  });
+
+  it("reads a cached hosts.yml token synchronously before async status warmup", () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    process.env.GH_CONFIG_DIR = "/tmp/gh-fresh-sync-token";
+    vi.mocked(fs.readFileSync).mockImplementationOnce(((filePath: fs.PathOrFileDescriptor) => {
+      if (String(filePath).endsWith("hosts.yml")) {
+        return "github.com:\n    user: alice\n    oauth_token: gho_hosts_fresh\n";
+      }
+      return Buffer.from("encrypted");
+    }) as typeof fs.readFileSync);
+
+    expect(makeService().getTokenOrThrow()).toBe("gho_hosts_fresh");
+    expect(makeService().getTokenOrThrow()).toBe("gho_hosts_fresh");
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+    delete process.env.GH_CONFIG_DIR;
+  });
+
+  it("coalesces slow gh auth and failed status probes across project services", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const baseNow = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+    let resolveAuth!: (value: { token: string; ghCliPath: string; ghAuthError: null }) => void;
+    const ghAuthTokenProvider = vi.fn(() => new Promise<{
+      token: string;
+      ghCliPath: string;
+      ghAuthError: null;
+    }>((resolve) => {
+      resolveAuth = resolve;
+    }));
+    mockFetch.mockImplementation(async (input: string | URL) => {
+      if (String(input).endsWith("/user")) {
+        return jsonResponse(200, { login: "alice" });
+      }
+      const timeout = new Error("request timed out");
+      timeout.name = "AbortError";
+      throw timeout;
+    });
+    const first = makeService({ ghAuthTokenProvider });
+    const second = makeService({ ghAuthTokenProvider });
+
+    const firstStatus = first.getStatus();
+    const secondStatus = second.getStatus();
+    await Promise.resolve();
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
+
+    resolveAuth({
+      token: "github_pat_shared_slow_token",
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null,
+    });
+    const statuses = await Promise.all([firstStatus, secondStatus]);
+    expect(statuses.map((status) => status.repoAccessOk)).toEqual([false, false]);
+    expect(mockFetch).toHaveBeenCalledTimes(2); // one /user + one repo probe total
+
+    now.mockReturnValue(baseNow + 31_000);
+    const third = await makeService({ ghAuthTokenProvider }).getStatus();
+    expect(third.repoAccessOk).toBe(false);
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    now.mockRestore();
   });
 
   it("clearing a stored PAT falls back to gh auth", async () => {

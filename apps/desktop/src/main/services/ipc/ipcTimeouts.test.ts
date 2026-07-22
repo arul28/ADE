@@ -14,6 +14,13 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(4 * 60_000);
   });
 
+  it("uses a bounded archive budget on direct and runtime-backed paths", () => {
+    expect(ipcInvokeTimeoutMs(IPC.lanesArchive)).toBe(4 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "lane", action: "archive", args: { laneId: "lane-1" } },
+    }])).toBe(4 * 60_000);
+  });
+
   it("gives ordinary local runtime calls enough time to bind a cold project", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "lane", action: "list" },
@@ -22,6 +29,7 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync)).toBe(150_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeListActionRegistry)).toBe(150_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeStreamEvents)).toBe(150_000);
+    expect(ipcInvokeTimeoutMs(IPC.projectSwitchToPath)).toBe(150_000);
   });
 
   it("gives retryable remote runtime actions enough time to reconnect", () => {

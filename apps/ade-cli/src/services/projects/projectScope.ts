@@ -36,6 +36,8 @@ export class ProjectScopeRegistry {
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
   private syncHostProjectId: ProjectId | null = null;
   private syncHostTransitionDepth = 0;
+  private syncHostTransitionTail: Promise<void> = Promise.resolve();
+  private latestSyncHostTransitionId = 0;
   private prewarmStarted = false;
   private disposed = false;
   private readonly remoteCommandExecutor = {
@@ -213,47 +215,66 @@ export class ProjectScopeRegistry {
     options: SwitchSyncHostOptions = {},
   ): Promise<ProjectScope | null> {
     if (!this.options.syncRuntime?.enabled) return null;
+    const transitionId = ++this.latestSyncHostTransitionId;
     this.syncHostTransitionDepth += 1;
+    const work = this.syncHostTransitionTail.then(
+      () => this.performSyncHostSwitch(projectId, options, transitionId),
+      () => this.performSyncHostSwitch(projectId, options, transitionId),
+    );
+    this.syncHostTransitionTail = work.then(
+      () => undefined,
+      () => undefined,
+    );
     try {
-      const previousHostId = this.syncHostProjectId;
-      const deactivatePreviousHost = options.deactivatePreviousHost ?? true;
-      if (previousHostId && previousHostId !== projectId && deactivatePreviousHost) {
-        await this.configureCachedSyncHost(previousHostId, false);
-      }
-      this.syncHostProjectId = projectId;
-      try {
-        const scope = await this.get(projectId);
-        await this.configureSyncHost(scope, true);
-        return scope;
-      } catch (error) {
-        // A failing get() already nulls syncHostProjectId, so check for both.
-        if (this.syncHostProjectId === projectId) {
-          this.syncHostProjectId = deactivatePreviousHost ? null : previousHostId;
-        }
-        if (
-          this.syncHostProjectId == null
-          && deactivatePreviousHost
-          && previousHostId
-          && previousHostId !== projectId
-        ) {
-          // The previous host was already stopped. With a brain-level shared
-          // sync listener that leaves NO host owning the socket: reconnecting
-          // phones would park until the grace close (4002), forever, since
-          // nothing else restarts a host. Restore the known-good previous
-          // host before surfacing the failure.
-          try {
-            const previousScope = await this.get(previousHostId);
-            await this.configureSyncHost(previousScope, true);
-            this.syncHostProjectId = previousHostId;
-          } catch {
-            // Leave syncHostProjectId null; resolveActiveSyncHost() (e.g. the
-            // next prepareProjectConnection) is the remaining recovery path.
-          }
-        }
-        throw error;
-      }
+      return await work;
     } finally {
       this.syncHostTransitionDepth = Math.max(0, this.syncHostTransitionDepth - 1);
+    }
+  }
+
+  private async performSyncHostSwitch(
+    projectId: ProjectId,
+    options: SwitchSyncHostOptions,
+    transitionId: number,
+  ): Promise<ProjectScope> {
+    const previousHostId = this.syncHostProjectId;
+    const deactivatePreviousHost = options.deactivatePreviousHost ?? true;
+
+    // Boot and initialize the target while the previous project remains the
+    // authoritative host. get() sees syncHostProjectId still pointing at the
+    // old host, so the new runtime starts with host startup/discovery disabled.
+    const scope = await this.get(projectId);
+    await scope.runtime.syncService?.initialize();
+
+    // A newer queued selection superseded this one while its cold runtime was
+    // booting. Keep the warm scope, but never flap the active listener/peers.
+    if (transitionId !== this.latestSyncHostTransitionId) return scope;
+    if (previousHostId === projectId) {
+      await this.configureSyncHost(scope, true, { initialize: false });
+      return scope;
+    }
+
+    let previousDeactivated = false;
+    try {
+      if (previousHostId && deactivatePreviousHost) {
+        await this.configureCachedSyncHost(previousHostId, false);
+        previousDeactivated = true;
+      }
+      this.syncHostProjectId = projectId;
+      await this.configureSyncHost(scope, true, { initialize: false });
+      return scope;
+    } catch (error) {
+      await this.configureSyncHost(scope, false).catch(() => {});
+      this.syncHostProjectId = previousHostId;
+      if (previousHostId && previousDeactivated) {
+        try {
+          const previousScope = await this.get(previousHostId);
+          await this.configureSyncHost(previousScope, true);
+        } catch {
+          this.syncHostProjectId = null;
+        }
+      }
+      throw error;
     }
   }
 
@@ -279,12 +300,13 @@ export class ProjectScopeRegistry {
   private async configureSyncHost(
     scope: ProjectScope,
     enabled: boolean,
+    options: { initialize?: boolean } = {},
   ): Promise<void> {
     const syncService = scope.runtime.syncService;
     if (!syncService) return;
     syncService.setHostDiscoveryEnabled?.(enabled);
     await syncService.setHostStartupEnabled?.(enabled);
-    if (enabled) await syncService.initialize();
+    if (enabled && options.initialize !== false) await syncService.initialize();
   }
 
   private buildSyncRuntimeOptions(projectId: ProjectId, isHost: boolean): AdeRuntimeSyncOptions | null {

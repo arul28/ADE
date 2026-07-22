@@ -11,6 +11,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     createChild: IPC.lanesCreateChild,
     createFromUnstaged: IPC.lanesCreateFromUnstaged,
     importBranch: IPC.lanesImportBranch,
+    archive: IPC.lanesArchive,
     delete: IPC.lanesDelete,
   },
   ios_simulator: {
@@ -64,6 +65,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     return 30_000;
   }
   switch (channel) {
+    // Switching projects can cold-start and bind the local runtime. Keep the
+    // renderer's outcome known until the same setup budget used by local
+    // runtime calls expires.
+    case IPC.projectSwitchToPath:
+      return LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS;
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:
@@ -84,6 +90,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.lanesCreateChild:
     case IPC.lanesCreateFromUnstaged:
     case IPC.lanesImportBranch:
+    case IPC.lanesArchive:
     case IPC.lanesDelete:
       return 4 * 60_000;
     // Handoff runs an AI brief + session creation + first-message dispatch

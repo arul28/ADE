@@ -165,7 +165,6 @@ const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
 const AGENT_CLI_READY_POLL_MS = 100;
 const AGENT_CLI_READY_QUIET_MS = 600;
 const PTY_PROCESS_TREE_KILL_DELAY_MS = 1500;
-const PTY_PROCESS_TREE_MAX_DEPTH = 12;
 
 let cachedOpenCodeReplayResumeSupport: boolean | null = null;
 
@@ -178,50 +177,36 @@ function isPidLive(pid: number): boolean {
   }
 }
 
-function childPidsOf(pid: number): number[] {
-  if (!Number.isFinite(pid) || pid <= 0) return [];
-  try {
-    const result = spawnSync("pgrep", ["-P", String(Math.trunc(pid))], {
-      encoding: "utf8",
-      timeout: 1000,
-    });
-    if (result.error || result.status === 1) return [];
-    return String(result.stdout ?? "")
-      .split(/\s+/)
-      .map((value) => Number.parseInt(value, 10))
-      .filter((value) => Number.isFinite(value) && value > 0);
-  } catch {
-    return [];
-  }
-}
-
-function collectDescendantPids(rootPid: number): number[] {
-  const root = Math.trunc(rootPid);
-  if (!Number.isFinite(root) || root <= 0) return [];
-  const seen = new Set<number>([root]);
-  const descendants: number[] = [];
-  let frontier = [root];
-  for (let depth = 0; depth < PTY_PROCESS_TREE_MAX_DEPTH && frontier.length > 0; depth += 1) {
-    const next: number[] = [];
-    for (const parent of frontier) {
-      for (const child of childPidsOf(parent)) {
-        if (seen.has(child)) continue;
-        seen.add(child);
-        descendants.push(child);
-        next.push(child);
-      }
-    }
-    frontier = next;
-  }
-  return descendants;
-}
-
 function killPidBestEffort(pid: number, signal: NodeJS.Signals): void {
   if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
   try {
     process.kill(Math.trunc(pid), signal);
   } catch {
     // The process may have already exited.
+  }
+}
+
+function killPtyProcessGroupBestEffort(rootPid: number, signal: NodeJS.Signals): boolean {
+  if (process.platform === "win32" || !Number.isFinite(rootPid) || rootPid <= 0) return false;
+  try {
+    // node-pty's POSIX backend uses forkpty(3); forkpty's login_tty(3) creates
+    // a new session, making the child both session and process-group leader.
+    // Targeting `-pid` therefore signals the PTY group in one syscall, instead
+    // of recursively running synchronous `pgrep` calls on the main thread.
+    process.kill(-Math.trunc(rootPid), signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPtyProcessGroupLive(rootPid: number): boolean {
+  if (process.platform === "win32" || !Number.isFinite(rootPid) || rootPid <= 0) return false;
+  try {
+    process.kill(-Math.trunc(rootPid), 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -589,27 +574,26 @@ function terminatePtyProcessTree(
   const rootPid = typeof entry.pty.pid === "number" && Number.isFinite(entry.pty.pid)
     ? Math.trunc(entry.pty.pid)
     : null;
-  const descendants = rootPid ? collectDescendantPids(rootPid) : [];
-  for (const pid of [...descendants].reverse()) {
-    killPidBestEffort(pid, signal);
-  }
+  const signaledProcessGroup = rootPid
+    ? killPtyProcessGroupBestEffort(rootPid, signal)
+    : false;
   try {
     entry.pty.kill(signal);
   } catch {
     if (rootPid) killPidBestEffort(rootPid, signal);
   }
-  if (signal === "SIGKILL" || (!rootPid && descendants.length === 0)) return;
-  const pidsToReap = Array.from(new Set([...(rootPid ? [rootPid] : []), ...descendants]));
-  if (!pidsToReap.length) return;
+  if (signal === "SIGKILL" || !rootPid) return;
   const timer = setTimeout(() => {
-    const stillLive = pidsToReap.filter((pid) => isPidLive(pid));
-    for (const pid of stillLive) killPidBestEffort(pid, "SIGKILL");
-    if (stillLive.length > 0) {
+    const processGroupLive = signaledProcessGroup && isPtyProcessGroupLive(rootPid);
+    const rootLive = !signaledProcessGroup && isPidLive(rootPid);
+    if (processGroupLive || rootLive) {
+      if (processGroupLive) killPtyProcessGroupBestEffort(rootPid, "SIGKILL");
+      killPidBestEffort(rootPid, "SIGKILL");
       logger.warn("pty.process_tree_force_killed", {
         sessionId: entry.sessionId,
         toolType: entry.toolTypeHint,
         rootPid,
-        pids: stillLive,
+        pids: [rootPid],
       });
     }
   }, PTY_PROCESS_TREE_KILL_DELAY_MS);
