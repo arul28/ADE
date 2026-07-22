@@ -192,6 +192,37 @@ describe("buildSyncHostHelloOkPayload", () => {
     expect(syncConnectionTransportForOrigin("relay-bridge")).toBe("relay");
   });
 
+  it("acknowledges invalidation-only sync only to peers that requested it", () => {
+    const peer = {
+      deviceId: "browser-1",
+      deviceName: "ADE Browser",
+      platform: "macOS",
+      deviceType: "browser",
+      siteId: "browser-site-1",
+      dbVersion: 0,
+      capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+    } satisfies SyncPeerMetadata;
+    const base = {
+      brain: peer,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+    };
+
+    expect(buildSyncHostHelloOkPayload({ ...base, peer }).features.invalidationOnlyV1).toEqual({ enabled: true });
+    expect(buildSyncHostHelloOkPayload({
+      ...base,
+      peer: { ...peer, deviceType: "phone", capabilities: [] },
+    }).features).not.toHaveProperty("invalidationOnlyV1");
+  });
+
   it("advertises daemon-hosted project catalog support in hello_ok without desktop", () => {
     const peer = {
       deviceId: "ios-phone-1",

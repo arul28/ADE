@@ -12,6 +12,7 @@ import type { AdeAccountMachine } from "../../../../shared/types/account";
 import { AdeSyncClient } from "../client";
 import {
   BACKOFF_STABLE_CONNECTED_MS,
+  INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
   RELAY_READY_NEGOTIATION_WINDOW_MS,
   SyncConnection,
   type WebSocketLike,
@@ -70,6 +71,7 @@ const features: SyncFeatureFlags = {
   fileAccess: true,
   terminalStreaming: true,
   chatStreaming: { enabled: true },
+  invalidationOnlyV1: { enabled: true },
   projectCatalog: { enabled: true },
   projectActions: { enabled: true },
   changesetAck: { enabled: true },
@@ -139,6 +141,15 @@ function helloOk(projectId = "project-1"): SyncHelloOkPayload {
       },
     ],
     features,
+  };
+}
+
+function legacyHelloOk(projectId = "project-1"): SyncHelloOkPayload {
+  const payload = helloOk(projectId);
+  const { invalidationOnlyV1: _ignored, ...featuresWithoutAcceptance } = payload.features;
+  return {
+    ...payload,
+    features: featuresWithoutAcceptance,
   };
 }
 
@@ -760,6 +771,84 @@ describe("browser sync connection and client", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("rejects a saved browser pairing when the host does not accept invalidation-only sync", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: legacyHelloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const outcome = connection.connect(environment, [
+      { url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true },
+      { url: "ws://127.0.0.1:8788", kind: "loopback", dialable: true },
+    ]).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(outcome).resolves.toMatchObject({
+      code: "invalidation_only_v1_unsupported",
+      message: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+
+    expect(script.sockets).toHaveLength(1);
+    expect(script.sockets[0]?.closeHistory).toContainEqual({ code: 4000, reason: "Incompatible ADE host" });
+    expect(connection.getStatus()).toMatchObject({
+      state: "error",
+      error: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(script.sockets).toHaveLength(1);
+    connection.dispose();
+  });
+
+  it("rejects account adoption before creating trust when the host is too old", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const buildEnvironment = vi.fn(() => environment);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        const peer = (envelope.payload as { peer: SyncPeerMetadata }).peer;
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: {
+            ...legacyHelloOk(),
+            accountPairing: { deviceId: peer.deviceId, secret: "new-pairing-secret" },
+          },
+        });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const outcome = connection.pairWithAccount({
+      endpoints: [
+        { url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true },
+        { url: "ws://127.0.0.1:8788", kind: "loopback", dialable: true },
+      ],
+      peer: { ...hostPeer, deviceId: "new-browser-device", deviceType: "browser" },
+      accountToken: "account-token",
+      createDpop: async () => ({ timestamp: 1, nonce: "nonce", signature: "signature" }),
+      expectedHostDeviceId: hostPeer.deviceId,
+      existingPairing: null,
+      buildEnvironment,
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(outcome).resolves.toMatchObject({
+      code: "invalidation_only_v1_unsupported",
+      message: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+
+    expect(buildEnvironment).not.toHaveBeenCalled();
+    expect(script.sockets).toHaveLength(1);
+    expect(script.sockets[0]?.closeHistory).toContainEqual({ code: 4000, reason: "Incompatible ADE host" });
+    expect(connection.getStatus()).toMatchObject({
+      state: "error",
+      error: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+    connection.dispose();
   });
 
   it("retries an old Worker on a fresh legacy socket without sending hello on ready-v2", async () => {

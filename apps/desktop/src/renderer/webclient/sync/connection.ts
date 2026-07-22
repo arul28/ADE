@@ -66,6 +66,8 @@ const FULL_INVALIDATION_TABLES = [
   "github",
   "rebase",
 ] as const;
+export const INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE =
+  "Update ADE on this Mac via Settings > General > Check for Updates, then retry.";
 
 export type WebSocketLike = {
   readonly readyState: number;
@@ -162,6 +164,10 @@ export class SyncConnectionError extends Error {
   constructor(message: string, readonly code: string, readonly payload?: SyncHelloErrorPayload) {
     super(message);
   }
+}
+
+function hostAcceptedInvalidationOnlyV1(payload: SyncHelloOkPayload): boolean {
+  return payload.features?.invalidationOnlyV1?.enabled === true;
 }
 
 function createDefaultSocket(url: string): WebSocketLike {
@@ -336,6 +342,7 @@ export class SyncConnection {
           || operationGeneration !== this.operationGeneration
         ) throw new StaleSocketAttemptError();
         this.cleanupSocket();
+        if (this.isTerminalConnectionError(lastError)) throw lastError;
       }
     }
     throw lastError ?? new Error("Failed to connect to the ADE account machine.");
@@ -411,19 +418,13 @@ export class SyncConnection {
         lastError = error instanceof Error ? error : new Error(String(error));
         if (lastError instanceof StaleSocketAttemptError) throw lastError;
         this.cleanupSocket();
-        if (
-          error instanceof SyncConnectionError
-          && (error.code === "attributed_auth_failed" || error.code === "terminal_auth_failed")
-        ) {
+        if (this.isTerminalConnectionError(lastError)) {
           break;
         }
       }
     }
     const message = lastError?.message ?? "Failed to connect to ADE machine.";
-    if (
-      lastError instanceof SyncConnectionError
-      && (lastError.code === "attributed_auth_failed" || lastError.code === "terminal_auth_failed")
-    ) {
+    if (this.isTerminalConnectionError(lastError)) {
       this.emit("error", lastError);
       throw lastError;
     }
@@ -545,6 +546,11 @@ export class SyncConnection {
             if (settled || !this.isCurrentSocket(socket, generation)) return;
             if (payload.brain?.deviceId?.trim() !== environment.hostDeviceId) {
               fail(new Error("Connected machine identity did not match the stored pairing."));
+              return;
+            }
+            const compatibilityError = this.requireInvalidationOnlyV1(payload);
+            if (compatibilityError) {
+              fail(compatibilityError, "Incompatible ADE host");
               return;
             }
             if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
@@ -718,6 +724,11 @@ export class SyncConnection {
               || !pairing
             ) {
               fail(new Error("Account machine identity did not match the verified directory record."));
+              return;
+            }
+            const compatibilityError = this.requireInvalidationOnlyV1(payload);
+            if (compatibilityError) {
+              fail(compatibilityError, "Incompatible ADE host");
               return;
             }
             let environment: WebClientEnvironmentRecord;
@@ -1125,6 +1136,33 @@ export class SyncConnection {
     }
     this.setStatus({ state: "error", error: payload.message });
     return new SyncConnectionError(payload.message, "auth_failed", payload);
+  }
+
+  private isTerminalConnectionError(error: unknown): error is SyncConnectionError {
+    return error instanceof SyncConnectionError
+      && (
+        error.code === "attributed_auth_failed"
+        || error.code === "terminal_auth_failed"
+        || error.code === "invalidation_only_v1_unsupported"
+      );
+  }
+
+  private requireInvalidationOnlyV1(payload: SyncHelloOkPayload): SyncConnectionError | null {
+    if (hostAcceptedInvalidationOnlyV1(payload)) return null;
+    this.shouldReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.setStatus({
+      state: "error",
+      connectedAt: null,
+      error: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+    return new SyncConnectionError(
+      INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+      "invalidation_only_v1_unsupported",
+    );
   }
 
   private startHeartbeat(intervalMs: number | undefined): void {

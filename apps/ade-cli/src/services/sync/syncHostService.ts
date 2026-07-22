@@ -1109,6 +1109,13 @@ export function buildSyncHostHelloOkPayload(args: {
       chatStreaming: {
         enabled: true,
       },
+      ...(args.peer.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY)
+        ? {
+            invalidationOnlyV1: {
+              enabled: true,
+            },
+          }
+        : {}),
       crossProjectChat: {
         enabled: args.crossProjectChatEnabled,
       },

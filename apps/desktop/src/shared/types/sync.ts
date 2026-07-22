@@ -428,6 +428,17 @@ export type SyncFeatureFlags = {
     enabled: true;
   };
   /**
+   * Browser invalidation-only sync contract. The host includes this only when
+   * the concrete hello requested `invalidationOnlyV1`, confirming it will not
+   * replay CRDT history to a browser with no local replica.
+   *
+   * Older hosts omit this additive feature. Browser clients that require the
+   * contract must fail closed; other clients safely ignore it.
+   */
+  invalidationOnlyV1?: {
+    enabled: true;
+  };
+  /**
    * Cross-project chat "quick look": when enabled, the host honors a
    * `projectId`/`projectRootPath` override on `chat_subscribe` and streams a
    * foreign (non-active) project's chat transcript + live events read-only,
