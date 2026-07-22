@@ -766,6 +766,9 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     }
     XCTAssertTrue(service.subscribedTerminalSessionIds.contains("terminal-retry"))
     XCTAssertEqual(service.terminalBuffers["terminal-retry"], "Mac% ")
+    // Snapshot acceptance and retry ownership cleanup are one atomic state
+    // transition; this assertion must not need a yield for the retry task's
+    // defer to catch up.
     XCTAssertFalse(service.hasTerminalSnapshotRecoveryForTesting(sessionId: "terminal-retry"))
 
     service.handleTerminalDataChunkForTesting(

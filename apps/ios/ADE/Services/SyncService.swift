@@ -6623,6 +6623,12 @@ final class SyncService: ObservableObject {
                 self.isCurrentTerminalSnapshotRecoveryScope(scope)
           else { return }
           self.terminalSnapshotRequestTokens.removeValue(forKey: sessionId)
+          // Acceptance is the terminal state for any retry job serving this
+          // session. Clear its ownership in the same actor turn as the
+          // subscription barrier; otherwise callers can observe a live stream
+          // alongside a stale recovery marker until the awaiting retry task's
+          // defer gets scheduled.
+          self.terminalSnapshotRecoveryJobs.removeValue(forKey: sessionId)
           self.applyTerminalSnapshot(snapshot, sessionId: sessionId)
           self.subscribedTerminalSessionIds.insert(sessionId)
           self.flushTerminalInputQueue(sessionId: sessionId)
