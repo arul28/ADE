@@ -21945,6 +21945,83 @@ describe("createAgentChatService", () => {
       await pendingInput;
     });
 
+    it("keeps small snapshots and older pages on one deterministic transcript", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      const LINE_BYTES = 8 * 1024;
+      const durableTargetCount = 8;
+      const durableLines = [
+        ...Array.from({ length: durableTargetCount }, (_, index) => paddedLine({
+          sessionId: session.id,
+          timestamp: new Date(Date.UTC(2026, 0, 2, 0, 0, index)).toISOString(),
+          event: { type: "text", text: `durable-${index}-` },
+          sequence: index,
+        }, LINE_BYTES)),
+        // More than 128 KiB of unrelated trailing data makes the small
+        // hydration probe see no events for this session, while the fixed
+        // 2 MiB identity probe still sees the durable target history.
+        ...Array.from({ length: 18 }, (_, index) => paddedLine({
+          sessionId: "other-session",
+          timestamp: new Date(Date.UTC(2026, 0, 2, 1, 0, index)).toISOString(),
+          event: { type: "text", text: `foreign-${index}-` },
+          sequence: 1_000 + index,
+        }, LINE_BYTES)),
+      ];
+      const legacyLines = Array.from({ length: 20 }, (_, index) => paddedLine({
+        sessionId: session.id,
+        timestamp: new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+        event: { type: "text", text: `legacy-${index}-` },
+        sequence: 2_000 + index,
+      }, LINE_BYTES));
+
+      const legacyTranscript = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const durableTranscript = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.mkdirSync(path.dirname(legacyTranscript), { recursive: true });
+      fs.mkdirSync(path.dirname(durableTranscript), { recursive: true });
+      fs.writeFileSync(legacyTranscript, legacyLines.join(""), "utf8");
+      fs.writeFileSync(durableTranscript, durableLines.join(""), "utf8");
+      fs.utimesSync(legacyTranscript, new Date("2026-01-01T00:00:00.000Z"), new Date("2026-01-01T00:00:00.000Z"));
+      fs.utimesSync(durableTranscript, new Date("2026-01-02T00:00:00.000Z"), new Date("2026-01-02T00:00:00.000Z"));
+      vi.mocked(parseAgentChatTranscript).mockClear();
+
+      const maxBytes = 128 * 1024;
+      const history = service.getChatEventHistory(session.id, { maxEvents: 512, maxBytes });
+      expect(history.tailStartOffset).toBe(Buffer.byteLength(durableLines.join(""), "utf8"));
+      expect(history.events.some((entry) =>
+        entry.event.type === "text" && entry.event.text.startsWith("legacy-"),
+      )).toBe(false);
+
+      const durableSequences = history.events.flatMap((entry) =>
+        entry.event.type === "text" && entry.event.text.startsWith("durable-") && typeof entry.sequence === "number"
+          ? [entry.sequence]
+          : []);
+      let beforeOffset = history.tailStartOffset!;
+      while (beforeOffset > 0) {
+        const parseCallsBeforePage = vi.mocked(parseAgentChatTranscript).mock.calls.length;
+        const page = service.getChatEventHistoryPage(session.id, { beforeOffset, maxBytes });
+        // Candidate ranking reuses both fixed-window cache entries. The only
+        // parse here is the page payload itself, rather than synchronously
+        // re-reading both candidates on every scroll-back request.
+        expect(parseAgentChatTranscript).toHaveBeenCalledTimes(parseCallsBeforePage + 1);
+        expect(page.events.some((entry) =>
+          entry.event.type === "text" && entry.event.text.startsWith("legacy-"),
+        )).toBe(false);
+        durableSequences.push(...page.events.flatMap((entry) =>
+          entry.event.type === "text" && entry.event.text.startsWith("durable-") && typeof entry.sequence === "number"
+            ? [entry.sequence]
+            : []));
+        expect(page.startOffset).toBeLessThan(beforeOffset);
+        beforeOffset = page.startOffset;
+      }
+
+      expect(durableSequences.slice().sort((a, b) => a - b)).toEqual(
+        Array.from({ length: durableTargetCount }, (_, index) => index),
+      );
+      expect(new Set(durableSequences).size).toBe(durableSequences.length);
+    });
+
     it("reports a null tailStartOffset when the transcript is fully hydrated", async () => {
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });

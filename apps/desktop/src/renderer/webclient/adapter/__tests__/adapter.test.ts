@@ -288,6 +288,47 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("keeps only the eight most recently used project chat subscriptions", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    for (let index = 1; index <= 8; index += 1) {
+      await adapter.ade.agentChat.getEventHistory({ sessionId: `chat-${index}` });
+    }
+    // Reusing chat-1 makes it the most recent entry without opening another
+    // wire subscription, so chat-2 is the oldest when chat-9 is selected.
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" });
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-9" });
+
+    expect(fake.chatSubscribeCalls.map((call) => call.sessionId)).toEqual([
+      "chat-1",
+      "chat-2",
+      "chat-3",
+      "chat-4",
+      "chat-5",
+      "chat-6",
+      "chat-7",
+      "chat-8",
+      "chat-9",
+    ]);
+    expect(fake.chatUnsubscribeCalls).toEqual(["chat-2"]);
+
+    adapter.dispose();
+    expect(new Set(fake.chatUnsubscribeCalls)).toEqual(new Set([
+      "chat-1",
+      "chat-2",
+      "chat-3",
+      "chat-4",
+      "chat-5",
+      "chat-6",
+      "chat-7",
+      "chat-8",
+      "chat-9",
+    ]));
+    expect(fake.chatUnsubscribeCalls).toHaveLength(9);
+  });
+
   it("does not subscribe every chat returned by a session-list read", async () => {
     fake.descriptors = descriptors([
       "chat.listSessions",
@@ -1275,6 +1316,7 @@ class FakeAdeSyncClient {
   terminalResizes: Array<{ sessionId: string; cols: number; rows: number }> = [];
   terminalSubscribeCalls: Array<{ sessionId: string; opts: { maxBytes?: number } }> = [];
   chatSubscribeCalls: Array<{ sessionId: string; opts: Record<string, unknown> }> = [];
+  chatUnsubscribeCalls: string[] = [];
   terminalUnsubscribeCalls: string[] = [];
   terminalHistoryCalls: TerminalHistoryCall[] = [];
   terminalHistoryResults = new Map<string, SyncTerminalHistoryResponsePayload>();
@@ -1356,7 +1398,10 @@ class FakeAdeSyncClient {
       opts: opts && typeof opts === "object" ? { ...(opts as Record<string, unknown>) } : {},
     });
     this.chatHandlers.set(sessionId, handlers);
-    return () => this.chatHandlers.delete(sessionId);
+    return () => {
+      this.chatUnsubscribeCalls.push(sessionId);
+      if (this.chatHandlers.get(sessionId) === handlers) this.chatHandlers.delete(sessionId);
+    };
   }
 
   subscribeTerminal(sessionId: string, opts: unknown, handlers: TerminalHandlers): () => void {

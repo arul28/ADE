@@ -18,6 +18,7 @@ import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 const WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const WEB_CHAT_INITIAL_HISTORY_MAX_EVENTS = 512;
 const WEB_CHAT_INITIAL_HISTORY_MAX_BYTES = 128 * 1024;
+const WEB_CHAT_PROJECT_SUBSCRIPTION_LIMIT = 8;
 
 export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"agentChat"> {
   const { client, commands, events, terminalRegistry } = infra;
@@ -40,7 +41,21 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
   }
 
   function ensureChatSubscription(sessionId: string | null | undefined): void {
-    if (!sessionId || chatSubscriptions.has(sessionId)) return;
+    if (!sessionId) return;
+    const existingUnsubscribe = chatSubscriptions.get(sessionId);
+    if (existingUnsubscribe) {
+      // Map insertion order is the LRU order. A selected/reused chat should
+      // survive ahead of background chats visited earlier in this tab.
+      chatSubscriptions.delete(sessionId);
+      chatSubscriptions.set(sessionId, existingUnsubscribe);
+      return;
+    }
+    while (chatSubscriptions.size >= WEB_CHAT_PROJECT_SUBSCRIPTION_LIMIT) {
+      const oldest = chatSubscriptions.entries().next().value as [string, () => void] | undefined;
+      if (!oldest) break;
+      chatSubscriptions.delete(oldest[0]);
+      oldest[1]();
+    }
     const unsubscribe = client.subscribeChat(
       sessionId,
       { maxBytes: WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES },

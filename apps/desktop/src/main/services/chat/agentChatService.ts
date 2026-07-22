@@ -6592,6 +6592,10 @@ export function createAgentChatService(args: {
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES = 2_000_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS = 32;
+  // Path selection has at most three candidates; the selected path can also
+  // be parsed at a smaller client hydration window. Retain that working set
+  // without allowing arbitrary caller budgets to grow the cache indefinitely.
+  const CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_ENTRIES_PER_SESSION = 4;
   // Byte budgets alongside the event-count caps above. Individual events are
   // unbounded (multi-MB tool outputs exist in real transcripts), so count caps
   // alone cannot keep a history snapshot under the desktop RPC client's
@@ -6989,7 +6993,14 @@ export function createAgentChatService(args: {
     entry: TranscriptHistoryCacheEntry,
   ): void => {
     const sessionEntries = transcriptHistoryCacheBySession.get(sessionId) ?? new Map<string, TranscriptHistoryCacheEntry>();
-    sessionEntries.set(entry.transcriptPath, entry);
+    const cacheKey = `${entry.transcriptPath}\0${entry.maxBytes}`;
+    sessionEntries.delete(cacheKey);
+    sessionEntries.set(cacheKey, entry);
+    while (sessionEntries.size > CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_ENTRIES_PER_SESSION) {
+      const oldestKey = sessionEntries.keys().next().value;
+      if (typeof oldestKey !== "string") break;
+      sessionEntries.delete(oldestKey);
+    }
     transcriptHistoryCacheBySession.delete(sessionId);
     transcriptHistoryCacheBySession.set(sessionId, sessionEntries);
     while (transcriptHistoryCacheBySession.size > CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS) {
@@ -8337,7 +8348,8 @@ export function createAgentChatService(args: {
       1_024,
       Math.min(CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES, Math.floor(requestedMaxBytes)),
     );
-    const cached = transcriptHistoryCacheBySession.get(sessionId)?.get(transcriptPath);
+    const cacheKey = `${transcriptPath}\0${maxBytes}`;
+    const cached = transcriptHistoryCacheBySession.get(sessionId)?.get(cacheKey);
     if (
       cached
       && cached.transcriptPath === transcriptPath
@@ -8426,7 +8438,6 @@ export function createAgentChatService(args: {
   const resolveBestTranscriptPathForSessionId = (
     sessionId: string,
     managed?: ManagedChatSession | null,
-    maxBytes = CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
   ): string | null => {
     type Candidate = {
       path: string;
@@ -8457,7 +8468,17 @@ export function createAgentChatService(args: {
         if (!transcriptPath) continue;
         const stat = fs.statSync(transcriptPath);
         if (!stat.isFile()) continue;
-        const parsed = parseTranscriptHistoryTail(sessionId, transcriptPath, maxBytes);
+        // Transcript identity must not depend on the response byte budget.
+        // Snapshot cursors are raw offsets into this selected file, and older
+        // history pages resolve the path again without carrying an opaque path
+        // token. Rank every caller's candidates through the same fixed window
+        // so a small web hydration and a later page cannot address different
+        // legacy/durable transcripts.
+        const parsed = parseTranscriptHistoryTail(
+          sessionId,
+          transcriptPath,
+          CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
+        );
         const candidate: Candidate = {
           path: transcriptPath,
           size: parsed.endOffset,
@@ -8489,7 +8510,7 @@ export function createAgentChatService(args: {
     envelopeStartOffsets: Map<string, number[]>;
   } => {
     const managed = managedSessions.get(sessionId);
-    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managed, maxBytes);
+    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managed);
     if (transcriptPath) {
       try {
         return parseTranscriptHistoryTail(sessionId, transcriptPath, maxBytes);
