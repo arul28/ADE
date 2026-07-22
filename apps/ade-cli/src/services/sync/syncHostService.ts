@@ -263,7 +263,7 @@ const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
 const MAX_SYNC_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
-export const SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS = 2_000;
+export const SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS = 2_000;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
@@ -477,7 +477,7 @@ type PeerState = {
   awaitingHeartbeatAt: string | null;
   missedHeartbeatCount: number;
   backpressuredSinceMs: number | null;
-  changesetChatDeferredSinceMs: number | null;
+  changesetPriorityDeferredSinceMs: number | null;
   changesetRecoveryLevel: number;
   changesetRecoveryNotBeforeMs: number;
   remoteAddress: string | null;
@@ -914,6 +914,37 @@ export function initialSyncHostCursorForPeer(args: {
   const cursorForThisDb = args.peer.dbVersionBySite?.[args.serverDbSiteId]
     ?? (args.peer.dbVersionBySite ? 0 : args.peer.dbVersion);
   return Math.max(0, Math.floor(cursorForThisDb));
+}
+
+export function adoptedSyncHostCursorForPeer(args: {
+  peer: Pick<SyncPeerMetadata, "deviceType" | "dbVersion" | "dbVersionBySite" | "capabilities">;
+  serverDbSiteId: string;
+  serverDbVersion: number;
+  snapshotServerDbSiteId?: string | null;
+  snapshotLastKnownServerDbVersion?: number | null;
+}): number {
+  const initialCursor = initialSyncHostCursorForPeer(args);
+  if (
+    args.snapshotServerDbSiteId !== args.serverDbSiteId
+    || typeof args.snapshotLastKnownServerDbVersion !== "number"
+    || !Number.isFinite(args.snapshotLastKnownServerDbVersion)
+  ) {
+    return initialCursor;
+  }
+  const snapshotCursor = Math.max(0, Math.floor(args.snapshotLastKnownServerDbVersion));
+  // Invalidation-only browsers have no replica cursor to merge. On a
+  // same-DB seamless adoption, the deposited cursor is the exact boundary:
+  // writes committed while the socket is parked must be exported by the new
+  // owner. A different DB still starts at that DB's current watermark.
+  if (
+    args.peer.deviceType === "browser"
+    && args.peer.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY)
+  ) {
+    return Math.min(Math.max(0, Math.floor(args.serverDbVersion)), snapshotCursor);
+  }
+  // Replica peers may have advertised a newer durable per-site cursor than
+  // the depositing host had observed, so retain the fresher same-DB value.
+  return Math.max(initialCursor, snapshotCursor);
 }
 
 export function shouldDeferSyncHostBackgroundChangesForChat(args: {
@@ -2526,11 +2557,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } catch (error) {
         args.logger.warn("sync_host.chat_poll_failed", { error: error instanceof Error ? error.message : String(error) });
       }
-      // The per-peer message queue owns subscriptions, snapshots, and remote
-      // commands. A background export is synchronous and cannot be preempted,
-      // so never start one while any already-received foreground work remains
-      // queued or in flight.
-      if ([...peers].some((peer) => peer.queuedMessageCount > 0)) return;
       try {
         await pumpChanges();
       } catch (error) {
@@ -2854,7 +2880,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       awaitingHeartbeatAt: null,
       missedHeartbeatCount: 0,
       backpressuredSinceMs: null,
-      changesetChatDeferredSinceMs: null,
+      changesetPriorityDeferredSinceMs: null,
       changesetRecoveryLevel: 0,
       changesetRecoveryNotBeforeMs: 0,
       remoteAddress,
@@ -3077,28 +3103,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         terminalInputDedupeLedger.restore(snapshot.terminalInputDedupe ?? []);
         peer.connectedAt = snapshot.connectedAt;
         const serverDbSiteId = args.db.sync.getSiteId();
-        peer.lastKnownServerDbVersion = initialSyncHostCursorForPeer({
+        peer.lastKnownServerDbVersion = adoptedSyncHostCursorForPeer({
           peer: snapshot.metadata,
           serverDbSiteId,
           serverDbVersion: args.db.sync.getDbVersion(),
+          snapshotServerDbSiteId: snapshot.serverDbSiteId,
+          snapshotLastKnownServerDbVersion: snapshot.lastKnownServerDbVersion,
         });
-        if (
-          !(
-            snapshot.metadata.deviceType === "browser"
-            && snapshot.metadata.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY)
-          )
-          && snapshot.serverDbSiteId === serverDbSiteId
-          && typeof snapshot.lastKnownServerDbVersion === "number"
-          && Number.isFinite(snapshot.lastKnownServerDbVersion)
-        ) {
-          // Same project DB as the depositing host (e.g. a same-project host
-          // restart): its live ack watermark is fresher than the hello-time
-          // dbVersionBySite snapshot and avoids re-draining the backlog.
-          peer.lastKnownServerDbVersion = Math.max(
-            peer.lastKnownServerDbVersion,
-            Math.floor(snapshot.lastKnownServerDbVersion),
-          );
-        }
         // Restore live subscriptions so streaming does not silently stop for
         // a peer that never observes a disconnect. Sessions from a different
         // project simply no-op on this host; the phone that REQUESTED a
@@ -3983,18 +3994,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
   }
 
-  function finishChangesetChatDeferral(
+  function finishChangesetPriorityDeferral(
     peer: PeerState,
     reason: "pressure_relieved" | "no_changes" | "batch_admitted",
     nowMs: number,
   ): void {
-    if (peer.changesetChatDeferredSinceMs == null) return;
-    args.logger.debug("sync_host.changeset_chat_deferral_ended", {
+    if (peer.changesetPriorityDeferredSinceMs == null) return;
+    args.logger.debug("sync_host.changeset_priority_deferral_ended", {
       peerDeviceId: peer.metadata?.deviceId ?? null,
       reason,
-      deferredMs: Math.max(0, nowMs - peer.changesetChatDeferredSinceMs),
+      deferredMs: Math.max(0, nowMs - peer.changesetPriorityDeferredSinceMs),
     });
-    peer.changesetChatDeferredSinceMs = null;
+    peer.changesetPriorityDeferredSinceMs = null;
   }
 
   function abandonPendingChangesetBatch(
@@ -4731,29 +4742,36 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         continue;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) {
-        finishChangesetChatDeferral(peer, "no_changes", nowMs);
+        finishChangesetPriorityDeferral(peer, "no_changes", nowMs);
         continue;
       }
       if (nowMs < peer.changesetRecoveryNotBeforeMs) continue;
-      if (shouldDeferBackgroundChangesForChat(peer)) {
-        if (peer.changesetChatDeferredSinceMs == null) {
-          peer.changesetChatDeferredSinceMs = nowMs;
-          args.logger.debug("sync_host.changeset_chat_deferral_started", {
+      const hasQueuedForegroundWork = peer.queuedMessageCount > 0;
+      const chatBackpressured = shouldDeferBackgroundChangesForChat(peer);
+      if (hasQueuedForegroundWork || chatBackpressured) {
+        if (peer.changesetPriorityDeferredSinceMs == null) {
+          peer.changesetPriorityDeferredSinceMs = nowMs;
+          args.logger.debug("sync_host.changeset_priority_deferral_started", {
             peerDeviceId: peer.metadata.deviceId,
             bufferedAmount: peer.ws.bufferedAmount,
             thresholdBytes: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
-            maxDeferMs: SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS,
+            hasQueuedForegroundWork,
+            chatBackpressured,
+            maxDeferMs: SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS,
           });
         }
-        if (nowMs - peer.changesetChatDeferredSinceMs < SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS) {
+        if (nowMs - peer.changesetPriorityDeferredSinceMs < SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS) {
           continue;
         }
       } else {
-        finishChangesetChatDeferral(peer, "pressure_relieved", nowMs);
+        finishChangesetPriorityDeferral(peer, "pressure_relieved", nowMs);
       }
       const recoveryLimits = changesetBatchLimits(peer);
       const chatLimits = syncHostChangesetBatchOptionsForChat({
-        subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
+        // Once a foreground queue ages past the deadline, admit only the same
+        // small batch used for an active chat. This bounds the synchronous
+        // export pause before the peer returns to its serialized messages.
+        subscribedChatSessionCount: peer.subscribedChatSessionIds.size + (hasQueuedForegroundWork ? 1 : 0),
         maxRows: recoveryLimits.maxRows,
         maxBytes: recoveryLimits.maxBytes,
       });
@@ -4795,7 +4813,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           toDbVersion: exportedThroughDbVersion,
           reason: "peer_owned_changes_only",
         });
-        finishChangesetChatDeferral(peer, "no_changes", nowMs);
+        finishChangesetPriorityDeferral(peer, "no_changes", nowMs);
         continue;
       }
       const pending = sendNextChangesetBatch(
@@ -4813,7 +4831,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);
         }
-        finishChangesetChatDeferral(peer, "batch_admitted", nowMs);
+        finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
         lastBroadcastAt = nowIso();
       }
     }

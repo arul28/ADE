@@ -33,13 +33,14 @@ import {
   CHAT_EVENT_REPLAY_MAX_EVENTS,
   CONNECTION_ATTEMPT_RESERVATION_TTL_MS,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
-  SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS,
+  SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   compactChatEventEnvelopeForSync,
   createChatEventReplayBuffer,
   createSyncHostService,
   createTerminalInputDedupeLedger,
+  adoptedSyncHostCursorForPeer,
   initialSyncHostCursorForPeer,
   isRuntimeOnlySyncPeer,
   isRuntimeHostPairingRecord,
@@ -3798,6 +3799,37 @@ describe("initial hydration priority", () => {
     })).toBe(11);
   });
 
+  it("preserves an invalidation browser's same-DB handoff cursor but resets for a new DB", () => {
+    const peer = {
+      deviceType: "browser" as const,
+      dbVersion: 0,
+      dbVersionBySite: { "site-host": 4 },
+      capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+    };
+
+    expect(adoptedSyncHostCursorForPeer({
+      peer,
+      serverDbSiteId: "site-host",
+      serverDbVersion: 9,
+      snapshotServerDbSiteId: "site-host",
+      snapshotLastKnownServerDbVersion: 6,
+    })).toBe(6);
+    expect(adoptedSyncHostCursorForPeer({
+      peer,
+      serverDbSiteId: "site-new",
+      serverDbVersion: 9,
+      snapshotServerDbSiteId: "site-host",
+      snapshotLastKnownServerDbVersion: 6,
+    })).toBe(9);
+    expect(adoptedSyncHostCursorForPeer({
+      peer,
+      serverDbSiteId: "site-host",
+      serverDbVersion: 9,
+      snapshotServerDbSiteId: "site-host",
+      snapshotLastKnownServerDbVersion: 12,
+    })).toBe(9);
+  });
+
   it("admits a queued chat subscription before a replica peer's initial catch-up", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const exportChangesSince = vi.fn(() => [makeChange(1, 0)]);
@@ -3857,6 +3889,131 @@ describe("initial hydration priority", () => {
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("serves other peers while one foreground queue is slow, then admits a bounded batch", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 0,
+      changes: Array.from({ length: 200 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const exportChangesSince = vi.fn(
+      (fromDbVersion: number, options?: { maxRows?: number; throughDbVersion?: number }) =>
+        state.changes
+          .filter((change) => Number(change.db_version) > fromDbVersion)
+          .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+          .slice(0, options?.maxRows ?? state.changes.length),
+    );
+    let releaseSummary!: (summary: { status: string }) => void;
+    const summaryGate = new Promise<{ status: string }>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const getSessionSummary = vi.fn((sessionId: string) =>
+      sessionId === "slow-chat" ? summaryGate : Promise.resolve(null)
+    );
+    const logger = createDiscoveryLogger();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 25,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-peer-fairness",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince,
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn(() => ({
+          sessionId: "slow-chat",
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        })),
+        getSessionSummary,
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let slowPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let fastPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      slowPeer = await connectPeer(port, host.getBootstrapToken(), "slow-foreground-peer", {
+        platform: "macOS",
+        deviceType: "browser",
+        capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY, "changesetAck"],
+      });
+      fastPeer = await connectPeer(port, host.getBootstrapToken(), "independent-peer", {
+        platform: "macOS",
+        deviceType: "browser",
+        capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY, "changesetAck"],
+      });
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+
+      slowPeer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "slow-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: "slow-chat" },
+      }));
+      await waitForValue(() => getSessionSummary.mock.calls[0], "slow foreground handler");
+      state.dbVersion = 200;
+
+      await waitForValue(
+        () => logger.debug.mock.calls.find(([event, fields]) =>
+          event === "sync_host.changeset_priority_deferral_started"
+          && fields?.peerDeviceId === "slow-foreground-peer"
+        ),
+        "per-peer foreground deferral",
+      );
+      const independentBatch = await waitForValue(
+        () => fastPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "independent peer changeset",
+      );
+      expect((independentBatch.payload as SyncChangesetBatchPayload).changes).toHaveLength(200);
+      expect(slowPeer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(getSessionSummary).toHaveBeenCalledWith("slow-chat");
+
+      clockOffsetMs += SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 25;
+      const boundedSlowBatch = await waitForValue(
+        () => slowPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "bounded slow-peer changeset",
+      );
+      expect((boundedSlowBatch.payload as SyncChangesetBatchPayload).changes).toHaveLength(64);
+      expect(logger.debug).toHaveBeenCalledWith(
+        "sync_host.changeset_priority_deferral_ended",
+        expect.objectContaining({
+          peerDeviceId: "slow-foreground-peer",
+          reason: "batch_admitted",
+        }),
+      );
+      expect(slowPeer.envelopes.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
+
+      releaseSummary({ status: "idle" });
+      await waitForEnvelope(slowPeer.envelopes, "chat_subscribe", "slow-chat-subscribe");
+    } finally {
+      releaseSummary({ status: "idle" });
+      dateNowSpy?.mockRestore();
+      slowPeer?.ws.close();
+      fastPeer?.ws.close();
       await host.dispose();
       cleanup();
     }
@@ -4161,21 +4318,21 @@ describe("outbound changeset ack retries", () => {
       state.dbVersion = 1;
 
       await waitForValue(
-        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_chat_deferral_started"),
+        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_priority_deferral_started"),
         "chat changeset deferral transition",
       );
       await new Promise((resolve) => setTimeout(resolve, 75));
       expect(peer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
 
-      clockOffsetMs += SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 25;
+      clockOffsetMs += SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 25;
       const batch = await waitForValue(
         () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
         "fair changeset admission",
       );
       expect((batch.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
-      expect(logger.debug.mock.calls.filter(([event]) => event === "sync_host.changeset_chat_deferral_started")).toHaveLength(1);
+      expect(logger.debug.mock.calls.filter(([event]) => event === "sync_host.changeset_priority_deferral_started")).toHaveLength(1);
       expect(logger.debug).toHaveBeenCalledWith(
-        "sync_host.changeset_chat_deferral_ended",
+        "sync_host.changeset_priority_deferral_ended",
         expect.objectContaining({ reason: "batch_admitted" }),
       );
     } finally {
@@ -4211,19 +4368,19 @@ describe("outbound changeset ack retries", () => {
         .spyOn(WebSocket.prototype, "bufferedAmount", "get")
         .mockImplementation(() => bufferedAmount);
       const realDateNow = Date.now.bind(Date);
-      let clockOffsetMs = SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 5_000;
+      let clockOffsetMs = SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 5_000;
       dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
       state.dbVersion = 1;
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(peer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
-      expect(logger.debug.mock.calls.some(([event]) => event === "sync_host.changeset_chat_deferral_started")).toBe(false);
+      expect(logger.debug.mock.calls.some(([event]) => event === "sync_host.changeset_priority_deferral_started")).toBe(false);
 
       bufferedAmount = SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES;
       await waitForValue(
-        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_chat_deferral_started"),
+        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_priority_deferral_started"),
         "soft deferral after hard pressure clears",
       );
-      clockOffsetMs += SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 25;
+      clockOffsetMs += SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 25;
       await waitForValue(
         () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
         "changeset after hard pressure clears",
@@ -5081,6 +5238,82 @@ describe("sync host handoff over a shared listener", () => {
       await listener.close();
       rootA.cleanup();
       rootB.cleanup();
+    }
+  });
+
+  it("preserves an invalidation browser's cursor across a same-database handoff", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const tokenPath = path.join(projectRoot, "shared-browser-bootstrap-token");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const db = {
+      siteId: "site-shared-browser-db",
+      dbVersion: 1,
+      changes: [makeHostChange(1, 0)],
+    };
+    let browser: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let hostA: ReturnType<typeof createSyncHostService> | null = null;
+    let hostB: ReturnType<typeof createSyncHostService> | null = null;
+
+    try {
+      const port = await listener.ensureListening([0]);
+      hostA = createSyncHostService({
+        ...createHandoffHostArgs(projectRoot, tokenPath, db),
+        sharedListener: listener,
+        pollIntervalMs: 25,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      await hostA.waitUntilListening();
+      browser = await connectPeer(port, hostA.getBootstrapToken(), "browser-handoff-peer", {
+        platform: "macOS",
+        deviceType: "browser",
+        capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+      });
+
+      expect(hostA.getPeerStates()).toEqual([
+        expect.objectContaining({
+          deviceId: "browser-handoff-peer",
+          syncLag: 0,
+        }),
+      ]);
+      expect(browser.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+
+      await hostA.dispose();
+      hostA = null;
+      const envelopeCountAfterDeposit = browser.envelopes.length;
+
+      // This write lands after the old owner deposits the live socket but
+      // before the new owner adopts it. The deposited cursor is the only safe
+      // boundary for a same-DB invalidation-only browser.
+      db.dbVersion = 2;
+      db.changes.push(makeHostChange(2, 1));
+      hostB = createSyncHostService({
+        ...createHandoffHostArgs(projectRoot, tokenPath, db),
+        sharedListener: listener,
+        pollIntervalMs: 25,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      await hostB.waitUntilListening();
+
+      const postHandoffBatch = await waitForValue(
+        () => browser?.envelopes
+          .slice(envelopeCountAfterDeposit)
+          .find((envelope) => envelope.type === "changeset_batch"),
+        "same-DB post-handoff browser invalidation",
+      );
+      expect((postHandoffBatch.payload as SyncChangesetBatchPayload).changes).toEqual([
+        expect.objectContaining({ db_version: 2 }),
+      ]);
+      expect(browser.closeEvents).toEqual([]);
+      expect(browser.ws.readyState).toBe(WebSocket.OPEN);
+      expect(hostB.getPeerStates()).toEqual([
+        expect.objectContaining({
+          deviceId: "browser-handoff-peer",
+        }),
+      ]);
+    } finally {
+      browser?.ws.close();
+      await hostA?.dispose();
+      await hostB?.dispose();
+      await listener.close();
+      cleanup();
     }
   });
 
