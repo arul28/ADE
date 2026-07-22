@@ -4218,22 +4218,10 @@ describe("ADE database usage aggregation", () => {
     }));
   });
 
-  it("caps raw daily bucket scans newest-first without throwing", async () => {
+  it("caps daily source windows newest-first before aggregating in SQLite", async () => {
     const db = await createStatsDb();
     const logger = createLogger();
     const originalAll = db.all.bind(db);
-    const newestRow = {
-      timestamp: "2026-07-08T12:00:00.000Z",
-      input_tokens: 1,
-      output_tokens: 0,
-      duration_ms: 0,
-    };
-    const oldestRow = {
-      ...newestRow,
-      timestamp: "2026-07-07T12:00:00.000Z",
-    };
-    const rowsBeyondCap = Array(250_001).fill(newestRow);
-    rowsBeyondCap[0] = oldestRow;
     let checkedClientQuery = false;
     let checkedOperationQuery = false;
     let checkedAiQuery = false;
@@ -4241,20 +4229,38 @@ describe("ADE database usage aggregation", () => {
       ...db,
       all: ((sql: string, params = []) => {
         const normalized = sql.replace(/\s+/g, " ").trim();
-        if (normalized.startsWith("select occurred_at, client_surface")) {
-          expect(normalized).toContain("order by occurred_at desc limit ?");
+        if (normalized.startsWith("select date(occurred_at, 'localtime') active_date")) {
+          expect(normalized).toContain("from ( select occurred_at, client_surface");
+          expect(normalized).toContain("order by occurred_at desc limit ? ) group by active_date, client_surface");
           checkedClientQuery = true;
+          return [{
+            active_date: "2026-07-08",
+            client_surface: "desktop",
+            interactions: 250_000,
+          }];
         }
-        if (normalized.startsWith("select started_at, kind")) {
-          expect(normalized).toContain("order by started_at desc limit ?");
+        if (normalized.startsWith("select date(started_at, 'localtime') active_date")) {
+          expect(normalized).toContain("from ( select started_at, kind");
+          expect(normalized).toContain("order by started_at desc limit ? ) group by active_date, kind");
           checkedOperationQuery = true;
+          return [{
+            active_date: "2026-07-08",
+            kind: "git_commit",
+            operations: 250_000,
+          }];
         }
-        if (normalized.startsWith("select timestamp,")) {
-          expect(normalized).toContain("order by timestamp desc limit ?");
-          const limit = Number(params.at(-1));
-          expect(rowsBeyondCap.length).toBeGreaterThan(limit);
+        if (normalized.startsWith("select date(timestamp, 'localtime') active_date")) {
+          expect(normalized).toContain("from ( select timestamp, input_tokens, output_tokens, duration_ms");
+          expect(normalized).toContain("order by timestamp desc limit ? ) group by active_date");
+          expect(params.at(-1)).toBe(250_000);
           checkedAiQuery = true;
-          return rowsBeyondCap.slice(1, limit + 1);
+          return [{
+            active_date: "2026-07-08",
+            input_tokens: 250_000,
+            output_tokens: 0,
+            duration_ms: 0,
+            calls: 250_000,
+          }];
         }
         return originalAll(sql, params);
       }) as AdeDb["all"],
@@ -4272,12 +4278,15 @@ describe("ADE database usage aggregation", () => {
       date: "2026-07-08",
       inputTokens: 250_000,
       totalTokens: 250_000,
+      commits: 250_000,
+      interactions: 250_000,
+      clients: { desktop: 250_000 },
     }));
     expect(stats?.daily.some((point) => point.date === "2026-07-07")).toBe(false);
     expect(logger.debug).toHaveBeenCalledTimes(1);
     expect(logger.debug).toHaveBeenCalledWith("usage.daily_bucket_scan_capped", {
       maxRows: 250_000,
-      sources: ["ai_usage_log"],
+      sources: ["usage_events", "operations", "ai_usage_log"],
     });
   });
 
@@ -4373,11 +4382,13 @@ describe("ADE database usage aggregation", () => {
     );
     db.run(
       `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status)
-       values (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
+       values (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?),
+              (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
       [
         "op-1", "project-1", "lane-1", "git_commit", "2026-07-08T12:20:00.000Z", "2026-07-08T12:20:01.000Z", "succeeded",
         "op-2", "project-1", "lane-1", "git_push", "2026-07-08T12:21:00.000Z", "2026-07-08T12:21:01.000Z", "succeeded",
         "op-3", "project-1", "lane-1", "git_commit", "2026-07-08T12:22:00.000Z", "2026-07-08T12:22:01.000Z", "failed",
+        "op-4", "project-1", "lane-1", "pr_land", "2026-07-08T12:23:00.000Z", "2026-07-08T12:23:01.000Z", "succeeded",
       ],
     );
     recordUsageInteraction(db, { projectId: "project-1", client: "desktop", action: "chat.send", sessionId: "session-1", occurredAt: "2026-07-08T12:05:00.000Z" });
@@ -4395,6 +4406,7 @@ describe("ADE database usage aggregation", () => {
       chatSessions: 1,
       commitsCreated: 1,
       pushOperations: 1,
+      prLandings: 1,
       filesChanged: 5,
       insertions: 120,
       deletions: 20,
@@ -4420,10 +4432,14 @@ describe("ADE database usage aggregation", () => {
       }),
       expect.objectContaining({
         date: "2026-07-08",
+        inputTokens: 120,
+        outputTokens: 60,
         totalTokens: 180,
+        durationMs: 1_500,
         sessions: 1,
         filesChanged: 3,
         commits: 1,
+        prs: 1,
         interactions: 2,
         clients: { desktop: 1, mobile: 1 },
       }),
