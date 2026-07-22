@@ -39,7 +39,13 @@ function newestMtimeMs(entryPath) {
     }
     newest = Math.max(newest, stat.mtimeMs);
     if (!stat.isDirectory()) continue;
-    for (const child of fs.readdirSync(current)) {
+    let children;
+    try {
+      children = fs.readdirSync(current);
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+    for (const child of children) {
       if (child === "node_modules" || child === "dist" || child === ".turbo") continue;
       stack.push(path.join(current, child));
     }
@@ -55,7 +61,12 @@ function oldestMtimeMs(entryPath) {
     return 0;
   }
   if (!stat.isDirectory()) return stat.mtimeMs;
-  const children = fs.readdirSync(entryPath);
+  let children;
+  try {
+    children = fs.readdirSync(entryPath);
+  } catch {
+    return 0;
+  }
   if (children.length === 0) return 0;
   return children.reduce(
     (oldest, child) => Math.min(oldest, oldestMtimeMs(path.join(entryPath, child))),

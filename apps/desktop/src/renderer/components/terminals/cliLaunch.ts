@@ -92,14 +92,17 @@ export function recoverImportedContinuationLaunch(
     return existing.promise;
   }
   if (existing) continuationLaunchLookups.delete(key);
-  const request = window.ade.externalSessions.list({
+  let request: Promise<TerminalResumeLaunchConfig | null>;
+  request = window.ade.externalSessions.list({
     providers: [provider],
     scope: "all",
     sessionId: targetId,
     limit: 1,
   }).then((sessions) => sessions.find((candidate) => candidate.id === targetId)?.launch ?? null)
     .catch((error) => {
-      continuationLaunchLookups.delete(key);
+      if (continuationLaunchLookups.get(key)?.promise === request) {
+        continuationLaunchLookups.delete(key);
+      }
       throw error;
     });
   continuationLaunchLookups.set(key, {

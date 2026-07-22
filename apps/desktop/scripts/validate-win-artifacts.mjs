@@ -12,7 +12,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(__dirname, "..");
 const packageJsonPath = path.join(desktopRoot, "package.json");
 const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
-const { packagedAdeCliResources } = packagedAdeCliResourcesModule;
+const {
+  missingRequiredPackagedAdeCliPayloadPaths,
+  packagedAdeCliPayloadFiles,
+} = packagedAdeCliResourcesModule;
 const productName = pkg.build?.productName ?? pkg.productName ?? "ADE";
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // The unpacked runtime includes x64 Codex, Claude, OpenCode, node-pty, and
@@ -35,11 +38,22 @@ const bundledAgentSkills = [
   "ade-deeplinks",
   "ade-orchestrator",
 ];
-const bundledAdeCliFiles = packagedAdeCliResources({ desktopRoot, packageJson: pkg })
-  .map((resource) => [
-    resource.relativePath,
-    `bundled ADE CLI resource ${resource.to}`,
-  ]);
+function resolveBundledAdeCliFiles(options = {}) {
+  return packagedAdeCliPayloadFiles({
+    desktopRoot,
+    packageJson: pkg,
+    ...options,
+  });
+}
+
+function assertRequiredBundledAdeCliFiles(payloadFiles) {
+  const missing = missingRequiredPackagedAdeCliPayloadPaths(payloadFiles);
+  if (missing.length > 0) {
+    fail(
+      `package.json build.extraResources omits required ADE CLI payload: ${missing.join(", ")}`,
+    );
+  }
+}
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -202,9 +216,7 @@ function validatePreflight() {
   requireFile("scripts/ade-cli-install-path.cmd", "Windows ADE CLI PATH installer");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
-  if (bundledAdeCliFiles.length === 0) {
-    fail("package.json build.extraResources must ship the ADE CLI payload");
-  }
+  assertRequiredBundledAdeCliFiles(resolveBundledAdeCliFiles({ allowMissingSources: true }));
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("vendor/crsqlite/**")) {
     fail("package.json build.asarUnpack must unpack vendor/crsqlite/**");
   }
@@ -500,12 +512,17 @@ async function validatePackagedRuntime(appDir) {
   const sqlJsModulePath = path.join(nodeModulesPath, "sql.js");
   const smokeScriptPath = path.join(unpackedPath, "dist", "main", "packagedRuntimeSmoke.cjs");
   const crsqliteDllPath = path.join(unpackedPath, "vendor", "crsqlite", "win32-x64", "crsqlite.dll");
+  const bundledAdeCliFiles = resolveBundledAdeCliFiles();
+  assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
 
   await assertPathExists(appExe, "packaged Windows app executable");
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
-  for (const [relativePath, label] of bundledAdeCliFiles) {
-    await assertPathExists(path.join(resourcesPath, "ade-cli", relativePath), label);
+  for (const resource of bundledAdeCliFiles) {
+    await assertPathExists(
+      path.join(resourcesPath, resource.to),
+      `bundled ADE CLI resource ${resource.to}`,
+    );
   }
   await assertBundledAgentSkills(bundledAgentSkillsRoot);
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");

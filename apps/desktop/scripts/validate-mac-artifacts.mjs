@@ -21,7 +21,10 @@ const DEFAULT_MAX_UNIVERSAL_UNPACKED_BYTES = 1600 * 1024 * 1024;
 const EXPECTED_APPLICATION_IDENTIFIER = "VQ372F39G6.com.ade.desktop";
 const EXPECTED_KEYCHAIN_ACCESS_GROUP = "VQ372F39G6.com.ade.desktop.webauthn";
 const ALLOWED_KEYCHAIN_ACCESS_GROUP = "VQ372F39G6.*";
-const { packagedAdeCliResources } = packagedAdeCliResourcesModule;
+const {
+  missingRequiredPackagedAdeCliPayloadPaths,
+  packagedAdeCliPayloadFiles,
+} = packagedAdeCliResourcesModule;
 const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
@@ -34,11 +37,20 @@ const bundledAgentSkills = [
   "ade-deeplinks",
   "ade-orchestrator",
 ];
-const bundledAdeCliFiles = packagedAdeCliResources({ desktopRoot: appDir })
+const bundledAdeCliFiles = packagedAdeCliPayloadFiles({ desktopRoot: appDir })
   .map((resource) => [
     resource.relativePath,
     `bundled ADE CLI resource ${resource.to}`,
   ]);
+const missingRequiredBundledAdeCliFiles = missingRequiredPackagedAdeCliPayloadPaths(
+  bundledAdeCliFiles.map(([relativePath]) => ({ relativePath })),
+);
+if (missingRequiredBundledAdeCliFiles.length > 0) {
+  throw new Error(
+    `[release:mac] package.json build.extraResources omits required ADE CLI payload: ` +
+      missingRequiredBundledAdeCliFiles.join(", "),
+  );
+}
 
 function readFlag(name) {
   const prefix = `${name}=`;

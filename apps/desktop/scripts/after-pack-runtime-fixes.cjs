@@ -4,7 +4,10 @@ const {
   normalizeDesktopRuntimeBinaries,
   resolvePackagedRuntimeRoot,
 } = require("./runtimeBinaryPermissions.cjs");
-const { packagedAdeCliResources } = require("./packaged-ade-cli-resources.cjs");
+const {
+  missingRequiredPackagedAdeCliPayloadPaths,
+  packagedAdeCliPayloadFiles,
+} = require("./packaged-ade-cli-resources.cjs");
 
 const appDir = path.resolve(__dirname, "..");
 
@@ -391,7 +394,14 @@ module.exports = async function afterPack(context) {
   }
 
   const resourcesRoot = resolveExtraResourcesRoot(context, appBundlePath);
-  for (const resource of packagedAdeCliResources({ desktopRoot: appDir })) {
+  const bundledAdeCliFiles = packagedAdeCliPayloadFiles({ desktopRoot: appDir });
+  const missingRequiredPayload = missingRequiredPackagedAdeCliPayloadPaths(bundledAdeCliFiles);
+  if (missingRequiredPayload.length > 0) {
+    throw new Error(
+      `[afterPack] ADE CLI resources omit required payload: ${missingRequiredPayload.join(", ")}`,
+    );
+  }
+  for (const resource of bundledAdeCliFiles) {
     requireFile(
       path.join(resourcesRoot, resource.to),
       `bundled ADE CLI resource ${resource.to}`,
