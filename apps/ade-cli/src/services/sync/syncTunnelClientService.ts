@@ -79,10 +79,10 @@ type SyncTunnelClientArgs = {
     url: string,
     options?: { headers?: Record<string, string> },
   ) => WebSocket;
-  /** Requests a fresh directory publication after a confirmed-409 identity rotation opens. */
-  onIdentityRotated?: () => void | Promise<void>;
-  /** Requests a directory refresh when a Relay bridge-open failure recovers or becomes unhealthy. */
-  onRouteStateChanged?: () => void | Promise<void>;
+  /** Requests a directory refresh when publication-relevant Relay state changes. */
+  onPublicationStateChanged?: (
+    reason: "identity-rotated" | "route-state-changed",
+  ) => void | Promise<void>;
 };
 
 const BACKOFF_BASE_MS = 1_000;
@@ -278,11 +278,16 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     lastFailureAt = new Date().toISOString();
   };
 
-  const requestRouteStatePublish = (): void => {
+  const requestPublicationStatePublish = (
+    reason: "identity-rotated" | "route-state-changed",
+  ): void => {
+    const failureEvent = reason === "identity-rotated"
+      ? "sync_tunnel.identity_republish_failed"
+      : "sync_tunnel.route_state_republish_failed";
     void Promise.resolve()
-      .then(() => args.onRouteStateChanged?.())
+      .then(() => args.onPublicationStateChanged?.(reason))
       .catch((error) => {
-        log.warn?.("sync_tunnel.route_state_republish_failed", {
+        log.warn?.(failureEvent, {
           error: error instanceof Error ? error.message : String(error),
         });
       });
@@ -294,7 +299,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     const previousFailure = bridgeOpenFailure;
     bridgeOpenFailure = null;
     if (lastError === previousFailure.reason) lastError = null;
-    requestRouteStatePublish();
+    requestPublicationStatePublish("route-state-changed");
   };
 
   const clearBridgeValidation = (): void => {
@@ -325,13 +330,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const publishRotatedIdentityIfReady = (): void => {
     if (!identityRotationPendingPublish || !connected) return;
     identityRotationPendingPublish = false;
-    void Promise.resolve()
-      .then(() => args.onIdentityRotated?.())
-      .catch((error) => {
-        log.warn?.("sync_tunnel.identity_republish_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+    requestPublicationStatePublish("identity-rotated");
   };
 
   const identity = (): MachineIdentity => {
@@ -876,7 +875,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       error: reason,
       routeRetained: false,
     });
-    if (stateChanged) requestRouteStatePublish();
+    if (stateChanged) requestPublicationStatePublish("route-state-changed");
   };
 
   const sendControlLifecycle = (
