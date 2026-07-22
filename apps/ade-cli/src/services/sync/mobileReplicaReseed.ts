@@ -12,6 +12,10 @@ export const SYNC_HOST_MOBILE_REPLICA_RESEED_GAP = 5_000;
 export const MOBILE_REPLICA_RESEED_MAX_ROWS = 10_000;
 export const MOBILE_REPLICA_RESEED_MAX_BYTES = 4 * 1024 * 1024;
 export const MOBILE_REPLICA_RESEED_BUILD_ROWS_PER_POLL = DEFAULT_MAX_CHANGESET_BATCH_ROWS * 4;
+// Empty db_version windows contain no compact state to materialize, so cross a
+// few in one poll. This reduces a sparse multi-million-version backlog without
+// turning one poll into an unbounded database scan or delaying foreground work.
+export const MOBILE_REPLICA_RESEED_MAX_EMPTY_WINDOWS_PER_POLL = 8;
 
 export type MobileReplicaReseedCache = {
   targetDbVersion: number;
@@ -19,6 +23,7 @@ export type MobileReplicaReseedCache = {
   changes: CrsqlChangeRow[];
   approximateBytes: number;
   buildSteps: number;
+  lastAdvanceWasEmpty: boolean;
   status: "building" | "ready" | "too_large";
 };
 
@@ -29,6 +34,7 @@ export function createMobileReplicaReseedCache(targetDbVersion: number): MobileR
     changes: [],
     approximateBytes: 0,
     buildSteps: 0,
+    lastAdvanceWasEmpty: false,
     status: "building",
   };
 }
@@ -70,8 +76,10 @@ export function advanceMobileReplicaReseedCache(args: {
     cache.status = "too_large";
     cache.changes = [];
     cache.approximateBytes = 0;
+    cache.lastAdvanceWasEmpty = false;
     return cache;
   }
+  cache.lastAdvanceWasEmpty = exported.length === 0;
   cache.scanFromDbVersion = exported.length > 0
     ? Number(exported[exported.length - 1].db_version)
     : scanThroughDbVersion;

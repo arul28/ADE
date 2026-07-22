@@ -161,6 +161,7 @@ import {
 } from "./changesetPump";
 import {
   MOBILE_REPLICA_RESEED_MAX_BYTES,
+  MOBILE_REPLICA_RESEED_MAX_EMPTY_WINDOWS_PER_POLL,
   MOBILE_REPLICA_RESEED_MAX_ROWS,
   SYNC_HOST_MOBILE_REPLICA_RESEED_GAP,
   advanceMobileReplicaReseedCache,
@@ -2614,6 +2615,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // database; an oversized replica falls back to incremental replay.
   let mobileReplicaReseedCache: MobileReplicaReseedCache | null = null;
   let mobileReplicaReseedAdvancedPollGeneration = -1;
+  // Constructing the cache is shared, but gzip/frame generation happens once
+  // per recipient. Admit only one fresh compact send per poll so a reconnect
+  // burst cannot monopolize the event loop or outbound socket budget.
+  let mobileReplicaReseedLaunchPollGeneration = -1;
   let pollPumpGeneration = 0;
   // All-projects roster (mobile hub) coalescing state. Each subscribed peer
   // carries its own monotonic seq (PeerState.rosterSeq); clients re-snapshot on
@@ -4110,10 +4115,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (
       !mobileReplicaReseedCache
       || mobileReplicaReseedCache.targetDbVersion <= peerDbVersion
-      || (
-        mobileReplicaReseedCache.status !== "too_large"
-        && cachedTargetLag > SYNC_HOST_MOBILE_REPLICA_RESEED_GAP
-      )
+      || cachedTargetLag > SYNC_HOST_MOBILE_REPLICA_RESEED_GAP
     ) {
       mobileReplicaReseedCache = createMobileReplicaReseedCache(targetDbVersion);
       args.logger.info("sync_host.mobile_replica_reseed_started", {
@@ -4127,15 +4129,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (cache.status !== "building") return cache;
     if (pollGeneration <= mobileReplicaReseedAdvancedPollGeneration) return cache;
     mobileReplicaReseedAdvancedPollGeneration = pollGeneration;
-    const advancedCache = advanceMobileReplicaReseedCache({
-      cache,
-      versionWindow: SYNC_EXPORT_VERSION_WINDOW,
-      exportChangesSince: args.db.sync.exportChangesSince,
-      excludeTables: MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
-      includeChange: (change) =>
-        !isHostAuthoritativeTable(change)
-        && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
-    });
+    let advancedCache = cache;
+    for (let emptyWindows = 0; emptyWindows < MOBILE_REPLICA_RESEED_MAX_EMPTY_WINDOWS_PER_POLL; emptyWindows += 1) {
+      advancedCache = advanceMobileReplicaReseedCache({
+        cache: advancedCache,
+        versionWindow: SYNC_EXPORT_VERSION_WINDOW,
+        exportChangesSince: args.db.sync.exportChangesSince,
+        excludeTables: MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
+        includeChange: (change) =>
+          !isHostAuthoritativeTable(change)
+          && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
+      });
+      if (advancedCache.status !== "building" || !advancedCache.lastAdvanceWasEmpty) break;
+    }
     if (advancedCache.status === "too_large") {
       args.logger.info("sync_host.mobile_replica_reseed_skipped", {
         targetDbVersion: advancedCache.targetDbVersion,
@@ -5133,6 +5139,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         );
         if (reseed.status === "building") return;
         if (reseed.status === "ready") {
+          if (mobileReplicaReseedLaunchPollGeneration === pollGeneration) return;
+          mobileReplicaReseedLaunchPollGeneration = pollGeneration;
           const result = sendMobileReplicaReseed(peer, reseed);
           if (result.status === "sent") {
             peer.mobileReplicaReseedDisabled = true;
