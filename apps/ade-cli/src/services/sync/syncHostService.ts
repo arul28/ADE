@@ -4240,6 +4240,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const pending = peer.pendingChangesetBatch;
     if (!pending) return;
     peer.pendingChangesetBatch = null;
+    if (pending.reason === "catchup") {
+      // A compact reseed is disabled while it is in flight so the normal
+      // incremental pump cannot race it. If every delivery attempt fails,
+      // keep the replica at its old cursor and let the bounded reseed retry
+      // after the same recovery backoff as any other abandoned batch.
+      peer.mobileReplicaReseedDisabled = false;
+    }
     peer.changesetRecoveryLevel = Math.min(
       MAX_CHANGESET_RECOVERY_LEVEL,
       peer.changesetRecoveryLevel + 1,

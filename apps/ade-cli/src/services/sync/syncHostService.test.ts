@@ -4073,9 +4073,9 @@ describe("initial hydration priority", () => {
           "changesetAck",
         ],
       });
-      const realDateNow = Date.now.bind(Date);
+      const baseNowMs = Date.now();
       let clockOffsetMs = 0;
-      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => baseNowMs + clockOffsetMs);
 
       slowPeer.ws.send(encodeSyncEnvelope({
         type: "chat_subscribe",
@@ -4701,6 +4701,83 @@ describe("outbound changeset ack retries", () => {
       cleanup();
     }
   });
+
+  it("retries an abandoned far-behind replica reseed from its old cursor after recovery backoff", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const targetDbVersion = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+    const state = {
+      dbVersion: targetDbVersion,
+      changes: Array.from({ length: 10 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-reseed-recovery", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+
+      const firstEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "initial compact reseed",
+      );
+      const firstReseed = firstEnvelope.payload as SyncChangesetBatchPayload;
+      expect(firstReseed).toMatchObject({
+        reason: "catchup",
+        fromDbVersion: 0,
+        toDbVersion: targetDbVersion,
+      });
+
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      for (let attemptCount = 2; attemptCount <= 6; attemptCount += 1) {
+        clockOffsetMs += 11_000;
+        await waitForValue(
+          () => peer?.envelopes.filter((envelope) =>
+            envelope.type === "changeset_batch"
+            && (envelope.payload as SyncChangesetBatchPayload).batchId === firstReseed.batchId
+          )[attemptCount - 1],
+          `compact reseed send attempt ${attemptCount}`,
+        );
+      }
+
+      clockOffsetMs += 11_000;
+      await waitForValue(
+        () => logger.warn.mock.calls.find(([event, fields]) =>
+          event === "sync_host.changeset_recovery_started"
+          && fields?.abandonedBatchId === firstReseed.batchId
+        ),
+        "compact reseed abandonment",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(peer.envelopes.filter((envelope) =>
+        envelope.type === "changeset_batch"
+        && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstReseed.batchId
+      )).toHaveLength(0);
+
+      clockOffsetMs += 500;
+      const retryEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstReseed.batchId),
+        "compact reseed after recovery backoff",
+      );
+      const retryReseed = retryEnvelope.payload as SyncChangesetBatchPayload;
+      expect(retryReseed.batchId).not.toBe(firstReseed.batchId);
+      expect(retryReseed).toMatchObject({
+        reason: "catchup",
+        fromDbVersion: 0,
+        toDbVersion: targetDbVersion,
+      });
+    } finally {
+      dateNowSpy?.mockRestore();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  }, 15_000);
 
   it("refreshes a shared reseed cache before it can leave another replica far behind", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
