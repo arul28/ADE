@@ -1312,6 +1312,13 @@ struct WorkSessionDestinationView: View {
     defer { openingLoadInFlight = false }
 
     do {
+      // Deep links and programmatic navigation do not always carry the Work
+      // list's ephemeral roster projection. Seed from the active-project
+      // roster before hitting the slower project replica so the destination
+      // can render and subscribe as soon as the machine roster announces it.
+      if !isRemoteOnlyChat, session == nil {
+        session = syncService.activeProjectRosterSession(sessionId: sessionId)
+      }
       if !isRemoteOnlyChat, let fetchedSession = try await syncService.fetchSession(id: sessionId) {
         session = fetchedSession
       } else if !isRemoteOnlyChat, session == nil, initialSession == nil, isLive, hostReachable {

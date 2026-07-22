@@ -1698,15 +1698,35 @@ struct WorkLaneNavigationRequest: Equatable, Identifiable {
 struct WorkSessionNavigationRequest: Equatable, Identifiable {
   let id: String
   let sessionId: String
+  let laneId: String?
+  let repoOwner: String?
+  let repoName: String?
+  let branch: String?
   /// Optional anchors parsed from ADE session deeplinks. The Work view keeps
   /// them for parity with desktop, but currently ignores them because iOS has
   /// no route-level chat/terminal scroll hook.
   let event: Int?
   let offset: Int?
 
-  init(sessionId: String, event: Int? = nil, offset: Int? = nil) {
+  var hasProjectScope: Bool {
+    laneId != nil || repoOwner != nil || repoName != nil || branch != nil
+  }
+
+  init(
+    sessionId: String,
+    laneId: String? = nil,
+    repoOwner: String? = nil,
+    repoName: String? = nil,
+    branch: String? = nil,
+    event: Int? = nil,
+    offset: Int? = nil
+  ) {
     self.id = UUID().uuidString
     self.sessionId = sessionId
+    self.laneId = laneId
+    self.repoOwner = repoOwner
+    self.repoName = repoName
+    self.branch = branch
     self.event = event
     self.offset = offset
   }
@@ -1922,6 +1942,22 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
   ]
   guard projectScopedTypes.contains(type) else { return nil }
   return syncNormalizedCommandScopeValue(activeProjectId)
+}
+
+/// Lane ids that must be hydrated before a `work.listSessions` snapshot can be
+/// installed safely. The database deliberately rejects sessions whose lane is
+/// absent, so replacing Work first would silently discard a newly-created
+/// lane+chat pair on every pull-to-refresh.
+func syncMissingWorkSessionLaneIds(
+  sessions: [TerminalSessionSummary],
+  knownLaneIds: Set<String>
+) -> Set<String> {
+  Set(sessions.compactMap { session in
+    guard !session.laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          !knownLaneIds.contains(session.laneId)
+    else { return nil }
+    return session.laneId
+  })
 }
 
 /// The foreign project a cross-project chat "quick look" streams from. The
@@ -2196,6 +2232,10 @@ final class SyncService: ObservableObject {
   // `projects` (the catalog). Mutated only by the roster apply path below.
   @Published private(set) var rosterProjects: [RemoteRosterProject] = []
   @Published private(set) var rosterRevision = 0
+  /// Per-project roster stamps let an open Work tab ignore high-frequency
+  /// roster activity from agents running in other projects. Values are local
+  /// monotonic revisions, not protocol sequence numbers.
+  private var rosterProjectRevisions: [String: Int] = [:]
   /// Machine-scoped conversations. Unlike Work sessions these never hydrate
   /// through the active project's CRR database; the runtime command surface is
   /// authoritative and this bounded cache keeps the list useful offline.
@@ -5714,6 +5754,14 @@ final class SyncService: ObservableObject {
     do {
       let raw = try await sendCommand(action: "work.listSessions", args: ["limit": 200])
       let sessions = try decodeHydrationPayload(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
+      let knownLaneIds = Set(database.fetchLanes(includeArchived: true).map(\.id))
+      if !syncMissingWorkSessionLaneIds(sessions: sessions, knownLaneIds: knownLaneIds).isEmpty {
+        // Fetch only the cheap lane identity/status projection needed to
+        // satisfy the session foreign-key boundary. Rich git/conflict/rebase
+        // decorations stay lazy and must not turn a Work refresh into a large
+        // multi-domain request.
+        try await refreshLaneSnapshots(includeStatus: false, includeDecorations: false)
+      }
       try database.replaceTerminalSessions(sessions)
       setDomainStatus([.work], phase: .ready)
     } catch {
@@ -15980,10 +16028,13 @@ extension SyncService {
   }
 
   func applyRosterSnapshot(_ snapshot: RemoteRosterSnapshotPayload) {
-    rosterProjects = sortRosterProjects(snapshot.projects)
+    let nextProjects = sortRosterProjects(snapshot.projects)
+    let changedProjectIds = rosterChangedProjectIds(previous: rosterProjects, next: nextProjects)
+    rosterProjects = nextProjects
     rosterSeq = snapshot.seq
     rosterSupported = true
     rosterRevision &+= 1
+    markRosterProjectsChanged(changedProjectIds)
     schedulePersistRoster()
   }
 
@@ -15997,9 +16048,15 @@ extension SyncService {
     case .dropped:
       break // duplicate / out-of-order replay
     case let .applied(projects, seq):
-      rosterProjects = sortRosterProjects(projects)
+      let nextProjects = sortRosterProjects(projects)
+      // A delta already carries its changed/removed project ids. Avoid a deep
+      // all-project chat-array comparison on the MainActor every 250 ms.
+      let changedProjectIds = Set((delta.changed ?? []).map(\.projectId))
+        .union(delta.removed ?? [])
+      rosterProjects = nextProjects
       rosterSeq = seq
       rosterRevision &+= 1
+      markRosterProjectsChanged(changedProjectIds)
       schedulePersistRoster()
     }
   }
@@ -16012,6 +16069,42 @@ extension SyncService {
     }
     guard let root = normalizedProjectRoot(project.rootPath) else { return nil }
     return rosterProjects.first { normalizedProjectRoot($0.rootPath) == root }
+  }
+
+  /// Active-surface invalidation token. Unlike machine-wide `rosterRevision`,
+  /// this remains stable when only another project's agents change.
+  func rosterRevision(for project: MobileProjectSummary?) -> Int {
+    guard let project else { return 0 }
+    let rosterProjectId = rosterProject(for: project)?.projectId ?? project.id
+    return rosterProjectRevisions[rosterProjectId] ?? rosterProjectRevisions[project.id] ?? 0
+  }
+
+  /// Resolve a display/subscription seed for a chat in the active project
+  /// without waiting for its replicated `terminal_sessions` row. This is used
+  /// by deep links and navigation races where the machine-wide roster has
+  /// already announced a new chat but the per-project CRDT cursor is behind.
+  func activeProjectRosterSession(sessionId: String) -> TerminalSessionSummary? {
+    guard let activeProject,
+          let roster = rosterProject(for: activeProject),
+          let chat = roster.chats.first(where: {
+            $0.id == sessionId && $0.archived != true && $0.isChatTool
+          })
+    else { return nil }
+    let laneName = roster.lanes.first(where: { $0.id == chat.laneId })?.name ?? chat.laneId
+    return chat.asTerminalSessionSummary(laneName: laneName)
+  }
+
+  func rosterNavigationTarget(
+    for request: WorkSessionNavigationRequest
+  ) -> RosterSessionNavigationTarget? {
+    resolveRosterSessionNavigationTarget(
+      projects: projects,
+      rosterProjects: rosterProjects,
+      sessionId: request.sessionId,
+      laneId: request.laneId,
+      repoName: request.repoName,
+      branch: request.branch
+    )
   }
 
   private func sortRosterProjects(_ projects: [RemoteRosterProject]) -> [RemoteRosterProject] {
@@ -16139,7 +16232,15 @@ extension SyncService {
 
     rosterProjects = sortRosterProjects(next)
     rosterRevision &+= 1
+    let mergedProjectId = existingIndex.map { next[$0].projectId } ?? local.projectId
+    markRosterProjectsChanged([local.projectId, mergedProjectId])
     schedulePersistRoster()
+  }
+
+  private func markRosterProjectsChanged(_ projectIds: Set<String>) {
+    for projectId in projectIds where !projectId.isEmpty {
+      rosterProjectRevisions[projectId] = rosterRevision
+    }
   }
 
   private func mergedRosterProject(remote: RemoteRosterProject, local: RemoteRosterProject) -> RemoteRosterProject {

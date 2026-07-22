@@ -854,18 +854,24 @@ struct WorkQueuedSteerRow: View {
   }
 }
 
+/// Box-drawing and block glyphs that mark fixed-column layout art. Shared by
+/// the question-card preview classifier below and the assistant-message
+/// classifier in WorkChatHeaderAndMessageViews.
+let workWireframeGlyphs: Set<Character> = [
+  "│", "┌", "┐", "└", "┘", "├", "┤", "┼", "─",
+  "╭", "╮", "╰", "╯", "║", "═", "╔", "╗", "╚", "╝", "╠", "╣", "╬",
+  "▌", "▐", "█", "▓", "▒", "░", "▢", "▣", "□", "■",
+]
+
 /// Whether an option preview should render as a fixed-column monospace block
 /// rather than markdown. True when the text contains ASCII box-drawing or
 /// wireframe glyphs (│┌┐└┘├┤┼─ ╭╮╰╯ ●○◉◯ ▢▣ etc.) or repeated indentation
 /// whose alignment matters.
 /// Mirrors the desktop redesign's wireframe detection on the question card.
+/// NOTE: assistant chat messages do NOT use this — they classify through the
+/// markdown-aware `workAssistantMessageUsesMonospacedPreview` instead.
 func workPreviewIsWireframe(_ text: String) -> Bool {
-  let wireframeScalars: Set<Character> = [
-    "│", "┌", "┐", "└", "┘", "├", "┤", "┼", "─",
-    "╭", "╮", "╰", "╯", "║", "═", "╔", "╗", "╚", "╝", "╠", "╣", "╬",
-    "▌", "▐", "█", "▓", "▒", "░", "▢", "▣", "□", "■",
-  ]
-  if text.contains(where: { wireframeScalars.contains($0) }) {
+  if text.contains(where: { workWireframeGlyphs.contains($0) }) {
     return true
   }
   let lines = text.split(separator: "\n", omittingEmptySubsequences: false)

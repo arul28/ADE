@@ -452,6 +452,70 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testDeepLinkRouterPreservesScopedSessionEnvelope() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    let laneId = "e906d7a2-3c16-47c5-a887-9a5989131e52"
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "ade://session/foreign-chat?lane=\(laneId)&repo=arul28%2FVersic&branch=ver%2Fsearch-hygiene&event=12&offset=34"
+    )))
+
+    let request = try XCTUnwrap(service.requestedWorkSessionNavigation)
+    XCTAssertEqual(request.sessionId, "foreign-chat")
+    XCTAssertEqual(request.laneId, laneId)
+    XCTAssertEqual(request.repoOwner, "arul28")
+    XCTAssertEqual(request.repoName, "Versic")
+    XCTAssertEqual(request.branch, "ver/search-hygiene")
+    XCTAssertEqual(request.event, 12)
+    XCTAssertEqual(request.offset, 34)
+    XCTAssertTrue(request.hasProjectScope)
+  }
+
+  @MainActor
+  func testDeepLinkRouterPreservesHttpsSessionProjectScope() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=session&id=foreign-chat&repo=arul28%2FVersic&branch=ver%2Fsearch-hygiene"
+    )))
+
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.sessionId, "foreign-chat")
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.repoOwner, "arul28")
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.repoName, "Versic")
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.branch, "ver/search-hygiene")
+  }
+
+  @MainActor
+  func testDeepLinkRouterRejectsMalformedSessionProjectScope() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+    service.requestedWorkSessionNavigation = nil
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=session&id=foreign-chat&repo=arul28%2FVersic%2Fextra"
+    )))
+
+    XCTAssertNil(service.requestedWorkSessionNavigation)
+  }
+
+  @MainActor
   func testDeepLinkRouterRequestsPrNavigationByNumberWhenSnapshotMisses() throws {
     let previousShared = SyncService.shared
     let previousSnapshotData = ADESharedContainer.defaults.data(forKey: ADESharedContainer.workspaceSnapshotKey)
@@ -15232,6 +15296,273 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(firstPage.text.contains("row 24"))
     XCTAssertFalse(firstPage.text.contains("row 25"))
     XCTAssertEqual(workAssistantMessageMaxLineBudget(for: firstPage.text), workAssistantMessageWideMaxLineBudget)
+  }
+
+  func testAssistantMessageMarkdownWithPaddedTableIsNotMonospaced() {
+    // Regression: padded table cells contain wide space runs, which the old
+    // aligned-column heuristic classified as a wireframe — the whole answer
+    // then rendered as one tiny monospaced block with the wide (24-line)
+    // budget instead of normal markdown.
+    let markdown = """
+    Here's the summary of the run:
+
+    | File            | Status   |
+    |-----------------|----------|
+    | AppDelegate     | modified |
+    | SceneDelegate   | deleted  |
+
+    All tests passed. Let me know if you want the diff.
+    """
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+    XCTAssertEqual(workAssistantMessageMaxLineBudget(for: markdown), workAssistantMessageMaxLineBudget)
+  }
+
+  func testAssistantMessageFencedCodeWithAlignedColumnsIsNotMonospaced() {
+    // Fenced content already renders monospaced inside a code card, so aligned
+    // columns inside a fence must not push the surrounding prose into the
+    // whole-message monospaced path.
+    let markdown = """
+    The tests all pass now:
+
+    ```
+    Suite ADETests started
+    testPreview        passed   0.003s
+    testTimeline       passed   0.108s
+    ```
+
+    I also cleaned up the helper while I was in there.
+    """
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+  }
+
+  func testAssistantMessageFencedWireframeGlyphsAreNotMonospaced() {
+    let markdown = """
+    Proposed layout:
+
+    ```
+    ┌─────────┬─────────┐
+    │ sidebar │ content │
+    └─────────┴─────────┘
+    ```
+
+    The sidebar keeps its fixed width.
+    """
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+  }
+
+  func testAssistantMessageFencedUnicodeTreeOutputIsNotMonospaced() {
+    // Regression: `tree`-style output pasted inside a fence uses box-drawing
+    // glyphs (├── └── │). The fence already renders it monospaced in a code
+    // card, so the glyphs must not drag the surrounding prose into the
+    // whole-message monospaced path.
+    let markdown = """
+    Here's the new layout of the module:
+
+    ```
+    apps/ios/ADE/Views/Work
+    ├── WorkChatSessionView.swift
+    ├── WorkMarkdownParsing.swift
+    │   └── WorkMarkdownViews.swift
+    └── WorkChatHeaderAndMessageViews.swift
+    ```
+
+    The parser helpers stay in one file.
+    """
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+    XCTAssertEqual(workAssistantMessageMaxLineBudget(for: markdown), workAssistantMessageMaxLineBudget)
+  }
+
+  func testAssistantMessageUnfencedWireframeStaysMonospaced() {
+    let markdown = (1...40).map { "│ pane \($0)  │" }.joined(separator: "\n")
+    XCTAssertTrue(workAssistantMessageUsesMonospacedPreview(markdown))
+    XCTAssertEqual(workAssistantMessageMaxLineBudget(for: markdown), workAssistantMessageWideMaxLineBudget)
+  }
+
+  func testAssistantMessagePlainAsciiLayoutDominatedByAlignedColumnsIsMonospaced() {
+    let markdown = (1...30).map { "[Button \($0)]      [Input field \($0)]" }.joined(separator: "\n")
+    XCTAssertTrue(workAssistantMessageUsesMonospacedPreview(markdown))
+  }
+
+  func testAssistantMessageProseWithFewAlignedLinesIsNotMonospaced() {
+    let prose = (1...20).map { "This is regular prose line number \($0) in the final answer." }
+    let aligned = ["column a      column b", "value 1       value 2"]
+    let markdown = (prose + aligned).joined(separator: "\n")
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+  }
+
+  func testLatestAssistantAnswerWithPaddedTableRendersFullMarkdownWithoutShowMore() {
+    // Regression for the Hub-opened session report: the latest answer held a
+    // padded table, was misclassified as a wireframe, and rendered as a
+    // truncated tiny monospaced block that needed "Show more" to read. With
+    // the markdown-aware classifier the tail-full path renders the whole
+    // answer as markdown block rows with no controls row.
+    let tableLines = (1...20).map { "| file-\($0).swift    | modified |" }
+    let markdown = (
+      ["Here's where things landed:", "", "| File | Status |", "|------|--------|"]
+        + tableLines
+        + ["", "Everything is committed on the branch."]
+    ).joined(separator: "\n")
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+
+    let preview = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageTailFullLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(
+        forLineBudget: workAssistantMessageTailFullLineBudget,
+        tailCanRenderFull: true
+      ),
+      anchor: .tail
+    )
+    XCTAssertFalse(preview.isTruncated)
+    XCTAssertEqual(preview.text, markdown)
+
+    var message = WorkChatMessage(
+      id: "assistant-table-answer",
+      role: "assistant",
+      markdown: markdown,
+      timestamp: "2026-07-22T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-1"
+    )
+    message.assistantPreview = preview
+    let entry = WorkTimelineEntry(
+      id: "message-assistant-table-answer",
+      timestamp: message.timestamp,
+      rank: 0,
+      payload: .message(message)
+    )
+
+    let rendered = workTimelineRenderEntries(
+      from: [entry],
+      streamingAssistantMessageId: nil,
+      splitAssistantMessageId: message.id
+    )
+    XCTAssertTrue(rendered.contains { renderEntry in
+      if case .assistantMarkdownBlock = renderEntry.payload { return true }
+      return false
+    })
+    XCTAssertFalse(rendered.contains { renderEntry in
+      if case .assistantMonospaced = renderEntry.payload { return true }
+      return false
+    })
+    XCTAssertFalse(rendered.contains { renderEntry in
+      if case .assistantControls = renderEntry.payload { return true }
+      return false
+    })
+  }
+
+  func testAssistantTailStartingInsideFencedTreeStillRendersAsMarkdown() {
+    let markdown = (
+      ["The complete tree is below:", "", "```", "root"]
+        + (1...170).map { "├── generated-item-\($0)" }
+        + ["```", "", "Only the generated subtree changed."]
+    ).joined(separator: "\n")
+    let preview = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageTailFullLineBudget,
+      characterBudget: workAssistantMessageTailFullCharacterBudget,
+      anchor: .tail
+    )
+
+    XCTAssertTrue(preview.isTruncated)
+    XCTAssertTrue(
+      workAssistantMessageUsesMonospacedPreview(preview.text),
+      "a tail slice that starts after the opening fence demonstrates the old false-positive"
+    )
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+
+    var message = WorkChatMessage(
+      id: "assistant-fenced-tail",
+      role: "assistant",
+      markdown: markdown,
+      timestamp: "2026-07-22T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-1"
+    )
+    message.assistantPreview = preview
+    let entry = WorkTimelineEntry(
+      id: "message-assistant-fenced-tail",
+      timestamp: message.timestamp,
+      rank: 0,
+      payload: .message(message)
+    )
+    let rendered = workTimelineRenderEntries(
+      from: [entry],
+      streamingAssistantMessageId: nil,
+      splitAssistantMessageId: message.id,
+      assistantLineBudgets: [message.id: workAssistantMessageTailFullLineBudget]
+    )
+
+    XCTAssertTrue(rendered.contains { renderEntry in
+      if case .assistantMarkdownBlock = renderEntry.payload { return true }
+      return false
+    })
+    XCTAssertFalse(rendered.contains { renderEntry in
+      if case .assistantMonospaced = renderEntry.payload { return true }
+      return false
+    })
+  }
+
+  func testFiftyFourLineProseAndFencedTreeRendersFullyWithoutShowMore() {
+    let markdownLines = (
+      ["Here is the result:", "", "```", "root"]
+        + (1...42).map { "├── item-\($0)" }
+        + [
+          "└── final-item",
+          "```",
+          "",
+          "The tree is complete.",
+          "All expected files are present.",
+          "No files were omitted.",
+          "The checks passed.",
+          "That is the full result.",
+        ]
+    )
+    XCTAssertEqual(markdownLines.count, 54)
+    let markdown = markdownLines.joined(separator: "\n")
+    XCTAssertFalse(workAssistantMessageUsesMonospacedPreview(markdown))
+
+    let preview = workAssistantMessagePreview(
+      markdown,
+      lineBudget: workAssistantMessageTailFullLineBudget,
+      characterBudget: workAssistantMessageTailFullCharacterBudget,
+      anchor: .tail
+    )
+    XCTAssertFalse(preview.isTruncated)
+    XCTAssertEqual(preview.text, markdown)
+
+    var message = WorkChatMessage(
+      id: "assistant-fifty-four-lines",
+      role: "assistant",
+      markdown: markdown,
+      timestamp: "2026-07-22T00:00:01.000Z",
+      turnId: "turn-1",
+      itemId: "item-1"
+    )
+    message.assistantPreview = preview
+    let rendered = workTimelineRenderEntries(
+      from: [WorkTimelineEntry(
+        id: "message-assistant-fifty-four-lines",
+        timestamp: message.timestamp,
+        rank: 0,
+        payload: .message(message)
+      )],
+      streamingAssistantMessageId: nil,
+      splitAssistantMessageId: message.id
+    )
+
+    XCTAssertTrue(rendered.contains { renderEntry in
+      if case .assistantMarkdownBlock = renderEntry.payload { return true }
+      return false
+    })
+    XCTAssertFalse(rendered.contains { renderEntry in
+      if case .assistantMonospaced = renderEntry.payload { return true }
+      return false
+    })
+    XCTAssertFalse(rendered.contains { renderEntry in
+      if case .assistantControls = renderEntry.payload { return true }
+      return false
+    })
   }
 
   func testAssistantPreviewCacheHydratesBuiltChatMessages() {

@@ -65,6 +65,108 @@ struct RemoteRosterProject: Codable, Equatable, Identifiable {
   var id: String { projectId }
 }
 
+struct RosterSessionNavigationTarget: Equatable {
+  let project: MobileProjectSummary
+  let lane: RemoteRosterLane?
+  let chat: RemoteRosterChat
+}
+
+/// Resolve a session deeplink against the machine roster. Session id is the
+/// primary identity; lane/repo/branch are only fallback envelope hints. A
+/// synthetic non-chat row intentionally forces project activation + real row
+/// hydration when the roster has not announced the session yet.
+func resolveRosterSessionNavigationTarget(
+  projects: [MobileProjectSummary],
+  rosterProjects: [RemoteRosterProject],
+  sessionId: String,
+  laneId: String?,
+  repoName: String?,
+  branch: String?
+) -> RosterSessionNavigationTarget? {
+  let normalizedLaneId = laneId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedRepoName = repoName?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+  var rosterProject = rosterProjects.first { project in
+    project.chats.contains { $0.id == sessionId }
+  }
+  if rosterProject == nil, let normalizedLaneId, !normalizedLaneId.isEmpty {
+    rosterProject = rosterProjects.first { project in
+      project.lanes.contains { $0.id == normalizedLaneId }
+    }
+  }
+  if rosterProject == nil, let normalizedBranch, !normalizedBranch.isEmpty {
+    let matches = rosterProjects.filter { project in
+      project.lanes.contains {
+        $0.branchRef?.caseInsensitiveCompare(normalizedBranch) == .orderedSame
+      }
+    }
+    if matches.count == 1 { rosterProject = matches[0] }
+  }
+
+  let catalogProject: MobileProjectSummary? = {
+    if let rosterProject {
+      if let direct = projects.first(where: { $0.id == rosterProject.projectId }) {
+        return direct
+      }
+      let rosterRoot = syncNormalizedProjectRootScope(rosterProject.rootPath)
+      if let rosterRoot,
+         let rootMatch = projects.first(where: {
+           syncNormalizedProjectRootScope($0.rootPath) == rosterRoot
+         }) {
+        return rootMatch
+      }
+    }
+    guard let normalizedRepoName, !normalizedRepoName.isEmpty else { return nil }
+    let matches = projects.filter { project in
+      let displayMatches = project.displayName.caseInsensitiveCompare(normalizedRepoName) == .orderedSame
+      let rootName = project.rootPath.map {
+        let component = URL(fileURLWithPath: $0).lastPathComponent
+        return component.lowercased().hasSuffix(".git")
+          ? String(component.dropLast(4))
+          : component
+      }
+      return displayMatches || rootName?.caseInsensitiveCompare(normalizedRepoName) == .orderedSame
+    }
+    return matches.count == 1 ? matches[0] : nil
+  }()
+  guard let catalogProject else { return nil }
+
+  let resolvedRoster = rosterProject ?? rosterProjects.first { project in
+    project.projectId == catalogProject.id
+      || (
+        syncNormalizedProjectRootScope(project.rootPath) != nil
+          && syncNormalizedProjectRootScope(project.rootPath)
+            == syncNormalizedProjectRootScope(catalogProject.rootPath)
+      )
+  }
+  let rosterChat = resolvedRoster?.chats.first { $0.id == sessionId }
+  let resolvedLane = resolvedRoster?.lanes.first { lane in
+    if let rosterChat, lane.id == rosterChat.laneId { return true }
+    if let normalizedLaneId, !normalizedLaneId.isEmpty, lane.id == normalizedLaneId { return true }
+    if let normalizedBranch, !normalizedBranch.isEmpty {
+      return lane.branchRef?.caseInsensitiveCompare(normalizedBranch) == .orderedSame
+    }
+    return false
+  }
+  let chat = rosterChat ?? RemoteRosterChat(
+    id: sessionId,
+    laneId: resolvedLane?.id ?? normalizedLaneId ?? "",
+    chatSessionId: nil,
+    title: nil,
+    provider: nil,
+    model: nil,
+    toolType: nil,
+    status: .idle,
+    awaitingInput: nil,
+    pinned: nil,
+    archived: nil,
+    lastActivityAt: nil,
+    preview: nil
+  )
+  return RosterSessionNavigationTarget(project: catalogProject, lane: resolvedLane, chat: chat)
+}
+
 /// Full roster snapshot — `roster_snapshot` envelope payload.
 struct RemoteRosterSnapshotPayload: Codable, Equatable {
   var seq: Int
@@ -88,6 +190,24 @@ enum RosterDeltaOutcome: Equatable {
   case dropped
   /// No baseline or a seq gap — must request a fresh snapshot before applying.
   case needsSnapshot
+}
+
+/// Project ids whose lightweight roster projection changed between two
+/// snapshots. Used to invalidate an active Work surface without making
+/// unrelated-project agent activity rebuild it.
+func rosterChangedProjectIds(
+  previous: [RemoteRosterProject],
+  next: [RemoteRosterProject]
+) -> Set<String> {
+  var previousById: [String: RemoteRosterProject] = [:]
+  var nextById: [String: RemoteRosterProject] = [:]
+  for project in previous { previousById[project.projectId] = project }
+  for project in next { nextById[project.projectId] = project }
+  return Set(
+    Set(previousById.keys).union(nextById.keys).filter {
+      previousById[$0] != nextById[$0]
+    }
+  )
 }
 
 /// Pure delta-merge with the same sinceSeq discipline as chat_event: never apply

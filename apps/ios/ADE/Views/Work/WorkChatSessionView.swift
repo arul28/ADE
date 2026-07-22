@@ -1572,7 +1572,10 @@ func workTimelineRenderEntries(
     let nextLineBudget = min(requestedLineBudget + workAssistantMessageLineBudgetStep, maxLineBudget)
     let accessibilityLabel = workAssistantMessageAccessibilityLabel(preview)
 
-    if workAssistantMessageUsesMonospacedPreview(preview.text) {
+    // A truncated tail can start inside a fenced tree and omit the opening
+    // fence. Classify the authoritative full message so markdown prose never
+    // flips into the tiny whole-message monospace renderer while paginating.
+    if workAssistantMessageUsesMonospacedPreview(message.markdown) {
       let model = WorkAssistantMonospacedRenderModel(
         id: "\(entry.id)-assistant-monospace",
         messageId: message.id,

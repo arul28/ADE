@@ -46,6 +46,10 @@ struct HubScreen: View {
   // home (haptic fires at the same moment).
   @State private var showConnectBeat = false
   @State private var connectBeatTask: Task<Void, Never>?
+  // Avoid repeatedly requesting the same roster snapshot while a scoped deep
+  // link waits for its project/session to appear. Roster revisions still retry
+  // local resolution without creating a request loop.
+  @State private var requestedRosterLookupRequestId: String?
 
   private var isNoMachineBlankState: Bool {
     syncService.connectionState == .disconnected || syncService.connectionState == .error
@@ -94,6 +98,9 @@ struct HubScreen: View {
     .task(id: hubCollapseDefaultsConnectionKey) {
       loadHubLayoutForConnection(hubCollapseDefaultsConnectionKey)
     }
+    .task(id: workSessionDeepLinkKey) {
+      handleRequestedWorkSessionNavigation()
+    }
   }
 
   private func handleCreated(_ created: HubCreatedChat) {
@@ -136,6 +143,26 @@ struct HubScreen: View {
       status: .running, awaitingInput: nil, pinned: nil, archived: nil, lastActivityAt: nil, preview: nil
     )
     openChatTarget = HubChatTarget(project: project, lane: nil, chat: chat)
+  }
+
+  @MainActor
+  private func handleRequestedWorkSessionNavigation() {
+    guard openChatTarget == nil,
+          let request = syncService.requestedWorkSessionNavigation else { return }
+    guard let target = syncService.rosterNavigationTarget(for: request) else {
+      if requestedRosterLookupRequestId != request.id, canShowProjects {
+        requestedRosterLookupRequestId = request.id
+        syncService.requestRosterSnapshot()
+      }
+      return
+    }
+    requestedRosterLookupRequestId = nil
+    openChatTarget = HubChatTarget(
+      project: target.project,
+      lane: target.lane,
+      chat: target.chat
+    )
+    syncService.requestedWorkSessionNavigation = nil
   }
 
   private var chatsAttentionCount: Int {
@@ -287,6 +314,13 @@ struct HubScreen: View {
   private var rebuildKey: String? {
     guard hubIsActive else { return nil }
     return "\(syncService.activeProjectId ?? "-")|\(syncService.workProjectionRevision)|\(syncService.lanesProjectionRevision)"
+  }
+
+  private var workSessionDeepLinkKey: String? {
+    guard syncService.shouldShowProjectHome,
+          openChatTarget == nil,
+          let request = syncService.requestedWorkSessionNavigation else { return nil }
+    return "\(request.id)|\(syncService.rosterRevision)"
   }
 
   /// Display order: the user's persisted manual order first, with any project

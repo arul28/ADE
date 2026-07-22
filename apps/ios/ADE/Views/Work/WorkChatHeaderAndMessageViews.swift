@@ -355,7 +355,9 @@ struct WorkChatMessageBubble: View {
     // reads like a document. The truncation / "Show more" affordance stays but
     // unstyled so it doesn't reintroduce a boxed feel.
     let preview = assistantPreview
-    let usesMonospacedPreview = workAssistantMessageUsesMonospacedPreview(preview.text)
+    // Classify the complete markdown, not a tail slice that may begin halfway
+    // through a fenced tree/code block and therefore look like raw wireframe.
+    let usesMonospacedPreview = workAssistantMessageUsesMonospacedPreview(message.markdown)
     let maxLineBudget = workAssistantMessageMaxLineBudget(for: message.markdown)
 
     return VStack(alignment: .leading, spacing: 10) {
@@ -845,8 +847,61 @@ private func workAssistantMessageTailPreview(
   )
 }
 
+/// Whether an assistant message should render as one fixed-column monospace
+/// block (with the tighter wide line budgets) instead of parsed markdown.
+///
+/// Unlike `workPreviewIsWireframe` — which classifies raw question-card
+/// option previews — assistant messages are markdown, so this classifier must
+/// not let ordinary markdown constructs force the whole message into the
+/// tiny monospaced path:
+/// - fenced ``` content is ignored: the block renderer already shows fences
+///   monospaced in a horizontally scrolling code card, so aligned columns or
+///   box glyphs inside a fence say nothing about the prose around it;
+/// - markdown table rows are ignored: padded `| a    | b |` cells are the
+///   most common source of wide space runs in normal answers.
+/// What remains classifies as a wireframe when any prose line carries a
+/// box-drawing glyph, or when column-aligned lines dominate the prose (a raw
+/// ASCII layout pasted without fences). Genuinely huge wireframes therefore
+/// keep the bounded monospaced rendering.
 func workAssistantMessageUsesMonospacedPreview(_ text: String) -> Bool {
-  workPreviewIsWireframe(text)
+  var insideFence = false
+  var proseLineCount = 0
+  var alignedColumnLineCount = 0
+  for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if trimmed.hasPrefix("```") {
+      insideFence.toggle()
+      continue
+    }
+    if insideFence || trimmed.isEmpty { continue }
+    if trimmed.contains(where: { workWireframeGlyphs.contains($0) }) {
+      return true
+    }
+    proseLineCount += 1
+    if trimmed.contains("|") { continue }
+    if workLineHasAlignedColumnGap(trimmed) {
+      alignedColumnLineCount += 1
+    }
+  }
+  return alignedColumnLineCount >= 2 && alignedColumnLineCount * 2 >= proseLineCount
+}
+
+/// True when the line has an interior run of 3+ spaces/tabs between two
+/// non-whitespace characters — the "aligned columns" wireframe signal.
+/// Equivalent to the `\S\s{3,}\S` regex without per-line regex cost.
+private func workLineHasAlignedColumnGap(_ line: String) -> Bool {
+  var sawNonWhitespace = false
+  var whitespaceRun = 0
+  for character in line {
+    if character == " " || character == "\t" {
+      if sawNonWhitespace { whitespaceRun += 1 }
+    } else {
+      if whitespaceRun >= 3 { return true }
+      sawNonWhitespace = true
+      whitespaceRun = 0
+    }
+  }
+  return false
 }
 
 func workAssistantMessageMaxLineBudget(for text: String) -> Int {

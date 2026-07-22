@@ -39,56 +39,20 @@ struct WorkChatCrossProjectContext: Equatable {
 private enum HubChatOpenMode: Equatable {
   case deciding
   case crossProject(WorkChatCrossProjectContext, TerminalSessionSummary)
-  case activated
+  case activated(TerminalSessionSummary?)
 }
 
-/// Chat tool type for a roster-seeded session stub. The quick-look path is
-/// gated on `chat.isChatTool`, which is only true for a non-empty chat tool
-/// type — so the row's own value is always present here.
-private func workCrossProjectChatToolType(chat: RemoteRosterChat) -> String {
-  chat.toolType?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-}
-
-/// Synthesize a `TerminalSessionSummary` from the hub roster stub so the chat
-/// view renders immediately in cross-project mode — the foreign session row is
-/// never mirrored into the phone's local DB. The authoritative summary/status
-/// arrives over the scoped transcript stream and `chat.getSummary`.
-func makeCrossProjectSessionStub(chat: RemoteRosterChat, lane: RemoteRosterLane?) -> TerminalSessionSummary {
-  let (statusString, runtimeState): (String, String) = {
-    switch chat.status {
-    case .running: return ("running", "running")
-    case .awaiting: return ("awaiting-input", "waiting-input")
-    case .idle: return ("idle", "idle")
-    case .ended: return ("ended", "stopped")
-    case .failed: return ("failed", "failed")
-    }
-  }()
-  return TerminalSessionSummary(
-    id: chat.id,
-    laneId: chat.laneId,
-    laneName: lane?.name ?? "",
-    ptyId: nil,
-    tracked: true,
-    pinned: chat.pinned ?? false,
-    manuallyNamed: nil,
-    goal: nil,
-    toolType: workCrossProjectChatToolType(chat: chat),
-    title: chat.title ?? "Chat",
-    status: statusString,
-    startedAt: chat.lastActivityAt ?? "",
-    endedAt: nil,
-    exitCode: nil,
-    transcriptPath: "",
-    headShaStart: nil,
-    headShaEnd: nil,
-    lastOutputPreview: chat.preview,
-    summary: nil,
-    runtimeState: runtimeState,
-    resumeCommand: nil,
-    resumeMetadata: nil,
-    chatIdleSinceAt: nil,
-    chatSessionId: chat.chatSessionId
-  )
+/// Synthesize a `TerminalSessionSummary` from the Hub roster so a destination
+/// can render immediately. A foreign session never enters the phone's active
+/// project DB; a same-project session may simply be ahead of CRDT replication.
+/// In both cases the live stream and eventual row remain authoritative.
+func makeRosterSessionStub(chat: RemoteRosterChat, lane: RemoteRosterLane?) -> TerminalSessionSummary? {
+  // The roster carries enough metadata to open a chat transcript, but not a
+  // terminal: CLI rows omit the PTY id, transcript offsets, and tracked state
+  // required by TerminalSessionScreen. Let CLI activation hydrate its real
+  // project row instead of manufacturing a terminal that cannot subscribe.
+  guard chat.isChatTool else { return nil }
+  return chat.asTerminalSessionSummary(laneName: lane?.name ?? chat.laneId)
 }
 
 private struct HubChatCover: View {
@@ -123,11 +87,14 @@ private struct HubChatCover: View {
             crossProjectContext: context
           )
           .id(target.id)
-        case .activated:
+        case .activated(let sessionStub):
           WorkSessionDestinationView(
             sessionId: target.chat.id,
             initialOpeningPrompt: nil,
-            initialSession: nil,
+            // A chat roster row is authoritative enough to render and
+            // subscribe before CRR catches up. CLI rows intentionally pass nil
+            // here so the destination hydrates their real PTY-backed row.
+            initialSession: sessionStub,
             initialChatSummary: nil,
             initialTranscript: nil,
             transitionNamespace: nil,
@@ -144,23 +111,24 @@ private struct HubChatCover: View {
   }
 
   private func decideAndOpen() async {
+    let sessionStub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
     // Already the active project → the full-detail path (existing infra).
     if syncService.isActiveProject(target.project) {
-      mode = .activated
+      mode = .activated(sessionStub)
       return
     }
     // Cross-project quick look when the host supports it (newer brain): stream
     // the foreign chat in place, no project switch. Chat sessions only — CLI
     // sessions have no chat transcript JSONL to stream, so they take the
     // activation path below and open as a terminal.
-    if syncService.supportsCrossProjectChat, target.chat.isChatTool {
+    if syncService.supportsCrossProjectChat, let sessionStub {
       mode = .crossProject(
         WorkChatCrossProjectContext(
           projectId: target.project.id,
           projectRootPath: target.project.rootPath,
           displayName: target.project.displayName
         ),
-        makeCrossProjectSessionStub(chat: target.chat, lane: target.lane)
+        sessionStub
       )
       return
     }
@@ -170,7 +138,7 @@ private struct HubChatCover: View {
     // the activating spinner so the cover never opens against the wrong project.
     await syncService.openProjectForHubChat(target.project)
     guard syncService.isActiveProject(target.project) else { return }
-    mode = .activated
+    mode = .activated(sessionStub)
   }
 }
 

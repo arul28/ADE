@@ -699,10 +699,16 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
 4. If no active project is selected, show the Hub (all-projects roster
    home) instead of hydrating lane/file/PR surfaces against the wrong row.
    The Hub subscribes to the roster feed (`roster_subscribe`) to render
-   every project's chats-by-lane without activating each project.
+   every project's chats-by-lane without activating each project. For the
+   active project, that same lightweight roster is also a display bridge for
+   newly created lanes/chats that arrive before the project CRR replica: Hub
+   navigation and the Work list can render and subscribe immediately, while
+   richer local rows replace the temporary projection by id when they land.
 5. After the active project row exists locally, receive catchup
    changesets and hydrate lane, file, Work, and PR projections scoped
-   to that project.
+   to that project. A manual Work refresh preserves the database's lane
+   integrity boundary by fetching a lightweight lane snapshot before installing
+   any session snapshot that references a lane missing locally.
 6. Enter continuous bidirectional sync. Inbound processing runs off
    the main actor: envelope JSON parse, gunzip, payload JSON parse,
    chunked-envelope reassembly, and changeset decode + apply all run
@@ -1114,10 +1120,13 @@ requires a live host because it is not queueable. Existing chats reuse
 runtime-scoped attachment reads, and personal action names for sends, steers,
 approvals, metadata, archive, and delete.
 
-The active
-project's chats come straight from the phone's already-synced local DB
-(authoritative + instant) rather than the cross-project roster, so the active
-card is never stuck on "Loading chats…". Tapping a project card opens its
+The active project's rich chat rows still come from the phone's synced local
+DB, but the machine roster is merged over that cache as an ephemeral display
+projection. Local rows win by id; roster-only lanes and chats fill the CRR
+arrival gap and disappear naturally when the authoritative row replaces them.
+This keeps both the active Hub card and the Work list current when another
+client creates a chat, without persisting foreign/stub rows or activating every
+project. Tapping a project card opens its
 detailed tabbed view; tapping a chat opens that chat directly over the Hub (the
 Hub stays mounted underneath so Back returns to it, and it keeps rebuilding
 roster cards while a chat is open). Opening a chat that belongs to a project
@@ -1125,7 +1134,7 @@ other than the active one uses **cross-project quick look**
 (`HubScreen+ChatNavigation`): when the host advertises `crossProjectChat`
 (`SyncService.supportsCrossProjectChat`), the cover synthesizes a
 `TerminalSessionSummary` stub from the roster row
-(`makeCrossProjectSessionStub`) and streams that foreign project's transcript
+(`makeRosterSessionStub`) and streams that foreign project's transcript
 read-only via a `WorkSessionDestinationView` carrying a
 `WorkChatCrossProjectContext` — no project switch, no runtime boot. Lane/PR
 affordances are hidden in this mode (`showsLaneActions: false`) but send /

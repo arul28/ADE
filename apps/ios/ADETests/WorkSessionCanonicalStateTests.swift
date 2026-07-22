@@ -202,6 +202,295 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(state.badge)
   }
 
+  // MARK: - Active-project roster overlay
+
+  func testActiveProjectRosterOverlayKeepsLocalRowsAndAppendsMissingRosterRowsInSourceOrder() {
+    let localLane = makeLane(id: "lane-local", name: "Local lane")
+    let localSession = makeSession(id: "local-chat", laneId: localLane.id, laneName: localLane.name, title: "Hydrated local title")
+    let roster = RemoteRosterProject(
+      projectId: "project-1",
+      rootPath: nil,
+      displayName: "Project",
+      iconDataUrl: nil,
+      lastOpenedAt: nil,
+      booted: true,
+      runningCount: 0,
+      attentionCount: 0,
+      lanes: [
+        RemoteRosterLane(id: "lane-local", name: "Stale remote name", color: nil, icon: nil, laneType: "primary", branchRef: "main"),
+        RemoteRosterLane(id: "lane-roster-1", name: "Roster one", color: nil, icon: nil, laneType: "worktree", branchRef: "feature/one"),
+        RemoteRosterLane(id: "lane-roster-2", name: "Roster two", color: nil, icon: nil, laneType: "worktree", branchRef: "feature/two"),
+      ],
+      chats: [
+        makeRosterChat(id: "local-chat", laneId: "lane-local", title: "Stale remote title"),
+        makeRosterChat(id: "roster-chat-1", laneId: "lane-roster-2", title: "Roster chat one"),
+        makeRosterChat(id: "roster-chat-2", laneId: "lane-roster-1", title: "Roster chat two"),
+      ]
+    )
+
+    let projection = overlayActiveProjectRoster(
+      localSessions: [localSession],
+      localLanes: [localLane],
+      roster: roster
+    )
+
+    XCTAssertEqual(projection.lanes.map(\.id), ["lane-local", "lane-roster-1", "lane-roster-2"])
+    XCTAssertEqual(projection.sessions.map(\.id), ["local-chat", "roster-chat-1", "roster-chat-2"])
+    XCTAssertEqual(projection.sessions.first?.title, "Hydrated local title")
+    XCTAssertEqual(projection.sessions[1].laneName, "Roster two")
+  }
+
+  func testActiveProjectRosterOverlayExcludesArchivedChatsAndHandlesNoRoster() {
+    let localLane = makeLane(id: "lane-local", name: "Local lane")
+    let localSession = makeSession(id: "local-chat", laneId: localLane.id, laneName: localLane.name, title: "Local")
+    let roster = RemoteRosterProject(
+      projectId: "project-1",
+      rootPath: nil,
+      displayName: "Project",
+      iconDataUrl: nil,
+      lastOpenedAt: nil,
+      booted: false,
+      runningCount: 0,
+      attentionCount: 0,
+      lanes: [RemoteRosterLane(id: "lane-roster", name: "Roster", color: nil, icon: nil, laneType: "worktree", branchRef: "feature")],
+      chats: [
+        makeRosterChat(id: "archived-chat", laneId: "lane-roster", title: "Archived", archived: true),
+        makeRosterChat(id: "cli-session", laneId: "lane-roster", title: "Terminal", toolType: "cli"),
+      ]
+    )
+
+    let withRoster = overlayActiveProjectRoster(localSessions: [localSession], localLanes: [localLane], roster: roster)
+    XCTAssertEqual(withRoster.sessions.map(\.id), ["local-chat"])
+    XCTAssertEqual(withRoster.lanes.map(\.id), ["lane-local"])
+
+    let withoutRoster = overlayActiveProjectRoster(localSessions: [localSession], localLanes: [localLane], roster: nil)
+    XCTAssertEqual(withoutRoster.sessions, [localSession])
+    XCTAssertEqual(withoutRoster.lanes, [localLane])
+  }
+
+  func testActiveProjectRosterOverlayBoundsChatStubsAndOmitsUnusedLanes() {
+    let chats = (0..<(workActiveProjectRosterSessionLimit + 5)).map { index in
+      makeRosterChat(id: "chat-\(index)", laneId: "lane-used", title: "Chat \(index)")
+    }
+    let roster = RemoteRosterProject(
+      projectId: "project-1",
+      rootPath: nil,
+      displayName: "Project",
+      iconDataUrl: nil,
+      lastOpenedAt: nil,
+      booted: true,
+      runningCount: 0,
+      attentionCount: 0,
+      lanes: [
+        RemoteRosterLane(id: "lane-used", name: "Used", color: nil, icon: nil, laneType: "worktree", branchRef: "feature"),
+        RemoteRosterLane(id: "lane-empty", name: "Empty", color: nil, icon: nil, laneType: "worktree", branchRef: "empty"),
+      ],
+      chats: chats
+    )
+
+    let projection = overlayActiveProjectRoster(localSessions: [], localLanes: [], roster: roster)
+
+    XCTAssertEqual(projection.sessions.count, workActiveProjectRosterSessionLimit)
+    XCTAssertEqual(projection.sessions.first?.id, "chat-0")
+    XCTAssertEqual(projection.sessions.last?.id, "chat-\(workActiveProjectRosterSessionLimit - 1)")
+    XCTAssertEqual(projection.lanes.map(\.id), ["lane-used"])
+  }
+
+  func testRosterSessionStubIsChatOnlyBecauseTerminalMetadataIsIncomplete() {
+    let lane = RemoteRosterLane(
+      id: "lane-1",
+      name: "Feature",
+      color: nil,
+      icon: nil,
+      laneType: "worktree",
+      branchRef: "feature"
+    )
+    XCTAssertNotNil(makeRosterSessionStub(
+      chat: makeRosterChat(id: "chat", laneId: lane.id, title: "Chat"),
+      lane: lane
+    ))
+    XCTAssertNil(makeRosterSessionStub(
+      chat: makeRosterChat(id: "cli", laneId: lane.id, title: "Terminal", toolType: "cli"),
+      lane: lane
+    ))
+  }
+
+  func testRosterChangedProjectIdsIgnoresUnrelatedStableProjects() {
+    func project(_ id: String, title: String) -> RemoteRosterProject {
+      RemoteRosterProject(
+        projectId: id,
+        rootPath: "/tmp/\(id)",
+        displayName: id,
+        iconDataUrl: nil,
+        lastOpenedAt: nil,
+        booted: true,
+        runningCount: 0,
+        attentionCount: 0,
+        lanes: [],
+        chats: [makeRosterChat(id: "\(id)-chat", laneId: "lane", title: title)]
+      )
+    }
+    let stable = project("stable", title: "Same")
+    let previous = [stable, project("changed", title: "Before"), project("removed", title: "Gone")]
+    let next = [stable, project("changed", title: "After"), project("added", title: "New")]
+
+    XCTAssertEqual(rosterChangedProjectIds(previous: [stable, next[1]], next: [next[1], stable]), [])
+    XCTAssertEqual(
+      rosterChangedProjectIds(previous: previous, next: next),
+      ["changed", "removed", "added"]
+    )
+  }
+
+  func testWorkHydrationDetectsOnlyNonemptyMissingLaneIds() {
+    let sessions = [
+      makeSession(id: "known", laneId: "lane-known"),
+      makeSession(id: "new-a", laneId: "lane-new"),
+      makeSession(id: "new-b", laneId: "lane-new"),
+      makeSession(id: "malformed", laneId: "   "),
+    ]
+
+    XCTAssertEqual(
+      syncMissingWorkSessionLaneIds(
+        sessions: sessions,
+        knownLaneIds: ["lane-known"]
+      ),
+      ["lane-new"]
+    )
+  }
+
+  func testPendingChatCreationStaysInItsProjectScope() {
+    let creation = PendingChatCreation(
+      id: "pending-1",
+      projectId: "project-a",
+      projectRootPath: "/tmp/A/",
+      laneId: "lane-1",
+      name: "Queued",
+      provider: "codex",
+      model: "gpt",
+      queuedAt: ""
+    )
+
+    XCTAssertTrue(workPendingChatCreationMatchesProject(
+      creation,
+      projectId: "project-a",
+      projectRootPath: "/other"
+    ))
+    XCTAssertTrue(workPendingChatCreationMatchesProject(
+      creation,
+      projectId: "alias-a",
+      projectRootPath: "/tmp/A"
+    ))
+    XCTAssertFalse(workPendingChatCreationMatchesProject(
+      creation,
+      projectId: "project-b",
+      projectRootPath: "/tmp/B"
+    ))
+  }
+
+  func testRosterSessionNavigationUsesSessionIdentityAcrossProjects() {
+    let ade = MobileProjectSummary(
+      id: "project-ade",
+      displayName: "ADE",
+      rootPath: "/Users/test/ADE",
+      laneCount: 1,
+      isAvailable: true,
+      isCached: true
+    )
+    let versic = MobileProjectSummary(
+      id: "project-versic",
+      displayName: "Versic",
+      rootPath: "/Users/test/Versic",
+      laneCount: 1,
+      isAvailable: true,
+      isCached: true
+    )
+    let lane = RemoteRosterLane(
+      id: "lane-versic",
+      name: "Search hygiene",
+      color: nil,
+      icon: nil,
+      laneType: "worktree",
+      branchRef: "ver/search-hygiene"
+    )
+    let roster = RemoteRosterProject(
+      projectId: versic.id,
+      rootPath: versic.rootPath,
+      displayName: versic.displayName,
+      iconDataUrl: nil,
+      lastOpenedAt: nil,
+      booted: true,
+      runningCount: 1,
+      attentionCount: 0,
+      lanes: [lane],
+      chats: [makeRosterChat(id: "foreign-chat", laneId: lane.id, title: "Foreign chat")]
+    )
+
+    let target = resolveRosterSessionNavigationTarget(
+      projects: [ade, versic],
+      rosterProjects: [roster],
+      sessionId: "foreign-chat",
+      laneId: nil,
+      repoName: nil,
+      branch: nil
+    )
+
+    XCTAssertEqual(target?.project.id, versic.id)
+    XCTAssertEqual(target?.lane?.id, lane.id)
+    XCTAssertEqual(target?.chat.id, "foreign-chat")
+    XCTAssertTrue(target?.chat.isChatTool == true)
+  }
+
+  func testRosterSessionNavigationUsesScopedRepoAndBranchBeforeSessionAppears() {
+    let project = MobileProjectSummary(
+      id: "catalog-versic",
+      displayName: "Versic",
+      rootPath: "/Users/test/Versic.git",
+      laneCount: 1,
+      isAvailable: true,
+      isCached: true
+    )
+    let lane = RemoteRosterLane(
+      id: "lane-versic",
+      name: "Search hygiene",
+      color: nil,
+      icon: nil,
+      laneType: "worktree",
+      branchRef: "ver/search-hygiene"
+    )
+    let roster = RemoteRosterProject(
+      projectId: "roster-versic",
+      rootPath: nil,
+      displayName: "Versic",
+      iconDataUrl: nil,
+      lastOpenedAt: nil,
+      booted: false,
+      runningCount: 0,
+      attentionCount: 0,
+      lanes: [lane],
+      chats: []
+    )
+
+    let target = resolveRosterSessionNavigationTarget(
+      projects: [project],
+      rosterProjects: [roster],
+      sessionId: "not-in-roster-yet",
+      laneId: nil,
+      repoName: "Versic",
+      branch: lane.branchRef
+    )
+
+    XCTAssertEqual(target?.project.id, project.id)
+    XCTAssertEqual(target?.lane?.id, lane.id)
+    XCTAssertEqual(target?.chat.id, "not-in-roster-yet")
+    XCTAssertFalse(target?.chat.isChatTool == true, "unknown rows must activate and hydrate instead of opening a fake chat")
+  }
+
+  func testWorkSessionNavigationRecognizesProjectEnvelope() {
+    XCTAssertFalse(WorkSessionNavigationRequest(sessionId: "local").hasProjectScope)
+    XCTAssertTrue(WorkSessionNavigationRequest(sessionId: "scoped", repoName: "Versic").hasProjectScope)
+    XCTAssertTrue(WorkSessionNavigationRequest(sessionId: "scoped", branch: "ver/search").hasProjectScope)
+  }
+
   // MARK: - No badge for calm states
 
   func testCalmStatesCarryNoBadge() {
@@ -377,25 +666,29 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   // MARK: - Fixtures
 
   private func makeSession(
-    status: String,
-    runtimeState: String,
-    toolType: String?,
+    id: String = "s-1",
+    laneId: String = "lane-1",
+    laneName: String = "feature/work",
+    title: String = "Session",
+    status: String = "completed",
+    runtimeState: String = "exited",
+    toolType: String? = "codex-chat",
     exitCode: Int? = nil,
     pendingInputItemId: String? = nil,
     lastOutputPreview: String? = nil,
     startedAt: String? = nil
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
-      id: "s-1",
-      laneId: "lane-1",
-      laneName: "feature/work",
+      id: id,
+      laneId: laneId,
+      laneName: laneName,
       ptyId: nil,
       tracked: true,
       pinned: false,
       manuallyNamed: nil,
       goal: nil,
       toolType: toolType,
-      title: "Session",
+      title: title,
       status: status,
       startedAt: startedAt ?? iso(now),
       endedAt: nil,
@@ -412,6 +705,58 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       chatIdleSinceAt: nil,
       chatSessionId: nil,
       pendingInputItemId: pendingInputItemId
+    )
+  }
+
+  private func makeLane(id: String, name: String) -> LaneSummary {
+    LaneSummary(
+      id: id,
+      name: name,
+      description: nil,
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "feature",
+      worktreePath: "",
+      attachedRootPath: nil,
+      parentLaneId: nil,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: nil,
+      isEditProtected: false,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil,
+      icon: nil,
+      tags: [],
+      folder: nil,
+      linearIssue: nil,
+      linearIssueLinks: nil,
+      createdAt: "",
+      archivedAt: nil,
+      devicesOpen: nil
+    )
+  }
+
+  private func makeRosterChat(
+    id: String,
+    laneId: String,
+    title: String,
+    archived: Bool? = nil,
+    toolType: String? = "codex-chat"
+  ) -> RemoteRosterChat {
+    RemoteRosterChat(
+      id: id,
+      laneId: laneId,
+      chatSessionId: nil,
+      title: title,
+      provider: "codex",
+      model: nil,
+      toolType: toolType,
+      status: .idle,
+      awaitingInput: nil,
+      pinned: nil,
+      archived: archived,
+      lastActivityAt: nil,
+      preview: nil
     )
   }
 

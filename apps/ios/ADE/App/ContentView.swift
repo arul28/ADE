@@ -185,7 +185,16 @@ struct ContentView: View {
         }
       }
       .onChange(of: syncService.requestedWorkSessionNavigation?.id) { _, requestId in
-        guard requestId != nil else { return }
+        guard requestId != nil,
+              let request = syncService.requestedWorkSessionNavigation else { return }
+        // A scoped or roster-resolved session may belong to any project. Keep
+        // the machine-wide Hub mounted so it can open the correct chat directly
+        // instead of sending the id into whichever project's Work tab happens
+        // to be active (which produces a misleading blank-cache state).
+        if request.hasProjectScope || syncService.rosterNavigationTarget(for: request) != nil {
+          syncService.showProjectHome()
+          return
+        }
         syncService.closeProjectHome()
         if selectedTab != .work {
           selectedTab = .work
