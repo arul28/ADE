@@ -5350,7 +5350,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(attemptedAddresses, ["192.168.1.10", "192.168.1.11"])
     XCTAssertEqual(winner, attempts[1])
     XCTAssertEqual(failedCandidateStates, [.connecting])
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
   }
 
   @MainActor
@@ -5385,7 +5385,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(attemptedAddresses, ["100.64.0.10", "100.64.0.11"])
     XCTAssertEqual(winner, attempts[1])
     XCTAssertEqual(failedCandidateStates, [.error])
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
   }
 
   @MainActor
@@ -5416,7 +5416,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testSyncServiceKeepsLegacyHelloConnectedInLimitedCompatibilityMode() async throws {
+  func testSyncServiceAcceptsLegacyHelloInLimitedCompatibilityMode() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
 
     try service.applyHelloPayloadForTesting([
@@ -5429,7 +5429,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
@@ -5490,7 +5490,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertFalse(service.supportsRemoteAction("cto.startLinearMobileOAuth"))
     XCTAssertFalse(service.supportsRemoteAction("cto.setLinearToken"))
@@ -5535,7 +5535,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
     XCTAssertEqual(service.hostCompatibilityMode, .full)
     XCTAssertTrue(service.supportsRemoteAction("cto.startLinearMobileOAuth"))
     XCTAssertTrue(service.supportsRemoteAction("cto.completeLinearMobileOAuth"))
@@ -5596,7 +5596,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
     XCTAssertEqual(service.hostCompatibilityMode, .full)
     XCTAssertEqual(service.hostCompatibilityMissingActions, [])
     XCTAssertTrue(service.supportsRemoteAction("chat.send"))
@@ -5640,7 +5640,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
     XCTAssertFalse(service.canInvokeChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
     do {
@@ -5679,7 +5679,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["prs.getMobileGithubDetail"])
     XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
@@ -5982,7 +5982,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionState, .syncing)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertTrue(service.supportsPersonalChats)
     XCTAssertTrue(service.supportsRemoteAction("personalChats.list"))

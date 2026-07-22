@@ -1124,6 +1124,40 @@ final class SyncRecoveryPolicyTests: XCTestCase {
   }
 
   @MainActor
+  func testSuccessfulPostHelloRestorationPublishesConnectedOnlyAfterCompletion() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    let restoration = DeferredRecoveryWork()
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "ready-host", "deviceName": "Mac Studio"],
+      "features": [:],
+    ])
+    XCTAssertEqual(service.connectionState, .syncing)
+
+    let postHello = Task { @MainActor in
+      await service.performPostHelloRestorationForTesting {
+        await restoration.wait()
+      }
+    }
+    while !restoration.isWaiting { await Task.yield() }
+    XCTAssertEqual(service.connectionState, .syncing)
+
+    restoration.resume()
+    await postHello.value
+    XCTAssertEqual(service.connectionState, .connected)
+  }
+
+  @MainActor
   func testStalePostHelloRestorationCannotRepublishConnected() async throws {
     let baseURL = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
