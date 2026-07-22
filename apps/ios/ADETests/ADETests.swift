@@ -12550,6 +12550,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(visibleKinds, [
       "user",
       "assistant:msg-progress",
+      "tool:tool-1",
       "assistant:msg-final",
     ])
   }
@@ -18309,12 +18310,23 @@ final class ADETests: XCTestCase {
       localEchoMessages: []
     )
 
-    XCTAssertTrue(snapshot.toolCards.isEmpty)
-    XCTAssertFalse(snapshot.timeline.contains { entry in
-      if case .toolGroup = entry.payload { return true }
-      if case .toolCard = entry.payload { return true }
-      return false
-    })
+    let toolGroups = snapshot.timeline.compactMap { entry -> WorkToolGroupModel? in
+      guard case .toolGroup(let group) = entry.payload else { return nil }
+      return group
+    }
+    let standaloneToolCards = snapshot.timeline.compactMap { entry -> WorkToolCardModel? in
+      guard case .toolCard(let card) = entry.payload else { return nil }
+      return card
+    }
+
+    XCTAssertEqual(toolGroups.count, 1)
+    XCTAssertEqual(toolGroups.first?.members.count, 2)
+    XCTAssertTrue(standaloneToolCards.isEmpty)
+    guard case .tool(let latest)? = toolGroups.first?.latest else {
+      return XCTFail("Expected the latest visible group member to be the newest tool call.")
+    }
+    XCTAssertEqual(latest.id, "tool-2")
+    XCTAssertEqual(latest.status, .running)
   }
 
   func testBuildWorkTimelineCollapsesAlternatingReasoningAndToolBursts() {
