@@ -3093,7 +3093,7 @@ app.whenReady().then(async () => {
       logger,
       appVersion: app.getVersion(),
       getAdeCliAgentEnv: adeCliService.agentEnv,
-      getLocalGitHubToken: () => githubService.getTokenOrThrow(),
+      getLocalGitHubToken: () => githubService.getTokenOrThrowAsync(),
       onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);

@@ -3797,6 +3797,9 @@ export function registerIpc({
   ipcMain.handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {
     let token: string | null = null;
     try {
+      // ADE's release repository is public. Use only an immediately available
+      // token here so a slow/keyring-backed `gh auth token` lookup cannot hold
+      // the update affordance behind unrelated GitHub authentication.
       token = getCtx().githubService.getTokenOrThrow();
     } catch {
       token = null;
@@ -4122,9 +4125,9 @@ export function registerIpc({
   const runtimeBridge = registerRuntimeBridge({
     appVersion: app.getVersion(),
     bindRemoteProject,
-    getGitHubTokenForRemoteClone: () => {
+    getGitHubTokenForRemoteClone: async () => {
       try {
-        return getCtx().githubService.getTokenOrThrow();
+        return await getCtx().githubService.getTokenOrThrowAsync();
       } catch {
         return null;
       }

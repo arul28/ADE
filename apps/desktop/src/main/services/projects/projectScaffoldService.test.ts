@@ -25,9 +25,11 @@ function makeGithubServiceStub(overrides: Partial<{
   getTokenOrThrow: ReturnType<typeof vi.fn>;
   parseGitHubRepoFromRemoteUrl: ReturnType<typeof vi.fn>;
 }> = {}) {
+  const getTokenOrThrow = overrides.getTokenOrThrow ?? vi.fn(() => "ghp_fake_token_12345");
   return {
     apiRequest: overrides.apiRequest ?? vi.fn(),
-    getTokenOrThrow: overrides.getTokenOrThrow ?? vi.fn(() => "ghp_fake_token_12345"),
+    getTokenOrThrow,
+    getTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
     parseGitHubRepoFromRemoteUrl:
       overrides.parseGitHubRepoFromRemoteUrl ??
       vi.fn((url: string) => {

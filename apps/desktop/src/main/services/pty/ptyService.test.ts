@@ -6641,6 +6641,61 @@ describe("ptyService", () => {
       }
     });
 
+    it("force-kills known PTY groups when the reap scan fails under load", async () => {
+      vi.useFakeTimers();
+      let scanCount = 0;
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        scanCount += 1;
+        const callback = args.at(-1);
+        if (typeof callback === "function") {
+          if (scanCount === 1) {
+            (callback as (...callbackArgs: unknown[]) => void)(
+              null,
+              [
+                "12345 1 12345 23456",
+                "23456 12345 23456 23456",
+              ].join("\n"),
+              "",
+            );
+          } else {
+            (callback as (...callbackArgs: unknown[]) => void)(
+              new Error("process scan timed out"),
+              "",
+              "",
+            );
+          }
+        }
+        return { kill: vi.fn() };
+      });
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
+      try {
+        const { service } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-reap-scan-failure",
+        });
+
+        service.signalTerminal({
+          chatSessionId: "chat-signal-reap-scan-failure",
+          signal: "SIGTERM",
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        kill.mockClear();
+
+        await vi.advanceTimersByTimeAsync(1_500);
+        expect(kill).toHaveBeenCalledWith(-12345, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(12345, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(-23456, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(23456, "SIGKILL");
+      } finally {
+        kill.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
     it("fails loudly when chat terminal calls cannot resolve a target", async () => {
       const { service } = createChatHarness();
 

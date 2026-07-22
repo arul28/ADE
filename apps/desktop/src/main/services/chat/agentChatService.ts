@@ -6382,7 +6382,7 @@ export function createAgentChatService(args: {
   appVersion: string;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   /** Resolves credentials owned by this runtime only; never supplied by a handoff capsule. */
-  getLocalGitHubToken?: () => string | null | undefined;
+  getLocalGitHubToken?: () => string | null | undefined | Promise<string | null | undefined>;
   resolveCodexComputerUseMcp?: () =>
     | CodexComputerUseMcpConfig
     | null
@@ -27119,14 +27119,14 @@ export function createAgentChatService(args: {
   const crossMachineHandoffRecordKey = (handoffId: string): string =>
     `agent-chat-cross-machine-handoff:v1:${handoffId}`;
 
-  const destinationGitEnv = (): NodeJS.ProcessEnv => {
+  const destinationGitEnv = async (): Promise<NodeJS.ProcessEnv> => {
     const env: NodeJS.ProcessEnv = {
       GIT_TERMINAL_PROMPT: "0",
       GCM_INTERACTIVE: "Never",
     };
     let token = "";
     try {
-      token = getLocalGitHubToken?.()?.trim() ?? "";
+      token = (await getLocalGitHubToken?.())?.trim() ?? "";
     } catch {
       // A destination credential helper may still authorize Git. Keep prompts
       // disabled so a headless handoff fails clearly instead of hanging.
@@ -27866,7 +27866,7 @@ export function createAgentChatService(args: {
       const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
         cwd: projectRoot,
         timeoutMs: 30_000,
-        env: destinationGitEnv(),
+        env: await destinationGitEnv(),
       });
       if (remote.exitCode !== 0) {
         blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
@@ -28247,7 +28247,7 @@ export function createAgentChatService(args: {
       const fetch = await runGit(["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`], {
         cwd: projectRoot,
         timeoutMs: 60_000,
-        env: destinationGitEnv(),
+        env: await destinationGitEnv(),
       });
       if (fetch.exitCode !== 0) {
         throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);

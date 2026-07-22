@@ -745,7 +745,34 @@ describe("githubService.getStatus", () => {
     delete process.env.GH_CONFIG_DIR;
   });
 
-  it("coalesces slow gh auth and failed status probes across project services", async () => {
+  it("awaits keyring-backed gh auth when no synchronous hosts token exists", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    let resolveAuth!: (value: { token: string; ghCliPath: string; ghAuthError: null }) => void;
+    const ghAuthTokenProvider = vi.fn(() => new Promise<{
+      token: string;
+      ghCliPath: string;
+      ghAuthError: null;
+    }>((resolve) => {
+      resolveAuth = resolve;
+    }));
+    const first = makeService({ ghAuthTokenProvider });
+    const second = makeService({ ghAuthTokenProvider });
+
+    const firstToken = first.getTokenOrThrowAsync();
+    const secondToken = second.getTokenOrThrowAsync();
+    await Promise.resolve();
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
+
+    resolveAuth({
+      token: "gho_keyring_token",
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null,
+    });
+    await expect(firstToken).resolves.toBe("gho_keyring_token");
+    await expect(secondToken).resolves.toBe("gho_keyring_token");
+  });
+
+  it("retries transient status failures after a short shared cooldown", async () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
     const baseNow = Date.now();
@@ -774,11 +801,13 @@ describe("githubService.getStatus", () => {
     await Promise.resolve();
     expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
 
-    resolveAuth({
+    const resolvedAuth = {
       token: "github_pat_shared_slow_token",
       ghCliPath: "/opt/homebrew/bin/gh",
-      ghAuthError: null,
-    });
+      ghAuthError: null as null,
+    };
+    resolveAuth(resolvedAuth);
+    ghAuthTokenProvider.mockResolvedValue(resolvedAuth);
     const statuses = await Promise.all([firstStatus, secondStatus]);
     expect(statuses.map((status) => status.repoAccessOk)).toEqual([false, false]);
     expect(mockFetch).toHaveBeenCalledTimes(2); // one /user + one repo probe total
@@ -786,8 +815,8 @@ describe("githubService.getStatus", () => {
     now.mockReturnValue(baseNow + 31_000);
     const third = await makeService({ ghAuthTokenProvider }).getStatus();
     expect(third.repoAccessOk).toBe(false);
-    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(4);
     now.mockRestore();
   });
 

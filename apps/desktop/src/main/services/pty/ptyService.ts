@@ -201,6 +201,11 @@ type PtyTreeProcess = {
   foregroundProcessGroupId: number;
 };
 
+type PtyTreeProcessScan = {
+  processes: PtyTreeProcess[];
+  succeeded: boolean;
+};
+
 function parsePtyTreeProcesses(
   stdout: string,
   rootPid: number,
@@ -255,9 +260,9 @@ function parsePtyTreeProcesses(
 function collectPtyTreeProcesses(
   rootPid: number,
   knownProcessGroupIds: ReadonlySet<number> = new Set(),
-): Promise<PtyTreeProcess[]> {
+): Promise<PtyTreeProcessScan> {
   if (process.platform === "win32" || !Number.isFinite(rootPid) || rootPid <= 0) {
-    return Promise.resolve([]);
+    return Promise.resolve({ processes: [], succeeded: false });
   }
   return new Promise((resolve) => {
     try {
@@ -272,12 +277,15 @@ function collectPtyTreeProcesses(
         },
         (error, stdout) => {
           resolve(error
-            ? []
-            : parsePtyTreeProcesses(String(stdout ?? ""), rootPid, knownProcessGroupIds));
+            ? { processes: [], succeeded: false }
+            : {
+                processes: parsePtyTreeProcesses(String(stdout ?? ""), rootPid, knownProcessGroupIds),
+                succeeded: true,
+              });
         },
       );
     } catch {
-      resolve([]);
+      resolve({ processes: [], succeeded: false });
     }
   });
 }
@@ -727,7 +735,7 @@ function terminatePtyProcessTree(
     dispatchInitialSignal([]);
   }, PTY_PROCESS_SCAN_SIGNAL_DELAY_MS);
   signalFallbackTimer.unref?.();
-  void initialProcessScan.then((processes) => {
+  void initialProcessScan.then(({ processes }) => {
     initialProcesses = processes;
     clearTimeout(signalFallbackTimer);
     const signalAlreadyDispatched = initialSignalDispatched;
@@ -740,7 +748,24 @@ function terminatePtyProcessTree(
       process.processGroupId,
       process.foregroundProcessGroupId,
     ]).filter((processGroupId) => processGroupId > 1));
-    void collectPtyTreeProcesses(rootPid, knownProcessGroupIds).then((currentProcesses) => {
+    void collectPtyTreeProcesses(rootPid, knownProcessGroupIds).then(({ processes: currentProcesses, succeeded }) => {
+      if (!succeeded) {
+        // A saturated host can time out the fallback `ps` scan precisely when
+        // cleanup matters most. Do not interpret an unavailable scan as proof
+        // that the tree exited: force the known PTY/root groups once more so a
+        // surviving child cannot keep a lane worktree busy indefinitely.
+        killPtyProcessGroupBestEffort(rootPid, "SIGKILL");
+        killPidBestEffort(rootPid, "SIGKILL");
+        signalPtyTreeProcesses(initialProcesses, "SIGKILL");
+        logger.warn("pty.process_tree_force_killed", {
+          sessionId: entry.sessionId,
+          toolType: entry.toolTypeHint,
+          rootPid,
+          pids: Array.from(new Set([rootPid, ...initialProcesses.map(({ pid }) => pid)])),
+          processScanFailed: true,
+        });
+        return;
+      }
       if (currentProcesses.length === 0) return;
       signalPtyTreeProcesses(currentProcesses, "SIGKILL");
       logger.warn("pty.process_tree_force_killed", {

@@ -30,7 +30,7 @@ const MACHINE_TOKEN_KEY = "github.token.v1";
 const GITHUB_API_TIMEOUT_MS = 20_000;
 const GH_AUTH_TOKEN_CACHE_TTL_MS = 30_000;
 const GH_HOSTS_TOKEN_CACHE_MAX_ENTRIES = 32;
-const GITHUB_STATUS_FAILURE_COOLDOWN_MS = 2 * 60_000;
+const GITHUB_STATUS_FAILURE_COOLDOWN_MS = 30_000;
 const execFileAsync = promisify(execFile);
 const processGhHostsTokenCache = new Map<string, { expiresAt: number; token: string | null }>();
 
@@ -1670,6 +1670,12 @@ export function createGithubService({
 
     getTokenOrThrow(): string {
       const token = readAuthTokenSync().token;
+      if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
+      return token;
+    },
+
+    async getTokenOrThrowAsync(): Promise<string> {
+      const token = (await readAuthToken()).token;
       if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
       return token;
     },
