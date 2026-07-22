@@ -1393,6 +1393,85 @@ describe("registerIpc sync bridge", () => {
     vi.useRealTimers();
   });
 
+  it("preserves and validates exact lookup and launch overrides across external-session IPC parsing", async () => {
+    const list = vi.fn(async () => []);
+    const importExternalSession = vi.fn(async () => ({
+      kind: "cli" as const,
+      sessionId: "terminal-1",
+      ptyId: "pty-1",
+      laneId: "lane-1",
+    }));
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        externalSessionsService: { list, importExternalSession },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await ipcHandlers.get(IPC.externalSessionsList)?.(eventForSender(), {
+      providers: ["codex"],
+      sessionId: "native-session-1",
+      limit: 1,
+    });
+    await ipcHandlers.get(IPC.externalSessionsImport)?.(eventForSender(), {
+      provider: "codex",
+      sessionId: "native-session-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      model: "gpt-5.6-codex",
+      reasoningEffort: "high",
+      fastMode: true,
+      permissionMode: "default",
+    });
+    await ipcHandlers.get(IPC.externalSessionsList)?.(eventForSender(), {
+      sessionId: 42,
+    });
+    await ipcHandlers.get(IPC.externalSessionsImport)?.(eventForSender(), {
+      provider: "codex",
+      sessionId: "native-session-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      reasoningEffort: 42,
+      fastMode: "yes",
+    });
+
+    expect(list).toHaveBeenNthCalledWith(1, {
+      providers: ["codex"],
+      sessionId: "native-session-1",
+      limit: 1,
+    });
+    expect(importExternalSession).toHaveBeenNthCalledWith(1, {
+      provider: "codex",
+      sessionId: "native-session-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      model: "gpt-5.6-codex",
+      reasoningEffort: "high",
+      fastMode: true,
+      permissionMode: "default",
+    });
+    expect(list).toHaveBeenNthCalledWith(2, {});
+    expect(importExternalSession).toHaveBeenNthCalledWith(2, {
+      provider: "codex",
+      sessionId: "native-session-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+    });
+  });
+
   it("shows hidden dotenv variants in the import picker", async () => {
     showOpenDialogMock.mockResolvedValue({ canceled: true, filePaths: [] });
     registerIpc({

@@ -5311,6 +5311,7 @@ export function registerIpc({
       ...(typeof record.cwd === "string" || record.cwd === null ? { cwd: record.cwd } : {}),
       ...(record.scope === "all" || record.scope === "project" ? { scope: record.scope } : {}),
       ...(typeof record.limit === "number" ? { limit: record.limit } : {}),
+      ...(typeof record.sessionId === "string" || record.sessionId === null ? { sessionId: record.sessionId } : {}),
     };
   };
 
@@ -5332,6 +5333,8 @@ export function registerIpc({
       target,
       mode,
       ...(typeof record.model === "string" ? { model: record.model } : {}),
+      ...(typeof record.reasoningEffort === "string" ? { reasoningEffort: record.reasoningEffort } : {}),
+      ...(typeof record.fastMode === "boolean" ? { fastMode: record.fastMode } : {}),
       ...(typeof record.permissionMode === "string" ? { permissionMode: record.permissionMode } : {}),
     };
   };
