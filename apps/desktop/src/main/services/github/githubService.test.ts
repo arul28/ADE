@@ -769,6 +769,31 @@ describe("githubService.getStatus", () => {
     now.mockRestore();
   });
 
+  it("does not extend the shared cooldown for an invalid gh token", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const baseNow = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+    const ghAuthTokenProvider = vi.fn(() => ({
+      token: "gho_invalid_token",
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null,
+    }));
+    mockFetch.mockResolvedValue(jsonResponse(401, { message: "Bad credentials" }));
+
+    const first = await makeService({ ghAuthTokenProvider }).getStatus();
+    expect(first.connected).toBe(false);
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(baseNow + 31_000);
+    const second = await makeService({ ghAuthTokenProvider }).getStatus();
+    expect(second.connected).toBe(false);
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    now.mockRestore();
+  });
+
   it("clearing a stored PAT falls back to gh auth", async () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;

@@ -62,6 +62,11 @@ type ProcessGithubAuthState = {
 
 const processGithubAuthStates = new WeakMap<GitHubCliAuthProvider, ProcessGithubAuthState>();
 
+function isTransientGithubProbeFailure(error: string | null): boolean {
+  return /timed out|timeout|network|fetch failed|aborted|econn(?:reset|refused|aborted)|enotfound|eai_again|socket|tls|temporarily unavailable/i
+    .test(error ?? "");
+}
+
 function processGithubAuthState(provider: GitHubCliAuthProvider): ProcessGithubAuthState {
   const existing = processGithubAuthStates.get(provider);
   if (existing) return existing;
@@ -802,9 +807,12 @@ export function createGithubService({
     sharedGhAuth.statusInFlight.set(key, work);
     try {
       const result = await work;
-      const isNetworkFailure = !result.ok
-        || (result.value.repoAccessOk === false
-          && /timed out|network|fetch failed/i.test(result.value.repoAccessError ?? ""));
+      let isNetworkFailure = false;
+      if (!result.ok) {
+        isNetworkFailure = isTransientGithubProbeFailure(result.error);
+      } else if (result.value.repoAccessOk === false) {
+        isNetworkFailure = isTransientGithubProbeFailure(result.value.repoAccessError);
+      }
       sharedGhAuth.statusCache.set(key, {
         expiresAt: Date.now() + (isNetworkFailure
           ? GITHUB_STATUS_FAILURE_COOLDOWN_MS
