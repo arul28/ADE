@@ -21,7 +21,6 @@ import {
   SYNC_RELAY_READY_VERSION,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../shared/types/sync";
-export { SYNC_INVALIDATION_ONLY_V1_CAPABILITY } from "../../../shared/types/sync";
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
 import {
   browserEndpointRequiresRelayAccess,

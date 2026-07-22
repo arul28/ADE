@@ -1,18 +1,18 @@
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  SyncEnvelope,
-  SyncFeatureFlags,
-  SyncHelloOkPayload,
-  SyncPairingQrPayload,
-  SyncPeerMetadata,
+import {
+  SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+  type SyncEnvelope,
+  type SyncFeatureFlags,
+  type SyncHelloOkPayload,
+  type SyncPairingQrPayload,
+  type SyncPeerMetadata,
 } from "../../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../../shared/types/account";
 import { AdeSyncClient } from "../client";
 import {
   BACKOFF_STABLE_CONNECTED_MS,
   RELAY_READY_NEGOTIATION_WINDOW_MS,
-  SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SyncConnection,
   type WebSocketLike,
 } from "../connection";
