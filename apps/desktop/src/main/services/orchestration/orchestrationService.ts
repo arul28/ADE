@@ -1107,6 +1107,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         kind: req.kind,
         version: req.version ?? 1,
         approval: req.approval ?? "pending",
+        ...(req.externalRef ? { externalRef: req.externalRef } : {}),
       };
       const op: ManifestPatchOp = {
         op: "add",

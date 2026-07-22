@@ -102,6 +102,10 @@ export type ValidationConcern =
   | "dual_review_maintainability"
   | "test_stewardship"
   | "regression_pinning"
+  // Evidence capture: an externally-visible action (proof/computer-use/browser/
+  // iOS-sim capture, PR/Linear update, deeplink) must be recorded in the bundle
+  // as an asset with the matching kind + externalRef. See SKILL §6 + §13.
+  | "proof_capture"
   | "custom";
 
 /** Severity rank for a structured validation finding (mirrors /quality). */
@@ -132,7 +136,10 @@ export type ValidationEvidenceKind =
   | "manifest_checklist"
   | "diff_summary"
   | "screenshot"
-  | "test_log";
+  | "test_log"
+  // A proof-drawer / computer-use artifact (screenshot, video, capture) that a
+  // `proof_capture` step may require as evidence.
+  | "proof_artifact";
 
 export type ValidationStep = {
   id: string;
@@ -246,7 +253,32 @@ export type OrchestrationAssetKind =
   | "html_spec"
   | "screenshot"
   | "test_log"
-  | "doc";
+  | "doc"
+  // Evidence kinds for externally-visible ADE actions taken during a task.
+  // Registered as first-class bundle assets so validators/leads can see them.
+  | "proof_artifact" // ade-proof-artifacts capture (test evidence, generic proof)
+  | "computer_use" // computer-use / app-control capture
+  | "video" // screen recording (sim/browser/computer-use)
+  | "pr_link" // a GitHub PR opened/updated by the run
+  | "linear_issue" // a Linear issue read/updated by the run
+  | "deeplink"; // a minted ADE deeplink (run/file/commit/PR/issue)
+
+/**
+ * Pointer from a bundle asset to the externally-visible artifact it records.
+ * All fields optional — populate whichever identify the target (a proof asset
+ * carries `artifactId`, a `pr_link` carries `prNumber`+`url`, a `linear_issue`
+ * carries `linearId`, a `deeplink` carries `url`).
+ */
+export type OrchestrationAssetExternalRef = {
+  /** Canonical URL (PR, Linear issue, minted deeplink, hosted artifact). */
+  url?: string;
+  /** GitHub PR number, when the asset is a `pr_link`. */
+  prNumber?: number;
+  /** Linear issue id / identifier, when the asset is a `linear_issue`. */
+  linearId?: string;
+  /** ADE proof-drawer artifact id (proof_artifact / computer_use / video). */
+  artifactId?: string;
+};
 
 export type OrchestrationAsset = {
   id: string;
@@ -255,6 +287,12 @@ export type OrchestrationAsset = {
   version: number;
   approval?: "pending" | "approved" | "rejected";
   notes?: string;
+  /**
+   * Optional pointer to the externally-visible artifact this asset records
+   * (proof-drawer id, PR number/url, Linear id, deeplink url). Optional +
+   * additive; absent on legacy html_spec/screenshot/test_log/doc assets.
+   */
+  externalRef?: OrchestrationAssetExternalRef;
 };
 
 export type DecisionLogEntry = {
@@ -469,6 +507,108 @@ export type DelegationEdge = {
   parentRunId?: string;
 };
 
+export type OrchestrationReceiptKind = "spawnAgent" | "messageAgent";
+
+export type OrchestrationReceipt = {
+  /** Stable idempotency key supplied by the caller or derived from tool input. */
+  requestId: string;
+  kind: OrchestrationReceiptKind;
+  createdAt: string;
+  status: "pending" | "completed";
+  /** Original tool result replayed when a request is emitted more than once. */
+  result?: { sessionId?: string; etag?: string; [key: string]: unknown };
+};
+
+export type OrchestrationOutboxKind =
+  | "brief"
+  | "ping"
+  | "lead_status"
+  | "cancel_interrupt";
+
+export type OrchestrationOutboxStatus =
+  | "pending"
+  | "delivering"
+  | "delivered"
+  | "failed";
+
+export type OrchestrationOutboxEntry = {
+  id: string;
+  kind: OrchestrationOutboxKind;
+  targetSessionId: string;
+  delivery: {
+    op: "sendMessage" | "steer" | "interrupt-replace" | "interrupt";
+    text?: string;
+    metadata?: Record<string, unknown>;
+  };
+  status: OrchestrationOutboxStatus;
+  attempts: number;
+  maxAttempts: number;
+  nextAttemptAt?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt?: string;
+  /** Idempotency key of the tool request that created this side effect. */
+  requestId?: string;
+};
+
+/**
+ * Where the run's goal originated. The lead records this so it (and later
+ * readers) can cite/re-read the source of truth for the goal rather than only
+ * `goal.md` / the intake `askUser`. `ref` identifies the source (Linear issue
+ * id, PR number, `goal.md` path, or a short description for `user`).
+ */
+export type OrchestrationGoalSource = {
+  kind: "linear" | "pr" | "goalMd" | "user";
+  ref?: string;
+};
+
+/**
+ * A durable follow-up scheduled for after the run (e.g. "re-check CI in 30m").
+ * Placeholder shape in v1 — Unit F wires the durable scheduler
+ * (`chat.createScheduledWork`) and owns `scheduledWorkId`/`status` transitions.
+ * Additive + optional.
+ */
+export type OrchestrationScheduledFollowup = {
+  id: string;
+  /** Human, plain-language description of the follow-up. */
+  summary: string;
+  /** ISO-8601 fire time, or a cron/interval expression the scheduler parses. */
+  scheduledFor?: string;
+  /** ADE scheduled-work id, once created via `chat.createScheduledWork`. */
+  scheduledWorkId?: string;
+  createdAt?: string;
+  status?: "pending" | "scheduled" | "fired" | "cancelled";
+};
+
+/** ADE capabilities a run may reach through the `ade` CLI (see SKILL §13). */
+export type OrchestrationCapabilityId =
+  | "proof_capture"
+  | "linear"
+  | "pr"
+  | "search"
+  | "deeplinks"
+  | "browser"
+  | "ios_simulator"
+  | "app_control"
+  | "computer_use";
+
+/**
+ * Declares which ADE capabilities workers on this run may (and should) use, so
+ * the lead can scope capability usage and feed the spawn brief. Placeholder
+ * shape in v1 — Unit F consumes/enforces it; validators may require
+ * `proof_capture` evidence for `required` capabilities. Additive + optional;
+ * absent = no declared policy (workers use judgement per SKILL §13).
+ */
+export type OrchestrationCapabilities = {
+  /** Capabilities workers are allowed to use on this run. */
+  allowed?: OrchestrationCapabilityId[];
+  /** Capabilities the plan expects workers to exercise (and produce evidence for). */
+  required?: OrchestrationCapabilityId[];
+  /** Free-form, plain-language per-run notes on capability usage. */
+  notes?: string;
+};
+
 export type OrchestrationManifest = {
   version: 1;
   schemaCompatibility?: { minReader: 1; maxKnown: 1 };
@@ -505,6 +645,20 @@ export type OrchestrationManifest = {
   history: OrchestrationHistoryEntry[];
   defaultBudget?: AgentBudget;
   /**
+   * Where the run's goal came from (Linear issue / PR / goal.md / user). Optional
+   * + additive; `normalizeManifestShape` does not inject a default, so absence
+   * means "not recorded" (legacy runs, or a goal taken straight from askUser).
+   */
+  goalSource?: OrchestrationGoalSource;
+  /** Durable follow-ups scheduled for after the run (Unit F wires the scheduler). */
+  scheduledFollowups?: OrchestrationScheduledFollowup[];
+  /** Declared ADE capability policy for this run (Unit F consumes/enforces). */
+  capabilities?: OrchestrationCapabilities;
+  /** Service-owned idempotency records. Normalization defaults legacy runs to `[]`. */
+  receipts?: OrchestrationReceipt[];
+  /** Service-owned durable chat-delivery queue. Normalization defaults legacy runs to `[]`. */
+  outbox?: OrchestrationOutboxEntry[];
+  /**
    * Lead→worker/validator delegation edges (spawn + result). Optional for
    * back-compat; `normalizeManifestShape` defaults it to `[]` on load, so it is
    * always an array on an in-memory runtime manifest.
@@ -536,6 +690,8 @@ export type ManifestPatchKind =
   | "leadState"
   | "history"
   | "lineage"
+  | "receipts"
+  | "outbox"
   | "core"
   | "unknown";
 
@@ -715,6 +871,8 @@ export type OrchestrationAssetRegisterRequest = {
   kind: OrchestrationAssetKind;
   version?: number;
   approval?: "pending" | "approved" | "rejected";
+  /** Optional pointer to the externally-visible artifact this asset records. */
+  externalRef?: OrchestrationAssetExternalRef;
 };
 
 export type OrchestrationBundleReadResponse = {

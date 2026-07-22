@@ -37,7 +37,7 @@ When you accept an override:
 
 The planning state lives in `manifest.leadState.planning.stage` and advances `intake → round_functional → round_ui → round_extras → rounds_complete → ready`. Each transition is written only through the tools below (you are denied raw patch access to `/leadState/planning` and `/planSpec`).
 
-1. **Goal.** Read `goal.md` if present in the lane worktree; otherwise `askUser` for a one-line goal. Persist it to `manifest.goalSummary`.
+1. **Goal — read where it actually came from.** The goal is not always in `goal.md`. Check, in order: (a) an **attached Linear issue** — many runs launch from one, and its title/description/acceptance-criteria are attached to this chat; read them for the real goal and success bar. (b) an **attached PR** — a fix-forward run carries the PR's title/body/review context; read it. (c) `goal.md` in the lane worktree. (d) otherwise `askUser` for a one-line goal. Persist the one-liner to `manifest.goalSummary`, and record where it came from with `manifest.goalSource = { kind: "linear" | "pr" | "goalMd" | "user", ref }` (the Linear id, PR number, file path, or a short note). If you need fuller issue/PR detail than what's attached, a worker can pull it later via the `ade` CLI (§13) — but derive the plan's goal from the attached context now, not just a bare one-liner.
 
 2. **Codebase intake (the `/context` step) — REQUIRED FIRST.** Read `CLAUDE.md`/`README.md`, package manifests (`package.json` / `pyproject.toml` / `Cargo.toml` / `go.mod`), CI config (`.github/workflows/` etc.), the top-level directory listing, and recent `git log`/`git diff main`. `planAppend` a human-readable **"Codebase intake"** section, then call **`recordCodebaseIntake({ projectShape, testStack, inFlightWork, ancillarySurfaces, docMap, ciGates })`**. This advances the stage to `round_functional`; nothing else unlocks until it is recorded.
 
@@ -71,7 +71,7 @@ The planning state lives in `manifest.leadState.planning.stage` and advances `in
 
 4. **Live plan updates.** Treat `plan.md` as the shared operations log. Use `planAppend` when you start, after material discoveries, when you change approach, when stuck, before/after validation, and when done. Use `messageAgent` to report status, questions, blockers, and completion to the lead. Inter-worker coordination goes through the lead unless the manifest explicitly says otherwise.
 
-5. **Execute.** Implement the change. Workers have full edit-capable tools (`editFile`, `writeFile`, `bash`), but `bash` refuses writes to `<bundlePath>/manifest.json` and `<bundlePath>/plan.md` — go through the orchestration tools.
+5. **Execute.** Implement the change. Workers have full edit-capable tools (`editFile`, `writeFile`, and a shell). The orchestration TS `bash` tool refuses writes to `<bundlePath>/manifest.json` and `<bundlePath>/plan.md`. But your provider's **native** shell (Claude `Bash`, Codex's shell, etc.) is *not* wrapped by the orchestration sandbox and technically *can* reach those files — so treat "never write the bundle directly" as a rule you follow, not a guard that will stop you. Always mutate the bundle through the orchestration tools (`manifestPatch`, `planAppend`, `recordValidationRun`, …), never by hand-editing `manifest.json` / `plan.md`.
 
 6. **Satisfy validation gates.** After substantive edits, satisfy every `validationGate.stepIds[]` entry on the task that has `scope: "per_worker"` and `required: true`. Default gate (when present): `reverify_changes` — execute its `prompt` from the manifest. Write evidence via `planAppend`, then call `recordValidationRun({ taskId, stepId, status: "passed" | "failed", notes, attachedEvidence })`. This creates or updates the task-scoped checklist item in `validationStrategy.checklist`.
 
@@ -128,17 +128,25 @@ The Validating phase runs as a **lean perspective-diverse panel**: spawn a small
 
 **Planner step.** Inspect for plausible surfaces (look for `docs/`, `README.md` density, `apps/mobile`/`apps/ios`/`apps/android`, `sdks/`, `openapi.yaml`, `proto/`, `.proto`, `clients/`, `examples/`, `website/`). For each surface detected, `askUser`: "I see `<surface>` in this repo. Should validation include keeping it in lockstep with the change? (e.g. update docs to reflect new behavior / update SDK types / regenerate clients)". For each yes, author a validation step naming that specific surface and what "in lockstep" means for it.
 
-### `pre_completion_gate` (finalize principle, minus PR/push handoff)
+### `pre_completion_gate` (finalize principle)
 
-**Principle.** Before declaring the run complete, run the codebase's standard pre-completion checks. These vary: typecheck, lint, test suite, build, doc validators, lock-file consistency, asset compilation. **Orchestrator does not push, open PRs, or handle remote review** — that's a separate user-driven step.
+**Principle.** Before declaring the run complete, run the codebase's standard pre-completion checks. These vary: typecheck, lint, test suite, build, doc validators, lock-file consistency, asset compilation.
 
-**Planner step.** Inspect `package.json` scripts, `Makefile`, CI workflow yaml, common entry points (`npm run typecheck` / `lint` / `test` / `build`, `cargo check` / `clippy` / `test` / `build`, `pytest`, `go vet` / `go test` / `go build`, etc.). Propose a set; `askUser`: "Propose pre-completion gates: `<list>`. Add/remove?" Author the prompt with the exact commands and the codebase's local rules.
+**Push / PR is a per-run decision made during planning.** By default the orchestrator leaves the branch alone — pushing, opening a PR, or handling remote review is a separate user-driven step. But when the approved plan explicitly called for it (the user asked to open a PR, or the extras round locked "open a PR when done"), the run *may* push and open/update the PR as part of finishing. There is no blanket exclusion: what the approved plan.md says for *this* run wins. When a PR is in scope, register it as a `pr_link` asset (with `externalRef.prNumber` + `externalRef.url`) so it shows up in the bundle. (Unit F wires the mechanics that let a worker actually push under this decision.)
+
+**Planner step.** Inspect `package.json` scripts, `Makefile`, CI workflow yaml, common entry points (`npm run typecheck` / `lint` / `test` / `build`, `cargo check` / `clippy` / `test` / `build`, `pytest`, `go vet` / `go test` / `go build`, etc.). Propose a set; `askUser`: "Propose pre-completion gates: `<list>`. Add/remove?" If the goal implies a PR (a fix-forward on an existing PR, or the user asked to ship), ask whether this run should open/update the PR or stop at a clean branch, and record the answer in the plan. Author the prompt with the exact commands and the codebase's local rules.
 
 ### `deep_maintainability` (thermal principle, opt-in for high-risk diffs)
 
 **Principle.** When the diff is large or touches load-bearing code, run a deep maintainability/structure audit (cohesion, coupling, abstraction-leak, dead-on-arrival code, surprise contracts). Optional v1.
 
 **Planner step.** If the user marks the run `risk: high` or asks for it, propose; otherwise skip.
+
+### `proof_capture` (evidence principle, when the change is externally observable)
+
+**Principle.** When a task's outcome is only convincing if you *see* it — a UI change, a browser/iOS-sim flow, a computer-use action, a passing run captured on screen — the worker must capture evidence and register it in the bundle. Capture through the `ade` CLI (see §13): a screenshot / recording / proof-drawer artifact, then `registerAsset` with the matching kind (`proof_artifact` / `computer_use` / `video` / `screenshot`) and an `externalRef` pointing at the proof-drawer artifact id or URL. The validator checks that the promised evidence exists and matches the claim, not just that a checkbox was ticked.
+
+**Planner step.** If the change is user-visible or its correctness rests on an observed behavior, add a `proof_capture` step naming what evidence to capture (which screen/flow, before/after, which artifact kind) and require `proof_artifact` (or `screenshot`) evidence on it.
 
 ### `custom`
 
@@ -171,35 +179,33 @@ The caller picks the ping `kind` (`queue` / `interrupt-replace` / `wake`) per th
 
 Pick `queue` for non-urgent context drops (worker progress reports, validator pass/fail). Pick `interrupt-replace` for cancellations and high-priority redirects. Pick `wake` only when the target is dormant.
 
-When you need to message an ADE chat through the CLI instead of the orchestration
-tool, check the target first:
+**How each role delivers a message:**
 
-```
-ade chat show <session> --text
-ade chat read <session> --limit 20 --text
-```
+- **Lead — use `messageAgent` only.** The lead has no shell (`bash`/`Bash` are
+  denied) and no ADE-actions MCP, so it cannot run any `ade chat …` command.
+  Every message the lead sends to a worker or validator goes through
+  `messageAgent({ kind, intent, text, taskId?, cancellation? })`; the `kind`
+  picks the delivery mode per the table above. There is no CLI fallback for the
+  lead — if `messageAgent` returns a delivery failure, re-read the manifest and
+  retry, don't reach for a shell.
+- **Worker / validator — `messageAgent` to talk, `ade chat` to *look*.** Workers
+  and validators also send through `messageAgent` (inter-worker pings still route
+  through the lead per §7 — you do not message peers directly). Their native
+  shell can, however, run the read-only `ade chat` observers when they need
+  context on a peer or the lead:
 
-- General handoff/status/directive: use
-  `ade chat message <session> --kind auto --text "..."`. This is the CLI
-  counterpart to `messageAgent`: ADE wakes idle chats with a normal turn, steers
-  active chats through the provider-normalized steer path, and reports whether
-  the message was sent, delivered, or queued.
-- Active target: use `ade chat steer <session> --text "..."`. This preserves the
-  provider's active-turn semantics (`turn/steer` for Codex, staged steer for
-  Claude, queued boundary delivery for Cursor/Droid/OpenCode).
-- Dormant/idle target: use `ade chat send <session> --text "..."` to start the
-  next turn.
-- Hard redirect/cancel: use `messageAgent({ kind: "interrupt-replace", ... })`
-  when you have orchestration tools; from a plain shell use
-  `ade chat message <session> --kind interrupt-replace --text "..."` or
-  `ade chat interrupt <session>` and then send the replacement instruction.
-- Waiting for a peer: use `ade chat wait <session> --for idle --timeout-ms <ms>`
-  before reading final output; `--for active`, `awaiting-input`, and `terminal`
-  are also available.
+  ```
+  ade chat show <session> --text
+  ade chat read <session> --limit 20 --text
+  ade chat wait <session> --for idle --timeout-ms <ms>
+  ```
 
-Do not use a normal send as a substitute for steering a running chat. It can
-surface as "A turn is already active" inside the target transcript instead of
-being delivered through the provider's steering channel.
+  Use `ade chat wait` before reading a peer's final output (`--for active`,
+  `awaiting-input`, and `terminal` are also available). Do not use `ade chat
+  send`/`steer`/`message` to push work at another orchestration chat — routing
+  and steering are the lead's job via `messageAgent`; a stray CLI send can
+  surface as "A turn is already active" in the target transcript instead of
+  being delivered through the provider's steering channel.
 
 ## §9 — Cancellation with smart revert
 
@@ -254,9 +260,47 @@ The brief must also say: read `manifest.json`, `plan.md`, and the relevant plan 
 
 - Forking canonical state into chat-only prose — read the manifest.
 - Spawning agents not registered in the manifest — always use `spawnAgent`.
-- Using `bash` to edit `<bundlePath>/{manifest.json, plan.md}` — sandbox enforces this server-side too.
+- Using any shell to edit `<bundlePath>/{manifest.json, plan.md}` — the orchestration TS `bash` tool blocks it, but your provider's native shell is not sandboxed, so this is a rule you keep, not one the sandbox always enforces (see §4.5). Go through the orchestration tools.
 - Validators spawning agents — they report up to the lead instead.
 - Workers patching their own `validationGate` — server rejects.
 - Patching `validationStrategy.checklist` items directly for validation state. Workers and validators must use `recordValidationRun`; direct checklist patches are reserved for lead-level reconciliation only.
 - Lowering `validationGate.required` without `humanOverride` + `UserOverrideEntry` in the same patch transaction — server rejects.
 - Re-prompting a default the user already waived in this scope.
+
+## §13 — Using ADE capabilities in a task
+
+ADE is more than a code editor — a run can reach the same capabilities a normal Work chat has. **Workers and validators** get there through the `ade` CLI, which they run from their **native shell** (the lead cannot: it has no shell and no actions MCP — the lead's job is to *decide* which capabilities a run should use and *read* attached context; workers *do* the actions). Each capability has a companion skill that documents its commands — load it when you need it:
+
+| Capability | Skill | Typical use in a task |
+|---|---|---|
+| Proof / test evidence | `ade-proof-artifacts` | capture a screenshot / recording / artifact into the proof drawer |
+| Computer-use / desktop app | `ade-app-control` | drive and capture an Electron/desktop app for evidence |
+| Browser | `ade-browser` | open a page, screenshot, inspect, capture a flow |
+| iOS simulator | `ade-ios-simulator` | render a SwiftUI preview, tap, screenshot the sim |
+| Linear | `ade-linear` | read the attached issue; move state / comment progress |
+| PR workflows | `ade-pr-workflows` | read PR state, checks, review comments; (push/open only if the plan approved it — see §6) |
+| Universal search | `ade-search` | search transcripts, PRs, commits, Linear, proof, other lanes |
+| Deeplinks | `ade-deeplinks` | mint a shareable link to the run / a file / a PR / an issue |
+
+**The bundle must record what the outside world saw.** Every externally-visible action a worker takes MUST be registered in the bundle as an asset via `registerAsset`, using the matching kind and an `externalRef`:
+
+- proof / test evidence → kind `proof_artifact` (or `screenshot` / `video`), `externalRef.artifactId` = the proof-drawer id
+- computer-use / app-control capture → kind `computer_use`, `externalRef.artifactId`
+- a PR opened or updated → kind `pr_link`, `externalRef.prNumber` + `externalRef.url`
+- a Linear issue read/updated → kind `linear_issue`, `externalRef.linearId` (+ `url`)
+- a minted deeplink → kind `deeplink`, `externalRef.url`
+
+If it isn't in the bundle, it didn't happen: chat prose about "I captured a screenshot" is not evidence. Validators may add a `proof_capture` gate (§6) that *requires* a registered `proof_artifact`, and will check the artifact exists and matches the claim.
+
+**Lead scoping.** The lead may declare which capabilities a run should use in `manifest.capabilities` (`allowed` / `required` / `notes`) and surface them in each spawn brief so workers know what to reach for and what evidence to bring back. Absent a declaration, workers use judgement — capture proof whenever the outcome is only convincing if you see it.
+
+## §14 — Plain-language narrator discipline
+
+Everything a human reads — every `plan.md` narrative line, every lead status update, every question you ask the user — is written in **plain language about the work**, never in the system's internal vocabulary.
+
+- **Do not surface internal state names or protocol jargon.** The user never sees `round_ui`, `pre_completion_gate`, `rounds_complete`, `reverify_changes`, `mission_exit`, "the gate machine", "express lane", concern ids, stage ids, or tool names as if they were words. Those are plumbing.
+- **Say what is happening, plainly.** Write "waiting on the tests to finish", "reviewing impl-1's diff", "the UI round is next — a couple of choices about layout", "blocked: the login helper it depends on isn't merged yet". Not "advancing to round_ui", "pre_completion_gate pending", "worker in reverify_changes".
+- **When you offer the lighter path, ask in plain words.** If a task looks small enough that the full planning sequence is overkill, ask the user something like: *"This looks like a lighter task — want me to skip the heavy planning rounds and do a simpler plan, or continue with the full one?"* Do not name the mechanism ("express lane", "skip round_functional") — describe the choice.
+- **Names for agents, not roles-as-jargon.** Refer to workers by a human tag ("the backend worker", "impl-1"), not by session ids or internal role enums, in anything the user reads.
+
+This applies to the copy in this skill too: the examples above are how a human-facing line should read. Internal identifiers still live in the manifest and in tool arguments — this rule is about the **prose humans see**, not the structured state you write through tools.
