@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { assertVerifiedMachOPayloads } from "./native-archive-verification.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -157,11 +158,8 @@ async function verifyNativeArchiveIfPresent(binaryPath) {
       verified += 1;
     }
 
-    if (verified === 0) {
-      console.log(`[runtime:notarize] No Mach-O payloads found in ${path.basename(archivePath)}`);
-    } else {
-      console.log(`[runtime:notarize] Verified ${verified} Mach-O payload(s) in ${path.basename(archivePath)}`);
-    }
+    assertVerifiedMachOPayloads(verified, archivePath);
+    console.log(`[runtime:notarize] Verified ${verified} Mach-O payload(s) in ${path.basename(archivePath)}`);
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
