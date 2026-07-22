@@ -40,7 +40,12 @@ import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runtimeErrors";
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import {
+  LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
+  LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
+  LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
+  LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS,
   LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
+  LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
   longRunningLocalRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
 
@@ -85,10 +90,7 @@ type LocalRuntimeConnectionPoolOptions = {
 
 type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
-const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
-const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
-const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
@@ -186,6 +188,14 @@ function coalescedLocalRuntimeActionKey(
     args: stableActionValue(request.args),
     argsList: stableActionValue(request.argsList),
   });
+}
+
+function isSameProjectRegistrationIntent(
+  left: ProjectRegistrationIntent,
+  right: ProjectRegistrationIntent,
+): boolean {
+  return left.catalogVisibility === right.catalogVisibility
+    && left.registrationSource === right.registrationSource;
 }
 
 export function buildLocalRuntimeServeArgs(
@@ -665,6 +675,7 @@ function serviceHealthState(
 }
 
 export class LocalRuntimeConnectionPool {
+  private disposed = false;
   private connection: Promise<LocalRuntimeConnection> | null = null;
   private activeConnection: LocalRuntimeConnection | null = null;
   private activeClient: RuntimeRpcClient | null = null;
@@ -675,6 +686,11 @@ export class LocalRuntimeConnectionPool {
   private lastIsolatedServiceRepairMs = 0;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
+  private readonly projectRegistrationsByRoot = new Map<string, {
+    acceptsMatchingWaiters: boolean;
+    intent: ProjectRegistrationIntent;
+    promise: Promise<RemoteRuntimeProjectRecord>;
+  }>();
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
     state: "not_attempted",
     attempted: false,
@@ -1016,18 +1032,61 @@ export class LocalRuntimeConnectionPool {
     },
   ): Promise<RemoteRuntimeProjectRecord> {
     const normalizedRoot = path.resolve(rootPath);
-    const cached = this.projectsByRoot.get(normalizedRoot);
-    if (
-      cached
-      && registration.catalogVisibility === "system"
-      && (cached.registrationSource ?? "runtime-auto") === registration.registrationSource
-    ) {
-      return cached;
-    }
+    while (true) {
+      this.assertNotDisposed();
+      const cached = this.projectsByRoot.get(normalizedRoot);
+      if (
+        cached
+        && registration.catalogVisibility === "system"
+        && (cached.registrationSource ?? "runtime-auto") === registration.registrationSource
+      ) {
+        return cached;
+      }
 
+      const pending = this.projectRegistrationsByRoot.get(normalizedRoot);
+      if (pending) {
+        if (
+          pending.acceptsMatchingWaiters
+          && isSameProjectRegistrationIntent(pending.intent, registration)
+        ) {
+          return await pending.promise;
+        }
+        pending.acceptsMatchingWaiters = false;
+        await pending.promise.catch(() => undefined);
+        continue;
+      }
+
+      const registrationPromise = this.registerProject(normalizedRoot, registration);
+      const nextPending = {
+        acceptsMatchingWaiters: true,
+        intent: { ...registration },
+        promise: registrationPromise,
+      };
+      this.projectRegistrationsByRoot.set(normalizedRoot, nextPending);
+      void registrationPromise.then(
+        () => {
+          if (this.projectRegistrationsByRoot.get(normalizedRoot) === nextPending) {
+            this.projectRegistrationsByRoot.delete(normalizedRoot);
+          }
+        },
+        () => {
+          if (this.projectRegistrationsByRoot.get(normalizedRoot) === nextPending) {
+            this.projectRegistrationsByRoot.delete(normalizedRoot);
+          }
+        },
+      );
+      return await registrationPromise;
+    }
+  }
+
+  private async registerProject(
+    normalizedRoot: string,
+    registration: ProjectRegistrationIntent,
+  ): Promise<RemoteRuntimeProjectRecord> {
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
       const entry = await this.connect();
+      this.assertNotDisposed();
       if (entry.client.isClosed()) {
         const error = new Error("Remote ADE service connection closed.");
         this.logger.warn("local_runtime.ensure_project_connection_dropped", {
@@ -1049,6 +1108,7 @@ export class LocalRuntimeConnectionPool {
           { rootPath: normalizedRoot, ...registration },
           { timeoutMs: LOCAL_RUNTIME_PROJECT_TIMEOUT_MS },
         );
+        this.assertNotDisposed();
         const record = coerceProjects([project])[0];
         if (!record) throw new Error("Local ADE service did not return a project record.");
         this.projectsByRoot.set(normalizedRoot, record);
@@ -1318,7 +1378,7 @@ export class LocalRuntimeConnectionPool {
       projectId: project.projectId,
       name: "list_ade_actions",
       arguments: { domain: "all" },
-    });
+    }, { timeoutMs: LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS });
     return normalizeAdeActionRegistry(value);
   }
 
@@ -1399,10 +1459,12 @@ export class LocalRuntimeConnectionPool {
     return await entry.client.call(method, {
       ...params,
       projectId: project.projectId,
-    }) as T;
+    }, { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS }) as T;
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.clearIsolatedRecoveryTimer();
     this.markIsolatedMode(false, { notify: false });
     const pending = this.connection;
@@ -1412,6 +1474,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimePid = null;
     this.ownedRuntimeChild = null;
     this.projectsByRoot.clear();
+    this.projectRegistrationsByRoot.clear();
     void pending?.then((entry) => {
       try { entry.client.close(); } catch {}
       disposeOwnedRuntimeChild(entry.child, entry.socketPath);
@@ -1419,7 +1482,12 @@ export class LocalRuntimeConnectionPool {
   }
 
   private async connect(): Promise<LocalRuntimeConnection> {
-    if (this.connection) return this.connection;
+    this.assertNotDisposed();
+    if (this.connection) {
+      const entry = await this.connection;
+      this.assertNotDisposed();
+      return entry;
+    }
     const connection = this.createConnection().then((entry) => {
       if (this.connection === connection) {
         this.activeConnection = entry;
@@ -1435,7 +1503,15 @@ export class LocalRuntimeConnectionPool {
       throw error;
     });
     this.connection = connection;
-    return connection;
+    const entry = await connection;
+    this.assertNotDisposed();
+    return entry;
+  }
+
+  private assertNotDisposed(): void {
+    if (this.disposed) {
+      throw new Error("Local runtime connection pool is disposed.");
+    }
   }
 
   private isCurrentConnection(entry: LocalRuntimeConnection): boolean {
@@ -2126,7 +2202,7 @@ async function subscribeToRuntimeEvents(
       limit: clampLimit(request.limit),
       ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
       ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
-    });
+    }, { timeoutMs: LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS });
     subscriptionId = readSubscriptionId(value);
     onSubscribed?.(normalizeRuntimeEventsSubscribeResult(value, request.cursor));
     for (const notification of pendingNotifications) {

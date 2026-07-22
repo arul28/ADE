@@ -668,6 +668,16 @@ export function createGithubService({
   const readAuthTokenSync = (): GitHubTokenLookup => {
     const primary = readPrimaryAuthToken();
     if (primary) return primary;
+    if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
+      sharedGhAuth.authCache = null;
+      return {
+        token: null,
+        source: "none",
+        patTokenStored: false,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
     const cachedGh = sharedGhAuth.authCache && sharedGhAuth.authCache.expiresAt > Date.now()
       ? sharedGhAuth.authCache
       : null;
@@ -1044,6 +1054,7 @@ export function createGithubService({
       cachedStatusTokenDigest = null;
       sharedGhAuth.authCache = null;
       sharedGhAuth.statusCache.clear();
+      processGhHostsTokenCache.clear();
     }
     const tokenLookup = await readAuthToken();
     const token = tokenLookup.token;

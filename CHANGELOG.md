@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Desktop and sessions
 
 - Coalesced and bounded project switching, lane snapshots, cleanup work, GitHub probes, and runtime process discovery under load.
+- Single-flighted initial project registration so concurrent terminal input cannot amplify runtime startup work or lose input ordering.
 - Moved historical usage aggregation into SQLite and isolated workers to reduce main-process memory and event-loop pressure.
 - Restored exact model, reasoning, fast-mode, and permission controls for imported and resumed Codex chats without broadening access.
 

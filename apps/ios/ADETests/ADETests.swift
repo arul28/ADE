@@ -15945,7 +15945,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(filtered.map(\.id), ["chat-1"])
   }
 
-  func testWorkFilteredSessionsHidesStaleStandaloneCliRowsButKeepsChatOwnedShells() {
+  func testWorkFilteredSessionsRetainsStaleStandaloneCliRowsAndChatOwnedShells() {
     let chatSession = makeTerminalSessionSummary(
       id: "chat-parent",
       laneId: "lane-1",

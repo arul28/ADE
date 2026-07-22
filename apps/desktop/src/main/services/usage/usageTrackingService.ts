@@ -116,6 +116,8 @@ const IDLE_POLL_INTERVAL_MS = 5 * 60_000;
 const IDLE_AFTER_MS = 15 * 60_000;
 const QUOTA_DEMAND_LEASE_MS = 90_000;
 const COST_CACHE_TTL_MS = 60 * 60_000;        // 1 hour; history scans are intentionally low priority
+const COST_REFRESH_RETRY_BASE_MS = 60_000;
+const COST_REFRESH_RETRY_MAX_MS = 15 * 60_000;
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
 const CLAUDE_CLI_USAGE_TIMEOUT_MS = 16_000;
 const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
@@ -2379,6 +2381,13 @@ function providerBackoffMs(result: UsageProviderPollResult, failureCount: number
   return exponential;
 }
 
+function costRefreshBackoffMs(failureCount: number): number {
+  return Math.min(
+    COST_REFRESH_RETRY_MAX_MS,
+    COST_REFRESH_RETRY_BASE_MS * 2 ** Math.min(4, Math.max(0, failureCount - 1)),
+  );
+}
+
 export function createUsageTrackingService({
   logger,
   pollIntervalMs: configuredInterval,
@@ -2408,6 +2417,8 @@ export function createUsageTrackingService({
     ?? (cachedCosts.length > 0 || cachedAdeCosts.length > 0 ? lastSnapshot?.lastPolledAt : null);
   const cachedCostTimestampMs = cachedCostTimestampIso ? Date.parse(cachedCostTimestampIso) : Number.NaN;
   let costCacheTimestamp = Number.isFinite(cachedCostTimestampMs) ? cachedCostTimestampMs : 0;
+  let costRefreshFailureCount = 0;
+  let costRefreshNextRetryAtMs = 0;
   let cachedDaily7d: Partial<Record<UsageProvider, number[]>> = lastSnapshot?.dailyUsage7d ?? {};
   // Track the last poll that returned real windows per provider so carried-forward
   // (stale) data can still report when it was genuinely fresh.
@@ -2490,9 +2501,14 @@ export function createUsageTrackingService({
     return { costs: cachedCosts, adeCosts: cachedAdeCosts };
   }
 
-  async function pollCosts(): Promise<{ costs: CostSnapshot[]; adeCosts: CostSnapshot[] }> {
+  async function pollCosts(
+    options: { force?: boolean } = {},
+  ): Promise<{ costs: CostSnapshot[]; adeCosts: CostSnapshot[] }> {
     const now = Date.now();
-    if (costCacheTimestamp > 0 && now - costCacheTimestamp < COST_CACHE_TTL_MS && projectCostsReady) {
+    if (!options.force
+      && costCacheTimestamp > 0
+      && now - costCacheTimestamp < COST_CACHE_TTL_MS
+      && projectCostsReady) {
       return cachedCostResult();
     }
 
@@ -2889,17 +2905,22 @@ export function createUsageTrackingService({
     options: { reason?: UsageRefreshReason } = {},
   ): Promise<UsageSnapshot> {
     if (inFlightHistoryRefresh) return await inFlightHistoryRefresh;
-    costCacheTimestamp = 0;
+    const reason = options.reason ?? "user";
+    if (reason === "automatic" && Date.now() < costRefreshNextRetryAtMs) {
+      return lastSnapshot ?? emptySnapshot();
+    }
     githubStatsCache.clear();
     githubStatsInFlight.clear();
     const startedAt = Date.now();
     let current!: Promise<UsageSnapshot>;
     current = measureUsagePhase(
       logger,
-      { phase: "history", reason: options.reason ?? "user" },
-      pollCosts,
+      { phase: "history", reason },
+      () => pollCosts({ force: true }),
     )
       .then((costResult) => {
+        costRefreshFailureCount = 0;
+        costRefreshNextRetryAtMs = 0;
         const refreshedAt = nowIso();
         const snapshot: UsageSnapshot = {
           ...(lastSnapshot ?? emptySnapshot()),
@@ -2921,6 +2942,18 @@ export function createUsageTrackingService({
         });
         return snapshot;
       })
+      .catch((error) => {
+        costRefreshFailureCount += 1;
+        const retryDelayMs = costRefreshBackoffMs(costRefreshFailureCount);
+        costRefreshNextRetryAtMs = Date.now() + retryDelayMs;
+        logger.warn("usage.refresh.history_failed", {
+          reason,
+          failureCount: costRefreshFailureCount,
+          retryDelayMs,
+          error: getErrorMessage(error),
+        });
+        throw error;
+      })
       .finally(() => {
         if (inFlightHistoryRefresh === current) inFlightHistoryRefresh = null;
       });
@@ -2940,15 +2973,17 @@ export function createUsageTrackingService({
       ? { ...machineSnapshot, costs: cachedProjectCosts }
       : machineSnapshot;
     const providerHistoryMissing = costCacheTimestamp === 0;
-    const providerHistoryStale = !providerHistoryMissing
-      && (nowMs - costCacheTimestamp > COST_CACHE_TTL_MS
-        || (scope === "project" && !projectCostsReady));
+    const projectHistoryMissing = scope === "project" && !projectCostsReady;
+    const providerHistoryIncomplete = providerHistoryMissing || projectHistoryMissing;
+    const providerHistoryStale = providerHistoryIncomplete
+      || nowMs - costCacheTimestamp > COST_CACHE_TTL_MS;
     // Reading the compact Activity card must never start a multi-gigabyte
     // transcript walk merely because a cached history snapshot aged out. A
     // first-run install still populates history in the isolated worker, while
-    // established installs keep serving their snapshot until the explicit
-    // Settings > Activity refresh asks for a newer ledger pass.
-    const providerNeedsRefresh = providerHistoryMissing;
+    // established installs keep serving aged history until an explicit refresh.
+    // Project scope is the exception because project costs are not persisted.
+    const providerNeedsRefresh = providerHistoryIncomplete
+      && nowMs >= costRefreshNextRetryAtMs;
     const githubNeedsRefresh = !githubCached || nowMs - (githubStatsCache.get(cacheKey)?.fetchedAtMs ?? 0) > GITHUB_STATS_CACHE_TTL_MS;
     if (providerNeedsRefresh || githubNeedsRefresh) {
       refreshStatsInBackground(range, { provider: providerNeedsRefresh, github: githubNeedsRefresh }, exactRange);

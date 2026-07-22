@@ -1,5 +1,9 @@
 import type { LaunchProfile } from "../../../shared/cliLaunch";
-import type { AgentChatPermissionMode } from "../../../shared/types";
+import type {
+  AgentChatPermissionMode,
+  PtySendToSessionArgs,
+  TerminalResumeLaunchConfig,
+} from "../../../shared/types";
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { PtyCreateResult } from "../../../shared/types";
 import type { OpenProjectBinding } from "../../../shared/types/core";
@@ -34,6 +38,35 @@ export type WorkPtyLaunchArgs = {
 };
 
 export type WorkPtyLaunchResult = PtyCreateResult;
+
+export type PtyContinuationLaunchFields = Pick<
+  PtySendToSessionArgs,
+  | "model"
+  | "reasoningEffort"
+  | "fastMode"
+  | "permissionMode"
+  | "codexApprovalPolicy"
+  | "codexSandbox"
+  | "codexConfigSource"
+>;
+
+export function buildPtyContinuationLaunchFields(
+  launch: TerminalResumeLaunchConfig | null | undefined,
+): PtyContinuationLaunchFields {
+  return {
+    ...(launch?.model?.trim() ? { model: launch.model.trim() } : {}),
+    ...(launch?.reasoningEffort?.trim() ? { reasoningEffort: launch.reasoningEffort.trim() } : {}),
+    ...(typeof launch?.fastMode === "boolean"
+      ? { fastMode: launch.fastMode }
+      : typeof launch?.codexFastMode === "boolean"
+        ? { fastMode: launch.codexFastMode }
+        : {}),
+    ...(launch?.permissionMode ? { permissionMode: launch.permissionMode } : {}),
+    ...(launch?.codexApprovalPolicy ? { codexApprovalPolicy: launch.codexApprovalPolicy } : {}),
+    ...(launch?.codexSandbox ? { codexSandbox: launch.codexSandbox } : {}),
+    ...(launch?.codexConfigSource ? { codexConfigSource: launch.codexConfigSource } : {}),
+  };
+}
 
 type WorkPtyPinLookup = {
   id?: string | null;

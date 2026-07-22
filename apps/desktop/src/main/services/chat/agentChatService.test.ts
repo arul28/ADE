@@ -21921,7 +21921,7 @@ describe("createAgentChatService", () => {
       });
       const liveRingEvent = await waitForEvent(
         emitted,
-        (entry): entry is AgentChatEventEnvelope & {
+        (entry): entry is Omit<AgentChatEventEnvelope, "event"> & {
           event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
         } => entry.event.type === "approval_request",
       );

@@ -8,6 +8,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import { serializeLaneCacheKeyFields } from "./laneCacheKey";
 
 type LanePresenceHost = {
   getLanePresenceSnapshot?: () => Array<{ laneId: string; devicesOpen: DeviceMarker[] }>;
@@ -77,14 +78,7 @@ function optionalLaneEnrichmentKey(
 ): string {
   return JSON.stringify({
     lanes: lanes
-      .map((lane) => ({
-        id: lane.id,
-        parentLaneId: lane.parentLaneId,
-        branchRef: lane.branchRef,
-        baseRef: lane.baseRef,
-        worktreePath: lane.worktreePath,
-        archivedAt: lane.archivedAt,
-      }))
+      .map(serializeLaneCacheKeyFields)
       .sort((left, right) => left.id.localeCompare(right.id)),
     conflict: options.includeConflictStatus !== false,
     rebase: options.includeRebaseSuggestions !== false,

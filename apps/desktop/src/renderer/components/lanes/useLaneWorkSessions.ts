@@ -9,6 +9,7 @@ import {
 } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import {
+  buildPtyContinuationLaunchFields,
   forgetWorkPtyLaunchPin,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
@@ -791,17 +792,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       text,
       cols: 100,
       rows: 30,
-      ...(launch?.model?.trim() ? { model: launch.model.trim() } : {}),
-      ...(launch?.reasoningEffort?.trim() ? { reasoningEffort: launch.reasoningEffort.trim() } : {}),
-      ...(typeof launch?.fastMode === "boolean"
-        ? { fastMode: launch.fastMode }
-        : typeof launch?.codexFastMode === "boolean"
-          ? { fastMode: launch.codexFastMode }
-          : {}),
-      ...(launch?.permissionMode ? { permissionMode: launch.permissionMode } : {}),
-      ...(launch?.codexApprovalPolicy ? { codexApprovalPolicy: launch.codexApprovalPolicy } : {}),
-      ...(launch?.codexSandbox ? { codexSandbox: launch.codexSandbox } : {}),
-      ...(launch?.codexConfigSource ? { codexConfigSource: launch.codexConfigSource } : {}),
+      ...buildPtyContinuationLaunchFields(launch),
     };
     const pin = workPtyLaunchPinFor(session);
     const result = pin

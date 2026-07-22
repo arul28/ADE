@@ -32,6 +32,7 @@ import {
 } from "../../lib/handoffLaunchJobs";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
+import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -577,17 +578,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           text,
           cols: 100,
           rows: 30,
-          ...(launch?.model?.trim() ? { model: launch.model.trim() } : {}),
-          ...(launch?.reasoningEffort?.trim() ? { reasoningEffort: launch.reasoningEffort.trim() } : {}),
-          ...(typeof launch?.fastMode === "boolean"
-            ? { fastMode: launch.fastMode }
-            : typeof launch?.codexFastMode === "boolean"
-              ? { fastMode: launch.codexFastMode }
-              : {}),
-          ...(launch?.permissionMode ? { permissionMode: launch.permissionMode } : {}),
-          ...(launch?.codexApprovalPolicy ? { codexApprovalPolicy: launch.codexApprovalPolicy } : {}),
-          ...(launch?.codexSandbox ? { codexSandbox: launch.codexSandbox } : {}),
-          ...(launch?.codexConfigSource ? { codexConfigSource: launch.codexConfigSource } : {}),
+          ...buildPtyContinuationLaunchFields(launch),
         });
         invalidateSessionListCache();
         // Patch the local sessions list with the freshly-resumed snapshot so

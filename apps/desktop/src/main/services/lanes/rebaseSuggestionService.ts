@@ -6,6 +6,7 @@ import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload, Reba
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { isRecord, nowIso } from "../shared/utils";
+import { serializeLaneCacheKeyFields } from "./laneCacheKey";
 
 type StoredSuggestionState = {
   laneId: string;
@@ -31,14 +32,7 @@ type ListSuggestionsOptions = {
 function suggestionCacheKey(options: ListSuggestionsOptions): string {
   if (!options.lanes) return "default";
   return JSON.stringify(options.lanes
-    .map((lane) => ({
-      id: lane.id,
-      parentLaneId: lane.parentLaneId,
-      branchRef: lane.branchRef,
-      baseRef: lane.baseRef,
-      worktreePath: lane.worktreePath,
-      archivedAt: lane.archivedAt,
-    }))
+    .map(serializeLaneCacheKeyFields)
     .sort((left, right) => left.id.localeCompare(right.id)));
 }
 

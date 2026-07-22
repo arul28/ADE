@@ -24,6 +24,7 @@ v1.2.34 makes ADE stay responsive while a remote phone or browser catches up, an
 ## Desktop responsiveness
 
 - Project switching, lane lists, cleanup work, GitHub probes, and runtime process discovery now share bounded/coalesced work instead of multiplying slow operations under load.
+- Terminal input shares one initial project registration, so rapid keystrokes cannot fan out duplicate runtime work; every input chunk remains ordered and lossless while the project wakes.
 - Usage history aggregation runs in SQLite and isolated workers, reducing the amount of historical ledger data copied into the main process.
 - Imported Codex chats recover their exact model, reasoning effort, fast-mode state, and permission policy. Resuming a chat preserves those controls without broadening access.
 

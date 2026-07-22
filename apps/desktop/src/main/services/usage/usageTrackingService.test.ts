@@ -1958,6 +1958,221 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
+  it("refreshes missing project costs from an established machine snapshot", async () => {
+    const logger = createLogger();
+    const cachedAt = new Date().toISOString();
+    const dependencies = {
+      ...createFastDependencies(),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: "arul28/ADE",
+        available: true,
+        fetchedAt: cachedAt,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const cachedSnapshot = {
+      version: 3,
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        pacingByProvider: {},
+        providerStatus: {},
+        costs: [{
+          provider: "codex",
+          last30dCostUsd: 1,
+          todayCostUsd: 0,
+          tokenBreakdown: {},
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        costsLastPolledAt: cachedAt,
+        lastPolledAt: cachedAt,
+        errors: [],
+      },
+    };
+    const previousVitest = process.env.VITEST;
+    const previousNodeEnv = process.env.NODE_ENV;
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((() => (
+      JSON.stringify(cachedSnapshot)
+    )) as unknown as typeof fs.readFileSync);
+    let service: ReturnType<typeof createUsageTrackingService>;
+    try {
+      process.env.VITEST = "false";
+      process.env.NODE_ENV = "development";
+      service = createUsageTrackingService({ logger, dependencies });
+    } finally {
+      readFileSync.mockRestore();
+      if (previousVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = previousVitest;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+
+    await service.getAdeUsageStats({ preset: "7d", scope: "machine" });
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(dependencies.scanClaudeLogs).not.toHaveBeenCalled();
+
+    const projectStats = await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+    expect(projectStats.freshness?.state).toBe("refreshing");
+    await vi.waitFor(() => expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+    expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("fresh");
+    expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
+
+  it("preserves established costs and backs off failed project scans without blocking explicit refresh", async () => {
+    const logger = createLogger();
+    const now = Date.now();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    const cachedAt = new Date(now).toISOString();
+    const establishedCosts = [{
+      provider: "codex" as const,
+      last30dCostUsd: 1,
+      todayCostUsd: 0,
+      tokenBreakdown: {},
+    }];
+    const scanUsageLedgers = vi.fn()
+      .mockRejectedValueOnce(new Error("automatic ledger worker failed"))
+      .mockRejectedValueOnce(new Error("explicit ledger worker failed"))
+      .mockResolvedValue({
+        costs: [{
+          provider: "codex" as const,
+          last30dCostUsd: 2,
+          todayCostUsd: 1,
+          tokenBreakdown: {},
+        }],
+        projectCosts: [{
+          provider: "codex" as const,
+          last30dCostUsd: 0.5,
+          todayCostUsd: 0.25,
+          tokenBreakdown: {},
+        }],
+        daily7d: {},
+        entryCounts: { codex: 1 },
+        providerErrors: {},
+      });
+    const scanGitHubStats = vi.fn(async () => ({
+      repo: "arul28/ADE",
+      available: true,
+      fetchedAt: cachedAt,
+      error: null,
+      commitsCreated: 0,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    }));
+    const cachedSnapshot = {
+      version: 3,
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        pacingByProvider: {},
+        providerStatus: {},
+        costs: establishedCosts,
+        adeCosts: [],
+        extraUsage: [],
+        costsLastPolledAt: cachedAt,
+        lastPolledAt: cachedAt,
+        errors: [],
+      },
+    };
+    const previousVitest = process.env.VITEST;
+    const previousNodeEnv = process.env.NODE_ENV;
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((() => (
+      JSON.stringify(cachedSnapshot)
+    )) as unknown as typeof fs.readFileSync);
+    let service: ReturnType<typeof createUsageTrackingService>;
+    try {
+      process.env.VITEST = "false";
+      process.env.NODE_ENV = "development";
+      service = createUsageTrackingService({
+        logger,
+        dependencies: {
+          pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
+          pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+          scanUsageLedgers,
+          scanGitHubStats,
+        },
+      });
+    } finally {
+      readFileSync.mockRestore();
+      if (previousVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = previousVitest;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+
+    try {
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("refreshing");
+      await vi.waitFor(() => expect(scanUsageLedgers).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(
+        "usage.refresh.history_failed",
+        expect.objectContaining({ reason: "automatic", failureCount: 1, retryDelayMs: 60_000 }),
+      ));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(service.getUsageSnapshot()).toMatchObject({
+        costs: establishedCosts,
+        costsLastPolledAt: cachedAt,
+      });
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "machine" })).freshness?.state).toBe("fresh");
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("stale");
+      await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(scanUsageLedgers).toHaveBeenCalledTimes(1);
+
+      await expect(service.refreshHistory()).rejects.toThrow("explicit ledger worker failed");
+      expect(scanUsageLedgers).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "usage.refresh.history_failed",
+        expect.objectContaining({ reason: "user", failureCount: 2, retryDelayMs: 120_000 }),
+      );
+      expect(service.getUsageSnapshot()).toMatchObject({
+        costs: establishedCosts,
+        costsLastPolledAt: cachedAt,
+      });
+
+      await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(scanUsageLedgers).toHaveBeenCalledTimes(2);
+
+      nowSpy.mockReturnValue(now + 2 * 60_000);
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("refreshing");
+      await vi.waitFor(() => expect(scanUsageLedgers).toHaveBeenCalledTimes(3));
+      await new Promise((resolve) => setImmediate(resolve));
+      await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+      await vi.waitFor(() => expect(scanGitHubStats).toHaveBeenCalledTimes(3));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("fresh");
+    } finally {
+      service.dispose();
+      nowSpy.mockRestore();
+    }
+  });
+
   it("serves aged provider history without launching a surprise transcript rescan", async () => {
     const logger = createLogger();
     const now = new Date("2026-07-22T12:00:00.000Z").getTime();

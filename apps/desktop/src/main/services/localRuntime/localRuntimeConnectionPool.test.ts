@@ -27,6 +27,11 @@ import {
   parseRuntimeServiceManagerOutput,
   shouldAutoInstallRuntimeServiceFromPath,
 } from "./localRuntimeConnectionPool";
+import {
+  LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
+  LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
+  LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
+} from "./localRuntimeTimeoutPolicy";
 
 type RawPendingRequest = {
   resolve: (value: unknown) => void;
@@ -860,11 +865,15 @@ describe("local runtime connection pool", () => {
 
     const registry = await pool.listActionRegistryForRoot("/repo");
 
-    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
-      projectId: "project-1",
-      name: "list_ade_actions",
-      arguments: { domain: "all" },
-    });
+    expect(client.call).toHaveBeenCalledWith(
+      "ade/actions/call",
+      {
+        projectId: "project-1",
+        name: "list_ade_actions",
+        arguments: { domain: "all" },
+      },
+      { timeoutMs: LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS },
+    );
     expect(registry).toEqual([
       { domain: "chat", actions: [{ name: "create" }] },
       {
@@ -952,6 +961,340 @@ describe("local runtime connection pool", () => {
       args: { limit: 500, laneId: "lane-1" },
     });
     expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("single-flights initial project registration without dropping or reordering PTY writes", async () => {
+    let resolveRegistration!: (value: unknown) => void;
+    const registration = new Promise<unknown>((resolve) => {
+      resolveRegistration = resolve;
+    });
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    const deliveredInput: string[] = [];
+    const call = vi.fn((method: string, params?: unknown) => {
+      if (method === "projects.add") return registration;
+      if (method === "ade/actions/call") {
+        const data = (params as {
+          arguments?: { args?: { data?: unknown } };
+        }).arguments?.args?.data;
+        if (typeof data !== "string") throw new Error("PTY write data is missing.");
+        deliveredInput.push(data);
+        return Promise.resolve({
+          domain: "pty",
+          action: "write",
+          result: null,
+          statusHints: {},
+        });
+      }
+      return Promise.reject(new Error(`Unexpected method ${method}`));
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+    const inputChunks = ["a", "\x1b", "\r"];
+    const rootPaths = [rootPath, `${rootPath}/.`, `${rootPath}/nested/..`];
+
+    const writes = inputChunks.map((data, index) => pool.callActionForRoot(rootPaths[index]!, {
+      domain: "pty",
+      action: "write",
+      args: { ptyId: "pty-1", data },
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+    expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(0);
+    expect(deliveredInput).toEqual([]);
+
+    resolveRegistration(project);
+    await expect(Promise.all(writes)).resolves.toHaveLength(inputChunks.length);
+
+    expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+    expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(inputChunks.length);
+    expect(deliveredInput).toEqual(inputChunks);
+    expect(deliveredInput.join("")).toBe(inputChunks.join(""));
+  });
+
+  it("preserves registration intent order after a conflicting waiter closes the active flight", async () => {
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    const registrations: Array<{
+      params: Record<string, unknown>;
+      resolve: (value: unknown) => void;
+    }> = [];
+    const call = vi.fn((method: string, params?: unknown) => {
+      if (method !== "projects.add") {
+        return Promise.reject(new Error(`Unexpected method ${method}`));
+      }
+      return new Promise<unknown>((resolve) => {
+        registrations.push({ params: params as Record<string, unknown>, resolve });
+      });
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+    const desktopIntent = {
+      catalogVisibility: "recent" as const,
+      registrationSource: "desktop" as const,
+    };
+    const mobileIntent = {
+      catalogVisibility: "recent" as const,
+      registrationSource: "mobile" as const,
+    };
+
+    const firstDesktop = pool.ensureProject(rootPath, desktopIntent);
+    while (registrations.length < 1) await Promise.resolve();
+    const mobile = pool.ensureProject(rootPath, mobileIntent);
+    const secondDesktop = pool.ensureProject(rootPath, desktopIntent);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]!.params.registrationSource).toBe("desktop");
+
+    registrations[0]!.resolve({ ...project, ...desktopIntent });
+    while (registrations.length < 2) await Promise.resolve();
+    expect(registrations.map(({ params }) => params.registrationSource))
+      .toEqual(["desktop", "mobile"]);
+
+    registrations[1]!.resolve({ ...project, ...mobileIntent });
+    while (registrations.length < 3) await Promise.resolve();
+    expect(registrations.map(({ params }) => params.registrationSource))
+      .toEqual(["desktop", "mobile", "desktop"]);
+
+    registrations[2]!.resolve({ ...project, ...desktopIntent });
+    await expect(Promise.all([firstDesktop, mobile, secondDesktop])).resolves.toHaveLength(3);
+    expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(3);
+  });
+
+  it("clears a failed project registration single-flight so the next action retries", async () => {
+    let rejectRegistration!: (error: Error) => void;
+    const firstRegistration = new Promise<unknown>((_resolve, reject) => {
+      rejectRegistration = reject;
+    });
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    let registrationAttempts = 0;
+    const deliveredInput: string[] = [];
+    const call = vi.fn((method: string, params?: unknown) => {
+      if (method === "projects.add") {
+        registrationAttempts += 1;
+        return registrationAttempts === 1 ? firstRegistration : Promise.resolve(project);
+      }
+      if (method === "ade/actions/call") {
+        const data = (params as {
+          arguments?: { args?: { data?: unknown } };
+        }).arguments?.args?.data;
+        if (typeof data !== "string") throw new Error("PTY write data is missing.");
+        deliveredInput.push(data);
+        return Promise.resolve({
+          domain: "pty",
+          action: "write",
+          result: null,
+          statusHints: {},
+        });
+      }
+      return Promise.reject(new Error(`Unexpected method ${method}`));
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    const first = pool.callActionForRoot(rootPath, {
+      domain: "pty",
+      action: "write",
+      args: { ptyId: "pty-1", data: "first" },
+    });
+    const shared = pool.callActionForRoot(`${rootPath}/.`, {
+      domain: "pty",
+      action: "write",
+      args: { ptyId: "pty-1", data: "shared" },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(registrationAttempts).toBe(1);
+
+    rejectRegistration(new Error("project registration failed"));
+    const failures = await Promise.allSettled([first, shared]);
+    expect(failures.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    expect(failures.map((result) => result.status === "rejected" ? result.reason.message : null))
+      .toEqual(["project registration failed", "project registration failed"]);
+    expect(deliveredInput).toEqual([]);
+
+    await expect(pool.callActionForRoot(rootPath, {
+      domain: "pty",
+      action: "write",
+      args: { ptyId: "pty-1", data: "retry" },
+    })).resolves.toMatchObject({ domain: "pty", action: "write", result: null });
+
+    expect(registrationAttempts).toBe(2);
+    expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(1);
+    expect(deliveredInput).toEqual(["retry"]);
+  });
+
+  it("keeps project registration single-flighted while retrying a dropped connection", async () => {
+    const dropped = new Error("Remote ADE service connection closed.");
+    let resolveRetry!: (value: unknown) => void;
+    const retryRegistration = new Promise<unknown>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    const deliveredInput: string[] = [];
+    const firstClient = {
+      call: vi.fn().mockRejectedValue(dropped),
+      close: vi.fn(),
+      isClosed: vi.fn(() => false),
+    };
+    const secondClient = {
+      call: vi.fn((method: string, params?: unknown) => {
+        if (method === "projects.add") return retryRegistration;
+        if (method === "ade/actions/call") {
+          const data = (params as {
+            arguments?: { args?: { data?: unknown } };
+          }).arguments?.args?.data;
+          if (typeof data !== "string") throw new Error("PTY write data is missing.");
+          deliveredInput.push(data);
+          return Promise.resolve({ domain: "pty", action: "write", result: null, statusHints: {} });
+        }
+        return Promise.reject(new Error(`Unexpected method ${method}`));
+      }),
+      close: vi.fn(),
+      isClosed: vi.fn(() => false),
+    };
+    const createConnection = vi.fn<[], Promise<unknown>>()
+      .mockResolvedValueOnce({ client: firstClient, child: null, socketPath: "/tmp/ade-stale.sock" })
+      .mockResolvedValueOnce({ client: secondClient, child: null, socketPath: "/tmp/ade-fresh.sock" });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = createConnection;
+
+    const write = (data: string) => pool.callActionForRoot(rootPath, {
+      domain: "pty",
+      action: "write",
+      args: { ptyId: "pty-1", data },
+    });
+    const first = write("first");
+    while (!secondClient.call.mock.calls.some(([method]) => method === "projects.add")) {
+      await Promise.resolve();
+    }
+    const writes = [first, write("second"), write("third")];
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(createConnection).toHaveBeenCalledTimes(2);
+    expect(firstClient.call).toHaveBeenCalledTimes(1);
+    expect(secondClient.call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+
+    resolveRetry(project);
+    await expect(Promise.all(writes)).resolves.toHaveLength(3);
+
+    expect(firstClient.close).toHaveBeenCalledTimes(1);
+    expect(secondClient.call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+    expect(secondClient.call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(3);
+    expect(deliveredInput).toEqual(["first", "second", "third"]);
+  });
+
+  it("makes disposal terminal while project registration is in flight", async () => {
+    let resolveRegistration!: (value: unknown) => void;
+    const registration = new Promise<unknown>((resolve) => {
+      resolveRegistration = resolve;
+    });
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    };
+    const call = vi.fn((method: string) => {
+      if (method === "projects.add") return registration;
+      if (method === "ade/actions/call") {
+        return Promise.resolve({ domain: "pty", action: "write", result: null, statusHints: {} });
+      }
+      return Promise.reject(new Error(`Unexpected method ${method}`));
+    });
+    const client = {
+      call,
+      close: vi.fn(),
+      isClosed: vi.fn(() => false),
+    };
+    const createConnection = vi.fn(async () => ({
+      client,
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    }));
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = createConnection;
+
+    const pendingWrite = pool.callActionForRoot(rootPath, {
+      domain: "pty",
+      action: "write",
+      args: { ptyId: "pty-1", data: "blocked" },
+    });
+    while (!call.mock.calls.some(([method]) => method === "projects.add")) {
+      await Promise.resolve();
+    }
+
+    pool.dispose();
+    resolveRegistration(project);
+
+    await expect(pendingWrite).rejects.toThrow("Local runtime connection pool is disposed.");
+    await expect(pool.ensureProject(rootPath)).rejects.toThrow(
+      "Local runtime connection pool is disposed.",
+    );
+    expect(createConnection).toHaveBeenCalledTimes(1);
+    expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+    expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(0);
+    expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot).toHaveLength(0);
+    expect(
+      (pool as unknown as { projectRegistrationsByRoot: Map<string, unknown> }).projectRegistrationsByRoot,
+    ).toHaveLength(0);
+    expect(client.close).toHaveBeenCalledTimes(1);
   });
 
   it("single-flights an exact lane delete and keeps its client timeout above daemon work", async () => {
@@ -2080,7 +2423,7 @@ describe("local runtime connection pool", () => {
           category: "pty",
         },
       },
-      { timeoutMs: 2_000 },
+      { timeoutMs: LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS },
     );
     expect(result).toEqual({
       events: [
@@ -2530,10 +2873,14 @@ describe("local runtime connection pool", () => {
       connectedPeers: [],
     });
 
-    expect(call).toHaveBeenCalledWith("sync.getStatus", {
-      projectId: "project-1",
-      includeTransferReadiness: true,
-    });
+    expect(call).toHaveBeenCalledWith(
+      "sync.getStatus",
+      {
+        projectId: "project-1",
+        includeTransferReadiness: true,
+      },
+      { timeoutMs: LOCAL_RUNTIME_SYNC_TIMEOUT_MS },
+    );
   });
 
   it("routes machine sync calls without adding a project id", async () => {
@@ -2694,12 +3041,16 @@ describe("local runtime connection pool", () => {
       category: "runtime",
     }, onEvent);
 
-    expect(call).toHaveBeenCalledWith("runtimeEvents.subscribe", {
-      projectId: "project-1",
-      cursor: 20,
-      limit: 5,
-      category: "runtime",
-    });
+    expect(call).toHaveBeenCalledWith(
+      "runtimeEvents.subscribe",
+      {
+        projectId: "project-1",
+        cursor: 20,
+        limit: 5,
+        category: "runtime",
+      },
+      { timeoutMs: LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS },
+    );
     expect(onEvent).toHaveBeenCalledWith({
       id: 21,
       timestamp: "2026-05-10T12:00:00.000Z",

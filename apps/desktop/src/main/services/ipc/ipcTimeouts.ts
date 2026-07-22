@@ -1,8 +1,11 @@
 import { IPC } from "../../../shared/ipc";
 import { isRetryableRemoteAction } from "../remoteRuntime/retryableRemoteActions";
 import {
-  destructiveLaneLocalRuntimeIpcTimeoutMs,
-  LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS,
+  localRuntimeActionIpcTimeoutMs,
+  LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,18 +58,14 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
   if (channel === IPC.localRuntimeCallAction) {
     const payload = args[0];
     const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
-    const destructiveLaneTimeoutMs = typeof request?.domain === "string"
-      && typeof request.action === "string"
-      ? destructiveLaneLocalRuntimeIpcTimeoutMs(request.domain, request.action)
-      : null;
-    if (destructiveLaneTimeoutMs != null) return destructiveLaneTimeoutMs;
-    const actionTimeoutMs = runtimeActionTimeoutMs(args);
-    if (actionTimeoutMs != null) return actionTimeoutMs;
-    return LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS;
+    if (typeof request?.domain === "string" && typeof request.action === "string") {
+      return localRuntimeActionIpcTimeoutMs(request.domain, request.action);
+    }
+    return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
   }
-  if (channel === IPC.localRuntimeCallSync || channel === IPC.localRuntimeListActionRegistry || channel === IPC.localRuntimeStreamEvents) {
-    return LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS;
-  }
+  if (channel === IPC.localRuntimeCallSync) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
+  if (channel === IPC.localRuntimeListActionRegistry) return LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS;
+  if (channel === IPC.localRuntimeStreamEvents) return LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS;
   if (channel === IPC.remoteRuntimeCallAction) {
     const actionTimeoutMs = runtimeActionTimeoutMs(args);
     if (actionTimeoutMs != null) return actionTimeoutMs;
@@ -76,10 +75,9 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
   }
   switch (channel) {
     // Switching projects can cold-start and bind the local runtime. Keep the
-    // renderer's outcome known until the same setup budget used by local
-    // runtime calls expires.
+    // renderer's outcome known through setup and result delivery.
     case IPC.projectSwitchToPath:
-      return LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS;
+      return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:

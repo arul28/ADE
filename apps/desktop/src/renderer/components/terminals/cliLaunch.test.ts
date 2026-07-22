@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPtyContinuationLaunchFields,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeCommand,
   buildTrackedCliStartupCommand,
@@ -24,6 +25,43 @@ function withProcessPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
     Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   }
 }
+
+describe("buildPtyContinuationLaunchFields", () => {
+  it("forwards trimmed continuation controls and preserves explicit false fast mode", () => {
+    expect(buildPtyContinuationLaunchFields({
+      model: "  openai/gpt-5.4  ",
+      reasoningEffort: " high ",
+      fastMode: false,
+      codexFastMode: true,
+      permissionMode: "plan",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    })).toEqual({
+      model: "openai/gpt-5.4",
+      reasoningEffort: "high",
+      fastMode: false,
+      permissionMode: "plan",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("uses the legacy fast-mode field and omits empty continuation controls", () => {
+    expect(buildPtyContinuationLaunchFields({
+      model: "  ",
+      reasoningEffort: null,
+      fastMode: null,
+      codexFastMode: true,
+      permissionMode: null,
+      codexApprovalPolicy: null,
+      codexSandbox: null,
+      codexConfigSource: null,
+    })).toEqual({ fastMode: true });
+    expect(buildPtyContinuationLaunchFields(null)).toEqual({});
+  });
+});
 
 describe("withCodexNoAltScreen", () => {
   it("returns non-codex commands unchanged", () => {
