@@ -244,7 +244,11 @@ export type PtySendToSessionArgs = {
   rows?: number | null;
   model?: string | null;
   reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   permissionMode?: AgentChatPermissionMode | null;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+  codexSandbox?: AgentChatCodexSandbox | null;
+  codexConfigSource?: AgentChatCodexConfigSource | null;
 };
 
 export type PtyResumeSessionArgs = Omit<PtySendToSessionArgs, "text">;

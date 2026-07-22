@@ -190,6 +190,7 @@ const modelsMock = vi.fn();
 const sendToSessionMock = vi.fn();
 const resumeSessionMock = vi.fn();
 const resourceUsageMock = vi.fn();
+const externalSessionsListMock = vi.fn();
 const resolvePtyLaunch = async () => ({ sessionId: "test-session", ptyId: "test-pty", pid: null });
 
 beforeEach(() => {
@@ -239,6 +240,8 @@ beforeEach(() => {
     freeMemoryMB: 12_000,
     totalMemoryMB: 16_000,
   });
+  externalSessionsListMock.mockReset();
+  externalSessionsListMock.mockResolvedValue([]);
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -253,6 +256,9 @@ beforeEach(() => {
       pty: {
         resumeSession: resumeSessionMock,
         sendToSession: sendToSessionMock,
+      },
+      externalSessions: {
+        list: externalSessionsListMock,
       },
       terminal: {
         preview: terminalPreviewMock,
@@ -1050,12 +1056,16 @@ describe("WorkViewArea", () => {
     fireEvent.change(textarea, { target: { value: "fix the test" } });
     fireEvent.keyDown(textarea, { key: "Enter" });
 
-    await waitFor(() => expect(onContinue).toHaveBeenCalledWith(session, "fix the test"));
+    await waitFor(() => expect(onContinue).toHaveBeenCalledWith(
+      session,
+      "fix the test",
+      { permissionMode: "plan" },
+    ));
     expect((window.ade as any).app.writeClipboardText).toHaveBeenCalledWith("fix the test");
     expect((textarea as HTMLTextAreaElement).value).toBe("");
   });
 
-  it("does not show resume-time model or permission controls", async () => {
+  it("shows saved resume state without presenting misleading editable controls", async () => {
     const session = {
       ...makeSession(),
       toolType: "codex" as const,
@@ -1064,7 +1074,11 @@ describe("WorkViewArea", () => {
         provider: "codex" as const,
         targetKind: "thread" as const,
         targetId: "thread-1",
-        launch: { permissionMode: "plan" as const },
+        launch: {
+          model: "gpt-5.4",
+          reasoningEffort: "high",
+          permissionMode: "plan" as const,
+        },
       },
     };
     const view = render(
@@ -1085,8 +1099,121 @@ describe("WorkViewArea", () => {
     const local = within(view.container);
 
     expect(await local.findByLabelText("Continue Codex session")).toBeTruthy();
+    expect(local.getByText("GPT-5.4")).toBeTruthy();
+    expect(local.getByText("high")).toBeTruthy();
+    expect(local.getByText("Plan")).toBeTruthy();
     expect(local.queryByRole("button", { name: /Select model/i })).toBeNull();
     expect(local.queryByLabelText("Codex permission mode")).toBeNull();
+  });
+
+  it("recovers imported Codex launch state once and uses it for continuation", async () => {
+    const onContinue = vi.fn().mockResolvedValue(undefined);
+    externalSessionsListMock.mockResolvedValue([{
+      provider: "codex",
+      id: "019f8135-cd9d-7ba1-8f4f-f594d76d8273",
+      cwd: "/tmp/lane-1",
+      title: "Imported Codex",
+      preview: null,
+      createdAt: null,
+      updatedAt: null,
+      messageCount: null,
+      launch: {
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      },
+      alreadyImported: true,
+      importedSessionRef: { kind: "cli", sessionId: "session-1" },
+      possiblyActive: false,
+      cwdMatchesRequestedLane: true,
+      capabilities: {
+        resumeInPlace: true,
+        resumeInDifferentCwd: true,
+        fork: true,
+        forkIntoDifferentCwd: true,
+        importToChat: true,
+      },
+    }]);
+    const session = {
+      ...makeSession(),
+      toolType: "codex" as const,
+      resumeCommand: "codex resume 019f8135-cd9d-7ba1-8f4f-f594d76d8273",
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetKind: "thread" as const,
+        targetId: "019f8135-cd9d-7ba1-8f4f-f594d76d8273",
+        launch: {},
+        importedFrom: {
+          provider: "codex" as const,
+          targetId: "019f8135-cd9d-7ba1-8f4f-f594d76d8273",
+          mode: "resume" as const,
+        },
+      },
+    };
+    const view = render(
+      <WorkViewArea
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        activeItemId={session.id}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+        onContinueCliSession={onContinue}
+      />,
+    );
+    const local = within(view.container);
+
+    expect(await local.findByText("GPT-5.6 Sol")).toBeTruthy();
+    expect(local.getByText("max")).toBeTruthy();
+    expect(local.getByText("Fast")).toBeTruthy();
+    expect(local.getByText("Full access")).toBeTruthy();
+    expect(externalSessionsListMock).toHaveBeenCalledTimes(1);
+    expect(externalSessionsListMock).toHaveBeenCalledWith({
+      providers: ["codex"],
+      scope: "all",
+      sessionId: "019f8135-cd9d-7ba1-8f4f-f594d76d8273",
+      limit: 1,
+    });
+
+    view.rerender(
+      <WorkViewArea
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        activeItemId={session.id}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+        onContinueCliSession={onContinue}
+      />,
+    );
+    expect(externalSessionsListMock).toHaveBeenCalledTimes(1);
+
+    const textarea = local.getByLabelText("Continue Codex session");
+    fireEvent.change(textarea, { target: { value: "continue" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(onContinue).toHaveBeenCalledWith(session, "continue", {
+      model: "gpt-5.6-sol",
+      reasoningEffort: "max",
+      fastMode: true,
+      permissionMode: "full-auto",
+      codexApprovalPolicy: "never",
+      codexSandbox: "danger-full-access",
+      codexConfigSource: "flags",
+    }));
   });
 
   it("shows provider-specific slash command suggestions in the continuation composer", async () => {

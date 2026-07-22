@@ -223,6 +223,7 @@ describe("sessionService resume metadata", () => {
           permissionMode: "edit",
           model: "gpt-5.4",
           reasoningEffort: "medium",
+          fastMode: true,
           codexApprovalPolicy: "untrusted",
           codexSandbox: "workspace-write",
           codexConfigSource: "flags",
@@ -232,7 +233,7 @@ describe("sessionService resume metadata", () => {
 
     const created = service.get("session-2");
     expect(created?.resumeCommand).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume",
     );
 
     service.setResumeCommand("session-2", "codex resume thread-1");
@@ -246,13 +247,14 @@ describe("sessionService resume metadata", () => {
         permissionMode: "edit",
         model: "gpt-5.4",
         reasoningEffort: "medium",
+        fastMode: true,
         codexApprovalPolicy: "untrusted",
         codexSandbox: "workspace-write",
         codexConfigSource: "flags",
       },
     });
     expect(resumed?.resumeCommand).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-1",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-1",
     );
 
     activeDisposers.push(async () => db.close());
@@ -301,7 +303,9 @@ describe("sessionService resume metadata", () => {
         codexConfigSource: "flags",
       },
     });
-    expect(resumed?.resumeCommand).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-full-auto");
+    expect(resumed?.resumeCommand).toBe(
+      "codex --no-alt-screen --sandbox danger-full-access --ask-for-approval never resume thread-full-auto",
+    );
 
     activeDisposers.push(async () => db.close());
   });

@@ -406,6 +406,7 @@ function createHarness(overrides: {
         ...(args.title !== undefined ? { title: args.title } : {}),
         ...(args.goal !== undefined ? { goal: args.goal } : {}),
         ...(args.manuallyNamed !== undefined ? { manuallyNamed: args.manuallyNamed } : {}),
+        ...(args.resumeMetadata !== undefined ? { resumeMetadata: args.resumeMetadata } : {}),
       });
       return session;
     }),
@@ -2791,7 +2792,11 @@ describe("ptyService", () => {
         rows: 40,
         model: "gpt-5.4",
         reasoningEffort: "high",
-        permissionMode: "plan",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
       });
       await Promise.resolve();
       const result = await pending;
@@ -2809,9 +2814,18 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-ended \"fix failing tests\""],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox danger-full-access --ask-for-approval on-request resume thread-ended \"fix failing tests\""],
         expect.any(Object),
       );
+      expect(sessionService.get("session-ended-send")?.resumeMetadata?.launch).toMatchObject({
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      });
       expect(mockPty.write).not.toHaveBeenCalled();
     });
 

@@ -5,6 +5,7 @@ import type {
   ExternalSessionProvider,
   ExternalSessionSummary,
 } from "../../../shared/types/externalSessions";
+import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
 
 export type ExternalSessionDiscoveryRecord = Omit<
   ExternalSessionSummary,
@@ -462,6 +463,7 @@ export function recordWithFile(args: {
   createdAt?: number | null;
   updatedAt?: number | null;
   messageCount?: number | null;
+  launch?: TerminalResumeLaunchConfig | null;
   filePath?: string | null;
   sourceMtimeMs?: number | null;
 }): ExternalSessionDiscoveryRecord {
@@ -478,6 +480,7 @@ export function recordWithFile(args: {
     createdAt: args.createdAt ?? null,
     updatedAt: args.updatedAt ?? sourceMtimeMs,
     messageCount: args.messageCount ?? null,
+    launch: args.launch ?? null,
     sourcePath: args.filePath ?? null,
     sourceMtimeMs,
   };

@@ -1,4 +1,10 @@
-import type { AgentChatEventEnvelope, AgentChatPermissionMode } from "./chat";
+import type {
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexConfigSource,
+  AgentChatCodexSandbox,
+  AgentChatEventEnvelope,
+  AgentChatPermissionMode,
+} from "./chat";
 import type { PersonalChatRemoteCommandAction } from "./personalChats";
 import type {
   CloneProjectInput,
@@ -1291,6 +1297,13 @@ export type SyncSendToSessionArgs = {
   text: string;
   cols?: number | null;
   rows?: number | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+  permissionMode?: AgentChatPermissionMode | null;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+  codexSandbox?: AgentChatCodexSandbox | null;
+  codexConfigSource?: AgentChatCodexConfigSource | null;
 };
 
 export type SyncSendToSessionResult = PtySendToSessionResult;

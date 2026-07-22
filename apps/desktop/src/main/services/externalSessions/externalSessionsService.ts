@@ -320,11 +320,21 @@ function metadataForImport(args: {
   originalTargetId: string;
   mode: "resume" | "fork";
   model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   permissionMode?: string | null;
+  codexApprovalPolicy?: TerminalResumeMetadata["launch"]["codexApprovalPolicy"];
+  codexSandbox?: TerminalResumeMetadata["launch"]["codexSandbox"];
+  codexConfigSource?: TerminalResumeMetadata["launch"]["codexConfigSource"];
 }): TerminalResumeMetadata {
   const launch = {
     ...(args.model ? { model: args.model } : {}),
+    ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
+    ...(typeof args.fastMode === "boolean" ? { fastMode: args.fastMode } : {}),
     ...(args.permissionMode ? { permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"] } : {}),
+    ...(args.codexApprovalPolicy ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
+    ...(args.codexSandbox ? { codexSandbox: args.codexSandbox } : {}),
+    ...(args.codexConfigSource ? { codexConfigSource: args.codexConfigSource } : {}),
   };
   return {
     provider: args.provider,
@@ -345,7 +355,12 @@ async function forkCommandFor(args: {
   metadata: TerminalResumeMetadata;
   targetId: string;
   model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   permissionMode?: string | null;
+  codexApprovalPolicy?: TerminalResumeMetadata["launch"]["codexApprovalPolicy"];
+  codexSandbox?: TerminalResumeMetadata["launch"]["codexSandbox"];
+  codexConfigSource?: TerminalResumeMetadata["launch"]["codexConfigSource"];
   transplantedClaude: boolean;
 }): Promise<string> {
   if (args.provider === "claude") {
@@ -353,7 +368,12 @@ async function forkCommandFor(args: {
       { ...args.metadata, targetId: args.targetId },
       {
         model: args.model,
+        reasoningEffort: args.reasoningEffort,
+        fastMode: args.fastMode,
         permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
+        codexApprovalPolicy: args.codexApprovalPolicy,
+        codexSandbox: args.codexSandbox,
+        codexConfigSource: args.codexConfigSource,
       },
     );
     return args.transplantedClaude ? command : `${command} --fork-session`;
@@ -364,7 +384,12 @@ async function forkCommandFor(args: {
       { ...args.metadata, targetId: args.targetId },
       {
         model: args.model,
+        reasoningEffort: args.reasoningEffort,
+        fastMode: args.fastMode,
         permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
+        codexApprovalPolicy: args.codexApprovalPolicy,
+        codexSandbox: args.codexSandbox,
+        codexConfigSource: args.codexConfigSource,
         codexComputerUse: await resolveCodexComputerUseMcpConfig(),
       },
     );
@@ -380,7 +405,12 @@ async function forkCommandFor(args: {
       { ...args.metadata, targetId: args.targetId },
       {
         model: args.model,
+        reasoningEffort: args.reasoningEffort,
+        fastMode: args.fastMode,
         permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
+        codexApprovalPolicy: args.codexApprovalPolicy,
+        codexSandbox: args.codexSandbox,
+        codexConfigSource: args.codexConfigSource,
       },
     );
     return `${resume} --fork`;
@@ -467,12 +497,28 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   };
 
   const list = async (rawArgs: ExternalSessionListArgs = {}): Promise<ExternalSessionSummary[]> => {
-    const limit = normalizeExternalSessionLimit(rawArgs.limit);
+    const hasRequestedSessionId = rawArgs.sessionId != null;
+    const requestedSessionId = rawArgs.sessionId?.trim() || null;
+    if (hasRequestedSessionId && !requestedSessionId) return [];
+    const limit = requestedSessionId ? 1 : normalizeExternalSessionLimit(rawArgs.limit);
     const projectScoped = rawArgs.scope !== "all";
-    const discoveryLimit = projectScoped
-      ? Math.max(limit, PROJECT_SCOPE_DISCOVERY_LIMIT)
-      : limit;
-    const providers = providerSet(rawArgs.providers);
+    const discoveryLimit = requestedSessionId
+      ? 1
+      : projectScoped
+        ? Math.max(limit, PROJECT_SCOPE_DISCOVERY_LIMIT)
+        : limit;
+    const requestedProviders = providerSet(rawArgs.providers);
+    const providers = requestedSessionId
+      ? requestedProviders.filter((provider) => {
+          try {
+            validateExternalSessionId(provider, requestedSessionId);
+            return true;
+          } catch {
+            return false;
+          }
+        })
+      : requestedProviders;
+    if (providers.length === 0) return [];
     const requestedLaneCwd = rawArgs.laneId ? resolveLaneCwd(args.laneService, rawArgs.laneId) : null;
     const requestedCwd = rawArgs.cwd?.trim() ? realish(rawArgs.cwd) : requestedLaneCwd;
     const scopeRoots = projectScoped ? deriveProjectScopeRoots(args.projectRoot) : [];
@@ -482,6 +528,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       cwd: requestedCwd,
       projectRoot: args.projectRoot,
       limit: discoveryLimit,
+      sessionId: requestedSessionId,
       scopeRoots: projectScoped ? scopeRoots : null,
       logger: args.logger,
     };
@@ -520,6 +567,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           createdAt: session.createdAt,
           updatedAt: session.updatedAt,
           messageCount: session.messageCount,
+          launch: session.launch ?? null,
           alreadyImported: importedRef != null,
           importedSessionRef: importedRef,
           possiblyActive: typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs,
@@ -564,6 +612,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       messageCount: session.messageCount,
+      launch: session.launch ?? null,
       alreadyImported: false,
       importedSessionRef: null,
       possiblyActive: typeof session.sourceMtimeMs === "number"
@@ -690,26 +739,61 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       }
     }
 
+    const resolvedModel = importArgs.model?.trim() || summary.launch?.model?.trim() || null;
+    const resolvedReasoningEffort = importArgs.reasoningEffort?.trim()
+      || summary.launch?.reasoningEffort?.trim()
+      || null;
+    const resolvedPermissionMode = importArgs.permissionMode?.trim()
+      || summary.launch?.permissionMode?.trim()
+      || null;
+    const resolvedFastMode = typeof importArgs.fastMode === "boolean"
+      ? importArgs.fastMode
+      : summary.launch?.fastMode ?? summary.launch?.codexFastMode ?? null;
+    const preserveDiscoveredCodexPermissions = provider === "codex" && importArgs.permissionMode == null;
+    const resolvedCodexApprovalPolicy = preserveDiscoveredCodexPermissions
+      ? summary.launch?.codexApprovalPolicy ?? null
+      : null;
+    const resolvedCodexSandbox = preserveDiscoveredCodexPermissions
+      ? summary.launch?.codexSandbox ?? null
+      : null;
+    const resolvedCodexConfigSource = preserveDiscoveredCodexPermissions
+      ? summary.launch?.codexConfigSource ?? null
+      : null;
     const metadata = metadataForImport({
       provider,
       targetId: metadataTargetId,
       originalTargetId: sessionId,
       mode: importArgs.mode,
-      model: importArgs.model,
-      permissionMode: importArgs.permissionMode,
+      model: resolvedModel,
+      reasoningEffort: resolvedReasoningEffort,
+      fastMode: resolvedFastMode,
+      permissionMode: resolvedPermissionMode,
+      codexApprovalPolicy: resolvedCodexApprovalPolicy,
+      codexSandbox: resolvedCodexSandbox,
+      codexConfigSource: resolvedCodexConfigSource,
     });
     const startupCommand = importArgs.mode === "resume"
       ? buildTrackedCliResumeCommand(metadata, {
-          model: importArgs.model,
-          permissionMode: importArgs.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
+          model: resolvedModel,
+          reasoningEffort: resolvedReasoningEffort,
+          fastMode: resolvedFastMode,
+          permissionMode: resolvedPermissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
+          codexApprovalPolicy: resolvedCodexApprovalPolicy,
+          codexSandbox: resolvedCodexSandbox,
+          codexConfigSource: resolvedCodexConfigSource,
           ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
         })
       : await forkCommandFor({
           provider,
           metadata,
           targetId: launchTargetId,
-          model: importArgs.model,
-          permissionMode: importArgs.permissionMode,
+          model: resolvedModel,
+          reasoningEffort: resolvedReasoningEffort,
+          fastMode: resolvedFastMode,
+          permissionMode: resolvedPermissionMode,
+          codexApprovalPolicy: resolvedCodexApprovalPolicy,
+          codexSandbox: resolvedCodexSandbox,
+          codexConfigSource: resolvedCodexConfigSource,
           transplantedClaude,
         });
 

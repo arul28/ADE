@@ -1,4 +1,7 @@
 import type {
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexConfigSource,
+  AgentChatCodexSandbox,
   AgentChatPermissionMode,
   TerminalResumeMetadata,
   TerminalSessionSummary,
@@ -642,6 +645,20 @@ function permissionModeToCodexFlags(permissionMode: AgentChatPermissionMode | nu
   return [];
 }
 
+function codexResumePermissionFlags(args: {
+  permissionMode: AgentChatPermissionMode | null | undefined;
+  approvalPolicy: AgentChatCodexApprovalPolicy | null | undefined;
+  sandbox: AgentChatCodexSandbox | null | undefined;
+  configSource: AgentChatCodexConfigSource | null | undefined;
+}): string[] {
+  if (args.configSource === "config-toml") return [];
+  if (args.approvalPolicy && args.sandbox) {
+    return ["--sandbox", args.sandbox, "--ask-for-approval", args.approvalPolicy];
+  }
+  if (args.approvalPolicy || args.sandbox) return [];
+  return permissionModeToCodexFlags(args.permissionMode);
+}
+
 function permissionModeToCursorFlags(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
   if (permissionMode === "full-auto") return ["--force"];
   if (permissionMode === "plan") return ["--mode", "plan"];
@@ -849,11 +866,30 @@ export function buildTrackedCliResumeCommand(
     reasoningEffort?: string | null;
     fastMode?: boolean | null;
     permissionMode?: AgentChatPermissionMode | null;
+    codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+    codexSandbox?: AgentChatCodexSandbox | null;
+    codexConfigSource?: AgentChatCodexConfigSource | null;
     prompt?: string | null;
     codexComputerUse?: CodexComputerUseCliConfig | null;
   } = {},
 ): string {
   const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode;
+  const hasPermissionModeOverride = overrides.permissionMode !== undefined;
+  const codexApprovalPolicy = overrides.codexApprovalPolicy !== undefined
+    ? overrides.codexApprovalPolicy
+    : hasPermissionModeOverride
+      ? null
+      : metadata.launch.codexApprovalPolicy;
+  const codexSandbox = overrides.codexSandbox !== undefined
+    ? overrides.codexSandbox
+    : hasPermissionModeOverride
+      ? null
+      : metadata.launch.codexSandbox;
+  const codexConfigSource = overrides.codexConfigSource !== undefined
+    ? overrides.codexConfigSource
+    : hasPermissionModeOverride
+      ? null
+      : metadata.launch.codexConfigSource;
   const model = overrides.model !== undefined ? overrides.model : metadata.launch.model;
   const reasoningEffort = overrides.reasoningEffort !== undefined
     ? overrides.reasoningEffort
@@ -885,7 +921,12 @@ export function buildTrackedCliResumeCommand(
       ...codexReasoningEffortFlags(reasoningEffort),
       ...codexServiceTierFlags(fastMode),
       ...codexComputerUseMcpFlags(overrides.codexComputerUse),
-      ...permissionModeToCodexFlags(permissionMode),
+      ...codexResumePermissionFlags({
+        permissionMode,
+        approvalPolicy: codexApprovalPolicy,
+        sandbox: codexSandbox,
+        configSource: codexConfigSource,
+      }),
     ];
     parts.push("resume");
     if (targetId) parts.push(targetId);

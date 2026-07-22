@@ -771,6 +771,35 @@ describe("tracked CLI resume helpers", () => {
     }, { model: "opencode/opencode/big-pickle" })).toContain("--agent plan --model \"opencode/big-pickle\" --session ses_99");
   });
 
+  it("preserves Codex native approval and sandbox pairs without escalating access", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-danger-on-request",
+      launch: {
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      },
+    })).toBe(
+      "codex --no-alt-screen --sandbox danger-full-access --ask-for-approval on-request resume thread-danger-on-request",
+    );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-workspace-on-request",
+      launch: {
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+      },
+    })).toBe(
+      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-workspace-on-request",
+    );
+  });
+
   it("adds provider model overrides to resumable CLI commands", () => {
     expect(buildTrackedCliResumeCommand({
       provider: "claude",

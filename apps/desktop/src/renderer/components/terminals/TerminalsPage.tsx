@@ -8,7 +8,7 @@ import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
@@ -569,7 +569,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [selectedSessions, stopAndDeleteConfirm, work]);
 
   const handleContinueCliSession = useCallback(
-    async (session: TerminalSessionSummary, text: string) => {
+    async (session: TerminalSessionSummary, text: string, launch: TerminalResumeLaunchConfig | null) => {
       setSessionActionError(null);
       try {
         const result = await window.ade.pty.sendToSession({
@@ -577,6 +577,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           text,
           cols: 100,
           rows: 30,
+          ...(launch?.model?.trim() ? { model: launch.model.trim() } : {}),
+          ...(launch?.reasoningEffort?.trim() ? { reasoningEffort: launch.reasoningEffort.trim() } : {}),
+          ...(typeof launch?.fastMode === "boolean"
+            ? { fastMode: launch.fastMode }
+            : typeof launch?.codexFastMode === "boolean"
+              ? { fastMode: launch.codexFastMode }
+              : {}),
+          ...(launch?.permissionMode ? { permissionMode: launch.permissionMode } : {}),
+          ...(launch?.codexApprovalPolicy ? { codexApprovalPolicy: launch.codexApprovalPolicy } : {}),
+          ...(launch?.codexSandbox ? { codexSandbox: launch.codexSandbox } : {}),
+          ...(launch?.codexConfigSource ? { codexConfigSource: launch.codexConfigSource } : {}),
         });
         invalidateSessionListCache();
         // Patch the local sessions list with the freshly-resumed snapshot so

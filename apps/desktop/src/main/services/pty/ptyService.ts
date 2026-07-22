@@ -3967,7 +3967,16 @@ export function createPtyService({
   };
 
   const resumeLaunchOverrides = (
-    args: Pick<PtySendToSessionArgs, "model" | "reasoningEffort" | "permissionMode">,
+    args: Pick<
+      PtySendToSessionArgs,
+      | "model"
+      | "reasoningEffort"
+      | "fastMode"
+      | "permissionMode"
+      | "codexApprovalPolicy"
+      | "codexSandbox"
+      | "codexConfigSource"
+    >,
   ) => ({
     model: typeof args.model === "string" && args.model.trim().length
       ? args.model.trim()
@@ -3975,8 +3984,23 @@ export function createPtyService({
     reasoningEffort: typeof args.reasoningEffort === "string" && args.reasoningEffort.trim().length
       ? args.reasoningEffort.trim()
       : undefined,
+    fastMode: typeof args.fastMode === "boolean" ? args.fastMode : undefined,
     permissionMode: typeof args.permissionMode === "string" && args.permissionMode.trim().length
       ? args.permissionMode
+      : undefined,
+    codexApprovalPolicy: args.codexApprovalPolicy === "untrusted"
+      || args.codexApprovalPolicy === "on-request"
+      || args.codexApprovalPolicy === "on-failure"
+      || args.codexApprovalPolicy === "never"
+      ? args.codexApprovalPolicy
+      : undefined,
+    codexSandbox: args.codexSandbox === "read-only"
+      || args.codexSandbox === "workspace-write"
+      || args.codexSandbox === "danger-full-access"
+      ? args.codexSandbox
+      : undefined,
+    codexConfigSource: args.codexConfigSource === "flags" || args.codexConfigSource === "config-toml"
+      ? args.codexConfigSource
       : undefined,
   });
 
@@ -4942,8 +4966,31 @@ export function createPtyService({
         );
       }
 
-      const { session: resumableSession, provider } = await resolveEndedResumeSession(sessionId, session);
+      const resolvedResume = await resolveEndedResumeSession(sessionId, session);
+      let resumableSession = resolvedResume.session;
+      const provider = resolvedResume.provider;
       const overrides = resumeLaunchOverrides(args);
+      const launchOverridePatch = {
+        ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+        ...(overrides.reasoningEffort !== undefined ? { reasoningEffort: overrides.reasoningEffort } : {}),
+        ...(overrides.fastMode !== undefined ? { fastMode: overrides.fastMode } : {}),
+        ...(overrides.permissionMode !== undefined ? { permissionMode: overrides.permissionMode } : {}),
+        ...(overrides.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: overrides.codexApprovalPolicy } : {}),
+        ...(overrides.codexSandbox !== undefined ? { codexSandbox: overrides.codexSandbox } : {}),
+        ...(overrides.codexConfigSource !== undefined ? { codexConfigSource: overrides.codexConfigSource } : {}),
+      };
+      if (resumableSession.resumeMetadata && Object.keys(launchOverridePatch).length > 0) {
+        resumableSession = sessionService.updateMeta({
+          sessionId,
+          resumeMetadata: {
+            ...resumableSession.resumeMetadata,
+            launch: {
+              ...resumableSession.resumeMetadata.launch,
+              ...launchOverridePatch,
+            },
+          },
+        }) ?? resumableSession;
+      }
       const launchMetadata = resumableSession.resumeMetadata?.launch;
       const openCodeReplayCommand = provider === "opencode"
         && resumableSession.resumeMetadata?.provider === "opencode"
@@ -4953,7 +5000,7 @@ export function createPtyService({
             targetId: sanitizeResumeTargetId(resumableSession.resumeMetadata.targetId ?? null),
             model: overrides.model ?? launchMetadata?.model ?? null,
             reasoningEffort: overrides.reasoningEffort ?? launchMetadata?.reasoningEffort ?? null,
-            fastMode: launchMetadata?.fastMode ?? launchMetadata?.codexFastMode ?? null,
+            fastMode: overrides.fastMode ?? launchMetadata?.fastMode ?? launchMetadata?.codexFastMode ?? null,
             prompt: text,
           })
         : null;

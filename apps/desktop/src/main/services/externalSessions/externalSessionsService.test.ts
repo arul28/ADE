@@ -63,6 +63,27 @@ afterEach(() => {
 });
 
 describe("externalSessionsService", () => {
+  it("rejects unsafe exact lookup ids before provider path resolution", async () => {
+    const service = createExternalSessionsService({
+      projectRoot: path.join(root, "repo"),
+      homeDir: path.join(root, "home"),
+      laneService: {},
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+    const statSync = vi.spyOn(fs, "statSync");
+    try {
+      await expect(service.list({ providers: ["cursor", "droid"], scope: "all", sessionId: "../../outside" }))
+        .resolves.toEqual([]);
+      await expect(service.list({ providers: ["codex"], scope: "all", sessionId: "not-a-uuid" }))
+        .resolves.toEqual([]);
+      expect(statSync).not.toHaveBeenCalled();
+    } finally {
+      statSync.mockRestore();
+    }
+  });
+
   it("lists sessions with imported flags, active flags, capabilities, and lane cwd matching", async () => {
     const homeDir = path.join(root, "home");
     const projectRoot = path.join(root, "repo");
@@ -560,6 +581,16 @@ describe("externalSessionsService", () => {
         type: "session_meta",
         payload: { id, cwd: path.join(root, "elsewhere"), timestamp: "2026-07-06T10:00:00.000Z" },
       },
+      {
+        type: "turn_context",
+        payload: {
+          model: "gpt-5.6-sol",
+          effort: "max",
+          service_tier: "fast",
+          approval_policy: "on-request",
+          sandbox_policy: { type: "danger-full-access" },
+        },
+      },
     ]);
     const create = vi.fn(async (_args: PtyCreateArgs) => ({ sessionId: "terminal-1", ptyId: "pty-1", pid: 123 }));
     const service = createExternalSessionsService({
@@ -578,7 +609,6 @@ describe("externalSessionsService", () => {
       laneId: "lane-1",
       target: "cli",
       mode: "resume",
-      permissionMode: "edit",
     });
 
     expect(result).toEqual({ kind: "cli", sessionId: "terminal-1", ptyId: "pty-1", laneId: "lane-1" });
@@ -588,11 +618,24 @@ describe("externalSessionsService", () => {
     expect(args.allowExternalCwd).toBe(false);
     expect(args.startupCommand).toContain("codex --no-alt-screen");
     expect(args.startupCommand).toContain(`resume ${id}`);
+    expect(args.startupCommand).toContain("--model gpt-5.6-sol");
+    expect(args.startupCommand).toContain("model_reasoning_effort");
+    expect(args.startupCommand).toContain("service_tier");
+    expect(args.startupCommand).toContain("--sandbox danger-full-access --ask-for-approval on-request");
+    expect(args.startupCommand).not.toContain("dangerously-bypass");
     expect(args.resumeMetadata).toMatchObject({
       provider: "codex",
       targetKind: "thread",
       targetId: id,
       importedFrom: { provider: "codex", targetId: id, mode: "resume" },
+      launch: {
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max",
+        fastMode: true,
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      },
     });
   });
 

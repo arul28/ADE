@@ -17,6 +17,8 @@ export interface ExternalSessionSummary {
   createdAt: number | null;
   updatedAt: number | null;
   messageCount: number | null;
+  /** Provider launch state recovered from the native session transcript. */
+  launch?: TerminalResumeLaunchConfig | null;
   alreadyImported: boolean;
   importedSessionRef?: { kind: "chat" | "cli"; sessionId: string } | null;
   possiblyActive: boolean;
@@ -30,6 +32,8 @@ export interface ExternalSessionListArgs {
   cwd?: string | null;
   scope?: "project" | "all";
   limit?: number;
+  /** Resolve one provider-native session without scanning or returning the recent list. */
+  sessionId?: string | null;
 }
 
 export interface ExternalSessionImportArgs {
@@ -39,6 +43,8 @@ export interface ExternalSessionImportArgs {
   target: "cli" | "chat";
   mode: "resume" | "fork";
   model?: string;
+  reasoningEffort?: string;
+  fastMode?: boolean;
   permissionMode?: string;
 }
 
@@ -46,4 +52,4 @@ export type ExternalSessionImportResult =
   | { kind: "cli"; sessionId: string; ptyId: string; laneId: string; session?: TerminalSessionSummary }
   | { kind: "chat"; chatSessionId: string; laneId: string; chatSummary: AgentChatSessionSummary };
 import type { AgentChatSessionSummary } from "./chat";
-import type { TerminalSessionSummary } from "./sessions";
+import type { TerminalResumeLaunchConfig, TerminalSessionSummary } from "./sessions";
