@@ -1,12 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { IPC } from "../../../shared/ipc";
 import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
+import {
+  LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+  LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS,
+  LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
+  longRunningLocalRuntimeActionTimeoutMs,
+} from "../localRuntime/localRuntimeTimeoutPolicy";
 
 describe("ipcInvokeTimeoutMs", () => {
-  it("uses the lane delete budget for runtime-backed lane delete actions", () => {
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+  it("keeps local lane delete IPC alive through cold setup and the daemon action", () => {
+    const innerTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("lane.delete")!;
+    const outerTimeoutMs = ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "lane", action: "delete", args: { laneId: "lane-1" } },
-    }])).toBe(4 * 60_000);
+    }]);
+
+    expect(innerTimeoutMs).toBe(4 * 60_000);
+    expect(outerTimeoutMs).toBe(
+      LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS
+      + innerTimeoutMs
+      + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+    );
+    // Model the full cold setup allowance (connect + projects.add) followed by
+    // the full daemon delete budget. The renderer timer still owns the explicit
+    // completion headroom instead of racing the inner timer.
+    expect(
+      outerTimeoutMs
+      - (LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS + innerTimeoutMs),
+    ).toBe(LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS);
+    expect(LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS)
+      .toBeGreaterThan(LOCAL_RUNTIME_PROJECT_TIMEOUT_MS);
+
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
       projectId: "project-1",
@@ -14,11 +38,23 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(4 * 60_000);
   });
 
-  it("uses a bounded archive budget on direct and runtime-backed paths", () => {
+  it("composes cold setup, daemon action, and headroom for archive and unarchive", () => {
     expect(ipcInvokeTimeoutMs(IPC.lanesArchive)).toBe(4 * 60_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
-      request: { domain: "lane", action: "archive", args: { laneId: "lane-1" } },
-    }])).toBe(4 * 60_000);
+    for (const action of ["archive", "unarchive"] as const) {
+      const innerTimeoutMs = longRunningLocalRuntimeActionTimeoutMs(`lane.${action}`)!;
+      const outerTimeoutMs = ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+        request: { domain: "lane", action, args: { laneId: "lane-1" } },
+      }]);
+      expect(outerTimeoutMs).toBe(
+        LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS
+        + innerTimeoutMs
+        + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+      );
+      expect(
+        outerTimeoutMs
+        - (LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS + innerTimeoutMs),
+      ).toBe(LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS);
+    }
   });
 
   it("gives ordinary local runtime calls enough time to bind a cold project", () => {

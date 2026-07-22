@@ -792,6 +792,16 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("passes the project root to the hidden icon worker entrypoint", () => {
+    expect(buildCliPlan([
+      "__ade-project-icon-worker",
+      "/tmp/project with spaces",
+    ])).toEqual({
+      kind: "project-icon-worker",
+      rootPath: "/tmp/project with spaces",
+    });
+  });
+
   it("classifies only ADE temp runtime sockets as ephemeral", () => {
     const tempSocket = path.join(os.tmpdir(), "ade-stdio-rpc-test", "sock", "ade.sock");
 

@@ -124,14 +124,14 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
-  it("keeps the complete inline icon catalog below its hard wire budget", () => {
+  it("keeps the complete inline icon catalog below its hard wire budget", async () => {
     const records = Array.from({ length: 8 }, (_, index) => ({
       rootPath: `/project-${index}`,
       lastOpenedAt: index,
     }));
     const iconPayload = `data:image/png;base64,${"a".repeat(100 * 1024)}`;
 
-    const decorated = decorateProjectListWithIcons(records, (rootPath) => ({
+    const decorated = await decorateProjectListWithIcons(records, (rootPath) => ({
       dataUrl: iconPayload,
       sourcePath: `${rootPath}/icon.png`,
       mimeType: "image/png",
@@ -145,8 +145,8 @@ describe("multi-project RPC server", () => {
     expect(decorated.filter((record) => record.icon.dataUrl).length).toBe(5);
   });
 
-  it("drops an individually oversized icon before it reaches the catalog", () => {
-    const [decorated] = decorateProjectListWithIcons(
+  it("drops an individually oversized icon before it reaches the catalog", async () => {
+    const [decorated] = await decorateProjectListWithIcons(
       [{ rootPath: "/project", lastOpenedAt: 1 }],
       () => ({
         dataUrl: `data:image/png;base64,${"a".repeat(129 * 1024)}`,
@@ -156,6 +156,36 @@ describe("multi-project RPC server", () => {
     );
 
     expect(decorated.icon).toEqual({
+      dataUrl: null,
+      sourcePath: null,
+      mimeType: null,
+    });
+  });
+
+  it("returns at the wall-clock icon budget when a resolver stalls", async () => {
+    const startedAt = performance.now();
+    let eventLoopTicked = false;
+    const eventLoopProbe = setTimeout(() => {
+      eventLoopTicked = true;
+    }, 5);
+    const decorated = await decorateProjectListWithIcons(
+      [{ rootPath: "/slow-project", lastOpenedAt: 1 }],
+      async () => {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        return {
+          dataUrl: "data:image/png;base64,YQ==",
+          sourcePath: "/slow-project/icon.png",
+          mimeType: "image/png",
+        };
+      },
+      40,
+    );
+    const elapsedMs = performance.now() - startedAt;
+    clearTimeout(eventLoopProbe);
+
+    expect(elapsedMs).toBeLessThan(150);
+    expect(eventLoopTicked).toBe(true);
+    expect(decorated[0]?.icon).toEqual({
       dataUrl: null,
       sourcePath: null,
       mimeType: null,
