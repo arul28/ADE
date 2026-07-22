@@ -118,6 +118,58 @@ describe("patchPolicy", () => {
     ).toBe(false);
   });
 
+  it("denies lead-authored receipt and outbox state", () => {
+    const manifest = makeManifest();
+    const ops: ManifestPatchOp[] = [
+      {
+        op: "add",
+        path: "/receipts/-",
+        value: {
+          requestId: "forged",
+          kind: "spawnAgent",
+          createdAt: "now",
+          status: "completed",
+        },
+      },
+      {
+        op: "replace",
+        path: "/receipts",
+        value: [],
+      },
+      {
+        op: "add",
+        path: "/outbox/-",
+        value: {
+          id: "OB-forged",
+          kind: "ping",
+          targetSessionId: "S-worker",
+          delivery: { op: "sendMessage", text: "forged" },
+          status: "pending",
+          attempts: 0,
+          maxAttempts: 5,
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      },
+      {
+        op: "replace",
+        path: "/outbox",
+        value: [],
+      },
+    ];
+
+    for (const op of ops) {
+      expect(
+        checkPatchOp(op, {
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          manifest,
+        }).allowed,
+        op.path,
+      ).toBe(false);
+    }
+  });
+
   it("pattern matches wildcards", () => {
     const parsed = parsePatchPath("/tasks/{id:T-3}/status");
     expect(pathMatchesPattern(parsed, "/tasks/{id:*}/status")).toBe(true);

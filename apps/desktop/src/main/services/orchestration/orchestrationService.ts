@@ -14,6 +14,10 @@ import {
   type ManifestPatchOp,
   type OrchestrationEventPayload,
   type OrchestrationManifest,
+  type OrchestrationOutboxEntry,
+  type OrchestrationOutboxKind,
+  type OrchestrationReceipt,
+  type OrchestrationReceiptKind,
   type OrchestrationManifestPatchRequest,
   type OrchestrationManifestPatchResponse,
   type OrchestrationRole,
@@ -153,6 +157,66 @@ export type OrchestrationServiceDeps = {
   /** Override clock for testing. */
   now?: () => Date;
 };
+
+export type NewOutboxEntry = {
+  kind: OrchestrationOutboxKind;
+  targetSessionId: string;
+  delivery: OrchestrationOutboxEntry["delivery"];
+  requestId?: string;
+  maxAttempts?: number;
+  /** Internal clock injection used by enqueueOutbox; callers normally omit it. */
+  createdAt?: string;
+};
+
+export type OutboxSettlement =
+  | { status: "delivered" }
+  | {
+      status: "failed" | "pending";
+      error: string;
+      backoffMs: number;
+    };
+
+/**
+ * Build service-owned outbox append operations without mutating the manifest.
+ * IDs are deterministic for the manifest generation + entry position, which
+ * keeps a caller free to fold these ops into a larger directPatch transaction.
+ */
+export function buildOutboxEnqueueOps(
+  manifest: OrchestrationManifest,
+  entries: readonly NewOutboxEntry[],
+): ManifestPatchOp[] {
+  return entries.map((entry, index) => {
+    const createdAt = entry.createdAt ?? manifest.updatedAt;
+    const digest = crypto
+      .createHash("sha256")
+      .update(
+        JSON.stringify({
+          runId: manifest.runId,
+          etag: manifest.etag,
+          index,
+          kind: entry.kind,
+          targetSessionId: entry.targetSessionId,
+          delivery: entry.delivery,
+          requestId: entry.requestId,
+        }),
+      )
+      .digest("hex")
+      .slice(0, 16);
+    const value: OrchestrationOutboxEntry = {
+      id: `OB-${digest}`,
+      kind: entry.kind,
+      targetSessionId: entry.targetSessionId,
+      delivery: entry.delivery,
+      status: "pending",
+      attempts: 0,
+      maxAttempts: entry.maxAttempts ?? 5,
+      createdAt,
+      updatedAt: createdAt,
+      ...(entry.requestId ? { requestId: entry.requestId } : {}),
+    };
+    return { op: "add", path: "/outbox/-", value };
+  });
+}
 
 export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   const emitter = new EventEmitter();
@@ -848,6 +912,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           { etag, at: createdAt, summary: "run created", patchKindSummary: "init" },
         ],
         lineage: [],
+        receipts: [],
+        outbox: [],
       };
       await persistManifest(runtime, manifest);
       await persistPlan(runtime, initialPlanMd(manifest));
@@ -1672,25 +1738,36 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   // with role=lead.
   async function directPatch(
     runtime: RunRuntime,
-    patches: readonly ManifestPatchOp[],
+    patches:
+      | readonly ManifestPatchOp[]
+      | ((nextEtag: string) => readonly ManifestPatchOp[]),
     summary: string,
   ): Promise<{ manifest: OrchestrationManifest; etag: string }> {
     assertRunWritable(runtime);
     if (!runtime.manifest) throw new Error("manifest not loaded");
-    const next = normalizeManifestShape(applyPatches(runtime.manifest, patches));
+    const updatedAt = nowIso();
+    const serverGeneration = runtime.manifest.serverGeneration + 1;
+    const etag = makeEtag(runtime, serverGeneration);
+    const resolvedPatches =
+      typeof patches === "function" ? patches(etag) : patches;
+    const next = normalizeManifestShape(
+      applyPatches(runtime.manifest, resolvedPatches),
+    );
     const shapeError = validateManifestShape(next);
     if (shapeError) {
       throw new Error(shapeError);
     }
-    const updatedAt = nowIso();
-    const serverGeneration = runtime.manifest.serverGeneration + 1;
-    const etag = makeEtag(runtime, serverGeneration);
     next.updatedAt = updatedAt;
     next.serverGeneration = serverGeneration;
     next.etag = etag;
     next.history = [
       ...runtime.manifest.history.slice(-HISTORY_RING_LIMIT + 1),
-      { etag, at: updatedAt, summary, patchKindSummary: summarizePatch([...patches]) },
+      {
+        etag,
+        at: updatedAt,
+        summary,
+        patchKindSummary: summarizePatch([...resolvedPatches]),
+      },
     ];
     await persistManifest(runtime, next);
     emit({
@@ -1698,9 +1775,320 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       kind: "manifest",
       etag,
       manifest: next,
-      patch: [...patches],
+      patch: [...resolvedPatches],
     });
     return { manifest: next, etag };
+  }
+
+  function internalMutationError(err: unknown): { ok: false; error: string; message: string } {
+    if (err instanceof OrchestrationRunSuspendedError) {
+      return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+    }
+    if (err instanceof OrchestrationPersistConflictError) {
+      return {
+        ok: false,
+        error: "etag_conflict",
+        message: `manifest on disk advanced to generation ${err.onDisk.serverGeneration}`,
+      };
+    }
+    return {
+      ok: false,
+      error: "mutation_failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  async function reserveReceipt(
+    runId: string,
+    bundlePath: string,
+    args: { requestId: string; kind: OrchestrationReceiptKind },
+  ): Promise<
+    | { ok: true; status: "duplicate"; receipt: OrchestrationReceipt }
+    | { ok: true; status: "reserved" }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const existing = (manifest.receipts ?? []).find(
+        (receipt) => receipt.requestId === args.requestId,
+      );
+      if (existing) {
+        return { ok: true, status: "duplicate", receipt: existing };
+      }
+      const receipt: OrchestrationReceipt = {
+        requestId: args.requestId,
+        kind: args.kind,
+        createdAt: nowIso(),
+        status: "pending",
+      };
+      try {
+        await directPatch(
+          runtime,
+          [{ op: "add", path: "/receipts/-", value: receipt }],
+          `reserve ${args.kind} receipt`,
+        );
+        return { ok: true, status: "reserved" };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  async function completeReceipt(
+    runId: string,
+    bundlePath: string,
+    args: {
+      requestId: string;
+      result: NonNullable<OrchestrationReceipt["result"]>;
+    },
+    extraPatches: readonly ManifestPatchOp[] = [],
+  ): Promise<
+    | { ok: true; manifest: OrchestrationManifest; etag: string }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const receiptIndex = (manifest.receipts ?? []).findIndex(
+        (receipt) => receipt.requestId === args.requestId,
+      );
+      if (receiptIndex < 0) {
+        return {
+          ok: false,
+          error: "receipt_not_found",
+          message: `receipt ${args.requestId} is not reserved`,
+        };
+      }
+      const existing = manifest.receipts![receiptIndex]!;
+      if (existing.status === "completed") {
+        return { ok: true, manifest, etag: manifest.etag };
+      }
+      try {
+        const res = await directPatch(
+          runtime,
+          (nextEtag) => {
+            const receipts = [...(manifest.receipts ?? [])];
+            receipts[receiptIndex] = {
+              ...existing,
+              status: "completed",
+              result: { ...args.result, etag: nextEtag },
+            };
+            return [
+              { op: "replace", path: "/receipts", value: receipts },
+              ...extraPatches,
+            ];
+          },
+          `complete ${existing.kind} receipt`,
+        );
+        return { ok: true, manifest: res.manifest, etag: res.etag };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  async function releaseReceipt(
+    runId: string,
+    bundlePath: string,
+    args: { requestId: string },
+  ): Promise<
+    | { ok: true; manifest: OrchestrationManifest; etag: string }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const existing = (manifest.receipts ?? []).find(
+        (receipt) => receipt.requestId === args.requestId,
+      );
+      if (!existing || existing.status !== "pending") {
+        return { ok: true, manifest, etag: manifest.etag };
+      }
+      const receipts = (manifest.receipts ?? []).filter(
+        (receipt) => receipt.requestId !== args.requestId,
+      );
+      try {
+        const res = await directPatch(
+          runtime,
+          [{ op: "replace", path: "/receipts", value: receipts }],
+          `release ${existing.kind} receipt`,
+        );
+        return { ok: true, manifest: res.manifest, etag: res.etag };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  async function enqueueOutbox(
+    runId: string,
+    bundlePath: string,
+    entries: readonly NewOutboxEntry[],
+  ): Promise<
+    | { ok: true; ids: string[]; etag: string }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      if (!entries.length) return { ok: true, ids: [], etag: manifest.etag };
+      const createdAt = nowIso();
+      const ops = buildOutboxEnqueueOps(
+        manifest,
+        entries.map((entry) => ({ ...entry, createdAt: entry.createdAt ?? createdAt })),
+      );
+      const ids = ops.map(
+        (op) => (op as { value: OrchestrationOutboxEntry }).value.id,
+      );
+      try {
+        const res = await directPatch(runtime, ops, `enqueue ${entries.length} outbox entr${entries.length === 1 ? "y" : "ies"}`);
+        return { ok: true, ids, etag: res.etag };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  function listDueOutbox(runId: string): OrchestrationOutboxEntry[] {
+    const manifest = runs.get(runId)?.manifest;
+    if (!manifest) return [];
+    const nowMs = now().getTime();
+    return (manifest.outbox ?? [])
+      .filter((entry) => {
+        if (entry.status === "delivering") return true;
+        if (entry.status !== "pending") return false;
+        if (!entry.nextAttemptAt) return true;
+        const nextAttemptMs = Date.parse(entry.nextAttemptAt);
+        return !Number.isFinite(nextAttemptMs) || nextAttemptMs <= nowMs;
+      })
+      .map((entry) => structuredClone(entry));
+  }
+
+  async function claimOutboxEntry(
+    runId: string,
+    bundlePath: string,
+    entryId: string,
+  ): Promise<OrchestrationOutboxEntry | null> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended || !runtime.manifest) return null;
+      const manifest = runtime.manifest;
+      const index = (manifest.outbox ?? []).findIndex((entry) => entry.id === entryId);
+      if (index < 0) return null;
+      const existing = manifest.outbox![index]!;
+      if (existing.status !== "pending" && existing.status !== "delivering") return null;
+      const claimed: OrchestrationOutboxEntry = {
+        ...existing,
+        status: "delivering",
+        updatedAt: nowIso(),
+      };
+      const outbox = [...(manifest.outbox ?? [])];
+      outbox[index] = claimed;
+      try {
+        const res = await directPatch(
+          runtime,
+          [{ op: "replace", path: "/outbox", value: outbox }],
+          `claim outbox ${entryId}`,
+        );
+        return res.manifest.outbox?.find((entry) => entry.id === entryId) ?? null;
+      } catch {
+        return null;
+      }
+    });
+  }
+
+  async function settleOutboxEntry(
+    runId: string,
+    bundlePath: string,
+    entryId: string,
+    outcome: OutboxSettlement,
+  ): Promise<void> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    await runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended || !runtime.manifest) return;
+      const manifest = runtime.manifest;
+      const index = (manifest.outbox ?? []).findIndex((entry) => entry.id === entryId);
+      if (index < 0) return;
+      const existing = manifest.outbox![index]!;
+      if (existing.status !== "delivering") return;
+      const updatedAt = nowIso();
+      const outbox = [...(manifest.outbox ?? [])];
+      const patches: ManifestPatchOp[] = [];
+      if (outcome.status === "delivered") {
+        const delivered: OrchestrationOutboxEntry = {
+          ...existing,
+          status: "delivered",
+          updatedAt,
+          deliveredAt: updatedAt,
+        };
+        delete delivered.nextAttemptAt;
+        delete delivered.lastError;
+        outbox[index] = delivered;
+      } else {
+        const attempts = existing.attempts + 1;
+        const permanent = outcome.status === "failed" || attempts >= existing.maxAttempts;
+        const failed: OrchestrationOutboxEntry = {
+          ...existing,
+          status: permanent ? "failed" : "pending",
+          attempts,
+          updatedAt,
+          lastError: outcome.error,
+          ...(permanent
+            ? {}
+            : { nextAttemptAt: new Date(now().getTime() + outcome.backoffMs).toISOString() }),
+        };
+        if (permanent) delete failed.nextAttemptAt;
+        outbox[index] = failed;
+        if (permanent) {
+          patches.push({
+            op: "add",
+            path: "/decisions/-",
+            value: {
+              id: `D-outbox-${shortRand()}`,
+              at: updatedAt,
+              source: "lead",
+              summary: `outbox delivery failed permanently: ${existing.kind} → ${existing.targetSessionId}: ${outcome.error}`,
+            },
+          });
+        }
+      }
+      await directPatch(
+        runtime,
+        [{ op: "replace", path: "/outbox", value: outbox }, ...patches],
+        `settle outbox ${entryId} → ${outbox[index]!.status}`,
+      );
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -2448,6 +2836,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     releaseTask,
     recordValidationRun,
     recordDelegationSpawn,
+    reserveReceipt,
+    completeReceipt,
+    releaseReceipt,
+    enqueueOutbox,
+    listDueOutbox,
+    claimOutboxEntry,
+    settleOutboxEntry,
     agentHeartbeat,
     approvePlan,
     recordPlanningIntake,

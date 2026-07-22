@@ -13,6 +13,7 @@ import {
   type OrchestrationSessionContext,
   type OrchestrationToolSetOptions,
 } from "./orchestrationTools";
+import { drainOutbox } from "./orchestrationOutbox";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 
 const VALID_BRIEF = `
@@ -100,10 +101,14 @@ type Setup = {
   runId: string;
 };
 
-async function setupWithRun(role: "lead" | "worker" | "validator"): Promise<Setup> {
+async function setupWithRun(
+  role: "lead" | "worker" | "validator",
+  options: { now?: () => Date } = {},
+): Promise<Setup> {
   const laneRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ade-orch-tools-"));
   const svc = createOrchestrationService({
     resolveLaneWorktree: () => laneRoot,
+    ...(options.now ? { now: options.now } : {}),
   });
   const created = await svc.runCreate({
     laneId: "L-test",
@@ -364,6 +369,148 @@ describe("spawnAgent tool", () => {
       routingKey: "fallback",
     });
     expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays the original worker for an identical derived spawn request", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const spawn = makeToolSet(setup, "lead", "S-lead").spawnAgent!;
+    const input = {
+      role: "worker" as const,
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    };
+
+    const first: any = await spawn.execute(input);
+    const duplicate: any = await spawn.execute(input);
+
+    expect(first).toMatchObject({ ok: true, sessionId: "S-spawned-1" });
+    expect(duplicate).toMatchObject({
+      ok: true,
+      sessionId: "S-spawned-1",
+      deduped: true,
+    });
+    expect(setup.chat.createSession).toHaveBeenCalledTimes(1);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(
+      manifest.agents.filter((agent) => agent.sessionId === "S-spawned-1"),
+    ).toHaveLength(1);
+  });
+
+  it("deduplicates spawn requests by an explicit requestId", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const spawn = makeToolSet(setup, "lead", "S-lead").spawnAgent!;
+    const input = {
+      role: "worker" as const,
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+      requestId: "spawn-explicit-1",
+    };
+
+    const first: any = await spawn.execute(input);
+    const duplicate: any = await spawn.execute({
+      ...input,
+      goalSummary: "A re-emitted call with changed non-key prose",
+    });
+
+    expect(first.sessionId).toBe("S-spawned-1");
+    expect(duplicate).toMatchObject({
+      ok: true,
+      sessionId: "S-spawned-1",
+      deduped: true,
+    });
+    expect(setup.chat.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a failed brief durable and redelivers it during recovery", async () => {
+    let clock = new Date("2026-01-01T00:00:00.000Z");
+    setup = await setupWithRun("lead", { now: () => clock });
+    await approveRun(setup);
+    setup.chat.sendMessage
+      .mockRejectedValueOnce(new Error("provider temporarily unavailable"))
+      .mockResolvedValue(undefined);
+    const tools = makeToolSet(setup, "lead", "S-lead");
+
+    const spawned: any = await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    });
+
+    expect(spawned).toMatchObject({ ok: true, sessionId: "S-spawned-1" });
+    let manifest = setup.svc.getManifestForRun(setup.runId)!;
+    let brief = manifest.outbox?.find((entry) => entry.kind === "brief");
+    expect(brief).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      lastError: "provider temporarily unavailable",
+    });
+    expect(manifest.agents.some((agent) => agent.sessionId === "S-spawned-1")).toBe(true);
+
+    clock = new Date(brief!.nextAttemptAt!);
+    const recovered: any = await tools.recoverStaleTasks!.execute({});
+
+    expect(recovered.ok).toBe(true);
+    manifest = setup.svc.getManifestForRun(setup.runId)!;
+    brief = manifest.outbox?.find((entry) => entry.id === brief!.id);
+    expect(brief?.status).toBe("delivered");
+    expect(setup.chat.sendMessage).toHaveBeenCalledTimes(2);
+    expect(setup.chat.sendMessage.mock.calls[1]![0]).toMatchObject({
+      sessionId: "S-spawned-1",
+      text: VALID_BRIEF,
+    });
+  });
+
+  it("surfaces a permanently undeliverable brief in the decision log", async () => {
+    let clock = new Date("2026-01-01T00:00:00.000Z");
+    setup = await setupWithRun("lead", { now: () => clock });
+    await approveRun(setup);
+    setup.chat.sendMessage.mockRejectedValue(new Error("provider stays down"));
+    const tools = makeToolSet(setup, "lead", "S-lead");
+
+    await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    });
+
+    let brief = setup.svc
+      .getManifestForRun(setup.runId)!
+      .outbox?.find((entry) => entry.kind === "brief")!;
+    for (let pass = 0; brief.status === "pending" && pass < 10; pass += 1) {
+      clock = new Date(brief.nextAttemptAt!);
+      await drainOutbox(setup.svc, setup.chat, {
+        runId: setup.runId,
+        bundlePath: setup.bundlePath,
+      });
+      brief = setup.svc
+        .getManifestForRun(setup.runId)!
+        .outbox?.find((entry) => entry.id === brief.id)!;
+    }
+
+    expect(brief).toMatchObject({
+      status: "failed",
+      lastError: "provider stays down",
+    });
+    expect(brief.attempts).toBe(brief.maxAttempts);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(
+      manifest.decisions.some(
+        (decision) =>
+          decision.summary.includes("outbox delivery failed permanently") &&
+          decision.summary.includes("brief") &&
+          decision.summary.includes("S-spawned-1"),
+      ),
+    ).toBe(true);
   });
 
   it("allows the lead to override the cosmetic spawn kind", async () => {
@@ -1113,7 +1260,7 @@ describe("messageAgent tool", () => {
     }
   });
 
-  it("lead messageAgent with kind=interrupt-replace invokes interrupt + sendMessage", async () => {
+  it("records cancellation and interrupts a native worker with an active task", async () => {
     setup = await setupWithRun("lead");
     await approveRun(setup);
     // Spawn a target so the manifest membership check passes.
@@ -1126,6 +1273,34 @@ describe("messageAgent tool", () => {
       initialMessage: VALID_BRIEF,
     });
     expect(spawnResult.ok).toBe(true);
+    const beforeTask = setup.svc.getManifestForRun(setup.runId)!;
+    const taskPatch = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: beforeTask.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        summary: "assign cancellation test task",
+        patches: [{
+          op: "add",
+          path: "/tasks/-",
+          value: {
+            id: "T-cancel",
+            phaseId: "developing",
+            title: "Native worker task",
+            description: "Run provider-native Bash work.",
+            status: "in_progress",
+            assigneeSessionId: spawnResult.sessionId,
+            claimedAt: "2026-01-01T00:00:00.000Z",
+            claimLeaseUntil: "2099-01-01T00:00:00.000Z",
+            attempts: [],
+            validationGate: { required: false, stepIds: [] },
+          },
+        }],
+      },
+      setup.bundlePath,
+    );
+    expect(taskPatch.ok).toBe(true);
     const messageAgent = leadTools.messageAgent!;
     setup.chat.sendMessage.mockClear();
     const result: any = await messageAgent.execute({
@@ -1137,15 +1312,23 @@ describe("messageAgent tool", () => {
     });
     expect(result.ok).toBe(true);
     expect(setup.chat.interrupt).toHaveBeenCalledWith({ sessionId: spawnResult.sessionId });
-    expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
-    const sendArgs = setup.chat.sendMessage.mock.calls[0]![0] as Record<string, any>;
-    expect(sendArgs.metadata.orchestrationOrigin.intent).toBe("cancellation");
-    expect(sendArgs.metadata.orchestrationCancellation).toEqual({
-      revert: true,
-      reason: "test",
-    });
+    expect(setup.chat.sendMessage).not.toHaveBeenCalled();
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect(manifest.agents.find((agent) => agent.sessionId === spawnResult.sessionId)?.cancellationRequested).toBe(true);
+    const task = manifest.tasks.find((entry) => entry.id === "T-cancel")!;
+    expect(task.attempts?.find((attempt) => attempt.id === task.currentAttemptId)).toMatchObject({
+      sessionId: spawnResult.sessionId,
+      outcome: "cancelled",
+      failureReason: "test",
+    });
+    expect(
+      manifest.outbox?.some(
+        (entry) =>
+          entry.kind === "cancel_interrupt" &&
+          entry.targetSessionId === spawnResult.sessionId &&
+          entry.status === "delivered",
+      ),
+    ).toBe(true);
     expect(manifest.decisions.some((decision) =>
       decision.summary.includes(`Cancellation requested for ${spawnResult.sessionId}`),
     )).toBe(true);

@@ -24,6 +24,30 @@ export const ORCHESTRATION_TASK_STATUSES = new Set<string>([
   "failed",
 ]);
 
+const RECEIPT_CAP = 200;
+const OUTBOX_TERMINAL_CAP = 200;
+
+const RECEIPT_KINDS = new Set<string>(["spawnAgent", "messageAgent"]);
+const RECEIPT_STATUSES = new Set<string>(["pending", "completed"]);
+const OUTBOX_KINDS = new Set<string>([
+  "brief",
+  "ping",
+  "lead_status",
+  "cancel_interrupt",
+]);
+const OUTBOX_STATUSES = new Set<string>([
+  "pending",
+  "delivering",
+  "delivered",
+  "failed",
+]);
+const OUTBOX_DELIVERY_OPS = new Set<string>([
+  "sendMessage",
+  "steer",
+  "interrupt-replace",
+  "interrupt",
+]);
+
 export function isPhaseId(value: unknown): value is OrchestrationManifest["currentPhase"] {
   return typeof value === "string" && ORCHESTRATION_PHASE_IDS.has(value);
 }
@@ -169,6 +193,79 @@ function ensureLineage(manifest: OrchestrationManifest): void {
   });
 }
 
+function isNonArrayObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function validOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === "string";
+}
+
+function ensureReceipts(manifest: OrchestrationManifest): void {
+  const raw = (manifest as { receipts?: unknown }).receipts;
+  if (!Array.isArray(raw)) {
+    manifest.receipts = [];
+    return;
+  }
+  const seen = new Set<string>();
+  const valid = raw.filter((entry): entry is NonNullable<OrchestrationManifest["receipts"]>[number] => {
+    if (!isNonArrayObject(entry)) return false;
+    const requestId = typeof entry.requestId === "string" ? entry.requestId.trim() : "";
+    if (!requestId || seen.has(requestId)) return false;
+    if (typeof entry.kind !== "string" || !RECEIPT_KINDS.has(entry.kind)) return false;
+    if (typeof entry.createdAt !== "string" || !entry.createdAt.trim()) return false;
+    if (typeof entry.status !== "string" || !RECEIPT_STATUSES.has(entry.status)) return false;
+    if (entry.result !== undefined && !isNonArrayObject(entry.result)) return false;
+    seen.add(requestId);
+    return true;
+  });
+  const completed = valid
+    .filter((entry) => entry.status === "completed")
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const prune = new Set(
+    completed.slice(0, Math.max(0, completed.length - RECEIPT_CAP)).map((entry) => entry.requestId),
+  );
+  manifest.receipts = valid.filter((entry) => !prune.has(entry.requestId));
+}
+
+function ensureOutbox(manifest: OrchestrationManifest): void {
+  const raw = (manifest as { outbox?: unknown }).outbox;
+  if (!Array.isArray(raw)) {
+    manifest.outbox = [];
+    return;
+  }
+  const seen = new Set<string>();
+  const valid = raw.filter((entry): entry is NonNullable<OrchestrationManifest["outbox"]>[number] => {
+    if (!isNonArrayObject(entry)) return false;
+    const id = typeof entry.id === "string" ? entry.id.trim() : "";
+    if (!id || seen.has(id)) return false;
+    if (typeof entry.kind !== "string" || !OUTBOX_KINDS.has(entry.kind)) return false;
+    if (typeof entry.targetSessionId !== "string" || !entry.targetSessionId.trim()) return false;
+    if (!isNonArrayObject(entry.delivery)) return false;
+    if (typeof entry.delivery.op !== "string" || !OUTBOX_DELIVERY_OPS.has(entry.delivery.op)) return false;
+    if (!validOptionalString(entry.delivery.text)) return false;
+    if (entry.delivery.metadata !== undefined && !isNonArrayObject(entry.delivery.metadata)) return false;
+    if (typeof entry.status !== "string" || !OUTBOX_STATUSES.has(entry.status)) return false;
+    if (!Number.isInteger(entry.attempts) || (entry.attempts as number) < 0) return false;
+    if (!Number.isInteger(entry.maxAttempts) || (entry.maxAttempts as number) < 1) return false;
+    if (typeof entry.createdAt !== "string" || !entry.createdAt.trim()) return false;
+    if (typeof entry.updatedAt !== "string" || !entry.updatedAt.trim()) return false;
+    if (!validOptionalString(entry.nextAttemptAt)) return false;
+    if (!validOptionalString(entry.lastError)) return false;
+    if (!validOptionalString(entry.deliveredAt)) return false;
+    if (!validOptionalString(entry.requestId)) return false;
+    seen.add(id);
+    return true;
+  });
+  const terminal = valid
+    .filter((entry) => entry.status === "delivered" || entry.status === "failed")
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+  const prune = new Set(
+    terminal.slice(0, Math.max(0, terminal.length - OUTBOX_TERMINAL_CAP)).map((entry) => entry.id),
+  );
+  manifest.outbox = valid.filter((entry) => !prune.has(entry.id));
+}
+
 // ---------------------------------------------------------------------------
 // Full manifest shape normalization
 // ---------------------------------------------------------------------------
@@ -182,6 +279,8 @@ export function normalizeManifestShape(manifest: OrchestrationManifest): Orchest
   normalizeChecklist(next);
   ensurePlanningAndSpec(next);
   ensureLineage(next);
+  ensureReceipts(next);
+  ensureOutbox(next);
   reconcileActivePhaseProgress(next);
   return next;
 }
@@ -433,6 +532,95 @@ export function validateManifestShape(manifest: OrchestrationManifest): string |
   if (planningError) return planningError;
   const lineageError = validateLineage(manifest.lineage);
   if (lineageError) return lineageError;
+  const receiptsError = validateReceipts(manifest.receipts);
+  if (receiptsError) return receiptsError;
+  const outboxError = validateOutbox(manifest.outbox);
+  if (outboxError) return outboxError;
+  return null;
+}
+
+function validateReceipts(receipts: OrchestrationManifest["receipts"]): string | null {
+  if (receipts === undefined) return null;
+  if (!Array.isArray(receipts)) return "manifest.receipts must be an array";
+  const seen = new Set<string>();
+  for (const receipt of receipts) {
+    if (!receipt || typeof receipt !== "object") return "manifest.receipts entries must be objects";
+    if (typeof receipt.requestId !== "string" || !receipt.requestId.trim()) {
+      return "manifest.receipts entries must include a non-empty requestId";
+    }
+    if (seen.has(receipt.requestId)) {
+      return `manifest.receipts contains duplicate requestId ${receipt.requestId}`;
+    }
+    seen.add(receipt.requestId);
+    if (!RECEIPT_KINDS.has(receipt.kind)) {
+      return `manifest receipt ${receipt.requestId} has invalid kind`;
+    }
+    if (typeof receipt.createdAt !== "string" || !receipt.createdAt.trim()) {
+      return `manifest receipt ${receipt.requestId} must include createdAt`;
+    }
+    if (!RECEIPT_STATUSES.has(receipt.status)) {
+      return `manifest receipt ${receipt.requestId} has invalid status`;
+    }
+    if (receipt.result !== undefined && !isNonArrayObject(receipt.result)) {
+      return `manifest receipt ${receipt.requestId} result must be an object`;
+    }
+  }
+  return null;
+}
+
+function validateOutbox(outbox: OrchestrationManifest["outbox"]): string | null {
+  if (outbox === undefined) return null;
+  if (!Array.isArray(outbox)) return "manifest.outbox must be an array";
+  const seen = new Set<string>();
+  for (const entry of outbox) {
+    if (!entry || typeof entry !== "object") return "manifest.outbox entries must be objects";
+    if (typeof entry.id !== "string" || !entry.id.trim()) {
+      return "manifest.outbox entries must include a non-empty id";
+    }
+    if (seen.has(entry.id)) return `manifest.outbox contains duplicate id ${entry.id}`;
+    seen.add(entry.id);
+    if (!OUTBOX_KINDS.has(entry.kind)) return `manifest outbox entry ${entry.id} has invalid kind`;
+    if (typeof entry.targetSessionId !== "string" || !entry.targetSessionId.trim()) {
+      return `manifest outbox entry ${entry.id} must include targetSessionId`;
+    }
+    if (!entry.delivery || typeof entry.delivery !== "object") {
+      return `manifest outbox entry ${entry.id} must include delivery`;
+    }
+    if (!OUTBOX_DELIVERY_OPS.has(entry.delivery.op)) {
+      return `manifest outbox entry ${entry.id} has invalid delivery op`;
+    }
+    if (!validOptionalString(entry.delivery.text)) {
+      return `manifest outbox entry ${entry.id} delivery.text must be a string`;
+    }
+    if (entry.delivery.metadata !== undefined && !isNonArrayObject(entry.delivery.metadata)) {
+      return `manifest outbox entry ${entry.id} delivery.metadata must be an object`;
+    }
+    if (!OUTBOX_STATUSES.has(entry.status)) {
+      return `manifest outbox entry ${entry.id} has invalid status`;
+    }
+    if (!Number.isInteger(entry.attempts) || entry.attempts < 0) {
+      return `manifest outbox entry ${entry.id} attempts must be a non-negative integer`;
+    }
+    if (!Number.isInteger(entry.maxAttempts) || entry.maxAttempts < 1) {
+      return `manifest outbox entry ${entry.id} maxAttempts must be a positive integer`;
+    }
+    if (typeof entry.createdAt !== "string" || !entry.createdAt.trim()) {
+      return `manifest outbox entry ${entry.id} must include createdAt`;
+    }
+    if (typeof entry.updatedAt !== "string" || !entry.updatedAt.trim()) {
+      return `manifest outbox entry ${entry.id} must include updatedAt`;
+    }
+    for (const [field, value] of [
+      ["nextAttemptAt", entry.nextAttemptAt],
+      ["lastError", entry.lastError],
+      ["deliveredAt", entry.deliveredAt],
+      ["requestId", entry.requestId],
+    ] as const) {
+      if (!validOptionalString(value)) {
+        return `manifest outbox entry ${entry.id} ${field} must be a string`;
+      }
+    }
+  }
   return null;
 }
 

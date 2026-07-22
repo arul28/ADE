@@ -77,6 +77,78 @@ describe("orchestrationService", () => {
     await svc.dispose();
   });
 
+  it("reserves, completes, replays, and releases idempotency receipts", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const created = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Receipt behavior",
+    });
+
+    const reserved = await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "spawn-request-1",
+      kind: "spawnAgent",
+    });
+    expect(reserved).toEqual({ ok: true, status: "reserved" });
+
+    const pendingDuplicate = await svc.reserveReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "spawn-request-1", kind: "spawnAgent" },
+    );
+    expect(pendingDuplicate).toMatchObject({
+      ok: true,
+      status: "duplicate",
+      receipt: { requestId: "spawn-request-1", status: "pending" },
+    });
+
+    const completed = await svc.completeReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "spawn-request-1", result: { sessionId: "S-worker" } },
+    );
+    expect(completed.ok).toBe(true);
+    if (!completed.ok) throw new Error(completed.message);
+
+    const completedDuplicate = await svc.reserveReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "spawn-request-1", kind: "spawnAgent" },
+    );
+    expect(completedDuplicate).toMatchObject({
+      ok: true,
+      status: "duplicate",
+      receipt: {
+        status: "completed",
+        result: { sessionId: "S-worker", etag: completed.etag },
+      },
+    });
+
+    await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "retryable-request",
+      kind: "messageAgent",
+    });
+    const released = await svc.releaseReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "retryable-request" },
+    );
+    expect(released.ok).toBe(true);
+    expect(
+      svc
+        .getManifestForRun(created.runId)!
+        .receipts?.some((receipt) => receipt.requestId === "retryable-request"),
+    ).toBe(false);
+    const reservedAgain = await svc.reserveReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "retryable-request", kind: "messageAgent" },
+    );
+    expect(reservedAgain).toEqual({ ok: true, status: "reserved" });
+    await svc.dispose();
+  });
+
   it("hydrates lane runs from the persistent discovery index after restart", async () => {
     const svc = createOrchestrationService({
       resolveLaneWorktree: () => lane,

@@ -134,6 +134,12 @@ const LEAD_DENY_PATTERNS = [
   // forged or rewritten by an agent.
   "/lineage",
   "/lineage/**",
+  // Idempotency and delivery state are authoritative service-owned records.
+  // Tool implementations write them through mutex-protected directPatch APIs.
+  "/receipts",
+  "/receipts/**",
+  "/outbox",
+  "/outbox/**",
   "/phases/{id:planning}/status",
   "/phases/{id:planning}/completedAt",
   "/currentPhase",

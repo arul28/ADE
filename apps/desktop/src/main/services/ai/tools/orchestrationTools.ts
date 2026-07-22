@@ -36,7 +36,10 @@ import {
   type OrchestrationSpawnAgentRequest,
 } from "../../../../shared/types/orchestration";
 import type { createOrchestrationService } from "../../orchestration/orchestrationService";
-import { validateSpawnBrief } from "../../orchestration/orchestrationService";
+import {
+  buildOutboxEnqueueOps,
+  validateSpawnBrief,
+} from "../../orchestration/orchestrationService";
 import {
   applyOrchestrationPermissionProfile,
   isOrchestrationPlanApproved,
@@ -46,6 +49,7 @@ import {
 
 import { assessPlanReadiness } from "./orchestrationPlanQuality";
 import { deriveSuggestedValidationSteps } from "./orchestrationValidationDerivation";
+import { drainOutbox } from "./orchestrationOutbox";
 import {
   buildOrchestrationSandboxConfig,
   errorMessage,
@@ -152,6 +156,10 @@ const ASSET_KIND_VALUES = [
 ] as const;
 const MODEL_SELECTION_ROLE_VALUES = ["worker", "validator"] as const;
 
+function sha256(value: string): string {
+  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
 const LEAD_READ_ONLY_BASE = new Set([
   "readFile",
   "grep",
@@ -190,6 +198,7 @@ function createSpawnAgentTool(
       goalSummary: z.string().min(1, "goalSummary is required"),
       stepId: z.string().min(1, "stepId is required"),
       initialMessage: z.string().min(1, "initialMessage is required"),
+      requestId: z.string().min(1).optional(),
       spawnKind: z.enum(["subagent", "peer", "none"]).optional(),
       modelOverride: z
         .object({
@@ -228,6 +237,32 @@ function createSpawnAgentTool(
           input.tag,
           input.modelOverride as ModelSelection | undefined,
         );
+        const briefDigest = sha256(input.initialMessage);
+        const requestId =
+          input.requestId ??
+          `spawn:${sha256(
+            `${ctx.runId}|${input.role}|${input.tag}|${input.stepId}|${briefDigest}`,
+          )}`;
+        const reservation = await svc.reserveReceipt(
+          ctx.runId,
+          ctx.bundlePath,
+          { requestId, kind: "spawnAgent" },
+        );
+        if (!reservation.ok) {
+          return {
+            ok: false as const,
+            error: "receipt_reservation_failed",
+            message: reservation.message,
+          };
+        }
+        if (reservation.status === "duplicate") {
+          return {
+            ok: true as const,
+            sessionId: reservation.receipt.result?.sessionId,
+            etag: reservation.receipt.result?.etag,
+            deduped: true,
+          };
+        }
         const interactionMode =
           input.role === "validator"
             ? "orchestrator-validator"
@@ -253,6 +288,7 @@ function createSpawnAgentTool(
             goal: input.goalSummary,
           });
         } catch (err) {
+          await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId });
           return {
             ok: false as const,
             error: "create_session_failed",
@@ -281,48 +317,51 @@ function createSpawnAgentTool(
             },
           },
         };
-        const buildPatchRequest = (ifMatchEtag: string, summary: string) => ({
-          runId: ctx.runId,
-          ifMatchEtag,
-          actorRole: "lead" as const,
-          actorSessionId: ctx.sessionId,
-          summary,
-          patches: [patch],
-        });
-        let patchRes = await svc.manifestPatch(
-          buildPatchRequest(manifest.etag, "spawn agent"),
+        const currentManifest = manifestOrThrow(svc, ctx.runId);
+        const briefOps = buildOutboxEnqueueOps(currentManifest, [{
+          kind: "brief",
+          targetSessionId: created.id,
+          delivery: {
+            op: "sendMessage",
+            text: input.initialMessage,
+            metadata: {
+              orchestrationOrigin: {
+                runId: ctx.runId,
+                fromSessionId: ctx.sessionId,
+                kind: "wake" as OrchestrationPingKind,
+                intent: "directive" as OrchestrationPingIntent,
+                taskId: input.stepId,
+              },
+            },
+          },
+          requestId,
+        }]);
+        const completeRes = await svc.completeReceipt(
+          ctx.runId,
           ctx.bundlePath,
+          { requestId, result: { sessionId: created.id } },
+          [patch, ...briefOps],
         );
-        if (!patchRes.ok && patchRes.error === "etag_conflict") {
-          patchRes = await svc.manifestPatch(
-            buildPatchRequest(patchRes.manifest.etag, "spawn agent (retry)"),
-            ctx.bundlePath,
-          );
-        }
-        if (!patchRes.ok) {
+        if (!completeRes.ok) {
           // Clean up the orphaned session since manifest registration failed
           try {
             await chat.deleteSession({ sessionId: created.id });
           } catch (_cleanupErr) {
             // Best-effort cleanup — log suppressed to avoid masking the root error
           }
+          await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId });
           return {
             ok: false as const,
             error: "manifest_patch_failed",
             message:
               "Created session but failed to append agent row (session cleaned up): " +
-              ("error" in patchRes
-                ? String(patchRes.error)
-                : "unknown"),
+              completeRes.error,
           };
         }
         // Record the lead→child delegation edge (best-effort; never fails the
         // spawn — the agent row is the source of truth, the edge is provenance).
-        // The ledger write advances the manifest etag, so surface its etag to
-        // the caller (fall back to the agent-append etag only if it failed).
-        let latestEtag = patchRes.etag;
         try {
-          const ledger = await svc.recordDelegationSpawn(
+          await svc.recordDelegationSpawn(
             {
               runId: ctx.runId,
               parentSessionId: ctx.sessionId,
@@ -342,39 +381,14 @@ function createSpawnAgentTool(
             },
             ctx.bundlePath,
           );
-          if (ledger.ok) latestEtag = ledger.etag;
         } catch {
           // Supplementary provenance only — swallow.
         }
-        try {
-          await chat.sendMessage(
-            {
-              sessionId: created.id,
-              text: input.initialMessage,
-              metadata: {
-                orchestrationOrigin: {
-                  runId: ctx.runId,
-                  fromSessionId: ctx.sessionId,
-                  kind: "wake" as OrchestrationPingKind,
-                  intent: "directive" as OrchestrationPingIntent,
-                  taskId: input.stepId,
-                },
-              },
-            },
-            { awaitDispatch: false },
-          );
-        } catch (err) {
-          return {
-            ok: true as const,
-            sessionId: created.id,
-            etag: latestEtag,
-            warning: `agent spawned but initial message delivery failed: ${errorMessage(err)}`,
-          };
-        }
+        await drainOutbox(svc, chat, ctx);
         return {
           ok: true as const,
           sessionId: created.id,
-          etag: latestEtag,
+          etag: completeRes.etag,
         };
       });
     },
@@ -404,6 +418,7 @@ function createMessageAgentTool(args: {
       intent: intentSchema,
       text: z.string().min(1),
       taskId: z.string().optional(),
+      requestId: z.string().min(1).optional(),
       cancellation: z
         .object({
           revert: z.union([z.boolean(), z.literal("review")]),
@@ -444,54 +459,25 @@ function createMessageAgentTool(args: {
               "Workers and validators cannot send cancellation directives.",
           };
         }
-        if (intent === "cancellation") {
-          const cancelledAt = new Date().toISOString();
-          const buildCancellationPatch = (
-            current: OrchestrationManifest,
-            summary: string,
-          ) => ({
-            runId: args.ctx.runId,
-            ifMatchEtag: current.etag,
-            actorRole: args.ctx.role,
-            actorSessionId: args.ctx.sessionId,
-            summary,
-            patches: [
-              {
-                op: "add" as const,
-                path: `/agents/{sessionId:${input.targetSessionId}}/cancellationRequested`,
-                value: true,
-              },
-              {
-                op: "add" as const,
-                path: "/decisions/-",
-                value: {
-                  id: `D-cancel-${cancelledAt.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
-                  at: cancelledAt,
-                  source: args.ctx.role,
-                  summary: `Cancellation requested for ${input.targetSessionId}: ${input.cancellation?.reason ?? input.text}`,
-                  ...(input.taskId ? { refs: { taskId: input.taskId } } : {}),
-                },
-              },
-            ] satisfies ManifestPatchOp[],
-          });
-          let patchRes = await args.svc.manifestPatch(
-            buildCancellationPatch(manifest, "cancellation requested"),
-            args.ctx.bundlePath,
-          );
-          if (!patchRes.ok && patchRes.error === "etag_conflict") {
-            patchRes = await args.svc.manifestPatch(
-              buildCancellationPatch(patchRes.manifest, "cancellation requested (retry)"),
-              args.ctx.bundlePath,
-            );
-          }
-          if (!patchRes.ok) {
-            return {
-              ok: false as const,
-              error: "cancellation_patch_failed",
-              message: "Cancellation could not be recorded in the manifest.",
-              detail: "message" in patchRes ? patchRes.message : patchRes.error,
-            };
-          }
+        const requestId =
+          input.requestId ??
+          `msg:${sha256(
+            `${args.ctx.runId}|${args.ctx.sessionId}|${input.targetSessionId}|${input.kind}|${intent}|${input.taskId ?? ""}|${input.text}`,
+          )}`;
+        const reservation = await args.svc.reserveReceipt(
+          args.ctx.runId,
+          args.ctx.bundlePath,
+          { requestId, kind: "messageAgent" },
+        );
+        if (!reservation.ok) {
+          return {
+            ok: false as const,
+            error: "delivery_failed",
+            message: reservation.message,
+          };
+        }
+        if (reservation.status === "duplicate") {
+          return { ok: true as const, deduped: true };
         }
         const origin = {
           runId: args.ctx.runId,
@@ -504,41 +490,177 @@ function createMessageAgentTool(args: {
           orchestrationOrigin: origin,
           ...(input.cancellation ? { orchestrationCancellation: input.cancellation } : {}),
         };
-        try {
-          if (input.kind === "queue") {
-            await args.chat.steer({
-              sessionId: input.targetSessionId,
-              text: input.text,
-              metadata,
-            });
-          } else if (input.kind === "interrupt-replace") {
-            await args.chat.interrupt({ sessionId: input.targetSessionId });
-            await args.chat.sendMessage(
+        if (intent === "cancellation") {
+          const cancelledAt = new Date().toISOString();
+          const buildCancellationPatch = (
+            current: OrchestrationManifest,
+            summary: string,
+          ) => {
+            const patches: ManifestPatchOp[] = [
               {
-                sessionId: input.targetSessionId,
-                text: input.text,
-                metadata,
+                op: "add",
+                path: `/agents/{sessionId:${input.targetSessionId}}/cancellationRequested`,
+                value: true,
               },
-              { awaitDispatch: false },
-            );
-          } else {
-            await args.chat.sendMessage(
               {
-                sessionId: input.targetSessionId,
-                text: input.text,
-                metadata,
+                op: "add",
+                path: "/decisions/-",
+                value: {
+                  id: `D-cancel-${cancelledAt.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+                  at: cancelledAt,
+                  source: args.ctx.role,
+                  summary: `Cancellation requested for ${input.targetSessionId}: ${input.cancellation?.reason ?? input.text}`,
+                  ...(input.taskId ? { refs: { taskId: input.taskId } } : {}),
+                },
               },
-              { awaitDispatch: false },
+            ];
+            for (const task of current.tasks) {
+              if (task.assigneeSessionId !== input.targetSessionId) continue;
+              if (task.status !== "claimed" && task.status !== "in_progress") continue;
+              const attemptId = `A-cancel-${task.id.replace(/[^a-zA-Z0-9_-]/g, "_")}-${cancelledAt.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+              const attempt = {
+                id: attemptId,
+                sessionId: input.targetSessionId,
+                startedAt: task.claimedAt ?? cancelledAt,
+                endedAt: cancelledAt,
+                outcome: "cancelled" as const,
+                failureReason: input.cancellation?.reason ?? input.text,
+              };
+              patches.push(
+                task.attempts
+                  ? {
+                      op: "add",
+                      path: `/tasks/{id:${task.id}}/attempts/-`,
+                      value: attempt,
+                    }
+                  : {
+                      op: "add",
+                      path: `/tasks/{id:${task.id}}/attempts`,
+                      value: [attempt],
+                    },
+                {
+                  op: "add",
+                  path: `/tasks/{id:${task.id}}/currentAttemptId`,
+                  value: attemptId,
+                },
+              );
+            }
+            return {
+              runId: args.ctx.runId,
+              ifMatchEtag: current.etag,
+              actorRole: args.ctx.role,
+              actorSessionId: args.ctx.sessionId,
+              summary,
+              patches,
+            };
+          };
+          let patchRes = await args.svc.manifestPatch(
+            buildCancellationPatch(manifest, "cancellation requested"),
+            args.ctx.bundlePath,
+          );
+          if (!patchRes.ok && patchRes.error === "etag_conflict") {
+            patchRes = await args.svc.manifestPatch(
+              buildCancellationPatch(patchRes.manifest, "cancellation requested (retry)"),
+              args.ctx.bundlePath,
             );
           }
+          if (!patchRes.ok) {
+            await args.svc.releaseReceipt(
+              args.ctx.runId,
+              args.ctx.bundlePath,
+              { requestId },
+            );
+            return {
+              ok: false as const,
+              error: "cancellation_patch_failed",
+              message: "Cancellation could not be recorded in the manifest.",
+              detail: "message" in patchRes ? patchRes.message : patchRes.error,
+            };
+          }
+          const enqueued = await args.svc.enqueueOutbox(
+            args.ctx.runId,
+            args.ctx.bundlePath,
+            [{
+              kind: "cancel_interrupt",
+              targetSessionId: input.targetSessionId,
+              delivery: { op: "interrupt" },
+              requestId,
+            }],
+          );
+          if (!enqueued.ok) {
+            await args.svc.releaseReceipt(
+              args.ctx.runId,
+              args.ctx.bundlePath,
+              { requestId },
+            );
+            return {
+              ok: false as const,
+              error: "delivery_failed",
+              message: enqueued.message,
+            };
+          }
+          const completed = await args.svc.completeReceipt(
+            args.ctx.runId,
+            args.ctx.bundlePath,
+            { requestId, result: {} },
+          );
+          if (!completed.ok) {
+            return {
+              ok: false as const,
+              error: "delivery_failed",
+              message: completed.message,
+            };
+          }
+          await drainOutbox(args.svc, args.chat, args.ctx);
           return { ok: true as const };
-        } catch (err) {
+        }
+
+        const deliveryOp =
+          input.kind === "queue"
+            ? "steer"
+            : input.kind === "interrupt-replace"
+              ? "interrupt-replace"
+              : "sendMessage";
+        const enqueued = await args.svc.enqueueOutbox(
+          args.ctx.runId,
+          args.ctx.bundlePath,
+          [{
+            kind: "ping",
+            targetSessionId: input.targetSessionId,
+            delivery: {
+              op: deliveryOp,
+              text: input.text,
+              metadata,
+            },
+            requestId,
+          }],
+        );
+        if (!enqueued.ok) {
+          await args.svc.releaseReceipt(
+            args.ctx.runId,
+            args.ctx.bundlePath,
+            { requestId },
+          );
           return {
             ok: false as const,
             error: "delivery_failed",
-            message: errorMessage(err),
+            message: enqueued.message,
           };
         }
+        const completed = await args.svc.completeReceipt(
+          args.ctx.runId,
+          args.ctx.bundlePath,
+          { requestId, result: {} },
+        );
+        if (!completed.ok) {
+          return {
+            ok: false as const,
+            error: "delivery_failed",
+            message: completed.message,
+          };
+        }
+        await drainOutbox(args.svc, args.chat, args.ctx);
+        return { ok: true as const };
       });
     },
   });
@@ -1580,6 +1702,7 @@ function createProposeValidationStepsTool(
 function createRecoverStaleTasksTool(
   ctx: OrchestrationSessionContext,
   svc: ReturnType<typeof createOrchestrationService>,
+  chat: OrchestrationAgentChatHandle,
 ) {
   return tool({
     description:
@@ -1592,6 +1715,7 @@ function createRecoverStaleTasksTool(
         if (!res.ok) {
           return { ok: false as const, error: res.error, message: res.message };
         }
+        await drainOutbox(svc, chat, ctx);
         return { ok: true as const, recovered: res.recovered, etag: res.etag };
       }),
   });
@@ -1716,7 +1840,7 @@ export function createOrchestrationToolSet(
     tools.askPlanningRound = createAskPlanningRoundTool(sessionContext, svc, universal);
     tools.recordPlanningOverride = createRecordPlanningOverrideTool(sessionContext, svc);
     tools.proposeValidationSteps = createProposeValidationStepsTool(sessionContext, svc);
-    tools.recoverStaleTasks = createRecoverStaleTasksTool(sessionContext, svc);
+    tools.recoverStaleTasks = createRecoverStaleTasksTool(sessionContext, svc, chat);
     tools.registerAsset = createRegisterAssetTool(sessionContext, svc, chat);
     // Lead may claim tasks during the planning seed (and to pin "lead is
     // working on planning" semantics). Worker-only edits still gate on lead

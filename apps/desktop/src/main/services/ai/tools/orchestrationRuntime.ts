@@ -18,6 +18,7 @@ import type { WorkerSandboxConfig } from "../../../../shared/types";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 import type { createOrchestrationService } from "../../orchestration/orchestrationService";
 import type { OrchestrationAgentChatHandle, OrchestrationSessionContext } from "./orchestrationTools";
+import { drainOutbox } from "./orchestrationOutbox";
 
 // ---------------------------------------------------------------------------
 // Error helper
@@ -88,19 +89,34 @@ export async function notifyLeadStatus(args: {
   if (!manifest) return;
   const leadSessionId = leadSessionIdFor(manifest, args.ctx);
   if (!leadSessionId || leadSessionId === args.ctx.sessionId) return;
-  await args.chat.steer({
-    sessionId: leadSessionId,
-    text: args.text,
-    metadata: {
-      orchestrationOrigin: {
-        runId: args.ctx.runId,
-        fromSessionId: args.ctx.sessionId,
-        kind: "queue" as OrchestrationPingKind,
-        intent: "status" as OrchestrationPingIntent,
-        ...(args.taskId ? { taskId: args.taskId } : {}),
-      },
-    },
-  }).catch(() => undefined);
+  try {
+    const enqueued = await args.svc.enqueueOutbox(
+      args.ctx.runId,
+      args.ctx.bundlePath,
+      [{
+        kind: "lead_status",
+        targetSessionId: leadSessionId,
+        delivery: {
+          op: "steer",
+          text: args.text,
+          metadata: {
+            orchestrationOrigin: {
+              runId: args.ctx.runId,
+              fromSessionId: args.ctx.sessionId,
+              kind: "queue" as OrchestrationPingKind,
+              intent: "status" as OrchestrationPingIntent,
+              ...(args.taskId ? { taskId: args.taskId } : {}),
+            },
+          },
+        },
+      }],
+    );
+    if (!enqueued.ok) return;
+    await drainOutbox(args.svc, args.chat, args.ctx);
+  } catch {
+    // The mutation wrapper remains best-effort at its call boundary. Once the
+    // enqueue succeeds, the manifest outbox preserves the delivery for retry.
+  }
 }
 
 // ---------------------------------------------------------------------------
