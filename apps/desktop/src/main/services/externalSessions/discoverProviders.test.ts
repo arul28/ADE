@@ -311,7 +311,7 @@ describe("external session provider discovery", () => {
     });
   });
 
-  it("retains the prefix Codex launch when a large final record truncates exact tail recovery", async () => {
+  it("retains only non-security Codex preferences when a large final record truncates exact tail recovery", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "repo");
     const id = "25252525-2525-4252-8252-252525252525";
@@ -350,10 +350,6 @@ describe("external session provider discovery", () => {
       model: "gpt-5.6-sol",
       reasoningEffort: "high",
       fastMode: true,
-      permissionMode: "full-auto",
-      codexApprovalPolicy: "never",
-      codexSandbox: "danger-full-access",
-      codexConfigSource: "flags",
     });
   });
 

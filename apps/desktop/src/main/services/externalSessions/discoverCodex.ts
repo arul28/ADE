@@ -369,7 +369,16 @@ async function codexLaunchForFile(
 ): Promise<TerminalResumeLaunchConfig | null> {
   const prefixLaunch = codexLaunchFromRecords(prefixRecords);
   if (!exactLookup) return prefixLaunch;
-  return (await latestCodexLaunchFromFile(filePath, logger)) ?? prefixLaunch;
+  const latestLaunch = await latestCodexLaunchFromFile(filePath, logger);
+  if (latestLaunch) return latestLaunch;
+  if (!prefixLaunch) return null;
+  const fallback: TerminalResumeLaunchConfig = {
+    ...(prefixLaunch.model !== undefined ? { model: prefixLaunch.model } : {}),
+    ...(prefixLaunch.reasoningEffort !== undefined ? { reasoningEffort: prefixLaunch.reasoningEffort } : {}),
+    ...(prefixLaunch.fastMode !== undefined ? { fastMode: prefixLaunch.fastMode } : {}),
+    ...(prefixLaunch.codexFastMode !== undefined ? { codexFastMode: prefixLaunch.codexFastMode } : {}),
+  };
+  return Object.keys(fallback).length ? fallback : null;
 }
 
 function collectProjectScopedCodexSessionCandidates(
