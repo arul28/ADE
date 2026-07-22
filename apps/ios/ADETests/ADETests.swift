@@ -446,7 +446,7 @@ final class ADETests: XCTestCase {
     let service = SyncService(database: database)
     SyncService.shared = service
 
-    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://session/session%201%2F2?lane=lane%26active")))
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://session/session%201%2F2")))
 
     XCTAssertEqual(service.requestedWorkSessionNavigation?.sessionId, "session 1/2")
   }
@@ -969,11 +969,15 @@ final class ADETests: XCTestCase {
   func testWorkSessionDeepLinkMatchesDesktopSessionFormat() {
     XCTAssertEqual(
       workSessionDeepLink(sessionId: "session 1/2", laneId: "lane&active"),
-      "ade://session/session%201%2F2?lane=lane%26active"
+      "https://ade-app.dev/open?type=session&id=session%201%2F2&lane=lane%26active"
     )
     XCTAssertEqual(
       workSessionDeepLink(sessionId: "session-plain", laneId: "   "),
-      "ade://session/session-plain"
+      "https://ade-app.dev/open?type=session&id=session-plain"
+    )
+    XCTAssertEqual(
+      workSessionDeepLink(sessionId: "session 1/2", laneId: "lane&active", form: .ade),
+      "ade://session/session%201%2F2?lane=lane%26active"
     )
   }
 
@@ -7421,7 +7425,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(mirrored.first?.color, "violet")
     XCTAssertEqual(mirrored.last?.attachedRootPath, "/tmp/project/.ade/worktrees/linear-test")
     XCTAssertEqual(mirrored.last?.parentStatus?.dirty, true)
-    XCTAssertEqual(database.listWorkspaces().first?.isReadOnlyByDefault, true)
+    XCTAssertEqual(database.listWorkspaces().first?.isReadOnlyByDefault, false)
     database.close()
   }
 
@@ -14116,7 +14120,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(merged.count, 3)
     XCTAssertEqual(merged.map(\.timestamp), [
       "2026-03-25T00:00:01.000Z",
-      "2026-03-25T00:00:03.000Z",
+      "2026-03-25T00:00:02.000Z",
       "2026-03-25T00:00:04.000Z",
     ])
     XCTAssertEqual(merged[1].id, "chat-1:assistant-text:turn-1:msg-2")
@@ -15977,7 +15981,7 @@ final class ADETests: XCTestCase {
       searchText: ""
     )
 
-    XCTAssertEqual(filtered.map(\.id), ["chat-parent", "shell-child"])
+    XCTAssertEqual(filtered.map(\.id), ["chat-parent", "shell-child", "legacy-cli"])
   }
 
   func testWorkFilteredSessionsPrioritizesWaitingBeforeActiveAndEnded() {
@@ -18066,7 +18070,7 @@ final class ADETests: XCTestCase {
     let cards = buildWorkEventCards(from: transcript).filter { $0.kind == "contextCompact" }
 
     XCTAssertEqual(cards.count, 1)
-    XCTAssertEqual(cards.first?.id, "context-compact:chat-1:turn:turn-compact")
+    XCTAssertEqual(cards.first?.id, "context-compact:chat-1:compaction:turn-compact")
     XCTAssertEqual(cards.first?.title, "Context compacted")
     XCTAssertEqual(cards.first?.body, "Manual\nPre-compact tokens: 12000")
     XCTAssertEqual(cards.first?.isInProgress, false)
@@ -18173,11 +18177,11 @@ final class ADETests: XCTestCase {
       artifacts: [],
       localEchoMessages: []
     )
-    XCTAssertTrue(snapshot.toolCards.isEmpty)
-    XCTAssertFalse(snapshot.timeline.contains { entry in
-      if case .toolGroup = entry.payload { return true }
-      if case .toolCard = entry.payload { return true }
-      return false
+    XCTAssertEqual(snapshot.toolCards.map(\.id), ["call-dup"])
+    XCTAssertTrue(snapshot.timeline.contains { entry in
+      guard case .toolGroup(let group) = entry.payload else { return false }
+      guard case .tool(let card)? = group.members.first else { return false }
+      return group.members.count == 1 && card.id == "call-dup"
     })
   }
 
@@ -18374,7 +18378,13 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(reasoningCards.first?.body?.contains("First thought.") == true)
     XCTAssertTrue(reasoningCards.first?.body?.contains("Second thought.") == true)
     XCTAssertTrue(reasoningCards.first?.body?.contains("Third thought.") == true)
-    XCTAssertEqual(toolGroups.first?.count, 3)
+    XCTAssertEqual(toolGroups.first?.count, 2)
+    let changedFileGroups = snapshot.timeline.compactMap { entry -> WorkChangedFilesGroupModel? in
+      guard case .changedFiles(let group) = entry.payload else { return nil }
+      return group
+    }
+    XCTAssertEqual(changedFileGroups.count, 1)
+    XCTAssertEqual(changedFileGroups.first?.files.map(\.path), ["b.ts"])
   }
 
   func testBuildWorkTimelineCollapsesReasoningTurnWithGroupedWorkRows() {
@@ -18785,7 +18795,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(cards.isEmpty)
   }
 
-  func testBuildWorkTimelineHidesNormalToolCallsOnMobile() {
+  func testBuildWorkTimelineShowsNormalToolCallsOnMobile() {
     let transcript: [WorkChatEnvelope] = [
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -18814,13 +18824,21 @@ final class ADETests: XCTestCase {
       localEchoMessages: []
     )
 
-    XCTAssertTrue(snapshot.toolCards.isEmpty)
+    XCTAssertEqual(snapshot.toolCards.map(\.id), ["tool-1"])
     XCTAssertFalse(snapshot.eventCards.contains { $0.kind == "toolUseSummary" })
-    XCTAssertEqual(snapshot.timeline.count, 1)
+    XCTAssertEqual(snapshot.timeline.count, 2)
     guard case .message(let message)? = snapshot.timeline.first?.payload else {
-      return XCTFail("Expected only the assistant message to remain visible.")
+      return XCTFail("Expected the assistant message before the tool group.")
     }
     XCTAssertEqual(message.markdown, "I will inspect it.")
+    guard case .toolGroup(let group)? = snapshot.timeline.last?.payload else {
+      return XCTFail("Expected the ordinary tool call in a compact tool group.")
+    }
+    guard case .tool(let card)? = group.members.first else {
+      return XCTFail("Expected the tool group to retain the Read card.")
+    }
+    XCTAssertEqual(group.members.count, 1)
+    XCTAssertEqual(card.id, "tool-1")
   }
 
   func testBuildWorkTimelineKeepsMalformedAskUserFallbackOnMobile() {

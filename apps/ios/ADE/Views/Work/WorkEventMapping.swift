@@ -303,7 +303,9 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .systemNotice(kind: noticeKind.rawValue, message: message, detail: prettyPrintedRemoteJSONValue(detail), turnId: turnId, steerId: steerId)
   case .error(let message, let detail, let turnId, _, let errorInfo):
     let detailText = detail ?? prettyPrintedRemoteJSONValue(errorInfo)
-    return .error(message: message, detail: detailText, category: workErrorCategory(message: message, detail: detailText), turnId: turnId)
+    let category = workStructuredErrorCategory(from: errorInfo)
+      ?? workErrorCategory(message: message, detail: detailText)
+    return .error(message: message, detail: detailText, category: category, turnId: turnId)
   case .done(let turnId, let status, let model, let modelId, let usage, let costUsd, let terminalReason):
     var parts = [status.rawValue.replacingOccurrences(of: "_", with: " ").capitalized]
     if let model, !model.isEmpty {
@@ -571,6 +573,20 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
     return .unknown(type: "delegation_state")
   case .unknown(let type):
     return .unknown(type: type)
+  }
+}
+
+private func workStructuredErrorCategory(from errorInfo: RemoteJSONValue?) -> String? {
+  guard case .object(let fields)? = errorInfo,
+        case .string(let rawCategory)? = fields["category"]
+  else { return nil }
+
+  let category = rawCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  switch category {
+  case "auth", "rate_limit", "network", "permission", "general", "busy", "unknown":
+    return category
+  default:
+    return nil
   }
 }
 
