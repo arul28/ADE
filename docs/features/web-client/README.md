@@ -84,7 +84,10 @@ Browser sync client:
   heartbeat, reconnect/backoff, project catalog chunks, and auth-failure
   attribution. DPoP/token preparation begins in parallel with the socket dial;
   transport open and authenticated hello have separate 8-second and 12-second
-  deadlines. Relay sockets negotiate ready-v2 first: no ADE hello is sent
+  deadlines. Relay authorization is renewed in place ahead of expiry even
+  while the tab is hidden, so background timer throttling does not turn a
+  healthy socket into a reconnect loop. Relay sockets negotiate ready-v2
+  first: no ADE hello is sent
   before `accepted` then `ready`; an old Worker that does not send `accepted`
   within the short negotiation window is retried on a fresh legacy socket,
   never downgraded in place. While the page is visible, a 15-second watchdog closes a socket
@@ -183,7 +186,10 @@ Browser `window.ade` adapter:
 - `apps/desktop/src/renderer/webclient/adapter/agentChat.ts`,
   `personalChats.ts`, `lanes.ts`, `git.ts`, `prs.ts`, `project.ts`, `app.ts`, and `misc.ts` -
   web implementations of desktop renderer namespaces, mixing remote commands,
-  sync sub-protocols, and local browser-only state. The chat adapter routes
+  sync sub-protocols, and local browser-only state. The chat adapter subscribes
+  only the selected or explicitly requested chat and bounds initial transcript
+  hydration to 128 KiB; older events page in on demand instead of every chat
+  transcript competing with the active pane. It routes
   smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
   and falls back to the shared deterministic provider label when an older host
   does not advertise the action. It also routes
@@ -286,7 +292,10 @@ Machine runtime and sync host:
   Worker/Durable Object.
 - `apps/ade-cli/src/services/sync/brainProjectActionsSyncHandler.ts` -
   machine-level fallback handler for pairing/project actions before a project
-  host owns the sync listener.
+  host owns the sync listener. The headless machine catalog marks the
+  `ProjectScopeRegistry`'s actual current sync host as `isOpen` on every read,
+  including after a host handoff, so reconnect restoration cannot guess from
+  stale MRU order and bind streams to the wrong project.
 - `apps/ade-cli/src/services/sync/deviceRegistryService.ts` - device records;
   `SyncPeerDeviceType` includes `browser`.
 
@@ -359,8 +368,10 @@ Tests:
   still use an already-verified direct `wss://` route.
   `ws://127.0.0.1:<port>` is for local web-client development only.
 - **The browser has no ADE database.** It does not load cr-sqlite, does not
-  apply changesets, and does not advertise the `changesetAck` capability. A
-  `changeset_batch` only tells the adapter which table domains to refresh.
+  apply changesets, and does not advertise the `changesetAck` capability. It
+  advertises `invalidationOnlyV1`: the host starts it at the current database
+  watermark, the browser performs one full-domain refresh after hello, and
+  later `changeset_batch` envelopes identify only the domains that changed.
 - **Protocol version 1 extensions are additive.** The browser decodes the
   common envelope and ignores valid types it does not implement, including the
   desktop-only `rpc_*` and `fwd_*` channels. Unknown `hello_ok.features` keys
@@ -592,8 +603,12 @@ for their non-Relay routes.
 ## Data strategy: no local DB
 
 The browser intentionally does not maintain a local replica of `.ade/ade.db`.
-`SyncConnection.sendHello` sends `dbVersion: 0` and `capabilities: []`, so the
-host does not treat it like a changeset-acknowledging CRDT peer.
+`SyncConnection.sendHello` sends `dbVersion: 0` and advertises
+`invalidationOnlyV1` (along with Relay reauthorization support), so the host
+does not replay historical CRR rows to a client that cannot apply them. The
+host places the browser at its current watermark; the accepted hello triggers
+a full-domain refresh, and subsequent changeset batches remain live
+invalidation hints rather than replicated state.
 
 Because there is no local replica, every read is a live relay round-trip to the
 machine — where the desktop renderer would hit its in-process cr-sqlite. Two
