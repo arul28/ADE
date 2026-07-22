@@ -3,6 +3,8 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
   AgentChatPermissionMode,
+  PtySendToSessionArgs,
+  TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
   TerminalSessionSummary,
   TerminalToolType,
@@ -42,6 +44,35 @@ export type CleanShellLaunchFields = {
   args: string[];
   env?: Record<string, string>;
 };
+
+export type PtyContinuationLaunchFields = Pick<
+  PtySendToSessionArgs,
+  | "model"
+  | "reasoningEffort"
+  | "fastMode"
+  | "permissionMode"
+  | "codexApprovalPolicy"
+  | "codexSandbox"
+  | "codexConfigSource"
+>;
+
+export function buildPtyContinuationLaunchFields(
+  launch: TerminalResumeLaunchConfig | null | undefined,
+): PtyContinuationLaunchFields {
+  return {
+    ...(launch?.model?.trim() ? { model: launch.model.trim() } : {}),
+    ...(launch?.reasoningEffort?.trim() ? { reasoningEffort: launch.reasoningEffort.trim() } : {}),
+    ...(typeof launch?.fastMode === "boolean"
+      ? { fastMode: launch.fastMode }
+      : typeof launch?.codexFastMode === "boolean"
+        ? { fastMode: launch.codexFastMode }
+        : {}),
+    ...(launch?.permissionMode ? { permissionMode: launch.permissionMode } : {}),
+    ...(launch?.codexApprovalPolicy ? { codexApprovalPolicy: launch.codexApprovalPolicy } : {}),
+    ...(launch?.codexSandbox ? { codexSandbox: launch.codexSandbox } : {}),
+    ...(launch?.codexConfigSource ? { codexConfigSource: launch.codexConfigSource } : {}),
+  };
+}
 
 export const LAUNCH_PROFILES = ["claude", "codex", "cursor", "droid", "opencode", "shell"] as const satisfies readonly LaunchProfile[];
 export const TRACKED_CLI_PERMISSION_MODES = ["default", "auto", "plan", "edit", "full-auto", "config-toml"] as const satisfies readonly AgentChatPermissionMode[];

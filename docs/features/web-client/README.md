@@ -125,7 +125,10 @@ Browser `window.ade` adapter:
 
 - `apps/desktop/src/renderer/webclient/adapter/index.ts` - installs a
   sync-backed `window.ade` surface, including the browser account client, and
-  hides native-only capabilities.
+  hides native-only capabilities. A project rebind creates an explicit project
+  boundary: it drops old terminal subscriptions, clears command-read caches,
+  binds the newly selected id, and fans a full-domain invalidation out before
+  the reused renderer can hydrate stale project data.
 - `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
   OAuth session and account directory onto the reused `window.ade.account`
   contract for status, sign-in/out, machine listing, and machine removal.
@@ -155,7 +158,9 @@ Browser `window.ade` adapter:
   requests and project commands with a stale id.
 - `apps/desktop/src/renderer/webclient/adapter/infra/invalidation.ts` -
   maps changed table names from `invalidation_batch` envelopes to coarse
-  renderer invalidation domains.
+  renderer invalidation domains. Its coalescing timer starts with the first
+  pending change rather than resetting on every one, so sustained chat or
+  terminal activity cannot postpone a lane/session/PR refresh indefinitely.
 - `apps/desktop/src/renderer/webclient/adapter/files.ts` - browser file API
   over sync `file_request`; no local file watcher. List reads
   (`listWorkspaces` / `listTree` / `listTreeChildren`) are coalesced through a
@@ -644,6 +649,12 @@ Incoming `invalidation_batch` envelopes already contain only table names and
 database-version bounds; `connection.ts` validates their table-count and name
 limits before emitting them. `createInvalidationScheduler` maps those names to
 domains such as lanes, sessions, chats, PRs, files, GitHub, and rebase. The
+first pending hint starts the debounce window; later hints coalesce into that
+same drain instead of extending it forever. A project switch is a stronger
+boundary than an ordinary hint: it clears old terminal streams and read caches,
+rebinds the adapter to the selected project id, then invalidates every domain
+before shared surfaces rehydrate.
+
 adapter then refreshes through the appropriate remote command or sub-protocol:
 
 - Remote commands: `command` / `command_ack` / `command_result`, routed by

@@ -331,7 +331,11 @@ Runtime support files outside `services/sync/`:
   desktop's recent-project list (passed in as `legacyRecentProjectRoots`) or are
   an existing Git checkout, marking everything else `"system"`; `add()` upgrades
   a `"system"` row to `"recent"` on an explicit recent registration but never
-  demotes.
+  demotes. Desktop local-runtime action routing uses that default registration
+  only to obtain a project id: an already-cached registration for the same root
+  satisfies the default request, so routine PTY/file actions after a project
+  switch cannot overwrite an explicit recent/desktop registration with
+  `system` / `runtime-auto` metadata.
 - `apps/ade-cli/src/services/personalChats/personalChatScope.ts` — lazy
   machine-owned personal runtime injected into both sync ingress paths. It
   validates personal session ownership and exposes the durable transcript path
@@ -428,11 +432,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   client can only ever drop a saved pairing when the rejection came from
   the machine it is actually paired with), per-peer state,
   changeset fan-out + ack tracking (bounded, windowed exports and smaller-batch
-  recovery from the last acknowledged cursor — see `crdt-model.md`), chat-first
-  scheduling (chat events are pumped before background changesets; peers with
-  active chat subscriptions get a 64 KB changeset target and may defer a
-  background batch above the 512 KB socket watermark, but only for 2 seconds
-  so replication cannot starve), mobile-chat inline-image compaction
+  recovery from the last acknowledged cursor — see `crdt-model.md`), per-peer
+  foreground-first scheduling (each peer has its own serialized
+  chat/changeset-poll chain, so a slow transcript read cannot hold other peers;
+  queued foreground envelopes or active-chat socket pressure defer background
+  changesets for at most 2 seconds, after which only the smaller active-chat
+  batch is admitted before returning to foreground work), mobile-chat inline-image compaction
   (`compactChatEventEnvelopeForSync`: data URIs above 64 KB are removed from
   live sends, snapshots, and replay entries while the desktop event remains
   unchanged and original/omitted byte counts are retained), the mobile changeset diet

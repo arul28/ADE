@@ -1026,6 +1026,76 @@ describe("local runtime connection pool", () => {
     expect(deliveredInput.join("")).toBe(inputChunks.join(""));
   });
 
+  it("lets foreground recent registration satisfy PTY routing after a project switch", async () => {
+    let resolveRegistration!: (value: unknown) => void;
+    const registration = new Promise<unknown>((resolve) => {
+      resolveRegistration = resolve;
+    });
+    const rootPath = path.resolve("/repo");
+    const project = {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    } as const;
+    const deliveredInput: string[] = [];
+    const call = vi.fn((method: string, params?: unknown) => {
+      if (method === "projects.add") return registration;
+      if (method === "ade/actions/call") {
+        const data = (params as {
+          arguments?: { args?: { data?: unknown } };
+        }).arguments?.args?.data;
+        if (typeof data !== "string") throw new Error("PTY write data is missing.");
+        deliveredInput.push(data);
+        return Promise.resolve({
+          domain: "pty",
+          action: "write",
+          result: null,
+          statusHints: {},
+        });
+      }
+      return Promise.reject(new Error(`Unexpected method ${method}`));
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: vi.fn(() => false) },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    // Foregrounding mirrors the desktop-recent intent. Terminal input can
+    // arrive immediately afterward with the internal system/runtime-auto
+    // intent used by action routing.
+    const foreground = pool.ensureProject(rootPath, {
+      catalogVisibility: "recent",
+      registrationSource: "desktop",
+    });
+    const writes = ["a", "b", "\r"].map((data) => pool.callActionForRoot(rootPath, {
+      domain: "pty",
+      action: "write",
+      args: { ptyId: "pty-1", data },
+    }));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+    expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(0);
+
+    resolveRegistration(project);
+    await expect(Promise.all([foreground, ...writes])).resolves.toHaveLength(4);
+
+    // The authoritative foreground record now satisfies background routing;
+    // no second projects.add is inserted before the individual PTY writes.
+    expect(call.mock.calls.filter(([method]) => method === "projects.add")).toHaveLength(1);
+    expect(call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(3);
+    expect(deliveredInput).toEqual(["a", "b", "\r"]);
+  });
+
   it("preserves registration intent order after a conflicting waiter closes the active flight", async () => {
     const rootPath = path.resolve("/repo");
     const project = {
@@ -2912,7 +2982,7 @@ describe("local runtime connection pool", () => {
     });
   });
 
-  it("registers foreground intent and demotes a forgotten project without switching the mobile sync host", async () => {
+  it("keeps foreground catalog metadata authoritative while routing background actions", async () => {
     const rootPath = path.resolve("/repo");
     const project = {
       projectId: "project-1",
@@ -2948,7 +3018,7 @@ describe("local runtime connection pool", () => {
     await pool.setProjectCatalogVisibility(rootPath, "system", "desktop");
     await pool.ensureProject(rootPath);
 
-    expect(call).toHaveBeenCalledTimes(3);
+    expect(call).toHaveBeenCalledTimes(2);
     expect(call).toHaveBeenNthCalledWith(
       1,
       "projects.add",
@@ -2965,11 +3035,10 @@ describe("local runtime connection pool", () => {
       },
       { timeoutMs: expect.any(Number) },
     );
-    expect(call).toHaveBeenNthCalledWith(
-      3,
+    expect(call).not.toHaveBeenCalledWith(
       "projects.add",
       { rootPath, catalogVisibility: "system", registrationSource: "runtime-auto" },
-      { timeoutMs: expect.any(Number) },
+      expect.anything(),
     );
     expect(call).not.toHaveBeenCalledWith("sync.switchHost", expect.anything());
   });

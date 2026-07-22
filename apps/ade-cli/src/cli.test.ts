@@ -792,6 +792,12 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("recognizes the hidden usage ledger worker entrypoint", () => {
+    expect(buildCliPlan(["__ade-usage-ledger-worker"])).toEqual({
+      kind: "usage-ledger-worker",
+    });
+  });
+
   it("passes the project root to the hidden icon worker entrypoint", () => {
     expect(buildCliPlan([
       "__ade-project-icon-worker",

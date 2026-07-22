@@ -323,15 +323,24 @@ inferred from OSC 133 prompt markers.
 ### Process tree termination
 
 `terminatePtyProcessTree(entry, signal, logger)` replaces the older
-single-process `entry.pty.kill(signal)` call. On POSIX it walks the PTY
-root PID's descendant tree via `pgrep -P` (up to
-`PTY_PROCESS_TREE_MAX_DEPTH = 12` levels), signals every descendant in
-reverse depth order, then kills the root. For non-`SIGKILL` signals a
-follow-up timer (`PTY_PROCESS_TREE_KILL_DELAY_MS = 1500 ms`) checks
-whether any descendants survived and sends them `SIGKILL`. This ensures
-that a `SIGTERM` on a tracked agent CLI session kills both the shell and
-any child processes the agent spawned (language servers, dev servers,
-etc.) instead of leaving orphaned process trees.
+single-process `entry.pty.kill(signal)` call. On POSIX, node-pty's
+`forkpty(3)` child is normally its own session and process-group leader, so
+the service first signals that process group directly. In parallel it runs a
+bounded asynchronous `ps` scan (PID, parent PID, process group, and foreground
+process group) to include descendants and groups that a shell or foreground job
+created after launch. The initial signal is never held behind that scan: a
+100 ms fallback sends it if the scan is slow, and the scan itself is capped at
+250 ms. For a non-`SIGKILL` signal, the 1.5 s follow-up rescans using the
+known groups and sends `SIGKILL` to anything still reachable. If that final
+scan cannot complete, ADE force-kills the known PTY/root groups and initial
+members rather than treating scan failure as proof that the tree exited.
+
+Windows first uses node-pty's normal kill path and, if the root still exists
+after the same grace period, uses bounded `taskkill /T /F` as the tree fallback.
+This keeps termination off the main thread's former synchronous recursive
+`pgrep` path while ensuring a `SIGTERM` on a tracked agent CLI also reaches
+language servers, dev servers, and other child processes instead of leaving
+them orphaned.
 
 ### Live session row resync
 

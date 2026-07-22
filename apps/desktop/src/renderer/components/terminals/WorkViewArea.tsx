@@ -45,7 +45,13 @@ import { useChatPrAutoPop } from "../chat/useChatPrAutoPop";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
-import { launchProfileForTerminalSession, type WorkPtyLaunchArgs, type WorkPtyLaunchResult } from "./cliLaunch";
+import {
+  launchProfileForTerminalSession,
+  mergeContinuationLaunch,
+  recoverImportedContinuationLaunch,
+  type WorkPtyLaunchArgs,
+  type WorkPtyLaunchResult,
+} from "./cliLaunch";
 import type { ExternalSessionImportResult, ExternalSessionSummary } from "./importSessions/contract";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -304,81 +310,6 @@ function continuationProviderLabel(provider: TerminalResumeProvider | null): str
   if (provider === "droid") return "Droid";
   if (provider === "opencode") return "OpenCode";
   return "agent CLI";
-}
-
-const CONTINUATION_LAUNCH_LOOKUP_TTL_MS = 60_000;
-const CONTINUATION_LAUNCH_LOOKUP_MAX_ENTRIES = 100;
-
-type ContinuationLaunchLookup = {
-  promise: Promise<TerminalResumeLaunchConfig | null>;
-  expiresAt: number;
-};
-
-const continuationLaunchLookups = new Map<string, ContinuationLaunchLookup>();
-
-function mergeContinuationLaunch(
-  recovered: TerminalResumeLaunchConfig | null,
-  stored: TerminalResumeLaunchConfig | null,
-): TerminalResumeLaunchConfig | null {
-  if (!recovered) return stored;
-  if (!stored) return recovered;
-  const storedCoarsePermission = stored.permissionMode ?? null;
-  return {
-    ...recovered,
-    ...stored,
-    model: stored.model?.trim() || recovered.model?.trim() || null,
-    reasoningEffort: stored.reasoningEffort?.trim() || recovered.reasoningEffort?.trim() || null,
-    permissionMode: stored.permissionMode ?? recovered.permissionMode ?? null,
-    fastMode: stored.fastMode ?? stored.codexFastMode ?? recovered.fastMode ?? recovered.codexFastMode ?? null,
-    codexApprovalPolicy: stored.codexApprovalPolicy
-      ?? (storedCoarsePermission ? null : recovered.codexApprovalPolicy)
-      ?? null,
-    codexSandbox: stored.codexSandbox
-      ?? (storedCoarsePermission ? null : recovered.codexSandbox)
-      ?? null,
-    codexConfigSource: stored.codexConfigSource
-      ?? (storedCoarsePermission ? null : recovered.codexConfigSource)
-      ?? null,
-  };
-}
-
-function recoverImportedContinuationLaunch(
-  provider: TerminalResumeProvider | null,
-  importedProvider: TerminalResumeProvider | null,
-  targetId: string,
-): Promise<TerminalResumeLaunchConfig | null> | null {
-  // Codex rollouts persist a turn_context record with the launch state. Other
-  // providers currently do not expose an equivalent bounded exact lookup.
-  if (provider !== "codex" || importedProvider !== provider || !targetId) return null;
-  const key = `${provider}:${targetId}`;
-  const now = Date.now();
-  const existing = continuationLaunchLookups.get(key);
-  if (existing && existing.expiresAt > now) {
-    continuationLaunchLookups.delete(key);
-    continuationLaunchLookups.set(key, existing);
-    return existing.promise;
-  }
-  if (existing) continuationLaunchLookups.delete(key);
-  const request = window.ade.externalSessions.list({
-    providers: [provider],
-    scope: "all",
-    sessionId: targetId,
-    limit: 1,
-  }).then((sessions) => sessions.find((candidate) => candidate.id === targetId)?.launch ?? null)
-    .catch((error) => {
-      continuationLaunchLookups.delete(key);
-      throw error;
-    });
-  continuationLaunchLookups.set(key, {
-    promise: request,
-    expiresAt: now + CONTINUATION_LAUNCH_LOOKUP_TTL_MS,
-  });
-  while (continuationLaunchLookups.size > CONTINUATION_LAUNCH_LOOKUP_MAX_ENTRIES) {
-    const oldestKey = continuationLaunchLookups.keys().next().value as string | undefined;
-    if (!oldestKey) break;
-    continuationLaunchLookups.delete(oldestKey);
-  }
-  return request;
 }
 
 function continuationPermissionLabel(launch: TerminalResumeLaunchConfig | null): string | null {

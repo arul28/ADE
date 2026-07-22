@@ -7,6 +7,7 @@ import {
   buildOpenCodeReplayResumeCommand,
   defaultTrackedCliStartupCommand,
   deriveTrackedCliInitialInputSessionMeta,
+  mergeContinuationLaunch,
   resolveCleanShellLaunchFields,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
@@ -60,6 +61,49 @@ describe("buildPtyContinuationLaunchFields", () => {
       codexConfigSource: null,
     })).toEqual({ fastMode: true });
     expect(buildPtyContinuationLaunchFields(null)).toEqual({});
+  });
+});
+
+describe("mergeContinuationLaunch", () => {
+  it("prefers stored launch choices while filling missing exact controls", () => {
+    expect(mergeContinuationLaunch({
+      model: "recovered-model",
+      reasoningEffort: "high",
+      fastMode: true,
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    }, {
+      model: " stored-model ",
+      reasoningEffort: null,
+      fastMode: false,
+      permissionMode: null,
+      codexApprovalPolicy: null,
+      codexSandbox: null,
+      codexConfigSource: null,
+    })).toMatchObject({
+      model: "stored-model",
+      reasoningEffort: "high",
+      fastMode: false,
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("does not mix recovered granular Codex controls with a stored coarse permission", () => {
+    expect(mergeContinuationLaunch({
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    }, {
+      permissionMode: "full-auto",
+    })).toMatchObject({
+      permissionMode: "full-auto",
+      codexApprovalPolicy: null,
+      codexSandbox: null,
+      codexConfigSource: null,
+    });
   });
 });
 

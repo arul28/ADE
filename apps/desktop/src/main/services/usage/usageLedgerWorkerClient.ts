@@ -9,6 +9,7 @@ import { terminateProcessTree } from "../shared/processExecution";
 const LEDGER_WORKER_TIMEOUT_MS = 90_000;
 const LEDGER_WORKER_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const LEDGER_WORKER_MAX_ERROR_BYTES = 64 * 1024;
+const INTERNAL_LEDGER_WORKER_ARG = "__ade-usage-ledger-worker";
 
 export type UsageLedgerScanResult = {
   costs: CostSnapshot[];
@@ -22,6 +23,8 @@ type WorkerOptions = {
   signal?: AbortSignal;
   workerPath?: string;
   spawnWorker?: typeof spawn;
+  /** Test seam for the Node SEA runtime, whose executable embeds the worker. */
+  embeddedRuntime?: boolean;
 };
 
 function abortError(): Error {
@@ -31,7 +34,20 @@ function abortError(): Error {
 }
 
 export function resolveUsageLedgerWorkerPath(baseDir = __dirname): string {
-  return path.join(baseDir, "usageLedgerWorker.cjs");
+  const configured = process.env.ADE_USAGE_LEDGER_WORKER_PATH?.trim();
+  if (configured) return configured;
+  const candidates = [
+    path.join(baseDir, "usageLedgerWorker.cjs"),
+    // `npm run dev` executes the source graph through tsx. Reuse its loader in
+    // the child so development gets the same event-loop isolation as builds.
+    path.join(baseDir, "usageLedgerWorkerEntry.ts"),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]!;
+}
+
+function isEmbeddedAdeRuntime(): boolean {
+  const sea = process.getBuiltinModule?.("node:sea") as { isSea?: () => boolean } | undefined;
+  return sea?.isSea?.() === true;
 }
 
 function isCostSnapshot(value: unknown): value is CostSnapshot {
@@ -40,6 +56,14 @@ function isCostSnapshot(value: unknown): value is CostSnapshot {
     && typeof value.todayCostUsd === "number"
     && typeof value.last30dCostUsd === "number"
     && isRecord(value.tokenBreakdown);
+}
+
+function isUsageProvider(value: string): value is UsageProvider {
+  return value === "claude" || value === "codex" || value === "cursor";
+}
+
+function invalidWorkerResult(): never {
+  throw new Error("Usage ledger worker returned an invalid result");
 }
 
 export function parseUsageLedgerWorkerResult(raw: string): UsageLedgerScanResult {
@@ -52,17 +76,51 @@ export function parseUsageLedgerWorkerResult(raw: string): UsageLedgerScanResult
     || !isRecord(parsed.daily7d)
     || !isRecord(parsed.entryCounts)
     || !isRecord(parsed.providerErrors)) {
-    throw new Error("Usage ledger worker returned an invalid result");
+    invalidWorkerResult();
   }
-  return parsed as UsageLedgerScanResult;
+
+  const daily7d: Partial<Record<UsageProvider, number[]>> = {};
+  for (const [provider, value] of Object.entries(parsed.daily7d)) {
+    if (
+      !isUsageProvider(provider)
+      || !Array.isArray(value)
+      || !value.every((entry) => typeof entry === "number" && Number.isFinite(entry))
+    ) {
+      invalidWorkerResult();
+    }
+    daily7d[provider] = value;
+  }
+
+  const entryCounts: Record<string, number> = {};
+  for (const [provider, value] of Object.entries(parsed.entryCounts)) {
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      invalidWorkerResult();
+    }
+    entryCounts[provider] = value;
+  }
+
+  const providerErrors: Record<string, string> = {};
+  for (const [provider, value] of Object.entries(parsed.providerErrors)) {
+    if (typeof value !== "string") invalidWorkerResult();
+    providerErrors[provider] = value;
+  }
+
+  return {
+    costs: parsed.costs,
+    projectCosts: parsed.projectCosts,
+    daily7d,
+    entryCounts,
+    providerErrors,
+  };
 }
 
 export function scanUsageLedgersInWorker(
   projectRoot: string | null | undefined,
   options: WorkerOptions = {},
 ): Promise<UsageLedgerScanResult> {
-  const workerPath = options.workerPath ?? resolveUsageLedgerWorkerPath();
-  if (!fs.existsSync(workerPath)) {
+  const embeddedRuntime = options.embeddedRuntime ?? isEmbeddedAdeRuntime();
+  const workerPath = options.workerPath ?? (embeddedRuntime ? null : resolveUsageLedgerWorkerPath());
+  if (workerPath && !fs.existsSync(workerPath)) {
     return Promise.reject(new Error(`Usage ledger worker is missing: ${workerPath}`));
   }
   if (options.signal?.aborted) return Promise.reject(abortError());
@@ -73,7 +131,13 @@ export function scanUsageLedgersInWorker(
     if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = "1";
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawnWorker(process.execPath, [workerPath], {
+      const workerArgs = embeddedRuntime
+        ? [INTERNAL_LEDGER_WORKER_ARG]
+        : [
+            ...(!options.workerPath && workerPath?.endsWith(".ts") ? process.execArgv : []),
+            workerPath!,
+          ];
+      child = spawnWorker(process.execPath, workerArgs, {
         env,
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
@@ -150,4 +214,5 @@ export const _testing = {
   LEDGER_WORKER_TIMEOUT_MS,
   LEDGER_WORKER_MAX_OUTPUT_BYTES,
   LEDGER_WORKER_MAX_ERROR_BYTES,
+  INTERNAL_LEDGER_WORKER_ARG,
 };

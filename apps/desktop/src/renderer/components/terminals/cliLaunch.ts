@@ -1,8 +1,8 @@
 import type { LaunchProfile } from "../../../shared/cliLaunch";
 import type {
   AgentChatPermissionMode,
-  PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
+  TerminalResumeProvider,
 } from "../../../shared/types";
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { PtyCreateResult } from "../../../shared/types";
@@ -39,33 +39,79 @@ export type WorkPtyLaunchArgs = {
 
 export type WorkPtyLaunchResult = PtyCreateResult;
 
-export type PtyContinuationLaunchFields = Pick<
-  PtySendToSessionArgs,
-  | "model"
-  | "reasoningEffort"
-  | "fastMode"
-  | "permissionMode"
-  | "codexApprovalPolicy"
-  | "codexSandbox"
-  | "codexConfigSource"
->;
+const CONTINUATION_LAUNCH_LOOKUP_TTL_MS = 60_000;
+const CONTINUATION_LAUNCH_LOOKUP_MAX_ENTRIES = 100;
 
-export function buildPtyContinuationLaunchFields(
-  launch: TerminalResumeLaunchConfig | null | undefined,
-): PtyContinuationLaunchFields {
+type ContinuationLaunchLookup = {
+  promise: Promise<TerminalResumeLaunchConfig | null>;
+  expiresAt: number;
+};
+
+const continuationLaunchLookups = new Map<string, ContinuationLaunchLookup>();
+
+export function mergeContinuationLaunch(
+  recovered: TerminalResumeLaunchConfig | null,
+  stored: TerminalResumeLaunchConfig | null,
+): TerminalResumeLaunchConfig | null {
+  if (!recovered) return stored;
+  if (!stored) return recovered;
+  const storedCoarsePermission = stored.permissionMode ?? null;
   return {
-    ...(launch?.model?.trim() ? { model: launch.model.trim() } : {}),
-    ...(launch?.reasoningEffort?.trim() ? { reasoningEffort: launch.reasoningEffort.trim() } : {}),
-    ...(typeof launch?.fastMode === "boolean"
-      ? { fastMode: launch.fastMode }
-      : typeof launch?.codexFastMode === "boolean"
-        ? { fastMode: launch.codexFastMode }
-        : {}),
-    ...(launch?.permissionMode ? { permissionMode: launch.permissionMode } : {}),
-    ...(launch?.codexApprovalPolicy ? { codexApprovalPolicy: launch.codexApprovalPolicy } : {}),
-    ...(launch?.codexSandbox ? { codexSandbox: launch.codexSandbox } : {}),
-    ...(launch?.codexConfigSource ? { codexConfigSource: launch.codexConfigSource } : {}),
+    ...recovered,
+    ...stored,
+    model: stored.model?.trim() || recovered.model?.trim() || null,
+    reasoningEffort: stored.reasoningEffort?.trim() || recovered.reasoningEffort?.trim() || null,
+    permissionMode: stored.permissionMode ?? recovered.permissionMode ?? null,
+    fastMode: stored.fastMode ?? stored.codexFastMode ?? recovered.fastMode ?? recovered.codexFastMode ?? null,
+    codexApprovalPolicy: stored.codexApprovalPolicy
+      ?? (storedCoarsePermission ? null : recovered.codexApprovalPolicy)
+      ?? null,
+    codexSandbox: stored.codexSandbox
+      ?? (storedCoarsePermission ? null : recovered.codexSandbox)
+      ?? null,
+    codexConfigSource: stored.codexConfigSource
+      ?? (storedCoarsePermission ? null : recovered.codexConfigSource)
+      ?? null,
   };
+}
+
+export function recoverImportedContinuationLaunch(
+  provider: TerminalResumeProvider | null,
+  importedProvider: TerminalResumeProvider | null,
+  targetId: string,
+): Promise<TerminalResumeLaunchConfig | null> | null {
+  // Codex rollouts persist a turn_context record with the launch state. Other
+  // providers currently do not expose an equivalent bounded exact lookup.
+  if (provider !== "codex" || importedProvider !== provider || !targetId) return null;
+  const key = `${provider}:${targetId}`;
+  const now = Date.now();
+  const existing = continuationLaunchLookups.get(key);
+  if (existing && existing.expiresAt > now) {
+    continuationLaunchLookups.delete(key);
+    continuationLaunchLookups.set(key, existing);
+    return existing.promise;
+  }
+  if (existing) continuationLaunchLookups.delete(key);
+  const request = window.ade.externalSessions.list({
+    providers: [provider],
+    scope: "all",
+    sessionId: targetId,
+    limit: 1,
+  }).then((sessions) => sessions.find((candidate) => candidate.id === targetId)?.launch ?? null)
+    .catch((error) => {
+      continuationLaunchLookups.delete(key);
+      throw error;
+    });
+  continuationLaunchLookups.set(key, {
+    promise: request,
+    expiresAt: now + CONTINUATION_LAUNCH_LOOKUP_TTL_MS,
+  });
+  while (continuationLaunchLookups.size > CONTINUATION_LAUNCH_LOOKUP_MAX_ENTRIES) {
+    const oldestKey = continuationLaunchLookups.keys().next().value;
+    if (typeof oldestKey !== "string") break;
+    continuationLaunchLookups.delete(oldestKey);
+  }
+  return request;
 }
 
 type WorkPtyPinLookup = {

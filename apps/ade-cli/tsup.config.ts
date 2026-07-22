@@ -45,7 +45,7 @@ export default defineConfig([
       ptyHostWorker: "../desktop/src/main/services/pty/ptyHostWorker.ts",
       cursorSdkWorker: "../desktop/src/main/services/chat/cursorSdkWorker.ts",
       droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts",
-      usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorker.ts"
+      usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorkerEntry.ts"
     },
     format: ["cjs"],
     platform: "node",

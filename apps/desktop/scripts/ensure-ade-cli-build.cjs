@@ -3,20 +3,14 @@
 const cp = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { packagedAdeCliBuildResources } = require("./packaged-ade-cli-resources.cjs");
 
 const desktopRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(desktopRoot, "..", "..");
 const cliRoot = path.join(repoRoot, "apps", "ade-cli");
 
-const distFiles = [
-  path.join(cliRoot, "dist", "cli.cjs"),
-  path.join(cliRoot, "dist", "bootstrap.cjs"),
-  path.join(cliRoot, "dist", "adeRpcServer.cjs"),
-  path.join(cliRoot, "dist", "ptyHostWorker.cjs"),
-  path.join(cliRoot, "dist", "cursorSdkWorker.cjs"),
-  path.join(cliRoot, "dist", "droidSdkWorker.cjs"),
-  path.join(cliRoot, "dist", "tuiClient", "cli.mjs"),
-];
+const distFiles = packagedAdeCliBuildResources({ desktopRoot })
+  .map((entry) => entry.sourcePath);
 
 const sourceEntries = [
   path.join(cliRoot, "src"),
@@ -53,16 +47,29 @@ function newestMtimeMs(entryPath) {
   return newest;
 }
 
+function oldestMtimeMs(entryPath) {
+  let stat;
+  try {
+    stat = fs.statSync(entryPath);
+  } catch {
+    return 0;
+  }
+  if (!stat.isDirectory()) return stat.mtimeMs;
+  const children = fs.readdirSync(entryPath);
+  if (children.length === 0) return 0;
+  return children.reduce(
+    (oldest, child) => Math.min(oldest, oldestMtimeMs(path.join(entryPath, child))),
+    Number.POSITIVE_INFINITY,
+  );
+}
+
 function oldestDistMtimeMs() {
+  if (distFiles.length === 0) return 0;
   let oldest = Number.POSITIVE_INFINITY;
   for (const filePath of distFiles) {
-    let stat;
-    try {
-      stat = fs.statSync(filePath);
-    } catch {
-      return 0;
-    }
-    oldest = Math.min(oldest, stat.mtimeMs);
+    const fileMtime = oldestMtimeMs(filePath);
+    if (fileMtime === 0) return 0;
+    oldest = Math.min(oldest, fileMtime);
   }
   return oldest;
 }

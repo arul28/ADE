@@ -26,9 +26,10 @@ import type {
   SyncRoleSnapshot,
 } from "../../../shared/types";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
-import type {
-  ProjectRegistrationIntent,
-  ProjectRegistrationSource,
+import {
+  SYSTEM_PROJECT_REGISTRATION,
+  type ProjectRegistrationIntent,
+  type ProjectRegistrationSource,
 } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/runtimeRpcClient";
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
@@ -41,12 +42,10 @@ import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runt
 import type { RuntimeHealthSnapshot } from "../../../shared/types/storage";
 import {
   LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
-  LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
   LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
-  LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS,
   LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
   LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
-  longRunningLocalRuntimeActionTimeoutMs,
+  localRuntimeActionTimeoutMs,
 } from "./localRuntimeTimeoutPolicy";
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
@@ -196,6 +195,26 @@ function isSameProjectRegistrationIntent(
 ): boolean {
   return left.catalogVisibility === right.catalogVisibility
     && left.registrationSource === right.registrationSource;
+}
+
+function cachedProjectSatisfiesRegistration(
+  project: RemoteRuntimeProjectRecord,
+  registration: ProjectRegistrationIntent,
+): boolean {
+  // The default runtime-auto registration is only an internal lookup: callers
+  // need a projectId so they can route an action. Any cached registration for
+  // the same normalized root already satisfies that requirement. In
+  // particular, do not overwrite a foreground recent/desktop registration
+  // with system/runtime-auto on every action — that metadata ping-pong forced a
+  // fresh projects.add in front of PTY writes after project switches.
+  if (
+    isSameProjectRegistrationIntent(registration, SYSTEM_PROJECT_REGISTRATION)
+  ) {
+    return true;
+  }
+
+  return project.catalogVisibility === registration.catalogVisibility
+    && project.registrationSource === registration.registrationSource;
 }
 
 export function buildLocalRuntimeServeArgs(
@@ -1026,23 +1045,11 @@ export class LocalRuntimeConnectionPool {
 
   async ensureProject(
     rootPath: string,
-    registration: ProjectRegistrationIntent = {
-      catalogVisibility: "system",
-      registrationSource: "runtime-auto",
-    },
+    registration: ProjectRegistrationIntent = SYSTEM_PROJECT_REGISTRATION,
   ): Promise<RemoteRuntimeProjectRecord> {
     const normalizedRoot = path.resolve(rootPath);
     while (true) {
       this.assertNotDisposed();
-      const cached = this.projectsByRoot.get(normalizedRoot);
-      if (
-        cached
-        && registration.catalogVisibility === "system"
-        && (cached.registrationSource ?? "runtime-auto") === registration.registrationSource
-      ) {
-        return cached;
-      }
-
       const pending = this.projectRegistrationsByRoot.get(normalizedRoot);
       if (pending) {
         if (
@@ -1054,6 +1061,11 @@ export class LocalRuntimeConnectionPool {
         pending.acceptsMatchingWaiters = false;
         await pending.promise.catch(() => undefined);
         continue;
+      }
+
+      const cached = this.projectsByRoot.get(normalizedRoot);
+      if (cached && cachedProjectSatisfiesRegistration(cached, registration)) {
+        return cached;
       }
 
       const registrationPromise = this.registerProject(normalizedRoot, registration);
@@ -1272,12 +1284,8 @@ export class LocalRuntimeConnectionPool {
         entry = await this.connect();
       }
       const tConnect = Date.now();
-      const actionKey = `${request.domain}.${request.action}`;
       const actionCallOptions = {
-        timeoutMs: longRunningLocalRuntimeActionTimeoutMs(actionKey)
-          ?? (request.domain === "file"
-            ? LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS
-            : LOCAL_RUNTIME_ACTION_TIMEOUT_MS),
+        timeoutMs: localRuntimeActionTimeoutMs(request.domain, request.action),
       };
       let value: unknown = undefined;
       let callError: Error | null = null;

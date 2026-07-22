@@ -87,7 +87,12 @@ async function main(): Promise<void> {
   process.stdout.write(JSON.stringify(result));
 }
 
-void main().catch((error) => {
-  process.stderr.write(getErrorMessage(error).slice(0, 64 * 1024));
-  process.exitCode = 1;
-});
+export async function runUsageLedgerWorkerEntrypoint(): Promise<number> {
+  try {
+    await main();
+    return 0;
+  } catch (error) {
+    process.stderr.write(getErrorMessage(error).slice(0, 64 * 1024));
+    return 1;
+  }
+}

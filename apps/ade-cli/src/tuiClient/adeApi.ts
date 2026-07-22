@@ -56,6 +56,10 @@ import type {
 import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
+import {
+  buildPtyContinuationLaunchFields,
+  type PtyContinuationLaunchFields,
+} from "../../../desktop/src/shared/cliLaunch";
 import type {
   ChatTerminalPreviewResult,
   ChatTerminalSession,
@@ -67,6 +71,7 @@ import { discoverAllProjectSlashCommands } from "../../../desktop/src/main/servi
 import type { AdeCodeConnection, AdeCodeInterfaceMode, AdeCodeProvider, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
+export { buildPtyContinuationLaunchFields };
 
 export async function listLanes(
   connection: AdeCodeConnection,
@@ -349,12 +354,13 @@ export async function sendToTerminalSession(args: {
   text: string;
   cols: number;
   rows: number;
-}): Promise<PtySendToSessionResult> {
+} & PtyContinuationLaunchFields): Promise<PtySendToSessionResult> {
   return await args.connection.action<PtySendToSessionResult>("pty", "sendToSession", {
     sessionId: args.sessionId,
     text: args.text,
     cols: args.cols,
     rows: args.rows,
+    ...buildPtyContinuationLaunchFields(args),
   });
 }
 
@@ -363,11 +369,12 @@ export async function resumeTerminalSession(args: {
   sessionId: string;
   cols: number;
   rows: number;
-}): Promise<PtyResumeSessionResult> {
+} & PtyContinuationLaunchFields): Promise<PtyResumeSessionResult> {
   return await args.connection.action<PtyResumeSessionResult>("pty", "resumeSession", {
     sessionId: args.sessionId,
     cols: args.cols,
     rows: args.rows,
+    ...buildPtyContinuationLaunchFields(args),
   });
 }
 

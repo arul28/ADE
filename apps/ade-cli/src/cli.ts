@@ -288,6 +288,7 @@ type CliPlan =
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
+  | { kind: "usage-ledger-worker" }
   | { kind: "project-icon-worker"; rootPath: string }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
@@ -11627,6 +11628,9 @@ function buildCliPlan(
   if (primary === "__ade-pty-host-worker") {
     return { kind: "pty-host-worker" };
   }
+  if (primary === "__ade-usage-ledger-worker") {
+    return { kind: "usage-ledger-worker" };
+  }
   if (primary === "__ade-project-icon-worker") {
     const primaryIndex = args.indexOf(primary);
     return {
@@ -19125,6 +19129,13 @@ async function runCli(
         process.once("disconnect", resolve);
       });
       return { output: "", exitCode: 0 };
+    }
+    if (plan.kind === "usage-ledger-worker") {
+      const { runUsageLedgerWorkerEntrypoint } = await import(
+        "../../desktop/src/main/services/usage/usageLedgerWorker"
+      );
+      const exitCode = await runUsageLedgerWorkerEntrypoint();
+      return { output: "", exitCode };
     }
     if (plan.kind === "desktop") {
       const result = await runDesktopCommand(plan.rest);
