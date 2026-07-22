@@ -1375,10 +1375,12 @@ export function createSyncService(args: SyncServiceArgs) {
           : !tunnelStatus
             ? "Relay tunnel status is unavailable in this ADE process."
             : !relayControlConnected
-              ? tunnelStatus.lastError ?? "Relay control is not connected."
+              ? tunnelStatus.lastControlError
+                ?? tunnelStatus.lastError
+                ?? "Relay control is not connected."
               : !relayBridgeValidated
                 ? tunnelStatus.lastError ?? `Relay bridge to 127.0.0.1:${listenerPort} has not been validated against the current sync port.`
-                : tunnelStatus.lastError;
+                : tunnelStatus.bridgeOpenFailure ?? null;
       let accountDirectory: SyncAccountDirectoryHealth;
       try {
         accountDirectory = args.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(

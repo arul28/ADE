@@ -1567,6 +1567,7 @@ export async function createAdeRuntime(args: {
           : null;
       },
       onIdentityRotated: () => resolvedArgs.syncRuntime?.requestAccountMachinePublish?.(),
+      onRouteStateChanged: () => resolvedArgs.syncRuntime?.requestAccountMachinePublish?.(),
     });
     resolvedArgs.syncRuntime?.sharedSyncListener?.onLoopbackValidated(() => {
       void service.validateCurrentBridge().catch((error) => {

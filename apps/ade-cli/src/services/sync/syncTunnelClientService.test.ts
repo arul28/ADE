@@ -808,6 +808,147 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
+  it("keeps a failed pipe diagnostic until a fresh tunnel reaches ready", async () => {
+    const sockets: StubWebSocket[] = [];
+    const expectedNonce = "c".repeat(32);
+    const onRouteStateChanged = vi.fn();
+    const loopbackProbe = vi.fn(async (port: number) => ({
+      ok: true as const,
+      port,
+      statusCode: 426,
+      statusMessage: "Upgrade Required",
+      markerValue: expectedNonce,
+      checkedAt: new Date().toISOString(),
+      reason: null,
+    }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(),
+      loopbackProbe,
+      onRouteStateChanged,
+      reconnectBackoffMs: () => 0,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const control = sockets[0];
+      control.open();
+      await vi.waitFor(() => expect(service.getStatus().relayBridgeValidated).toBe(true));
+      expect(loopbackProbe).toHaveBeenCalledOnce();
+
+      control.receive(epochOpen(control.url, "abcdef10"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(3));
+      const cancelledPipe = sockets.find((socket) => socket.url.includes("/pipe/abcdef10"));
+      expect(cancelledPipe).toBeTruthy();
+      cancelledPipe!.remoteClose(1000, "candidate cancelled");
+      await vi.waitFor(() => expect(service.getStatus().activeTunnels).toBe(0));
+      expect(service.getStatus()).toMatchObject({
+        lastError: null,
+        bridgeOpenFailure: null,
+      });
+      expect(onRouteStateChanged).not.toHaveBeenCalled();
+
+      control.receive(epochOpen(control.url, "abcdef11"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(5));
+      const firstPipe = sockets.find((socket) => socket.url.includes("/pipe/abcdef11"));
+      expect(firstPipe).toBeTruthy();
+      firstPipe!.emit("error", new Error("injected relay pipe open failure"));
+
+      const failedAt = service.getStatus().lastFailureAt;
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        relayBridgeValidated: true,
+        activeTunnels: 0,
+        lastError: "injected relay pipe open failure",
+        bridgeOpenFailure: "injected relay pipe open failure",
+        lastControlError: null,
+      });
+      expect(failedAt).not.toBeNull();
+
+      // A cached/proactive loopback probe does not prove that the Relay pipe
+      // recovered, so it must not erase the diagnostic or publish success.
+      await expect(service.validateCurrentBridge()).resolves.toBe(true);
+      expect(loopbackProbe).toHaveBeenCalledOnce();
+      expect(service.getStatus().lastError).toBe("injected relay pipe open failure");
+      await vi.waitFor(() => expect(onRouteStateChanged).toHaveBeenCalledOnce());
+
+      control.receive(epochOpen(control.url, "abcdef12"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(7));
+      const secondPipe = sockets.find((socket) => socket.url.includes("/pipe/abcdef12"));
+      const secondLocal = sockets[6];
+      expect(secondPipe).toBeTruthy();
+      expect(secondLocal.url).toBe("ws://127.0.0.1:8787");
+      secondPipe!.open();
+      secondLocal.open();
+
+      await vi.waitFor(() => {
+        expect(control.sent.map((raw) => JSON.parse(raw) as { t?: string; id?: string }))
+          .toContainEqual(expect.objectContaining({ t: "ready", id: "abcdef12" }));
+        expect(service.getStatus()).toMatchObject({
+          connected: true,
+          relayBridgeValidated: true,
+          activeTunnels: 1,
+          lastError: null,
+          bridgeOpenFailure: null,
+          lastFailureAt: failedAt,
+        });
+        expect(onRouteStateChanged).toHaveBeenCalledTimes(2);
+      });
+
+      // A secondary/losing attempt cannot poison the route while another
+      // tunnel is already carrying authenticated traffic.
+      control.receive(epochOpen(control.url, "abcdef13"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(9));
+      const thirdPipe = sockets.find((socket) => socket.url.includes("/pipe/abcdef13"));
+      expect(thirdPipe).toBeTruthy();
+      thirdPipe!.emit("error", new Error("secondary pipe failure"));
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        relayBridgeValidated: true,
+        activeTunnels: 1,
+        lastError: null,
+        bridgeOpenFailure: null,
+      });
+      expect(onRouteStateChanged).toHaveBeenCalledTimes(2);
+
+      // Ready data tunnels can outlive their control socket. They prove only
+      // their own generation and must not mask a new-generation setup failure.
+      control.remoteClose();
+      await vi.waitFor(() => expect(sockets).toHaveLength(10));
+      const replacementControl = sockets[9];
+      replacementControl.open();
+      await vi.waitFor(() => {
+        expect(loopbackProbe).toHaveBeenCalledTimes(2);
+        expect(service.getStatus().relayBridgeValidated).toBe(true);
+      });
+      replacementControl.receive(epochOpen(replacementControl.url, "abcdef14"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(12));
+      const replacementPipe = sockets.find((socket) => socket.url.includes("/pipe/abcdef14"));
+      expect(replacementPipe).toBeTruthy();
+      replacementPipe!.emit("error", new Error("new-generation pipe failure"));
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        relayBridgeValidated: true,
+        activeTunnels: 1,
+        lastError: "new-generation pipe failure",
+        bridgeOpenFailure: "new-generation pipe failure",
+      });
+      await vi.waitFor(() => expect(onRouteStateChanged).toHaveBeenCalledTimes(3));
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("closes both tunnel sides with 4509 when Node's live send queue is full", async () => {
     const sockets: StubWebSocket[] = [];
     const expectedNonce = "c".repeat(32);

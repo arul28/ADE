@@ -729,11 +729,15 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   guarded reconnect state machine without waking the hibernated Durable Object
   with JSON traffic. Opens that fail validation, local-listener setup, or pipe
   setup send a bounded `{t:"reject"}` signal so the waiting controller closes
-  immediately instead of hanging. Pipe/local application close codes and
-  sanitized reasons are preserved across the bridge; other closes normalize to
-  `4000`. Account loss clears validation and all sockets, while account switches
-  force a clean control reconnect. Control observability preserves the
-  causal failure rather than replacing it with a generic WebSocket error:
+  immediately instead of hanging. A real pipe/local setup error or timeout is
+  also a generation-scoped publication blocker until a fresh tunnel reaches
+  `ready`; cached loopback validation cannot clear it, ordinary cancelled
+  candidate closes do not create it, and a failed secondary attempt cannot
+  poison a route that already has a ready tunnel. Pipe/local application close
+  codes and sanitized reasons are preserved across the bridge; other closes
+  normalize to `4000`. Account loss clears validation and all sockets, while
+  account switches force a clean control reconnect. Control observability
+  preserves the causal failure rather than replacing it with a generic WebSocket error:
   upgrade rejection captures the HTTP status and at most 512 sanitized response
   bytes; close telemetry records code, reason, and whether the socket opened.
   `sync_tunnel.claimed`, `.claim_failed`, `.control_open`, `.control_error`, and
