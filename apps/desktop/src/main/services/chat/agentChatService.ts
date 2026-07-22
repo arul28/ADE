@@ -8255,7 +8255,7 @@ export function createAgentChatService(args: {
     transcriptPath: string,
     stat: fs.Stats,
     maxBytes: number,
-  ): { raw: string; truncated: boolean; startOffset: number } => {
+  ): { raw: string; truncated: boolean; startOffset: number; endOffset: number } => {
     if (transcriptPath.endsWith(".gz")) {
       const full = readHistoryFileSync(transcriptPath);
       const size = full.length;
@@ -8275,6 +8275,7 @@ export function createAgentChatService(args: {
         raw: slice.toString("utf8"),
         truncated: start > 0,
         startOffset: start > 0 ? startOffset : 0,
+        endOffset: size,
       };
     }
     const size = stat.size;
@@ -8284,7 +8285,7 @@ export function createAgentChatService(args: {
     // complete line: if byte `start - 1` is "\n" the line at `start` is kept.
     const readStart = Math.max(0, start - 1);
     const length = size - readStart;
-    if (length <= 0) return { raw: "", truncated: false, startOffset: 0 };
+    if (length <= 0) return { raw: "", truncated: false, startOffset: 0, endOffset: size };
     const fd = fs.openSync(transcriptPath, "r");
     try {
       const out = Buffer.allocUnsafe(length);
@@ -8308,7 +8309,12 @@ export function createAgentChatService(args: {
           startOffset = start;
         }
       }
-      return { raw: slice.toString("utf8"), truncated, startOffset: truncated ? startOffset : 0 };
+      return {
+        raw: slice.toString("utf8"),
+        truncated,
+        startOffset: truncated ? startOffset : 0,
+        endOffset: size,
+      };
     } finally {
       fs.closeSync(fd);
     }
@@ -8352,10 +8358,11 @@ export function createAgentChatService(args: {
       };
     }
 
-    const { raw, truncated, startOffset } = readTranscriptTailForHistory(transcriptPath, stat, maxBytes);
-    const endOffset = transcriptPath.endsWith(".gz")
-      ? readHistoryFileSync(transcriptPath).length
-      : stat.size;
+    const { raw, truncated, startOffset, endOffset } = readTranscriptTailForHistory(
+      transcriptPath,
+      stat,
+      maxBytes,
+    );
     const hasCapNotice = raw.includes(CHAT_TRANSCRIPT_LIMIT_NOTICE.trim());
     const envelopes = parseAgentChatTranscript(raw)
       .filter((entry) => entry.sessionId === sessionId);
@@ -8453,7 +8460,7 @@ export function createAgentChatService(args: {
         const parsed = parseTranscriptHistoryTail(sessionId, transcriptPath, maxBytes);
         const candidate: Candidate = {
           path: transcriptPath,
-          size: transcriptPath.endsWith(".gz") ? readHistoryFileSync(transcriptPath).length : stat.size,
+          size: parsed.endOffset,
           mtimeMs: stat.mtimeMs,
           envelopeCount: parsed.envelopes.length,
           hasCapNotice: parsed.hasCapNotice,
