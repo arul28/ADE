@@ -189,7 +189,12 @@ Browser `window.ade` adapter:
   sync sub-protocols, and local browser-only state. The chat adapter subscribes
   only the selected or explicitly requested chat and bounds initial transcript
   hydration to 128 KiB; older events page in on demand instead of every chat
-  transcript competing with the active pane. It routes
+  transcript competing with the active pane. It retains at most eight
+  most-recently used chat streams and evicts the oldest before opening another,
+  keeping aggregate snapshots below the Relay bridge budget. Host-side
+  pagination ranks durable and legacy transcript candidates through one fixed
+  identity window, so the initial tail and every older page keep addressing the
+  same file even when their response byte budgets differ. It routes
   smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
   and falls back to the shared deterministic provider label when an older host
   does not advertise the action. It also routes
@@ -372,6 +377,10 @@ Tests:
   advertises `invalidationOnlyV1`: the host starts it at the current database
   watermark, the browser performs one full-domain refresh after hello, and
   later `changeset_batch` envelopes identify only the domains that changed.
+  The host must confirm that contract through
+  `hello_ok.features.invalidationOnlyV1`; an older host is closed immediately
+  with concrete desktop-update guidance instead of being allowed to replay its
+  historical CRR backlog through Relay.
 - **Protocol version 1 extensions are additive.** The browser decodes the
   common envelope and ignores valid types it does not implement, including the
   desktop-only `rpc_*` and `fwd_*` channels. Unknown `hello_ok.features` keys

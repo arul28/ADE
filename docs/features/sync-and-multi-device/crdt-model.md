@@ -324,6 +324,17 @@ most 2 seconds, so a busy chat cannot starve CRR convergence. The byte/row
 limits are split targets rather than hard transaction caps: one complete
 `db_version` group is admitted even when that group alone exceeds a target.
 
+Hosted browsers negotiate `invalidationOnlyV1` because they have no local CRR
+replica. A supporting host confirms the capability in `hello_ok`, starts a new
+browser at the current database watermark, and sends only post-connect rows as
+invalidation hints after the browser's initial full-domain refresh. Same-DB
+socket handoff restores the deposited live cursor so writes committed during
+the handoff window are not skipped. Foreground requests defer changesets only
+for their own peer and for at most 2 seconds; the forced fairness batch is
+bounded to the active-chat 64 KB/64-row limits. Browsers close with desktop
+update guidance when an older host does not confirm the contract, preventing a
+historical replay from overflowing the Relay bridge.
+
 ### Apply
 
 ```sql
