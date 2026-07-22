@@ -2874,6 +2874,71 @@ describe("ptyService", () => {
       );
     });
 
+    it("sendToSession persists a coarse Codex permission override across later continuations", async () => {
+      const { service, sessionService, mockPty, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-ended-permission-override",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-ended-permission-override.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen --sandbox danger-full-access --ask-for-approval never resume thread-permission-override",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-permission-override",
+          launch: {
+            permissionMode: "full-auto",
+            codexApprovalPolicy: "never",
+            codexSandbox: "danger-full-access",
+            codexConfigSource: "flags",
+          },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-ended-permission-override",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await service.sendToSession({
+        sessionId: "session-ended-permission-override",
+        text: "first continuation",
+        permissionMode: "plan",
+      });
+
+      expect(sessionService.get("session-ended-permission-override")?.resumeMetadata?.launch).toMatchObject({
+        permissionMode: "plan",
+        codexApprovalPolicy: null,
+        codexSandbox: null,
+        codexConfigSource: null,
+      });
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      expect(spawn).toHaveBeenLastCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"first continuation\""],
+        expect.any(Object),
+      );
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+
+      await service.sendToSession({
+        sessionId: "session-ended-permission-override",
+        text: "later continuation",
+      });
+
+      const laterSpawn = (loadPty.mock.results[1]?.value as any).spawn;
+      expect(laterSpawn).toHaveBeenCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"later continuation\""],
+        expect.any(Object),
+      );
+    });
+
     it("sendToSession rebuilds legacy resumeCommand-only sessions with the prompt at launch", async () => {
       const { service, sessionService, mockPty, loadPty } = createHarness();
       sessionService.create({

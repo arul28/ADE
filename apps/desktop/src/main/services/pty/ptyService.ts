@@ -4970,14 +4970,28 @@ export function createPtyService({
       let resumableSession = resolvedResume.session;
       const provider = resolvedResume.provider;
       const overrides = resumeLaunchOverrides(args);
+      const resetsStoredCodexPermissionProfile = provider === "codex"
+        && overrides.permissionMode !== undefined;
       const launchOverridePatch = {
         ...(overrides.model !== undefined ? { model: overrides.model } : {}),
         ...(overrides.reasoningEffort !== undefined ? { reasoningEffort: overrides.reasoningEffort } : {}),
         ...(overrides.fastMode !== undefined ? { fastMode: overrides.fastMode } : {}),
         ...(overrides.permissionMode !== undefined ? { permissionMode: overrides.permissionMode } : {}),
-        ...(overrides.codexApprovalPolicy !== undefined ? { codexApprovalPolicy: overrides.codexApprovalPolicy } : {}),
-        ...(overrides.codexSandbox !== undefined ? { codexSandbox: overrides.codexSandbox } : {}),
-        ...(overrides.codexConfigSource !== undefined ? { codexConfigSource: overrides.codexConfigSource } : {}),
+        ...(overrides.codexApprovalPolicy !== undefined
+          ? { codexApprovalPolicy: overrides.codexApprovalPolicy }
+          : resetsStoredCodexPermissionProfile
+            ? { codexApprovalPolicy: null }
+            : {}),
+        ...(overrides.codexSandbox !== undefined
+          ? { codexSandbox: overrides.codexSandbox }
+          : resetsStoredCodexPermissionProfile
+            ? { codexSandbox: null }
+            : {}),
+        ...(overrides.codexConfigSource !== undefined
+          ? { codexConfigSource: overrides.codexConfigSource }
+          : resetsStoredCodexPermissionProfile
+            ? { codexConfigSource: null }
+            : {}),
       };
       if (resumableSession.resumeMetadata && Object.keys(launchOverridePatch).length > 0) {
         resumableSession = sessionService.updateMeta({
