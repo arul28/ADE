@@ -172,7 +172,7 @@ describe("ProjectScopeRegistry", () => {
   });
 
   it("warms the most recently opened project as the sync host", async () => {
-    const { registry, first, second } = createRegistry();
+    const { registry, first } = createRegistry();
     const file = JSON.parse(fs.readFileSync(registry.path, "utf8")) as {
       projects: Array<{ projectId: string; lastOpenedAt: number; addedAt: number }>;
     };
@@ -355,12 +355,12 @@ describe("ProjectScopeRegistry", () => {
     expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
   });
 
-  it("lets the newest concurrent sync-host selection win without flapping an intermediate host", async () => {
+  it("coalesces a queued A -> B -> C selection before booting the superseded target", async () => {
     const { registry, first, second } = createRegistry();
     const thirdRoot = path.join(path.dirname(first.rootPath), "third-concurrent");
     fs.mkdirSync(thirdRoot, { recursive: true });
     const third = registry.add(thirdRoot);
-    const secondRuntime = deferred<any>();
+    const thirdRuntime = deferred<any>();
     const makeSyncService = () => ({
       initialize: vi.fn(async () => undefined),
       setHostDiscoveryEnabled: vi.fn(),
@@ -371,8 +371,7 @@ describe("ProjectScopeRegistry", () => {
     const thirdSyncService = makeSyncService();
     createAdeRuntimeMock
       .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
-      .mockImplementationOnce(() => secondRuntime.promise)
-      .mockResolvedValueOnce({ dispose: vi.fn(), syncService: thirdSyncService });
+      .mockImplementationOnce(() => thirdRuntime.promise);
     const scopeRegistry = new ProjectScopeRegistry(registry, {
       syncRuntime: {
         enabled: true,
@@ -388,14 +387,233 @@ describe("ProjectScopeRegistry", () => {
     const switchToSecond = scopeRegistry.switchSyncHost(second.projectId);
     const switchToThird = scopeRegistry.switchSyncHost(third.projectId);
     await new Promise((resolve) => setImmediate(resolve));
-    secondRuntime.resolve({ dispose: vi.fn(), syncService: secondSyncService });
-    await Promise.all([switchToSecond, switchToThird]);
+    expect(createAdeRuntimeMock.mock.calls.map(([args]) => args.projectRoot)).toEqual([
+      first.rootPath,
+      third.rootPath,
+    ]);
+    thirdRuntime.resolve({ dispose: vi.fn(), syncService: thirdSyncService });
+    const [secondResult, thirdResult] = await Promise.all([switchToSecond, switchToThird]);
 
+    expect(secondResult).toBeNull();
+    expect(thirdResult?.registryProjectId).toBe(third.projectId);
     expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(third.projectId);
+    expect(secondSyncService.initialize).not.toHaveBeenCalled();
     expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
     expect(thirdSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
     expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledTimes(1);
     expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
+  });
+
+  it("does not let a never-resolving obsolete cold boot delay the newest host", async () => {
+    vi.useFakeTimers();
+    try {
+      const { registry, first, second } = createRegistry();
+      const thirdRoot = path.join(path.dirname(first.rootPath), "third-after-stuck-boot");
+      fs.mkdirSync(thirdRoot, { recursive: true });
+      const third = registry.add(thirdRoot);
+      const stuckSecondRuntime = deferred<any>();
+      const makeSyncService = () => ({
+        initialize: vi.fn(async () => undefined),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn(async () => undefined),
+      });
+      const firstSyncService = makeSyncService();
+      const thirdSyncService = makeSyncService();
+      createAdeRuntimeMock
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+        .mockImplementationOnce(() => stuckSecondRuntime.promise)
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: thirdSyncService });
+      const scopeRegistry = new ProjectScopeRegistry(registry, {
+        syncRuntime: {
+          enabled: true,
+          hostStartupEnabled: true,
+          hostDiscoveryEnabled: true,
+          forceHostRole: false,
+          runtimeKind: "daemon",
+        },
+      });
+      await scopeRegistry.switchSyncHost(first.projectId);
+      firstSyncService.setHostStartupEnabled.mockClear();
+
+      const switchToSecond = scopeRegistry.switchSyncHost(second.projectId);
+      const secondRejection = expect(switchToSecond).rejects.toThrow(
+        `Sync host cold boot for ${second.projectId} timed out`,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(createAdeRuntimeMock).toHaveBeenCalledTimes(2);
+
+      const switchedToThird = await scopeRegistry.switchSyncHost(third.projectId);
+      expect(switchedToThird?.registryProjectId).toBe(third.projectId);
+      expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(third.projectId);
+      expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(60_001);
+      await secondRejection;
+      expect(scopeRegistry.getIfBooted(second.projectId)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("disposes a late cold-boot completion without deleting a successful retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const { registry, first, second } = createRegistry();
+      const staleRuntime = deferred<any>();
+      const staleDispose = vi.fn();
+      const makeSyncService = () => ({
+        initialize: vi.fn(async () => undefined),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn(async () => undefined),
+      });
+      const firstSyncService = makeSyncService();
+      const staleSyncService = makeSyncService();
+      const retrySyncService = makeSyncService();
+      createAdeRuntimeMock
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+        .mockImplementationOnce(() => staleRuntime.promise)
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: retrySyncService });
+      const scopeRegistry = new ProjectScopeRegistry(registry, {
+        syncRuntime: {
+          enabled: true,
+          hostStartupEnabled: true,
+          hostDiscoveryEnabled: true,
+          forceHostRole: false,
+          runtimeKind: "daemon",
+        },
+      });
+      await scopeRegistry.switchSyncHost(first.projectId);
+
+      const firstAttempt = scopeRegistry.switchSyncHost(second.projectId);
+      const rejection = expect(firstAttempt).rejects.toThrow(
+        `Sync host cold boot for ${second.projectId} timed out`,
+      );
+      await vi.advanceTimersByTimeAsync(60_001);
+      await rejection;
+
+      const retryScope = await scopeRegistry.switchSyncHost(second.projectId);
+      expect(retryScope?.runtime.syncService).toBe(retrySyncService);
+      expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(second.projectId);
+
+      staleRuntime.resolve({ dispose: staleDispose, syncService: staleSyncService });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(staleDispose).toHaveBeenCalledTimes(1);
+      await expect(scopeRegistry.getIfBooted(second.projectId)).resolves.toBe(retryScope);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds a never-resolving target initialization without disabling the old host", async () => {
+    vi.useFakeTimers();
+    try {
+      const { registry, first, second } = createRegistry();
+      const stuckInitialization = deferred<void>();
+      const firstSyncService = {
+        initialize: vi.fn(async () => undefined),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn(async () => undefined),
+      };
+      const secondSyncService = {
+        initialize: vi.fn(() => stuckInitialization.promise),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn(async () => undefined),
+      };
+      createAdeRuntimeMock
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService });
+      const scopeRegistry = new ProjectScopeRegistry(registry, {
+        syncRuntime: {
+          enabled: true,
+          hostStartupEnabled: true,
+          hostDiscoveryEnabled: true,
+          forceHostRole: false,
+          runtimeKind: "daemon",
+        },
+      });
+      await scopeRegistry.switchSyncHost(first.projectId);
+      firstSyncService.setHostDiscoveryEnabled.mockClear();
+      firstSyncService.setHostStartupEnabled.mockClear();
+
+      const switching = scopeRegistry.switchSyncHost(second.projectId);
+      const rejection = expect(switching).rejects.toThrow(
+        `Sync host initialization for ${second.projectId} timed out`,
+      );
+      await vi.advanceTimersByTimeAsync(30_001);
+      await rejection;
+
+      expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+      expect(firstSyncService.setHostDiscoveryEnabled).not.toHaveBeenCalledWith(false);
+      expect(firstSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(false);
+      expect(secondSyncService.setHostStartupEnabled).not.toHaveBeenCalledWith(true);
+      expect(scopeRegistry.getIfBooted(second.projectId)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out a stuck activation, rolls back, and releases the mutation tail", async () => {
+    vi.useFakeTimers();
+    try {
+      const { registry, first, second } = createRegistry();
+      const thirdRoot = path.join(path.dirname(first.rootPath), "third-after-stuck-activation");
+      fs.mkdirSync(thirdRoot, { recursive: true });
+      const third = registry.add(thirdRoot);
+      const stuckActivation = deferred<void>();
+      const firstSyncService = {
+        initialize: vi.fn(async () => undefined),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn(async () => undefined),
+      };
+      const secondSyncService = {
+        initialize: vi.fn(async () => undefined),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn((enabled: boolean) => (
+          enabled ? stuckActivation.promise : Promise.resolve()
+        )),
+      };
+      const thirdSyncService = {
+        initialize: vi.fn(async () => undefined),
+        setHostDiscoveryEnabled: vi.fn(),
+        setHostStartupEnabled: vi.fn(async () => undefined),
+      };
+      createAdeRuntimeMock
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: firstSyncService })
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: secondSyncService })
+        .mockResolvedValueOnce({ dispose: vi.fn(), syncService: thirdSyncService });
+      const scopeRegistry = new ProjectScopeRegistry(registry, {
+        syncRuntime: {
+          enabled: true,
+          hostStartupEnabled: true,
+          hostDiscoveryEnabled: true,
+          forceHostRole: false,
+          runtimeKind: "daemon",
+        },
+      });
+      await scopeRegistry.switchSyncHost(first.projectId);
+      firstSyncService.setHostStartupEnabled.mockClear();
+
+      const switching = scopeRegistry.switchSyncHost(second.projectId);
+      const rejection = expect(switching).rejects.toThrow(
+        `Sync host activation for ${second.projectId} timed out`,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+      expect(firstSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
+      expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(true);
+
+      await vi.advanceTimersByTimeAsync(10_001);
+      await rejection;
+      expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(first.projectId);
+      expect(secondSyncService.setHostStartupEnabled).toHaveBeenCalledWith(false);
+      expect(firstSyncService.setHostStartupEnabled).toHaveBeenLastCalledWith(true);
+
+      const switchedToThird = await scopeRegistry.switchSyncHost(third.projectId);
+      expect(switchedToThird?.registryProjectId).toBe(third.projectId);
+      expect(scopeRegistry.getActiveSyncHostProjectId()).toBe(third.projectId);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("can prepare a new phone sync host before retiring the previous host", async () => {
