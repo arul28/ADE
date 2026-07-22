@@ -7,6 +7,7 @@ import type {
   SyncHelloOkPayload,
   SyncHelloPayload,
   SyncHelloErrorPayload,
+  SyncInvalidationBatchPayload,
   SyncPeerMetadata,
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
@@ -17,6 +18,9 @@ import type {
   SyncRelayReauthorizeResultPayload,
 } from "../../../shared/types/sync";
 import {
+  SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+  SYNC_INVALIDATION_BATCH_MAX_TABLES,
+  SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SYNC_RELAY_READY_VERSION,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
@@ -68,6 +72,39 @@ const FULL_INVALIDATION_TABLES = [
 ] as const;
 export const INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE =
   "Update ADE on this Mac via Settings > General > Check for Updates, then retry.";
+
+function invalidationTables(payload: SyncInvalidationBatchPayload): Set<string> {
+  if (!payload || typeof payload !== "object") return new Set(FULL_INVALIDATION_TABLES);
+  if (payload.fullRefresh === true) return new Set(FULL_INVALIDATION_TABLES);
+  if (payload.fullRefresh !== false || !Array.isArray(payload.tables)) {
+    return new Set(FULL_INVALIDATION_TABLES);
+  }
+  if (
+    !Number.isSafeInteger(payload.fromDbVersion)
+    || payload.fromDbVersion < 0
+    || !Number.isSafeInteger(payload.toDbVersion)
+    || payload.toDbVersion <= payload.fromDbVersion
+    || payload.tables.length === 0
+    || payload.tables.length > SYNC_INVALIDATION_BATCH_MAX_TABLES
+  ) {
+    return new Set(FULL_INVALIDATION_TABLES);
+  }
+  const encoder = new TextEncoder();
+  const tables = new Set<string>();
+  for (const table of payload.tables) {
+    if (
+      typeof table !== "string"
+      || !table
+      || table.trim() !== table
+      || table.includes("\0")
+      || encoder.encode(table).byteLength > SYNC_INVALIDATION_TABLE_MAX_BYTES
+    ) {
+      return new Set(FULL_INVALIDATION_TABLES);
+    }
+    tables.add(table);
+  }
+  return tables;
+}
 
 export type WebSocketLike = {
   readonly readyState: number;
@@ -167,7 +204,8 @@ export class SyncConnectionError extends Error {
 }
 
 function hostAcceptedInvalidationOnlyV1(payload: SyncHelloOkPayload): boolean {
-  return payload.features?.invalidationOnlyV1?.enabled === true;
+  return payload.features?.invalidationOnlyV1?.enabled === true
+    && payload.features?.compactInvalidationV1?.enabled === true;
 }
 
 function createDefaultSocket(url: string): WebSocketLike {
@@ -646,10 +684,12 @@ export class SyncConnection {
                 (capability) => (
                   capability !== SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY
                   && capability !== SYNC_INVALIDATION_ONLY_V1_CAPABILITY
+                  && capability !== SYNC_COMPACT_INVALIDATION_V1_CAPABILITY
                 ),
               ),
               SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
               SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+              SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
             ],
           },
           auth: {
@@ -810,6 +850,7 @@ export class SyncConnection {
         capabilities: [
           SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
           SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
         ],
       },
       auth: {
@@ -878,6 +919,11 @@ export class SyncConnection {
       case "changeset_batch": {
         const payload = envelope.payload as SyncChangesetBatchPayload;
         const tables = new Set(payload.changes.map((change) => change.table).filter(Boolean));
+        if (tables.size > 0) this.emit("tablesChanged", tables);
+        break;
+      }
+      case "invalidation_batch": {
+        const tables = invalidationTables(envelope.payload as SyncInvalidationBatchPayload);
         if (tables.size > 0) this.emit("tablesChanged", tables);
         break;
       }

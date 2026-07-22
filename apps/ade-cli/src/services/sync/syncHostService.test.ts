@@ -14,12 +14,16 @@ import type {
   PersonalChatScopeContract,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
+  SyncInvalidationBatchPayload,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
 import {
+  SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+  SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
+  SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
@@ -36,6 +40,7 @@ import {
   SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
   SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
   SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS,
+  buildSyncInvalidationBatchPayload,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   compactChatEventEnvelopeForSync,
@@ -63,7 +68,7 @@ import {
   buildRelayReauthorizationChallenge,
   sha256RelayToken,
 } from "./relayAuthorization";
-import { encodeSyncEnvelope, parseSyncEnvelope, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 
@@ -219,10 +224,72 @@ describe("buildSyncHostHelloOkPayload", () => {
     };
 
     expect(buildSyncHostHelloOkPayload({ ...base, peer }).features.invalidationOnlyV1).toEqual({ enabled: true });
+    expect(buildSyncHostHelloOkPayload({ ...base, peer }).features).not.toHaveProperty("compactInvalidationV1");
     expect(buildSyncHostHelloOkPayload({
       ...base,
-      peer: { ...peer, deviceType: "phone", capabilities: [] },
-    }).features).not.toHaveProperty("invalidationOnlyV1");
+      peer: {
+        ...peer,
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+        ],
+      },
+    }).features.compactInvalidationV1).toEqual({ enabled: true });
+    const phoneFeatures = buildSyncHostHelloOkPayload({
+      ...base,
+      peer: {
+        ...peer,
+        deviceType: "phone",
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+        ],
+      },
+    }).features;
+    expect(phoneFeatures).not.toHaveProperty("invalidationOnlyV1");
+    expect(phoneFeatures).not.toHaveProperty("compactInvalidationV1");
+  });
+
+  it("keeps invalidation envelopes bounded when table metadata is oversized", () => {
+    const oversizedNamePayload = buildSyncInvalidationBatchPayload({
+      fromDbVersion: 4,
+      toDbVersion: 5,
+      changes: [{
+        ...makeChange(5, 0),
+        table: "t".repeat(SYNC_INVALIDATION_TABLE_MAX_BYTES + 1),
+      }],
+      compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+    });
+
+    expect(oversizedNamePayload).toEqual({
+      fromDbVersion: 4,
+      toDbVersion: 5,
+      tables: [],
+      fullRefresh: true,
+    });
+    const oversizedEnvelopePayload = buildSyncInvalidationBatchPayload({
+      fromDbVersion: 5,
+      toDbVersion: 6,
+      changes: Array.from({ length: 128 }, (_, index) => ({
+        ...makeChange(6, index),
+        table: `${String(index).padStart(3, "0")}${"t".repeat(253)}`,
+      })),
+      compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+    });
+    expect(oversizedEnvelopePayload).toEqual({
+      fromDbVersion: 5,
+      toDbVersion: 6,
+      tables: [],
+      fullRefresh: true,
+    });
+
+    for (const payload of [oversizedNamePayload, oversizedEnvelopePayload]) {
+      expect(Buffer.byteLength(encodeSyncEnvelope({
+        type: "invalidation_batch",
+        payload,
+        compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+      }), "utf8")).toBeLessThanOrEqual(SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES);
+    }
   });
 
   it("advertises daemon-hosted project catalog support in hello_ok without desktop", () => {
@@ -3990,12 +4057,20 @@ describe("initial hydration priority", () => {
       slowPeer = await connectPeer(port, host.getBootstrapToken(), "slow-foreground-peer", {
         platform: "macOS",
         deviceType: "browser",
-        capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY, "changesetAck"],
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+          "changesetAck",
+        ],
       });
       fastPeer = await connectPeer(port, host.getBootstrapToken(), "independent-peer", {
         platform: "macOS",
         deviceType: "browser",
-        capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY, "changesetAck"],
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+          "changesetAck",
+        ],
       });
       const realDateNow = Date.now.bind(Date);
       let clockOffsetMs = 0;
@@ -4018,19 +4093,31 @@ describe("initial hydration priority", () => {
         "per-peer foreground deferral",
       );
       const independentBatch = await waitForValue(
-        () => fastPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
-        "independent peer changeset",
+        () => fastPeer?.envelopes.find((envelope) => envelope.type === "invalidation_batch"),
+        "independent peer invalidation",
       );
-      expect((independentBatch.payload as SyncChangesetBatchPayload).changes).toHaveLength(200);
-      expect(slowPeer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(independentBatch.payload as SyncInvalidationBatchPayload).toEqual({
+        fromDbVersion: 0,
+        toDbVersion: 200,
+        tables: ["kv"],
+        fullRefresh: false,
+      });
+      expect(slowPeer.envelopes.some((envelope) =>
+        envelope.type === "changeset_batch" || envelope.type === "invalidation_batch"
+      )).toBe(false);
       expect(getSessionSummary).toHaveBeenCalledWith("slow-chat");
 
       clockOffsetMs += SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 25;
       const boundedSlowBatch = await waitForValue(
-        () => slowPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
-        "bounded slow-peer changeset",
+        () => slowPeer?.envelopes.find((envelope) => envelope.type === "invalidation_batch"),
+        "bounded slow-peer invalidation",
       );
-      expect((boundedSlowBatch.payload as SyncChangesetBatchPayload).changes).toHaveLength(64);
+      expect(boundedSlowBatch.payload as SyncInvalidationBatchPayload).toEqual({
+        fromDbVersion: 0,
+        toDbVersion: 64,
+        tables: ["kv"],
+        fullRefresh: false,
+      });
       expect(logger.debug).toHaveBeenCalledWith(
         "sync_host.changeset_priority_deferral_ended",
         expect.objectContaining({
@@ -4317,7 +4404,10 @@ describe("initial hydration priority", () => {
             deviceType: "browser",
             siteId: "browser-initial-hydration-site",
             dbVersion: 0,
-            capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+            capabilities: [
+              SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+              SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+            ],
           },
           auth: { kind: "bootstrap", token: host.getBootstrapToken() },
         },
@@ -4351,24 +4441,119 @@ describe("initial hydration priority", () => {
       expect(envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
 
       // A browser is invalidation-only: historical rows are skipped, while a
-      // mutation committed after hello still produces a normal live signal.
+      // mutation committed after hello produces a compact live signal even
+      // when the source row itself is larger than the Relay peer budget.
       state.dbVersion = 2;
-      state.changes.push(makeChange(2, 1));
+      const oversizedValue = "x".repeat(PEER_BACKPRESSURE_BYTES + 1);
+      state.changes.push({
+        ...makeChange(2, 1, oversizedValue),
+        table: "operations",
+      });
       const liveInvalidation = await waitForValue(
-        () => envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        () => envelopes.find((envelope) => envelope.type === "invalidation_batch"),
         "post-connect browser invalidation",
       );
       expect(exportChangesSince).toHaveBeenCalledWith(
         1,
         expect.objectContaining({ throughDbVersion: 2 }),
       );
-      expect((liveInvalidation.payload as SyncChangesetBatchPayload).changes.map((change) => change.db_version)).toEqual([2]);
+      const invalidationPayload = liveInvalidation.payload as SyncInvalidationBatchPayload;
+      expect(invalidationPayload).toEqual({
+        fromDbVersion: 1,
+        toDbVersion: 2,
+        tables: ["operations"],
+        fullRefresh: false,
+      });
+      expect(envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(Buffer.byteLength(encodeSyncEnvelope({
+        type: "invalidation_batch",
+        payload: invalidationPayload,
+        compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+      }), "utf8")).toBeLessThanOrEqual(SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES);
     } finally {
       try {
         client?.close();
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps older invalidation-only browsers on changeset hints", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 0,
+      changes: [] as CrsqlChangeRow[],
+    };
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 25,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-legacy-browser",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince: (fromDbVersion: number) =>
+            state.changes.filter((change) => Number(change.db_version) > fromDbVersion),
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let browser: WebSocket | null = null;
+    let envelopes: ParsedSyncEnvelope[] = [];
+
+    try {
+      const port = await host.waitUntilListening();
+      browser = new WebSocket(`ws://127.0.0.1:${port}`);
+      ({ envelopes } = trackClientEnvelopes(browser));
+      await new Promise<void>((resolve, reject) => {
+        browser!.once("open", resolve);
+        browser!.once("error", reject);
+      });
+      browser.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "legacy-browser-hello",
+        payload: {
+          peer: {
+            deviceId: "legacy-invalidation-browser",
+            deviceName: "Legacy Browser",
+            platform: "macOS",
+            deviceType: "browser",
+            siteId: "legacy-invalidation-browser-site",
+            dbVersion: 0,
+            capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      const helloOkEnvelope = await waitForEnvelope(envelopes, "hello_ok", "legacy-browser-hello");
+      expect((helloOkEnvelope.payload as { features?: Record<string, unknown> }).features)
+        .not.toHaveProperty("compactInvalidationV1");
+      expect(envelopes.some((envelope) =>
+        envelope.type === "changeset_batch" || envelope.type === "invalidation_batch"
+      )).toBe(false);
+
+      state.dbVersion = 1;
+      state.changes.push(makeChange(1, 0));
+      const legacyBatch = await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "legacy browser changeset hint",
+      );
+      expect((legacyBatch.payload as SyncChangesetBatchPayload).changes).toEqual([
+        expect.objectContaining({ db_version: 1, table: "kv" }),
+      ]);
+      expect(envelopes.some((envelope) => envelope.type === "invalidation_batch")).toBe(false);
+    } finally {
+      browser?.close();
       await host.dispose();
       cleanup();
     }
@@ -5475,7 +5660,10 @@ describe("sync host handoff over a shared listener", () => {
       browser = await connectPeer(port, hostA.getBootstrapToken(), "browser-handoff-peer", {
         platform: "macOS",
         deviceType: "browser",
-        capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+        ],
       });
 
       expect(hostA.getPeerStates()).toEqual([
@@ -5484,7 +5672,9 @@ describe("sync host handoff over a shared listener", () => {
           syncLag: 0,
         }),
       ]);
-      expect(browser.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(browser.envelopes.some((envelope) =>
+        envelope.type === "changeset_batch" || envelope.type === "invalidation_batch"
+      )).toBe(false);
 
       await hostA.dispose();
       hostA = null;
@@ -5505,12 +5695,15 @@ describe("sync host handoff over a shared listener", () => {
       const postHandoffBatch = await waitForValue(
         () => browser?.envelopes
           .slice(envelopeCountAfterDeposit)
-          .find((envelope) => envelope.type === "changeset_batch"),
+          .find((envelope) => envelope.type === "invalidation_batch"),
         "same-DB post-handoff browser invalidation",
       );
-      expect((postHandoffBatch.payload as SyncChangesetBatchPayload).changes).toEqual([
-        expect.objectContaining({ db_version: 2 }),
-      ]);
+      expect(postHandoffBatch.payload as SyncInvalidationBatchPayload).toEqual({
+        fromDbVersion: 1,
+        toDbVersion: 2,
+        tables: ["kv"],
+        fullRefresh: false,
+      });
       expect(browser.closeEvents).toEqual([]);
       expect(browser.ws.readyState).toBe(WebSocket.OPEN);
       expect(hostB.getPeerStates()).toEqual([

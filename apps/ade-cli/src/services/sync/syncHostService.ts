@@ -58,6 +58,7 @@ import type {
   SyncFileResponsePayload,
   SyncHelloPayload,
   SyncHelloErrorPayload,
+  SyncInvalidationBatchPayload,
   SyncMobileProjectSummary,
   SyncPairingRequestPayload,
   PairedRuntimeHelloOkPayload,
@@ -89,6 +90,10 @@ import type {
   SyncTerminalSnapshotPayload,
 } from "../../../../desktop/src/shared/types";
 import {
+  SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+  SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
+  SYNC_INVALIDATION_BATCH_MAX_TABLES,
+  SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
@@ -908,13 +913,10 @@ export function initialSyncHostCursorForPeer(args: {
 }): number {
   // A browser may explicitly negotiate an invalidation-only contract: it has
   // no SQLite replica, fully refetches its query domains after hello, and uses
-  // only post-connect changesets as invalidation hints. Starting that peer at
+  // only post-connect sync messages as invalidation hints. Starting that peer at
   // the current watermark avoids replaying CRR history it cannot apply. Keep
   // legacy browsers on replica semantics unless they declare the capability.
-  if (
-    args.peer.deviceType === "browser"
-    && args.peer.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY)
-  ) {
+  if (isInvalidationOnlyBrowserPeer(args.peer)) {
     return Math.max(0, Math.floor(args.serverDbVersion));
   }
   const cursorForThisDb = args.peer.dbVersionBySite?.[args.serverDbSiteId]
@@ -942,15 +944,75 @@ export function adoptedSyncHostCursorForPeer(args: {
   // same-DB seamless adoption, the deposited cursor is the exact boundary:
   // writes committed while the socket is parked must be exported by the new
   // owner. A different DB still starts at that DB's current watermark.
-  if (
-    args.peer.deviceType === "browser"
-    && args.peer.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY)
-  ) {
+  if (isInvalidationOnlyBrowserPeer(args.peer)) {
     return Math.min(Math.max(0, Math.floor(args.serverDbVersion)), snapshotCursor);
   }
   // Replica peers may have advertised a newer durable per-site cursor than
   // the depositing host had observed, so retain the fresher same-DB value.
   return Math.max(initialCursor, snapshotCursor);
+}
+
+function isInvalidationOnlyBrowserPeer(
+  peer: Pick<SyncPeerMetadata, "deviceType" | "capabilities"> | null | undefined,
+): boolean {
+  return peer?.deviceType === "browser"
+    && peer.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY) === true;
+}
+
+function isCompactInvalidationBrowserPeer(
+  peer: Pick<SyncPeerMetadata, "deviceType" | "capabilities"> | null | undefined,
+): boolean {
+  return isInvalidationOnlyBrowserPeer(peer)
+    && peer?.capabilities?.includes(SYNC_COMPACT_INVALIDATION_V1_CAPABILITY) === true;
+}
+
+export function buildSyncInvalidationBatchPayload(args: {
+  fromDbVersion: number;
+  toDbVersion: number;
+  changes: readonly CrsqlChangeRow[];
+  compressionThresholdBytes?: number;
+}): SyncInvalidationBatchPayload {
+  const fromDbVersion = Number.isFinite(args.fromDbVersion)
+    ? Math.max(0, Math.floor(args.fromDbVersion))
+    : 0;
+  const toDbVersion = Number.isFinite(args.toDbVersion)
+    ? Math.max(fromDbVersion, Math.floor(args.toDbVersion))
+    : fromDbVersion;
+  const fullRefresh = (): SyncInvalidationBatchPayload => ({
+    fromDbVersion,
+    toDbVersion,
+    tables: [],
+    fullRefresh: true,
+  });
+  if (args.changes.length === 0) return fullRefresh();
+  const tables = new Set<string>();
+  for (const change of args.changes) {
+    const table = typeof change.table === "string" ? change.table : "";
+    if (
+      !table
+      || table.trim() !== table
+      || table.includes("\0")
+      || Buffer.byteLength(table, "utf8") > SYNC_INVALIDATION_TABLE_MAX_BYTES
+    ) {
+      return fullRefresh();
+    }
+    tables.add(table);
+    if (tables.size > SYNC_INVALIDATION_BATCH_MAX_TABLES) return fullRefresh();
+  }
+  const payload: SyncInvalidationBatchPayload = {
+    fromDbVersion,
+    toDbVersion,
+    tables: [...tables].sort(),
+    fullRefresh: false,
+  };
+  const envelopeBytes = Buffer.byteLength(encodeSyncEnvelope({
+    type: "invalidation_batch",
+    payload,
+    compressionThresholdBytes: args.compressionThresholdBytes,
+  }), "utf8");
+  return envelopeBytes <= SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES
+    ? payload
+    : fullRefresh();
 }
 
 export function shouldDeferSyncHostBackgroundChangesForChat(args: {
@@ -1115,10 +1177,17 @@ export function buildSyncHostHelloOkPayload(args: {
       chatStreaming: {
         enabled: true,
       },
-      ...(args.peer.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY)
+      ...(isInvalidationOnlyBrowserPeer(args.peer)
         ? {
             invalidationOnlyV1: {
               enabled: true,
+            },
+          }
+        : {}),
+      ...(isCompactInvalidationBrowserPeer(args.peer)
+        ? {
+            compactInvalidationV1: {
+              enabled: true as const,
             },
           }
         : {}),
@@ -3980,7 +4049,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       attemptCount: 0,
       retryNotBeforeMs: 0,
     };
-    const sent = send(peer, "changeset_batch", payload);
+    const sent = isCompactInvalidationBrowserPeer(peer.metadata)
+      ? send(peer, "invalidation_batch", buildSyncInvalidationBatchPayload({
+        fromDbVersion: payload.fromDbVersion,
+        toDbVersion: payload.toDbVersion,
+        changes: payload.changes,
+        compressionThresholdBytes,
+      }))
+      : send(peer, "changeset_batch", payload);
     if (!sent) return null;
     batch.sentAtMs = Date.now();
     batch.attemptCount = 1;
@@ -4976,7 +5052,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       );
       if (pending) {
         peer.changesetRecoveryNotBeforeMs = 0;
-        if (peerSupportsChangesetAck(peer)) {
+        if (peerSupportsChangesetAck(peer) && !isCompactInvalidationBrowserPeer(peer.metadata)) {
           peer.pendingChangesetBatch = pending;
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);

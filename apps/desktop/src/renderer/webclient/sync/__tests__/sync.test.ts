@@ -1,6 +1,8 @@
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+  SYNC_INVALIDATION_TABLE_MAX_BYTES,
   SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   type SyncEnvelope,
   type SyncFeatureFlags,
@@ -72,6 +74,7 @@ const features: SyncFeatureFlags = {
   terminalStreaming: true,
   chatStreaming: { enabled: true },
   invalidationOnlyV1: { enabled: true },
+  compactInvalidationV1: { enabled: true },
   projectCatalog: { enabled: true },
   projectActions: { enabled: true },
   changesetAck: { enabled: true },
@@ -150,6 +153,15 @@ function legacyHelloOk(projectId = "project-1"): SyncHelloOkPayload {
   return {
     ...payload,
     features: featuresWithoutAcceptance,
+  };
+}
+
+function changesetHintHelloOk(projectId = "project-1"): SyncHelloOkPayload {
+  const payload = helloOk(projectId);
+  const { compactInvalidationV1: _ignored, ...featuresWithoutCompactInvalidation } = payload.features;
+  return {
+    ...payload,
+    features: featuresWithoutCompactInvalidation,
   };
 }
 
@@ -773,12 +785,12 @@ describe("browser sync connection and client", () => {
     vi.unstubAllGlobals();
   });
 
-  it("rejects a saved browser pairing when the host does not accept invalidation-only sync", async () => {
+  it("rejects a saved browser pairing when the host only supports legacy changeset hints", async () => {
     const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
     vi.useFakeTimers();
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: legacyHelloOk() });
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: changesetHintHelloOk() });
       }
     });
     const connection = new SyncConnection({ socketFactory: script.factory, document: null });
@@ -2063,7 +2075,7 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("uses invalidation-only sync without suppressing live changeset hints", async () => {
+  it("uses invalidation-only sync with bounded live hints", async () => {
     const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
@@ -2080,6 +2092,9 @@ describe("browser sync connection and client", () => {
     expect((hello?.payload as { peer?: SyncPeerMetadata }).peer?.capabilities).toContain(
       SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
     );
+    expect((hello?.payload as { peer?: SyncPeerMetadata }).peer?.capabilities).toContain(
+      SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+    );
     expect(invalidations).toEqual([[
       "agent_chats",
       "files",
@@ -2091,22 +2106,35 @@ describe("browser sync connection and client", () => {
     ]]);
 
     script.sockets[0]?.serverSend({
-      type: "changeset_batch",
+      type: "invalidation_batch",
       payload: {
-        batchId: "live-1",
-        reason: "broadcast",
         fromDbVersion: 12,
         toDbVersion: 13,
-        changes: [{ table: "agent_chats" }],
+        tables: ["agent_chats"],
+        fullRefresh: false,
       },
     });
     await flushMicrotasks();
     expect(invalidations).toHaveLength(2);
     expect(invalidations[1]).toEqual(["agent_chats"]);
+    expect(script.sockets[0]?.sent.some((envelope) => envelope.type === "changeset_ack")).toBe(false);
 
-    await connection.connect(environment, [endpoint]);
+    script.sockets[0]?.serverSend({
+      type: "invalidation_batch",
+      payload: {
+        fromDbVersion: 13,
+        toDbVersion: 14,
+        tables: ["t".repeat(SYNC_INVALIDATION_TABLE_MAX_BYTES + 1)],
+        fullRefresh: false,
+      },
+    });
+    await flushMicrotasks();
     expect(invalidations).toHaveLength(3);
     expect(invalidations[2]).toEqual(invalidations[0]);
+
+    await connection.connect(environment, [endpoint]);
+    expect(invalidations).toHaveLength(4);
+    expect(invalidations[3]).toEqual(invalidations[0]);
     connection.dispose();
   });
 

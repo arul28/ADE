@@ -74,7 +74,8 @@ Browser sync client:
   sync client. Adopts a machine through the verified account relay, reconnects
   saved environments, stores only the resulting paired credentials, sends
   remote commands, requests files, subscribes to chat and terminal streams,
-  switches projects, and treats `changeset_batch` as invalidation input. Its
+  switches projects, and treats compact `invalidation_batch` envelopes as
+  refresh input. Its
   terminal subscriptions keep logical UTF-8 byte watermarks, drop duplicates,
   trim overlaps, and perform one guarded `sinceOffset` resubscribe when a gap
   appears. Delta snapshots append only the missing suffix; full snapshots are
@@ -140,7 +141,7 @@ Browser `window.ade` adapter:
   read cache: concurrent identical calls join a single in-flight relay request,
   and the resolved value is reused for the TTL window (3 s). `invalidateCache`
   clears the whole cache or a set of action prefixes so a mutation or a
-  `changeset_batch`-driven refresh drops stale reads.
+  sync-driven refresh drops stale reads.
 - `apps/desktop/src/renderer/webclient/adapter/infra/coalescingReadCache.ts`
   and `infra/cacheKey.ts` - the shared coalescing/TTL cache primitive and a
   deterministic argument-serializer used to key it. The cache keeps concurrent
@@ -153,7 +154,7 @@ Browser `window.ade` adapter:
   name the prior project during reconnect and would otherwise stamp file
   requests and project commands with a stale id.
 - `apps/desktop/src/renderer/webclient/adapter/infra/invalidation.ts` -
-  maps changed table names from `changeset_batch` envelopes to coarse
+  maps changed table names from `invalidation_batch` envelopes to coarse
   renderer invalidation domains.
 - `apps/desktop/src/renderer/webclient/adapter/files.ts` - browser file API
   over sync `file_request`; no local file watcher. List reads
@@ -376,11 +377,16 @@ Tests:
   apply changesets, and does not advertise the `changesetAck` capability. It
   advertises `invalidationOnlyV1`: the host starts it at the current database
   watermark, the browser performs one full-domain refresh after hello, and
-  later `changeset_batch` envelopes identify only the domains that changed.
-  The host must confirm that contract through
-  `hello_ok.features.invalidationOnlyV1`; an older host is closed immediately
-  with concrete desktop-update guidance instead of being allowed to replay its
-  historical CRR backlog through Relay.
+  later `invalidation_batch` envelopes identify only the domains that changed.
+  The additive `compactInvalidationV1` capability distinguishes this format
+  from older invalidation-only browsers that understood only changeset hints.
+  The host never includes CRR row values in these hints and caps their serialized
+  size at 16 KB, falling back to a full-domain refresh hint for invalid or
+  oversized table sets.
+  The host must confirm both contracts through
+  `hello_ok.features.invalidationOnlyV1` and `compactInvalidationV1`; an older
+  host is closed immediately with concrete desktop-update guidance instead of
+  being allowed to replay its historical CRR backlog through Relay.
 - **Protocol version 1 extensions are additive.** The browser decodes the
   common envelope and ignores valid types it does not implement, including the
   desktop-only `rpc_*` and `fwd_*` channels. Unknown `hello_ok.features` keys
@@ -452,7 +458,7 @@ apps/desktop/src/renderer/webclient/sync/
   - WebCrypto DPoP key
   - sync envelope codec
   - command/file/chat/terminal/project sub-protocols
-  - changeset_batch -> invalidation only
+  - invalidation_batch -> bounded refresh hints
   |
   v
 Browser-safe WebSocket transport
@@ -613,11 +619,12 @@ for their non-Relay routes.
 
 The browser intentionally does not maintain a local replica of `.ade/ade.db`.
 `SyncConnection.sendHello` sends `dbVersion: 0` and advertises
-`invalidationOnlyV1` (along with Relay reauthorization support), so the host
+`invalidationOnlyV1` and `compactInvalidationV1` (along with Relay
+reauthorization support), so the host
 does not replay historical CRR rows to a client that cannot apply them. The
 host places the browser at its current watermark; the accepted hello triggers
-a full-domain refresh, and subsequent changeset batches remain live
-invalidation hints rather than replicated state.
+a full-domain refresh, and subsequent compact invalidation batches remain live
+refresh hints rather than replicated state.
 
 Because there is no local replica, every read is a live relay round-trip to the
 machine — where the desktop renderer would hit its in-process cr-sqlite. Two
@@ -625,7 +632,7 @@ adapter-side measures keep that from turning routine UI into a burst of
 redundant relay traffic. First, read commands and file-list requests pass
 through a short (3 s) **coalescing read cache**: concurrent identical reads join
 one in-flight request and reuse its result for the TTL window, while any
-mutation or `changeset_batch`-driven invalidation drops the affected entries.
+mutation or sync-driven invalidation drops the affected entries.
 Second, the PRs surface **batches** its reads: instead of separate `prs.list` /
 `prs.getForLane` / `listWithConflicts` round-trips it hydrates a single
 coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
@@ -633,8 +640,9 @@ coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
 empty-list marker. These caches are freshness hints over the authoritative
 relay reads, not a persisted store.
 
-Incoming `changeset_batch` envelopes are reduced to a set of table names in
-`connection.ts`. `createInvalidationScheduler` maps those table names to
+Incoming `invalidation_batch` envelopes already contain only table names and
+database-version bounds; `connection.ts` validates their table-count and name
+limits before emitting them. `createInvalidationScheduler` maps those names to
 domains such as lanes, sessions, chats, PRs, files, GitHub, and rebase. The
 adapter then refreshes through the appropriate remote command or sub-protocol:
 
@@ -756,7 +764,7 @@ Ops checks after deploy:
   Projectless Chats therefore shows its runtime-backed Terminal control but not
   the desktop-only Browser button/profile.
 - No local file watcher. File-change events are synthesized from
-  changeset-driven invalidation and are coarser than desktop chokidar events.
+  sync-driven invalidation and are coarser than desktop chokidar events.
 - Some progress/live updates are invalidation-triggered snapshots rather than
   the exact desktop event stream.
 - Hosted HTTPS cannot dial LAN or Tailscale-IP `ws://` candidates. Use relay
