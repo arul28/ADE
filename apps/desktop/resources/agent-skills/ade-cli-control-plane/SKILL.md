@@ -148,6 +148,27 @@ Use `ade chat show <session> --text` before messaging a chat you do not own:
   `ade chat send ...` with the new instruction. Do not send a second normal turn
   into an active chat and hope the provider interprets it as steering.
 
+### Checking whether delegated / backgrounded work finished
+
+Prefer **harness-tracked** delegation and wait on the tracked handle — do not
+background a raw CLI and then guess at its state:
+
+- **ADE agents:** wait with `ade chat wait <session> --for idle|terminal
+  --timeout-ms <ms>`, or spawn with `--type subagent` so completion wakes you
+  automatically. These are reliable signals; you never poll a transcript in a
+  loop.
+- **A background provider CLI (e.g. `codex exec`):** do **not** check completion
+  with a bare `pgrep <name>` — `pgrep` matches your own shell/invocation and
+  sibling processes (the self-match trap), so it reports "still running" or
+  "done" wrongly. Instead run it detached with its own log and stdin closed, e.g.
+  `codex exec "…" </dev/null >"$LOG" 2>&1 &` (closing stdin is required — without
+  it `codex` blocks forever on "Reading additional input from stdin…"). Then
+  detect completion deterministically: `wait "$PID"` on the exact PID you
+  captured, or watch the log for the tool's own end-of-run marker, and confirm a
+  new session file appeared under `~/.codex/sessions/<date>/`. If you must use
+  `pgrep`, match the full command line and exclude yourself
+  (`pgrep -f "codex exec" | grep -v $$`), never the bare program name.
+
 ### Scheduled work
 
 Persistent ADE chats and tracked provider CLI sessions can schedule their own

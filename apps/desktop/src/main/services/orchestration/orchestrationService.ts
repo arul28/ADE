@@ -220,6 +220,11 @@ export function buildOutboxEnqueueOps(
 
 export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   const emitter = new EventEmitter();
+  // Completion waiters (`awaitAgent`) subscribe transiently to the event bus;
+  // several concurrent awaits plus the cancellation registry can exceed the
+  // default 10-listener cap. Waiters always unsubscribe on resolve/timeout, so
+  // this is a headroom bump, not a leak escape hatch.
+  emitter.setMaxListeners(0);
   const runs = new Map<string, RunRuntime>();
   const laneIndexMutexes = new Map<string, AsyncMutex>();
   const now = deps.now ?? (() => new Date());
@@ -1361,6 +1366,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
               nowIso(),
             ),
           );
+          // Durable completion event → lead. Emitted in the SAME transaction as
+          // the terminal transition, so a lead can never miss a worker/validator
+          // finishing (drives `awaitAgent`; delivered via the outbox drain). This
+          // piggybacks the existing lifecycle observation — no poller.
+          ops.push(
+            ...buildAgentCompletionOutboxOps(manifest, actor, task, edgeStatus),
+          );
         }
       }
       const projectedManifest = applyPatches(manifest, ops);
@@ -2127,6 +2139,53 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       return doneIds.length ? `completed: ${doneIds.join(", ")}` : "completed";
     }
     return "failed";
+  }
+
+  /**
+   * Build the outbox-append op(s) for a worker/validator completion event
+   * targeted at the run's lead. Returns [] when there is no distinct lead to
+   * notify (no lead registered, or the lead itself is the actor). The text is
+   * plain-language per SKILL §14; structured detail rides in the metadata so
+   * `awaitAgent` and lead tooling can read the outcome without parsing prose.
+   */
+  function buildAgentCompletionOutboxOps(
+    manifest: OrchestrationManifest,
+    actor: OrchestrationManifest["agents"][number],
+    task: OrchestrationManifest["tasks"][number] | undefined,
+    edgeStatus: Extract<DelegationStatus, "completed" | "failed">,
+  ): ManifestPatchOp[] {
+    const lead = manifest.agents.find((agent) => agent.role === "lead");
+    if (!lead || lead.sessionId === actor.sessionId) return [];
+    const actorLabel = actor.tag?.trim() || actor.role;
+    const taskLabel = task?.title?.trim() || task?.id || "its task";
+    const outcomeWord = edgeStatus === "completed" ? "done" : "failed";
+    const text = `${actorLabel} finished ${taskLabel} — ${outcomeWord}.`;
+    return buildOutboxEnqueueOps(manifest, [
+      {
+        kind: "completion",
+        targetSessionId: lead.sessionId,
+        delivery: {
+          op: "steer",
+          text,
+          metadata: {
+            orchestrationOrigin: {
+              runId: manifest.runId,
+              fromSessionId: actor.sessionId,
+              kind: "queue",
+              intent: "status",
+              ...(task ? { taskId: task.id } : {}),
+            },
+            orchestrationCompletion: {
+              sessionId: actor.sessionId,
+              role: actor.role,
+              ...(actor.tag ? { tag: actor.tag } : {}),
+              outcome: edgeStatus,
+              ...(task ? { taskId: task.id } : {}),
+            },
+          },
+        },
+      },
+    ]);
   }
 
   /**

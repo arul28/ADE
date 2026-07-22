@@ -383,6 +383,8 @@ import type {
 import {
   createOrchestrationToolSet,
   type OrchestrationInteractionMode,
+  type OrchestrationLeadReadResult,
+  type OrchestrationLeadReadServices,
   type OrchestrationSessionContext,
   type OrchestrationToolMap,
 } from "../ai/tools/orchestrationTools";
@@ -404,6 +406,7 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -6361,6 +6364,18 @@ export function createAgentChatService(args: {
   linearIssueTracker?: IssueTracker | null;
   githubService?: Pick<GithubService, "getIssue"> | null;
   getOrchestrationService?: () => ReturnType<typeof createOrchestrationService> | null;
+  /**
+   * Lazy accessor for the universal search service. Used only to back the
+   * orchestrator lead's read-only `searchWorkspace` tool; may be null in
+   * runtimes where search is not wired (tool degrades to "unavailable").
+   */
+  getSearchService?: () => {
+    query: (args: {
+      query: string;
+      laneId?: string;
+      limit?: number;
+    }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor: unknown }>;
+  } | null;
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
@@ -6413,6 +6428,7 @@ export function createAgentChatService(args: {
     linearIssueTracker,
     githubService,
     getOrchestrationService,
+    getSearchService,
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
@@ -13876,6 +13892,79 @@ export function createAgentChatService(args: {
     },
   });
 
+  // Curated READ-ONLY ADE capability backings for the orchestrator lead. Every
+  // method is attached only when its backing service is actually wired in this
+  // process — a missing service leaves the method undefined, so the lead tool
+  // degrades to a clean "unavailable" result rather than throwing (runtime-
+  // backed-null-services safety). None of these mutate anything.
+  const buildOrchestrationLeadReadServices = (
+    laneId: string,
+  ): OrchestrationLeadReadServices => {
+    const services: OrchestrationLeadReadServices = {};
+
+    const searchService = getSearchService?.() ?? null;
+    if (searchService) {
+      services.searchWorkspace = async (args): Promise<OrchestrationLeadReadResult> => {
+        const res = await searchService.query({
+          query: args.query,
+          ...(args.limit ? { limit: args.limit } : {}),
+          ...(args.laneId ? { laneId: args.laneId } : {}),
+        });
+        return { ok: true, results: res.results, totalByKind: res.totalByKind };
+      };
+    }
+
+    if (linearIssueTracker) {
+      services.readLinearIssue = async (args): Promise<OrchestrationLeadReadResult> => {
+        const issue = await linearIssueTracker.fetchIssueById(args.issueId);
+        if (!issue) {
+          return { ok: false, error: "not_found", message: `Linear issue ${args.issueId} not found.` };
+        }
+        let comments: unknown[] = [];
+        try {
+          comments = await linearIssueTracker.fetchIssueComments(args.issueId);
+        } catch {
+          comments = [];
+        }
+        return { ok: true, issue, comments };
+      };
+    }
+
+    if (prService) {
+      services.readPr = async (args): Promise<OrchestrationLeadReadResult> => {
+        if (args.prId) {
+          const [status, checks] = await Promise.all([
+            prService.getStatus(args.prId),
+            prService.getChecks(args.prId).catch(() => []),
+          ]);
+          return { ok: true, status, checks };
+        }
+        const prs = await prService.listPrsByLane();
+        return { ok: true, prs };
+      };
+    }
+
+    if (computerUseArtifactBrokerService) {
+      services.listProofArtifacts = async (args): Promise<OrchestrationLeadReadResult> => {
+        const artifacts = computerUseArtifactBrokerService.listArtifacts({
+          ...(args.limit ? { limit: args.limit } : {}),
+        });
+        return { ok: true, artifacts };
+      };
+    }
+
+    // Deeplink minting is pure (side-effect-free) — always available.
+    services.mintDeeplink = async (args): Promise<OrchestrationLeadReadResult> => {
+      const target = args.target as DeeplinkTarget;
+      const ade = buildDeeplink(target, { form: "ade" });
+      const https = buildDeeplink(target, { form: "https" });
+      return { ok: true, ade, https };
+    };
+
+    void laneId;
+    return services;
+  };
+
   const createOrchestrationRuntimeToolMap = (
     managed: ManagedChatSession,
   ): OrchestrationToolMap | null => {
@@ -13897,6 +13986,9 @@ export function createAgentChatService(args: {
         readTranscript,
       },
       universal: buildOrchestrationUniversalOptions(managed),
+      ...(context.interactionMode === "orchestrator-lead"
+        ? { leadReadServices: buildOrchestrationLeadReadServices(context.sessionContext.laneId) }
+        : {}),
     });
   };
 

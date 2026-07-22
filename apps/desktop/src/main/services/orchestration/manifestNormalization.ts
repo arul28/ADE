@@ -34,6 +34,7 @@ const OUTBOX_KINDS = new Set<string>([
   "ping",
   "lead_status",
   "cancel_interrupt",
+  "completion",
 ]);
 const OUTBOX_STATUSES = new Set<string>([
   "pending",

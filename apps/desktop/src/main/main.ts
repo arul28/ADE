@@ -3073,6 +3073,7 @@ app.whenReady().then(async () => {
       linearIssueTracker,
       githubService,
       getOrchestrationService: () => orchestrationServiceRef,
+      getSearchService: () => searchServiceHolder.current,
       linearClient,
       linearCredentials: linearCredentialService,
       prService,

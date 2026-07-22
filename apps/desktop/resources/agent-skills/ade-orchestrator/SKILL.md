@@ -188,6 +188,24 @@ Pick `queue` for non-urgent context drops (worker progress reports, validator pa
   picks the delivery mode per the table above. There is no CLI fallback for the
   lead — if `messageAgent` returns a delivery failure, re-read the manifest and
   retry, don't reach for a shell.
+- **Lead — waiting on a worker: use `awaitAgent`, never a polling loop.** When you
+  need to wait for a worker or validator to finish before your next move, call
+  `awaitAgent({ sessionIds, waitFor?: "all" | "any", timeoutMs? })`. It blocks on
+  the run's live events until the target(s) settle (turn done / failed) and then
+  returns — it does **not** poll transcripts, and it short-circuits if they are
+  already done. On timeout it returns a structured *still-running* result (with a
+  `stillRunning` list) so you can decide whether to keep waiting, re-plan, or
+  nudge. You do not have to await: every worker/validator completion is also
+  delivered to you durably as a plain-language note through the run's outbox, so
+  you can react whenever the note arrives instead of blocking.
+- **Lead — read-only ADE capability tools (planning + status).** The lead has a
+  curated, read-only slice of ADE to inform planning and status without a shell:
+  `searchWorkspace` (universal search across transcripts / PRs / commits / Linear
+  / proof / lanes), `readLinearIssue`, `readPr`, `listProofArtifacts`, and
+  `mintDeeplink` (side-effect-free link minting for status prose / handoff). These
+  never mutate; if a capability isn't wired in this runtime the tool returns a
+  clean "unavailable" result. Workers still *do* the actions (§13) — the lead
+  reads and decides.
 - **Worker / validator — `messageAgent` to talk, `ade chat` to *look*.** Workers
   and validators also send through `messageAgent` (inter-worker pings still route
   through the lead per §7 — you do not message peers directly). Their native
@@ -291,6 +309,8 @@ ADE is more than a code editor — a run can reach the same capabilities a norma
 - a minted deeplink → kind `deeplink`, `externalRef.url`
 
 If it isn't in the bundle, it didn't happen: chat prose about "I captured a screenshot" is not evidence. Validators may add a `proof_capture` gate (§6) that *requires* a registered `proof_artifact`, and will check the artifact exists and matches the claim.
+
+`registerAsset` accepts all of these kinds at the tool boundary (`html_spec`, `screenshot`, `test_log`, `doc`, `proof_artifact`, `computer_use`, `video`, `pr_link`, `linear_issue`, `deeplink`) plus the optional `externalRef` (`{ artifactId?, prNumber?, linearId?, url? }`) — pass the `externalRef` whenever the asset points at something outside the bundle so a reader can jump straight to it.
 
 **Lead scoping.** The lead may declare which capabilities a run should use in `manifest.capabilities` (`allowed` / `required` / `notes`) and surface them in each spawn brief so workers know what to reach for and what evidence to bring back. Absent a declaration, workers use judgement — capture proof whenever the outcome is only convincing if you see it.
 

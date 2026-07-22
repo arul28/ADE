@@ -19,6 +19,8 @@ import { createUniversalToolSet, type UniversalToolSetOptions } from "./universa
 import type {
   EvidenceRef,
   ManifestPatchOp,
+  OrchestrationAgentStatus,
+  OrchestrationAssetExternalRef,
   OrchestrationAssetKind,
   OrchestrationManifest,
   OrchestrationPingIntent,
@@ -113,6 +115,42 @@ export type OrchestrationAgentChatHandle = {
   ) => Promise<unknown>;
 };
 
+/**
+ * Result shape every lead read-only capability tool returns. Always resolves —
+ * a missing backing service yields `{ ok: false, error: "unavailable" }` rather
+ * than throwing (runtime-backed-null-services safety: never assume a service
+ * exists in prod).
+ */
+export type OrchestrationLeadReadResult =
+  | ({ ok: true } & Record<string, unknown>)
+  | { ok: false; error: string; message: string };
+
+/**
+ * Curated, READ-ONLY ADE capability backings for the orchestrator lead. Each is
+ * optional and injected by the chat runtime from whatever services are actually
+ * wired in this process; a missing entry means the matching tool reports
+ * "unavailable". All calls run with orchestrator-role read scope and MUST NOT
+ * mutate anything (deeplink minting is side-effect-free).
+ */
+export type OrchestrationLeadReadServices = {
+  /** Universal search across ADE (transcripts, PRs, commits, Linear, proof, lanes). */
+  searchWorkspace?: (args: {
+    query: string;
+    limit?: number;
+    laneId?: string;
+  }) => Promise<OrchestrationLeadReadResult>;
+  /** Read a Linear issue (description + comments) by id/identifier. */
+  readLinearIssue?: (args: { issueId: string }) => Promise<OrchestrationLeadReadResult>;
+  /** Read PR summary/status/checks for the lane (or a specific PR id). */
+  readPr?: (args: { prId?: string }) => Promise<OrchestrationLeadReadResult>;
+  /** List proof-drawer / computer-use artifacts (evidence). */
+  listProofArtifacts?: (args: { limit?: number }) => Promise<OrchestrationLeadReadResult>;
+  /** Mint an ADE deeplink (pure; side-effect-free) for a target. */
+  mintDeeplink?: (args: {
+    target: Record<string, unknown>;
+  }) => Promise<OrchestrationLeadReadResult>;
+};
+
 export type OrchestrationToolSetOptions = {
   cwd: string;
   interactionMode: OrchestrationInteractionMode;
@@ -124,6 +162,11 @@ export type OrchestrationToolSetOptions = {
    * a base set of read or edit tools depending on role.
    */
   universal: UniversalToolSetOptions;
+  /**
+   * Optional read-only ADE capability backings for the lead slice. Absent
+   * entries degrade to an "unavailable" tool result; never required.
+   */
+  leadReadServices?: OrchestrationLeadReadServices;
 };
 
 // ---------------------------------------------------------------------------
@@ -153,6 +196,13 @@ const ASSET_KIND_VALUES = [
   "screenshot",
   "test_log",
   "doc",
+  // Unit S evidence kinds for externally-visible ADE actions (see SKILL §13).
+  "proof_artifact",
+  "computer_use",
+  "video",
+  "pr_link",
+  "linear_issue",
+  "deeplink",
 ] as const;
 const MODEL_SELECTION_ROLE_VALUES = ["worker", "validator"] as const;
 
@@ -706,6 +756,170 @@ function createGetAgentTranscriptTool(
   });
 }
 
+/** Agent statuses that count as "settled" for awaitAgent (turn done / failed). */
+const SETTLED_AGENT_STATUSES: ReadonlySet<OrchestrationAgentStatus> = new Set([
+  "completed",
+  "failed",
+]);
+
+const AWAIT_AGENT_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const AWAIT_AGENT_MAX_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+type AwaitAgentSnapshot = {
+  sessionId: string;
+  tag?: string;
+  role: OrchestrationRole;
+  status: OrchestrationAgentStatus;
+  settled: boolean;
+};
+
+function snapshotAwaitTargets(
+  manifest: OrchestrationManifest,
+  sessionIds: readonly string[],
+): { known: AwaitAgentSnapshot[]; unknown: string[] } {
+  const known: AwaitAgentSnapshot[] = [];
+  const unknown: string[] = [];
+  for (const sessionId of sessionIds) {
+    const agent = manifest.agents.find((a) => a.sessionId === sessionId);
+    if (!agent) {
+      unknown.push(sessionId);
+      continue;
+    }
+    known.push({
+      sessionId,
+      ...(agent.tag ? { tag: agent.tag } : {}),
+      role: agent.role,
+      status: agent.status,
+      settled: SETTLED_AGENT_STATUSES.has(agent.status),
+    });
+  }
+  return { known, unknown };
+}
+
+function awaitConditionMet(
+  snapshots: readonly AwaitAgentSnapshot[],
+  waitFor: "all" | "any",
+): boolean {
+  if (!snapshots.length) return true;
+  return waitFor === "any"
+    ? snapshots.some((s) => s.settled)
+    : snapshots.every((s) => s.settled);
+}
+
+/**
+ * Lead-only. Block until target agent(s) reach a settled state (turn completed /
+ * idle / failed), driven purely by the orchestration event bus — no transcript
+ * polling. Short-circuits when already settled and always cleans up its
+ * subscription + timer, so duplicate calls cannot leak listeners.
+ */
+function createAwaitAgentTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Lead-only. Wait until the given orchestration agent(s) finish their turn (settle as completed or failed), " +
+      "then return. Event-driven — it subscribes to run lifecycle events, it does NOT poll transcripts. " +
+      "Pass `sessionIds` (one or more) and optionally `waitFor` ('all' | 'any', default 'all') and `timeoutMs` " +
+      "(default 10 min, max 30 min). On timeout it returns a structured still-running result instead of blocking forever. " +
+      "Completion events are also delivered to you durably via the run outbox, so awaitAgent is a convenience, not the only signal.",
+    inputSchema: z.object({
+      sessionIds: z.array(z.string().min(1)).min(1, "at least one target sessionId"),
+      waitFor: z.enum(["all", "any"]).optional(),
+      timeoutMs: z.number().int().positive().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const waitFor = input.waitFor ?? "all";
+        const timeoutMs = Math.min(
+          input.timeoutMs ?? AWAIT_AGENT_DEFAULT_TIMEOUT_MS,
+          AWAIT_AGENT_MAX_TIMEOUT_MS,
+        );
+        const manifest = manifestOrThrow(svc, ctx.runId);
+        const initial = snapshotAwaitTargets(manifest, input.sessionIds);
+        if (initial.unknown.length) {
+          return {
+            ok: false as const,
+            error: "agent_not_in_run",
+            unknownSessionIds: initial.unknown,
+            message:
+              `awaitAgent: session(s) not registered in run ${ctx.runId}: ${initial.unknown.join(", ")}.`,
+          };
+        }
+        // Short-circuit: already settled — no subscription needed.
+        if (awaitConditionMet(initial.known, waitFor)) {
+          return {
+            ok: true as const,
+            done: true,
+            timedOut: false,
+            waitFor,
+            agents: initial.known,
+          };
+        }
+        return await new Promise<{
+          ok: true;
+          done: boolean;
+          timedOut: boolean;
+          waitFor: "all" | "any";
+          agents: AwaitAgentSnapshot[];
+          stillRunning?: AwaitAgentSnapshot[];
+          message?: string;
+        }>((resolve) => {
+          let finished = false;
+          let unsubscribe: () => void = () => {};
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          const currentSnapshots = (): AwaitAgentSnapshot[] => {
+            const m = svc.getManifestForRun(ctx.runId);
+            return m
+              ? snapshotAwaitTargets(m, input.sessionIds).known
+              : initial.known;
+          };
+          const finish = (
+            result: Parameters<typeof resolve>[0],
+          ): void => {
+            if (finished) return;
+            finished = true;
+            if (timer) clearTimeout(timer);
+            unsubscribe();
+            resolve(result);
+          };
+          const check = (): void => {
+            const snapshots = currentSnapshots();
+            if (awaitConditionMet(snapshots, waitFor)) {
+              finish({
+                ok: true,
+                done: true,
+                timedOut: false,
+                waitFor,
+                agents: snapshots,
+              });
+            }
+          };
+          unsubscribe = svc.on("event", (payload) => {
+            if (payload.runId !== ctx.runId) return;
+            check();
+          });
+          timer = setTimeout(() => {
+            const snapshots = currentSnapshots();
+            finish({
+              ok: true,
+              done: false,
+              timedOut: true,
+              waitFor,
+              agents: snapshots,
+              stillRunning: snapshots.filter((s) => !s.settled),
+              message:
+                `Timed out after ${timeoutMs}ms waiting for ${waitFor === "any" ? "any of" : "all"} the target agent(s) to finish.`,
+            });
+          }, timeoutMs);
+          // Close the subscribe race: state may have advanced between the initial
+          // read and the subscription being installed.
+          check();
+        });
+      }),
+  });
+}
+
 function createManifestPatchTool(
   ctx: OrchestrationSessionContext,
   svc: ReturnType<typeof createOrchestrationService>,
@@ -1237,13 +1451,24 @@ function createRegisterAssetTool(
 ) {
   return tool({
     description:
-      "Register an asset (html spec, screenshot, test log, doc) under the bundle's artifacts/ tree. " +
+      "Register an asset under the bundle's artifacts/ tree. Kinds: html_spec, screenshot, " +
+      "test_log, doc, plus evidence kinds for externally-visible ADE actions — proof_artifact, " +
+      "computer_use, video, pr_link, linear_issue, deeplink (SKILL §13). Pass `externalRef` to " +
+      "point the asset at the real artifact (proof-drawer artifactId, PR number/url, Linear id, or deeplink url). " +
       "Path is relative to the bundle root; the file should already be on disk before calling.",
     inputSchema: z.object({
       relPath: z.string().min(1),
       kind: z.enum(ASSET_KIND_VALUES),
       version: z.number().int().positive().optional(),
       approval: z.enum(["pending", "approved", "rejected"]).optional(),
+      externalRef: z
+        .object({
+          url: z.string().optional(),
+          prNumber: z.number().int().optional(),
+          linearId: z.string().optional(),
+          artifactId: z.string().optional(),
+        })
+        .optional(),
     }),
     execute: async (input) => {
       return withMutationSideEffects({
@@ -1260,6 +1485,9 @@ function createRegisterAssetTool(
                 kind: input.kind as OrchestrationAssetKind,
                 version: input.version,
                 approval: input.approval,
+                ...(input.externalRef
+                  ? { externalRef: input.externalRef as OrchestrationAssetExternalRef }
+                  : {}),
               },
               ctx.bundlePath,
             );
@@ -1751,6 +1979,142 @@ function createRecordPlanningOverrideTool(
 }
 
 // ---------------------------------------------------------------------------
+// Lead read-only ADE capability tools
+// ---------------------------------------------------------------------------
+
+const LEAD_READ_TOOL_NAMES = [
+  "searchWorkspace",
+  "readLinearIssue",
+  "readPr",
+  "listProofArtifacts",
+  "mintDeeplink",
+] as const;
+
+function unavailableResult(capability: string): OrchestrationLeadReadResult {
+  return {
+    ok: false,
+    error: "unavailable",
+    message: `${capability} is not available in this ADE runtime.`,
+  };
+}
+
+/**
+ * Wrap a lead read backing so it (a) short-circuits to a clean "unavailable"
+ * result when the service is not wired, and (b) never throws — any error is
+ * flattened into a structured result. Read-only by construction.
+ */
+async function runLeadRead(
+  capability: string,
+  backing: (() => Promise<OrchestrationLeadReadResult>) | undefined,
+): Promise<OrchestrationLeadReadResult> {
+  if (!backing) return unavailableResult(capability);
+  try {
+    return await backing();
+  } catch (err) {
+    return {
+      ok: false,
+      error: "read_failed",
+      message: `${capability} failed: ${errorMessage(err)}`,
+    };
+  }
+}
+
+function createLeadReadTools(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+  services: OrchestrationLeadReadServices | undefined,
+): OrchestrationToolMap {
+  const tools: OrchestrationToolMap = {};
+
+  tools.searchWorkspace = tool({
+    description:
+      "Lead-only, read-only. Universal search across everything in ADE (chat transcripts, terminal " +
+      "scrollback, PRs, commits, branches, Linear issues, proof artifacts, files, lanes) to inform planning. " +
+      "Returns matches with deeplinks. Never mutates.",
+    inputSchema: z.object({
+      query: z.string().min(1),
+      limit: z.number().int().positive().max(50).optional(),
+      /** Restrict to a lane; omit to search this run's lane / whole project. */
+      laneId: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("searchWorkspace", services?.searchWorkspace
+          ? () => services.searchWorkspace!({
+              query: input.query,
+              ...(input.limit ? { limit: input.limit } : {}),
+              ...(input.laneId ? { laneId: input.laneId } : {}),
+            })
+          : undefined),
+      ),
+  });
+
+  tools.readLinearIssue = tool({
+    description:
+      "Lead-only, read-only. Read an attached/linked Linear issue (title, description, state, comments) " +
+      "to derive the goal and acceptance criteria. Never mutates the issue.",
+    inputSchema: z.object({
+      issueId: z.string().min(1, "Linear issue id or identifier (e.g. ADE-123)"),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("readLinearIssue", services?.readLinearIssue
+          ? () => services.readLinearIssue!({ issueId: input.issueId })
+          : undefined),
+      ),
+  });
+
+  tools.readPr = tool({
+    description:
+      "Lead-only, read-only. Read PR summary/status/checks/review state for the lane (or a specific PR id) " +
+      "when planning a fix-forward run. Never pushes, opens, merges, or comments.",
+    inputSchema: z.object({
+      prId: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("readPr", services?.readPr
+          ? () => services.readPr!({ ...(input.prId ? { prId: input.prId } : {}) })
+          : undefined),
+      ),
+  });
+
+  tools.listProofArtifacts = tool({
+    description:
+      "Lead-only, read-only. List proof-drawer / computer-use artifacts (screenshots, recordings, captures) " +
+      "so the lead can reason about the evidence workers/validators produced. Never mutates.",
+    inputSchema: z.object({
+      limit: z.number().int().positive().max(200).optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("listProofArtifacts", services?.listProofArtifacts
+          ? () => services.listProofArtifacts!({ ...(input.limit ? { limit: input.limit } : {}) })
+          : undefined),
+      ),
+  });
+
+  tools.mintDeeplink = tool({
+    description:
+      "Lead-only, read-only. Mint a shareable ADE deeplink (side-effect-free) for a target — e.g. " +
+      "`{ kind: 'lane', laneId }`, `{ kind: 'file', path, laneId? }`, `{ kind: 'commit', sha }`, " +
+      "`{ kind: 'pr', repoOwner, repoName, prNumber }`, `{ kind: 'linear-issue', issueIdentifier }`. " +
+      "Returns the ade:// and https:// forms. Nothing is created or changed.",
+    inputSchema: z.object({
+      target: z.record(z.string(), z.unknown()),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("mintDeeplink", services?.mintDeeplink
+          ? () => services.mintDeeplink!({ target: input.target })
+          : undefined),
+      ),
+  });
+
+  return tools;
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -1766,6 +2130,7 @@ export function createOrchestrationToolSet(
     orchestrationService: svc,
     agentChatService: chat,
     universal,
+    leadReadServices,
   } = opts;
 
   // Base from the universal toolset. For lead, we strip all write/bash tools
@@ -1822,6 +2187,8 @@ export function createOrchestrationToolSet(
       restrictedIntents: false,
     });
     tools.getAgentTranscript = createGetAgentTranscriptTool(sessionContext, chat, svc);
+    // Event-driven wait on worker/validator completion (no transcript polling).
+    tools.awaitAgent = createAwaitAgentTool(sessionContext, svc);
     tools.manifestPatch = createManifestPatchTool(sessionContext, svc, chat);
     tools.planAppend = createPlanAppendTool(sessionContext, svc, chat);
     tools.planWrite = createPlanWriteTool(sessionContext, svc, chat);
@@ -1848,6 +2215,10 @@ export function createOrchestrationToolSet(
     tools.claimTask = createClaimTaskTool(sessionContext, svc, chat);
     tools.releaseTask = createReleaseTaskTool(sessionContext, svc, chat);
     tools.recordValidationRun = createRecordValidationRunTool(sessionContext, svc, chat);
+    // Curated READ-ONLY ADE capability tools (search / Linear / PR / proof /
+    // deeplinks). Each degrades to a clean "unavailable" result when its backing
+    // service is not wired — they never throw and never mutate.
+    Object.assign(tools, createLeadReadTools(sessionContext, svc, leadReadServices));
     return tools;
   }
 

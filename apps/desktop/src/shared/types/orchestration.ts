@@ -523,7 +523,12 @@ export type OrchestrationOutboxKind =
   | "brief"
   | "ping"
   | "lead_status"
-  | "cancel_interrupt";
+  | "cancel_interrupt"
+  // A worker/validator reached a terminal state (task done/failed → agent
+  // completed/failed). Emitted service-side in the same transaction as the
+  // terminal transition and delivered to the lead so it can never miss a
+  // completion. Drives `awaitAgent` (see orchestrationTools.ts). See SKILL §8.
+  | "completion";
 
 export type OrchestrationOutboxStatus =
   | "pending"

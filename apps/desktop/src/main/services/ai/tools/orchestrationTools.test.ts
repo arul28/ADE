@@ -1675,3 +1675,395 @@ describe("validateSpawnBrief re-export", () => {
     expect(mod.validateSpawnBrief("## TASK\nfoo").ok).toBe(false);
   });
 });
+
+// Seed a developing task assigned to a worker/validator, ready to release.
+async function seedAssignedTask(
+  setup: Setup,
+  args: {
+    sessionId: string;
+    role: "worker" | "validator";
+    tag?: string;
+    taskId?: string;
+    phaseId?: "developing" | "validating";
+    status?: "running";
+  },
+): Promise<void> {
+  const m = setup.svc.getManifestForRun(setup.runId)!;
+  const taskId = args.taskId ?? "T-1";
+  const seeded = await setup.svc.manifestPatch(
+    {
+      runId: setup.runId,
+      ifMatchEtag: m.etag,
+      actorRole: "lead",
+      actorSessionId: "S-lead",
+      patches: [
+        {
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: args.sessionId,
+            role: args.role,
+            ...(args.tag ? { tag: args.tag } : {}),
+            goalSummary: "do work",
+            status: args.status ?? "running",
+            spawnedAt: "now",
+          },
+        },
+        {
+          op: "add",
+          path: "/tasks/-",
+          value: {
+            id: taskId,
+            phaseId: args.phaseId ?? "developing",
+            title: "build it",
+            description: "x",
+            status: "claimed",
+            validationGate: { required: false, stepIds: [] },
+            assigneeSessionId: args.sessionId,
+          },
+        },
+      ],
+    },
+    setup.bundlePath,
+  );
+  expect(seeded.ok).toBe(true);
+}
+
+describe("completion outbox on worker/validator terminal transition", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("enqueues a completion entry to the lead when a worker releases its task done", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "done" });
+    expect(res.ok).toBe(true);
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const completion = (manifest.outbox ?? []).find(
+      (e) => e.kind === "completion" && e.targetSessionId === "S-lead",
+    );
+    expect(completion).toBeDefined();
+    const detail = (completion!.delivery.metadata as any)?.orchestrationCompletion;
+    expect(detail?.sessionId).toBe("S-worker");
+    expect(detail?.outcome).toBe("completed");
+    expect(detail?.tag).toBe("impl");
+    // Plain-language, human-readable text (SKILL §14).
+    expect(completion!.delivery.text).toContain("impl finished");
+    expect(completion!.delivery.text).toContain("done");
+  });
+
+  it("records outcome=failed when a worker releases its task failed", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "failed" });
+    expect(res.ok).toBe(true);
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const completion = (manifest.outbox ?? []).find((e) => e.kind === "completion");
+    expect((completion!.delivery.metadata as any)?.orchestrationCompletion?.outcome).toBe("failed");
+    expect(completion!.delivery.text).toContain("failed");
+  });
+
+  it("does not enqueue a completion when the lead itself releases a task", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    // Lead claims + releases a planning-seed task on its own session.
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-lead",
+              phaseId: "developing",
+              title: "lead seed",
+              description: "x",
+              status: "claimed",
+              validationGate: { required: false, stepIds: [] },
+              assigneeSessionId: "S-lead",
+            },
+          },
+        ],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-lead", status: "done" });
+    expect(res.ok).toBe(true);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect((manifest.outbox ?? []).some((e) => e.kind === "completion")).toBe(false);
+  });
+});
+
+describe("awaitAgent tool", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("is registered for the lead and not for workers", async () => {
+    setup = await setupWithRun("lead");
+    expect(makeToolSet(setup, "lead", "S-lead").awaitAgent).toBeDefined();
+    expect(makeToolSet(setup, "worker", "S-worker").awaitAgent).toBeUndefined();
+  });
+
+  it("short-circuits immediately when the target is already settled", async () => {
+    setup = await setupWithRun("lead");
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: "S-worker",
+            role: "worker",
+            tag: "impl",
+            goalSummary: "done already",
+            status: "completed",
+            spawnedAt: "now",
+          },
+        }],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const res: any = await tools.awaitAgent!.execute({ sessionIds: ["S-worker"] });
+    expect(res.ok).toBe(true);
+    expect(res.done).toBe(true);
+    expect(res.timedOut).toBe(false);
+    expect(res.agents[0].status).toBe("completed");
+  });
+
+  it("rejects unknown target sessions", async () => {
+    setup = await setupWithRun("lead");
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const res: any = await tools.awaitAgent!.execute({ sessionIds: ["S-nope"] });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("agent_not_in_run");
+    expect(res.unknownSessionIds).toEqual(["S-nope"]);
+  });
+
+  it("resolves when the target reaches a terminal state via a completion event", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const workerTools = makeToolSet(setup, "worker", "S-worker");
+
+    // Start awaiting BEFORE the worker finishes; the Promise executor installs
+    // the subscription synchronously, so no event can be missed.
+    const pending = leadTools.awaitAgent!.execute({ sessionIds: ["S-worker"], timeoutMs: 5000 });
+    await workerTools.releaseTask!.execute({ taskId: "T-1", status: "done" });
+    const res: any = await pending;
+    expect(res.ok).toBe(true);
+    expect(res.done).toBe(true);
+    expect(res.timedOut).toBe(false);
+    expect(res.agents[0].status).toBe("completed");
+  });
+
+  it("returns a structured still-running result on timeout", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const res: any = await tools.awaitAgent!.execute({ sessionIds: ["S-worker"], timeoutMs: 30 });
+    expect(res.ok).toBe(true);
+    expect(res.done).toBe(false);
+    expect(res.timedOut).toBe(true);
+    expect(res.stillRunning.map((s: any) => s.sessionId)).toContain("S-worker");
+  });
+
+  it("waitFor 'any' resolves when at least one target settles", async () => {
+    setup = await setupWithRun("lead");
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          { op: "add", path: "/agents/-", value: { sessionId: "S-a", role: "worker", tag: "a", goalSummary: "x", status: "completed", spawnedAt: "now" } },
+          { op: "add", path: "/agents/-", value: { sessionId: "S-b", role: "worker", tag: "b", goalSummary: "x", status: "running", spawnedAt: "now" } },
+        ],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const anyRes: any = await tools.awaitAgent!.execute({ sessionIds: ["S-a", "S-b"], waitFor: "any" });
+    expect(anyRes.done).toBe(true);
+    // "all" would time out because S-b is still running.
+    const allRes: any = await tools.awaitAgent!.execute({ sessionIds: ["S-a", "S-b"], waitFor: "all", timeoutMs: 30 });
+    expect(allRes.timedOut).toBe(true);
+  });
+
+  it("does not leak event subscriptions across duplicate calls", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    let subscribes = 0;
+    let unsubscribes = 0;
+    const realOn = setup.svc.on.bind(setup.svc);
+    (setup.svc as any).on = (name: "event", cb: (payload: any) => void) => {
+      subscribes += 1;
+      const off = realOn(name, cb);
+      return () => {
+        unsubscribes += 1;
+        off();
+      };
+    };
+
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    await Promise.all([
+      tools.awaitAgent!.execute({ sessionIds: ["S-worker"], timeoutMs: 30 }),
+      tools.awaitAgent!.execute({ sessionIds: ["S-worker"], timeoutMs: 30 }),
+    ]);
+    expect(subscribes).toBe(2);
+    expect(unsubscribes).toBe(2);
+  });
+});
+
+describe("lead read-only ADE capability tools", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("registers the curated read-only tools for the lead only", async () => {
+    setup = await setupWithRun("lead");
+    const lead = makeToolSet(setup, "lead", "S-lead");
+    for (const name of ["searchWorkspace", "readLinearIssue", "readPr", "listProofArtifacts", "mintDeeplink"]) {
+      expect(lead[name]).toBeDefined();
+    }
+    const worker = makeToolSet(setup, "worker", "S-worker");
+    for (const name of ["searchWorkspace", "readLinearIssue", "readPr", "listProofArtifacts", "mintDeeplink"]) {
+      expect(worker[name]).toBeUndefined();
+    }
+  });
+
+  it("returns a clean 'unavailable' result when the backing service is null", async () => {
+    setup = await setupWithRun("lead");
+    const tools = makeToolSet(setup, "lead", "S-lead"); // no leadReadServices wired
+    for (const name of ["searchWorkspace", "readLinearIssue", "readPr", "listProofArtifacts", "mintDeeplink"]) {
+      const res: any = await tools[name]!.execute(
+        name === "searchWorkspace"
+          ? { query: "x" }
+          : name === "readLinearIssue"
+            ? { issueId: "ADE-1" }
+            : name === "mintDeeplink"
+              ? { target: { kind: "lane", laneId: "x" } }
+              : {},
+      );
+      expect(res.ok).toBe(false);
+      expect(res.error).toBe("unavailable");
+    }
+  });
+
+  it("passes through a wired backing and flattens thrown errors to a result", async () => {
+    setup = await setupWithRun("lead");
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      leadReadServices: {
+        searchWorkspace: async ({ query }) => ({ ok: true, results: [{ id: `hit:${query}` }] }),
+        readLinearIssue: async () => {
+          throw new Error("linear exploded");
+        },
+      },
+    });
+    const ok: any = await tools.searchWorkspace!.execute({ query: "login" });
+    expect(ok.ok).toBe(true);
+    expect(ok.results[0].id).toBe("hit:login");
+
+    const thrown: any = await tools.readLinearIssue!.execute({ issueId: "ADE-9" });
+    expect(thrown.ok).toBe(false);
+    expect(thrown.error).toBe("read_failed");
+    expect(thrown.message).toContain("linear exploded");
+  });
+});
+
+describe("registerAsset accepts Unit S evidence kinds + externalRef", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("registers a proof_artifact with an externalRef.artifactId", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/agents/-",
+          value: { sessionId: "S-worker", role: "worker", tag: "impl", goalSummary: "x", status: "running", spawnedAt: "now" },
+        }],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const res: any = await tools.registerAsset!.execute({
+      relPath: "artifacts/evidence/shot.png",
+      kind: "proof_artifact",
+      externalRef: { artifactId: "CU-123", url: "https://example.test/CU-123" },
+    });
+    expect(res.ok).toBe(true);
+    expect(res.asset.kind).toBe("proof_artifact");
+    expect(res.asset.externalRef.artifactId).toBe("CU-123");
+  });
+
+  it("accepts every new asset kind at the tool boundary", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/agents/-",
+          value: { sessionId: "S-worker", role: "worker", tag: "impl", goalSummary: "x", status: "running", spawnedAt: "now" },
+        }],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    for (const kind of ["computer_use", "video", "pr_link", "linear_issue", "deeplink"]) {
+      const res: any = await tools.registerAsset!.execute({
+        relPath: `artifacts/evidence/${kind}.bin`,
+        kind,
+      });
+      expect(res.ok).toBe(true);
+      expect(res.asset.kind).toBe(kind);
+    }
+  });
+});
