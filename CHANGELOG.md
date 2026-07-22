@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Isolated project handoff generations, retired abandoned streams, and bounded subscriptions, transcript cursors, artwork, invalidation hints, and inactive project scopes.
 - Renewed relay leases in the background and preserved verified secure routes when cloud presence is temporarily stale.
 - Kept peer changes, transcript polling, role transitions, and sync-host handoff progressing while foreground chats hydrate.
+- Updated desktop and CLI WebSocket parsing to bound fragmented-frame memory use, and refreshed the hosted router and project YAML parser to their patched compatible releases.
 
 ### Terminals and mobile
 

@@ -19,6 +19,7 @@ v1.2.34 makes ADE stay responsive while a remote phone or browser catches up, an
 - **Foreground work cannot starve the runtime.** Browser chat hydration remains prioritized without blocking peer changes, transcript polling, role transitions, or the final sync-host handoff.
 - **Terminal recovery is atomic on iPhone.** Live bytes that arrive during a snapshot are retained and applied after the snapshot, preventing recovered output from disappearing or reordering.
 - **Verified routes survive stale presence.** A temporarily stale directory status no longer discards a secure route that the client can still use.
+- **Network-facing runtime dependencies are patched.** Desktop and CLI use the bounded WebSocket parser, while hosted navigation and project config parsing use their patched compatible releases.
 
 ## Desktop responsiveness
 
