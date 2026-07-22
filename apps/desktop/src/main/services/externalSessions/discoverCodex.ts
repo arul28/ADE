@@ -369,7 +369,7 @@ async function codexLaunchForFile(
 ): Promise<TerminalResumeLaunchConfig | null> {
   const prefixLaunch = codexLaunchFromRecords(prefixRecords);
   if (!exactLookup) return prefixLaunch;
-  return latestCodexLaunchFromFile(filePath, logger);
+  return (await latestCodexLaunchFromFile(filePath, logger)) ?? prefixLaunch;
 }
 
 function collectProjectScopedCodexSessionCandidates(

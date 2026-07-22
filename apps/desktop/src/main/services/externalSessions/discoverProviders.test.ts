@@ -29,6 +29,23 @@ function writeJsonl(filePath: string, rows: unknown[]): void {
   fs.writeFileSync(filePath, rows.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
 }
 
+function appendLargeCodexAgentMessage(filePath: string, messageBytes: number): void {
+  const fd = fs.openSync(filePath, "a");
+  const chunk = Buffer.alloc(1024 * 1024, 0x78);
+  try {
+    fs.writeSync(fd, '{"type":"event_msg","payload":{"type":"agent_message","message":"');
+    let remaining = messageBytes;
+    while (remaining > 0) {
+      const bytesToWrite = Math.min(remaining, chunk.length);
+      fs.writeSync(fd, chunk, 0, bytesToWrite);
+      remaining -= bytesToWrite;
+    }
+    fs.writeSync(fd, '"}}\n');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-external-discovery-"));
   previousHome = process.env.HOME;
@@ -290,6 +307,52 @@ describe("external session provider discovery", () => {
       permissionMode: "plan",
       codexApprovalPolicy: "on-request",
       codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("retains the prefix Codex launch when a large final record truncates exact tail recovery", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "25252525-2525-4252-8252-252525252525";
+    const rolloutPath = path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-${id}.jsonl`);
+    writeJsonl(rolloutPath, [
+      {
+        type: "session_meta",
+        payload: { id, cwd, source: "cli", originator: "codex-tui" },
+      },
+      {
+        type: "turn_context",
+        payload: {
+          model: "gpt-5.6-sol",
+          effort: "high",
+          service_tier: "fast",
+          approval_policy: "never",
+          sandbox_policy: { type: "danger-full-access" },
+        },
+      },
+    ]);
+    appendLargeCodexAgentMessage(rolloutPath, 65 * 1024 * 1024);
+    const warn = vi.fn();
+
+    const [exact] = await discoverCodexSessions({
+      homeDir,
+      sessionId: id,
+      limit: 1,
+      logger: { warn },
+    });
+
+    expect(warn).toHaveBeenCalledWith("external_sessions.codex_launch_scan_truncated", expect.objectContaining({
+      filePath: rolloutPath,
+      bytesScanned: 64 * 1024 * 1024,
+    }));
+    expect(exact?.launch).toEqual({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      fastMode: true,
+      permissionMode: "full-auto",
+      codexApprovalPolicy: "never",
+      codexSandbox: "danger-full-access",
       codexConfigSource: "flags",
     });
   });
