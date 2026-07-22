@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { resolveRemoteProjectIcon } from "./projectIconResolver";
+import {
+  REMOTE_ICON_MAX_DATA_URL_BYTES,
+  resolveRemoteProjectIcon,
+} from "./projectIconResolver";
 
 const tempRoots = new Set<string>();
 
@@ -147,9 +150,11 @@ describe("resolveRemoteProjectIcon", () => {
     expect(icon.sourcePath).toBeNull();
   });
 
-  it("skips an oversized icon but keeps its metadata", () => {
+  it("never returns an encoded icon above the wire cap and keeps its metadata", () => {
     const root = makeTempRoot();
-    const big = Buffer.alloc(2 * 1024 * 1024 + 1, 0);
+    // Invalid raster data makes the thumbnailer take its bounded raw-PNG
+    // fallback, where base64 expansion pushes this beyond the encoded cap.
+    const big = Buffer.alloc(REMOTE_ICON_MAX_DATA_URL_BYTES, 0);
     writeFileEnsuringDir(path.join(root, "logo.png"), big);
 
     const icon = resolveRemoteProjectIcon(root);

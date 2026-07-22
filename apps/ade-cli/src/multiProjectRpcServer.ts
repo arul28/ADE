@@ -26,7 +26,10 @@ import {
   type JsonRpcRequest,
 } from "./jsonrpc";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
-import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
+import {
+  REMOTE_ICON_MAX_DATA_URL_BYTES,
+  resolveRemoteProjectIcon,
+} from "./services/projects/projectIconResolver";
 import {
   ProjectRegistry,
   SYSTEM_PROJECT_REGISTRATION,
@@ -251,8 +254,9 @@ const EMPTY_PROJECT_ICON: ResolvedProjectIcon = Object.freeze({
 // most this many icons and this many inlined bytes per call. A large or
 // slow-filesystem registry then can't stall a connect just to render tab
 // artwork — projects past the budget fall back to a null icon.
-const LIST_ICON_COUNT_BUDGET = 64;
-const LIST_ICON_BYTE_BUDGET = 12 * 1024 * 1024;
+const LIST_ICON_COUNT_BUDGET = 24;
+const LIST_ICON_BYTE_BUDGET = 512 * 1024;
+const LIST_ICON_RESOLVE_BUDGET_MS = 750;
 
 // Stamp a single project record with its host-resolved icon so a remote desktop
 // can render the real project logo. Used for the records returned by
@@ -268,20 +272,36 @@ function decorateProjectWithIcon<T extends { rootPath: string }>(
 // Decorate a full project list with icons under the connect-path budget above.
 // Icons are resolved for the most-recently-opened projects first (those most
 // likely to be open as tabs) while the returned array stays in registry order.
-function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number }>(
+export function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number }>(
   records: readonly T[],
+  resolveIcon: (rootPath: string) => ResolvedProjectIcon = resolveRemoteProjectIcon,
 ): Array<T & { icon: ResolvedProjectIcon }> {
   const icons = new Map<number, ResolvedProjectIcon>();
   let count = 0;
   let bytes = 0;
+  const startedAt = Date.now();
   const byRecency = records
     .map((record, index) => ({ record, index }))
     .sort((a, b) => b.record.lastOpenedAt - a.record.lastOpenedAt);
   for (const { record, index } of byRecency) {
-    if (count >= LIST_ICON_COUNT_BUDGET || bytes >= LIST_ICON_BYTE_BUDGET) break;
-    const icon = resolveRemoteProjectIcon(record.rootPath);
+    if (
+      count >= LIST_ICON_COUNT_BUDGET
+      || bytes >= LIST_ICON_BYTE_BUDGET
+      || Date.now() - startedAt >= LIST_ICON_RESOLVE_BUDGET_MS
+    ) break;
+    const icon = resolveIcon(record.rootPath);
     count += 1;
-    if (icon.dataUrl) bytes += icon.dataUrl.length;
+    const iconBytes = icon.dataUrl
+      ? Buffer.byteLength(icon.dataUrl, "utf8")
+      : 0;
+    if (
+      iconBytes > REMOTE_ICON_MAX_DATA_URL_BYTES
+      || bytes + iconBytes > LIST_ICON_BYTE_BUDGET
+    ) {
+      icons.set(index, EMPTY_PROJECT_ICON);
+      continue;
+    }
+    bytes += iconBytes;
     icons.set(index, icon);
   }
   return records.map((record, index) => ({

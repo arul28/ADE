@@ -4,7 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createEventBuffer } from "./eventBuffer";
-import { createMultiProjectRpcRequestHandler } from "./multiProjectRpcServer";
+import {
+  createMultiProjectRpcRequestHandler,
+  decorateProjectListWithIcons,
+} from "./multiProjectRpcServer";
 import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
@@ -121,6 +124,44 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("keeps the complete inline icon catalog below its hard wire budget", () => {
+    const records = Array.from({ length: 8 }, (_, index) => ({
+      rootPath: `/project-${index}`,
+      lastOpenedAt: index,
+    }));
+    const iconPayload = `data:image/png;base64,${"a".repeat(100 * 1024)}`;
+
+    const decorated = decorateProjectListWithIcons(records, (rootPath) => ({
+      dataUrl: iconPayload,
+      sourcePath: `${rootPath}/icon.png`,
+      mimeType: "image/png",
+    }));
+
+    const iconBytes = decorated.reduce(
+      (total, record) => total + Buffer.byteLength(record.icon.dataUrl ?? "", "utf8"),
+      0,
+    );
+    expect(iconBytes).toBeLessThanOrEqual(512 * 1024);
+    expect(decorated.filter((record) => record.icon.dataUrl).length).toBe(5);
+  });
+
+  it("drops an individually oversized icon before it reaches the catalog", () => {
+    const [decorated] = decorateProjectListWithIcons(
+      [{ rootPath: "/project", lastOpenedAt: 1 }],
+      () => ({
+        dataUrl: `data:image/png;base64,${"a".repeat(129 * 1024)}`,
+        sourcePath: "/project/icon.png",
+        mimeType: "image/png",
+      }),
+    );
+
+    expect(decorated.icon).toEqual({
+      dataUrl: null,
+      sourcePath: null,
+      mimeType: null,
+    });
+  });
+
   it("reconciles account-owned client trust on sign-out and account switch", async () => {
     const { registry } = createRegistry();
     const accountAuthService = makeAccountAuthServiceMock();

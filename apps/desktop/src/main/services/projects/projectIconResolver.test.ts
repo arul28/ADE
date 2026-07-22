@@ -10,7 +10,10 @@ import {
   setProjectIconOverride,
   setProjectIconOverrideFromSelection,
 } from "./projectIconResolver";
-import { resolveMobileProjectIconDataUrl } from "./projectIconThumbnail";
+import {
+  PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES,
+  resolveMobileProjectIconDataUrl,
+} from "./projectIconThumbnail";
 
 const OVER_ICON_LIMIT_BYTES = 10 * 1024 * 1024 + 1;
 const PNG_DATA = Buffer.from(
@@ -185,6 +188,21 @@ describe("projectIconResolver", () => {
     expect(icon.dataUrl).toMatch(/^data:image\/svg\+xml;base64,/);
   });
 
+  it("reuses positive icon-path discovery until its source signature changes", () => {
+    const root = makeProjectRoot();
+    const iconPath = writeFile(root, "icon.png", PNG_DATA);
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+
+    const readdirSpy = vi.spyOn(fs, "readdirSync");
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+    expect(readdirSpy).not.toHaveBeenCalled();
+
+    fs.appendFileSync(iconPath, Buffer.from([0]));
+    expect(resolveProjectIconPath(root)).toBe(iconPath);
+    expect(readdirSpy).toHaveBeenCalled();
+    readdirSpy.mockRestore();
+  });
+
   it("uses an Electron nativeImage thumbnail for mobile when one can be decoded", () => {
     const root = makeProjectRoot();
     writeFile(root, "icon.png", PNG_DATA);
@@ -244,6 +262,25 @@ describe("projectIconResolver", () => {
     });
 
     expect(dataUrl).toBe(`data:image/png;base64,${PNG_DATA.toString("base64")}`);
+  });
+
+  it("drops a thumbnail that exceeds the sync payload cap", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "icon.png", PNG_DATA);
+
+    const dataUrl = resolveMobileProjectIconDataUrl(root, {
+      nativeImage: {
+        createFromPath: () => ({
+          isEmpty: () => false,
+          resize: () => ({
+            toDataURL: () =>
+              `data:image/png;base64,${"a".repeat(PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES)}`,
+          }),
+        }),
+      },
+    });
+
+    expect(dataUrl).toBeNull();
   });
 
   it("keeps native and headless mobile thumbnail cache entries separate", () => {

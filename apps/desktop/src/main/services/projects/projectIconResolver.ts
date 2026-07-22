@@ -201,6 +201,19 @@ type ProjectIconResultCacheEntry = {
 
 const projectIconResultCache = new Map<string, ProjectIconResultCacheEntry>();
 
+type ProjectIconPathCacheEntry = {
+  rootMtimeMs: number;
+  appsMtimeMs: number;
+  packagesMtimeMs: number;
+  configMtimeMs: number;
+  sourceMtimeMs: number;
+  sourceSize: number;
+  expiresAtMs: number;
+  value: string;
+};
+
+const projectIconPathCache = new Map<string, ProjectIconPathCacheEntry>();
+
 function dirMtimeMs(absPath: string): number {
   try {
     return fs.statSync(absPath).mtimeMs;
@@ -240,11 +253,26 @@ function setProjectIconResultCache(key: string, entry: ProjectIconResultCacheEnt
   projectIconResultCache.set(key, entry);
 }
 
+function setProjectIconPathCache(key: string, entry: ProjectIconPathCacheEntry): void {
+  if (projectIconPathCache.has(key)) {
+    projectIconPathCache.delete(key);
+  } else if (projectIconPathCache.size >= PROJECT_ICON_RESULT_CACHE_MAX) {
+    const oldestKey = projectIconPathCache.keys().next().value;
+    if (oldestKey !== undefined) projectIconPathCache.delete(oldestKey);
+  }
+  projectIconPathCache.set(key, entry);
+}
+
 function clearProjectIconResultCache(projectRoot: string): void {
   const root = path.resolve(projectRoot);
   for (const key of projectIconResultCache.keys()) {
     if (key === root || key.startsWith(`${root}\0`)) {
       projectIconResultCache.delete(key);
+    }
+  }
+  for (const key of projectIconPathCache.keys()) {
+    if (key === root || key.startsWith(`${root}\0`)) {
+      projectIconPathCache.delete(key);
     }
   }
 }
@@ -531,15 +559,53 @@ export function resolveProjectIconPath(
   options: { iconPathOverride?: string | null } = {},
 ): string | null {
   const root = path.resolve(projectRoot);
+  const cacheKey = projectIconResultCacheKey(root, options);
+  const rootMtimeMs = dirMtimeMs(root);
+  const appsMtimeMs = dirMtimeMs(path.join(root, "apps"));
+  const packagesMtimeMs = dirMtimeMs(path.join(root, "packages"));
+  const configMtimeMs = dirMtimeMs(path.join(root, ".ade", "ade.yaml"));
+  const cached = projectIconPathCache.get(cacheKey);
+  if (
+    cached
+    && cached.expiresAtMs > Date.now()
+    && cached.rootMtimeMs === rootMtimeMs
+    && cached.appsMtimeMs === appsMtimeMs
+    && cached.packagesMtimeMs === packagesMtimeMs
+    && cached.configMtimeMs === configMtimeMs
+  ) {
+    const sourceSignature = fileSignature(cached.value);
+    if (
+      sourceSignature.mtimeMs === cached.sourceMtimeMs
+      && sourceSignature.size === cached.sourceSize
+    ) {
+      projectIconPathCache.delete(cacheKey);
+      projectIconPathCache.set(cacheKey, cached);
+      return cached.value;
+    }
+  }
+  const cacheValue = (value: string): string => {
+    const sourceSignature = fileSignature(value);
+    setProjectIconPathCache(cacheKey, {
+      rootMtimeMs,
+      appsMtimeMs,
+      packagesMtimeMs,
+      configMtimeMs,
+      sourceMtimeMs: sourceSignature.mtimeMs,
+      sourceSize: sourceSignature.size,
+      expiresAtMs: Date.now() + PROJECT_ICON_RESULT_CACHE_TTL_MS,
+      value,
+    });
+    return value;
+  };
   const configured = Object.prototype.hasOwnProperty.call(options, "iconPathOverride")
     ? options.iconPathOverride
     : readProjectIconOverride(root);
   if (configured === null) return null;
   const configuredMatch = resolveConfiguredProjectIconPath(root, configured);
-  if (configuredMatch) return configuredMatch;
+  if (configuredMatch) return cacheValue(configuredMatch);
 
   const directMatch = findBestDetectedIcon(root);
-  if (directMatch) return directMatch;
+  if (directMatch) return cacheValue(directMatch);
 
   for (const sourceFile of ICON_SOURCE_FILES) {
     // Resolve through the real filesystem so a symlinked source file (e.g.
@@ -560,7 +626,9 @@ export function resolveProjectIconPath(
     const href = extractIconHref(source);
     if (!href || !isLocalIconHref(href)) continue;
     const existing = findExistingFile(root, resolveIconHref(root, href));
-    if (existing && isSupportedIconPath(existing) && isInlineableIconFile(existing)) return existing;
+    if (existing && isSupportedIconPath(existing) && isInlineableIconFile(existing)) {
+      return cacheValue(existing);
+    }
   }
 
   return null;
