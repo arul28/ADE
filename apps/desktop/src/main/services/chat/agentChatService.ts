@@ -6971,7 +6971,17 @@ export function createAgentChatService(args: {
     endOffset: number;
     hasCapNotice: boolean;
     envelopes: AgentChatEventEnvelope[];
-    envelopeStartOffsets: Map<string, number[]>;
+    /**
+     * Cursor metadata keyed by the parsed envelope object itself. Values are
+     * null only when a custom/legacy parser produced an envelope that could
+     * not be aligned with a physical JSONL line.
+     *
+     * Keeping this index on the immutable cached envelopes avoids retaining a
+     * second payload-sized JSON.stringify(event) for every row. Object identity
+     * also distinguishes byte-for-byte duplicate rows without occurrence
+     * counters or per-request copies of offset arrays.
+     */
+    envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
   };
   const transcriptHistoryCacheBySession = new Map<string, Map<string, TranscriptHistoryCacheEntry>>();
   type TranscriptSubagentSnapshotCacheEntry = {
@@ -8341,7 +8351,7 @@ export function createAgentChatService(args: {
     startOffset: number;
     endOffset: number;
     hasCapNotice: boolean;
-    envelopeStartOffsets: Map<string, number[]>;
+    envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
   } => {
     const stat = fs.statSync(transcriptPath);
     const maxBytes = Math.max(
@@ -8358,16 +8368,7 @@ export function createAgentChatService(args: {
       && cached.maxBytes === maxBytes
     ) {
       rememberTranscriptHistoryCache(sessionId, cached);
-      return {
-        envelopes: cached.envelopes.slice(),
-        truncated: cached.truncated,
-        startOffset: cached.startOffset,
-        endOffset: cached.endOffset,
-        hasCapNotice: cached.hasCapNotice,
-        envelopeStartOffsets: new Map(
-          [...cached.envelopeStartOffsets].map(([key, offsets]) => [key, offsets.slice()]),
-        ),
-      };
+      return cached;
     }
 
     const { raw, truncated, startOffset, endOffset } = readTranscriptTailForHistory(
@@ -8378,7 +8379,7 @@ export function createAgentChatService(args: {
     const hasCapNotice = raw.includes(CHAT_TRANSCRIPT_LIMIT_NOTICE.trim());
     const envelopes = parseAgentChatTranscript(raw)
       .filter((entry) => entry.sessionId === sessionId);
-    const envelopeStartOffsets = new Map<string, number[]>();
+    const physicalEnvelopeStartOffsets: number[] = [];
     let rawByteOffset = 0;
     for (const line of raw.split(/(?<=\n)/)) {
       const lineBytes = Buffer.byteLength(line, "utf8");
@@ -8386,11 +8387,13 @@ export function createAgentChatService(args: {
       if (trimmedLine) {
         try {
           const parsed = JSON.parse(trimmedLine) as AgentChatEventEnvelope;
-          if (parsed?.sessionId === sessionId && parsed.event && typeof parsed.event === "object") {
-            const key = `${parsed.timestamp}#${parsed.event.type}#${JSON.stringify(parsed.event)}`;
-            const offsets = envelopeStartOffsets.get(key) ?? [];
-            offsets.push(startOffset + rawByteOffset);
-            envelopeStartOffsets.set(key, offsets);
+          if (
+            typeof parsed?.sessionId === "string"
+            && parsed.sessionId.trim() === sessionId
+            && parsed.event
+            && typeof parsed.event === "object"
+          ) {
+            physicalEnvelopeStartOffsets.push(startOffset + rawByteOffset);
           }
         } catch {
           // Legacy/splice-repaired lines remain readable through the canonical
@@ -8399,7 +8402,15 @@ export function createAgentChatService(args: {
       }
       rawByteOffset += lineBytes;
     }
-    rememberTranscriptHistoryCache(sessionId, {
+    const envelopeStartOffsetByIdentity = new WeakMap<AgentChatEventEnvelope, number | null>();
+    const offsetsAlignWithParsedEnvelopes = physicalEnvelopeStartOffsets.length === envelopes.length;
+    for (let index = 0; index < envelopes.length; index += 1) {
+      envelopeStartOffsetByIdentity.set(
+        envelopes[index]!,
+        offsetsAlignWithParsedEnvelopes ? physicalEnvelopeStartOffsets[index]! : null,
+      );
+    }
+    const entry: TranscriptHistoryCacheEntry = {
       transcriptPath,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
@@ -8409,18 +8420,10 @@ export function createAgentChatService(args: {
       endOffset,
       hasCapNotice,
       envelopes,
-      envelopeStartOffsets,
-    });
-    return {
-      envelopes: envelopes.slice(),
-      truncated,
-      startOffset,
-      endOffset,
-      hasCapNotice,
-      envelopeStartOffsets: new Map(
-        [...envelopeStartOffsets].map(([key, offsets]) => [key, offsets.slice()]),
-      ),
+      envelopeStartOffsetByIdentity,
     };
+    rememberTranscriptHistoryCache(sessionId, entry);
+    return entry;
   };
 
   const transcriptPathCandidatesForSessionId = (
@@ -8433,6 +8436,22 @@ export function createAgentChatService(args: {
       path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
     ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
     return [...new Set(candidates)];
+  };
+
+  const readTranscriptHistoryCandidateMetadata = (
+    sessionId: string,
+    transcriptPath: string,
+  ): { endOffset: number; envelopeCount: number; hasCapNotice: boolean } => {
+    const cachedWindow = parseTranscriptHistoryTail(
+      sessionId,
+      transcriptPath,
+      CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
+    );
+    return {
+      endOffset: cachedWindow.endOffset,
+      envelopeCount: cachedWindow.envelopes.length,
+      hasCapNotice: cachedWindow.hasCapNotice,
+    };
   };
 
   const resolveBestTranscriptPathForSessionId = (
@@ -8474,17 +8493,13 @@ export function createAgentChatService(args: {
         // token. Rank every caller's candidates through the same fixed window
         // so a small web hydration and a later page cannot address different
         // legacy/durable transcripts.
-        const parsed = parseTranscriptHistoryTail(
-          sessionId,
-          transcriptPath,
-          CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
-        );
+        const metadata = readTranscriptHistoryCandidateMetadata(sessionId, transcriptPath);
         const candidate: Candidate = {
           path: transcriptPath,
-          size: parsed.endOffset,
+          size: metadata.endOffset,
           mtimeMs: stat.mtimeMs,
-          envelopeCount: parsed.envelopes.length,
-          hasCapNotice: parsed.hasCapNotice,
+          envelopeCount: metadata.envelopeCount,
+          hasCapNotice: metadata.hasCapNotice,
         };
         if (!best || isBetterCandidate(candidate, best)) {
           best = candidate;
@@ -8507,7 +8522,7 @@ export function createAgentChatService(args: {
     truncated: boolean;
     startOffset: number;
     endOffset: number;
-    envelopeStartOffsets: Map<string, number[]>;
+    envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
   } => {
     const managed = managedSessions.get(sessionId);
     const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managed);
@@ -8515,10 +8530,22 @@ export function createAgentChatService(args: {
       try {
         return parseTranscriptHistoryTail(sessionId, transcriptPath, maxBytes);
       } catch {
-        return { envelopes: [], truncated: false, startOffset: 0, endOffset: 0, envelopeStartOffsets: new Map() };
+        return {
+          envelopes: [],
+          truncated: false,
+          startOffset: 0,
+          endOffset: 0,
+          envelopeStartOffsetByIdentity: new WeakMap(),
+        };
       }
     }
-    return { envelopes: [], truncated: false, startOffset: 0, endOffset: 0, envelopeStartOffsets: new Map() };
+    return {
+      envelopes: [],
+      truncated: false,
+      startOffset: 0,
+      endOffset: 0,
+      envelopeStartOffsetByIdentity: new WeakMap(),
+    };
   };
 
   // Resolve the best on-disk transcript path for a session the same
@@ -8762,18 +8789,12 @@ export function createAgentChatService(args: {
       || parentVisibleLength > maxEvents
       || windowed.length < countWindowed.length;
     const truncated = transcriptTruncated || windowTruncated;
-    const transcriptKeys = new Set(transcriptHistory.envelopes.map(envelopeDedupKey));
-    const availableOffsets = new Map(
-      [...transcriptHistory.envelopeStartOffsets].map(([key, offsets]) => [key, offsets.slice()]),
-    );
     let firstReturnedTranscriptOffset: number | null = null;
     let returnedTranscriptEvent = false;
     for (const envelope of windowed) {
-      const key = envelopeDedupKey(envelope);
-      if (!transcriptKeys.has(key)) continue;
+      if (!transcriptHistory.envelopeStartOffsetByIdentity.has(envelope)) continue;
       returnedTranscriptEvent = true;
-      const offsets = availableOffsets.get(key);
-      const offset = offsets?.shift();
+      const offset = transcriptHistory.envelopeStartOffsetByIdentity.get(envelope);
       if (offset != null) {
         firstReturnedTranscriptOffset = offset;
         break;

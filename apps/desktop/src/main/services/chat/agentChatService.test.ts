@@ -21867,6 +21867,37 @@ describe("createAgentChatService", () => {
       expect(page.hasMore).toBe(false);
     });
 
+    it("pages identical UTF-8 transcript rows by occurrence without skipping the older duplicate", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const duplicate: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "héllo-🙂-漢字" },
+        sequence: 1,
+      };
+      const line = `${JSON.stringify(duplicate)}\n`;
+      const lineBytes = Buffer.byteLength(line, "utf8");
+      expect(lineBytes).toBeGreaterThan(line.length);
+
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${line}${line}`, "utf8");
+
+      const history = service.getChatEventHistory(session.id, { maxEvents: 1 });
+      expect(history.events).toHaveLength(1);
+      expect(history.events[0]?.event).toEqual(duplicate.event);
+      expect(history.tailStartOffset).toBe(lineBytes);
+
+      const page = service.getChatEventHistoryPage(session.id, {
+        beforeOffset: history.tailStartOffset!,
+      });
+      expect(page.events).toHaveLength(1);
+      expect(page.events[0]?.event).toEqual(duplicate.event);
+      expect(page.startOffset).toBe(0);
+      expect(page.hasMore).toBe(false);
+    });
+
     it("keeps a requested-byte snapshot seamless with its older page and unflushed ring events", async () => {
       installRealTranscriptParser();
       const emitted: AgentChatEventEnvelope[] = [];
