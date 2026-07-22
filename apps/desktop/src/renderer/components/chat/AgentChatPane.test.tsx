@@ -3427,6 +3427,44 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("resyncs model tuning controls when a returned chat finishes hydrating", async () => {
+    const session = buildSession("session-1", {
+      status: "idle",
+      reasoningEffort: "medium",
+      fastMode: false,
+      executionMode: "focused",
+    });
+    const sessions = [session];
+    const { emitChatEvent } = installAdeMocks({ sessions });
+
+    renderPane(session);
+
+    const fastModeButton = await screen.findByRole("button", { name: "Fast mode" });
+    expect(fastModeButton.getAttribute("aria-pressed")).toBe("false");
+
+    sessions[0] = {
+      ...session,
+      reasoningEffort: "xhigh",
+      fastMode: true,
+      executionMode: "teams",
+    };
+    emitChatEvent({
+      sessionId: session.sessionId,
+      timestamp: "2026-03-24T07:15:00.000Z",
+      event: {
+        type: "done",
+        status: "completed",
+        turnId: "turn-hydrated",
+        model: "gpt-5.4",
+      },
+    });
+
+    await waitFor(() => {
+      expect(fastModeButton.getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByLabelText("Reasoning effort").textContent).toContain("XH");
+    });
+  });
+
   it("exits plan mode in the composer chip when an exit notice arrives even if the session refetch is stale", async () => {
     // Reproduces the production bug: the backend accepted the plan and emitted
     // the exit notice, but the debounced session refetch still reports plan

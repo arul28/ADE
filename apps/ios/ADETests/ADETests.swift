@@ -1495,19 +1495,20 @@ final class ADETests: XCTestCase {
     XCTAssertNil(health.lastFailureMessage)
   }
 
-  func testSettingsConnectedRouteChipFormatsDurationAndSlowFallback() {
+  func testSettingsConnectedRouteChipKeepsPrimaryCopyRouteNeutral() {
     XCTAssertEqual(
       settingsConnectedRouteChipText(durationMs: 300, routeKind: .tailnet),
-      "Connected in 0.3s · tailnet"
+      "Connected in 0.3s"
     )
     XCTAssertEqual(
       settingsConnectedRouteChipText(durationMs: 1_200, routeKind: .lan),
-      "Connected in 1.2s · lan"
+      "Connected in 1.2s"
     )
     XCTAssertEqual(
       settingsConnectedRouteChipText(durationMs: 10_001, routeKind: .relay),
-      "relay"
+      "Connected"
     )
+    XCTAssertNil(settingsConnectedRouteChipText(durationMs: 300, routeKind: nil))
   }
 
   @MainActor

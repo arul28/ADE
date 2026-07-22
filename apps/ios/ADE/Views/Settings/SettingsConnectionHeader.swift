@@ -5,14 +5,13 @@ func settingsConnectedRouteChipText(
   durationMs: Int?,
   routeKind: SyncConnectionRouteKind?
 ) -> String? {
-  guard let routeKind else { return nil }
-  let routeLabel = switch routeKind {
-  case .lan: "lan"
-  case .tailnet: "tailnet"
-  case .relay: "relay"
-  }
+  // A non-nil observed route proves that a connection attempt completed. Keep
+  // the primary performance chip route-neutral; the diagnostics section has a
+  // separate connectionRoute row for people who actually need LAN/Tailscale/
+  // relay detail.
+  guard routeKind != nil else { return nil }
   guard let durationMs, durationMs >= 0, durationMs <= 10_000 else {
-    return routeLabel
+    return "Connected"
   }
   let seconds = Double(durationMs) / 1_000
   let durationLabel = String(
@@ -20,7 +19,7 @@ func settingsConnectedRouteChipText(
     locale: Locale(identifier: "en_US_POSIX"),
     seconds
   )
-  return "Connected in \(durationLabel)s · \(routeLabel)"
+  return "Connected in \(durationLabel)s"
 }
 
 struct SettingsConnectionHeader: View {
