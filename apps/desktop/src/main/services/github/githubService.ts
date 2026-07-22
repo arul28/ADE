@@ -29,9 +29,23 @@ const AUTH_STORE_FILE_NAME = "github-token.v1.bin";
 const MACHINE_TOKEN_KEY = "github.token.v1";
 const GITHUB_API_TIMEOUT_MS = 20_000;
 const GH_AUTH_TOKEN_CACHE_TTL_MS = 30_000;
+const GH_HOSTS_TOKEN_CACHE_MAX_ENTRIES = 32;
 const GITHUB_STATUS_FAILURE_COOLDOWN_MS = 2 * 60_000;
 const execFileAsync = promisify(execFile);
 const processGhHostsTokenCache = new Map<string, { expiresAt: number; token: string | null }>();
+
+function cacheGhHostsToken(hostsPath: string, token: string | null): void {
+  processGhHostsTokenCache.delete(hostsPath);
+  processGhHostsTokenCache.set(hostsPath, {
+    expiresAt: Date.now() + GH_AUTH_TOKEN_CACHE_TTL_MS,
+    token,
+  });
+  while (processGhHostsTokenCache.size > GH_HOSTS_TOKEN_CACHE_MAX_ENTRIES) {
+    const oldest = processGhHostsTokenCache.keys().next().value as string | undefined;
+    if (!oldest) break;
+    processGhHostsTokenCache.delete(oldest);
+  }
+}
 
 type GitHubAuthSource = GitHubStatus["authSource"];
 
@@ -105,7 +119,11 @@ function readGhHostsFileToken(env: NodeJS.ProcessEnv = process.env): string | nu
     || path.join(env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config"), "gh");
   const hostsPath = path.join(configDir, "hosts.yml");
   const cached = processGhHostsTokenCache.get(hostsPath);
-  if (cached && cached.expiresAt > Date.now()) return cached.token;
+  if (cached && cached.expiresAt > Date.now()) {
+    processGhHostsTokenCache.delete(hostsPath);
+    processGhHostsTokenCache.set(hostsPath, cached);
+    return cached.token;
+  }
   try {
     const raw = fs.readFileSync(hostsPath, "utf8");
     const lines = raw.split(/\r?\n/);
@@ -120,10 +138,7 @@ function readGhHostsFileToken(env: NodeJS.ProcessEnv = process.env): string | nu
       if (match) {
         const token = match[1].replace(/^["']|["']$/g, "").trim();
         if (token) {
-          processGhHostsTokenCache.set(hostsPath, {
-            expiresAt: Date.now() + GH_AUTH_TOKEN_CACHE_TTL_MS,
-            token,
-          });
+          cacheGhHostsToken(hostsPath, token);
           return token;
         }
       }
@@ -131,10 +146,7 @@ function readGhHostsFileToken(env: NodeJS.ProcessEnv = process.env): string | nu
   } catch {
     // No hosts.yml or unreadable — fall through.
   }
-  processGhHostsTokenCache.set(hostsPath, {
-    expiresAt: Date.now() + GH_AUTH_TOKEN_CACHE_TTL_MS,
-    token: null,
-  });
+  cacheGhHostsToken(hostsPath, null);
   return null;
 }
 

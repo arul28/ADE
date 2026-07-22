@@ -723,6 +723,28 @@ describe("githubService.getStatus", () => {
     delete process.env.GH_CONFIG_DIR;
   });
 
+  it("bounds the process-wide hosts.yml token cache", () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const prefix = `/tmp/gh-bounded-token-cache-${Date.now()}`;
+    vi.mocked(fs.readFileSync).mockImplementation(((filePath: fs.PathOrFileDescriptor) => {
+      if (String(filePath).endsWith("hosts.yml")) {
+        return "github.com:\n    user: alice\n    oauth_token: gho_hosts_bounded\n";
+      }
+      return Buffer.from("encrypted");
+    }) as typeof fs.readFileSync);
+
+    for (let index = 0; index <= 32; index += 1) {
+      process.env.GH_CONFIG_DIR = `${prefix}-${index}`;
+      expect(makeService().getTokenOrThrow()).toBe("gho_hosts_bounded");
+    }
+    expect(fs.readFileSync).toHaveBeenCalledTimes(33);
+
+    process.env.GH_CONFIG_DIR = `${prefix}-0`;
+    expect(makeService().getTokenOrThrow()).toBe("gho_hosts_bounded");
+    expect(fs.readFileSync).toHaveBeenCalledTimes(34);
+    delete process.env.GH_CONFIG_DIR;
+  });
+
   it("coalesces slow gh auth and failed status probes across project services", async () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
