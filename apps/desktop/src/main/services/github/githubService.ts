@@ -81,8 +81,12 @@ function processGithubAuthState(provider: GitHubCliAuthProvider): ProcessGithubA
 }
 
 function githubStatusProbeKey(token: string, repo: GitHubRepoRef | null): string {
-  const tokenDigest = createHash("sha256").update(token).digest("hex").slice(0, 16);
+  const tokenDigest = githubTokenDigest(token);
   return `${tokenDigest}:${repo ? `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}` : "no-repo"}`;
+}
+
+function githubTokenDigest(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
 }
 
 type GitHubTokenLookup = GitHubCliAuthResult & {
@@ -433,6 +437,7 @@ export function createGithubService({
   const ghAuthProvider = ghAuthTokenProvider ?? readGitHubCliAuthToken;
   const sharedGhAuth = processGithubAuthState(ghAuthProvider);
   let statusInFlight: Promise<GitHubStatus> | null = null;
+  let cachedStatusTokenDigest: string | null = null;
 
   const readMachineToken = (): string | null => {
     if (!credentialStore) return null;
@@ -1024,6 +1029,7 @@ export function createGithubService({
     if (opts.forceRefresh) {
       cachedStatus = null;
       cachedAt = 0;
+      cachedStatusTokenDigest = null;
       sharedGhAuth.authCache = null;
       sharedGhAuth.statusCache.clear();
     }
@@ -1050,10 +1056,12 @@ export function createGithubService({
         connected: false,
       };
       cachedAt = Date.now();
+      cachedStatusTokenDigest = null;
       return cachedStatus;
     }
 
     const now = Date.now();
+    const tokenDigest = githubTokenDigest(token);
     if (cachedStatus && now - cachedAt < 30_000 && cachedStatus.tokenStored) {
       // Still re-detect repo and re-evaluate `connected` so a remote change is reflected.
       const repoChanged =
@@ -1062,9 +1070,10 @@ export function createGithubService({
       const authSourceChanged =
         cachedStatus.authSource !== tokenLookup.source ||
         cachedStatus.patTokenStored !== tokenLookup.patTokenStored;
-      if (authSourceChanged) {
+      if (authSourceChanged || cachedStatusTokenDigest !== tokenDigest) {
         cachedStatus = null;
         cachedAt = 0;
+        cachedStatusTokenDigest = null;
       } else {
         // If the repo just changed we can't trust the cached probe result.
         const repoAccessOk = repoChanged ? null : cachedStatus.repoAccessOk;
@@ -1132,6 +1141,7 @@ export function createGithubService({
         connected,
       };
       cachedAt = now;
+      cachedStatusTokenDigest = tokenDigest;
       return cachedStatus;
     } catch (error) {
       logger.warn("github.token_validation_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -1154,6 +1164,7 @@ export function createGithubService({
         connected: false,
       };
       cachedAt = now;
+      cachedStatusTokenDigest = tokenDigest;
       return cachedStatus;
     }
   };
@@ -1587,6 +1598,7 @@ export function createGithubService({
 
     cachedStatus = null;
     cachedAt = 0;
+    cachedStatusTokenDigest = null;
 
     return {
       state: resultState,
@@ -1623,6 +1635,7 @@ export function createGithubService({
       tokenDecryptionFailed = false;
       cachedStatus = null;
       cachedAt = 0;
+      cachedStatusTokenDigest = null;
       sharedGhAuth.authCache = null;
       sharedGhAuth.statusCache.clear();
     },
@@ -1632,6 +1645,7 @@ export function createGithubService({
       tokenDecryptionFailed = false;
       cachedStatus = null;
       cachedAt = 0;
+      cachedStatusTokenDigest = null;
       sharedGhAuth.authCache = null;
       sharedGhAuth.statusCache.clear();
     },

@@ -246,6 +246,48 @@ describe("laneListSnapshotService", () => {
     }
   });
 
+  it("publishes completed decorations when another optional enrichment hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const services = {
+        ...makeHarness({
+          id: "session-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "running",
+          toolType: "shell",
+          lastOutputPreview: "working",
+        }),
+        rebaseSuggestionService: {
+          listSuggestions: vi.fn().mockResolvedValue([{ laneId: "lane-1", behindCount: 3 }]),
+        },
+        conflictService: {
+          getBatchAssessment: vi.fn(() => new Promise(() => {})),
+        },
+      };
+      const pending = buildLaneListSnapshots(
+        services as any,
+        [{ id: "lane-1", name: "Lane 1", laneType: "worktree", archivedAt: null }] as any,
+        {
+          includeConflictStatus: true,
+          includeRebaseSuggestions: true,
+          includeAutoRebaseStatus: false,
+          optionalEnrichmentBudgetMs: 25,
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(pending).resolves.toEqual([
+        expect.objectContaining({
+          rebaseSuggestion: expect.objectContaining({ behindCount: 3 }),
+          conflictStatus: null,
+        }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("coalesces repeated snapshot calls onto one optional enrichment per lane set", async () => {
     vi.useFakeTimers();
     try {

@@ -794,6 +794,33 @@ describe("githubService.getStatus", () => {
     now.mockRestore();
   });
 
+  it("does not reuse a project-local status after the shared gh token changes", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    let token = "gho_shared_token_alice";
+    const ghAuthTokenProvider = vi.fn(async () => ({
+      token,
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null,
+    }));
+    mockFetch.mockImplementation(async (_input: string | URL, init?: RequestInit) => {
+      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+      return jsonResponse(200, {
+        login: authorization.includes("gho_shared_token_bob") ? "bob" : "alice",
+      });
+    });
+    const first = makeService({ ghAuthTokenProvider });
+    const second = makeService({ ghAuthTokenProvider });
+
+    await expect(first.getStatus()).resolves.toMatchObject({ userLogin: "alice" });
+    token = "gho_shared_token_bob";
+    await expect(second.getStatus({ forceRefresh: true })).resolves.toMatchObject({ userLogin: "bob" });
+    await expect(first.getStatus()).resolves.toMatchObject({ userLogin: "bob" });
+
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
   it("clearing a stored PAT falls back to gh auth", async () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;

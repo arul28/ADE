@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import * as HeadlessXterm from "@xterm/headless";
@@ -165,17 +165,11 @@ const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
 const AGENT_CLI_READY_POLL_MS = 100;
 const AGENT_CLI_READY_QUIET_MS = 600;
 const PTY_PROCESS_TREE_KILL_DELAY_MS = 1500;
+const PTY_PROCESS_SCAN_SIGNAL_DELAY_MS = 100;
+const PTY_PROCESS_SCAN_TIMEOUT_MS = 250;
+const PTY_PROCESS_SCAN_MAX_BYTES = 512 * 1024;
 
 let cachedOpenCodeReplayResumeSupport: boolean | null = null;
-
-function isPidLive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function killPidBestEffort(pid: number, signal: NodeJS.Signals): void {
   if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
@@ -200,13 +194,110 @@ function killPtyProcessGroupBestEffort(rootPid: number, signal: NodeJS.Signals):
   }
 }
 
-function isPtyProcessGroupLive(rootPid: number): boolean {
-  if (process.platform === "win32" || !Number.isFinite(rootPid) || rootPid <= 0) return false;
-  try {
-    process.kill(-Math.trunc(rootPid), 0);
-    return true;
-  } catch {
-    return false;
+type PtyTreeProcess = {
+  pid: number;
+  parentPid: number;
+  processGroupId: number;
+  foregroundProcessGroupId: number;
+};
+
+function parsePtyTreeProcesses(
+  stdout: string,
+  rootPid: number,
+  knownProcessGroupIds: ReadonlySet<number> = new Set(),
+): PtyTreeProcess[] {
+  const rows = stdout.split(/\r?\n/).flatMap((line) => {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s*$/);
+    if (!match) return [];
+    const [pid, parentPid, processGroupId, foregroundProcessGroupId] = match.slice(1).map((value) =>
+      Number.parseInt(value, 10)
+    );
+    if (![pid, parentPid, processGroupId, foregroundProcessGroupId].every(Number.isFinite)) return [];
+    return [{ pid, parentPid, processGroupId, foregroundProcessGroupId }];
+  });
+  const selectedPids = new Set<number>(
+    rows.some((row) => row.pid === rootPid) ? [rootPid] : [],
+  );
+  const selectedProcessGroups = new Set<number>(knownProcessGroupIds);
+  for (const row of rows) {
+    if (knownProcessGroupIds.has(row.processGroupId)) selectedPids.add(row.pid);
+  }
+  let added = true;
+  while (added) {
+    added = false;
+    for (const row of rows) {
+      if (
+        !selectedPids.has(row.pid)
+        && (selectedPids.has(row.parentPid) || selectedProcessGroups.has(row.processGroupId))
+      ) {
+        selectedPids.add(row.pid);
+        added = true;
+      }
+      if (!selectedPids.has(row.pid)) continue;
+      if (row.processGroupId > 1 && !selectedProcessGroups.has(row.processGroupId)) {
+        selectedProcessGroups.add(row.processGroupId);
+        added = true;
+      }
+      if (
+        row.foregroundProcessGroupId > 1
+        && !selectedProcessGroups.has(row.foregroundProcessGroupId)
+      ) {
+        selectedProcessGroups.add(row.foregroundProcessGroupId);
+        added = true;
+      }
+    }
+  }
+  return rows.filter((row) =>
+    selectedPids.has(row.pid) || selectedProcessGroups.has(row.processGroupId)
+  );
+}
+
+function collectPtyTreeProcesses(
+  rootPid: number,
+  knownProcessGroupIds: ReadonlySet<number> = new Set(),
+): Promise<PtyTreeProcess[]> {
+  if (process.platform === "win32" || !Number.isFinite(rootPid) || rootPid <= 0) {
+    return Promise.resolve([]);
+  }
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        "ps",
+        ["-axo", "pid=,ppid=,pgid=,tpgid="],
+        {
+          encoding: "utf8",
+          timeout: PTY_PROCESS_SCAN_TIMEOUT_MS,
+          maxBuffer: PTY_PROCESS_SCAN_MAX_BYTES,
+          windowsHide: true,
+        },
+        (error, stdout) => {
+          resolve(error
+            ? []
+            : parsePtyTreeProcesses(String(stdout ?? ""), rootPid, knownProcessGroupIds));
+        },
+      );
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+function signalPtyTreeProcesses(
+  processes: readonly PtyTreeProcess[],
+  signal: NodeJS.Signals,
+): void {
+  const processGroups = new Set(processes
+    .map((entry) => entry.processGroupId)
+    .filter((processGroupId) => processGroupId > 1 && processGroupId !== process.pid));
+  for (const processGroupId of processGroups) {
+    try {
+      process.kill(-processGroupId, signal);
+    } catch {
+      // A group may have exited between the process scan and signal.
+    }
+  }
+  for (const { pid } of [...processes].reverse()) {
+    killPidBestEffort(pid, signal);
   }
 }
 
@@ -574,28 +665,91 @@ function terminatePtyProcessTree(
   const rootPid = typeof entry.pty.pid === "number" && Number.isFinite(entry.pty.pid)
     ? Math.trunc(entry.pty.pid)
     : null;
-  const signaledProcessGroup = rootPid
-    ? killPtyProcessGroupBestEffort(rootPid, signal)
-    : false;
-  try {
-    entry.pty.kill(signal);
-  } catch {
-    if (rootPid) killPidBestEffort(rootPid, signal);
+  if (!rootPid) {
+    try {
+      entry.pty.kill(signal);
+    } catch {
+      // No numeric PID is available for a direct fallback.
+    }
+    return;
   }
-  if (signal === "SIGKILL" || !rootPid) return;
+  if (process.platform === "win32") {
+    try {
+      entry.pty.kill(signal);
+    } catch {
+      killPidBestEffort(rootPid, signal);
+    }
+    if (signal === "SIGKILL") return;
+    const timer = setTimeout(() => {
+      try {
+        process.kill(rootPid, 0);
+      } catch {
+        return;
+      }
+      try {
+        execFile(
+          "taskkill",
+          ["/pid", String(rootPid), "/T", "/F"],
+          { timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true },
+          (error) => {
+            if (error) return;
+            logger.warn("pty.process_tree_force_killed", {
+              sessionId: entry.sessionId,
+              toolType: entry.toolTypeHint,
+              rootPid,
+              pids: [rootPid],
+            });
+          },
+        );
+      } catch {
+        // taskkill may be unavailable; the initial node-pty signal still ran.
+      }
+    }, PTY_PROCESS_TREE_KILL_DELAY_MS);
+    timer.unref?.();
+    return;
+  }
+
+  let initialProcesses: PtyTreeProcess[] = [];
+  let initialSignalDispatched = false;
+  const dispatchInitialSignal = (processes: readonly PtyTreeProcess[]) => {
+    if (initialSignalDispatched) return;
+    initialSignalDispatched = true;
+    killPtyProcessGroupBestEffort(rootPid, signal);
+    try {
+      entry.pty.kill(signal);
+    } catch {
+      killPidBestEffort(rootPid, signal);
+    }
+    signalPtyTreeProcesses(processes, signal);
+  };
+  const initialProcessScan = collectPtyTreeProcesses(rootPid);
+  const signalFallbackTimer = setTimeout(() => {
+    dispatchInitialSignal([]);
+  }, PTY_PROCESS_SCAN_SIGNAL_DELAY_MS);
+  signalFallbackTimer.unref?.();
+  void initialProcessScan.then((processes) => {
+    initialProcesses = processes;
+    clearTimeout(signalFallbackTimer);
+    const signalAlreadyDispatched = initialSignalDispatched;
+    dispatchInitialSignal(processes);
+    if (signalAlreadyDispatched) signalPtyTreeProcesses(processes, signal);
+  });
+  if (signal === "SIGKILL") return;
   const timer = setTimeout(() => {
-    const processGroupLive = signaledProcessGroup && isPtyProcessGroupLive(rootPid);
-    const rootLive = !signaledProcessGroup && isPidLive(rootPid);
-    if (processGroupLive || rootLive) {
-      if (processGroupLive) killPtyProcessGroupBestEffort(rootPid, "SIGKILL");
-      killPidBestEffort(rootPid, "SIGKILL");
+    const knownProcessGroupIds = new Set(initialProcesses.flatMap((process) => [
+      process.processGroupId,
+      process.foregroundProcessGroupId,
+    ]).filter((processGroupId) => processGroupId > 1));
+    void collectPtyTreeProcesses(rootPid, knownProcessGroupIds).then((currentProcesses) => {
+      if (currentProcesses.length === 0) return;
+      signalPtyTreeProcesses(currentProcesses, "SIGKILL");
       logger.warn("pty.process_tree_force_killed", {
         sessionId: entry.sessionId,
         toolType: entry.toolTypeHint,
         rootPid,
-        pids: [rootPid],
+        pids: Array.from(new Set(currentProcesses.map(({ pid }) => pid))),
       });
-    }
+    });
   }, PTY_PROCESS_TREE_KILL_DELAY_MS);
   timer.unref?.();
 }
