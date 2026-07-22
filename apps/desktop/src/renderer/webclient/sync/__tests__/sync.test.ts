@@ -12,6 +12,7 @@ import { AdeSyncClient } from "../client";
 import {
   BACKOFF_STABLE_CONNECTED_MS,
   RELAY_READY_NEGOTIATION_WINDOW_MS,
+  SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SyncConnection,
   type WebSocketLike,
 } from "../connection";
@@ -1956,6 +1957,53 @@ describe("browser sync connection and client", () => {
     await flushMicrotasks();
     expect(clientPings()).toHaveLength(1);
     client.dispose();
+  });
+
+  it("uses invalidation-only sync without suppressing live changeset hints", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const invalidations: string[][] = [];
+    connection.on("tablesChanged", (tables) => invalidations.push([...tables].sort()));
+    const endpoint = { url: "ws://127.0.0.1:8787", kind: "loopback" as const, dialable: true };
+
+    await connection.connect(environment, [endpoint]);
+    const hello = script.sockets[0]?.sent.find((envelope) => envelope.type === "hello");
+    expect((hello?.payload as { peer?: SyncPeerMetadata }).peer?.capabilities).toContain(
+      SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+    );
+    expect(invalidations).toEqual([[
+      "agent_chats",
+      "files",
+      "github",
+      "lanes",
+      "pull_requests",
+      "rebase",
+      "sessions",
+    ]]);
+
+    script.sockets[0]?.serverSend({
+      type: "changeset_batch",
+      payload: {
+        batchId: "live-1",
+        reason: "broadcast",
+        fromDbVersion: 12,
+        toDbVersion: 13,
+        changes: [{ table: "agent_chats" }],
+      },
+    });
+    await flushMicrotasks();
+    expect(invalidations).toHaveLength(2);
+    expect(invalidations[1]).toEqual(["agent_chats"]);
+
+    await connection.connect(environment, [endpoint]);
+    expect(invalidations).toHaveLength(3);
+    expect(invalidations[2]).toEqual(invalidations[0]);
+    connection.dispose();
   });
 
   it("lets a locally paired environment use Relay only after the account directory verifies its host", async () => {

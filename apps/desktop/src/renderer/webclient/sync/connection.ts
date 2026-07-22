@@ -49,6 +49,23 @@ const VISIBILITY_RECONNECT_DEBOUNCE_MS = 1_000;
 const RELAY_REAUTH_RESULT_TIMEOUT_MS = 4_000;
 const RELAY_REAUTH_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 export const RELAY_READY_NEGOTIATION_WINDOW_MS = 750;
+// This browser never applies CRDT rows locally: it uses remote commands and
+// treats changesets only as cache-invalidation hints. A capable host can skip
+// replaying its historical changeset backlog and begin this peer at its live
+// DB version instead.
+export const SYNC_INVALIDATION_ONLY_V1_CAPABILITY = "invalidationOnlyV1";
+
+// Keep this as table-shaped names so the web adapter's existing invalidation
+// scheduler maps one accepted hello to every UI domain it owns.
+const FULL_INVALIDATION_TABLES = [
+  "lanes",
+  "sessions",
+  "agent_chats",
+  "pull_requests",
+  "files",
+  "github",
+  "rebase",
+] as const;
 
 export type WebSocketLike = {
   readonly readyState: number;
@@ -620,9 +637,13 @@ export class SyncConnection {
             ...args.peer,
             capabilities: [
               ...(args.peer.capabilities ?? []).filter(
-                (capability) => capability !== SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+                (capability) => (
+                  capability !== SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY
+                  && capability !== SYNC_INVALIDATION_ONLY_V1_CAPABILITY
+                ),
               ),
               SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+              SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
             ],
           },
           auth: {
@@ -775,7 +796,10 @@ export class SyncConnection {
         deviceType: "browser" as SyncPeerMetadata["deviceType"],
         siteId: environment.siteId,
         dbVersion: 0,
-        capabilities: [SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY],
+        capabilities: [
+          SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+        ],
       },
       auth: {
         kind: "paired",
@@ -899,6 +923,8 @@ export class SyncConnection {
     this.scheduleStableBackoffReset(generation);
     this.scheduleRelayAuthorizationRefresh(generation, helloOk.relayAuthorization ?? null, true);
     this.emit("helloOk", helloOk);
+    if (!this.isCurrentSocket(socket, generation)) return false;
+    this.emit("tablesChanged", new Set(FULL_INVALIDATION_TABLES));
     if (!this.isCurrentSocket(socket, generation)) return false;
     if (helloOk.projects) {
       this.emit("projectCatalog", { projects: helloOk.projects });
