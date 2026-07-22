@@ -664,10 +664,10 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    same-account requirement without consuming the reconnect retry budget; LAN
    and Tailscale attempts remain available. `accountOwnerId` separately marks
    profiles created by account adoption and therefore deleted on owner loss.
-   When the ACTIVE connection is a relay route, the Settings connection
-   header shows one quiet line: "Using ADE relay. For faster, more
-   stable sync, connect both devices with Tailscale." `reconnectIfPossible` is
-   the single connection-attempt owner: socket delegate failures, path changes,
+   The primary Settings status stays route-neutral (for example, "Connected in
+   0.3s"); the host-observed LAN/Tailscale/relay route remains available in the
+   diagnostics row for troubleshooting. `reconnectIfPossible` is the single
+   connection-attempt owner: socket delegate failures, path changes,
    foreground return, heartbeat silence, and failed liveness probes all
    converge there. Overlapping wake-ups are coalesced, delayed path tasks carry
    a connection-generation guard, and an automatic reconnect never tears down
