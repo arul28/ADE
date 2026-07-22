@@ -1958,6 +1958,65 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
+  it("serves aged provider history without launching a surprise transcript rescan", async () => {
+    const logger = createLogger();
+    const now = new Date("2026-07-22T12:00:00.000Z").getTime();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    const dependencies = {
+      ...createFastDependencies(),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: null,
+        available: false,
+        fetchedAt: null,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+    await service.refreshHistory();
+    for (const scanner of [
+      dependencies.scanClaudeLogs,
+      dependencies.scanCodexLogs,
+      dependencies.scanCursorLogs,
+      dependencies.scanCursorAgentLogs,
+      dependencies.scanOpenClawLogs,
+      dependencies.scanOpenCodeLogs,
+      dependencies.scanDroidLogs,
+      dependencies.scanCopilotLogs,
+      dependencies.scanGeminiLogs,
+    ]) scanner.mockClear();
+
+    nowSpy.mockReturnValue(now + 2 * 60 * 60_000);
+    const stats = await service.getAdeUsageStats({ preset: "7d" });
+    expect(stats.freshness?.state).toBe("refreshing");
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    const settled = await service.getAdeUsageStats({ preset: "7d" });
+    expect(settled.freshness?.state).toBe("stale");
+    for (const scanner of [
+      dependencies.scanClaudeLogs,
+      dependencies.scanCodexLogs,
+      dependencies.scanCursorLogs,
+      dependencies.scanCursorAgentLogs,
+      dependencies.scanOpenClawLogs,
+      dependencies.scanOpenCodeLogs,
+      dependencies.scanDroidLogs,
+      dependencies.scanCopilotLogs,
+      dependencies.scanGeminiLogs,
+    ]) expect(scanner).not.toHaveBeenCalled();
+
+    service.dispose();
+    nowSpy.mockRestore();
+  });
+
   it("runs an explicit history scan independently from a pending startup quota poll", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();

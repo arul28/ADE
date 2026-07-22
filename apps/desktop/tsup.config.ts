@@ -10,6 +10,7 @@ export default defineConfig({
     "main/cursorSdkWorker": "src/main/services/chat/cursorSdkWorker.ts",
     "main/droidSdkWorker": "src/main/services/chat/droidSdkWorker.ts",
     "main/ptyHostWorker": "src/main/services/pty/ptyHostWorker.ts",
+    "main/usageLedgerWorker": "src/main/services/usage/usageLedgerWorker.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
     "preload/preload": "src/preload/preload.ts"
   },

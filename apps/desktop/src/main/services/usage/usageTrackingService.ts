@@ -86,6 +86,10 @@ import {
   collectAdeDatabaseUsageStats,
   type AdeDatabaseUsageStats,
 } from "./usageStatsStore";
+import {
+  scanUsageLedgersInWorker,
+  type UsageLedgerScanResult,
+} from "./usageLedgerWorkerClient";
 import type {
   FreshUsageProviderPollResult,
   UsageProviderPollContext,
@@ -111,7 +115,7 @@ const ACTIVE_POLL_INTERVAL_MS = 60_000;
 const IDLE_POLL_INTERVAL_MS = 5 * 60_000;
 const IDLE_AFTER_MS = 15 * 60_000;
 const QUOTA_DEMAND_LEASE_MS = 90_000;
-const COST_CACHE_TTL_MS = 10 * 60_000;        // 10 min
+const COST_CACHE_TTL_MS = 60 * 60_000;        // 1 hour; history scans are intentionally low priority
 const CODEX_CLI_RPC_TIMEOUT_MS = 10_000;
 const CLAUDE_CLI_USAGE_TIMEOUT_MS = 16_000;
 const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
@@ -902,7 +906,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<FreshUsageProviderPol
 
 // ── Local Cost Scanning ──────────────────────────────────────────
 
-function bucketDaily7d(entries: TokenEntry[], nowMs: number): number[] {
+export function bucketDaily7d(entries: TokenEntry[], nowMs: number): number[] {
   const buckets = new Array<number>(7).fill(0);
   const today = new Date(nowMs);
   const bucketByDay = new Map<string, number>();
@@ -1092,7 +1096,7 @@ const PROVIDER_ESTIMATION: Readonly<Partial<Record<string, AdeUsageEstimationKin
   droid: "distribution",
 };
 
-type ProviderTokenEntries = Map<string, TokenEntry[]>;
+export type ProviderTokenEntries = Map<string, TokenEntry[]>;
 
 function canonicalProjectRoot(projectRoot: string): string {
   const resolved = path.resolve(projectRoot);
@@ -1116,7 +1120,7 @@ function tokenEntryMatchesProject(entry: TokenEntry, projectRoot: string | null 
   return false;
 }
 
-function buildCostSnapshots(
+export function buildCostSnapshots(
   entriesByProvider: ProviderTokenEntries,
   scope: AdeUsageScope,
   projectRoot: string | null | undefined,
@@ -2358,6 +2362,7 @@ type UsageTrackingDependencies = {
   scanGeminiLogs?: () => Promise<TokenEntry[]>;
   scanGitHubStats?: (range: ResolvedAdeUsageRange) => Promise<GitHubActivityStats>;
   collectDatabaseStats?: (range: ResolvedAdeUsageRange) => AdeDatabaseUsageStats | null;
+  scanUsageLedgers?: (projectRoot: string | null | undefined, signal: AbortSignal) => Promise<UsageLedgerScanResult>;
 };
 
 type PollOptions = {
@@ -2446,6 +2451,19 @@ export function createUsageTrackingService({
     ?? ((range: ResolvedAdeUsageRange) => scanGithubActivityStats(projectRoot, range));
   const collectDatabaseStatsForRange = dependencies?.collectDatabaseStats
     ?? ((range: ResolvedAdeUsageRange) => collectAdeDatabaseUsageStats(db, range, logger));
+  const hasInjectedLedgerScanners = Boolean(
+    dependencies?.scanClaudeLogs
+    || dependencies?.scanCodexLogs
+    || dependencies?.scanCursorLogs
+    || dependencies?.scanCursorAgentLogs
+    || dependencies?.scanOpenClawLogs
+    || dependencies?.scanOpenCodeLogs
+    || dependencies?.scanDroidLogs
+    || dependencies?.scanCopilotLogs
+    || dependencies?.scanGeminiLogs,
+  );
+  const ledgerAbortController = new AbortController();
+  let disposed = false;
 
   const emptySnapshot = (): UsageSnapshot => ({
     windows: [],
@@ -2460,6 +2478,7 @@ export function createUsageTrackingService({
   });
 
   function emitUpdate(snapshot: UsageSnapshot): void {
+    if (disposed) return;
     try {
       onUpdate?.(snapshot);
     } catch {
@@ -2485,96 +2504,86 @@ export function createUsageTrackingService({
       });
     }
 
-    const [
-      claudeEntries,
-      codexEntries,
-      cursorEntries,
-      cursorAgentEntries,
-      openClawEntries,
-      openCodeEntries,
-      droidEntries,
-      copilotEntries,
-      geminiEntries,
-    ] = await Promise.all([
-      scanClaudeCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.claude_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-      scanCodexCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.codex_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-      scanCursorCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.cursor_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-      scanCursorAgentCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.cursor_agent_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-      scanOpenClawCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.openclaw_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-      scanOpenCodeCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.opencode_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-      scanDroidCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.droid_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-      scanCopilotCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.copilot_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-      scanGeminiCostLogs().catch((err) => {
-        logger.warn("usage.cost_scan.gemini_failed", { error: getErrorMessage(err) });
-        return [] as TokenEntry[];
-      }),
-    ]);
+    let scanResult: UsageLedgerScanResult;
+    if (!hasInjectedLedgerScanners) {
+      scanResult = await (dependencies?.scanUsageLedgers ?? ((root, signal) => (
+        scanUsageLedgersInWorker(root, { signal })
+      )))(projectRoot, ledgerAbortController.signal);
+    } else {
+      const scanInjected = async (provider: string, work: () => Promise<TokenEntry[]>): Promise<TokenEntry[]> => {
+        try {
+          return await work();
+        } catch (error) {
+          logger.warn(`usage.cost_scan.${provider}_failed`, { error: getErrorMessage(error) });
+          return [];
+        }
+      };
+      const [
+        claudeEntries,
+        codexEntries,
+        cursorEntries,
+        cursorAgentEntries,
+        openClawEntries,
+        openCodeEntries,
+        droidEntries,
+        copilotEntries,
+        geminiEntries,
+      ] = await Promise.all([
+        scanInjected("claude", scanClaudeCostLogs),
+        scanInjected("codex", scanCodexCostLogs),
+        scanInjected("cursor", scanCursorCostLogs),
+        scanInjected("cursor_agent", scanCursorAgentCostLogs),
+        scanInjected("openclaw", scanOpenClawCostLogs),
+        scanInjected("opencode", scanOpenCodeCostLogs),
+        scanInjected("droid", scanDroidCostLogs),
+        scanInjected("copilot", scanCopilotCostLogs),
+        scanInjected("gemini", scanGeminiCostLogs),
+      ]);
+      const providerEntries: ProviderTokenEntries = new Map([
+        ["claude", claudeEntries],
+        ["codex", codexEntries],
+        ["cursor", cursorEntries],
+        ["cursor-agent", cursorAgentEntries],
+        ["openclaw", openClawEntries],
+        ["opencode", openCodeEntries],
+        ["droid", droidEntries],
+        ["copilot", copilotEntries],
+        ["gemini", geminiEntries],
+      ]);
+      scanResult = {
+        costs: buildCostSnapshots(providerEntries, "machine", projectRoot),
+        projectCosts: buildCostSnapshots(providerEntries, "project", projectRoot),
+        daily7d: {
+          ...(claudeEntries.length > 0 ? { claude: bucketDaily7d(claudeEntries, now) } : {}),
+          ...(codexEntries.length > 0 ? { codex: bucketDaily7d(codexEntries, now) } : {}),
+        },
+        entryCounts: Object.fromEntries(
+          Array.from(providerEntries, ([provider, entries]) => [provider, entries.length]),
+        ),
+        providerErrors: {},
+      };
+    }
+    if (disposed) throw new Error("Usage tracking service disposed during ledger scan");
+    for (const [provider, error] of Object.entries(scanResult.providerErrors)) {
+      logger.warn(`usage.cost_scan.${provider}_failed`, { error });
+    }
 
-    const providerEntries: ProviderTokenEntries = new Map([
-      ["claude", claudeEntries],
-      ["codex", codexEntries],
-      ["cursor", cursorEntries],
-      ["cursor-agent", cursorAgentEntries],
-      ["openclaw", openClawEntries],
-      ["opencode", openCodeEntries],
-      ["droid", droidEntries],
-      ["copilot", copilotEntries],
-      ["gemini", geminiEntries],
-    ]);
-    const costs = buildCostSnapshots(providerEntries, "machine", projectRoot);
-    const projectCosts = buildCostSnapshots(providerEntries, "project", projectRoot);
-
-    const daily7d: Partial<Record<UsageProvider, number[]>> = {};
-    if (claudeEntries.length > 0) daily7d.claude = bucketDaily7d(claudeEntries, now);
-    if (codexEntries.length > 0) daily7d.codex = bucketDaily7d(codexEntries, now);
-
-    cachedCosts = costs;
+    cachedCosts = scanResult.costs;
     cachedAdeCosts = [];
-    cachedProjectCosts = projectCosts;
+    cachedProjectCosts = scanResult.projectCosts;
     projectCostsReady = true;
-    cachedDaily7d = daily7d;
+    cachedDaily7d = scanResult.daily7d;
     costCacheTimestamp = now;
     const durationMs = Date.now() - startedAt;
     if (durationMs > 500) {
       logger.warn("usage.cost_scan_slow", {
         durationMs,
-        providerCount: costs.length,
-        claudeEntries: claudeEntries.length,
-        codexEntries: codexEntries.length,
-        cursorEntries: cursorEntries.length,
-        cursorAgentEntries: cursorAgentEntries.length,
-        openClawEntries: openClawEntries.length,
-        openCodeEntries: openCodeEntries.length,
-        droidEntries: droidEntries.length,
-        copilotEntries: copilotEntries.length,
-        geminiEntries: geminiEntries.length,
+        isolated: !hasInjectedLedgerScanners,
+        providerCount: scanResult.costs.length,
+        entryCounts: scanResult.entryCounts,
       });
     }
-    return { costs, adeCosts: [] };
+    return { costs: scanResult.costs, adeCosts: [] };
   }
 
   async function poll(options: PollOptions = {}): Promise<UsageSnapshot> {
@@ -2930,10 +2939,16 @@ export function createUsageTrackingService({
     const snapshot = scope === "project"
       ? { ...machineSnapshot, costs: cachedProjectCosts }
       : machineSnapshot;
-    const staleCosts = costCacheTimestamp === 0
-      || nowMs - costCacheTimestamp > COST_CACHE_TTL_MS
-      || (scope === "project" && !projectCostsReady);
-    const providerNeedsRefresh = staleCosts;
+    const providerHistoryMissing = costCacheTimestamp === 0;
+    const providerHistoryStale = !providerHistoryMissing
+      && (nowMs - costCacheTimestamp > COST_CACHE_TTL_MS
+        || (scope === "project" && !projectCostsReady));
+    // Reading the compact Activity card must never start a multi-gigabyte
+    // transcript walk merely because a cached history snapshot aged out. A
+    // first-run install still populates history in the isolated worker, while
+    // established installs keep serving their snapshot until the explicit
+    // Settings > Activity refresh asks for a newer ledger pass.
+    const providerNeedsRefresh = providerHistoryMissing;
     const githubNeedsRefresh = !githubCached || nowMs - (githubStatsCache.get(cacheKey)?.fetchedAtMs ?? 0) > GITHUB_STATS_CACHE_TTL_MS;
     if (providerNeedsRefresh || githubNeedsRefresh) {
       refreshStatsInBackground(range, { provider: providerNeedsRefresh, github: githubNeedsRefresh }, exactRange);
@@ -2946,7 +2961,9 @@ export function createUsageTrackingService({
       nowMs,
     });
     stats.freshness = {
-      state: providerNeedsRefresh || githubNeedsRefresh ? "refreshing" : "fresh",
+      state: providerNeedsRefresh || githubNeedsRefresh
+        ? "refreshing"
+        : providerHistoryStale ? "stale" : "fresh",
       providerUpdatedAt: machineSnapshot.costsLastPolledAt ?? null,
       githubUpdatedAt: githubCached?.fetchedAt ?? null,
     };
@@ -3036,7 +3053,11 @@ export function createUsageTrackingService({
     refreshHistory,
     getAdeUsageStats,
     poll,
-    dispose: stop,
+    dispose: () => {
+      disposed = true;
+      ledgerAbortController.abort();
+      stop();
+    },
   };
 }
 
