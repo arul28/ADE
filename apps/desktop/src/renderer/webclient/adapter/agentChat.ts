@@ -26,6 +26,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
   const chatSubscriptions = new Map<string, () => void>();
   const deliveredEvents: string[] = [];
   const deliveredEventSet = new Set<string>();
+  let visibleSessionId: string | null = null;
 
   function emitChatEvent(payload: SyncChatEventPayload): void {
     const key = chatEventDedupKey(payload);
@@ -39,22 +40,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     events.emit("agentChatEvent", payload);
   }
 
-  function resetDeliveredSyncEpoch(sessionId: string): void {
-    const prefix = `${sessionId}:sync-seq:`;
-    let writeIndex = 0;
-    for (const key of deliveredEvents) {
-      if (key.startsWith(prefix)) {
-        deliveredEventSet.delete(key);
-        continue;
-      }
-      deliveredEvents[writeIndex] = key;
-      writeIndex += 1;
-    }
-    deliveredEvents.length = writeIndex;
-  }
-
-  function ensureChatSubscription(sessionId: string | null | undefined): void {
+  function ensureChatSubscription(
+    sessionId: string | null | undefined,
+    options: { visible?: boolean } = {},
+  ): void {
     if (!sessionId) return;
+    if (options.visible) visibleSessionId = sessionId;
     const existingUnsubscribe = chatSubscriptions.get(sessionId);
     if (existingUnsubscribe) {
       // Map insertion order is the LRU order. A selected/reused chat should
@@ -64,8 +55,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       return;
     }
     while (chatSubscriptions.size >= WEB_CHAT_PROJECT_SUBSCRIPTION_LIMIT) {
-      const oldest = chatSubscriptions.entries().next().value as [string, () => void] | undefined;
-      if (!oldest) break;
+      const oldest = [...chatSubscriptions.entries()].find(([candidateId]) => (
+        candidateId !== visibleSessionId
+      ));
+      // Preserve the hard bound even if future pinning rules ever make every
+      // resident stream ineligible for eviction.
+      if (!oldest) return;
       chatSubscriptions.delete(oldest[0]);
       oldest[1]();
     }
@@ -74,7 +69,6 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       { maxBytes: WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES },
       {
         snapshot: (payload) => {
-          if (payload.resumed !== true) resetDeliveredSyncEpoch(payload.sessionId);
           for (const event of payload.events) emitChatEvent(event as SyncChatEventPayload);
         },
         event: (payload) => {
@@ -110,6 +104,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
   infra.addDispose(events.on("projectBoundary", () => {
     for (const unsubscribe of chatSubscriptions.values()) unsubscribe();
     chatSubscriptions.clear();
+    visibleSessionId = null;
     deliveredEvents.length = 0;
     deliveredEventSet.clear();
   }));
@@ -272,7 +267,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     getEventHistory: async (args: unknown) => {
       const record = asRecord(args);
-      ensureChatSubscription(stringField(record, "sessionId"));
+      // AgentChatPane requests history when a session becomes visible. Metadata
+      // reads such as list/getSummary are also used for background rows, so this
+      // is the adapter's authoritative selected-session signal.
+      ensureChatSubscription(stringField(record, "sessionId"), { visible: true });
       return await call(
         "chat.getChatEventHistory",
         {
@@ -296,7 +294,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     getEventHistoryPage: async (args: unknown) => {
       const record = asRecord(args);
-      ensureChatSubscription(stringField(record, "sessionId"));
+      ensureChatSubscription(stringField(record, "sessionId"), { visible: true });
       return await call(
         "chat.getChatEventHistoryPage",
         args,

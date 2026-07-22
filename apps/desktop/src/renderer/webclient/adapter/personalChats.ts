@@ -48,30 +48,13 @@ export function createPersonalChatsNamespace(infra: AdapterInfra): AdeNamespace<
     while (buffered.length > 2_000) buffered.shift();
   };
 
-  const resetDeliveredSyncEpoch = (sessionId: string) => {
-    const prefix = `${sessionId}:sync-seq:`;
-    let writeIndex = 0;
-    for (const key of deliveredOrder) {
-      if (key.startsWith(prefix)) {
-        delivered.delete(key);
-        continue;
-      }
-      deliveredOrder[writeIndex] = key;
-      writeIndex += 1;
-    }
-    deliveredOrder.length = writeIndex;
-  };
-
   const ensureSubscription = (sessionId: unknown) => {
     if (typeof sessionId !== "string" || !sessionId || subscriptions.has(sessionId)) return;
     subscriptions.set(sessionId, client.subscribeChat(
       sessionId,
       { chatScope: "personal", maxBytes: 4 * 1024 * 1024 },
       {
-        snapshot: (snapshot) => {
-          if (snapshot.resumed !== true) resetDeliveredSyncEpoch(snapshot.sessionId);
-          snapshot.events.forEach((event) => pushEvent(event as SyncChatEventPayload));
-        },
+        snapshot: (snapshot) => snapshot.events.forEach((event) => pushEvent(event as SyncChatEventPayload)),
         event: pushEvent,
       },
     ));

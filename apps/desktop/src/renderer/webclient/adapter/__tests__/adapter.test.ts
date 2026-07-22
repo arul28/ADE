@@ -348,6 +348,109 @@ describe("createAdeWebAdapter", () => {
     expect(fake.chatUnsubscribeCalls).toHaveLength(9);
   });
 
+  it("pins the visible project chat while more than eight background chats touch the LRU", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory", "chat.getSummary"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const received: SyncChatEventPayload[] = [];
+    adapter.ade.agentChat.onEvent((event) => received.push(event as SyncChatEventPayload));
+
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-visible-oldest" });
+    for (let index = 1; index <= 8; index += 1) {
+      fake.commandResults.set("chat.getSummary", { sessionId: `chat-background-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-background-${index}` });
+    }
+
+    expect(fake.chatUnsubscribeCalls).toEqual(["chat-background-1"]);
+    expect(fake.chatUnsubscribeCalls).not.toContain("chat-visible-oldest");
+
+    const done = {
+      sessionId: "chat-visible-oldest",
+      seq: 41,
+      timestamp: "2026-07-20T00:02:00.000Z",
+      event: {
+        type: "done",
+        turnId: "turn-visible",
+        status: "completed",
+        model: "gpt-5.6",
+        modelId: "openai/gpt-5.6",
+      },
+    } as SyncChatEventPayload;
+    fake.emitChatSnapshot("chat-visible-oldest", {
+      sessionId: "chat-visible-oldest",
+      capturedAt: "2026-07-20T00:02:01.000Z",
+      truncated: false,
+      resumed: true,
+      events: [done],
+    });
+
+    expect(received).toEqual([done]);
+    adapter.dispose();
+  });
+
+  it("moves the visible pin on selection change and evicts the old selection first", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory", "chat.getSummary"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-selection-old" });
+    for (let index = 1; index <= 7; index += 1) {
+      fake.commandResults.set("chat.getSummary", { sessionId: `chat-selection-background-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-selection-background-${index}` });
+    }
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-selection-new" });
+
+    expect(fake.chatUnsubscribeCalls).toEqual(["chat-selection-old"]);
+
+    fake.commandResults.set("chat.getSummary", { sessionId: "chat-selection-background-8" });
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-selection-background-8" });
+    expect(fake.chatUnsubscribeCalls).toEqual([
+      "chat-selection-old",
+      "chat-selection-background-1",
+    ]);
+    expect(fake.chatUnsubscribeCalls).not.toContain("chat-selection-new");
+
+    adapter.dispose();
+  });
+
+  it("drops every old-project stream and starts a fresh bounded pin after project handoff", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory", "chat.getSummary"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-one-visible" });
+    for (let index = 1; index <= 7; index += 1) {
+      fake.commandResults.set("chat.getSummary", { sessionId: `chat-project-one-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-one-${index}` });
+    }
+
+    const projectTwo = { ...project, rootPath: "/repo-2", displayName: "Repo Two" };
+    adapter.replaceProject(projectTwo, "project-2");
+    expect(new Set(fake.chatUnsubscribeCalls)).toEqual(new Set([
+      "chat-project-one-visible",
+      "chat-project-one-1",
+      "chat-project-one-2",
+      "chat-project-one-3",
+      "chat-project-one-4",
+      "chat-project-one-5",
+      "chat-project-one-6",
+      "chat-project-one-7",
+    ]));
+
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-two-visible" });
+    for (let index = 1; index <= 8; index += 1) {
+      fake.commandResults.set("chat.getSummary", { sessionId: `chat-project-two-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-two-${index}` });
+    }
+
+    expect(fake.chatUnsubscribeCalls).toContain("chat-project-two-1");
+    expect(fake.chatUnsubscribeCalls).not.toContain("chat-project-two-visible");
+    expect(fake.chatSubscribeCalls.at(-1)?.sessionId).toBe("chat-project-two-8");
+    expect(fake.commandCalls.at(-1)?.opts.projectId).toBe("project-2");
+
+    adapter.dispose();
+  });
+
   it("does not subscribe every chat returned by a session-list read", async () => {
     fake.descriptors = descriptors([
       "chat.listSessions",
@@ -420,7 +523,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("accepts a restarted project chat seq before its non-resumed snapshot", async () => {
+  it("accepts a restarted project chat seq without duplicating a non-resumed snapshot replay", async () => {
     fake.descriptors = descriptors(["chat.getSummary"]);
     fake.commandResults.set("chat.getSummary", { sessionId: "chat-restarted" });
     const adapter = createAdeWebAdapter(fake.asClient());
@@ -450,7 +553,7 @@ describe("createAdeWebAdapter", () => {
       capturedAt: "2026-07-20T00:00:01.000Z",
       truncated: false,
       resumed: false,
-      events: [transcriptChatEvent("chat-restarted", 1, "snapshot-after-restart")],
+      events: [liveAfterRestart, transcriptChatEvent("chat-restarted", 1, "snapshot-after-restart")],
     });
     fake.emitChat({ ...unrelatedEvent });
 
@@ -632,7 +735,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("accepts a restarted personal-chat seq before its non-resumed snapshot", async () => {
+  it("accepts a restarted personal-chat seq without duplicating a non-resumed snapshot replay", async () => {
     fake.descriptors = [{
       action: "personalChats.list",
       scope: "runtime",
@@ -673,7 +776,7 @@ describe("createAdeWebAdapter", () => {
       capturedAt: "2026-07-20T00:00:01.000Z",
       truncated: false,
       resumed: false,
-      events: [transcriptChatEvent("personal-restarted", 1, "snapshot-after-restart")],
+      events: [liveAfterRestart, transcriptChatEvent("personal-restarted", 1, "snapshot-after-restart")],
     });
     fake.emitChat({ ...unrelatedEvent });
 
