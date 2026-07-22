@@ -314,9 +314,10 @@ Runtime support files outside `services/sync/`:
   surface for `projects.*`, `sync.*`, `runtimeEvents.*`, project-scoped
   `ade/actions/call`, and project-independent `personalChats.call` /
   `personalChats.streamEvents`. Runtime-event subscribe replies include the gap
-  fields above; `projects.list` resolves host-side icons under a connect-path
-  budget (64 icons / 12 MB per call) so large project registries cannot stall
-  remote desktop or mobile catalog setup just to inline artwork.
+  fields above; `projects.list` resolves at most 24 host-side icons within
+  750 ms, with 128 KiB per-icon and 512 KiB aggregate wire caps, so large
+  project registries cannot stall remote desktop or mobile catalog setup just
+  to inline artwork.
   `projects.getHandoffStoragePreflight` checks the destination parent path,
   write access, target collision, free space, and destination-local Git access
   before the desktop offers to clone a missing handoff repository. `projects.add`
