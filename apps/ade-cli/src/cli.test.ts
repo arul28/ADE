@@ -1181,6 +1181,40 @@ describe("ADE CLI", () => {
     expect(output).toContain("Live processes must stop first.");
   });
 
+  it("formats the authoritative relay blocker without mistaking historical control errors for one", () => {
+    const plan = expectExecutePlan(buildCliPlan(["sync", "status"]));
+    const formatRelay = (skipReason: string | null) => formatOutput({
+      mode: "brain",
+      role: "brain",
+      runtimeRole: "host",
+      runtimeName: "Studio",
+      connectedPeers: [],
+      routeHealth: {
+        listener: { listenerBound: true, loopbackAdeValidated: true, port: 8787, reason: null },
+        tailscale: { enabled: false, tailscaleReachable: false, reason: null },
+        relay: {
+          enabled: true,
+          relayControlConnected: true,
+          relayBridgeValidated: true,
+          skipReason,
+          lastControlError: "Relay control closed (1012): historical restart",
+        },
+        accountDirectory: {
+          state: "published",
+          skipReason: null,
+          reachableEndpointCount: 1,
+        },
+      },
+    }, { text: true } as any, inferFormatter(plan));
+
+    const blocked = formatRelay("injected relay pipe open failure");
+    expect(blocked).toMatch(/relay\s+injected relay pipe open failure/);
+
+    const recovered = formatRelay(null);
+    expect(recovered).toMatch(/relay\s+reachable/);
+    expect(recovered).toContain("Relay control closed (1012): historical restart");
+  });
+
   it("formats sync web pairing info from sync status", () => {
     const plan = expectExecutePlan(buildCliPlan(["sync", "web"]));
     const connection = {

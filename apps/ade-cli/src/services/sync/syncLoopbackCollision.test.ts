@@ -352,6 +352,80 @@ describe("sync loopback collision recovery", () => {
     },
   );
 
+  it.runIf(process.platform === "darwin")(
+    "keeps a current-generation bridge-open failure fail-closed until a fresh tunnel is ready",
+    async () => {
+      const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-relay-pipe-failure-"));
+      const lockPath = path.join(projectRoot, "sync-host.lock");
+      const previousLockPath = process.env.ADE_SYNC_HOST_LOCK_PATH;
+      process.env.ADE_SYNC_HOST_LOCK_PATH = lockPath;
+      const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+      const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
+      (db.sync as { isAvailable?: () => boolean }).isAvailable = () => true;
+      const cloudRelayStore = createSyncCloudRelayStore({
+        filePath: path.join(projectRoot, ".ade", "secrets", "sync", "cloud-relay.json"),
+      });
+      const pipeFailure = "injected relay pipe open failure";
+      const tunnelStatus: SyncTunnelClientStatus = {
+        connected: true,
+        activeTunnels: 0,
+        lastError: pipeFailure,
+        bridgeOpenFailure: pipeFailure,
+        lastControlError: null,
+        relayBridgeValidated: true,
+        validatedPort: 8787,
+        lastFailureAt: "2026-07-22T12:00:00.000Z",
+        lastControlOpenAt: "2026-07-22T11:59:00.000Z",
+        lastBridgeValidationAt: "2026-07-22T11:59:30.000Z",
+        relayUrl: "https://relay.test.ade",
+        machineKey: "a".repeat(32),
+      };
+      const service = createService(db, projectRoot, {
+        sharedSyncListener: listener,
+        cloudRelayStore,
+        syncTunnelClientService: { getStatus: () => tunnelStatus },
+        accountAuthService: {
+          getStatus: () => ({ signedIn: true, userId: "relay-owner" }),
+        } as any,
+      });
+      const preferredPort = await findFreeLegacyPort();
+      tunnelStatus.validatedPort = preferredPort;
+      service.getDeviceRegistryService().touchLocalDevice({ lastPort: preferredPort });
+
+      try {
+        await service.initialize();
+        const blocked = await service.getStatus({ includeTransferReadiness: false });
+        expect(blocked.routeHealth.listener.loopbackAdeValidated).toBe(true);
+        expect(blocked.routeHealth.relay).toMatchObject({
+          enabled: true,
+          relayControlConnected: true,
+          relayBridgeValidated: true,
+          skipReason: pipeFailure,
+          lastFailureAt: "2026-07-22T12:00:00.000Z",
+        });
+
+        // A fresh tunnel's markReady clears only the current-generation
+        // blocker. The historical failure timestamp remains diagnostic.
+        tunnelStatus.bridgeOpenFailure = null;
+        tunnelStatus.activeTunnels = 1;
+        const recovered = await service.getStatus({ includeTransferReadiness: false });
+        expect(recovered.routeHealth.relay).toMatchObject({
+          relayControlConnected: true,
+          relayBridgeValidated: true,
+          skipReason: null,
+          lastFailureAt: "2026-07-22T12:00:00.000Z",
+        });
+      } finally {
+        await service.dispose();
+        await listener.close();
+        db.close();
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+        if (previousLockPath === undefined) delete process.env.ADE_SYNC_HOST_LOCK_PATH;
+        else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
+      }
+    },
+  );
+
   // Finding #1: a bare `ws`-style 426 (no ADE marker) must be rejected, while the
   // real ADE listener — whose 426 carries the marker — passes. Status code alone
   // cannot tell ADE apart from any other WebSocket process.

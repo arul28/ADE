@@ -1,0 +1,15 @@
+---
+title: "v1.2.35"
+description: "Release notes for ADE v1.2.35 - July 22, 2026"
+---
+
+v1.2.35 closes a lower-level Relay recovery gap found while validating v1.2.34 against a live machine.
+
+---
+
+## Reliable Relay recovery
+
+- **A failed bridge cannot look healthy.** A real Relay pipe or local-listener setup failure now blocks the current route until a fresh tunnel is fully ready; a cached loopback probe cannot clear it early.
+- **Healthy connections stay healthy.** A failed secondary connection attempt does not poison an already-ready Relay tunnel, and cancelled connection-race candidates are ignored.
+- **Cloud presence follows the real route.** ADE republishes directory state when the active bridge becomes blocked or recovers, while retaining the last verified endpoint during the bounded recovery window.
+- **Diagnostics report the current failure.** Sync status prioritizes authoritative route blockers and no longer presents an old control error as a current outage after recovery.

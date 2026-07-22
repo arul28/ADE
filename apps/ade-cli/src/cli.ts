@@ -16106,11 +16106,16 @@ function formatSyncStatus(value: unknown): string {
   const tailscaleState = tailscale.tailscaleReachable === true
     ? "reachable"
     : asString(tailscale.reason) ?? (tailscale.enabled === true ? "not reachable" : "disabled");
-  const relaySkipReason = asString(relay.skipReason)
-    ?? asString(relay.lastControlError);
-  const relayState = relay.relayControlConnected === true && relay.relayBridgeValidated === true
-    ? "reachable"
-    : relaySkipReason ?? (relay.enabled === true ? "not reachable" : "disabled");
+  const relaySkipReason = asString(relay.skipReason);
+  let relayState: string;
+  if (relaySkipReason) {
+    relayState = relaySkipReason;
+  } else if (relay.relayControlConnected === true && relay.relayBridgeValidated === true) {
+    relayState = "reachable";
+  } else {
+    relayState = asString(relay.lastControlError)
+      ?? (relay.enabled === true ? "not reachable" : "disabled");
+  }
   const transferReadiness = isRecord(snapshot.transferReadiness)
     ? snapshot.transferReadiness
     : null;

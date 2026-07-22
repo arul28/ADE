@@ -808,6 +808,154 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
+  it("keeps a failed pipe diagnostic until a fresh tunnel reaches ready", async () => {
+    const sockets: StubWebSocket[] = [];
+    const expectedNonce = "c".repeat(32);
+    const onPublicationStateChanged = vi.fn();
+    const latestBridgeSockets = (connectionId: string): {
+      pipe: StubWebSocket;
+      local: StubWebSocket;
+    } => {
+      const [pipe, local] = sockets.slice(-2);
+      if (!pipe || !local) throw new Error(`missing bridge sockets for ${connectionId}`);
+      expect(pipe.url).toContain(`/pipe/${connectionId}`);
+      expect(local.url).toBe("ws://127.0.0.1:8787");
+      return { pipe, local };
+    };
+    const loopbackProbe = vi.fn(async (port: number) => ({
+      ok: true as const,
+      port,
+      statusCode: 426,
+      statusMessage: "Upgrade Required",
+      markerValue: expectedNonce,
+      checkedAt: new Date().toISOString(),
+      reason: null,
+    }));
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(),
+      loopbackProbe,
+      onPublicationStateChanged,
+      reconnectBackoffMs: () => 0,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const control = sockets[0];
+      control.open();
+      await vi.waitFor(() => expect(service.getStatus().relayBridgeValidated).toBe(true));
+      expect(loopbackProbe).toHaveBeenCalledOnce();
+
+      control.receive(epochOpen(control.url, "abcdef10"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(3));
+      const cancelledBridge = latestBridgeSockets("abcdef10");
+      cancelledBridge.pipe.remoteClose(1000, "candidate cancelled");
+      await vi.waitFor(() => expect(service.getStatus().activeTunnels).toBe(0));
+      expect(service.getStatus()).toMatchObject({
+        lastError: null,
+        bridgeOpenFailure: null,
+      });
+      expect(onPublicationStateChanged).not.toHaveBeenCalled();
+
+      control.receive(epochOpen(control.url, "abcdef11"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(5));
+      const failedBridge = latestBridgeSockets("abcdef11");
+      failedBridge.pipe.emit("error", new Error("injected relay pipe open failure"));
+
+      const failedAt = service.getStatus().lastFailureAt;
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        relayBridgeValidated: true,
+        activeTunnels: 0,
+        lastError: "injected relay pipe open failure",
+        bridgeOpenFailure: "injected relay pipe open failure",
+        lastControlError: null,
+      });
+      expect(failedAt).not.toBeNull();
+
+      // A cached/proactive loopback probe does not prove that the Relay pipe
+      // recovered, so it must not erase the diagnostic or publish success.
+      await expect(service.validateCurrentBridge()).resolves.toBe(true);
+      expect(loopbackProbe).toHaveBeenCalledOnce();
+      expect(service.getStatus().lastError).toBe("injected relay pipe open failure");
+      await vi.waitFor(() => {
+        expect(onPublicationStateChanged).toHaveBeenCalledOnce();
+        expect(onPublicationStateChanged).toHaveBeenLastCalledWith("route-state-changed");
+      });
+
+      control.receive(epochOpen(control.url, "abcdef12"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(7));
+      const recoveredBridge = latestBridgeSockets("abcdef12");
+      recoveredBridge.pipe.open();
+      recoveredBridge.local.open();
+
+      await vi.waitFor(() => {
+        expect(control.sent.map((raw) => JSON.parse(raw) as { t?: string; id?: string }))
+          .toContainEqual(expect.objectContaining({ t: "ready", id: "abcdef12" }));
+        expect(service.getStatus()).toMatchObject({
+          connected: true,
+          relayBridgeValidated: true,
+          activeTunnels: 1,
+          lastError: null,
+          bridgeOpenFailure: null,
+          lastFailureAt: failedAt,
+        });
+        expect(onPublicationStateChanged).toHaveBeenCalledTimes(2);
+      });
+
+      // A secondary/losing attempt cannot poison the route while another
+      // tunnel is already carrying authenticated traffic.
+      control.receive(epochOpen(control.url, "abcdef13"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(9));
+      const secondaryBridge = latestBridgeSockets("abcdef13");
+      secondaryBridge.pipe.emit("error", new Error("secondary pipe failure"));
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        relayBridgeValidated: true,
+        activeTunnels: 1,
+        lastError: null,
+        bridgeOpenFailure: null,
+      });
+      expect(onPublicationStateChanged).toHaveBeenCalledTimes(2);
+
+      // Ready data tunnels can outlive their control socket. They prove only
+      // their own generation and must not mask a new-generation setup failure.
+      control.remoteClose();
+      await vi.waitFor(() => expect(sockets).toHaveLength(10));
+      const replacementControl = sockets.at(-1);
+      if (!replacementControl) throw new Error("missing replacement control socket");
+      replacementControl.open();
+      await vi.waitFor(() => {
+        expect(loopbackProbe).toHaveBeenCalledTimes(2);
+        expect(service.getStatus().relayBridgeValidated).toBe(true);
+      });
+      replacementControl.receive(epochOpen(replacementControl.url, "abcdef14"));
+      await vi.waitFor(() => expect(sockets).toHaveLength(12));
+      const replacementBridge = latestBridgeSockets("abcdef14");
+      replacementBridge.pipe.emit("error", new Error("new-generation pipe failure"));
+      expect(service.getStatus()).toMatchObject({
+        connected: true,
+        relayBridgeValidated: true,
+        activeTunnels: 1,
+        lastError: "new-generation pipe failure",
+        bridgeOpenFailure: "new-generation pipe failure",
+      });
+      await vi.waitFor(() => expect(onPublicationStateChanged).toHaveBeenCalledTimes(3));
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("closes both tunnel sides with 4509 when Node's live send queue is full", async () => {
     const sockets: StubWebSocket[] = [];
     const expectedNonce = "c".repeat(32);
@@ -1256,14 +1404,14 @@ describe("createSyncTunnelClientService", () => {
       .mockResolvedValueOnce(new Response(null, { status: 409 }))
       .mockResolvedValueOnce(new Response(null, { status: 201 }));
     globalThis.fetch = fetchMock;
-    const onIdentityRotated = vi.fn();
+    const onPublicationStateChanged = vi.fn();
     const store = fakeStore(`http://127.0.0.1:${relayPort}`);
     const service = createSyncTunnelClientService({
       getSyncPort: () => 8787,
       getExpectedLoopbackNonce: () => "f".repeat(32),
       getRelayBridgeProof: () => "e".repeat(43),
       configStore: store,
-      onIdentityRotated,
+      onPublicationStateChanged,
       loopbackProbe: async (port, expectedNonce) => ({
         ok: true,
         port,
@@ -1279,14 +1427,17 @@ describe("createSyncTunnelClientService", () => {
       await service.start();
       await upgradeStarted;
       await expect(service.validateCurrentBridge()).resolves.toBe(true);
-      expect(onIdentityRotated).not.toHaveBeenCalled();
+      expect(onPublicationStateChanged).not.toHaveBeenCalled();
       pendingUpgrade.release?.();
       delete pendingUpgrade.release;
       await vi.waitFor(() => expect(service.getStatus().connected).toBe(true));
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(store.getMachineIdentity().machineKey).toBe("c".repeat(32));
       expect(service.getStatus().machineKey).toBe("c".repeat(32));
-      await vi.waitFor(() => expect(onIdentityRotated).toHaveBeenCalledOnce());
+      await vi.waitFor(() => {
+        expect(onPublicationStateChanged).toHaveBeenCalledOnce();
+        expect(onPublicationStateChanged).toHaveBeenCalledWith("identity-rotated");
+      });
     } finally {
       pendingUpgrade.release?.();
       await service.dispose();

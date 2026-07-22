@@ -441,6 +441,54 @@ describe("account machine publisher health", () => {
     service.dispose();
   });
 
+  it("retains the verified Relay endpoint across a pipe blocker and republishes it on recovery", async () => {
+    vi.useFakeTimers();
+    const current = routeSnapshot();
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 200 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "owner-a",
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    current.routeHealth.relay.skipReason = "injected relay pipe open failure";
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RELAY_STATE_POLL_MS);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        retainRelayEndpoints: true,
+        reachableEndpoints: expect.arrayContaining([
+          { kind: "relay", url: "wss://relay.example/connect/machine-studio" },
+        ]),
+      }),
+    );
+
+    current.routeHealth.relay.skipReason = null;
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RELAY_STATE_POLL_MS);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    const recovered = JSON.parse(String(fetchImpl.mock.calls[2]?.[1]?.body));
+    expect(recovered.retainRelayEndpoints).toBeUndefined();
+    expect(recovered.reachableEndpoints).toContainEqual({
+      kind: "relay",
+      url: "wss://relay.example/connect/machine-studio",
+    });
+    service.dispose();
+  });
+
   it("does not retain a verified Relay route across account-owner changes", async () => {
     let accountOwnerId = "owner-a";
     const current = routeSnapshot();
