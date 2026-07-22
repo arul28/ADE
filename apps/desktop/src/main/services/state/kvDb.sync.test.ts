@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
+import { CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE } from "../../../shared/types/sync";
 import { openKvDb } from "./kvDb";
 import { isCrsqliteAvailable } from "./crsqliteExtension";
 
@@ -119,6 +120,69 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
 
     db1.close();
     db2.close();
+  });
+
+  it("exports a compact current-state reseed that converges an existing replica", async () => {
+    const db1 = await openKvDb(makeDbPath("ade-kvdb-sync-reseed-a-"), createLogger() as any);
+    const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-reseed-b-"), createLogger() as any);
+
+    db1.run("insert into kv(key, value) values (?, ?)", ["reseed-key", "version-1"]);
+    db2.sync.applyChanges(db1.sync.exportChangesSince(0));
+    db1.run("update kv set value = ? where key = ?", ["version-2", "reseed-key"]);
+    db1.run("update kv set value = ? where key = ?", ["version-3", "reseed-key"]);
+
+    const reseed = db1.sync.exportChangesSince(0);
+    const reseedKeyChanges = reseed.filter((change) =>
+      change.table === "kv" && syncPrimaryKeyMatchesText(change.pk, "reseed-key")
+    );
+    expect(reseedKeyChanges).toHaveLength(1);
+    expect(reseedKeyChanges[0]?.val).toBe("version-3");
+
+    db2.sync.applyChanges(reseed);
+    expect(db2.get<{ value: string }>("select value from kv where key = ?", ["reseed-key"])?.value).toBe("version-3");
+
+    db1.run("delete from kv where key = ?", ["reseed-key"]);
+    const deletionReseed = db1.sync.exportChangesSince(0);
+    const deletion = deletionReseed.find((change) =>
+      change.table === "kv" && syncPrimaryKeyMatchesText(change.pk, "reseed-key")
+    );
+    expect(deletion?.cid).toBe("-1");
+    db2.sync.applyChanges(deletionReseed);
+    expect(db2.get("select value from kv where key = ?", ["reseed-key"])).toBeNull();
+
+    db1.close();
+    db2.close();
+  });
+
+  it("bounds compact exports before materializing excluded tables or oversized version groups", async () => {
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-reseed-bounds-"), createLogger() as any);
+
+    db.run("begin immediate");
+    for (let index = 0; index < 20; index += 1) {
+      db.run("insert into kv(key, value) values (?, ?)", [`bounded-${index}`, `value-${index}`]);
+    }
+    db.run("commit");
+
+    expect(db.sync.exportChangesSince(0, {
+      maxRows: 10,
+      excludeTables: ["kv"],
+      rejectOversizedVersionGroup: true,
+    }).some((change) => change.table === "kv")).toBe(false);
+
+    let exportError: unknown = null;
+    try {
+      db.sync.exportChangesSince(0, {
+        maxRows: 10,
+        rejectOversizedVersionGroup: true,
+      });
+    } catch (error) {
+      exportError = error;
+    }
+    expect((exportError as { code?: unknown } | null)?.code).toBe(
+      CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE,
+    );
+
+    db.close();
   });
 
   it("normalizes legacy text primary keys before applying remote CRDT changes", async () => {

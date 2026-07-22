@@ -755,7 +755,7 @@ Implemented envelope types on iOS:
 | `project_clone_request` / `project_clone_result` | Phone → runtime / runtime → phone | Clone a GitHub repository on the machine and register it in the project catalog |
 | `project_list_my_github_repos_request` / `project_list_my_github_repos_result` | Phone → runtime / runtime → phone | List the runtime machine's authenticated GitHub repositories for the Clone flow |
 | `project_forget_request` / `project_forget_result` | Phone → runtime / runtime → phone | Remove a project from the machine recent-project catalog |
-| `changeset_batch` | Bidirectional | cr-sqlite changeset batch |
+| `changeset_batch` | Bidirectional | cr-sqlite changeset batch; a far-behind ACK- and chunk-capable phone may receive the host's compact current-state catch-up through this existing envelope (no new Swift Codable type) |
 | `changeset_ack` | Bidirectional | Per-batch apply confirmation (or error code); the sender retransmits on timeout |
 | `command` | Phone → runtime | Execution request |
 | `command_ack` | Runtime → phone | Command receipt |
@@ -1292,8 +1292,9 @@ existing pairing credentials to reconnect against the same port. The
 phone keeps a durable inbound cursor **per host DB site**
 (`remoteDbVersionBySite`, keyed by the `serverDbSiteId` from
 `hello_ok`) because each hosted project DB has its own `db_version`
-sequence — returning to a previously-synced project resumes its
-backlog precisely instead of replaying everything or skipping. If the
+sequence — returning to a previously-synced project resumes normal gaps
+incrementally without skipping, while a gap strictly over 5,000 versions may
+jump through one ACK-gated compact current-state catch-up batch. If the
 runtime is offline at switch time, it still records the requested
 project as active and the phone reconnects when the machine returns.
 

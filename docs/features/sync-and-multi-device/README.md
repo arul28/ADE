@@ -445,7 +445,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   never reads — `attempt_transcripts`, `operations`, `ai_usage_log`,
   `budget_usage_records`, `automation_runs`,
   `automation_action_results` — are filtered from phone changesets
-  while ack watermarks still advance), the host-authoritative table
+  while ack watermarks still advance), compact reseeding for replica phones
+  more than 5,000 versions behind (ACK- and chunk-capable iOS peers receive one
+  bounded current-state `catchup` batch, then resume incremental delivery only
+  after its `changeset_ack`), the host-authoritative table
   filter (`SYNC_HOST_AUTHORITATIVE_TABLES`: `sync_cluster_state` — the
   CRR that governs brain ownership — never crosses the CRR boundary in
   either direction, so a peer can neither receive it nor author a
@@ -573,6 +576,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   Splits an export into `changeset_batch` envelopes at ~256 KB / 250
   rows while never splitting rows that share a `db_version` (the ack
   watermark is version-granular).
+- `mobileReplicaReseed.ts` — bounded compact-state construction for an iOS
+  replica strictly more than 5,000 versions behind. It scans at most 1,000
+  relevant rows per host poll, caps the shared cache and logical payload at
+  10,000 rows / 4 MiB, and falls back to normal incremental replay when the
+  current state or one version group exceeds those limits.
 - `syncPeerService.ts` (~580 lines) — WebSocket **client**. The runtime
   can run this too when it joins another runtime as a peer (handoff
   rehearsal, controller-to-authority swap). On iOS, an equivalent Swift
@@ -1240,6 +1248,16 @@ bottom out at 16 rows / 16 KB with 250 ms–4 s backoff; iOS starts at 64 rows /
 `pendingChangesetPeerCount` is surfaced through `brain_status` for
 diagnostics; `brain_status` is a legacy envelope name.
 
+An iOS replica advertising both `changesetAck` and `chunkedEnvelopes` takes a
+compact path when its host cursor is strictly more than 5,000 versions behind:
+the host sends one logical `reason: "catchup"` batch containing the bounded
+current CRR state, split into `envelope_chunk` transport frames when necessary.
+Its cursor still advances only after the batch ACK; later writes use ordinary
+incremental batches. Oversized compact state falls back to the bounded replay
+above. Local diagnostics use `sync_host.mobile_replica_reseed_started`,
+`_ready`, `_skipped`, `_sent`, and `_fallback`; these polling mechanics are not
+product analytics.
+
 Mobile-originated `command` envelopes are deduplicated through a
 short-lived `mobileCommandResultCache` (TTL 30 minutes, 512 entries)
 plus a persisted journal, so a phone that retries the same
@@ -1255,7 +1273,7 @@ payload.
 
 | Sub-protocol | Purpose | Used by |
 |---|---|---|
-| Changeset sync | Bidirectional cr-sqlite row exchange | All devices |
+| Changeset sync | Bidirectional cr-sqlite row exchange. Normal delivery uses bounded 250-row / 256 KB incremental batches; an ACK- and chunk-capable iOS replica strictly more than 5,000 versions behind may instead receive one ACK-gated compact current-state reseed (10,000 rows / 4 MiB maximum) before incremental delivery resumes | All devices |
 | File access | On-demand project/worktree file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream/control | Subscribe to a logical-offset transcript snapshot plus live PTY output. The host installs a snapshot barrier before capture, queues concurrent data/exit events (256 events / 2 MB), trims overlap at UTF-8 boundaries, and recaptures up to four times when the snapshot did not reach the queued watermark; it closes instead of flushing a gap or unreconstructable overflow. Web/iOS clients drop duplicate ranges, trim overlap, and issue one guarded `sinceOffset` recovery subscribe when a live chunk starts beyond their watermark. A delta appends only the missing suffix; a full snapshot is authoritative replacement even when its end equals the current watermark. ACK-capable input uses stable `inputId`s and a bounded host dedupe ledger so reconnect/timeout retry cannot type twice; legacy hosts receive one-shot input with no ambiguous retry. Viewport resize remains subscription-scoped and the last desktop size is restored after the last mobile viewer detaches | iOS Work tab, hosted web Work terminal |
 | Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session); per-session history is evicted with a 64-session LRU so a phone that has opened many chats cannot pin unbounded host memory. `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). Optional live sends are marked delivered only after the WebSocket accepts the frame; a backpressured peer keeps its transcript offset in place and the pump stops at the first failed event so later chunks cannot overtake the missing one. The snapshot is a byte-capped tail: `chat_subscribe` also carries the client's `maxBytes`, and the host clamps the snapshot's `getChatEventHistory` budget to `min(host cap, maxBytes)` — for a mobile-sized budget even the newest oversize event is dropped rather than force-included, so a phone never receives a snapshot larger than it asked for. Snapshot events are marked as already-sent to that peer, so the follow-on live pump does not re-deliver the overlap. The ack also carries `turnActive` from the live agent chat service — because the snapshot is a byte-capped tail, a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint). **Cross-project "quick look":** `chat_subscribe` / `chat_unsubscribe` accept an optional `projectId` / `projectRootPath` override. When it names a registered project OTHER than the socket's active one — and the host advertised the `crossProjectChat` feature flag — the host serves that session's transcript **read-only straight off the foreign project's `.ade` transcript JSONL** (byte-capped tail snapshot, then the pump tails the same file for live events), with no project switch and no runtime boot for that project. Such sessions have no live agent chat service here, so `turnActive` is omitted and the client derives turn state from the streamed `status` events. The transcript resolver is the security boundary — it validates the project is registered and confines the path to that project's transcripts dir. A host without a foreign-chat provider never sets `crossProjectChat`, so the phone falls back to a full project activation. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change also rides this stream, so a mode switch made on one client (desktop ↔ iOS) patches every subscribed client's cached summary and composer controls live without a refetch | iOS Work tab, iOS Hub, controller chat |

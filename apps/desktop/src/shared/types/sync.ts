@@ -947,6 +947,8 @@ export type SyncChangesetBatchPayload = {
   changes: CrsqlChangeRow[];
 };
 
+export const CRSQL_EXPORT_VERSION_GROUP_TOO_LARGE_CODE = "crsql_export_version_group_too_large";
+
 /**
  * Compact live-change hint for an invalidation-only browser. The browser has
  * no CRR replica and therefore needs table names, never row values. When a
