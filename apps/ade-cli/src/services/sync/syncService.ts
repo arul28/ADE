@@ -592,8 +592,8 @@ export function createSyncService(args: SyncServiceArgs) {
     lastFailureAt: null,
     lastSuccessAt: null,
   };
-  let refreshRunning = false;
   let refreshQueued = false;
+  let refreshPromise: Promise<void> | null = null;
   let disposed = false;
   // Mobile project switch can fire `sync.initialize` as a background task and
   // then immediately await `service.initialize()` from the dialog handler.
@@ -1031,100 +1031,108 @@ export function createSyncService(args: SyncServiceArgs) {
     return !argsIn.cluster || isStaleNonLocalBrainCluster(argsIn.cluster, argsIn.localDevice.deviceId);
   };
 
-  const refreshRoleState = async (): Promise<void> => {
-    if (disposed) return;
-    if (refreshRunning) {
-      refreshQueued = true;
-      return;
-    }
-    refreshRunning = true;
-    try {
+  const refreshRoleState = (): Promise<void> => {
+    if (disposed) return Promise.resolve();
+    refreshQueued = true;
+    if (refreshPromise) return refreshPromise;
+
+    // Every caller joins the same drain promise. In particular, a host-start
+    // request immediately followed by a rollback must not report the rollback
+    // complete while the first role refresh is still starting the host.
+    const work = Promise.resolve().then(async () => {
+      try {
       do {
         refreshQueued = false;
-        const savedDraft = readSavedDraft();
-        syncPeerService.setSavedDraft(savedDraft);
-        const localDevice = deviceRegistryService.ensureLocalDevice();
-        let cluster = deviceRegistryService.getClusterState();
-        if (forceHostRole) {
-          if (!cluster || cluster.brainDeviceId !== localDevice.deviceId) {
-            cluster = deviceRegistryService.setClusterState({
-              brainDeviceId: localDevice.deviceId,
-              brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
-              updatedByDeviceId: localDevice.deviceId,
-            });
+        try {
+          const savedDraft = readSavedDraft();
+          syncPeerService.setSavedDraft(savedDraft);
+          const localDevice = deviceRegistryService.ensureLocalDevice();
+          let cluster = deviceRegistryService.getClusterState();
+          if (forceHostRole) {
+            if (!cluster || cluster.brainDeviceId !== localDevice.deviceId) {
+              cluster = deviceRegistryService.setClusterState({
+                brainDeviceId: localDevice.deviceId,
+                brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
+                updatedByDeviceId: localDevice.deviceId,
+              });
+            }
+          } else if (!savedDraft) {
+            if (!cluster) {
+              cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
+            } else if (isStaleNonLocalBrainCluster(cluster, localDevice.deviceId)) {
+              deviceRegistryService.touchLocalDevice({
+                lastSeenAt: nowIso(),
+                lastHost: localDevice.lastHost,
+                lastPort: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
+              });
+              cluster = deviceRegistryService.setClusterState({
+                brainDeviceId: localDevice.deviceId,
+                brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
+                updatedByDeviceId: localDevice.deviceId,
+              });
+            }
           }
-        } else if (!savedDraft) {
-          if (!cluster) {
-            cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
-          } else if (isStaleNonLocalBrainCluster(cluster, localDevice.deviceId)) {
-            deviceRegistryService.touchLocalDevice({
-              lastSeenAt: nowIso(),
-              lastHost: localDevice.lastHost,
-              lastPort: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
-            });
-            cluster = deviceRegistryService.setClusterState({
-              brainDeviceId: localDevice.deviceId,
-              brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
-              updatedByDeviceId: localDevice.deviceId,
-            });
-          }
-        }
-        const isLocalBrain = forceHostRole || (cluster
-          ? cluster.brainDeviceId === localDevice.deviceId
-          : !savedDraft);
-        if (isLocalBrain) {
-          if (syncPeerService.isConnected()) {
-            syncPeerService.disconnect({ preserveDraft: true });
-          }
-          await startHostIfNeeded();
-        } else {
-          await stopHostIfRunning();
-          if (!isCrdtSyncAvailable()) {
+          const isLocalBrain = forceHostRole || (cluster
+            ? cluster.brainDeviceId === localDevice.deviceId
+            : !savedDraft);
+          if (isLocalBrain) {
             if (syncPeerService.isConnected()) {
               syncPeerService.disconnect({ preserveDraft: true });
             }
-            continue;
-          }
-          const draft = savedDraft ?? resolveViewerDraftFromRegistry();
-          if (draft && !syncPeerService.isConnected()) {
-            syncPeerService.setSavedDraft(draft);
-            try {
-              await syncPeerService.connect(draft);
-              deviceRegistryService.touchLocalDevice({ lastSeenAt: nowIso() });
-              syncPeerService.flushLocalChanges();
-            } catch (error) {
-              args.logger.warn("sync.role.viewer_connect_failed", {
-                error: error instanceof Error ? error.message : String(error),
-              });
-              if (shouldReclaimStaleViewerDraft({ cluster, localDevice, draft, error })) {
-                args.logger.warn("sync.role.viewer_stale_draft_reclaimed", {
-                  host: draft.host,
-                  port: draft.port,
-                  previousBrainDeviceId: cluster?.brainDeviceId ?? null,
+            await startHostIfNeeded();
+          } else {
+            await stopHostIfRunning();
+            if (!isCrdtSyncAvailable()) {
+              if (syncPeerService.isConnected()) {
+                syncPeerService.disconnect({ preserveDraft: true });
+              }
+              continue;
+            }
+            const draft = savedDraft ?? resolveViewerDraftFromRegistry();
+            if (draft && !syncPeerService.isConnected()) {
+              syncPeerService.setSavedDraft(draft);
+              try {
+                await syncPeerService.connect(draft);
+                deviceRegistryService.touchLocalDevice({ lastSeenAt: nowIso() });
+                syncPeerService.flushLocalChanges();
+              } catch (error) {
+                args.logger.warn("sync.role.viewer_connect_failed", {
                   error: error instanceof Error ? error.message : String(error),
                 });
-                writeSavedDraft(null);
-                syncPeerService.setSavedDraft(null);
-                deviceRegistryService.touchLocalDevice({
-                  lastSeenAt: nowIso(),
-                  lastHost: localDevice.lastHost,
-                  lastPort: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
-                });
-                cluster = deviceRegistryService.setClusterState({
-                  brainDeviceId: localDevice.deviceId,
-                  brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
-                  updatedByDeviceId: localDevice.deviceId,
-                });
-                await startHostIfNeeded();
+                if (shouldReclaimStaleViewerDraft({ cluster, localDevice, draft, error })) {
+                  args.logger.warn("sync.role.viewer_stale_draft_reclaimed", {
+                    host: draft.host,
+                    port: draft.port,
+                    previousBrainDeviceId: cluster?.brainDeviceId ?? null,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                  writeSavedDraft(null);
+                  syncPeerService.setSavedDraft(null);
+                  deviceRegistryService.touchLocalDevice({
+                    lastSeenAt: nowIso(),
+                    lastHost: localDevice.lastHost,
+                    lastPort: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
+                  });
+                  cluster = deviceRegistryService.setClusterState({
+                    brainDeviceId: localDevice.deviceId,
+                    brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
+                    updatedByDeviceId: localDevice.deviceId,
+                  });
+                  await startHostIfNeeded();
+                }
               }
             }
           }
+        } finally {
+          await emitStatus();
         }
-      } while (refreshQueued);
-    } finally {
-      refreshRunning = false;
-      await emitStatus();
-    }
+      } while (refreshQueued && !disposed);
+      } finally {
+        if (refreshPromise === work) refreshPromise = null;
+      }
+    });
+    refreshPromise = work;
+    return work;
   };
 
   const listRuntimeDevices = async (): Promise<SyncDeviceRuntimeState[]> => {

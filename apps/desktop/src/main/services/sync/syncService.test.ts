@@ -1480,5 +1480,65 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       const enabledStatus = await service.getStatus();
       expect(enabledStatus.bootstrapToken).toBe("await-token");
     }, 30_000);
+
+    it("waits for a queued host rollback before resolving either toggle", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-startup-rollback-");
+      const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-startup-rollback-app-"));
+      const db = await openKvDb(
+        path.join(projectRoot, ".ade", "ade.db"),
+        createLogger() as any,
+      );
+      let resolveListening!: (port: number) => void;
+      const listening = new Promise<number>((resolve) => {
+        resolveListening = resolve;
+      });
+      const host = createDefaultSyncHostServiceMock();
+      const disposeHost = vi.fn(async () => undefined);
+      createSyncHostServiceMock.mockReturnValueOnce({
+        ...host,
+        waitUntilListening: () => listening,
+        dispose: disposeHost,
+      });
+
+      const service = createSyncService({
+        db,
+        logger: createLogger() as any,
+        projectRoot,
+        phonePairingStateDir: appPairingDir,
+        fileService: { dispose: () => {} } as any,
+        laneService: { list: async () => [] } as any,
+        prService: {} as any,
+        sessionService: { list: () => [] } as any,
+        ptyService: {} as any,
+        computerUseArtifactBrokerService: {} as any,
+        agentChatService: { listSessions: async () => [] } as any,
+        processService: { listRuntime: () => [] } as any,
+        hostStartupEnabled: false,
+      } as any);
+
+      activeDisposers.push(async () => {
+        await service.dispose();
+        db.close();
+      });
+
+      await service.initialize();
+      const enabling = service.setHostStartupEnabled(true);
+      await vi.waitFor(() => {
+        expect(createSyncHostServiceMock).toHaveBeenCalledTimes(1);
+      });
+
+      let rollbackResolved = false;
+      const disabling = service.setHostStartupEnabled(false).then(() => {
+        rollbackResolved = true;
+      });
+      await Promise.resolve();
+      expect(rollbackResolved).toBe(false);
+
+      resolveListening(8787);
+      await Promise.all([enabling, disabling]);
+
+      expect(disposeHost).toHaveBeenCalledTimes(1);
+      expect(service.getHostService()).toBeNull();
+    }, 30_000);
   });
 });
