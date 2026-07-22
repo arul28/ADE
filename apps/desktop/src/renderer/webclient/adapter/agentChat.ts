@@ -10,6 +10,15 @@ import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 
+// The browser gets the current chat tail through both chat_subscribe and
+// chat.getChatEventHistory. Keep each initial payload small: remote hosts
+// serialize those responses ahead of later summary/model commands. Older
+// history remains available through getChatEventHistoryPage when the user
+// scrolls back.
+const WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES = 128 * 1024;
+const WEB_CHAT_INITIAL_HISTORY_MAX_EVENTS = 512;
+const WEB_CHAT_INITIAL_HISTORY_MAX_BYTES = 128 * 1024;
+
 export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"agentChat"> {
   const { client, commands, events, terminalRegistry } = infra;
   const chatSubscriptions = new Map<string, () => void>();
@@ -34,7 +43,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     if (!sessionId || chatSubscriptions.has(sessionId)) return;
     const unsubscribe = client.subscribeChat(
       sessionId,
-      { maxBytes: 1024 * 1024 },
+      { maxBytes: WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES },
       {
         snapshot: (payload) => {
           for (const event of payload.events) emitChatEvent(event as SyncChatEventPayload);
@@ -64,16 +73,6 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     emitChatEvent(payload);
   }));
 
-  infra.addDispose(
-    events.on("chatsInvalidated", async () => {
-      const sessions = await commands.call<unknown[]>("chat.listSessions", {}, {
-        fallback: [],
-        idempotent: true,
-      });
-      ensureFromResult(sessions);
-    })
-  );
-
   infra.addDispose(() => {
     for (const unsubscribe of chatSubscriptions.values()) unsubscribe();
     chatSubscriptions.clear();
@@ -94,9 +93,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
 
   const agentChat: Record<string, unknown> = {
     list: async (args?: unknown) => {
-      const result = await call<unknown[]>("chat.listSessions", args, []);
-      ensureFromResult(result);
-      return result;
+      // Session lists drive UI metadata only. Subscribing every result eagerly
+      // replays each transcript tail and can block the selected chat's
+      // hydration behind background sessions.
+      return await call<unknown[]>("chat.listSessions", args, []);
     },
     getSummary: async (args: unknown) => {
       const result = await call("chat.getSummary", args, null);
@@ -239,7 +239,17 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       ensureChatSubscription(stringField(record, "sessionId"));
       return await call(
         "chat.getChatEventHistory",
-        args,
+        {
+          ...record,
+          maxEvents: boundedPositiveInteger(
+            record.maxEvents,
+            WEB_CHAT_INITIAL_HISTORY_MAX_EVENTS,
+          ),
+          maxBytes: boundedPositiveInteger(
+            record.maxBytes,
+            WEB_CHAT_INITIAL_HISTORY_MAX_BYTES,
+          ),
+        },
         {
           sessionId: stringField(record, "sessionId"),
           events: [],
@@ -271,6 +281,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
   };
 
   return agentChat as AdeNamespace<"agentChat">;
+}
+
+function boundedPositiveInteger(value: unknown, maximum: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return maximum;
+  return Math.max(1, Math.min(maximum, Math.floor(value)));
 }
 
 function asRecord(args: unknown): Record<string, unknown> {

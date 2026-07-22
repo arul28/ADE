@@ -250,6 +250,100 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("bounds initial web chat hydration while preserving paged scroll-back", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory"]);
+    fake.commandResults.set("chat.getChatEventHistory", {
+      sessionId: "chat-long-running",
+      events: [],
+      truncated: true,
+      sessionFound: true,
+      tailStartOffset: 4096,
+    });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.getEventHistory({
+      sessionId: "chat-long-running",
+      maxEvents: 20_000,
+    })).resolves.toMatchObject({
+      sessionId: "chat-long-running",
+      truncated: true,
+      tailStartOffset: 4096,
+    });
+
+    expect(fake.chatSubscribeCalls).toEqual([{
+      sessionId: "chat-long-running",
+      opts: { maxBytes: 128 * 1024 },
+    }]);
+    expect(fake.commandCalls).toEqual([{
+      action: "chat.getChatEventHistory",
+      args: {
+        sessionId: "chat-long-running",
+        maxEvents: 512,
+        maxBytes: 128 * 1024,
+      },
+      opts: { projectId: "project-1", timeoutMs: undefined },
+    }]);
+
+    adapter.dispose();
+  });
+
+  it("does not subscribe every chat returned by a session-list read", async () => {
+    fake.descriptors = descriptors([
+      "chat.listSessions",
+      "chat.getSummary",
+      "chat.create",
+      "chat.launch",
+      "chat.send",
+    ]);
+    fake.commandResults.set("chat.listSessions", [
+      { sessionId: "chat-background-1" },
+      { sessionId: "chat-background-2" },
+      { sessionId: "chat-background-3" },
+    ]);
+    fake.commandResults.set("chat.getSummary", { sessionId: "chat-selected" });
+    fake.commandResults.set("chat.create", { sessionId: "chat-created" });
+    fake.commandResults.set("chat.launch", { sessionId: "chat-launched" });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.agentChat.list({ laneId: "lane-1" });
+    expect(fake.chatSubscribeCalls).toEqual([]);
+
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-selected" });
+    await adapter.ade.agentChat.create({} as never);
+    await adapter.ade.agentChat.launch({} as never);
+    await adapter.ade.agentChat.send({ sessionId: "chat-sent", text: "Continue" });
+
+    expect(fake.chatSubscribeCalls.map((call) => call.sessionId)).toEqual([
+      "chat-selected",
+      "chat-created",
+      "chat-launched",
+      "chat-sent",
+    ]);
+
+    adapter.dispose();
+  });
+
+  it("does not subscribe background chats after chat-table invalidation", async () => {
+    vi.useFakeTimers();
+    fake.descriptors = descriptors(["chat.listSessions"]);
+    fake.commandResults.set("chat.listSessions", [
+      { sessionId: "chat-background-1" },
+      { sessionId: "chat-background-2" },
+    ]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    fake.emitTables(["agent_chats"]);
+    await vi.advanceTimersByTimeAsync(260);
+
+    expect(fake.commandCalls).toEqual([]);
+    expect(fake.chatSubscribeCalls).toEqual([]);
+
+    adapter.dispose();
+  });
+
   it("keeps the last successful read through a transport outage without caching it as fresh", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors(["lanes.list"]);
