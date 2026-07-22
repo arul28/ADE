@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { assertVerifiedMachOPayloads } from "./native-archive-verification.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -138,6 +139,32 @@ async function signNativeArchiveIfPresent(binaryPath, identity) {
   }
 }
 
+async function verifyNativeArchiveIfPresent(binaryPath) {
+  const archivePath = `${binaryPath}.native.tar.gz`;
+  if (!(await pathExists(archivePath))) {
+    return;
+  }
+
+  const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-runtime-native-verify-"));
+  try {
+    console.log(`[runtime:notarize] Verifying pre-signed Mach-O payloads in ${archivePath}`);
+    await run("tar", ["-xzf", archivePath, "-C", workDir]);
+
+    const files = await walkFiles(workDir);
+    let verified = 0;
+    for (const filePath of files) {
+      if (!(await isMachO(filePath))) continue;
+      await run("codesign", ["--verify", "--strict", "--verbose=4", filePath]);
+      verified += 1;
+    }
+
+    assertVerifiedMachOPayloads(verified, archivePath);
+    console.log(`[runtime:notarize] Verified ${verified} Mach-O payload(s) in ${path.basename(archivePath)}`);
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+  }
+}
+
 async function stapleBinaryIfSupported(binaryPath) {
   let stapled = false;
   try {
@@ -202,9 +229,13 @@ function buildNotarytoolArgs(zipPath) {
 
 const binary = readFlag("--binary");
 if (!binary) {
-  throw new Error("Usage: node scripts/notarize-static-runtime.mjs --binary=/path/to/ade-darwin-arm64 [--sign-native-only]");
+  throw new Error("Usage: node scripts/notarize-static-runtime.mjs --binary=/path/to/ade-darwin-arm64 [--sign-native-only|--verify-native-only]");
 }
 const signNativeOnly = process.argv.includes("--sign-native-only");
+const verifyNativeOnly = process.argv.includes("--verify-native-only");
+if (signNativeOnly && verifyNativeOnly) {
+  throw new Error("Use only one of --sign-native-only or --verify-native-only.");
+}
 
 const binaryPath = path.resolve(binary);
 await assertExists(binaryPath, "ADE runtime binary");
@@ -213,14 +244,20 @@ if (process.platform !== "darwin") {
   throw new Error("Static runtime notarization must run on macOS.");
 }
 
-const identity = await findDeveloperIdIdentity();
-
 if (signNativeOnly) {
+  const identity = await findDeveloperIdIdentity();
   console.log(`[runtime:notarize] Signing native archive payloads for ${binaryPath} with ${identity}`);
   await signNativeArchiveIfPresent(binaryPath, identity);
   process.exit(0);
 }
 
+if (verifyNativeOnly) {
+  console.log(`[runtime:notarize] Verifying pre-signed native archive payloads for ${binaryPath}`);
+  await verifyNativeArchiveIfPresent(binaryPath);
+  process.exit(0);
+}
+
+const identity = await findDeveloperIdIdentity();
 console.log(`[runtime:notarize] Signing ${binaryPath} with ${identity}`);
 await signBinary(binaryPath, identity);
 await signNativeArchiveIfPresent(binaryPath, identity);

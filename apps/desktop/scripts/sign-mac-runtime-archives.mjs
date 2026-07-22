@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { nativeArchiveAction, nativeArchiveNotarizeArgs } from "./mac-runtime-archive-mode.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
@@ -9,6 +10,7 @@ const repoRoot = path.resolve(desktopRoot, "..", "..");
 const adeCliRoot = path.join(repoRoot, "apps", "ade-cli");
 const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
 const darwinTargets = ["darwin-arm64", "darwin-x64"];
+const action = nativeArchiveAction();
 
 async function assertExists(filePath, label) {
   try {
@@ -40,9 +42,12 @@ for (const target of darwinTargets) {
     "run",
     "notarize:static",
     "--",
-    `--binary=${binaryPath}`,
-    "--sign-native-only",
+    ...nativeArchiveNotarizeArgs(binaryPath, action),
   ]);
 }
 
-console.log("[release:mac] Signed Mach-O payloads inside darwin runtime native archives");
+console.log(
+  action === "verify"
+    ? "[release:mac] Verified pre-signed Mach-O payloads inside darwin runtime native archives"
+    : "[release:mac] Signed Mach-O payloads inside darwin runtime native archives",
+);
