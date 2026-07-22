@@ -444,7 +444,10 @@ describe("account machine publisher health", () => {
   it("retains the verified Relay endpoint across a pipe blocker and republishes it on recovery", async () => {
     vi.useFakeTimers();
     const current = routeSnapshot();
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 200 }));
     const service = createAccountMachinePublisherService({
       getAccessToken: async () => "account-token",
       getAccountStatus: () => ({

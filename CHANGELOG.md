@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.35] - 2026-07-22
+
+### Relay recovery
+
+- Kept real Relay pipe and local-listener setup failures fail-closed for the current connection generation until a fresh tunnel is fully ready.
+- Preserved an already-ready Relay route when a secondary connection attempt fails, while republishing directory state when the active route becomes blocked or recovers.
+- Made sync status distinguish current bridge blockers from historical connection errors so reachability is reported truthfully.
+
 ## [1.2.34] - 2026-07-22
 
 ### Web client and sync
@@ -930,6 +938,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.34...HEAD
+[1.2.35]: https://github.com/arul28/ADE/compare/v1.2.34...v1.2.35
 [1.2.34]: https://github.com/arul28/ADE/compare/v1.2.33...v1.2.34
 [1.2.33]: https://github.com/arul28/ADE/compare/v1.2.32...v1.2.33
 [1.2.32]: https://github.com/arul28/ADE/compare/v1.2.31...v1.2.32
