@@ -33,6 +33,8 @@ import {
   CHAT_EVENT_REPLAY_MAX_EVENTS,
   CONNECTION_ATTEMPT_RESERVATION_TTL_MS,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+  SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
+  SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
   SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
@@ -4050,6 +4052,183 @@ describe("initial hydration priority", () => {
     }
   });
 
+  it("keeps an independent replica delivering and retrying while another peer's transcript read is stalled", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "stalled-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "stalled-chat",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const state = { dbVersion: 0, changes: [] as CrsqlChangeRow[] };
+    const logger = createDiscoveryLogger();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 100,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-transcript-fairness",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince: (fromDbVersion: number) =>
+            state.changes.filter((change) => Number(change.db_version) > fromDbVersion),
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => id === session.id ? session : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId: session.id,
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let stalledPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let replicaPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let openSpy: { mockRestore(): void } | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    let releaseTranscriptRead = () => {};
+
+    try {
+      const port = await host.waitUntilListening();
+      stalledPeer = await connectPeer(port, host.getBootstrapToken(), "stalled-chat-peer", {
+        capabilities: ["changesetAck"],
+      });
+      replicaPeer = await connectPeer(port, host.getBootstrapToken(), "independent-replica-peer", {
+        capabilities: ["changesetAck"],
+      });
+      stalledPeer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "stalled-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: session.id },
+      }));
+      await waitForEnvelope(stalledPeer.envelopes, "chat_subscribe", "stalled-chat-subscribe");
+
+      const realOpen = fs.promises.open.bind(fs.promises);
+      let markTranscriptReadStarted = () => {};
+      const transcriptReadStarted = new Promise<void>((resolve) => {
+        markTranscriptReadStarted = resolve;
+      });
+      const transcriptReadGate = new Promise<void>((resolve) => {
+        releaseTranscriptRead = resolve;
+      });
+      let shouldStallTranscriptRead = true;
+      openSpy = vi.spyOn(fs.promises, "open").mockImplementation((async (
+        ...openArgs: Parameters<typeof fs.promises.open>
+      ) => {
+        if (String(openArgs[0]) === transcriptPath && shouldStallTranscriptRead) {
+          shouldStallTranscriptRead = false;
+          markTranscriptReadStarted();
+          await transcriptReadGate;
+        }
+        return realOpen(...openArgs);
+      }) as typeof fs.promises.open);
+
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      const chatEvent: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-07-22T10:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "chat must lead its own catch-up" },
+      };
+      fs.appendFileSync(transcriptPath, `${JSON.stringify(chatEvent)}\n`, "utf8");
+      state.dbVersion = 1;
+      state.changes.push(makeChange(1, 0));
+      const stalledEnvelopeStart = stalledPeer.envelopes.length;
+
+      await transcriptReadStarted;
+      const firstReplicaBatch = await waitForValue(
+        () => replicaPeer?.envelopes.find((entry) => entry.type === "changeset_batch"),
+        "independent replica changeset while transcript is stalled",
+      );
+      expect(stalledPeer.envelopes.slice(stalledEnvelopeStart).some((entry) =>
+        entry.type === "changeset_batch" || entry.type === "chat_event"
+      )).toBe(false);
+
+      const firstPayload = firstReplicaBatch.payload as SyncChangesetBatchPayload;
+      replicaPeer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: firstPayload.batchId,
+        projectId: "project-1",
+        payload: {
+          batchId: firstPayload.batchId,
+          fromDbVersion: firstPayload.fromDbVersion,
+          toDbVersion: firstPayload.toDbVersion,
+          appliedDbVersion: firstPayload.fromDbVersion,
+          appliedCount: 0,
+          ok: false,
+          error: { code: "apply_failed", message: "retry deterministically" },
+        } satisfies SyncChangesetAckPayload,
+      }));
+      await waitForValue(
+        () => logger.warn.mock.calls.find(([event, fields]) =>
+          event === "sync_host.changeset_ack_failed"
+          && fields?.peerDeviceId === "independent-replica-peer"
+        ),
+        "independent replica retry scheduling",
+      );
+      clockOffsetMs += 60_000;
+      await waitForValue(
+        () => replicaPeer?.envelopes.filter((entry) =>
+          entry.type === "changeset_batch"
+          && (entry.payload as SyncChangesetBatchPayload).batchId === firstPayload.batchId
+        ).length === 2 ? true : null,
+        "independent replica retry while transcript remains stalled",
+      );
+
+      releaseTranscriptRead();
+      const stalledChatEvent = await waitForValue(
+        () => stalledPeer?.envelopes.slice(stalledEnvelopeStart).find((entry) => entry.type === "chat_event"),
+        "stalled peer chat event after read release",
+      );
+      const stalledBatch = await waitForValue(
+        () => stalledPeer?.envelopes.slice(stalledEnvelopeStart).find((entry) => entry.type === "changeset_batch"),
+        "stalled peer changeset after chat",
+      );
+      expect(stalledChatEvent.payload).toMatchObject({
+        sessionId: session.id,
+        event: { type: "text", text: "chat must lead its own catch-up" },
+      });
+      expect(stalledPeer.envelopes.indexOf(stalledChatEvent)).toBeLessThan(
+        stalledPeer.envelopes.indexOf(stalledBatch),
+      );
+    } finally {
+      releaseTranscriptRead();
+      openSpy?.mockRestore();
+      dateNowSpy?.mockRestore();
+      stalledPeer?.ws.close();
+      replicaPeer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("hydrates the selected browser chat without replaying historical CRDT rows", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const transcriptPath = path.join(projectRoot, "transcripts", "selected-chat.chat.jsonl");
@@ -6383,6 +6562,176 @@ describe("chat_subscribe snapshots", () => {
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("bounds transcript deltas at complete JSONL boundaries and recovers partial and oversized records", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "bounded-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "bounded-chat",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const logger = createDiscoveryLogger();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      pollIntervalMs: 100,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-bounded-chat",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => id === session.id ? session : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId: session.id,
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let openSpy: { mockRestore(): void } | null = null;
+    let releaseSecondRead = () => {};
+
+    const event = (sequence: number, text: string): AgentChatEventEnvelope => ({
+      sessionId: session.id,
+      timestamp: new Date(Date.UTC(2026, 6, 22, 11, 0, sequence)).toISOString(),
+      sequence,
+      event: { type: "text", text },
+    });
+    const line = (entry: AgentChatEventEnvelope): Buffer =>
+      Buffer.from(`${JSON.stringify(entry)}\n`, "utf8");
+    const deliveredSequences = (): number[] => (peer?.envelopes ?? [])
+      .filter((entry) => entry.type === "chat_event")
+      .map((entry) => Number((entry.payload as AgentChatEventEnvelope).sequence));
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "bounded-chat-peer");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "bounded-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: session.id },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "bounded-chat-subscribe");
+
+      const largeText = "🙂".repeat(18_000);
+      const completeLines = [line(event(1, largeText)), line(event(2, largeText)), line(event(3, largeText))];
+      expect(completeLines[0].length).toBeLessThan(SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES);
+      expect(completeLines[0].length + completeLines[1].length).toBeGreaterThan(
+        SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
+      );
+      const partialLine = line(event(4, "split-🙂-record"));
+      const emojiOffset = partialLine.indexOf(Buffer.from("🙂", "utf8"));
+      expect(emojiOffset).toBeGreaterThan(0);
+      const splitOffset = emojiOffset + 2;
+
+      const realOpen = fs.promises.open.bind(fs.promises);
+      let openCount = 0;
+      let markSecondReadStarted = () => {};
+      const secondReadStarted = new Promise<void>((resolve) => {
+        markSecondReadStarted = resolve;
+      });
+      let markPartialRetryStarted = () => {};
+      const partialRetryStarted = new Promise<void>((resolve) => {
+        markPartialRetryStarted = resolve;
+      });
+      const secondReadGate = new Promise<void>((resolve) => {
+        releaseSecondRead = resolve;
+      });
+      openSpy = vi.spyOn(fs.promises, "open").mockImplementation((async (
+        ...openArgs: Parameters<typeof fs.promises.open>
+      ) => {
+        if (String(openArgs[0]) === transcriptPath) {
+          openCount += 1;
+          if (openCount === 2) {
+            markSecondReadStarted();
+            await secondReadGate;
+          } else if (openCount === 4) {
+            markPartialRetryStarted();
+          }
+        }
+        return realOpen(...openArgs);
+      }) as typeof fs.promises.open);
+
+      fs.writeFileSync(
+        transcriptPath,
+        Buffer.concat([...completeLines, partialLine.subarray(0, splitOffset)]),
+      );
+      await secondReadStarted;
+      await waitForValue(
+        () => deliveredSequences().length === 1 ? true : null,
+        "first bounded transcript chunk",
+      );
+      expect(deliveredSequences()).toEqual([1]);
+
+      releaseSecondRead();
+      await partialRetryStarted;
+      await waitForValue(
+        () => deliveredSequences().length === 3 ? true : null,
+        "three complete bounded transcript records",
+      );
+      expect(deliveredSequences()).toEqual([1, 2, 3]);
+      fs.appendFileSync(transcriptPath, partialLine.subarray(splitOffset));
+      await waitForValue(
+        () => deliveredSequences().includes(4) ? true : null,
+        "UTF-8 split transcript record recovery",
+      );
+
+      const oversized = line(event(
+        5,
+        "x".repeat(SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES + 1_024),
+      ));
+      const recovered = line(event(6, "record after explicit oversized recovery"));
+      fs.appendFileSync(transcriptPath, Buffer.concat([oversized, recovered]));
+      await waitForValue(
+        () => deliveredSequences().includes(6) ? true : null,
+        "record after oversized transcript recovery",
+      );
+      expect(deliveredSequences()).toEqual([1, 2, 3, 4, 6]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_host.chat_transcript_record_too_large",
+        expect.objectContaining({
+          peerDeviceId: "bounded-chat-peer",
+          sessionId: session.id,
+          recordBytes: oversized.length,
+          maxRecordBytes: SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
+        }),
+      );
+    } finally {
+      releaseSecondRead();
+      openSpy?.mockRestore();
+      peer?.ws.close();
       await host.dispose();
       cleanup();
     }

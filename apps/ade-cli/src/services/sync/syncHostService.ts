@@ -264,6 +264,8 @@ const MAX_SYNC_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
 export const SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS = 2_000;
+export const SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES = 128 * 1024;
+export const SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES = 2 * 1024 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
@@ -490,6 +492,10 @@ type PeerState = {
   subscribedChatSessionIds: Set<string>;
   chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
   chatTranscriptOffsets: Map<string, number>;
+  // Progress while scanning one JSONL record that exceeded a normal bounded
+  // transcript-delta read. The durable offset above still advances only after
+  // a complete newline boundary is found and a deliverable record is parsed.
+  chatTranscriptScanOffsets: Map<string, number>;
   chatEventIdsSent: Map<string, Set<string>>;
   // Subscriptions resolved outside the active project's session service:
   // machine-scoped personal chats and cross-project quick looks. Scope stays
@@ -2514,7 +2520,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let tailnetServePublishSequence = 0;
   let tailnetServeActivePublishToken = 0;
   let discoveryEnabled = args.discoveryEnabled !== false;
-  let pollPumpInFlight = false;
+  // A peer owns one serialized chat -> changeset poll chain. Keeping the
+  // in-flight gate per peer prevents a slow transcript filesystem read from
+  // blocking unrelated peers or their later ack retries.
+  const pollPumpPeersInFlight = new Set<PeerState>();
   // All-projects roster (mobile hub) coalescing state. Each subscribed peer
   // carries its own monotonic seq (PeerState.rosterSeq); clients re-snapshot on
   // any seq discontinuity.
@@ -2554,24 +2563,33 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   });
 
   const runPollPump = (): void => {
-    if (disposed || pollPumpInFlight) return;
-    pollPumpInFlight = true;
-    void (async () => {
-      try {
-        // Transcript reads are asynchronous. Finish them before entering the
-        // synchronous CRR export scan so a large catch-up cannot overtake chat.
-        await pumpChatEvents();
-      } catch (error) {
-        args.logger.warn("sync_host.chat_poll_failed", { error: error instanceof Error ? error.message : String(error) });
-      }
-      try {
-        await pumpChanges();
-      } catch (error) {
-        args.logger.warn("sync_host.poll_failed", { error: error instanceof Error ? error.message : String(error) });
-      }
-    })().finally(() => {
-      pollPumpInFlight = false;
-    });
+    if (disposed) return;
+    for (const peer of peers) {
+      if (pollPumpPeersInFlight.has(peer)) continue;
+      pollPumpPeersInFlight.add(peer);
+      void (async () => {
+        try {
+          // Preserve chat-first hydration for this peer without making its
+          // transcript latency part of any other peer's catch-up path.
+          await pumpChatEvents(peer);
+        } catch (error) {
+          args.logger.warn("sync_host.chat_poll_failed", {
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        try {
+          await pumpChanges(peer);
+        } catch (error) {
+          args.logger.warn("sync_host.poll_failed", {
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })().finally(() => {
+        pollPumpPeersInFlight.delete(peer);
+      });
+    }
   };
 
   const pollTimer = setInterval(() => {
@@ -2900,6 +2918,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       subscribedChatSessionIds: new Set(),
       chatSubscriptionScopes: new Map(),
       chatTranscriptOffsets: new Map(),
+      chatTranscriptScanOffsets: new Map(),
       chatEventIdsSent: new Map(),
       resolvedChatTranscriptPaths: new Map(),
       pendingChangesetBatch: null,
@@ -4508,32 +4527,141 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   async function readChatTranscriptEventsSince(
     transcriptPath: string,
     startOffset: number,
-  ): Promise<{ events: AgentChatEventEnvelope[]; nextOffset: number }> {
+    scanOffset: number | null,
+  ): Promise<{
+    events: AgentChatEventEnvelope[];
+    nextOffset: number;
+    nextScanOffset: number | null;
+    droppedOversizedRecordBytes: number | null;
+  }> {
     let fh: fs.promises.FileHandle | null = null;
     try {
       fh = await fs.promises.open(transcriptPath, "r");
       const stat = await fh.stat();
       const size = stat.size;
-      const normalizedStart = Math.max(0, Math.min(startOffset, size));
-      if (size <= normalizedStart) {
-        return { events: [], nextOffset: size };
+      const durableStart = Math.max(0, Math.floor(startOffset));
+      // A truncation/rotation invalidates both cursors. Restart from the new
+      // EOF (the same recovery behavior as the old unbounded reader).
+      if (size < durableStart || (scanOffset != null && size < scanOffset)) {
+        return {
+          events: [],
+          nextOffset: size,
+          nextScanOffset: null,
+          droppedOversizedRecordBytes: null,
+        };
+      }
+      const normalizedScanOffset = scanOffset == null
+        ? null
+        : Math.max(durableStart, Math.floor(scanOffset));
+      const readStart = normalizedScanOffset ?? durableStart;
+      if (size <= readStart) {
+        return {
+          events: [],
+          nextOffset: durableStart,
+          nextScanOffset: normalizedScanOffset,
+          droppedOversizedRecordBytes: null,
+        };
       }
 
-      const out = Buffer.alloc(size - normalizedStart);
-      await fh.read(out, 0, out.length, normalizedStart);
-      const lastNewline = out.lastIndexOf(0x0a);
+      const readLength = Math.min(
+        size - readStart,
+        SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
+      );
+      const out = Buffer.alloc(readLength);
+      const { bytesRead } = await fh.read(out, 0, out.length, readStart);
+      const readSlice = out.subarray(0, bytesRead);
+      if (normalizedScanOffset != null) {
+        const firstNewline = readSlice.indexOf(0x0a);
+        if (firstNewline < 0) {
+          return {
+            events: [],
+            nextOffset: durableStart,
+            nextScanOffset: readStart + bytesRead,
+            droppedOversizedRecordBytes: null,
+          };
+        }
+        const firstRecordEnd = readStart + firstNewline + 1;
+        const firstRecordBytes = firstRecordEnd - durableStart;
+        const lastNewline = readSlice.lastIndexOf(0x0a);
+        if (firstRecordBytes <= SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES) {
+          // The long record is still deliverable. Re-read it once, now that a
+          // complete boundary is known, together with any later complete rows
+          // already present in this bounded scan chunk.
+          const completeEnd = readStart + lastNewline + 1;
+          const completeBytes = completeEnd - durableStart;
+          const completeSlice = Buffer.alloc(completeBytes);
+          let rereadBytes = 0;
+          while (rereadBytes < completeBytes) {
+            const reread = await fh.read(
+              completeSlice,
+              rereadBytes,
+              completeBytes - rereadBytes,
+              durableStart + rereadBytes,
+            );
+            if (reread.bytesRead <= 0) break;
+            rereadBytes += reread.bytesRead;
+          }
+          if (rereadBytes < completeBytes) {
+            return {
+              events: [],
+              nextOffset: durableStart,
+              nextScanOffset: normalizedScanOffset,
+              droppedOversizedRecordBytes: null,
+            };
+          }
+          return {
+            events: parseAgentChatTranscript(completeSlice.toString("utf8")),
+            nextOffset: durableStart + completeSlice.length,
+            nextScanOffset: null,
+            droppedOversizedRecordBytes: null,
+          };
+        }
+
+        // A single record beyond the explicit one-record ceiling is not safe
+        // to materialize. Drop exactly that complete row, surface a structured
+        // warning, and recover at its newline; later complete rows still flow.
+        const firstCompleteOffset = firstNewline + 1;
+        const completeSlice = readSlice.subarray(firstCompleteOffset, lastNewline + 1);
+        return {
+          events: completeSlice.length > 0
+            ? parseAgentChatTranscript(completeSlice.toString("utf8"))
+            : [],
+          nextOffset: readStart + lastNewline + 1,
+          nextScanOffset: null,
+          droppedOversizedRecordBytes: firstRecordBytes,
+        };
+      }
+
+      const lastNewline = readSlice.lastIndexOf(0x0a);
       if (lastNewline < 0) {
-        return { events: [], nextOffset: normalizedStart };
+        const hitReadBound = bytesRead === SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES;
+        return {
+          events: [],
+          nextOffset: durableStart,
+          // A short trailing record may still be mid-write, so retain and
+          // retry it. Once one record fills the normal cap, scan for its
+          // newline in bounded chunks; a record within the separate hard
+          // ceiling is then re-read and delivered intact.
+          nextScanOffset: hitReadBound ? readStart + bytesRead : null,
+          droppedOversizedRecordBytes: null,
+        };
       }
 
-      const completeSlice = out.subarray(0, lastNewline + 1);
+      const completeSlice = readSlice.subarray(0, lastNewline + 1);
       const raw = completeSlice.toString("utf8");
       return {
         events: parseAgentChatTranscript(raw),
-        nextOffset: normalizedStart + completeSlice.length,
+        nextOffset: durableStart + completeSlice.length,
+        nextScanOffset: null,
+        droppedOversizedRecordBytes: null,
       };
     } catch {
-      return { events: [], nextOffset: Math.max(0, startOffset) };
+      return {
+        events: [],
+        nextOffset: Math.max(0, startOffset),
+        nextScanOffset: scanOffset,
+        droppedOversizedRecordBytes: null,
+      };
     } finally {
       await fh?.close().catch(() => {});
     }
@@ -4661,32 +4789,48 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return sent ? "sent" : "failed";
   }
 
-  async function pumpChatEvents(): Promise<void> {
-    if (disposed) return;
+  async function pumpChatEvents(peer: PeerState): Promise<void> {
+    if (disposed || !peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) return;
+    if (isPeerBackpressured(peer)) return;
+    for (const sessionId of peer.subscribedChatSessionIds) {
+      // A foreign quick-look session has no local row; tail its resolved
+      // transcript path directly. Local sessions resolve via sessionService.
+      const resolvedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
+      const transcriptPath = resolvedTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
+      if (!transcriptPath) continue;
 
-    for (const peer of peers) {
-      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
-      if (isPeerBackpressured(peer)) continue;
-      for (const sessionId of peer.subscribedChatSessionIds) {
-        // A foreign quick-look session has no local row; tail its resolved
-        // transcript path directly. Local sessions resolve via sessionService.
-        const resolvedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
-        const transcriptPath = resolvedTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
-        if (!transcriptPath) continue;
-
-        const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
-        const { events, nextOffset } = await readChatTranscriptEventsSince(transcriptPath, startOffset);
-        let allEventsDelivered = true;
-        for (const event of events) {
-          const seq = recordChatEventSeq(event);
-          if (sendChatEvent(peer, event, seq) === "failed") {
-            allEventsDelivered = false;
-            break;
-          }
+      const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
+      const scanOffset = peer.chatTranscriptScanOffsets.get(sessionId) ?? null;
+      const {
+        events,
+        nextOffset,
+        nextScanOffset,
+        droppedOversizedRecordBytes,
+      } = await readChatTranscriptEventsSince(transcriptPath, startOffset, scanOffset);
+      if (droppedOversizedRecordBytes != null) {
+        args.logger.warn("sync_host.chat_transcript_record_too_large", {
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          sessionId,
+          recordBytes: droppedOversizedRecordBytes,
+          maxRecordBytes: SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
+        });
+      }
+      let allEventsDelivered = true;
+      for (const event of events) {
+        const seq = recordChatEventSeq(event);
+        if (sendChatEvent(peer, event, seq) === "failed") {
+          allEventsDelivered = false;
+          break;
         }
-        if (allEventsDelivered && nextOffset !== startOffset) {
-          peer.chatTranscriptOffsets.set(sessionId, nextOffset);
-        }
+      }
+      if (!allEventsDelivered) continue;
+      if (nextOffset !== startOffset) {
+        peer.chatTranscriptOffsets.set(sessionId, nextOffset);
+      }
+      if (nextScanOffset == null) {
+        peer.chatTranscriptScanOffsets.delete(sessionId);
+      } else {
+        peer.chatTranscriptScanOffsets.set(sessionId, nextScanOffset);
       }
     }
   }
@@ -4710,20 +4854,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     markRosterDirty();
   }
 
-  async function pumpChanges(): Promise<void> {
+  async function pumpChanges(peer: PeerState): Promise<void> {
     if (disposed) return;
     const currentDbVersion = args.db.sync.getDbVersion();
     const nowMs = Date.now();
-    for (const peer of peers) {
-      if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) continue;
+      if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) return;
       // A paired desktop runtime connection shares this authenticated socket
       // only for rpc/fwd envelopes. The authoritative pairing record remains
       // the gate so a phone/browser cannot suppress its normal CRDT stream by
       // spoofing the hello capability.
-      if (isRuntimeOnlyPairedHost(peer)) continue;
+      if (isRuntimeOnlyPairedHost(peer)) return;
       // The 4 MiB gate is a hard socket-safety boundary. Fair scheduling may
       // override only the lower chat-priority watermark below.
-      if (isPeerBackpressured(peer)) continue;
+      if (isPeerBackpressured(peer)) return;
       if (peer.pendingChangesetBatch) {
         const pending = peer.pendingChangesetBatch;
         const rejectedRetryDue = pending.retryNotBeforeMs > 0 && nowMs >= pending.retryNotBeforeMs;
@@ -4732,7 +4875,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (rejectedRetryDue || ackTimedOut) {
           if (pending.attemptCount >= MAX_CHANGESET_SEND_ATTEMPTS) {
             abandonPendingChangesetBatch(peer, ackTimedOut ? "ack_timeout" : "ack_failed", nowMs);
-            continue;
+            return;
           }
           const resent = resendPendingChangesetBatch(peer);
           if (resent) {
@@ -4746,13 +4889,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             });
           }
         }
-        continue;
+        return;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) {
         finishChangesetPriorityDeferral(peer, "no_changes", nowMs);
-        continue;
+        return;
       }
-      if (nowMs < peer.changesetRecoveryNotBeforeMs) continue;
+      if (nowMs < peer.changesetRecoveryNotBeforeMs) return;
       const hasQueuedForegroundWork = peer.queuedMessageCount > 0;
       const chatBackpressured = shouldDeferBackgroundChangesForChat(peer);
       if (hasQueuedForegroundWork || chatBackpressured) {
@@ -4768,7 +4911,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
         }
         if (nowMs - peer.changesetPriorityDeferredSinceMs < SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS) {
-          continue;
+          return;
         }
       } else {
         finishChangesetPriorityDeferral(peer, "pressure_relieved", nowMs);
@@ -4821,7 +4964,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           reason: "peer_owned_changes_only",
         });
         finishChangesetPriorityDeferral(peer, "no_changes", nowMs);
-        continue;
+        return;
       }
       const pending = sendNextChangesetBatch(
         peer,
@@ -4841,7 +4984,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         finishChangesetPriorityDeferral(peer, "batch_admitted", nowMs);
         lastBroadcastAt = nowIso();
       }
-    }
   }
 
   function handleChangesetAck(peer: PeerState, payload: SyncChangesetAckPayload | null | undefined): void {
@@ -6679,6 +6821,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ? fs.statSync(transcriptPath).size
             : 0;
           peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
+          peer.chatTranscriptScanOffsets.delete(sessionId);
           const resumeAck: SyncChatSubscribeSnapshotPayload = {
             sessionId,
             capturedAt: nowIso(),
@@ -6731,6 +6874,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         events = events.map(compactChatEventEnvelopeForSync);
         peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
+        peer.chatTranscriptScanOffsets.delete(sessionId);
         const snapshot: SyncChatSubscribeSnapshotPayload = {
           sessionId,
           capturedAt: nowIso(),
@@ -6751,6 +6895,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.subscribedChatSessionIds.delete(sessionId);
           peer.chatSubscriptionScopes.delete(sessionId);
           peer.chatTranscriptOffsets.delete(sessionId);
+          peer.chatTranscriptScanOffsets.delete(sessionId);
           peer.chatEventIdsSent.delete(sessionId);
           peer.resolvedChatTranscriptPaths.delete(sessionId);
         }
