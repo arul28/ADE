@@ -50,6 +50,11 @@ const MAX_CONSECUTIVE_AUTH_FAILURES = 5;
 const VISIBILITY_RECONNECT_DEBOUNCE_MS = 1_000;
 const RELAY_REAUTH_RESULT_TIMEOUT_MS = 4_000;
 const RELAY_REAUTH_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+// Browser background throttling can delay a timer well past its nominal fire
+// time. Start before the host's refresh deadline and do not depend on the tab
+// becoming visible again: otherwise a healthy Relay socket is guaranteed to
+// reconnect whenever the tab stays hidden across account-token expiry.
+const RELAY_REAUTH_CLIENT_SAFETY_LEAD_MS = 90_000;
 export const RELAY_READY_NEGOTIATION_WINDOW_MS = 750;
 // Keep this as table-shaped names so the web adapter's existing invalidation
 // scheduler maps one accepted hello to every UI domain it owns.
@@ -938,10 +943,12 @@ export class SyncConnection {
     this.relayRefreshTimer = null;
     if (resetRetries) this.relayRefreshRetryCount = 0;
     if (!lease || generation !== this.connectionGeneration) return;
-    const delayMs = Math.max(0, lease.refreshAfter - Date.now());
+    const delayMs = Math.max(
+      0,
+      lease.refreshAfter - RELAY_REAUTH_CLIENT_SAFETY_LEAD_MS - Date.now(),
+    );
     this.relayRefreshTimer = setTimeout(() => {
       this.relayRefreshTimer = null;
-      if (!visible(this.documentRef)) return;
       this.beginRelayAuthorizationRefresh(generation);
     }, delayMs);
   }

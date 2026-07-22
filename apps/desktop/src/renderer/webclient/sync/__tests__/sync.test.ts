@@ -1414,7 +1414,7 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
-  it("advertises reauthorization support and refreshes on the host lease schedule", async () => {
+  it("advertises reauthorization support and refreshes ahead of the host lease deadline", async () => {
     const nowMs = 1_800_000_000_000;
     vi.useFakeTimers();
     vi.setSystemTime(nowMs);
@@ -1424,7 +1424,11 @@ describe("browser sync connection and client", () => {
     const relayTokenProvider: () => Promise<string> = vi.fn(async () => `relay-token-${++relayTokenSequence}`);
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
+        });
       } else if (envelope.type === "relay_reauthorize") {
         socket.serverSend({
           type: "relay_reauthorize_result",
@@ -1483,7 +1487,11 @@ describe("browser sync connection and client", () => {
     let refreshFrames = 0;
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
+        });
       } else if (envelope.type === "relay_reauthorize") {
         refreshFrames += 1;
         if (refreshFrames === 2) {
@@ -1547,7 +1555,7 @@ describe("browser sync connection and client", () => {
         socket.serverSend({
           type: "hello_ok",
           requestId: envelope.requestId,
-          payload: relayHelloOk(nowMs, { expiresAfterMs: 90_000 }),
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
         });
       } else if (envelope.type === "relay_reauthorize") {
         refreshTimes.push(Date.now());
@@ -1650,7 +1658,10 @@ describe("browser sync connection and client", () => {
       socket.serverSend({
         type: "hello_ok",
         requestId: envelope.requestId,
-        payload: relayHelloOk(nowMs, { refreshAfterMs: helloCount === 1 ? 1_000 : 5_000 }),
+        payload: relayHelloOk(nowMs, {
+          expiresAfterMs: 120_000,
+          refreshAfterMs: helloCount === 1 ? 91_000 : 95_000,
+        }),
       });
     });
     const connection = new SyncConnection({
@@ -1686,7 +1697,7 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
-  it("wakes an overdue hidden refresh on visibility and treats account change as terminal", async () => {
+  it("refreshes a hidden Relay tab before expiry and treats account change as terminal", async () => {
     const nowMs = 1_800_000_000_000;
     vi.useFakeTimers();
     vi.setSystemTime(nowMs);
@@ -1695,7 +1706,11 @@ describe("browser sync connection and client", () => {
     const visibility = new VisibilityDocument();
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
+        });
       } else if (envelope.type === "relay_reauthorize") {
         socket.serverSend({
           type: "relay_reauthorize_result",
@@ -1727,7 +1742,7 @@ describe("browser sync connection and client", () => {
     visibility.setVisibility("hidden");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(script.sockets[0]?.sent.filter((envelope) => envelope.type === "relay_reauthorize"))
-      .toHaveLength(0);
+      .toHaveLength(1);
 
     visibility.setVisibility("visible");
     await flushMicrotasks();
