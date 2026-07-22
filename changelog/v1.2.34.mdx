@@ -1,0 +1,31 @@
+---
+title: "v1.2.34"
+description: "Release notes for ADE v1.2.34 - July 22, 2026"
+---
+
+v1.2.34 makes ADE stay responsive while a remote phone or browser catches up, and closes the remaining recovery gaps behind slow project switches, failed lane deletion, blank terminals, and incomplete resumed chats.
+
+---
+
+## Faster web sessions
+
+- **The page becomes useful before the entire project hydrates.** ADE bounds initial chat history, subscribes to the visible conversation first, and uses lightweight invalidations instead of replaying unrelated project state.
+- **Switching projects cannot mix old and new data.** Project streams, cursors, deduplication state, and cached chats now change as one generation, while abandoned streams are retired immediately.
+- **Large projects stay bounded.** Chat subscriptions, transcript cursors, project artwork, invalidation hints, and inactive project scopes all have explicit limits and eviction rules.
+- **Relay leases renew in the background.** Long-running browser sessions retain their route without waiting for a reconnect to discover an expired lease.
+
+## Reliable sync and terminals
+
+- **Foreground work cannot starve the runtime.** Browser chat hydration remains prioritized without blocking peer changes, transcript polling, role transitions, or the final sync-host handoff.
+- **Terminal recovery is atomic on iPhone.** Live bytes that arrive during a snapshot are retained and applied after the snapshot, preventing recovered output from disappearing or reordering.
+- **Verified routes survive stale presence.** A temporarily stale directory status no longer discards a secure route that the client can still use.
+
+## Desktop responsiveness
+
+- Project switching, lane lists, cleanup work, GitHub probes, and runtime process discovery now share bounded/coalesced work instead of multiplying slow operations under load.
+- Usage history aggregation runs in SQLite and isolated workers, reducing the amount of historical ledger data copied into the main process.
+- Imported Codex chats recover their exact model, reasoning effort, fast-mode state, and permission policy. Resuming a chat preserves those controls without broadening access.
+
+## Mobile Work
+
+- Restored grouped tool activity and stable post-hello sync state so the Work timeline remains readable while a remote project catches up.

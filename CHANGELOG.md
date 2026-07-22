@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.34] - 2026-07-22
+
+### Web client and sync
+
+- Bounded initial chat hydration, prioritized visible conversations, and replaced broad startup replay with invalidation-only synchronization.
+- Isolated project handoff generations, retired abandoned streams, and bounded subscriptions, transcript cursors, artwork, invalidation hints, and inactive project scopes.
+- Renewed relay leases in the background and preserved verified secure routes when cloud presence is temporarily stale.
+- Kept peer changes, transcript polling, role transitions, and sync-host handoff progressing while foreground chats hydrate.
+
+### Terminals and mobile
+
+- Made iOS terminal snapshot recovery atomic and retained live bytes that arrive while a snapshot is being applied.
+- Restored grouped Work tool activity and stable post-hello synchronization state.
+
+### Desktop and sessions
+
+- Coalesced and bounded project switching, lane snapshots, cleanup work, GitHub probes, and runtime process discovery under load.
+- Moved historical usage aggregation into SQLite and isolated workers to reduce main-process memory and event-loop pressure.
+- Restored exact model, reasoning, fast-mode, and permission controls for imported and resumed Codex chats without broadening access.
+
 ## [1.2.33] - 2026-07-21
 
 ### Connection reliability
@@ -907,7 +927,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.33...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.34...HEAD
+[1.2.34]: https://github.com/arul28/ADE/compare/v1.2.33...v1.2.34
 [1.2.33]: https://github.com/arul28/ADE/compare/v1.2.32...v1.2.33
 [1.2.32]: https://github.com/arul28/ADE/compare/v1.2.31...v1.2.32
 [1.2.31]: https://github.com/arul28/ADE/compare/v1.2.30...v1.2.31
