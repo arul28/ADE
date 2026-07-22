@@ -17,9 +17,11 @@ import type {
   SyncRelayReauthorizeResultPayload,
 } from "../../../shared/types/sync";
 import {
+  SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
   SYNC_RELAY_READY_VERSION,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../shared/types/sync";
+export { SYNC_INVALIDATION_ONLY_V1_CAPABILITY } from "../../../shared/types/sync";
 import { resolveAccountHelloPairing } from "../../../shared/accountDirectory";
 import {
   browserEndpointRequiresRelayAccess,
@@ -49,12 +51,6 @@ const VISIBILITY_RECONNECT_DEBOUNCE_MS = 1_000;
 const RELAY_REAUTH_RESULT_TIMEOUT_MS = 4_000;
 const RELAY_REAUTH_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
 export const RELAY_READY_NEGOTIATION_WINDOW_MS = 750;
-// This browser never applies CRDT rows locally: it uses remote commands and
-// treats changesets only as cache-invalidation hints. A capable host can skip
-// replaying its historical changeset backlog and begin this peer at its live
-// DB version instead.
-export const SYNC_INVALIDATION_ONLY_V1_CAPABILITY = "invalidationOnlyV1";
-
 // Keep this as table-shaped names so the web adapter's existing invalidation
 // scheduler maps one accepted hello to every UI domain it owns.
 const FULL_INVALIDATION_TABLES = [
