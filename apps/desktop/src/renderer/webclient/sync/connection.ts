@@ -53,6 +53,8 @@ const MAX_CONSECUTIVE_AUTH_FAILURES = 5;
 const VISIBILITY_RECONNECT_DEBOUNCE_MS = 1_000;
 const RELAY_REAUTH_RESULT_TIMEOUT_MS = 4_000;
 const RELAY_REAUTH_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000] as const;
+const RELAY_REAUTH_MIN_SUCCESS_INTERVAL_MS = 30_000;
+const RELAY_REAUTH_EXPIRY_SAFETY_MS = 5_000;
 // Browser background throttling can delay a timer well past its nominal fire
 // time. Start before the host's refresh deadline and do not depend on the tab
 // becoming visible again: otherwise a healthy Relay socket is guaranteed to
@@ -274,6 +276,8 @@ export class SyncConnection {
   private relayRefreshAttempt: RelayRefreshAttempt | null = null;
   private relayRefreshPreparation: Promise<void> | null = null;
   private relayRefreshRetryCount = 0;
+  private relayRefreshDueAtMs: number | null = null;
+  private relayLastRefreshStartedAtMs: number | null = null;
   private relayAuthorizationTerminalError: string | null = null;
   private readonly listeners: ListenerMap = {
     statusChanged: new Set(),
@@ -509,6 +513,7 @@ export class SyncConnection {
       let relayNegotiationTimeout: ReturnType<typeof setTimeout> | null = null;
       let helloStarted = false;
       let relayAccepted = false;
+      let inboundMessages = Promise.resolve();
       let cancelAttempt: () => void = () => {};
       const clearDeadlines = () => {
         clearTimeout(openTimeout);
@@ -579,38 +584,41 @@ export class SyncConnection {
           // final ready within the existing overall authenticated-hello budget.
           return;
         }
-        void this.handleMessage(asMessageEvent(event.data), socket, generation, {
-          onHelloOk: (payload) => {
-            if (settled || !this.isCurrentSocket(socket, generation)) return;
-            if (payload.brain?.deviceId?.trim() !== environment.hostDeviceId) {
-              fail(new Error("Connected machine identity did not match the stored pairing."));
-              return;
-            }
-            const compatibilityError = this.requireInvalidationOnlyV1(payload);
-            if (compatibilityError) {
-              fail(compatibilityError, "Incompatible ADE host");
-              return;
-            }
-            if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
-              fail(new StaleSocketAttemptError(), "Connection attempt superseded");
-              return;
-            }
-            settled = true;
-            clearDeadlines();
-            if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
-            resolve();
-          },
-          onHelloError: (payload) => {
-            if (settled || !this.isCurrentSocket(socket, generation)) return;
-            const error = this.handleAuthFailure(environment, payload);
-            fail(error);
-            if (error.code === "attributed_auth_failed") {
-              this.emit("pairingRejected", {
-                envId: environment.envId,
-                hostDeviceId: environment.hostDeviceId,
-              });
-            }
-          },
+        inboundMessages = inboundMessages.then(() => {
+          if (!this.isCurrentSocket(socket, generation)) return;
+          return this.handleMessage(asMessageEvent(event.data), socket, generation, {
+            onHelloOk: (payload) => {
+              if (settled || !this.isCurrentSocket(socket, generation)) return;
+              if (payload.brain?.deviceId?.trim() !== environment.hostDeviceId) {
+                fail(new Error("Connected machine identity did not match the stored pairing."));
+                return;
+              }
+              const compatibilityError = this.requireInvalidationOnlyV1(payload);
+              if (compatibilityError) {
+                fail(compatibilityError, "Incompatible ADE host");
+                return;
+              }
+              if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
+                fail(new StaleSocketAttemptError(), "Connection attempt superseded");
+                return;
+              }
+              settled = true;
+              clearDeadlines();
+              if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
+              resolve();
+            },
+            onHelloError: (payload) => {
+              if (settled || !this.isCurrentSocket(socket, generation)) return;
+              const error = this.handleAuthFailure(environment, payload);
+              fail(error);
+              if (error.code === "attributed_auth_failed") {
+                this.emit("pairingRejected", {
+                  envId: environment.envId,
+                  hostDeviceId: environment.hostDeviceId,
+                });
+              }
+            },
+          });
         }).catch((error) => {
           if (!this.isCurrentSocket(socket, generation)) return;
           fail(error instanceof Error ? error : new Error(String(error)));
@@ -665,6 +673,7 @@ export class SyncConnection {
       let relayNegotiationTimeout: ReturnType<typeof setTimeout> | null = null;
       let helloStarted = false;
       let relayAccepted = false;
+      let inboundMessages = Promise.resolve();
       let cancelAttempt: () => void = () => {};
       const clearDeadlines = () => {
         clearTimeout(openTimeout);
@@ -750,48 +759,51 @@ export class SyncConnection {
           }
           return;
         }
-        void this.handleMessage(asMessageEvent(event.data), socket, generation, {
-          onHelloOk: (payload) => {
-            if (settled || !this.isCurrentSocket(socket, generation)) return;
-            const hostDeviceId = payload.brain?.deviceId?.trim();
-            const pairing = resolveAccountHelloPairing({
-              accountPairing: payload.accountPairing,
-              existingPairing: args.existingPairing,
-              expectedDeviceId: args.peer.deviceId,
-            });
-            if (
-              hostDeviceId !== args.expectedHostDeviceId
-              || !pairing
-            ) {
-              fail(new Error("Account machine identity did not match the verified directory record."));
-              return;
-            }
-            const compatibilityError = this.requireInvalidationOnlyV1(payload);
-            if (compatibilityError) {
-              fail(compatibilityError, "Incompatible ADE host");
-              return;
-            }
-            let environment: WebClientEnvironmentRecord;
-            try {
-              environment = args.buildEnvironment(payload, endpoint, pairing);
-            } catch (error) {
-              fail(error instanceof Error ? error : new Error(String(error)));
-              return;
-            }
-            if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
-              fail(new StaleSocketAttemptError(), "Connection attempt superseded");
-              return;
-            }
-            settled = true;
-            clearDeadlines();
-            if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
-            this.shouldReconnect = true;
-            resolve({ environment, helloOk: payload, endpoint });
-          },
-          onHelloError: (payload) => {
-            if (settled || !this.isCurrentSocket(socket, generation)) return;
-            fail(new Error(payload.message || "Account authentication was rejected."));
-          },
+        inboundMessages = inboundMessages.then(() => {
+          if (!this.isCurrentSocket(socket, generation)) return;
+          return this.handleMessage(asMessageEvent(event.data), socket, generation, {
+            onHelloOk: (payload) => {
+              if (settled || !this.isCurrentSocket(socket, generation)) return;
+              const hostDeviceId = payload.brain?.deviceId?.trim();
+              const pairing = resolveAccountHelloPairing({
+                accountPairing: payload.accountPairing,
+                existingPairing: args.existingPairing,
+                expectedDeviceId: args.peer.deviceId,
+              });
+              if (
+                hostDeviceId !== args.expectedHostDeviceId
+                || !pairing
+              ) {
+                fail(new Error("Account machine identity did not match the verified directory record."));
+                return;
+              }
+              const compatibilityError = this.requireInvalidationOnlyV1(payload);
+              if (compatibilityError) {
+                fail(compatibilityError, "Incompatible ADE host");
+                return;
+              }
+              let environment: WebClientEnvironmentRecord;
+              try {
+                environment = args.buildEnvironment(payload, endpoint, pairing);
+              } catch (error) {
+                fail(error instanceof Error ? error : new Error(String(error)));
+                return;
+              }
+              if (!this.finishConnected(socket, environment, endpoint, payload, generation)) {
+                fail(new StaleSocketAttemptError(), "Connection attempt superseded");
+                return;
+              }
+              settled = true;
+              clearDeadlines();
+              if (this.pendingAttemptCancel === cancelAttempt) this.pendingAttemptCancel = null;
+              this.shouldReconnect = true;
+              resolve({ environment, helloOk: payload, endpoint });
+            },
+            onHelloError: (payload) => {
+              if (settled || !this.isCurrentSocket(socket, generation)) return;
+              fail(new Error(payload.message || "Account authentication was rejected."));
+            },
+          });
         }).catch((error) => {
           if (!this.isCurrentSocket(socket, generation)) return;
           fail(error instanceof Error ? error : new Error(String(error)));
@@ -893,6 +905,7 @@ export class SyncConnection {
     if (!this.isCurrentSocket(socket, generation)) return;
     if (this.isConnected()) {
       this.scheduleHeartbeatFallback();
+      this.beginRelayAuthorizationRefreshIfDue(generation);
     }
   }
 
@@ -997,11 +1010,31 @@ export class SyncConnection {
   ): void {
     if (this.relayRefreshTimer) clearTimeout(this.relayRefreshTimer);
     this.relayRefreshTimer = null;
+    this.relayRefreshDueAtMs = null;
     if (resetRetries) this.relayRefreshRetryCount = 0;
     if (!lease || generation !== this.connectionGeneration) return;
+    const desiredRefreshAtMs = Math.max(
+      Date.now(),
+      lease.refreshAfter - RELAY_REAUTH_CLIENT_SAFETY_LEAD_MS,
+    );
+    const pacedRefreshAtMs = Math.max(
+      desiredRefreshAtMs,
+      this.relayLastRefreshStartedAtMs == null
+        ? 0
+        : this.relayLastRefreshStartedAtMs + RELAY_REAUTH_MIN_SUCCESS_INTERVAL_MS,
+    );
+    // A verifier may legitimately return a lease with only ~30 seconds left.
+    // Pace repeated successes when there is room, but never let that pacing
+    // push the next proof beyond the current lease's latest safe refresh time.
+    const latestSafeRefreshAtMs = Math.max(
+      Date.now(),
+      lease.expiresAt - RELAY_REAUTH_EXPIRY_SAFETY_MS,
+    );
+    const refreshAtMs = Math.min(pacedRefreshAtMs, latestSafeRefreshAtMs);
+    this.relayRefreshDueAtMs = refreshAtMs;
     const delayMs = Math.max(
       0,
-      lease.refreshAfter - RELAY_REAUTH_CLIENT_SAFETY_LEAD_MS - Date.now(),
+      refreshAtMs - Date.now(),
     );
     this.relayRefreshTimer = setTimeout(() => {
       this.relayRefreshTimer = null;
@@ -1022,6 +1055,7 @@ export class SyncConnection {
     const lease = this.latestHello?.relayAuthorization ?? null;
     const provider = this.relayAccountTokenProvider;
     if (!environment || !lease || !provider) return;
+    this.relayRefreshDueAtMs = null;
 
     const preparation = (async () => {
       try {
@@ -1045,6 +1079,7 @@ export class SyncConnection {
           responseTimer: null,
         };
         this.relayRefreshAttempt = attempt;
+        this.relayLastRefreshStartedAtMs = Date.now();
         this.sendRelayAuthorizationAttempt(attempt);
       } catch {
         this.scheduleRelayAuthorizationRetry(generation, false);
@@ -1054,6 +1089,11 @@ export class SyncConnection {
     void preparation.finally(() => {
       if (this.relayRefreshPreparation === preparation) this.relayRefreshPreparation = null;
     });
+  }
+
+  private beginRelayAuthorizationRefreshIfDue(generation: number): void {
+    if (this.relayRefreshDueAtMs == null || Date.now() < this.relayRefreshDueAtMs) return;
+    this.beginRelayAuthorizationRefresh(generation);
   }
 
   private sendRelayAuthorizationAttempt(attempt: RelayRefreshAttempt): void {
@@ -1370,8 +1410,8 @@ export class SyncConnection {
     if (this.isConnected()) {
       if (this.closeIfInboundStale(true)) return;
       const lease = this.latestHello?.relayAuthorization ?? null;
-      if (lease && Date.now() >= lease.refreshAfter) {
-        this.beginRelayAuthorizationRefresh(this.connectionGeneration);
+      if (lease) {
+        this.beginRelayAuthorizationRefreshIfDue(this.connectionGeneration);
       }
       return;
     }
@@ -1424,6 +1464,8 @@ export class SyncConnection {
     this.relayRefreshAttempt = null;
     this.relayRefreshPreparation = null;
     this.relayRefreshRetryCount = 0;
+    this.relayRefreshDueAtMs = null;
+    this.relayLastRefreshStartedAtMs = null;
   }
 
   private setStatus(patch: Partial<SyncConnectionStatus>): void {

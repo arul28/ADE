@@ -404,6 +404,22 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("drains invalidations on a bounded cadence while writes stay continuous", async () => {
+    vi.useFakeTimers();
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const lifecycleEvents: unknown[] = [];
+    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event));
+
+    for (let index = 0; index < 8; index += 1) {
+      fake.emitTables(["lanes"]);
+      await vi.advanceTimersByTimeAsync(100);
+    }
+
+    expect(lifecycleEvents).toHaveLength(2);
+    adapter.dispose();
+  });
+
   it("accepts a restarted project chat seq before its non-resumed snapshot", async () => {
     fake.descriptors = descriptors(["chat.getSummary"]);
     fake.commandResults.set("chat.getSummary", { sessionId: "chat-restarted" });

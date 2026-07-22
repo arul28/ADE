@@ -245,6 +245,7 @@ export class AdeSyncClient {
   private readonly terminalInputQueue: TerminalInputOperation[] = [];
   private terminalInputQueueBytes = 0;
   private streamSubscriptionsPaused = false;
+  private environmentPersistenceTail: Promise<void> = Promise.resolve();
   private readonly restorationTimeoutMs: number;
   private readonly terminalInputAckTimeoutMs: number;
   private readonly terminalInputMaxAttempts: number;
@@ -531,6 +532,7 @@ export class AdeSyncClient {
   }
 
   async removeAccountOwnedEnvironments(ownerUserId: string): Promise<string[]> {
+    await this.drainEnvironmentPersistence();
     const removedIds = await this.envStore.removeAccountOwnedEnvironments(ownerUserId);
     return await this.finishAccountEnvironmentRemoval(removedIds);
   }
@@ -538,6 +540,7 @@ export class AdeSyncClient {
   async pruneAccountOwnedEnvironments(
     currentOwnerUserId: string | null,
   ): Promise<WebClientEnvironmentPruneResult> {
+    await this.drainEnvironmentPersistence();
     const result = await this.envStore.pruneAccountOwnedEnvironments(
       currentOwnerUserId,
     );
@@ -609,6 +612,7 @@ export class AdeSyncClient {
       this.selectedEnvId = null;
       this.activeProjectId = null;
     }
+    await this.drainEnvironmentPersistence();
     await this.envStore.removeEnvironment(envId);
     this.emitStatus();
   }
@@ -1632,9 +1636,19 @@ export class AdeSyncClient {
     envId = this.selectedEnvId,
   ): Promise<void> {
     if (!envId) return;
-    const current = await this.envStore.getEnvironment(envId);
-    if (!current) return;
-    await this.envStore.saveEnvironment(update(current));
+    const persistence = this.environmentPersistenceTail
+      .catch(() => undefined)
+      .then(async () => {
+        const current = await this.envStore.getEnvironment(envId);
+        if (!current) return;
+        await this.envStore.saveEnvironment(update(current));
+      });
+    this.environmentPersistenceTail = persistence;
+    await persistence;
+  }
+
+  private async drainEnvironmentPersistence(): Promise<void> {
+    await this.environmentPersistenceTail.catch(() => undefined);
   }
 
   private emitStatus(): void {

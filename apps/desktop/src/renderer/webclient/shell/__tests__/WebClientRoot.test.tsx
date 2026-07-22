@@ -277,6 +277,99 @@ describe("WebClientRoot entry routes", () => {
     expect(listEnvironments).toHaveBeenCalledTimes(1);
   });
 
+  it("does not switch back when a stale catalog resolves after a project boundary", async () => {
+    const environment = savedEnvironment({ activeProjectId: "project-1" });
+    const projectOne: SyncMobileProjectSummary = {
+      id: "project-1",
+      displayName: "Repo One",
+      rootPath: "/repo-1",
+      defaultBaseRef: "main",
+      lastOpenedAt: null,
+      iconDataUrl: null,
+      laneCount: 1,
+      isAvailable: true,
+      isCached: true,
+      isOpen: true,
+    };
+    const projectTwo: SyncMobileProjectSummary = {
+      ...projectOne,
+      id: "project-2",
+      displayName: "Repo Two",
+      rootPath: "/repo-2",
+    };
+    let currentStatus: AdeSyncClientStatus = idleStatus;
+    let resolveCatalog!: (catalog: SyncProjectCatalogPayload) => void;
+    const getProjectCatalog = vi.fn(() => new Promise<SyncProjectCatalogPayload>((resolve) => {
+      resolveCatalog = resolve;
+    }));
+    const statusListeners = new Set<(status: AdeSyncClientStatus) => void>();
+    const activeProjectListeners = new Set<(change: {
+      previousProjectId: string | null;
+      project: SyncMobileProjectSummary;
+      catalog: SyncProjectCatalogPayload;
+    }) => void>();
+    const switchProject = vi.fn(async () => ({ ok: true, project: projectOne }));
+    const bindProject = vi.fn();
+    createAdapterMock.mockReturnValue({
+      ade: {} as Window["ade"],
+      bindProject,
+      replaceProject: vi.fn(),
+      dispose: vi.fn(),
+    });
+    const client = syncClient({
+      getStatus: () => currentStatus,
+      listEnvironments: vi.fn(async () => [environment]),
+      pruneAccountOwnedEnvironments: vi.fn(async () => pruneResult([environment])),
+      connect: vi.fn(async () => {
+        currentStatus = {
+          ...idleStatus,
+          state: "connected",
+          readiness: "ready",
+          envId: environment.envId,
+          selectedEnvId: environment.envId,
+          activeProjectId: projectOne.id,
+        };
+        statusListeners.forEach((listener) => listener(currentStatus));
+      }),
+      getProjectCatalog,
+      switchProject,
+      subscribe: vi.fn((listener: (status: AdeSyncClientStatus) => void) => {
+        statusListeners.add(listener);
+        return () => statusListeners.delete(listener);
+      }),
+      onActiveProjectChanged: vi.fn((listener: (change: {
+        previousProjectId: string | null;
+        project: SyncMobileProjectSummary;
+        catalog: SyncProjectCatalogPayload;
+      }) => void) => {
+        activeProjectListeners.add(listener);
+        return () => activeProjectListeners.delete(listener);
+      }),
+    });
+
+    render(<WebClientRoot client={client} accountClient={browserAccountClient(signedOutAccount)} />);
+    fireEvent.click(await screen.findByRole("button", { name: /Current saved Mac/i }));
+    await waitFor(() => expect(getProjectCatalog).toHaveBeenCalledOnce());
+    currentStatus = { ...currentStatus, activeProjectId: projectTwo.id };
+    const currentCatalog = { projects: [{ ...projectOne, isOpen: false }, projectTwo] };
+    act(() => {
+      activeProjectListeners.forEach((listener) => listener({
+        previousProjectId: projectOne.id,
+        project: projectTwo,
+        catalog: currentCatalog,
+      }));
+      statusListeners.forEach((listener) => listener(currentStatus));
+      resolveCatalog({ projects: [projectOne] });
+    });
+
+    await waitFor(() => expect(bindProject).toHaveBeenCalledWith({
+      rootPath: projectTwo.rootPath,
+      displayName: projectTwo.displayName,
+      baseRef: "main",
+    }, projectTwo.id));
+    expect(switchProject).not.toHaveBeenCalled();
+  });
+
   it("replaces the mounted project when the connected client crosses a hydration boundary", async () => {
     const environment = savedEnvironment({ activeProjectId: "project-1" });
     const projectOne: SyncMobileProjectSummary = {

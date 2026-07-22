@@ -4,6 +4,7 @@ import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { DeeplinkTarget } from "../../../shared/deeplinks";
 import type {
+  AdeSyncActiveProjectChange,
   AdeSyncClient,
   AdeSyncClientStatus,
   WebRelayAccess,
@@ -174,7 +175,7 @@ export function WebClientRoot({
   const [connectingAccountMachineKey, setConnectingAccountMachineKey] = useState<string | null>(null);
 
   const adapterRef = useRef<AdeWebAdapter | null>(null);
-  const activeProjectBoundaryRef = useRef<SyncMobileProjectSummary | null>(null);
+  const activeProjectBoundaryRef = useRef<AdeSyncActiveProjectChange | null>(null);
   const stashedTargetRef = useRef<DeeplinkTarget | null>(null);
   const bootedRef = useRef(false);
   const fatalRebootRef = useRef(false);
@@ -266,24 +267,29 @@ export function WebClientRoot({
   // Bring the connected machine's catalog + selected project online, then mount
   // the shared App with the sync-backed adapter installed on window.ade.
   const enterProject = useCallback(async (project: SyncMobileProjectSummary, catalogSeed?: SyncMobileProjectSummary[]) => {
+    const pendingBoundary = activeProjectBoundaryRef.current;
+    const projectToEnter = pendingBoundary?.project.id === client.getStatus().activeProjectId
+      ? pendingBoundary.project
+      : project;
     // Switch onto the target project's host only when it isn't already the
     // active one. The host serves file_request/commands for the peer's bound
     // project without a redundant switch, so avoid the extra disconnect +
     // reconnect (and its startup latency) when we're already on this project.
-    if (project.id !== client.getStatus().activeProjectId) {
-      const result = await client.switchProject(project.id);
+    if (projectToEnter.id !== client.getStatus().activeProjectId) {
+      const result = await client.switchProject(projectToEnter.id);
       if (!result.ok) {
-        throw new Error(result.message?.trim() || `Could not switch to ${project.displayName}.`);
+        throw new Error(result.message?.trim() || `Could not switch to ${projectToEnter.displayName}.`);
       }
     }
     if (!adapterRef.current) {
       adapterRef.current = await loadAdapter(client, accountClient, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
-    const boundaryProject = activeProjectBoundaryRef.current;
-    const projectToBind = boundaryProject?.id === client.getStatus().activeProjectId
-      ? boundaryProject
-      : project;
+    const latestBoundary = activeProjectBoundaryRef.current;
+    const projectToBind = latestBoundary?.project.id === client.getStatus().activeProjectId
+      ? latestBoundary.project
+      : projectToEnter;
+    activeProjectBoundaryRef.current = null;
     adapterRef.current.bindProject(toProjectInfo(projectToBind), projectToBind.id);
 
     // Point the address bar at the initial App route before mounting so the
@@ -321,7 +327,11 @@ export function WebClientRoot({
     const activeEnv = availableEnvironments.find(
       (environment) => environment.envId === client.getStatus().selectedEnvId,
     ) ?? null;
-    const projects = (await client.getProjectCatalog()).projects;
+    const fetchedProjects = (await client.getProjectCatalog()).projects;
+    const pendingBoundary = activeProjectBoundaryRef.current;
+    const projects = pendingBoundary?.project.id === client.getStatus().activeProjectId
+      ? pendingBoundary.catalog.projects
+      : fetchedProjects;
     setCatalog(projects);
 
     if (isChatsRoute(window.location.pathname)) {
@@ -498,14 +508,23 @@ export function WebClientRoot({
   }, [client]);
 
   useEffect(() => {
-    return client.onActiveProjectChanged(({ project, catalog: nextCatalog }) => {
-      activeProjectBoundaryRef.current = project;
+    return client.onActiveProjectChanged((change) => {
+      const { project, catalog: nextCatalog } = change;
       setCatalog(nextCatalog.projects);
       // Personal Chats is intentionally machine-scoped and projectless. Keep
       // its mounted adapter detached even when the machine hands the shared
       // listener to another open project.
-      if (isChatsRoute(window.location.pathname)) return;
-      adapterRef.current?.replaceProject(toProjectInfo(project), project.id);
+      if (isChatsRoute(window.location.pathname)) {
+        activeProjectBoundaryRef.current = null;
+        return;
+      }
+      const adapter = adapterRef.current;
+      if (!adapter) {
+        activeProjectBoundaryRef.current = change;
+        return;
+      }
+      activeProjectBoundaryRef.current = null;
+      adapter.replaceProject(toProjectInfo(project), project.id);
     });
   }, [client]);
 

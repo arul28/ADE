@@ -45,8 +45,11 @@ export function createInvalidationScheduler(
 
   const unsubscribe = onTablesChanged((tables) => {
     for (const table of tables) pendingTables.add(table);
-    if (timer) clearTimeout(timer);
-    timer = setTimeout(flush, debounceMs);
+    // Bound invalidation latency from the first pending table. Resetting this
+    // timer on every live write lets a busy chat or terminal postpone every
+    // lane/session/PR refresh forever. One timer still coalesces bursts while
+    // guaranteeing a drain at most once per debounce window.
+    if (!timer) timer = setTimeout(flush, debounceMs);
   });
 
   return () => {
