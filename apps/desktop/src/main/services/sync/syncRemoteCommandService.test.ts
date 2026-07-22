@@ -2335,12 +2335,26 @@ describe("createSyncRemoteCommandService", () => {
         text: "continue here",
         cols: 999,
         rows: 999,
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
       }));
       expect(ptyService.sendToSession).toHaveBeenCalledWith({
         sessionId: "pty-existing",
         text: "continue here",
         cols: 999,
         rows: 999,
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
       });
       expect(result).toMatchObject({
         sessionId: "pty-1",

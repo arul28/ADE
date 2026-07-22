@@ -4,6 +4,10 @@ const {
   normalizeDesktopRuntimeBinaries,
   resolvePackagedRuntimeRoot,
 } = require("./runtimeBinaryPermissions.cjs");
+const {
+  missingRequiredPackagedAdeCliPayloadPaths,
+  packagedAdeCliPayloadFiles,
+} = require("./packaged-ade-cli-resources.cjs");
 
 const appDir = path.resolve(__dirname, "..");
 
@@ -390,20 +394,19 @@ module.exports = async function afterPack(context) {
   }
 
   const resourcesRoot = resolveExtraResourcesRoot(context, appBundlePath);
-  const bundledCliPath = path.join(resourcesRoot, "ade-cli", "cli.cjs");
-  const bundledCliBootstrapPath = path.join(resourcesRoot, "ade-cli", "bootstrap.cjs");
-  const bundledCliPtyHostWorkerPath = path.join(resourcesRoot, "ade-cli", "ptyHostWorker.cjs");
-  const bundledCliCursorSdkWorkerPath = path.join(resourcesRoot, "ade-cli", "cursorSdkWorker.cjs");
-  const bundledCliDroidSdkWorkerPath = path.join(resourcesRoot, "ade-cli", "droidSdkWorker.cjs");
-  const bundledCliRpcPath = path.join(resourcesRoot, "ade-cli", "adeRpcServer.cjs");
-  const bundledCliTuiPath = path.join(resourcesRoot, "ade-cli", "tuiClient", "cli.mjs");
-  requireFile(bundledCliPath, "bundled ADE CLI entry");
-  requireFile(bundledCliBootstrapPath, "bundled ADE CLI bootstrap entry");
-  requireFile(bundledCliPtyHostWorkerPath, "bundled ADE CLI PTY host worker");
-  requireFile(bundledCliCursorSdkWorkerPath, "bundled ADE CLI Cursor SDK worker");
-  requireFile(bundledCliDroidSdkWorkerPath, "bundled ADE CLI Droid SDK worker");
-  requireFile(bundledCliRpcPath, "bundled ADE CLI RPC entry");
-  requireFile(bundledCliTuiPath, "bundled ADE CLI TUI entry");
+  const bundledAdeCliFiles = packagedAdeCliPayloadFiles({ desktopRoot: appDir });
+  const missingRequiredPayload = missingRequiredPackagedAdeCliPayloadPaths(bundledAdeCliFiles);
+  if (missingRequiredPayload.length > 0) {
+    throw new Error(
+      `[afterPack] ADE CLI resources omit required payload: ${missingRequiredPayload.join(", ")}`,
+    );
+  }
+  for (const resource of bundledAdeCliFiles) {
+    requireFile(
+      path.join(resourcesRoot, resource.to),
+      `bundled ADE CLI resource ${resource.to}`,
+    );
+  }
 
   if (platform === "darwin") {
     const bundledCliBinPath = path.join(resourcesRoot, "ade-cli", "bin", "ade");

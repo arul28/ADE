@@ -137,9 +137,25 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const reasoningEffort = typeof launchRecord.reasoningEffort === "string" && launchRecord.reasoningEffort.trim().length
     ? launchRecord.reasoningEffort.trim()
     : null;
-  const codexApprovalPolicy = typeof launchRecord.codexApprovalPolicy === "string" ? launchRecord.codexApprovalPolicy : null;
-  const codexSandbox = typeof launchRecord.codexSandbox === "string" ? launchRecord.codexSandbox : null;
-  const codexConfigSource = typeof launchRecord.codexConfigSource === "string" ? launchRecord.codexConfigSource : null;
+  const fastMode = typeof launchRecord.fastMode === "boolean"
+    ? launchRecord.fastMode
+    : typeof launchRecord.codexFastMode === "boolean"
+      ? launchRecord.codexFastMode
+      : null;
+  const codexApprovalPolicy = launchRecord.codexApprovalPolicy === "untrusted"
+    || launchRecord.codexApprovalPolicy === "on-request"
+    || launchRecord.codexApprovalPolicy === "on-failure"
+    || launchRecord.codexApprovalPolicy === "never"
+    ? launchRecord.codexApprovalPolicy
+    : null;
+  const codexSandbox = launchRecord.codexSandbox === "read-only"
+    || launchRecord.codexSandbox === "workspace-write"
+    || launchRecord.codexSandbox === "danger-full-access"
+    ? launchRecord.codexSandbox
+    : null;
+  const codexConfigSource = launchRecord.codexConfigSource === "flags" || launchRecord.codexConfigSource === "config-toml"
+    ? launchRecord.codexConfigSource
+    : null;
   const importedFromRecord = record.importedFrom != null && typeof record.importedFrom === "object" && !Array.isArray(record.importedFrom)
     ? record.importedFrom as Record<string, unknown>
     : null;
@@ -168,6 +184,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
       ...(permissionMode ? { permissionMode } : {}),
       ...(model ? { model } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(fastMode !== null ? { fastMode } : {}),
       ...(claudePermissionMode ? { claudePermissionMode: claudePermissionMode as TerminalResumeMetadata["launch"]["claudePermissionMode"] } : {}),
       ...(codexApprovalPolicy ? { codexApprovalPolicy: codexApprovalPolicy as TerminalResumeMetadata["launch"]["codexApprovalPolicy"] } : {}),
       ...(codexSandbox ? { codexSandbox: codexSandbox as TerminalResumeMetadata["launch"]["codexSandbox"] } : {}),

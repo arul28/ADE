@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectInfo } from "../../../../shared/types";
 import type {
   SyncChatEventPayload,
+  SyncChatSubscribeSnapshotPayload,
   SyncFileBlob,
   SyncTerminalHistoryResponsePayload,
   SyncMobileProjectSummary,
@@ -21,6 +22,24 @@ const project: ProjectInfo = {
   displayName: "Repo",
   baseRef: "main",
 };
+
+function chatEvent(sessionId: string, seq: number, marker: string): SyncChatEventPayload {
+  return {
+    sessionId,
+    seq,
+    timestamp: `2026-07-20T00:00:${String(seq).padStart(2, "0")}.000Z`,
+    event: { type: "status", status: "started", marker } as never,
+  };
+}
+
+function transcriptChatEvent(sessionId: string, sequence: number, marker: string): SyncChatEventPayload {
+  return {
+    sessionId,
+    sequence,
+    timestamp: `2026-07-20T00:01:${String(sequence).padStart(2, "0")}.000Z`,
+    event: { type: "status", status: "started", marker } as never,
+  };
+}
 
 describe("createAdeWebAdapter", () => {
   let fake: FakeAdeSyncClient;
@@ -250,6 +269,304 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("bounds initial web chat hydration while preserving paged scroll-back", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory"]);
+    fake.commandResults.set("chat.getChatEventHistory", {
+      sessionId: "chat-long-running",
+      events: [],
+      truncated: true,
+      sessionFound: true,
+      tailStartOffset: 4096,
+    });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.getEventHistory({
+      sessionId: "chat-long-running",
+      maxEvents: 20_000,
+    })).resolves.toMatchObject({
+      sessionId: "chat-long-running",
+      truncated: true,
+      tailStartOffset: 4096,
+    });
+
+    expect(fake.chatSubscribeCalls).toEqual([{
+      sessionId: "chat-long-running",
+      opts: { maxBytes: 128 * 1024 },
+    }]);
+    expect(fake.commandCalls).toEqual([{
+      action: "chat.getChatEventHistory",
+      args: {
+        sessionId: "chat-long-running",
+        maxEvents: 512,
+        maxBytes: 128 * 1024,
+      },
+      opts: { projectId: "project-1", timeoutMs: undefined },
+    }]);
+
+    adapter.dispose();
+  });
+
+  it("keeps only the eight most recently used project chat subscriptions", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    for (let index = 1; index <= 8; index += 1) {
+      await adapter.ade.agentChat.getEventHistory({ sessionId: `chat-${index}` });
+    }
+    // Reusing chat-1 makes it the most recent entry without opening another
+    // wire subscription, so chat-2 is the oldest when chat-9 is selected.
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-1" });
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-9" });
+
+    expect(fake.chatSubscribeCalls.map((call) => call.sessionId)).toEqual([
+      "chat-1",
+      "chat-2",
+      "chat-3",
+      "chat-4",
+      "chat-5",
+      "chat-6",
+      "chat-7",
+      "chat-8",
+      "chat-9",
+    ]);
+    expect(fake.chatUnsubscribeCalls).toEqual(["chat-2"]);
+
+    adapter.dispose();
+    expect(new Set(fake.chatUnsubscribeCalls)).toEqual(new Set([
+      "chat-1",
+      "chat-2",
+      "chat-3",
+      "chat-4",
+      "chat-5",
+      "chat-6",
+      "chat-7",
+      "chat-8",
+      "chat-9",
+    ]));
+    expect(fake.chatUnsubscribeCalls).toHaveLength(9);
+  });
+
+  it("pins the visible project chat while more than eight background chats touch the LRU", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory", "chat.getSummary"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const received: SyncChatEventPayload[] = [];
+    adapter.ade.agentChat.onEvent((event) => received.push(event as SyncChatEventPayload));
+
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-visible-oldest" });
+    for (let index = 1; index <= 8; index += 1) {
+      fake.commandResults.set("chat.getSummary", { sessionId: `chat-background-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-background-${index}` });
+    }
+
+    expect(fake.chatUnsubscribeCalls).toEqual(["chat-background-1"]);
+    expect(fake.chatUnsubscribeCalls).not.toContain("chat-visible-oldest");
+
+    const done = {
+      sessionId: "chat-visible-oldest",
+      seq: 41,
+      timestamp: "2026-07-20T00:02:00.000Z",
+      event: {
+        type: "done",
+        turnId: "turn-visible",
+        status: "completed",
+        model: "gpt-5.6",
+        modelId: "openai/gpt-5.6",
+      },
+    } as SyncChatEventPayload;
+    fake.emitChatSnapshot("chat-visible-oldest", {
+      sessionId: "chat-visible-oldest",
+      capturedAt: "2026-07-20T00:02:01.000Z",
+      truncated: false,
+      resumed: true,
+      events: [done],
+    });
+
+    expect(received).toEqual([done]);
+    adapter.dispose();
+  });
+
+  it("moves the visible pin on selection change and evicts the old selection first", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory", "chat.getSummary"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-selection-old" });
+    for (let index = 1; index <= 7; index += 1) {
+      fake.commandResults.set("chat.getSummary", { sessionId: `chat-selection-background-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-selection-background-${index}` });
+    }
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-selection-new" });
+
+    expect(fake.chatUnsubscribeCalls).toEqual(["chat-selection-old"]);
+
+    fake.commandResults.set("chat.getSummary", { sessionId: "chat-selection-background-8" });
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-selection-background-8" });
+    expect(fake.chatUnsubscribeCalls).toEqual([
+      "chat-selection-old",
+      "chat-selection-background-1",
+    ]);
+    expect(fake.chatUnsubscribeCalls).not.toContain("chat-selection-new");
+
+    adapter.dispose();
+  });
+
+  it("drops every old-project stream and starts a fresh bounded pin after project handoff", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistory", "chat.getSummary"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-one-visible" });
+    for (let index = 1; index <= 7; index += 1) {
+      fake.commandResults.set("chat.getSummary", { sessionId: `chat-project-one-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-one-${index}` });
+    }
+
+    const projectTwo = { ...project, rootPath: "/repo-2", displayName: "Repo Two" };
+    adapter.replaceProject(projectTwo, "project-2");
+    expect(new Set(fake.chatUnsubscribeCalls)).toEqual(new Set([
+      "chat-project-one-visible",
+      "chat-project-one-1",
+      "chat-project-one-2",
+      "chat-project-one-3",
+      "chat-project-one-4",
+      "chat-project-one-5",
+      "chat-project-one-6",
+      "chat-project-one-7",
+    ]));
+
+    await adapter.ade.agentChat.getEventHistory({ sessionId: "chat-project-two-visible" });
+    for (let index = 1; index <= 8; index += 1) {
+      fake.commandResults.set("chat.getSummary", { sessionId: `chat-project-two-${index}` });
+      await adapter.ade.agentChat.getSummary({ sessionId: `chat-project-two-${index}` });
+    }
+
+    expect(fake.chatUnsubscribeCalls).toContain("chat-project-two-1");
+    expect(fake.chatUnsubscribeCalls).not.toContain("chat-project-two-visible");
+    expect(fake.chatSubscribeCalls.at(-1)?.sessionId).toBe("chat-project-two-8");
+    expect(fake.commandCalls.at(-1)?.opts.projectId).toBe("project-2");
+
+    adapter.dispose();
+  });
+
+  it("does not subscribe every chat returned by a session-list read", async () => {
+    fake.descriptors = descriptors([
+      "chat.listSessions",
+      "chat.getSummary",
+      "chat.create",
+      "chat.launch",
+      "chat.send",
+    ]);
+    fake.commandResults.set("chat.listSessions", [
+      { sessionId: "chat-background-1" },
+      { sessionId: "chat-background-2" },
+      { sessionId: "chat-background-3" },
+    ]);
+    fake.commandResults.set("chat.getSummary", { sessionId: "chat-selected" });
+    fake.commandResults.set("chat.create", { sessionId: "chat-created" });
+    fake.commandResults.set("chat.launch", { sessionId: "chat-launched" });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.agentChat.list({ laneId: "lane-1" });
+    expect(fake.chatSubscribeCalls).toEqual([]);
+
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-selected" });
+    await adapter.ade.agentChat.create({} as never);
+    await adapter.ade.agentChat.launch({} as never);
+    await adapter.ade.agentChat.send({ sessionId: "chat-sent", text: "Continue" });
+
+    expect(fake.chatSubscribeCalls.map((call) => call.sessionId)).toEqual([
+      "chat-selected",
+      "chat-created",
+      "chat-launched",
+      "chat-sent",
+    ]);
+
+    adapter.dispose();
+  });
+
+  it("does not subscribe background chats after chat-table invalidation", async () => {
+    vi.useFakeTimers();
+    fake.descriptors = descriptors(["chat.listSessions"]);
+    fake.commandResults.set("chat.listSessions", [
+      { sessionId: "chat-background-1" },
+      { sessionId: "chat-background-2" },
+    ]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    fake.emitTables(["agent_chats"]);
+    await vi.advanceTimersByTimeAsync(260);
+
+    expect(fake.commandCalls).toEqual([]);
+    expect(fake.chatSubscribeCalls).toEqual([]);
+
+    adapter.dispose();
+  });
+
+  it("drains invalidations on a bounded cadence while writes stay continuous", async () => {
+    vi.useFakeTimers();
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const lifecycleEvents: unknown[] = [];
+    adapter.ade.lanes.onLifecycleEvent((event) => lifecycleEvents.push(event));
+
+    for (let index = 0; index < 8; index += 1) {
+      fake.emitTables(["lanes"]);
+      await vi.advanceTimersByTimeAsync(100);
+    }
+
+    expect(lifecycleEvents).toHaveLength(2);
+    adapter.dispose();
+  });
+
+  it("accepts a restarted project chat seq without duplicating a non-resumed snapshot replay", async () => {
+    fake.descriptors = descriptors(["chat.getSummary"]);
+    fake.commandResults.set("chat.getSummary", { sessionId: "chat-restarted" });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-restarted" });
+    fake.commandResults.set("chat.getSummary", { sessionId: "chat-unrelated" });
+    await adapter.ade.agentChat.getSummary({ sessionId: "chat-unrelated" });
+    const received: SyncChatEventPayload[] = [];
+    adapter.ade.agentChat.onEvent((event) => received.push(event as SyncChatEventPayload));
+
+    const initialSnapshotEvent = transcriptChatEvent("chat-restarted", 1, "snapshot-source");
+    fake.emitChatSnapshot("chat-restarted", {
+      sessionId: "chat-restarted",
+      capturedAt: "2026-07-20T00:00:00.000Z",
+      truncated: false,
+      resumed: false,
+      events: [initialSnapshotEvent, { ...initialSnapshotEvent }],
+    });
+    fake.emitChat(chatEvent("chat-restarted", 1, "live-before-restart"));
+    const unrelatedEvent = chatEvent("chat-unrelated", 1, "old-unrelated");
+    fake.emitChat(unrelatedEvent);
+    const liveAfterRestart = chatEvent("chat-restarted", 1, "live-after-restart");
+    fake.emitChat(liveAfterRestart);
+    fake.emitChat({ ...liveAfterRestart });
+    fake.emitChatSnapshot("chat-restarted", {
+      sessionId: "chat-restarted",
+      capturedAt: "2026-07-20T00:00:01.000Z",
+      truncated: false,
+      resumed: false,
+      events: [liveAfterRestart, transcriptChatEvent("chat-restarted", 1, "snapshot-after-restart")],
+    });
+    fake.emitChat({ ...unrelatedEvent });
+
+    expect(received.map((payload) => [payload.sessionId, payload.event])).toEqual([
+      ["chat-restarted", expect.objectContaining({ marker: "snapshot-source" })],
+      ["chat-restarted", expect.objectContaining({ marker: "live-before-restart" })],
+      ["chat-unrelated", expect.objectContaining({ marker: "old-unrelated" })],
+      ["chat-restarted", expect.objectContaining({ marker: "live-after-restart" })],
+      ["chat-restarted", expect.objectContaining({ marker: "snapshot-after-restart" })],
+    ]);
+    adapter.dispose();
+  });
+
   it("keeps the last successful read through a transport outage without caching it as fresh", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors(["lanes.list"]);
@@ -415,6 +732,72 @@ describe("createAdeWebAdapter", () => {
       opts: { projectId: null, timeoutMs: undefined },
     });
 
+    adapter.dispose();
+  });
+
+  it("accepts a restarted personal-chat seq without duplicating a non-resumed snapshot replay", async () => {
+    fake.descriptors = [{
+      action: "personalChats.list",
+      scope: "runtime",
+      policy: { viewerAllowed: true },
+    }];
+    fake.commandResults.set("personalChats.list", [
+      { sessionId: "personal-restarted" },
+      { sessionId: "personal-unrelated" },
+    ]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    await adapter.ade.personalChats.call({ action: "list", args: {} });
+
+    const initialSnapshotEvent = transcriptChatEvent("personal-restarted", 1, "snapshot-source");
+    fake.emitChatSnapshot("personal-restarted", {
+      sessionId: "personal-restarted",
+      capturedAt: "2026-07-20T00:00:00.000Z",
+      truncated: false,
+      resumed: false,
+      events: [initialSnapshotEvent, { ...initialSnapshotEvent }],
+    });
+    fake.emitChat(chatEvent("personal-restarted", 1, "live-before-restart"));
+    const unrelatedEvent = chatEvent("personal-unrelated", 1, "old-unrelated");
+    fake.emitChat(unrelatedEvent);
+    await expect(adapter.ade.personalChats.streamEvents({ cursor: 0 })).resolves.toMatchObject({
+      nextCursor: 3,
+      events: [
+        { payload: { sessionId: "personal-restarted", event: { marker: "snapshot-source" } } },
+        { payload: { sessionId: "personal-restarted", event: { marker: "live-before-restart" } } },
+        { payload: { sessionId: "personal-unrelated", event: { marker: "old-unrelated" } } },
+      ],
+    });
+
+    const liveAfterRestart = chatEvent("personal-restarted", 1, "live-after-restart");
+    fake.emitChat(liveAfterRestart);
+    fake.emitChat({ ...liveAfterRestart });
+    fake.emitChatSnapshot("personal-restarted", {
+      sessionId: "personal-restarted",
+      capturedAt: "2026-07-20T00:00:01.000Z",
+      truncated: false,
+      resumed: false,
+      events: [liveAfterRestart, transcriptChatEvent("personal-restarted", 1, "snapshot-after-restart")],
+    });
+    fake.emitChat({ ...unrelatedEvent });
+
+    await expect(adapter.ade.personalChats.streamEvents({ cursor: 3 })).resolves.toMatchObject({
+      nextCursor: 5,
+      hasMore: false,
+      events: [
+        {
+          payload: {
+            sessionId: "personal-restarted",
+            event: { marker: "live-after-restart" },
+          },
+        },
+        {
+          payload: {
+            sessionId: "personal-restarted",
+            event: { marker: "snapshot-after-restart" },
+          },
+        },
+      ],
+    });
     adapter.dispose();
   });
 
@@ -638,6 +1021,50 @@ describe("createAdeWebAdapter", () => {
     fake.emitTables(["files"]);
     await vi.advanceTimersByTimeAsync(260);
     await expect(adapter.ade.files.listWorkspaces()).rejects.toThrow("wrong project scope");
+
+    adapter.dispose();
+  });
+
+  it("atomically replaces the bound project and refreshes every mounted domain", async () => {
+    fake.descriptors = descriptors(["lanes.list"]);
+    fake.commandResults.set("lanes.list", [{ id: "lane-old" }]);
+    const projectTwoSummary = {
+      ...fake.projects[0]!,
+      id: "project-2",
+      rootPath: "/repo-2",
+      displayName: "Repo Two",
+    };
+    fake.projects.push(projectTwoSummary);
+    const projectTwo = { rootPath: "/repo-2", displayName: "Repo Two", baseRef: "main" };
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    const projects: Array<ProjectInfo | null> = [];
+    const laneEvents: unknown[] = [];
+    const sessionEvents: unknown[] = [];
+    const fileEvents: unknown[] = [];
+    const rebaseEvents: unknown[] = [];
+    adapter.ade.app.onProjectChanged((next) => projects.push(next));
+    adapter.ade.lanes.onLifecycleEvent((event) => laneEvents.push(event));
+    adapter.ade.sessions.onChanged((event) => sessionEvents.push(event));
+    adapter.ade.files.onChange((event) => fileEvents.push(event));
+    adapter.ade.rebase.onEvent((event) => rebaseEvents.push(event));
+
+    await adapter.ade.lanes.list();
+    fake.commandResults.set("lanes.list", [{ id: "lane-new" }]);
+    adapter.replaceProject(projectTwo, "project-2");
+    await expect(adapter.ade.app.getProject()).resolves.toEqual(projectTwo);
+    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-new" }]);
+
+    expect(projects).toEqual([projectTwo]);
+    expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toEqual([
+      expect.objectContaining({ opts: expect.objectContaining({ projectId: "project-1" }) }),
+      expect.objectContaining({ opts: expect.objectContaining({ projectId: "project-2" }) }),
+    ]);
+    expect(laneEvents).toHaveLength(1);
+    expect(sessionEvents).toHaveLength(1);
+    expect(fileEvents).toHaveLength(1);
+    expect(rebaseEvents).toHaveLength(2);
 
     adapter.dispose();
   });
@@ -1181,6 +1608,7 @@ class FakeAdeSyncClient {
   terminalResizes: Array<{ sessionId: string; cols: number; rows: number }> = [];
   terminalSubscribeCalls: Array<{ sessionId: string; opts: { maxBytes?: number } }> = [];
   chatSubscribeCalls: Array<{ sessionId: string; opts: Record<string, unknown> }> = [];
+  chatUnsubscribeCalls: string[] = [];
   terminalUnsubscribeCalls: string[] = [];
   terminalHistoryCalls: TerminalHistoryCall[] = [];
   terminalHistoryResults = new Map<string, SyncTerminalHistoryResponsePayload>();
@@ -1262,7 +1690,10 @@ class FakeAdeSyncClient {
       opts: opts && typeof opts === "object" ? { ...(opts as Record<string, unknown>) } : {},
     });
     this.chatHandlers.set(sessionId, handlers);
-    return () => this.chatHandlers.delete(sessionId);
+    return () => {
+      this.chatUnsubscribeCalls.push(sessionId);
+      if (this.chatHandlers.get(sessionId) === handlers) this.chatHandlers.delete(sessionId);
+    };
   }
 
   subscribeTerminal(sessionId: string, opts: unknown, handlers: TerminalHandlers): () => void {
@@ -1336,6 +1767,10 @@ class FakeAdeSyncClient {
   emitChat(payload: SyncChatEventPayload): void {
     for (const listener of this.chatListeners) listener(payload);
     this.chatHandlers.get(payload.sessionId)?.event?.(payload);
+  }
+
+  emitChatSnapshot(sessionId: string, payload: SyncChatSubscribeSnapshotPayload): void {
+    this.chatHandlers.get(sessionId)?.snapshot?.(payload);
   }
 
   emitTerminalData(sessionId: string, payload: SyncTerminalDataPayload): void {

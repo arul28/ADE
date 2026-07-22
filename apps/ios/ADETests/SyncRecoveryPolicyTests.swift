@@ -663,6 +663,54 @@ final class SyncRecoveryPolicyTests: XCTestCase {
   }
 
   @MainActor
+  func testTerminalSnapshotInstallsSubscriptionBeforeFollowingDataFrame() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.beginOutboundEnvelopeCaptureForTesting()
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    let snapshotTask = Task {
+      try await service.refreshTerminalSnapshot(sessionId: "terminal-barrier")
+    }
+    var requestId: String?
+    for _ in 0..<20 where requestId == nil {
+      await Task.yield()
+      requestId = service.capturedOutboundRequestIdsForTesting(type: "terminal_subscribe").first
+    }
+    let capturedRequestId = try XCTUnwrap(requestId)
+
+    // Host ordering is snapshot then any PTY data queued behind its capture
+    // barrier. Accepting the snapshot must synchronously make that next frame
+    // deliverable; waiting for the request continuation can lose one-shot
+    // output when the receive loop wins the scheduling race.
+    service.completeTerminalSnapshotRequestForTesting(
+      requestId: capturedRequestId,
+      sessionId: "terminal-barrier",
+      transcript: "Mac% ",
+      startOffset: 0,
+      endOffset: 5
+    )
+    XCTAssertTrue(service.subscribedTerminalSessionIds.contains("terminal-barrier"))
+
+    service.handleTerminalDataChunkForTesting(
+      sessionId: "terminal-barrier",
+      chunk: "pwd\r\n",
+      endOffset: 10
+    )
+    XCTAssertEqual(service.terminalBuffers["terminal-barrier"], "Mac% pwd\r\n")
+    try await snapshotTask.value
+  }
+
+  @MainActor
   func testTerminalSnapshotTimeoutRetriesAndRestoresLiveStreamWithoutSocketTeardown() async throws {
     let baseURL = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -718,6 +766,9 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     }
     XCTAssertTrue(service.subscribedTerminalSessionIds.contains("terminal-retry"))
     XCTAssertEqual(service.terminalBuffers["terminal-retry"], "Mac% ")
+    // Snapshot acceptance and retry ownership cleanup are one atomic state
+    // transition; this assertion must not need a yield for the retry task's
+    // defer to catch up.
     XCTAssertFalse(service.hasTerminalSnapshotRecoveryForTesting(sessionId: "terminal-retry"))
 
     service.handleTerminalDataChunkForTesting(
@@ -1070,6 +1121,40 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     await service.awaitReconnectStabilityResetForTesting()
     XCTAssertEqual(service.reconnectAttemptCountForTesting(), 0)
     XCTAssertEqual(service.nextReconnectDelayForTesting(), 1_000_000_000)
+  }
+
+  @MainActor
+  func testSuccessfulPostHelloRestorationPublishesConnectedOnlyAfterCompletion() async throws {
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    let restoration = DeferredRecoveryWork()
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.disconnect(clearCredentials: false)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "ready-host", "deviceName": "Mac Studio"],
+      "features": [:],
+    ])
+    XCTAssertEqual(service.connectionState, .syncing)
+
+    let postHello = Task { @MainActor in
+      await service.performPostHelloRestorationForTesting {
+        await restoration.wait()
+      }
+    }
+    while !restoration.isWaiting { await Task.yield() }
+    XCTAssertEqual(service.connectionState, .syncing)
+
+    restoration.resume()
+    await postHello.value
+    XCTAssertEqual(service.connectionState, .connected)
   }
 
   @MainActor

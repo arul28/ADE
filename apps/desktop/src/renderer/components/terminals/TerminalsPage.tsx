@@ -8,7 +8,7 @@ import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
@@ -32,6 +32,7 @@ import {
 } from "../../lib/handoffLaunchJobs";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
+import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -569,7 +570,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, [selectedSessions, stopAndDeleteConfirm, work]);
 
   const handleContinueCliSession = useCallback(
-    async (session: TerminalSessionSummary, text: string) => {
+    async (session: TerminalSessionSummary, text: string, launch: TerminalResumeLaunchConfig | null) => {
       setSessionActionError(null);
       try {
         const result = await window.ade.pty.sendToSession({
@@ -577,6 +578,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           text,
           cols: 100,
           rows: 30,
+          ...buildPtyContinuationLaunchFields(launch),
         });
         invalidateSessionListCache();
         // Patch the local sessions list with the freshly-resumed snapshot so

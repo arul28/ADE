@@ -324,6 +324,23 @@ most 2 seconds, so a busy chat cannot starve CRR convergence. The byte/row
 limits are split targets rather than hard transaction caps: one complete
 `db_version` group is admitted even when that group alone exceeds a target.
 
+Hosted browsers negotiate `invalidationOnlyV1` because they have no local CRR
+replica and `compactInvalidationV1` when they understand bounded refresh hints.
+A supporting host confirms both capabilities in `hello_ok`, starts a new
+browser at the current database watermark, and sends post-connect
+`invalidation_batch` envelopes containing only database-version bounds and
+changed table names after the browser's initial full-domain refresh. These
+envelopes have a hard 16 KB serialized limit; an invalid or oversized table set
+collapses to a compact full-refresh hint, so a single large CRR value cannot
+overflow the Relay bridge. Same-DB socket handoff restores the deposited live
+cursor so writes committed during the handoff window are not skipped.
+Foreground requests defer invalidation scans only for their own peer and for at
+most 2 seconds; the forced fairness scan uses the active-chat 64 KB/64-row
+limits. Browsers close with desktop update guidance when an older host does not
+confirm both contracts, preventing a historical replay or oversized live row
+from overflowing Relay. Older browsers that advertise only
+`invalidationOnlyV1` remain on their existing `changeset_batch` hint path.
+
 ### Apply
 
 ```sql

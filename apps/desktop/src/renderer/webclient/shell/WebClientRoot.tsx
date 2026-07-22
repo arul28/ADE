@@ -4,6 +4,7 @@ import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { DeeplinkTarget } from "../../../shared/deeplinks";
 import type {
+  AdeSyncActiveProjectChange,
   AdeSyncClient,
   AdeSyncClientStatus,
   WebRelayAccess,
@@ -29,6 +30,7 @@ import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 type AdeWebAdapter = {
   ade: Window["ade"];
   bindProject: (project: ProjectInfo | null, projectId?: string | null) => void;
+  replaceProject: (project: ProjectInfo, projectId: string) => void;
   dispose: () => void;
 };
 
@@ -173,6 +175,7 @@ export function WebClientRoot({
   const [connectingAccountMachineKey, setConnectingAccountMachineKey] = useState<string | null>(null);
 
   const adapterRef = useRef<AdeWebAdapter | null>(null);
+  const activeProjectBoundaryRef = useRef<AdeSyncActiveProjectChange | null>(null);
   const stashedTargetRef = useRef<DeeplinkTarget | null>(null);
   const bootedRef = useRef(false);
   const fatalRebootRef = useRef(false);
@@ -264,21 +267,30 @@ export function WebClientRoot({
   // Bring the connected machine's catalog + selected project online, then mount
   // the shared App with the sync-backed adapter installed on window.ade.
   const enterProject = useCallback(async (project: SyncMobileProjectSummary, catalogSeed?: SyncMobileProjectSummary[]) => {
+    const pendingBoundary = activeProjectBoundaryRef.current;
+    const projectToEnter = pendingBoundary?.project.id === client.getStatus().activeProjectId
+      ? pendingBoundary.project
+      : project;
     // Switch onto the target project's host only when it isn't already the
     // active one. The host serves file_request/commands for the peer's bound
     // project without a redundant switch, so avoid the extra disconnect +
     // reconnect (and its startup latency) when we're already on this project.
-    if (project.id !== client.getStatus().activeProjectId) {
-      const result = await client.switchProject(project.id);
+    if (projectToEnter.id !== client.getStatus().activeProjectId) {
+      const result = await client.switchProject(projectToEnter.id);
       if (!result.ok) {
-        throw new Error(result.message?.trim() || `Could not switch to ${project.displayName}.`);
+        throw new Error(result.message?.trim() || `Could not switch to ${projectToEnter.displayName}.`);
       }
     }
     if (!adapterRef.current) {
       adapterRef.current = await loadAdapter(client, accountClient, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
-    adapterRef.current.bindProject(toProjectInfo(project), project.id);
+    const latestBoundary = activeProjectBoundaryRef.current;
+    const projectToBind = latestBoundary?.project.id === client.getStatus().activeProjectId
+      ? latestBoundary.project
+      : projectToEnter;
+    activeProjectBoundaryRef.current = null;
+    adapterRef.current.bindProject(toProjectInfo(projectToBind), projectToBind.id);
 
     // Point the address bar at the initial App route before mounting so the
     // App's BrowserRouter renders the right tab on first paint.
@@ -315,7 +327,11 @@ export function WebClientRoot({
     const activeEnv = availableEnvironments.find(
       (environment) => environment.envId === client.getStatus().selectedEnvId,
     ) ?? null;
-    const projects = (await client.getProjectCatalog()).projects;
+    const fetchedProjects = (await client.getProjectCatalog()).projects;
+    const pendingBoundary = activeProjectBoundaryRef.current;
+    const projects = pendingBoundary?.project.id === client.getStatus().activeProjectId
+      ? pendingBoundary.catalog.projects
+      : fetchedProjects;
     setCatalog(projects);
 
     if (isChatsRoute(window.location.pathname)) {
@@ -491,6 +507,27 @@ export function WebClientRoot({
     return client.onProjectCatalog((payload) => setCatalog(payload.projects));
   }, [client]);
 
+  useEffect(() => {
+    return client.onActiveProjectChanged((change) => {
+      const { project, catalog: nextCatalog } = change;
+      setCatalog(nextCatalog.projects);
+      // Personal Chats is intentionally machine-scoped and projectless. Keep
+      // its mounted adapter detached even when the machine hands the shared
+      // listener to another open project.
+      if (isChatsRoute(window.location.pathname)) {
+        activeProjectBoundaryRef.current = null;
+        return;
+      }
+      const adapter = adapterRef.current;
+      if (!adapter) {
+        activeProjectBoundaryRef.current = change;
+        return;
+      }
+      activeProjectBoundaryRef.current = null;
+      adapter.replaceProject(toProjectInfo(project), project.id);
+    });
+  }, [client]);
+
   // Account-owned trust and account-authorized Relay sockets stay usable only
   // while the same browser account remains valid. A local pairing keeps its
   // saved trust after Relay logout so it can reconnect directly later.
@@ -567,7 +604,7 @@ export function WebClientRoot({
       try {
         const result = await client.switchProject(project.id);
         if (!result.ok) return;
-        adapterRef.current?.bindProject(toProjectInfo(project), result.project?.id ?? project.id);
+        adapterRef.current?.replaceProject(toProjectInfo(project), result.project?.id ?? project.id);
       } catch {
         // switchProject surfaces its own failure via status; leave the app up.
       }

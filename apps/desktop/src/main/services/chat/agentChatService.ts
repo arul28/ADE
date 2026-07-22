@@ -6382,7 +6382,7 @@ export function createAgentChatService(args: {
   appVersion: string;
   getAdeCliAgentEnv?: (baseEnv?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
   /** Resolves credentials owned by this runtime only; never supplied by a handoff capsule. */
-  getLocalGitHubToken?: () => string | null | undefined;
+  getLocalGitHubToken?: () => string | null | undefined | Promise<string | null | undefined>;
   resolveCodexComputerUseMcp?: () =>
     | CodexComputerUseMcpConfig
     | null
@@ -6592,6 +6592,10 @@ export function createAgentChatService(args: {
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES = 2_000_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS = 32;
+  // Path selection has at most three candidates; the selected path can also
+  // be parsed at a smaller client hydration window. Retain that working set
+  // without allowing arbitrary caller budgets to grow the cache indefinitely.
+  const CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_ENTRIES_PER_SESSION = 4;
   // Byte budgets alongside the event-count caps above. Individual events are
   // unbounded (multi-MB tool outputs exist in real transcripts), so count caps
   // alone cannot keep a history snapshot under the desktop RPC client's
@@ -6642,12 +6646,26 @@ export function createAgentChatService(args: {
   // Envelopes are immutable once recorded; cache their serialized size so
   // byte-budget trims do not re-stringify multi-MB events on every snapshot.
   const envelopeSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
+  const envelopeByteSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
 
   const estimateEnvelopeChars = (envelope: AgentChatEventEnvelope): number => {
     let size = envelopeSizeCache.get(envelope);
     if (size == null) {
       size = safeJsonChars(envelope);
       envelopeSizeCache.set(envelope, size);
+    }
+    return size;
+  };
+
+  const estimateEnvelopeBytes = (envelope: AgentChatEventEnvelope): number => {
+    let size = envelopeByteSizeCache.get(envelope);
+    if (size == null) {
+      try {
+        size = Buffer.byteLength(JSON.stringify(envelope), "utf8");
+      } catch {
+        size = 2_048;
+      }
+      envelopeByteSizeCache.set(envelope, size);
     }
     return size;
   };
@@ -6945,11 +6963,25 @@ export function createAgentChatService(args: {
     transcriptPath: string;
     size: number;
     mtimeMs: number;
+    maxBytes: number;
     truncated: boolean;
     /** Byte offset (line start) where the cached tail window begins; 0 when not truncated. */
     startOffset: number;
+    /** Logical transcript end offset (decompressed bytes for gzip files). */
+    endOffset: number;
     hasCapNotice: boolean;
     envelopes: AgentChatEventEnvelope[];
+    /**
+     * Cursor metadata keyed by the parsed envelope object itself. Values are
+     * null only when a custom/legacy parser produced an envelope that could
+     * not be aligned with a physical JSONL line.
+     *
+     * Keeping this index on the immutable cached envelopes avoids retaining a
+     * second payload-sized JSON.stringify(event) for every row. Object identity
+     * also distinguishes byte-for-byte duplicate rows without occurrence
+     * counters or per-request copies of offset arrays.
+     */
+    envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
   };
   const transcriptHistoryCacheBySession = new Map<string, Map<string, TranscriptHistoryCacheEntry>>();
   type TranscriptSubagentSnapshotCacheEntry = {
@@ -6971,7 +7003,14 @@ export function createAgentChatService(args: {
     entry: TranscriptHistoryCacheEntry,
   ): void => {
     const sessionEntries = transcriptHistoryCacheBySession.get(sessionId) ?? new Map<string, TranscriptHistoryCacheEntry>();
-    sessionEntries.set(entry.transcriptPath, entry);
+    const cacheKey = `${entry.transcriptPath}\0${entry.maxBytes}`;
+    sessionEntries.delete(cacheKey);
+    sessionEntries.set(cacheKey, entry);
+    while (sessionEntries.size > CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_ENTRIES_PER_SESSION) {
+      const oldestKey = sessionEntries.keys().next().value;
+      if (typeof oldestKey !== "string") break;
+      sessionEntries.delete(oldestKey);
+    }
     transcriptHistoryCacheBySession.delete(sessionId);
     transcriptHistoryCacheBySession.set(sessionId, sessionEntries);
     while (transcriptHistoryCacheBySession.size > CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS) {
@@ -8236,11 +8275,12 @@ export function createAgentChatService(args: {
   const readTranscriptTailForHistory = (
     transcriptPath: string,
     stat: fs.Stats,
-  ): { raw: string; truncated: boolean; startOffset: number } => {
+    maxBytes: number,
+  ): { raw: string; truncated: boolean; startOffset: number; endOffset: number } => {
     if (transcriptPath.endsWith(".gz")) {
       const full = readHistoryFileSync(transcriptPath);
       const size = full.length;
-      const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
+      const start = Math.max(0, size - maxBytes);
       let slice = full.subarray(start);
       let startOffset = start;
       if (start > 0 && slice.length > 0) {
@@ -8256,16 +8296,17 @@ export function createAgentChatService(args: {
         raw: slice.toString("utf8"),
         truncated: start > 0,
         startOffset: start > 0 ? startOffset : 0,
+        endOffset: size,
       };
     }
     const size = stat.size;
-    const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
+    const start = Math.max(0, size - maxBytes);
     // Read one extra byte before the window (when possible) so a window
     // boundary that lands exactly on a line start does not silently drop a
     // complete line: if byte `start - 1` is "\n" the line at `start` is kept.
     const readStart = Math.max(0, start - 1);
     const length = size - readStart;
-    if (length <= 0) return { raw: "", truncated: false, startOffset: 0 };
+    if (length <= 0) return { raw: "", truncated: false, startOffset: 0, endOffset: size };
     const fd = fs.openSync(transcriptPath, "r");
     try {
       const out = Buffer.allocUnsafe(length);
@@ -8289,7 +8330,12 @@ export function createAgentChatService(args: {
           startOffset = start;
         }
       }
-      return { raw: slice.toString("utf8"), truncated, startOffset: truncated ? startOffset : 0 };
+      return {
+        raw: slice.toString("utf8"),
+        truncated,
+        startOffset: truncated ? startOffset : 0,
+        endOffset: size,
+      };
     } finally {
       fs.closeSync(fd);
     }
@@ -8298,38 +8344,86 @@ export function createAgentChatService(args: {
   const parseTranscriptHistoryTail = (
     sessionId: string,
     transcriptPath: string,
-  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number; hasCapNotice: boolean } => {
+    requestedMaxBytes = CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
+  ): {
+    envelopes: AgentChatEventEnvelope[];
+    truncated: boolean;
+    startOffset: number;
+    endOffset: number;
+    hasCapNotice: boolean;
+    envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
+  } => {
     const stat = fs.statSync(transcriptPath);
-    const cached = transcriptHistoryCacheBySession.get(sessionId)?.get(transcriptPath);
+    const maxBytes = Math.max(
+      1_024,
+      Math.min(CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES, Math.floor(requestedMaxBytes)),
+    );
+    const cacheKey = `${transcriptPath}\0${maxBytes}`;
+    const cached = transcriptHistoryCacheBySession.get(sessionId)?.get(cacheKey);
     if (
       cached
       && cached.transcriptPath === transcriptPath
       && cached.size === stat.size
       && cached.mtimeMs === stat.mtimeMs
+      && cached.maxBytes === maxBytes
     ) {
       rememberTranscriptHistoryCache(sessionId, cached);
-      return {
-        envelopes: cached.envelopes.slice(),
-        truncated: cached.truncated,
-        startOffset: cached.startOffset,
-        hasCapNotice: cached.hasCapNotice,
-      };
+      return cached;
     }
 
-    const { raw, truncated, startOffset } = readTranscriptTailForHistory(transcriptPath, stat);
+    const { raw, truncated, startOffset, endOffset } = readTranscriptTailForHistory(
+      transcriptPath,
+      stat,
+      maxBytes,
+    );
     const hasCapNotice = raw.includes(CHAT_TRANSCRIPT_LIMIT_NOTICE.trim());
     const envelopes = parseAgentChatTranscript(raw)
       .filter((entry) => entry.sessionId === sessionId);
-    rememberTranscriptHistoryCache(sessionId, {
+    const physicalEnvelopeStartOffsets: number[] = [];
+    let rawByteOffset = 0;
+    for (const line of raw.split(/(?<=\n)/)) {
+      const lineBytes = Buffer.byteLength(line, "utf8");
+      const trimmedLine = line.trim();
+      if (trimmedLine) {
+        try {
+          const parsed = JSON.parse(trimmedLine) as AgentChatEventEnvelope;
+          if (
+            typeof parsed?.sessionId === "string"
+            && parsed.sessionId.trim() === sessionId
+            && parsed.event
+            && typeof parsed.event === "object"
+          ) {
+            physicalEnvelopeStartOffsets.push(startOffset + rawByteOffset);
+          }
+        } catch {
+          // Legacy/splice-repaired lines remain readable through the canonical
+          // parser. Their cursor safely falls back to the tail window start.
+        }
+      }
+      rawByteOffset += lineBytes;
+    }
+    const envelopeStartOffsetByIdentity = new WeakMap<AgentChatEventEnvelope, number | null>();
+    const offsetsAlignWithParsedEnvelopes = physicalEnvelopeStartOffsets.length === envelopes.length;
+    for (let index = 0; index < envelopes.length; index += 1) {
+      envelopeStartOffsetByIdentity.set(
+        envelopes[index]!,
+        offsetsAlignWithParsedEnvelopes ? physicalEnvelopeStartOffsets[index]! : null,
+      );
+    }
+    const entry: TranscriptHistoryCacheEntry = {
       transcriptPath,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
+      maxBytes,
       truncated,
       startOffset,
+      endOffset,
       hasCapNotice,
       envelopes,
-    });
-    return { envelopes: envelopes.slice(), truncated, startOffset, hasCapNotice };
+      envelopeStartOffsetByIdentity,
+    };
+    rememberTranscriptHistoryCache(sessionId, entry);
+    return entry;
   };
 
   const transcriptPathCandidatesForSessionId = (
@@ -8342,6 +8436,22 @@ export function createAgentChatService(args: {
       path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
     ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
     return [...new Set(candidates)];
+  };
+
+  const readTranscriptHistoryCandidateMetadata = (
+    sessionId: string,
+    transcriptPath: string,
+  ): { endOffset: number; envelopeCount: number; hasCapNotice: boolean } => {
+    const cachedWindow = parseTranscriptHistoryTail(
+      sessionId,
+      transcriptPath,
+      CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
+    );
+    return {
+      endOffset: cachedWindow.endOffset,
+      envelopeCount: cachedWindow.envelopes.length,
+      hasCapNotice: cachedWindow.hasCapNotice,
+    };
   };
 
   const resolveBestTranscriptPathForSessionId = (
@@ -8377,13 +8487,19 @@ export function createAgentChatService(args: {
         if (!transcriptPath) continue;
         const stat = fs.statSync(transcriptPath);
         if (!stat.isFile()) continue;
-        const parsed = parseTranscriptHistoryTail(sessionId, transcriptPath);
+        // Transcript identity must not depend on the response byte budget.
+        // Snapshot cursors are raw offsets into this selected file, and older
+        // history pages resolve the path again without carrying an opaque path
+        // token. Rank every caller's candidates through the same fixed window
+        // so a small web hydration and a later page cannot address different
+        // legacy/durable transcripts.
+        const metadata = readTranscriptHistoryCandidateMetadata(sessionId, transcriptPath);
         const candidate: Candidate = {
           path: transcriptPath,
-          size: transcriptPath.endsWith(".gz") ? readHistoryFileSync(transcriptPath).length : stat.size,
+          size: metadata.endOffset,
           mtimeMs: stat.mtimeMs,
-          envelopeCount: parsed.envelopes.length,
-          hasCapNotice: parsed.hasCapNotice,
+          envelopeCount: metadata.envelopeCount,
+          hasCapNotice: metadata.hasCapNotice,
         };
         if (!best || isBetterCandidate(candidate, best)) {
           best = candidate;
@@ -8400,17 +8516,36 @@ export function createAgentChatService(args: {
   // in-memory ring buffer without allocating huge historical transcripts.
   const readTranscriptEnvelopesForSessionId = (
     sessionId: string,
-  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number } => {
+    maxBytes = CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
+  ): {
+    envelopes: AgentChatEventEnvelope[];
+    truncated: boolean;
+    startOffset: number;
+    endOffset: number;
+    envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
+  } => {
     const managed = managedSessions.get(sessionId);
     const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managed);
     if (transcriptPath) {
       try {
-        return parseTranscriptHistoryTail(sessionId, transcriptPath);
+        return parseTranscriptHistoryTail(sessionId, transcriptPath, maxBytes);
       } catch {
-        return { envelopes: [], truncated: false, startOffset: 0 };
+        return {
+          envelopes: [],
+          truncated: false,
+          startOffset: 0,
+          endOffset: 0,
+          envelopeStartOffsetByIdentity: new WeakMap(),
+        };
       }
     }
-    return { envelopes: [], truncated: false, startOffset: 0 };
+    return {
+      envelopes: [],
+      truncated: false,
+      startOffset: 0,
+      endOffset: 0,
+      envelopeStartOffsetByIdentity: new WeakMap(),
+    };
   };
 
   // Resolve the best on-disk transcript path for a session the same
@@ -8624,7 +8759,10 @@ export function createAgentChatService(args: {
     // transcript is the durable source for project/tab switch recovery, while
     // the buffer contributes events that fs.appendFile may not have flushed yet.
     const bufferExisting = eventHistoryBySession.get(trimmedId) ?? [];
-    const transcriptHistory = readTranscriptEnvelopesForSessionId(trimmedId);
+    const transcriptHistory = readTranscriptEnvelopesForSessionId(
+      trimmedId,
+      requestedMaxBytes == null ? CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES : responseMaxChars,
+    );
     let merged = mergeEnvelopeStreams(transcriptHistory.envelopes, bufferExisting);
     const mergedLengthBeforeResponseCap = merged.length;
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
@@ -8638,20 +8776,40 @@ export function createAgentChatService(args: {
     const countWindowed = parentVisibleLength > maxEvents
       ? parentVisibleMerged.slice(-maxEvents)
       : parentVisibleMerged;
-    // Backstop byte budget so the serialized snapshot always fits one RPC
-    // message. The ring and transcript-tail budgets keep snapshots well under
-    // it, so it only trims when a single envelope dwarfs both (>~6 MB); such
-    // trimmed events sit AFTER tailStartOffset and are not reachable through
-    // getChatEventHistoryPage (which pages strictly older) — an accepted
-    // seam, the alternative being a response the client must discard.
-    const windowed = trimEnvelopesToByteBudget(countWindowed, responseMaxChars, {
-      keepOversizeNewest: requestedMaxBytes == null,
-    });
+    // Desktop keeps its historical character-budget behavior. A caller that
+    // explicitly requests maxBytes gets a strict UTF-8 byte budget, including
+    // live ring events that have not reached the transcript file yet.
+    const windowed = requestedMaxBytes == null
+      ? trimEnvelopesToByteBudget(countWindowed, responseMaxChars)
+      : keepNewestWithinCharBudget(countWindowed, responseMaxChars, estimateEnvelopeBytes, {
+        keepOversizeNewest: false,
+      });
     const windowTruncated =
       mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
       || parentVisibleLength > maxEvents
       || windowed.length < countWindowed.length;
     const truncated = transcriptTruncated || windowTruncated;
+    let firstReturnedTranscriptOffset: number | null = null;
+    let returnedTranscriptEvent = false;
+    for (const envelope of windowed) {
+      if (!transcriptHistory.envelopeStartOffsetByIdentity.has(envelope)) continue;
+      returnedTranscriptEvent = true;
+      const offset = transcriptHistory.envelopeStartOffsetByIdentity.get(envelope);
+      if (offset != null) {
+        firstReturnedTranscriptOffset = offset;
+        break;
+      }
+    }
+    let tailStartOffset: number | null = null;
+    if (firstReturnedTranscriptOffset != null) {
+      tailStartOffset = firstReturnedTranscriptOffset > 0 ? firstReturnedTranscriptOffset : null;
+    } else if (transcriptHistory.endOffset > 0 && (truncated || !returnedTranscriptEvent)) {
+      // A legacy/repaired transcript line may not have a direct JSONL offset,
+      // and a snapshot can consist solely of not-yet-flushed ring events. Page
+      // from the current transcript end in those cases: it may overlap already
+      // returned events, but it can never skip persisted history.
+      tailStartOffset = transcriptHistory.endOffset;
+    }
     return {
       sessionId: trimmedId,
       events: windowed,
@@ -8659,10 +8817,10 @@ export function createAgentChatService(args: {
       transcriptTruncated,
       windowTruncated,
       sessionFound: true,
-      // Pagination cursor: the byte offset (line start) where the hydrated
-      // transcript tail began. Null when the transcript was fully hydrated
-      // (or absent) — i.e. there is nothing older on disk to page through.
-      tailStartOffset: transcriptTruncated ? transcriptHistory.startOffset : null,
+      // Exact byte offset of the first persisted event in this response. When
+      // response caps remove rows inside the raw tail window, older pagination
+      // resumes at that event instead of the original window boundary.
+      tailStartOffset,
     };
   };
 
@@ -26961,14 +27119,14 @@ export function createAgentChatService(args: {
   const crossMachineHandoffRecordKey = (handoffId: string): string =>
     `agent-chat-cross-machine-handoff:v1:${handoffId}`;
 
-  const destinationGitEnv = (): NodeJS.ProcessEnv => {
+  const destinationGitEnv = async (): Promise<NodeJS.ProcessEnv> => {
     const env: NodeJS.ProcessEnv = {
       GIT_TERMINAL_PROMPT: "0",
       GCM_INTERACTIVE: "Never",
     };
     let token = "";
     try {
-      token = getLocalGitHubToken?.()?.trim() ?? "";
+      token = (await getLocalGitHubToken?.())?.trim() ?? "";
     } catch {
       // A destination credential helper may still authorize Git. Keep prompts
       // disabled so a headless handoff fails clearly instead of hanging.
@@ -27708,7 +27866,7 @@ export function createAgentChatService(args: {
       const remote = await runGit(["ls-remote", "--heads", "origin", `refs/heads/${branchRef}`], {
         cwd: projectRoot,
         timeoutMs: 30_000,
-        env: destinationGitEnv(),
+        env: await destinationGitEnv(),
       });
       if (remote.exitCode !== 0) {
         blockingErrors.push(`The destination cannot read origin: ${remote.stderr.trim() || "check Git credentials and network access."}`);
@@ -28089,7 +28247,7 @@ export function createAgentChatService(args: {
       const fetch = await runGit(["fetch", "origin", `refs/heads/${branchRef}:refs/remotes/origin/${branchRef}`], {
         cwd: projectRoot,
         timeoutMs: 60_000,
-        env: destinationGitEnv(),
+        env: await destinationGitEnv(),
       });
       if (fetch.exitCode !== 0) {
         throw new Error(`The destination could not fetch '${branchRef}': ${fetch.stderr.trim() || "unknown Git error"}`);

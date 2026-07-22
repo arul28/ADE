@@ -80,6 +80,11 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     terminalSubscriptions.clear();
   });
 
+  infra.addDispose(events.on("projectBoundary", () => {
+    for (const unsubscribe of terminalSubscriptions.values()) unsubscribe();
+    terminalSubscriptions.clear();
+  }));
+
   infra.addDispose(
     events.on("sessionsInvalidated", () => {
       events.emit("sessionsChanged", {

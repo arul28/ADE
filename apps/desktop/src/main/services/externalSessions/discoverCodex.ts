@@ -23,6 +23,16 @@ import {
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import type {
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexSandbox,
+  AgentChatPermissionMode,
+  TerminalResumeLaunchConfig,
+} from "../../../shared/types";
+
+const CODEX_LAUNCH_BACKWARD_SCAN_CHUNK_BYTES = 256 * 1024;
+const CODEX_LAUNCH_BACKWARD_SCAN_MAX_BYTES = 64 * 1024 * 1024;
+const CODEX_LAUNCH_BACKWARD_SCAN_MAX_LINE_BYTES = 1024 * 1024;
 
 type CodexIndexEntry = {
   id: string;
@@ -203,6 +213,174 @@ function firstCodexUserText(records: unknown[]): string | null {
     : firstUserTextFromRecords(records);
 }
 
+function codexApprovalPolicy(payload: Record<string, unknown>): AgentChatCodexApprovalPolicy | null {
+  const value = (
+    asString(payload.approval_policy)
+    ?? asString(payload.approvalPolicy)
+    ?? ""
+  ).toLowerCase();
+  if (value === "untrusted" || value === "on-request" || value === "on-failure" || value === "never") {
+    return value;
+  }
+  return null;
+}
+
+function codexSandbox(payload: Record<string, unknown>): AgentChatCodexSandbox | null {
+  const sandbox = asRecord(payload.sandbox_policy) ?? asRecord(payload.sandboxPolicy);
+  const value = (
+    asString(sandbox?.type)
+    ?? asString(payload.sandbox_mode)
+    ?? asString(payload.sandboxMode)
+    ?? ""
+  ).toLowerCase();
+  if (value === "read-only" || value === "workspace-write" || value === "danger-full-access") {
+    return value;
+  }
+  return null;
+}
+
+function codexPermissionMode(
+  approvalPolicy: AgentChatCodexApprovalPolicy | null,
+  sandbox: AgentChatCodexSandbox | null,
+): AgentChatPermissionMode | null {
+  if (approvalPolicy === "never" && sandbox === "danger-full-access") return "full-auto";
+  if (approvalPolicy === "untrusted" && sandbox === "workspace-write") return "edit";
+  if (approvalPolicy === "on-request" && sandbox === "workspace-write") return "default";
+  if (approvalPolicy === "on-request" && sandbox === "read-only") return "plan";
+  return null;
+}
+
+function codexLaunchFromRecords(records: unknown[]): TerminalResumeLaunchConfig | null {
+  let launch: TerminalResumeLaunchConfig | null = null;
+  for (const item of records) {
+    const record = asRecord(item);
+    if (asString(record?.type)?.toLowerCase() !== "turn_context") continue;
+    const payload = asRecord(record?.payload);
+    if (!payload) continue;
+    const model = asString(payload.model) ?? asString(payload.model_id) ?? asString(payload.modelId);
+    const reasoningEffort = asString(payload.effort)
+      ?? asString(payload.reasoning_effort)
+      ?? asString(payload.reasoningEffort);
+    const approvalPolicy = codexApprovalPolicy(payload);
+    const sandbox = codexSandbox(payload);
+    const permissionMode = codexPermissionMode(approvalPolicy, sandbox);
+    const serviceTier = (asString(payload.service_tier) ?? asString(payload.serviceTier) ?? "").toLowerCase();
+    const next: TerminalResumeLaunchConfig = {
+      ...(model ? { model } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(permissionMode ? { permissionMode } : {}),
+      ...(approvalPolicy ? { codexApprovalPolicy: approvalPolicy } : {}),
+      ...(sandbox ? { codexSandbox: sandbox } : {}),
+      ...(approvalPolicy && sandbox ? { codexConfigSource: "flags" as const } : {}),
+      ...(serviceTier === "fast" ? { fastMode: true } : {}),
+      ...(serviceTier === "default" || serviceTier === "standard" ? { fastMode: false } : {}),
+      ...(serviceTier && serviceTier !== "fast" && serviceTier !== "default" && serviceTier !== "standard"
+        ? { fastMode: null }
+        : {}),
+    };
+    if (Object.keys(next).length) launch = { ...(launch ?? {}), ...next };
+  }
+  return launch;
+}
+
+async function latestCodexLaunchFromFile(
+  filePath: string,
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): Promise<TerminalResumeLaunchConfig | null> {
+  let handle: fs.promises.FileHandle | null = null;
+  let launch: TerminalResumeLaunchConfig | null = null;
+  try {
+    handle = await fs.promises.open(filePath, "r");
+    const stat = await handle.stat();
+    let position = stat.size;
+    let bytesScanned = 0;
+    let partialLeadingLine = Buffer.alloc(0);
+    while (position > 0 && bytesScanned < CODEX_LAUNCH_BACKWARD_SCAN_MAX_BYTES) {
+      const bytesToRead = Math.min(
+        CODEX_LAUNCH_BACKWARD_SCAN_CHUNK_BYTES,
+        position,
+        CODEX_LAUNCH_BACKWARD_SCAN_MAX_BYTES - bytesScanned,
+      );
+      const start = position - bytesToRead;
+      const chunk = Buffer.allocUnsafe(bytesToRead);
+      const { bytesRead } = await handle.read(chunk, 0, bytesToRead, start);
+      if (bytesRead <= 0) break;
+      const combined = Buffer.concat([chunk.subarray(0, bytesRead), partialLeadingLine]);
+      let completeStart = 0;
+      if (start > 0) {
+        const firstNewline = combined.indexOf(0x0a);
+        if (firstNewline < 0) {
+          // turn_context rows are tiny. Do not repeatedly concatenate an
+          // unbounded tool-output row while walking backwards through a large
+          // rollout; once its fragment exceeds this cap, discard that row and
+          // keep searching for the preceding newline/context.
+          partialLeadingLine = combined.length <= CODEX_LAUNCH_BACKWARD_SCAN_MAX_LINE_BYTES
+            ? combined
+            : Buffer.alloc(0);
+          position = start;
+          bytesScanned += bytesRead;
+          continue;
+        }
+        partialLeadingLine = Buffer.from(combined.subarray(0, firstNewline));
+        completeStart = firstNewline + 1;
+      } else {
+        partialLeadingLine = Buffer.alloc(0);
+      }
+      const lines = combined.subarray(completeStart).toString("utf8").split(/\r?\n/u);
+      for (let index = lines.length - 1; index >= 0; index -= 1) {
+        const line = lines[index];
+        if (!line?.includes("turn_context")) continue;
+        const record = safeParseJson(line);
+        const olderLaunch = record ? codexLaunchFromRecords([record]) : null;
+        if (!olderLaunch) continue;
+        // Records are visited newest-first. Fill fields omitted by a partial
+        // newest context from the prior context without overwriting newer data.
+        launch = { ...olderLaunch, ...(launch ?? {}) };
+        if (
+          launch.model?.trim()
+          && launch.reasoningEffort?.trim()
+          && launch.codexApprovalPolicy
+          && launch.codexSandbox
+        ) return launch;
+      }
+      position = start;
+      bytesScanned += bytesRead;
+    }
+    if (position > 0) {
+      logger?.warn?.("external_sessions.codex_launch_scan_truncated", {
+        filePath,
+        bytesScanned,
+        fileSize: stat.size,
+      });
+    }
+    return launch;
+  } catch {
+    return launch;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function codexLaunchForFile(
+  filePath: string,
+  prefixRecords: unknown[],
+  exactLookup: boolean,
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): Promise<TerminalResumeLaunchConfig | null> {
+  const prefixLaunch = codexLaunchFromRecords(prefixRecords);
+  if (!exactLookup) return prefixLaunch;
+  const latestLaunch = await latestCodexLaunchFromFile(filePath, logger);
+  if (latestLaunch) return latestLaunch;
+  if (!prefixLaunch) return null;
+  const fallback: TerminalResumeLaunchConfig = {
+    ...(prefixLaunch.model !== undefined ? { model: prefixLaunch.model } : {}),
+    ...(prefixLaunch.reasoningEffort !== undefined ? { reasoningEffort: prefixLaunch.reasoningEffort } : {}),
+    ...(prefixLaunch.fastMode !== undefined ? { fastMode: prefixLaunch.fastMode } : {}),
+    ...(prefixLaunch.codexFastMode !== undefined ? { codexFastMode: prefixLaunch.codexFastMode } : {}),
+  };
+  return Object.keys(fallback).length ? fallback : null;
+}
+
 function collectProjectScopedCodexSessionCandidates(
   root: string,
   limit: number,
@@ -330,6 +508,7 @@ export async function discoverCodexSessions(
     const indexed = index.get(id);
     const firstUserText = firstCodexUserText(jsonl);
     const title = candidate.meta?.title ?? titleFromCodexPayload(payload, indexed);
+    const launch = await codexLaunchForFile(filePath, jsonl, lookupId != null, args.logger);
     recordsById.set(id, recordWithFile({
       provider: "codex",
       id,
@@ -339,6 +518,7 @@ export async function discoverCodexSessions(
       createdAt: candidate.meta?.createdAt ?? asEpochMs(payload.timestamp) ?? asEpochMs(first?.timestamp),
       updatedAt: Math.max(indexed?.updatedAt ?? 0, candidate.mtimeMs),
       messageCount: countJsonlUserMessagesCheap(filePath, "codex"),
+      launch,
       filePath,
       sourceMtimeMs: candidate.mtimeMs,
     }));

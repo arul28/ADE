@@ -100,9 +100,16 @@ entry, while the all-time token breakdown includes it.
 
 SQLite reconciliation is bounded too: observed-thread lookups use batches of
 500, detailed state rows are capped at 250,000 and by remaining entry capacity,
-and the production scanner remains single-flight. This keeps Activity useful on
-large Codex histories without putting live Limits refreshes or the ADE runtime
-behind an unbounded disk/memory pass.
+and the production scanner remains single-flight. History aggregation runs in a
+separate process, so filesystem and SQLite work cannot stall the desktop or
+headless runtime event loop while terminals, project switching, and remote sync
+remain active. Packaged desktop and ordinary CLI builds ship the worker as
+`usageLedgerWorker.cjs`; the static ADE runtime invokes the same worker through
+its hidden embedded entrypoint because a single-executable build cannot load a
+sidecar. Desktop packaging validation derives its required ADE CLI payload from
+`build.extraResources`, so a newly built worker cannot be omitted silently.
+This keeps Activity useful on large Codex histories without putting live Limits
+refreshes or the ADE runtime behind an unbounded disk/memory pass.
 
 ## Claude credential hygiene (refresh storms)
 

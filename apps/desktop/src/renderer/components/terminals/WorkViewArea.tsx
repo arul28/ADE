@@ -14,6 +14,7 @@ import type {
   LaneLinearIssue,
   LaneSummary,
   TerminalResumeProvider,
+  TerminalResumeLaunchConfig,
   TerminalSessionSummary,
   TerminalSnapshotCell,
   TerminalSnapshotRow,
@@ -44,7 +45,13 @@ import { useChatPrAutoPop } from "../chat/useChatPrAutoPop";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, formatToolTypeLabel } from "../../lib/sessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
-import { launchProfileForTerminalSession, type WorkPtyLaunchArgs, type WorkPtyLaunchResult } from "./cliLaunch";
+import {
+  launchProfileForTerminalSession,
+  mergeContinuationLaunch,
+  recoverImportedContinuationLaunch,
+  type WorkPtyLaunchArgs,
+  type WorkPtyLaunchResult,
+} from "./cliLaunch";
 import type { ExternalSessionImportResult, ExternalSessionSummary } from "./importSessions/contract";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -305,21 +312,59 @@ function continuationProviderLabel(provider: TerminalResumeProvider | null): str
   return "agent CLI";
 }
 
+function continuationPermissionLabel(launch: TerminalResumeLaunchConfig | null): string | null {
+  if (launch?.codexApprovalPolicy === "on-request") return "Ask first";
+  if (launch?.codexApprovalPolicy === "on-failure") return "On failure";
+  if (launch?.codexApprovalPolicy === "untrusted") return "Restricted";
+  if (launch?.codexApprovalPolicy === "never" && launch.codexSandbox === "danger-full-access") return "Full access";
+  const mode = launch?.permissionMode;
+  if (mode === "full-auto") return "Full access";
+  if (mode === "plan") return "Plan";
+  if (mode === "edit") return "Edit";
+  if (mode === "auto") return "Auto";
+  if (mode === "config-toml") return "Config";
+  if (mode === "default") return "Default";
+  return null;
+}
+
 function WorkCliContinuationComposer({
   session,
   onContinue,
 }: {
   session: TerminalSessionSummary;
-  onContinue?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
+  onContinue?: (
+    session: TerminalSessionSummary,
+    text: string,
+    launch: TerminalResumeLaunchConfig | null,
+  ) => Promise<void> | void;
 }) {
   const provider = continuationProviderForSession(session);
   const providerLabel = continuationProviderLabel(provider);
   // Mirror the active chat composer's model pill: resolve the model the session was
   // launched with (recorded on its resume metadata) so we show the same glyph + name.
-  const modelId = session.resumeMetadata?.launch?.model?.trim() || null;
+  const storedLaunch = session.resumeMetadata?.launch ?? null;
+  const importedProvider = session.resumeMetadata?.importedFrom?.provider ?? null;
+  const importedTargetId = session.resumeMetadata?.importedFrom?.targetId?.trim() || "";
+  const storedLaunchFingerprint = JSON.stringify([
+    storedLaunch?.model ?? null,
+    storedLaunch?.reasoningEffort ?? null,
+    storedLaunch?.fastMode ?? null,
+    storedLaunch?.codexFastMode ?? null,
+    storedLaunch?.permissionMode ?? null,
+    storedLaunch?.codexApprovalPolicy ?? null,
+    storedLaunch?.codexSandbox ?? null,
+    storedLaunch?.codexConfigSource ?? null,
+  ]);
+  const storedLaunchRef = useRef(storedLaunch);
+  storedLaunchRef.current = storedLaunch;
+  const recoveryIdentity = `${session.id}:${provider ?? ""}:${importedProvider ?? ""}:${importedTargetId}:${storedLaunchFingerprint}`;
+  const appliedRecoveryIdentityRef = useRef<string | null>(null);
+  const [resolvedLaunch, setResolvedLaunch] = useState<TerminalResumeLaunchConfig | null>(storedLaunch);
+  const modelId = resolvedLaunch?.model?.trim() || null;
   const modelDescriptor = modelId
     ? (resolveModelDescriptorWithRuntimeCatalog(modelId) ?? createUnknownModelPlaceholder(modelId))
     : null;
+  const permissionLabel = continuationPermissionLabel(resolvedLaunch);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
   const [draft, setDraft] = useState("");
@@ -329,6 +374,40 @@ function WorkCliContinuationComposer({
   const [sending, setSending] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const launchPromptClipboardEnabled = useAppStore((s) => s.launchPromptClipboardEnabled);
+
+  useEffect(() => {
+    let cancelled = false;
+    const currentStoredLaunch = storedLaunchRef.current;
+    if (appliedRecoveryIdentityRef.current !== recoveryIdentity) {
+      appliedRecoveryIdentityRef.current = recoveryIdentity;
+      setResolvedLaunch(currentStoredLaunch);
+    }
+    // Historical imports often stored only one launch field (or an empty
+    // object), so the presence of a permission or fast-mode value must not
+    // prevent recovery of the model and reasoning effort.
+    if (provider !== "codex" || (
+      currentStoredLaunch?.model?.trim()
+      && currentStoredLaunch?.reasoningEffort?.trim()
+      && (currentStoredLaunch?.permissionMode || (
+        currentStoredLaunch?.codexApprovalPolicy && currentStoredLaunch?.codexSandbox
+      ))
+    )) return () => {
+      cancelled = true;
+    };
+    const request = recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId);
+    if (!request) return () => {
+      cancelled = true;
+    };
+    void request.then((launch) => {
+      if (!cancelled && launch) setResolvedLaunch(mergeContinuationLaunch(launch, currentStoredLaunch));
+    }).catch(() => {
+      // The native provider transcript may have moved or been compressed.
+      // Continuing still uses the durable stored resume command.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [importedProvider, importedTargetId, provider, recoveryIdentity]);
 
   useEffect(() => {
     let cancelled = false;
@@ -395,7 +474,7 @@ function WorkCliContinuationComposer({
       if (launchPromptClipboardEnabled) {
         void copyLaunchPromptToClipboard(text);
       }
-      await onContinue?.(session, text);
+      await onContinue?.(session, text, resolvedLaunch);
       setDraft("");
       setCommandMenuTrigger(null);
     } catch (err) {
@@ -403,7 +482,7 @@ function WorkCliContinuationComposer({
     } finally {
       setSending(false);
     }
-  }, [draft, launchPromptClipboardEnabled, onContinue, sending, session]);
+  }, [draft, launchPromptClipboardEnabled, onContinue, resolvedLaunch, sending, session]);
 
   // Auto-grow from a single-line height (matches the active chat composer): start
   // thin and expand with the draft, capped so the transcript above keeps the room.
@@ -421,21 +500,38 @@ function WorkCliContinuationComposer({
         className="mx-auto w-full max-w-[var(--chat-column,46rem)]"
         footer={(
           <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
-            {modelDescriptor ? (
-              <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11px] text-fg/80">
-                <ModelRowLogo
-                  modelFamily={modelDescriptor.family}
-                  cliCommand={modelDescriptor.cliCommand}
-                  modelId={modelDescriptor.id}
-                  providerModelId={modelDescriptor.providerModelId}
-                  size={13}
-                  className="shrink-0"
-                />
-                <span className="min-w-0 truncate font-medium leading-none">{modelDescriptor.displayName}</span>
-              </span>
-            ) : (
-              <span className="min-w-0 shrink truncate px-1 text-[11px] font-medium text-fg/70">{providerLabel}</span>
-            )}
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+              {modelDescriptor ? (
+                <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11px] text-fg/80">
+                  <ModelRowLogo
+                    modelFamily={modelDescriptor.family}
+                    cliCommand={modelDescriptor.cliCommand}
+                    modelId={modelDescriptor.id}
+                    providerModelId={modelDescriptor.providerModelId}
+                    size={13}
+                    className="shrink-0"
+                  />
+                  <span className="min-w-0 truncate font-medium leading-none">{modelDescriptor.displayName}</span>
+                </span>
+              ) : (
+                <span className="min-w-0 shrink truncate px-1 text-[11px] font-medium text-fg/70">{providerLabel}</span>
+              )}
+              {resolvedLaunch?.reasoningEffort ? (
+                <span className="rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-1 text-[10px] font-semibold uppercase text-fg/65">
+                  {resolvedLaunch.reasoningEffort}
+                </span>
+              ) : null}
+              {(resolvedLaunch?.fastMode ?? resolvedLaunch?.codexFastMode) ? (
+                <span className="rounded-md border border-amber-300/15 bg-amber-500/[0.06] px-1.5 py-1 text-[10px] font-semibold text-amber-100/80">
+                  Fast
+                </span>
+              ) : null}
+              {permissionLabel ? (
+                <span className="rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-1 text-[10px] text-fg/60">
+                  {permissionLabel}
+                </span>
+              ) : null}
+            </div>
             <button
               type="button"
               disabled={sending || !draft.trim()}
@@ -514,7 +610,11 @@ function ClosedCliSessionSurface({
   layoutVariant: "standard" | "grid-tile";
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
-  onContinue?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
+  onContinue?: (
+    session: TerminalSessionSummary,
+    text: string,
+    launch: TerminalResumeLaunchConfig | null,
+  ) => Promise<void> | void;
   onResume?: (session: TerminalSessionSummary) => Promise<void> | void;
   onToggleSessionsPane?: () => void;
   sessionsPaneCollapsed?: boolean;
@@ -765,7 +865,11 @@ function SessionSurface({
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
   stopping?: boolean;
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
-  onContinueCliSession?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
+  onContinueCliSession?: (
+    session: TerminalSessionSummary,
+    text: string,
+    launch: TerminalResumeLaunchConfig | null,
+  ) => Promise<void> | void;
   onResumeCliSession?: (session: TerminalSessionSummary) => Promise<void> | void;
   /** Far-left session-list expander (per-surface header now owns it). */
   onToggleSessionsPane?: () => void;
@@ -1039,7 +1143,11 @@ export function WorkViewArea({
   onShowDraftKind: (kind: WorkDraftKind) => void;
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
-  onContinueCliSession?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
+  onContinueCliSession?: (
+    session: TerminalSessionSummary,
+    text: string,
+    launch: TerminalResumeLaunchConfig | null,
+  ) => Promise<void> | void;
   onResumeCliSession?: (session: TerminalSessionSummary) => Promise<void> | void;
   onGoToLane?: (laneId: string) => void;
   /** Whether the work sessions list pane is collapsed. */

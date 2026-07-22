@@ -153,6 +153,7 @@ class FakeD1Database {
   run(sql: string, values: unknown[]): number {
     const normalized = sql.toLowerCase();
     if (normalized.includes("insert into machines")) {
+      const retainRelayEndpoints = values[10] === 1;
       const row: StoredMachine = {
         user_id: String(values[0]),
         machine_key: String(values[1]),
@@ -169,6 +170,21 @@ class FakeD1Database {
         entry.user_id === row.user_id && entry.machine_key === row.machine_key
       );
       if (existing) {
+        if (retainRelayEndpoints) {
+          const nextEndpoints = JSON.parse(row.reachable_endpoints ?? "[]") as Array<{ kind?: string }>;
+          const existingRelayEndpoints = (
+            JSON.parse(existing.reachable_endpoints ?? "[]") as Array<{ kind?: string }>
+          ).filter((endpoint) => endpoint.kind === "relay");
+          if (
+            !nextEndpoints.some((endpoint) => endpoint.kind === "relay")
+            && existingRelayEndpoints.length > 0
+          ) {
+            row.reachable_endpoints = JSON.stringify([
+              ...nextEndpoints,
+              ...existingRelayEndpoints,
+            ]);
+          }
+        }
         Object.assign(existing, row, { created_at: existing.created_at });
       } else {
         this.rows.push(row);
@@ -428,6 +444,13 @@ function registerBody(machineKey: string, endpoints: unknown = [{ kind: "lan", h
     deviceType: "desktop",
     pubkey: `pubkey-${machineKey}`,
     reachableEndpoints: endpoints,
+  };
+}
+
+function registrationWithRelayRetention(machineKey: string, endpoints: unknown) {
+  return {
+    ...registerBody(machineKey, endpoints),
+    retainRelayEndpoints: true,
   };
 }
 
@@ -1029,6 +1052,95 @@ describe("machine directory", () => {
 
     const otherUserList = await handleRequest(request("GET", "/account/machines", secondToken), env);
     expect(await otherUserList.json()).toEqual({ machines: [] });
+  });
+
+  it("retains the authenticated machine's verified Relay route during a transient health dip", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    const relayEndpoint = { kind: "relay", url: "wss://relay.test/machine-a" };
+    await register(env, token, "machine-a", [
+      { kind: "lan", host: "old.local", port: 8787 },
+      relayEndpoint,
+    ]);
+
+    const transient = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      registrationWithRelayRetention("machine-a", [
+        { kind: "lan", host: "new.local", port: 8787 },
+      ]),
+    ), env);
+
+    expect(transient.status).toBe(200);
+    expect(await transient.json()).toEqual(expect.objectContaining({
+      machineKey: "machine-a",
+      reachableEndpoints: [
+        { kind: "lan", host: "new.local", port: 8787 },
+        relayEndpoint,
+      ],
+    }));
+  });
+
+  it("never retains Relay routes across owners, deletion, or an authoritative replacement", async () => {
+    const env = makeEnv();
+    const firstToken = await mintToken({ sub: "user_1" });
+    const secondToken = await mintToken({ sub: "user_2" });
+    const relayEndpoint = { kind: "relay", url: "wss://relay.test/shared-machine" };
+    await register(env, firstToken, "shared-machine", [relayEndpoint]);
+
+    const otherOwner = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      secondToken,
+      registrationWithRelayRetention("shared-machine", [
+        { kind: "lan", host: "second.local", port: 8787 },
+      ]),
+    ), env);
+    expect(await otherOwner.json()).toEqual(expect.objectContaining({
+      reachableEndpoints: [{ kind: "lan", host: "second.local", port: 8787 }],
+    }));
+
+    const authoritative = await register(env, firstToken, "shared-machine", [
+      { kind: "lan", host: "first.local", port: 8787 },
+    ]);
+    expect(await authoritative.json()).toEqual(expect.objectContaining({
+      reachableEndpoints: [{ kind: "lan", host: "first.local", port: 8787 }],
+    }));
+
+    await handleRequest(request(
+      "DELETE",
+      "/account/machines/shared-machine",
+      firstToken,
+    ), env);
+    const afterDelete = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      firstToken,
+      registrationWithRelayRetention("shared-machine", [
+        { kind: "lan", host: "after-delete.local", port: 8787 },
+      ]),
+    ), env);
+    expect(await afterDelete.json()).toEqual(expect.objectContaining({
+      reachableEndpoints: [{ kind: "lan", host: "after-delete.local", port: 8787 }],
+    }));
+  });
+
+  it("rejects a non-boolean Relay-retention instruction", async () => {
+    const env = makeEnv();
+    const token = await mintToken();
+    const response = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      {
+        ...registerBody("machine-a"),
+        retainRelayEndpoints: "yes",
+      },
+    ), env);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid request body" });
   });
 
   it("returns online and offline machines, online first and newest first", async () => {

@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
 
 // ---------------------------------------------------------------------------
 // vi.hoisted mock state
@@ -70,6 +71,7 @@ function resetMocks() {
   runGitMock.mockReset();
   delete process.env.GH_TOKEN;
   delete process.env.GITHUB_TOKEN;
+  delete process.env.GH_CONFIG_DIR;
   delete process.env.ADE_GITHUB_TOKEN;
   delete process.env.ADE_GITHUB_RELAY_API_BASE_URL;
   delete process.env.ADE_GITHUB_RELAY_ACCESS_TOKEN;
@@ -115,7 +117,9 @@ class MemoryCredentialStore {
 
 function makeService(options: {
   credentialStore?: MemoryCredentialStore;
-  ghAuthTokenProvider?: () => { token: string | null; ghCliPath: string | null; ghAuthError: string | null };
+  ghAuthTokenProvider?: () =>
+    | { token: string | null; ghCliPath: string | null; ghAuthError: string | null }
+    | Promise<{ token: string | null; ghCliPath: string | null; ghAuthError: string | null }>;
   githubRelaySecretReader?: (ref: string) => string | null;
   getAccountAccessToken?: () => Promise<string | null>;
 } = {}) {
@@ -701,6 +705,222 @@ describe("githubService.getStatus", () => {
     expect(status.connected).toBe(true);
     const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer gho_cli_token");
+  });
+
+  it("reads a cached hosts.yml token synchronously before async status warmup", () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    process.env.GH_CONFIG_DIR = "/tmp/gh-fresh-sync-token";
+    vi.mocked(fs.readFileSync).mockImplementationOnce(((filePath: fs.PathOrFileDescriptor) => {
+      if (String(filePath).endsWith("hosts.yml")) {
+        return "github.com:\n    user: alice\n    oauth_token: gho_hosts_fresh\n";
+      }
+      return Buffer.from("encrypted");
+    }) as typeof fs.readFileSync);
+
+    expect(makeService().getTokenOrThrow()).toBe("gho_hosts_fresh");
+    expect(makeService().getTokenOrThrow()).toBe("gho_hosts_fresh");
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+    delete process.env.GH_CONFIG_DIR;
+  });
+
+  it("does not read or reuse hosts.yml auth when gh fallback is disabled", () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    process.env.GH_CONFIG_DIR = `/tmp/gh-disabled-sync-token-${Date.now()}`;
+    vi.mocked(fs.readFileSync).mockImplementation(((filePath: fs.PathOrFileDescriptor) => {
+      if (String(filePath).endsWith("hosts.yml")) {
+        return "github.com:\n    user: alice\n    oauth_token: gho_hosts_disabled\n";
+      }
+      return Buffer.from("encrypted");
+    }) as typeof fs.readFileSync);
+
+    expect(makeService().getTokenOrThrow()).toBe("gho_hosts_disabled");
+    expect(fs.readFileSync).toHaveBeenCalledTimes(1);
+
+    process.env.ADE_DISABLE_GH_AUTH_FALLBACK = "1";
+    vi.mocked(fs.readFileSync).mockClear();
+
+    expect(() => makeService().getTokenOrThrow()).toThrow("GitHub auth missing");
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+  });
+
+  it("bounds the process-wide hosts.yml token cache", () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const prefix = `/tmp/gh-bounded-token-cache-${Date.now()}`;
+    vi.mocked(fs.readFileSync).mockImplementation(((filePath: fs.PathOrFileDescriptor) => {
+      if (String(filePath).endsWith("hosts.yml")) {
+        return "github.com:\n    user: alice\n    oauth_token: gho_hosts_bounded\n";
+      }
+      return Buffer.from("encrypted");
+    }) as typeof fs.readFileSync);
+
+    for (let index = 0; index <= 32; index += 1) {
+      process.env.GH_CONFIG_DIR = `${prefix}-${index}`;
+      expect(makeService().getTokenOrThrow()).toBe("gho_hosts_bounded");
+    }
+    expect(fs.readFileSync).toHaveBeenCalledTimes(33);
+
+    process.env.GH_CONFIG_DIR = `${prefix}-0`;
+    expect(makeService().getTokenOrThrow()).toBe("gho_hosts_bounded");
+    expect(fs.readFileSync).toHaveBeenCalledTimes(34);
+    delete process.env.GH_CONFIG_DIR;
+  });
+
+  it("awaits keyring-backed gh auth when no synchronous hosts token exists", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    let resolveAuth!: (value: { token: string; ghCliPath: string; ghAuthError: null }) => void;
+    const ghAuthTokenProvider = vi.fn(() => new Promise<{
+      token: string;
+      ghCliPath: string;
+      ghAuthError: null;
+    }>((resolve) => {
+      resolveAuth = resolve;
+    }));
+    const first = makeService({ ghAuthTokenProvider });
+    const second = makeService({ ghAuthTokenProvider });
+
+    const firstToken = first.getTokenOrThrowAsync();
+    const secondToken = second.getTokenOrThrowAsync();
+    await Promise.resolve();
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
+
+    resolveAuth({
+      token: "gho_keyring_token",
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null,
+    });
+    await expect(firstToken).resolves.toBe("gho_keyring_token");
+    await expect(secondToken).resolves.toBe("gho_keyring_token");
+  });
+
+  it("retries transient status failures after a short shared cooldown", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const baseNow = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+    let resolveAuth!: (value: { token: string; ghCliPath: string; ghAuthError: null }) => void;
+    const ghAuthTokenProvider = vi.fn(() => new Promise<{
+      token: string;
+      ghCliPath: string;
+      ghAuthError: null;
+    }>((resolve) => {
+      resolveAuth = resolve;
+    }));
+    mockFetch.mockImplementation(async (input: string | URL) => {
+      if (String(input).endsWith("/user")) {
+        return jsonResponse(200, { login: "alice" });
+      }
+      const timeout = new Error("request timed out");
+      timeout.name = "AbortError";
+      throw timeout;
+    });
+    const first = makeService({ ghAuthTokenProvider });
+    const second = makeService({ ghAuthTokenProvider });
+
+    const firstStatus = first.getStatus();
+    const secondStatus = second.getStatus();
+    await Promise.resolve();
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
+
+    const resolvedAuth = {
+      token: "github_pat_shared_slow_token",
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null as null,
+    };
+    resolveAuth(resolvedAuth);
+    ghAuthTokenProvider.mockResolvedValue(resolvedAuth);
+    const statuses = await Promise.all([firstStatus, secondStatus]);
+    expect(statuses.map((status) => status.repoAccessOk)).toEqual([false, false]);
+    expect(mockFetch).toHaveBeenCalledTimes(2); // one /user + one repo probe total
+
+    now.mockReturnValue(baseNow + 31_000);
+    const third = await makeService({ ghAuthTokenProvider }).getStatus();
+    expect(third.repoAccessOk).toBe(false);
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(4);
+    now.mockRestore();
+  });
+
+  it("does not extend the shared cooldown for an invalid gh token", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const baseNow = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(baseNow);
+    const ghAuthTokenProvider = vi.fn(() => ({
+      token: "gho_invalid_token",
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null,
+    }));
+    mockFetch.mockResolvedValue(jsonResponse(401, { message: "Bad credentials" }));
+
+    const first = await makeService({ ghAuthTokenProvider }).getStatus();
+    expect(first.connected).toBe(false);
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(baseNow + 31_000);
+    const second = await makeService({ ghAuthTokenProvider }).getStatus();
+    expect(second.connected).toBe(false);
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    now.mockRestore();
+  });
+
+  it("does not reuse a project-local status after the shared gh token changes", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    let token = "gho_shared_token_alice";
+    const ghAuthTokenProvider = vi.fn(async () => ({
+      token,
+      ghCliPath: "/opt/homebrew/bin/gh",
+      ghAuthError: null,
+    }));
+    mockFetch.mockImplementation(async (_input: string | URL, init?: RequestInit) => {
+      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+      return jsonResponse(200, {
+        login: authorization.includes("gho_shared_token_bob") ? "bob" : "alice",
+      });
+    });
+    const first = makeService({ ghAuthTokenProvider });
+    const second = makeService({ ghAuthTokenProvider });
+
+    await expect(first.getStatus()).resolves.toMatchObject({ userLogin: "alice" });
+    token = "gho_shared_token_bob";
+    await expect(second.getStatus({ forceRefresh: true })).resolves.toMatchObject({ userLogin: "bob" });
+    await expect(first.getStatus()).resolves.toMatchObject({ userLogin: "bob" });
+
+    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("force-refreshes a hosts.yml token instead of reusing the process cache", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    process.env.GH_CONFIG_DIR = `/tmp/gh-force-refresh-token-${Date.now()}`;
+    let hostsToken = "gho_hosts_alice";
+    vi.mocked(fs.readFileSync).mockImplementation(((filePath: fs.PathOrFileDescriptor) => {
+      if (String(filePath).endsWith("hosts.yml")) {
+        return `github.com:\n    user: alice\n    oauth_token: ${hostsToken}\n`;
+      }
+      return Buffer.from("encrypted");
+    }) as typeof fs.readFileSync);
+    mockFetch.mockImplementation(async (_input: string | URL, init?: RequestInit) => {
+      const authorization = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+      return jsonResponse(
+        200,
+        { login: authorization.includes("gho_hosts_bob") ? "bob" : "alice" },
+        { "x-oauth-scopes": "repo, workflow" },
+      );
+    });
+    const service = makeService();
+
+    await expect(service.getStatus()).resolves.toMatchObject({ userLogin: "alice" });
+    hostsToken = "gho_hosts_bob";
+    await expect(service.getStatus({ forceRefresh: true })).resolves.toMatchObject({ userLogin: "bob" });
+
+    expect(fs.readFileSync).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect((mockFetch.mock.calls[1]?.[1]?.headers as Record<string, string>).authorization)
+      .toBe("Bearer gho_hosts_bob");
   });
 
   it("clearing a stored PAT falls back to gh auth", async () => {

@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  buildPtyContinuationLaunchFields,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeCommand,
   buildTrackedCliStartupCommand,
   buildOpenCodeReplayResumeCommand,
   defaultTrackedCliStartupCommand,
   deriveTrackedCliInitialInputSessionMeta,
+  mergeContinuationLaunch,
   resolveCleanShellLaunchFields,
   resolveTrackedCliResumeCommand,
   withCodexNoAltScreen,
@@ -24,6 +26,208 @@ function withProcessPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
     Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   }
 }
+
+describe("buildPtyContinuationLaunchFields", () => {
+  it("forwards trimmed continuation controls and preserves explicit false fast mode", () => {
+    expect(buildPtyContinuationLaunchFields({
+      model: "  openai/gpt-5.4  ",
+      reasoningEffort: " high ",
+      fastMode: false,
+      codexFastMode: true,
+      permissionMode: "plan",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    })).toEqual({
+      model: "openai/gpt-5.4",
+      reasoningEffort: "high",
+      fastMode: false,
+      permissionMode: "plan",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("uses the legacy fast-mode field and omits empty continuation controls", () => {
+    expect(buildPtyContinuationLaunchFields({
+      model: "  ",
+      reasoningEffort: null,
+      fastMode: null,
+      codexFastMode: true,
+      permissionMode: null,
+      codexApprovalPolicy: null,
+      codexSandbox: null,
+      codexConfigSource: null,
+    })).toEqual({ fastMode: true });
+    expect(buildPtyContinuationLaunchFields(null)).toEqual({});
+  });
+});
+
+describe("mergeContinuationLaunch", () => {
+  it("prefers stored launch choices while filling missing exact controls", () => {
+    expect(mergeContinuationLaunch({
+      model: "recovered-model",
+      reasoningEffort: "high",
+      fastMode: true,
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    }, {
+      model: " stored-model ",
+      reasoningEffort: null,
+      fastMode: false,
+      permissionMode: null,
+      codexApprovalPolicy: null,
+      codexSandbox: null,
+      codexConfigSource: null,
+    })).toMatchObject({
+      model: "stored-model",
+      reasoningEffort: "high",
+      fastMode: false,
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("does not mix recovered granular Codex controls with a stored coarse permission", () => {
+    expect(mergeContinuationLaunch({
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    }, {
+      permissionMode: "full-auto",
+    })).toMatchObject({
+      permissionMode: "full-auto",
+      codexApprovalPolicy: null,
+      codexSandbox: null,
+      codexConfigSource: null,
+    });
+  });
+});
+
+describe("recoverImportedContinuationLaunch", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-22T00:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  async function loadRecoveryWith(
+    list: ReturnType<typeof vi.fn>,
+  ): Promise<typeof import("./cliLaunch").recoverImportedContinuationLaunch> {
+    vi.stubGlobal("window", {
+      ade: {
+        externalSessions: { list },
+      },
+    });
+    const module = await import("./cliLaunch");
+    return module.recoverImportedContinuationLaunch;
+  }
+
+  it("deduplicates concurrent lookups and reuses the result within the TTL", async () => {
+    let resolveLookup!: (sessions: Array<{ id: string; launch: { model: string } }>) => void;
+    const list = vi.fn(() => new Promise<Array<{ id: string; launch: { model: string } }>>((resolve) => {
+      resolveLookup = resolve;
+    }));
+    const recover = await loadRecoveryWith(list);
+
+    const first = recover("codex", "codex", "session-dedup");
+    const concurrent = recover("codex", "codex", "session-dedup");
+    expect(concurrent).toBe(first);
+    expect(list).toHaveBeenCalledTimes(1);
+
+    resolveLookup([{ id: "session-dedup", launch: { model: "gpt-5.6-sol" } }]);
+    await expect(first).resolves.toMatchObject({ model: "gpt-5.6-sol" });
+    vi.advanceTimersByTime(59_999);
+
+    const withinTtl = recover("codex", "codex", "session-dedup");
+    expect(withinTtl).toBe(first);
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts a new lookup after the cached entry expires", async () => {
+    const list = vi.fn(async () => []);
+    const recover = await loadRecoveryWith(list);
+
+    const first = recover("codex", "codex", "session-expired");
+    vi.advanceTimersByTime(60_000);
+    const refreshed = recover("codex", "codex", "session-expired");
+
+    expect(refreshed).not.toBe(first);
+    expect(list).toHaveBeenCalledTimes(2);
+  });
+
+  it("evicts the least-recently-used lookup when the cache reaches its bound", async () => {
+    const list = vi.fn(async ({ sessionId }: { sessionId: string }) => [{
+      id: sessionId,
+      launch: null,
+    }]);
+    const recover = await loadRecoveryWith(list);
+
+    for (let index = 0; index < 101; index += 1) {
+      recover("codex", "codex", `session-${index}`);
+    }
+    expect(list).toHaveBeenCalledTimes(101);
+
+    recover("codex", "codex", "session-1");
+    expect(list).toHaveBeenCalledTimes(101);
+    recover("codex", "codex", "session-0");
+    expect(list).toHaveBeenCalledTimes(102);
+  });
+
+  it("does not let an expired request rejection delete its newer replacement", async () => {
+    let rejectFirst!: (error: Error) => void;
+    let resolveSecond!: (sessions: Array<{ id: string; launch: { model: string } }>) => void;
+    const list = vi.fn()
+      .mockImplementationOnce(() => new Promise((_, reject) => {
+        rejectFirst = reject;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveSecond = resolve;
+      }));
+    const recover = await loadRecoveryWith(list);
+
+    const stale = recover("codex", "codex", "session-race");
+    vi.advanceTimersByTime(60_000);
+    const current = recover("codex", "codex", "session-race");
+    expect(current).not.toBe(stale);
+    expect(list).toHaveBeenCalledTimes(2);
+
+    rejectFirst(new Error("stale lookup failed"));
+    await expect(stale).rejects.toThrow("stale lookup failed");
+
+    expect(recover("codex", "codex", "session-race")).toBe(current);
+    expect(list).toHaveBeenCalledTimes(2);
+    resolveSecond([{ id: "session-race", launch: { model: "newer-model" } }]);
+    await expect(current).resolves.toMatchObject({ model: "newer-model" });
+  });
+
+  it("evicts the current failed lookup so the next call retries", async () => {
+    let rejectLookup!: (error: Error) => void;
+    const list = vi.fn()
+      .mockImplementationOnce(() => new Promise((_, reject) => {
+        rejectLookup = reject;
+      }))
+      .mockResolvedValueOnce([]);
+    const recover = await loadRecoveryWith(list);
+
+    const failed = recover("codex", "codex", "session-retry");
+    rejectLookup(new Error("current lookup failed"));
+    await expect(failed).rejects.toThrow("current lookup failed");
+
+    const retry = recover("codex", "codex", "session-retry");
+    expect(retry).not.toBe(failed);
+    expect(list).toHaveBeenCalledTimes(2);
+    await expect(retry).resolves.toBeNull();
+  });
+});
 
 describe("withCodexNoAltScreen", () => {
   it("returns non-codex commands unchanged", () => {
@@ -769,6 +973,35 @@ describe("tracked CLI resume helpers", () => {
       targetId: "ses_99",
       launch: { permissionMode: "plan" },
     }, { model: "opencode/opencode/big-pickle" })).toContain("--agent plan --model \"opencode/big-pickle\" --session ses_99");
+  });
+
+  it("preserves Codex native approval and sandbox pairs without escalating access", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-danger-on-request",
+      launch: {
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      },
+    })).toBe(
+      "codex --no-alt-screen --sandbox danger-full-access --ask-for-approval on-request resume thread-danger-on-request",
+    );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-workspace-on-request",
+      launch: {
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+      },
+    })).toBe(
+      "codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request resume thread-workspace-on-request",
+    );
   });
 
   it("adds provider model overrides to resumable CLI commands", () => {

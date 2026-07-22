@@ -444,14 +444,21 @@ export function collectAdeDatabaseUsageStats(
   `, eventRange.params);
 
   const clientDailyRows = safeAll<{
-    occurred_at: string;
+    active_date: string | null;
     client_surface: AdeUsageClientSurface;
+    interactions: number;
   }>(db, `
-    select occurred_at, client_surface
-      from usage_events
-     where ${eventRange.sql}
-     order by occurred_at desc
-     limit ?
+    select date(occurred_at, 'localtime') active_date,
+           client_surface,
+           count(*) interactions
+      from (
+        select occurred_at, client_surface
+          from usage_events
+         where ${eventRange.sql}
+         order by occurred_at desc
+         limit ?
+      )
+     group by active_date, client_surface
   `, [...eventRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
 
   // Summary day counts and streaks must not depend on the capped chart scans
@@ -509,14 +516,24 @@ export function collectAdeDatabaseUsageStats(
        and kind in ('git_commit', 'git_push', 'pr_land', 'git_pull', 'git_sync_merge', 'git_sync_rebase')
      group by kind
   `, operationRange.params);
-  const operationDailyRows = safeAll<{ started_at: string; kind: string }>(db, `
-    select started_at, kind
-      from operations
-     where ${operationRange.sql}
-       and status = 'succeeded'
-       and kind in ('git_commit', 'pr_land')
-     order by started_at desc
-     limit ?
+  const operationDailyRows = safeAll<{
+    active_date: string | null;
+    kind: string;
+    operations: number;
+  }>(db, `
+    select date(started_at, 'localtime') active_date,
+           kind,
+           count(*) operations
+      from (
+        select started_at, kind
+          from operations
+         where ${operationRange.sql}
+           and status = 'succeeded'
+           and kind in ('git_commit', 'pr_land')
+         order by started_at desc
+         limit ?
+      )
+     group by active_date, kind
   `, [...operationRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
   const operationCounts = new Map(operationRows.map((row) => [row.kind, int(row.count)]));
   const activityCounts = new Map(interactionRows.map((row) => [row.action, int(row.count)]));
@@ -654,24 +671,42 @@ export function collectAdeDatabaseUsageStats(
     return existing;
   };
   const aiDailyRows = safeAll<{
-    timestamp: string;
+    active_date: string | null;
     input_tokens: number;
     output_tokens: number;
     duration_ms: number;
+    calls: number;
   }>(db, `
-    select timestamp,
-           coalesce(input_tokens, 0) input_tokens,
-           coalesce(output_tokens, 0) output_tokens,
-           coalesce(duration_ms, 0) duration_ms
-      from ai_usage_log
-     where ${aiRange.sql}
-     order by timestamp desc
-     limit ?
+    select date(timestamp, 'localtime') active_date,
+           sum(max(0, cast(coalesce(input_tokens, 0) as integer))) input_tokens,
+           sum(max(0, cast(coalesce(output_tokens, 0) as integer))) output_tokens,
+           sum(max(0, cast(coalesce(duration_ms, 0) as integer))) duration_ms,
+           count(*) calls
+      from (
+        select timestamp, input_tokens, output_tokens, duration_ms
+          from ai_usage_log
+         where ${aiRange.sql}
+         order by timestamp desc
+         limit ?
+      )
+     group by active_date
   `, [...aiRange.params, DAILY_BUCKET_SCAN_MAX_ROWS]);
+  const clientDailyScanCount = clientDailyRows.reduce(
+    (sum, row) => sum + int(row.interactions),
+    0,
+  );
+  const operationDailyScanCount = operationDailyRows.reduce(
+    (sum, row) => sum + int(row.operations),
+    0,
+  );
+  const aiDailyScanCount = aiDailyRows.reduce(
+    (sum, row) => sum + int(row.calls),
+    0,
+  );
   const cappedDailySources = [
-    clientDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "usage_events" : null,
-    operationDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "operations" : null,
-    aiDailyRows.length === DAILY_BUCKET_SCAN_MAX_ROWS ? "ai_usage_log" : null,
+    clientDailyScanCount === DAILY_BUCKET_SCAN_MAX_ROWS ? "usage_events" : null,
+    operationDailyScanCount === DAILY_BUCKET_SCAN_MAX_ROWS ? "operations" : null,
+    aiDailyScanCount === DAILY_BUCKET_SCAN_MAX_ROWS ? "ai_usage_log" : null,
   ].filter((source): source is string => source !== null);
   if (cappedDailySources.length > 0) {
     logger?.debug("usage.daily_bucket_scan_capped", {
@@ -680,7 +715,7 @@ export function collectAdeDatabaseUsageStats(
     });
   }
   for (const row of aiDailyRows) {
-    const date = isoDate(row.timestamp);
+    const date = isoDate(row.active_date);
     if (!date) continue;
     const day = ensureDay(date);
     day.inputTokens = int(day.inputTokens) + int(row.input_tokens);
@@ -703,21 +738,22 @@ export function collectAdeDatabaseUsageStats(
     day.deletions = int(day.deletions) + int(row.deletions);
   }
   for (const row of clientDailyRows) {
-    const date = isoDate(row.occurred_at);
+    const date = isoDate(row.active_date);
     if (!date) continue;
+    const interactions = int(row.interactions);
     const day = ensureDay(date);
-    day.interactions = int(day.interactions) + 1;
+    day.interactions = int(day.interactions) + interactions;
     day.clients = {
       ...(day.clients ?? {}),
-      [row.client_surface]: int(day.clients?.[row.client_surface]) + 1,
+      [row.client_surface]: int(day.clients?.[row.client_surface]) + interactions,
     };
   }
   for (const row of operationDailyRows) {
-    const date = isoDate(row.started_at);
+    const date = isoDate(row.active_date);
     if (!date) continue;
     const day = ensureDay(date);
-    if (row.kind === "git_commit") day.commits = int(day.commits) + 1;
-    if (row.kind === "pr_land") day.prs = int(day.prs) + 1;
+    if (row.kind === "git_commit") day.commits = int(day.commits) + int(row.operations);
+    if (row.kind === "pr_land") day.prs = int(day.prs) + int(row.operations);
   }
 
   const streaks = calculateStreaks(activeDateRows.map((row) => row.active_date), range.until);

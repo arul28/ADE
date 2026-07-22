@@ -211,6 +211,8 @@ function makeUnmappedBranchPull(overrides?: Partial<Record<string, unknown>>) {
 }
 
 function makeGithubService(overrides?: Record<string, unknown>) {
+  const getTokenOrThrow = (overrides?.getTokenOrThrow as (() => string) | undefined)
+    ?? vi.fn(() => "ghp_mock");
   return {
     getRepoOrThrow: vi.fn(async () => REPO),
     apiRequest: vi.fn(),
@@ -218,7 +220,8 @@ function makeGithubService(overrides?: Record<string, unknown>) {
     getStatus: vi.fn(),
     setToken: vi.fn(),
     clearToken: vi.fn(),
-    getTokenOrThrow: vi.fn(() => "ghp_mock"),
+    getTokenOrThrow,
+    getTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
     ...overrides,
   } as any;
 }

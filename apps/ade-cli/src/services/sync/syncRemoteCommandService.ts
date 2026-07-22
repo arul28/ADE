@@ -1379,6 +1379,30 @@ function parseCliPermissionMode(value: unknown): SyncStartCliSessionArgs["permis
   return isTrackedCliPermissionMode(mode) ? mode : "default";
 }
 
+function parseOptionalCliPermissionMode(value: unknown): SyncSendToSessionArgs["permissionMode"] {
+  const mode = asTrimmedString(value);
+  return isTrackedCliPermissionMode(mode) ? mode : undefined;
+}
+
+function parseOptionalCodexApprovalPolicy(value: unknown): SyncSendToSessionArgs["codexApprovalPolicy"] {
+  const policy = asTrimmedString(value);
+  return policy === "untrusted" || policy === "on-request" || policy === "on-failure" || policy === "never"
+    ? policy
+    : undefined;
+}
+
+function parseOptionalCodexSandbox(value: unknown): SyncSendToSessionArgs["codexSandbox"] {
+  const sandbox = asTrimmedString(value);
+  return sandbox === "read-only" || sandbox === "workspace-write" || sandbox === "danger-full-access"
+    ? sandbox
+    : undefined;
+}
+
+function parseOptionalCodexConfigSource(value: unknown): SyncSendToSessionArgs["codexConfigSource"] {
+  const source = asTrimmedString(value);
+  return source === "flags" || source === "config-toml" ? source : undefined;
+}
+
 function parseStartCliSessionArgs(value: Record<string, unknown>): SyncStartCliSessionArgs {
   const laneId = requireString(value.laneId, "work.startCliSession requires laneId.");
   const provider = parseCliProvider(value.provider);
@@ -1435,6 +1459,10 @@ function parseListExternalSessionsArgs(value: Record<string, unknown>): SyncList
     }
     result.limit = Math.max(1, Math.min(100, Math.floor(value.limit)));
   }
+  if (value.sessionId != null) {
+    if (typeof value.sessionId !== "string") throw new Error("work.listExternalSessions sessionId must be a string.");
+    result.sessionId = value.sessionId.trim();
+  }
   return result;
 }
 
@@ -1457,6 +1485,8 @@ function parseImportExternalSessionArgs(value: Record<string, unknown>): SyncImp
     target,
     mode,
     ...(asTrimmedString(value.model) ? { model: asTrimmedString(value.model)! } : {}),
+    ...(asTrimmedString(value.reasoningEffort) ? { reasoningEffort: asTrimmedString(value.reasoningEffort)! } : {}),
+    ...(typeof value.fastMode === "boolean" ? { fastMode: value.fastMode } : {}),
     ...(asTrimmedString(value.permissionMode) ? { permissionMode: asTrimmedString(value.permissionMode)! } : {}),
   };
 }
@@ -2093,6 +2123,13 @@ function parseSendToSessionArgs(value: Record<string, unknown>): SyncSendToSessi
     text,
     cols: asOptionalNumber(value.cols),
     rows: asOptionalNumber(value.rows),
+    model: asTrimmedString(value.model),
+    reasoningEffort: asTrimmedString(value.reasoningEffort),
+    fastMode: asOptionalBoolean(value.fastMode),
+    permissionMode: parseOptionalCliPermissionMode(value.permissionMode),
+    codexApprovalPolicy: parseOptionalCodexApprovalPolicy(value.codexApprovalPolicy),
+    codexSandbox: parseOptionalCodexSandbox(value.codexSandbox),
+    codexConfigSource: parseOptionalCodexConfigSource(value.codexConfigSource),
   };
 }
 
@@ -3781,6 +3818,13 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       text: parsed.text,
       ...(parsed.cols != null ? { cols: parsed.cols } : {}),
       ...(parsed.rows != null ? { rows: parsed.rows } : {}),
+      ...(parsed.model != null ? { model: parsed.model } : {}),
+      ...(parsed.reasoningEffort != null ? { reasoningEffort: parsed.reasoningEffort } : {}),
+      ...(parsed.fastMode != null ? { fastMode: parsed.fastMode } : {}),
+      ...(parsed.permissionMode != null ? { permissionMode: parsed.permissionMode } : {}),
+      ...(parsed.codexApprovalPolicy != null ? { codexApprovalPolicy: parsed.codexApprovalPolicy } : {}),
+      ...(parsed.codexSandbox != null ? { codexSandbox: parsed.codexSandbox } : {}),
+      ...(parsed.codexConfigSource != null ? { codexConfigSource: parsed.codexConfigSource } : {}),
     });
     return result satisfies SyncSendToSessionResult;
   });
@@ -3934,7 +3978,15 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
     const maxEvents = asOptionalNumber(payload.maxEvents);
-    return agentChatService.getChatEventHistory(sessionId, maxEvents == null ? undefined : { maxEvents });
+    const maxBytes = asOptionalNumber(payload.maxBytes);
+    const options = {
+      ...(maxEvents != null ? { maxEvents } : {}),
+      ...(maxBytes != null ? { maxBytes } : {}),
+    };
+    return agentChatService.getChatEventHistory(
+      sessionId,
+      Object.keys(options).length > 0 ? options : undefined,
+    );
   });
   register("chat.getTranscript", { viewerAllowed: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");

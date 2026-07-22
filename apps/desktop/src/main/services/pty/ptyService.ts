@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import * as HeadlessXterm from "@xterm/headless";
@@ -165,56 +165,11 @@ const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
 const AGENT_CLI_READY_POLL_MS = 100;
 const AGENT_CLI_READY_QUIET_MS = 600;
 const PTY_PROCESS_TREE_KILL_DELAY_MS = 1500;
-const PTY_PROCESS_TREE_MAX_DEPTH = 12;
+const PTY_PROCESS_SCAN_SIGNAL_DELAY_MS = 100;
+const PTY_PROCESS_SCAN_TIMEOUT_MS = 250;
+const PTY_PROCESS_SCAN_MAX_BYTES = 512 * 1024;
 
 let cachedOpenCodeReplayResumeSupport: boolean | null = null;
-
-function isPidLive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function childPidsOf(pid: number): number[] {
-  if (!Number.isFinite(pid) || pid <= 0) return [];
-  try {
-    const result = spawnSync("pgrep", ["-P", String(Math.trunc(pid))], {
-      encoding: "utf8",
-      timeout: 1000,
-    });
-    if (result.error || result.status === 1) return [];
-    return String(result.stdout ?? "")
-      .split(/\s+/)
-      .map((value) => Number.parseInt(value, 10))
-      .filter((value) => Number.isFinite(value) && value > 0);
-  } catch {
-    return [];
-  }
-}
-
-function collectDescendantPids(rootPid: number): number[] {
-  const root = Math.trunc(rootPid);
-  if (!Number.isFinite(root) || root <= 0) return [];
-  const seen = new Set<number>([root]);
-  const descendants: number[] = [];
-  let frontier = [root];
-  for (let depth = 0; depth < PTY_PROCESS_TREE_MAX_DEPTH && frontier.length > 0; depth += 1) {
-    const next: number[] = [];
-    for (const parent of frontier) {
-      for (const child of childPidsOf(parent)) {
-        if (seen.has(child)) continue;
-        seen.add(child);
-        descendants.push(child);
-        next.push(child);
-      }
-    }
-    frontier = next;
-  }
-  return descendants;
-}
 
 function killPidBestEffort(pid: number, signal: NodeJS.Signals): void {
   if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
@@ -222,6 +177,135 @@ function killPidBestEffort(pid: number, signal: NodeJS.Signals): void {
     process.kill(Math.trunc(pid), signal);
   } catch {
     // The process may have already exited.
+  }
+}
+
+function killPtyProcessGroupBestEffort(rootPid: number, signal: NodeJS.Signals): boolean {
+  if (process.platform === "win32" || !Number.isFinite(rootPid) || rootPid <= 0) return false;
+  try {
+    // node-pty's POSIX backend uses forkpty(3); forkpty's login_tty(3) creates
+    // a new session, making the child both session and process-group leader.
+    // Targeting `-pid` therefore signals the PTY group in one syscall, instead
+    // of recursively running synchronous `pgrep` calls on the main thread.
+    process.kill(-Math.trunc(rootPid), signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type PtyTreeProcess = {
+  pid: number;
+  parentPid: number;
+  processGroupId: number;
+  foregroundProcessGroupId: number;
+};
+
+type PtyTreeProcessScan = {
+  processes: PtyTreeProcess[];
+  succeeded: boolean;
+};
+
+function parsePtyTreeProcesses(
+  stdout: string,
+  rootPid: number,
+  knownProcessGroupIds: ReadonlySet<number> = new Set(),
+): PtyTreeProcess[] {
+  const rows = stdout.split(/\r?\n/).flatMap((line) => {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s*$/);
+    if (!match) return [];
+    const [pid, parentPid, processGroupId, foregroundProcessGroupId] = match.slice(1).map((value) =>
+      Number.parseInt(value, 10)
+    );
+    if (![pid, parentPid, processGroupId, foregroundProcessGroupId].every(Number.isFinite)) return [];
+    return [{ pid, parentPid, processGroupId, foregroundProcessGroupId }];
+  });
+  const selectedPids = new Set<number>(
+    rows.some((row) => row.pid === rootPid) ? [rootPid] : [],
+  );
+  const selectedProcessGroups = new Set<number>(knownProcessGroupIds);
+  for (const row of rows) {
+    if (knownProcessGroupIds.has(row.processGroupId)) selectedPids.add(row.pid);
+  }
+  let added = true;
+  while (added) {
+    added = false;
+    for (const row of rows) {
+      if (
+        !selectedPids.has(row.pid)
+        && (selectedPids.has(row.parentPid) || selectedProcessGroups.has(row.processGroupId))
+      ) {
+        selectedPids.add(row.pid);
+        added = true;
+      }
+      if (!selectedPids.has(row.pid)) continue;
+      if (row.processGroupId > 1 && !selectedProcessGroups.has(row.processGroupId)) {
+        selectedProcessGroups.add(row.processGroupId);
+        added = true;
+      }
+      if (
+        row.foregroundProcessGroupId > 1
+        && !selectedProcessGroups.has(row.foregroundProcessGroupId)
+      ) {
+        selectedProcessGroups.add(row.foregroundProcessGroupId);
+        added = true;
+      }
+    }
+  }
+  return rows.filter((row) =>
+    selectedPids.has(row.pid) || selectedProcessGroups.has(row.processGroupId)
+  );
+}
+
+function collectPtyTreeProcesses(
+  rootPid: number,
+  knownProcessGroupIds: ReadonlySet<number> = new Set(),
+): Promise<PtyTreeProcessScan> {
+  if (process.platform === "win32" || !Number.isFinite(rootPid) || rootPid <= 0) {
+    return Promise.resolve({ processes: [], succeeded: false });
+  }
+  return new Promise((resolve) => {
+    try {
+      execFile(
+        "ps",
+        ["-axo", "pid=,ppid=,pgid=,tpgid="],
+        {
+          encoding: "utf8",
+          timeout: PTY_PROCESS_SCAN_TIMEOUT_MS,
+          maxBuffer: PTY_PROCESS_SCAN_MAX_BYTES,
+          windowsHide: true,
+        },
+        (error, stdout) => {
+          resolve(error
+            ? { processes: [], succeeded: false }
+            : {
+                processes: parsePtyTreeProcesses(String(stdout ?? ""), rootPid, knownProcessGroupIds),
+                succeeded: true,
+              });
+        },
+      );
+    } catch {
+      resolve({ processes: [], succeeded: false });
+    }
+  });
+}
+
+function signalPtyTreeProcesses(
+  processes: readonly PtyTreeProcess[],
+  signal: NodeJS.Signals,
+): void {
+  const processGroups = new Set(processes
+    .map((entry) => entry.processGroupId)
+    .filter((processGroupId) => processGroupId > 1 && processGroupId !== process.pid));
+  for (const processGroupId of processGroups) {
+    try {
+      process.kill(-processGroupId, signal);
+    } catch {
+      // A group may have exited between the process scan and signal.
+    }
+  }
+  for (const { pid } of [...processes].reverse()) {
+    killPidBestEffort(pid, signal);
   }
 }
 
@@ -589,29 +673,108 @@ function terminatePtyProcessTree(
   const rootPid = typeof entry.pty.pid === "number" && Number.isFinite(entry.pty.pid)
     ? Math.trunc(entry.pty.pid)
     : null;
-  const descendants = rootPid ? collectDescendantPids(rootPid) : [];
-  for (const pid of [...descendants].reverse()) {
-    killPidBestEffort(pid, signal);
+  if (!rootPid) {
+    try {
+      entry.pty.kill(signal);
+    } catch {
+      // No numeric PID is available for a direct fallback.
+    }
+    return;
   }
-  try {
-    entry.pty.kill(signal);
-  } catch {
-    if (rootPid) killPidBestEffort(rootPid, signal);
+  if (process.platform === "win32") {
+    try {
+      entry.pty.kill(signal);
+    } catch {
+      killPidBestEffort(rootPid, signal);
+    }
+    if (signal === "SIGKILL") return;
+    const timer = setTimeout(() => {
+      try {
+        process.kill(rootPid, 0);
+      } catch {
+        return;
+      }
+      try {
+        execFile(
+          "taskkill",
+          ["/pid", String(rootPid), "/T", "/F"],
+          { timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true },
+          (error) => {
+            if (error) return;
+            logger.warn("pty.process_tree_force_killed", {
+              sessionId: entry.sessionId,
+              toolType: entry.toolTypeHint,
+              rootPid,
+              pids: [rootPid],
+            });
+          },
+        );
+      } catch {
+        // taskkill may be unavailable; the initial node-pty signal still ran.
+      }
+    }, PTY_PROCESS_TREE_KILL_DELAY_MS);
+    timer.unref?.();
+    return;
   }
-  if (signal === "SIGKILL" || (!rootPid && descendants.length === 0)) return;
-  const pidsToReap = Array.from(new Set([...(rootPid ? [rootPid] : []), ...descendants]));
-  if (!pidsToReap.length) return;
+
+  let initialProcesses: PtyTreeProcess[] = [];
+  let initialSignalDispatched = false;
+  const dispatchInitialSignal = (processes: readonly PtyTreeProcess[]) => {
+    if (initialSignalDispatched) return;
+    initialSignalDispatched = true;
+    killPtyProcessGroupBestEffort(rootPid, signal);
+    try {
+      entry.pty.kill(signal);
+    } catch {
+      killPidBestEffort(rootPid, signal);
+    }
+    signalPtyTreeProcesses(processes, signal);
+  };
+  const initialProcessScan = collectPtyTreeProcesses(rootPid);
+  const signalFallbackTimer = setTimeout(() => {
+    dispatchInitialSignal([]);
+  }, PTY_PROCESS_SCAN_SIGNAL_DELAY_MS);
+  signalFallbackTimer.unref?.();
+  void initialProcessScan.then(({ processes }) => {
+    initialProcesses = processes;
+    clearTimeout(signalFallbackTimer);
+    const signalAlreadyDispatched = initialSignalDispatched;
+    dispatchInitialSignal(processes);
+    if (signalAlreadyDispatched) signalPtyTreeProcesses(processes, signal);
+  });
+  if (signal === "SIGKILL") return;
   const timer = setTimeout(() => {
-    const stillLive = pidsToReap.filter((pid) => isPidLive(pid));
-    for (const pid of stillLive) killPidBestEffort(pid, "SIGKILL");
-    if (stillLive.length > 0) {
+    const knownProcessGroupIds = new Set(initialProcesses.flatMap((process) => [
+      process.processGroupId,
+      process.foregroundProcessGroupId,
+    ]).filter((processGroupId) => processGroupId > 1));
+    void collectPtyTreeProcesses(rootPid, knownProcessGroupIds).then(({ processes: currentProcesses, succeeded }) => {
+      if (!succeeded) {
+        // A saturated host can time out the fallback `ps` scan precisely when
+        // cleanup matters most. Do not interpret an unavailable scan as proof
+        // that the tree exited: force the known PTY/root groups once more so a
+        // surviving child cannot keep a lane worktree busy indefinitely.
+        killPtyProcessGroupBestEffort(rootPid, "SIGKILL");
+        killPidBestEffort(rootPid, "SIGKILL");
+        signalPtyTreeProcesses(initialProcesses, "SIGKILL");
+        logger.warn("pty.process_tree_force_killed", {
+          sessionId: entry.sessionId,
+          toolType: entry.toolTypeHint,
+          rootPid,
+          pids: Array.from(new Set([rootPid, ...initialProcesses.map(({ pid }) => pid)])),
+          processScanFailed: true,
+        });
+        return;
+      }
+      if (currentProcesses.length === 0) return;
+      signalPtyTreeProcesses(currentProcesses, "SIGKILL");
       logger.warn("pty.process_tree_force_killed", {
         sessionId: entry.sessionId,
         toolType: entry.toolTypeHint,
         rootPid,
-        pids: stillLive,
+        pids: Array.from(new Set(currentProcesses.map(({ pid }) => pid))),
       });
-    }
+    });
   }, PTY_PROCESS_TREE_KILL_DELAY_MS);
   timer.unref?.();
 }
@@ -3804,7 +3967,16 @@ export function createPtyService({
   };
 
   const resumeLaunchOverrides = (
-    args: Pick<PtySendToSessionArgs, "model" | "reasoningEffort" | "permissionMode">,
+    args: Pick<
+      PtySendToSessionArgs,
+      | "model"
+      | "reasoningEffort"
+      | "fastMode"
+      | "permissionMode"
+      | "codexApprovalPolicy"
+      | "codexSandbox"
+      | "codexConfigSource"
+    >,
   ) => ({
     model: typeof args.model === "string" && args.model.trim().length
       ? args.model.trim()
@@ -3812,8 +3984,23 @@ export function createPtyService({
     reasoningEffort: typeof args.reasoningEffort === "string" && args.reasoningEffort.trim().length
       ? args.reasoningEffort.trim()
       : undefined,
+    fastMode: typeof args.fastMode === "boolean" ? args.fastMode : undefined,
     permissionMode: typeof args.permissionMode === "string" && args.permissionMode.trim().length
       ? args.permissionMode
+      : undefined,
+    codexApprovalPolicy: args.codexApprovalPolicy === "untrusted"
+      || args.codexApprovalPolicy === "on-request"
+      || args.codexApprovalPolicy === "on-failure"
+      || args.codexApprovalPolicy === "never"
+      ? args.codexApprovalPolicy
+      : undefined,
+    codexSandbox: args.codexSandbox === "read-only"
+      || args.codexSandbox === "workspace-write"
+      || args.codexSandbox === "danger-full-access"
+      ? args.codexSandbox
+      : undefined,
+    codexConfigSource: args.codexConfigSource === "flags" || args.codexConfigSource === "config-toml"
+      ? args.codexConfigSource
       : undefined,
   });
 
@@ -4779,8 +4966,45 @@ export function createPtyService({
         );
       }
 
-      const { session: resumableSession, provider } = await resolveEndedResumeSession(sessionId, session);
+      const resolvedResume = await resolveEndedResumeSession(sessionId, session);
+      let resumableSession = resolvedResume.session;
+      const provider = resolvedResume.provider;
       const overrides = resumeLaunchOverrides(args);
+      const resetsStoredCodexPermissionProfile = provider === "codex"
+        && overrides.permissionMode !== undefined;
+      const launchOverridePatch = {
+        ...(overrides.model !== undefined ? { model: overrides.model } : {}),
+        ...(overrides.reasoningEffort !== undefined ? { reasoningEffort: overrides.reasoningEffort } : {}),
+        ...(overrides.fastMode !== undefined ? { fastMode: overrides.fastMode } : {}),
+        ...(overrides.permissionMode !== undefined ? { permissionMode: overrides.permissionMode } : {}),
+        ...(overrides.codexApprovalPolicy !== undefined
+          ? { codexApprovalPolicy: overrides.codexApprovalPolicy }
+          : resetsStoredCodexPermissionProfile
+            ? { codexApprovalPolicy: null }
+            : {}),
+        ...(overrides.codexSandbox !== undefined
+          ? { codexSandbox: overrides.codexSandbox }
+          : resetsStoredCodexPermissionProfile
+            ? { codexSandbox: null }
+            : {}),
+        ...(overrides.codexConfigSource !== undefined
+          ? { codexConfigSource: overrides.codexConfigSource }
+          : resetsStoredCodexPermissionProfile
+            ? { codexConfigSource: null }
+            : {}),
+      };
+      if (resumableSession.resumeMetadata && Object.keys(launchOverridePatch).length > 0) {
+        resumableSession = sessionService.updateMeta({
+          sessionId,
+          resumeMetadata: {
+            ...resumableSession.resumeMetadata,
+            launch: {
+              ...resumableSession.resumeMetadata.launch,
+              ...launchOverridePatch,
+            },
+          },
+        }) ?? resumableSession;
+      }
       const launchMetadata = resumableSession.resumeMetadata?.launch;
       const openCodeReplayCommand = provider === "opencode"
         && resumableSession.resumeMetadata?.provider === "opencode"
@@ -4790,7 +5014,7 @@ export function createPtyService({
             targetId: sanitizeResumeTargetId(resumableSession.resumeMetadata.targetId ?? null),
             model: overrides.model ?? launchMetadata?.model ?? null,
             reasoningEffort: overrides.reasoningEffort ?? launchMetadata?.reasoningEffort ?? null,
-            fastMode: launchMetadata?.fastMode ?? launchMetadata?.codexFastMode ?? null,
+            fastMode: overrides.fastMode ?? launchMetadata?.fastMode ?? launchMetadata?.codexFastMode ?? null,
             prompt: text,
           })
         : null;

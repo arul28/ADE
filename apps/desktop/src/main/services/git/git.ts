@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
 import { terminateProcessTree } from "../shared/processExecution";
 import {
@@ -13,6 +14,8 @@ import {
 // Silicon when shell PATH probe times out). Resolve git's absolute path once
 // and reuse it so spawn never throws ENOENT.
 let cachedGitExecutable: string | null = null;
+let gitExecutableResolution: Promise<string> | null = null;
+const execFileAsync = promisify(execFile);
 export function selectGitExecutable(
   candidates: readonly ResolvedExecutable[],
   platform: NodeJS.Platform = process.platform,
@@ -31,8 +34,18 @@ export function shouldProbeLoginShellForGit(
     || (platform === "darwin" && selectedExecutable === "/usr/bin/git");
 }
 
-function resolveGitExecutable(): string {
+async function resolveGitExecutable(): Promise<string> {
   if (cachedGitExecutable) return cachedGitExecutable;
+  if (gitExecutableResolution) return await gitExecutableResolution;
+  gitExecutableResolution = resolveGitExecutableUncached();
+  try {
+    return await gitExecutableResolution;
+  } finally {
+    gitExecutableResolution = null;
+  }
+}
+
+async function resolveGitExecutableUncached(): Promise<string> {
   if (process.env.ADE_GIT_EXECUTABLE && fs.existsSync(process.env.ADE_GIT_EXECUTABLE)) {
     cachedGitExecutable = process.env.ADE_GIT_EXECUTABLE;
     return cachedGitExecutable;
@@ -48,10 +61,11 @@ function resolveGitExecutable(): string {
   if (process.platform !== "win32" && shouldProbeLoginShellForGit(resolvedCandidate)) {
     try {
       const shell = process.env.SHELL?.trim() || "/bin/sh";
-      const out = execFileSync(shell, ["-lc", "command -v git"], {
+      const { stdout } = await execFileAsync(shell, ["-lc", "command -v git"], {
         encoding: "utf8",
         timeout: 3_000,
-      }).trim();
+      });
+      const out = stdout.trim();
       const isIndependentMacGit = process.platform !== "darwin" || out !== "/usr/bin/git";
       if (out && fs.existsSync(out) && (isIndependentMacGit || !resolvedCandidate)) {
         cachedGitExecutable = out;
@@ -84,12 +98,12 @@ function gitExecutableNotFoundMessage(executable: string): string {
   return `git executable not found (tried ${executable}). Install git or set ADE_GIT_EXECUTABLE to git's absolute path.`;
 }
 
-function gitSpawnErrorMessage(error: NodeJS.ErrnoException, opts: GitRunOptions): string {
+function gitSpawnErrorMessage(error: NodeJS.ErrnoException, opts: GitRunOptions, executable: string): string {
   if (error.code !== "ENOENT") return error.message;
   if (!fs.existsSync(opts.cwd)) {
     return `git working directory not found: ${opts.cwd}`;
   }
-  return gitExecutableNotFoundMessage(resolveGitExecutable());
+  return gitExecutableNotFoundMessage(executable);
 }
 
 export type GitRunOptions = {
@@ -136,22 +150,21 @@ function extractIndexLockPath(message: string): string | null {
   return doubleQuoteMatch?.[1] ?? null;
 }
 
-function isIndexLockHeldByProcess(lockPath: string): boolean {
+async function isIndexLockHeldByProcess(lockPath: string): Promise<boolean> {
   if (activeGitPids.size > 0) return true;
   if (process.platform === "win32") return false;
   try {
-    const out = execFileSync("lsof", [lockPath], {
+    const { stdout } = await execFileAsync("lsof", [lockPath], {
       encoding: "utf8",
       timeout: 2_000,
-      stdio: ["ignore", "pipe", "ignore"],
     });
-    return out.trim().split(/\r?\n/).length > 1;
+    return stdout.trim().split(/\r?\n/).length > 1;
   } catch {
     return false;
   }
 }
 
-function recoverStaleIndexLock(lockPath: string): boolean {
+async function recoverStaleIndexLock(lockPath: string): Promise<boolean> {
   try {
     const normalizedPath = path.normalize(lockPath);
     if (path.basename(normalizedPath) !== "index.lock") return false;
@@ -160,7 +173,7 @@ function recoverStaleIndexLock(lockPath: string): boolean {
     const stat = fs.statSync(lockPath);
     if (!stat.isFile()) return false;
     if (Date.now() - stat.mtimeMs < STALE_GIT_INDEX_LOCK_MIN_AGE_MS) return false;
-    if (isIndexLockHeldByProcess(lockPath)) return false;
+    if (await isIndexLockHeldByProcess(lockPath)) return false;
     fs.renameSync(lockPath, `${lockPath}.stale-${Date.now()}`);
     return true;
   } catch (error) {
@@ -171,13 +184,13 @@ function recoverStaleIndexLock(lockPath: string): boolean {
   }
 }
 
-function shouldRetryAfterIndexLock(result: GitRunResult): boolean {
+async function shouldRetryAfterIndexLock(result: GitRunResult): Promise<boolean> {
   if (result.exitCode === 0) return false;
   const message = `${result.stderr}\n${result.stdout}`;
   const lockPath = extractIndexLockPath(message);
   if (!lockPath) return false;
   if (!message.includes("Another git process seems to be running")) return false;
-  return recoverStaleIndexLock(lockPath);
+  return await recoverStaleIndexLock(lockPath);
 }
 
 function appendChunkWithCap(args: {
@@ -211,8 +224,9 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     ? Math.max(0, Math.floor(opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES))
     : DEFAULT_MAX_OUTPUT_BYTES;
 
+  const executable = await resolveGitExecutable();
   return await new Promise<GitRunResult>((resolve) => {
-    const child = spawn(resolveGitExecutable(), args, {
+    const child = spawn(executable, args, {
       cwd: opts.cwd,
       env: { ...process.env, ...(opts.env ?? {}) },
       stdio: ["ignore", "pipe", "pipe"]
@@ -279,7 +293,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     });
 
     child.on("error", (error) => {
-      const friendlyMessage = gitSpawnErrorMessage(error as NodeJS.ErrnoException, opts);
+      const friendlyMessage = gitSpawnErrorMessage(error as NodeJS.ErrnoException, opts, executable);
       finish({
         exitCode: 1,
         stdout,
@@ -303,7 +317,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
 
 export async function runGit(args: string[], opts: GitRunOptions): Promise<GitRunResult> {
   const first = await runGitOnce(args, opts);
-  if (!shouldRetryAfterIndexLock(first)) {
+  if (!(await shouldRetryAfterIndexLock(first))) {
     return first;
   }
   return await runGitOnce(args, opts);

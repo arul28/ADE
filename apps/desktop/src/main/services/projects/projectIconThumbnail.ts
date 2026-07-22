@@ -3,11 +3,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { resolveProjectIcon } from "./projectIconResolver";
+import { resolveProjectIcon, resolveProjectIconPath } from "./projectIconResolver";
 
 const MOBILE_PROJECT_ICON_EDGE = 64;
 const MOBILE_PROJECT_ICON_THUMBNAIL_CACHE_MAX = 64;
 const SIPS_PATH = "/usr/bin/sips";
+export const PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES = 128 * 1024;
+const IMAGE_DATA_URL_RE = /^data:image\/[a-z0-9.+-]+;base64,/i;
 
 type NativeImageInstanceLike = {
   isEmpty(): boolean;
@@ -32,6 +34,7 @@ type ResolveMobileProjectIconDataUrlOptions = {
   nativeImage?: NativeImageModuleLike;
   rasterizeWithSips?: SipsRasterizer;
   tmpRoot?: string;
+  resolvedSourcePath?: string;
 };
 
 const thumbnailCache = new Map<string, ThumbnailCacheEntry>();
@@ -77,8 +80,15 @@ function defaultSipsRasterizer(sourcePath: string, outputPath: string, edge: num
     outputPath,
   ], {
     stdio: "ignore",
-    timeout: 5_000,
+    timeout: 500,
   });
+}
+
+function boundedThumbnailDataUrl(value: string | null): string | null {
+  if (!value || !IMAGE_DATA_URL_RE.test(value)) return null;
+  return Buffer.byteLength(value, "utf8") <= PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES
+    ? value
+    : null;
 }
 
 function nativeImagePngDataUrl(
@@ -128,16 +138,16 @@ export function resolveMobileProjectIconDataUrl(
   projectRoot: string,
   options: ResolveMobileProjectIconDataUrlOptions = {},
 ): string | null {
-  let icon: ReturnType<typeof resolveProjectIcon>;
+  let sourcePath: string | null;
   try {
-    icon = resolveProjectIcon(projectRoot);
+    sourcePath = options.resolvedSourcePath ?? resolveProjectIconPath(projectRoot);
   } catch {
     return null;
   }
-  if (!icon.sourcePath) return null;
+  if (!sourcePath) return null;
 
-  const signature = fileSignature(icon.sourcePath);
-  const cacheKey = thumbnailCacheKey(icon.sourcePath, options);
+  const signature = fileSignature(sourcePath);
+  const cacheKey = thumbnailCacheKey(sourcePath, options);
   const cached = thumbnailCache.get(cacheKey);
   if (
     cached
@@ -149,14 +159,21 @@ export function resolveMobileProjectIconDataUrl(
     return cached.value;
   }
 
-  const value =
-    nativeImagePngDataUrl(icon.sourcePath, options.nativeImage)
+  const value = boundedThumbnailDataUrl(
+    nativeImagePngDataUrl(sourcePath, options.nativeImage)
     ?? sipsPngDataUrl(
-      icon.sourcePath,
+      sourcePath,
       options.rasterizeWithSips ?? defaultSipsRasterizer,
       options.tmpRoot ?? os.tmpdir(),
     )
-    ?? (icon.mimeType === "image/png" ? icon.dataUrl : null);
+    // Only read/base64-encode the original after both thumbnail paths fail.
+    // The common native/sips paths therefore never retain a multi-megabyte
+    // source image merely to return its tiny thumbnail.
+    ?? (() => {
+      const icon = resolveProjectIcon(projectRoot);
+      return icon.mimeType === "image/png" ? icon.dataUrl : null;
+    })(),
+  );
 
   setThumbnailCache(cacheKey, { ...signature, value });
   return value;

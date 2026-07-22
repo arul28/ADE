@@ -1,12 +1,45 @@
 import { describe, expect, it } from "vitest";
 import { IPC } from "../../../shared/ipc";
 import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
+import {
+  LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS,
+  LOCAL_RUNTIME_ACTION_TIMEOUT_MS,
+  LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS,
+  LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+  LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_PROJECT_SETUP_MARGIN_MS,
+  LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS,
+  LOCAL_RUNTIME_PROJECT_TIMEOUT_MS,
+  LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
+  longRunningLocalRuntimeActionTimeoutMs,
+} from "../localRuntime/localRuntimeTimeoutPolicy";
 
 describe("ipcInvokeTimeoutMs", () => {
-  it("uses the lane delete budget for runtime-backed lane delete actions", () => {
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+  it("keeps local lane delete IPC alive through cold setup and the daemon action", () => {
+    const innerTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("lane.delete")!;
+    const outerTimeoutMs = ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "lane", action: "delete", args: { laneId: "lane-1" } },
-    }])).toBe(4 * 60_000);
+    }]);
+
+    expect(innerTimeoutMs).toBe(4 * 60_000);
+    expect(outerTimeoutMs).toBe(
+      LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS
+      + innerTimeoutMs
+      + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+    );
+    // Model the full cold setup allowance (connect + projects.add) followed by
+    // the full daemon delete budget. The renderer timer still owns the explicit
+    // completion headroom instead of racing the inner timer.
+    expect(
+      outerTimeoutMs
+      - (LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS + innerTimeoutMs),
+    ).toBe(LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS);
+    expect(LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS).toBe(
+      2 * LOCAL_RUNTIME_PROJECT_TIMEOUT_MS + LOCAL_RUNTIME_IPC_PROJECT_SETUP_MARGIN_MS,
+    );
+    expect(LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS).toBe(270_000);
+
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
       projectId: "project-1",
@@ -14,14 +47,59 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(4 * 60_000);
   });
 
-  it("gives ordinary local runtime calls enough time to bind a cold project", () => {
+  it("composes cold setup, daemon action, and headroom for archive and unarchive", () => {
+    expect(ipcInvokeTimeoutMs(IPC.lanesArchive)).toBe(4 * 60_000);
+    for (const action of ["archive", "unarchive"] as const) {
+      const innerTimeoutMs = longRunningLocalRuntimeActionTimeoutMs(`lane.${action}`)!;
+      const outerTimeoutMs = ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+        request: { domain: "lane", action, args: { laneId: "lane-1" } },
+      }]);
+      expect(outerTimeoutMs).toBe(
+        LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS
+        + innerTimeoutMs
+        + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+      );
+      expect(
+        outerTimeoutMs
+        - (LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS + innerTimeoutMs),
+      ).toBe(LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS);
+    }
+  });
+
+  it("composes cold setup, the default daemon action, and completion headroom", () => {
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "lane", action: "list" },
-    }])).toBe(150_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction)).toBe(150_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync)).toBe(150_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeListActionRegistry)).toBe(150_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeStreamEvents)).toBe(150_000);
+    }])).toBe(315_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "file", action: "readFile", args: {} },
+    }])).toBe(293_000);
+    expect(LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS).toBe(285_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction)).toBe(285_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallSync)).toBe(315_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeListActionRegistry)).toBe(315_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeStreamEvents)).toBe(287_000);
+    expect(315_000 - LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS).toBe(
+      LOCAL_RUNTIME_ACTION_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+    );
+    expect(293_000 - LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS).toBe(
+      LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+    );
+    expect(315_000 - LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS).toBe(
+      LOCAL_RUNTIME_SYNC_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+    );
+    expect(315_000 - LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS).toBe(
+      LOCAL_RUNTIME_ACTION_REGISTRY_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+    );
+    expect(287_000 - LOCAL_RUNTIME_IPC_PROJECT_SETUP_TIMEOUT_MS).toBe(
+      LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS + LOCAL_RUNTIME_IPC_COMPLETION_HEADROOM_MS,
+    );
+  });
+
+  it("keeps project switching on setup plus completion without a daemon call budget", () => {
+    expect(ipcInvokeTimeoutMs(IPC.projectSwitchToPath)).toBe(
+      LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
+    );
+    expect(ipcInvokeTimeoutMs(IPC.projectSwitchToPath)).toBe(285_000);
   });
 
   it("gives retryable remote runtime actions enough time to reconnect", () => {
@@ -78,10 +156,10 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderCurrentPreview)).toBe(2 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "ios_simulator", action: "ensurePreviewWorkspace", args: {} },
-    }])).toBe(2 * 60_000);
+    }])).toBe(315_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "ios_simulator", action: "renderCurrentPreview", args: {} },
-    }])).toBe(2 * 60_000);
+    }])).toBe(315_000);
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
       projectId: "project-1",
@@ -108,16 +186,27 @@ describe("ipcInvokeTimeoutMs", () => {
     }])).toBe(150_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "chat", action: "handoffSession", args: {} },
-    }])).toBe(150_000);
+    }])).toBe(405_000);
   });
 
-  it("extends lane creation timeouts on direct and local runtime paths", () => {
+  it("keeps remote lane creation unchanged while composing the local timeout", () => {
     expect(ipcInvokeTimeoutMs(IPC.lanesCreate)).toBe(4 * 60_000);
-    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
       request: { domain: "lane", action: "create", args: {} },
     }])).toBe(4 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "lane", action: "create", args: {} },
+    }])).toBe(315_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "lane", action: "createChild", args: {} },
-    }])).toBe(4 * 60_000);
+    }])).toBe(315_000);
+  });
+
+  it("composes an unmapped named daemon override for local runtime actions", () => {
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "chat", action: "suggestLaneNameFromPrompt", args: {} },
+    }])).toBe(405_000);
   });
 });

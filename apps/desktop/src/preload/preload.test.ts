@@ -168,6 +168,58 @@ describe("preload OAuth bridge", () => {
     expect(invoke).toHaveBeenCalledWith(IPC.appMarkWelcomeVideoSeen, { reason: "completed" });
   });
 
+  it("preserves exact lookup and launch overrides in the external-session IPC fallback", async () => {
+    const imported = {
+      kind: "cli",
+      sessionId: "terminal-1",
+      ptyId: "pty-1",
+      laneId: "lane-1",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 7, project: null, binding: null };
+      }
+      if (channel === IPC.externalSessionsList) return [];
+      if (channel === IPC.externalSessionsImport) return imported;
+      return undefined;
+    });
+    const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
+      (globalThis as any).__adeBridge = value;
+    });
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+    const listArgs = {
+      providers: ["codex"],
+      sessionId: "native-session-1",
+      limit: 1,
+    };
+    const importArgs = {
+      provider: "codex",
+      sessionId: "native-session-1",
+      laneId: "lane-1",
+      target: "cli",
+      mode: "resume",
+      reasoningEffort: "high",
+      fastMode: true,
+    };
+
+    await expect(bridge.externalSessions.list(listArgs)).resolves.toEqual([]);
+    await expect(bridge.externalSessions.import(importArgs)).resolves.toEqual(imported);
+
+    expect(invoke).toHaveBeenCalledWith(IPC.externalSessionsList, listArgs);
+    expect(invoke).toHaveBeenCalledWith(IPC.externalSessionsImport, importArgs);
+  });
+
   it("exposes review IPC methods and cleans up listeners", async () => {
     const invoke = vi.fn(async () => undefined);
     const on = vi.fn();

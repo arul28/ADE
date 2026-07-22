@@ -24,6 +24,7 @@ import type { AdapterProjectState } from "./infra/projectState";
 import type { TerminalRegistry } from "./infra/registries";
 
 export type AdapterEvents = {
+  projectBoundary: { projectId: string };
   projectChanged: ProjectInfo | null;
   projectBindingChanged: OpenProjectBinding | null;
   projectMissing: { rootPath: string };

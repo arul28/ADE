@@ -115,8 +115,8 @@ func workChatComposerPlaceholder(pendingInputs: [WorkPendingInputItem], sessionS
   return "Type to vibecode..."
 }
 
-func workMobileShowsToolCardInTimeline(_ card: WorkToolCardModel) -> Bool {
-  isQuestionInputToolName(card.toolName)
+func workMobileShowsToolCardInTimeline(_: WorkToolCardModel) -> Bool {
+  true
 }
 
 struct WorkToolActivityPresentation: Equatable {

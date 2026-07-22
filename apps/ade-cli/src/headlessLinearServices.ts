@@ -1042,6 +1042,9 @@ export function createHeadlessGitHubService(
         );
       return token;
     },
+    async getTokenOrThrowAsync() {
+      return service.getTokenOrThrow();
+    },
     async getAppUserTokenForRelay() {
       return await appUserAuth.getValidTokenForRelay();
     },

@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, recoverCodexTurn, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
+import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, recoverCodexTurn, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
@@ -1099,6 +1099,44 @@ describe("trackedCliTerminalProvider", () => {
 });
 
 describe("resumeTerminalSession", () => {
+  it("forwards stored continuation controls, including legacy codexFastMode", async () => {
+    const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
+    const connection = {
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
+        return { sessionId: "term-1", ptyId: "pty-1", pid: 123, session: null, resumed: true, reusedExistingRuntime: false };
+      },
+    } as unknown as AdeCodeConnection;
+    const continuation = buildPtyContinuationLaunchFields({
+      model: "gpt-5.5-codex",
+      reasoningEffort: "high",
+      codexFastMode: true,
+      permissionMode: "full-auto",
+      codexApprovalPolicy: "never",
+      codexSandbox: "danger-full-access",
+      codexConfigSource: "flags",
+    });
+
+    await resumeTerminalSession({ connection, sessionId: "term-1", cols: 100, rows: 28, ...continuation });
+
+    expect(calls[0]).toEqual({
+      domain: "pty",
+      action: "resumeSession",
+      args: {
+        sessionId: "term-1",
+        cols: 100,
+        rows: 28,
+        model: "gpt-5.5-codex",
+        reasoningEffort: "high",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      },
+    });
+  });
+
   it("routes no-prompt terminal resumes through the PTY action domain", async () => {
     const calls: Array<{ domain: string; action: string; args?: Record<string, unknown> }> = [];
     const connection = {

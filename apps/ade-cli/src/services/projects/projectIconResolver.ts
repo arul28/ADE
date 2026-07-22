@@ -4,21 +4,20 @@ import {
   resolveProjectIcon,
   resolveProjectIconPath,
 } from "../../../../desktop/src/main/services/projects/projectIconResolver";
+import {
+  PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES,
+  resolveMobileProjectIconDataUrl,
+} from "../../../../desktop/src/main/services/projects/projectIconThumbnail";
 
 /**
  * Resolves a project's icon on the machine that hosts the project files, so a
  * desktop connected to this brain over the remote runtime can show the real
  * project logo in its project tab instead of a blank folder.
  *
- * This reuses the desktop's `resolveProjectIcon` (already in the brain bundle —
- * `cli.ts` imports the same module chain for the mobile sync icon path), so the
- * icon a remote desktop sees is exactly the one the host machine would show,
- * and we inherit its mtime-keyed result cache. Two things are layered on top:
- *   1. A wire-size cap — these icons travel inline in the `projects.list`
- *      payload, so anything too large is dropped.
- *   2. A size preflight via `resolveProjectIconPath` BEFORE `resolveProjectIcon`
- *      reads/encodes/caches the data URL, so an oversized icon is never inlined
- *      or retained in the resolver's cache just to be discarded.
+ * This reuses the same 64px thumbnail path as mobile (already in the brain
+ * bundle) and applies a strict encoded-size cap. Project art is cosmetic and
+ * travels inline in `projects.list`, so a full-resolution app icon must never
+ * consume a relay frame or delay project bootstrap.
  */
 export type RemoteProjectIcon = {
   dataUrl: string | null;
@@ -26,10 +25,10 @@ export type RemoteProjectIcon = {
   mimeType: string | null;
 };
 
-// Cap on the raw icon file. base64 inflates ~33%, so a 2 MB file yields a
-// ~2.7 MB data URL — an acceptable ceiling for inline transport, and well below
-// the desktop resolver's 10 MB on-disk limit.
-const REMOTE_ICON_MAX_FILE_BYTES = 2 * 1024 * 1024;
+// Keep this aligned with the persisted remote-project icon boundary. The
+// thumbnail normally lands well below this; the cap also protects platforms
+// where no rasterizer is available and the helper falls back to a raw PNG.
+export const REMOTE_ICON_MAX_DATA_URL_BYTES = PROJECT_ICON_THUMBNAIL_MAX_DATA_URL_BYTES;
 
 // Frozen so the shared singleton can't be mutated by a caller and silently
 // corrupt every subsequent resolve.
@@ -71,26 +70,30 @@ export function resolveRemoteProjectIcon(projectRoot: string): RemoteProjectIcon
   }
   if (!iconPath) return EMPTY_ICON;
 
-  // Preflight the file size BEFORE resolveProjectIcon reads, base64-encodes, and
-  // caches the full data URL. Without this, an oversized icon (under the
-  // desktop resolver's 10 MB cap) would be inlined and retained in the shared
-  // result cache even though we drop it from the wire.
-  let size: number;
   try {
-    size = fs.statSync(iconPath).size;
-  } catch {
-    return EMPTY_ICON;
-  }
-  if (size > REMOTE_ICON_MAX_FILE_BYTES) {
-    return {
-      dataUrl: null,
-      sourcePath: iconPath,
-      mimeType: mimeTypeForIconPath(iconPath),
-    };
-  }
-
-  try {
-    return resolveProjectIcon(root);
+    const thumbnailDataUrl = resolveMobileProjectIconDataUrl(root, {
+      resolvedSourcePath: iconPath,
+    });
+    // Headless hosts may not have a rasterizer. Small originals remain safe to
+    // inline (and preserve SVG/JPEG/WebP project art); larger originals are
+    // never read merely to discover that base64 would exceed the wire cap.
+    const dataUrl = thumbnailDataUrl ?? (
+      fs.statSync(iconPath).size <= 96 * 1024
+        ? resolveProjectIcon(root).dataUrl
+        : null
+    );
+    if (
+      !dataUrl
+      || Buffer.byteLength(dataUrl, "utf8") > REMOTE_ICON_MAX_DATA_URL_BYTES
+    ) {
+      return {
+        dataUrl: null,
+        sourcePath: iconPath,
+        mimeType: mimeTypeForIconPath(iconPath),
+      };
+    }
+    const mimeType = /^data:([^;,]+)[;,]/i.exec(dataUrl)?.[1] ?? null;
+    return { dataUrl, sourcePath: iconPath, mimeType };
   } catch {
     return EMPTY_ICON;
   }

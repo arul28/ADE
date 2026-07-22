@@ -41,6 +41,7 @@ type RegisterInput = {
   deviceType: string;
   pubkey: string | null;
   reachableEndpoints: ReachableEndpoint[];
+  retainRelayEndpoints: boolean;
 };
 
 type MachineRecord = {
@@ -172,10 +173,29 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
   const deviceType = requiredString(value, "deviceType");
   const pubkey = optionalString(value, "pubkey");
   const reachableEndpoints = parseReachableEndpoints(value.reachableEndpoints);
-  if (!machineKey || !deviceId || !name || !platform || !deviceType || pubkey === undefined || !reachableEndpoints) {
+  const retainRelayEndpoints = value.retainRelayEndpoints ?? false;
+  if (
+    !machineKey
+    || !deviceId
+    || !name
+    || !platform
+    || !deviceType
+    || pubkey === undefined
+    || !reachableEndpoints
+    || typeof retainRelayEndpoints !== "boolean"
+  ) {
     return null;
   }
-  return { machineKey, deviceId, name, platform, deviceType, pubkey, reachableEndpoints };
+  return {
+    machineKey,
+    deviceId,
+    name,
+    platform,
+    deviceType,
+    pubkey,
+    reachableEndpoints,
+    retainRelayEndpoints,
+  };
 }
 
 function getRemoteJwks(rawUrl: string): ReturnType<typeof createRemoteJWKSet> {
@@ -331,7 +351,32 @@ async function handleRegister(request: Request, env: Env, userId: string): Promi
       platform = excluded.platform,
       device_type = excluded.device_type,
       pubkey = excluded.pubkey,
-      reachable_endpoints = excluded.reachable_endpoints,
+      reachable_endpoints = case
+        when ? = 1
+          and json_valid(machines.reachable_endpoints)
+          and exists (
+            select 1
+              from json_each(machines.reachable_endpoints)
+             where json_extract(value, '$.kind') = 'relay'
+          )
+          and not exists (
+            select 1
+              from json_each(excluded.reachable_endpoints)
+             where json_extract(value, '$.kind') = 'relay'
+          )
+        then (
+          select json_group_array(json(endpoint))
+            from (
+              select value as endpoint
+                from json_each(excluded.reachable_endpoints)
+              union all
+              select value as endpoint
+                from json_each(machines.reachable_endpoints)
+               where json_extract(value, '$.kind') = 'relay'
+            )
+        )
+        else excluded.reachable_endpoints
+      end,
       last_seen_at = excluded.last_seen_at
   `).bind(
     userId,
@@ -344,6 +389,7 @@ async function handleRegister(request: Request, env: Env, userId: string): Promi
     JSON.stringify(input.reachableEndpoints),
     now,
     now,
+    input.retainRelayEndpoints ? 1 : 0,
   ).run();
 
   const row = await env.DB.prepare(`

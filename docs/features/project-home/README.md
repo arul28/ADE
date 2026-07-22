@@ -624,9 +624,10 @@ stamps each record with an `icon: { dataUrl, sourcePath, mimeType }` produced by
 `resolveRemoteProjectIcon` (`apps/ade-cli/src/services/projects/projectIconResolver.ts`),
 a compact electron-free port of the desktop resolver that covers the
 `.ade/ade.yaml` override, the conventional icon/logo files, and an
-`index.html` `<link rel="icon">` (resolution is best-effort and
-capped at 2 MB so it stays inline-safe on the wire; a failure for one
-project degrades to a null icon rather than breaking the list). That
+`index.html` `<link rel="icon">` (resolution is best-effort, rendered as a
+64 px thumbnail, and capped at 128 KiB per icon; a failure or exhausted
+catalog budget degrades that project to a null icon rather than breaking the
+list). That
 icon rides through `RemoteRuntimeProjectRecord.icon` →
 `OpenProjectBinding.iconDataUrl`. The desktop persists that data URL on
 both `globalState.lastRemoteProjectBinding` and the matching remote recent

@@ -94,7 +94,7 @@ type RuntimeBridgeArgs = {
     binding: OpenProjectBinding & { kind: "remote" },
   ) => void;
   localRuntimeConnectionPool?: LocalRuntimeConnectionPool | null;
-  getGitHubTokenForRemoteClone?: (() => string | null) | null;
+  getGitHubTokenForRemoteClone?: (() => string | null | Promise<string | null>) | null;
   getLocalMachineIdentity?: (() => AdeAccountLocalMachineIdentity) | null;
 };
 
@@ -909,7 +909,7 @@ export function registerRuntimeBridge({
       if (!destinationCredentialsOnly && target && hasKnownSshHostKeyForTarget(target)) {
         try {
           githubAuthHeader = createGitHubAuthHeader(
-            getGitHubTokenForRemoteClone?.() ?? null,
+            await getGitHubTokenForRemoteClone?.() ?? null,
           );
         } catch {
           githubAuthHeader = null;

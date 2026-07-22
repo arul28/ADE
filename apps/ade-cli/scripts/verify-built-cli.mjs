@@ -4,15 +4,16 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import packagedAdeCliResourcesModule from "../../desktop/scripts/packaged-ade-cli-resources.cjs";
 
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const distRoot = path.join(packageRoot, "dist");
 const cliPath = path.join(packageRoot, "dist", "cli.cjs");
-const bundledRuntimeEntryPaths = [
-  cliPath,
-  path.join(packageRoot, "dist", "bootstrap.cjs"),
-  path.join(packageRoot, "dist", "adeRpcServer.cjs"),
-];
+const { packagedAdeCliBuildResources, sourceContainsPath } = packagedAdeCliResourcesModule;
+const bundledRuntimeEntryPaths = (await fs.readdir(distRoot, { withFileTypes: true }))
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".cjs"))
+  .map((entry) => path.join(distRoot, entry.name));
 const tuiPath = path.join(packageRoot, "dist", "tuiClient", "cli.mjs");
 const packageJsonPath = path.join(packageRoot, "package.json");
 
@@ -93,6 +94,23 @@ for (const entryPath of bundledRuntimeEntryPaths) {
       `[ade-cli:build] ${path.relative(packageRoot, entryPath)} contains a bare require("@opencode-ai/sdk"); ` +
         "inline the ESM-only SDK in tsup instead.",
     );
+  }
+}
+
+const packagedBuildResources = packagedAdeCliBuildResources();
+for (const entryPath of [...bundledRuntimeEntryPaths, tuiPath]) {
+  if (packagedBuildResources.some((resource) => sourceContainsPath(resource.sourcePath, entryPath))) {
+    continue;
+  }
+  throw new Error(
+    `[ade-cli:build] ${path.relative(packageRoot, entryPath)} is not shipped by ` +
+      "apps/desktop/package.json build.extraResources",
+  );
+}
+
+for (const marker of ["__ade-usage-ledger-worker", "Usage ledger worker input is invalid"]) {
+  if (!contents.includes(marker)) {
+    throw new Error(`[ade-cli:build] dist/cli.cjs is missing embedded usage ledger worker marker: ${marker}`);
   }
 }
 

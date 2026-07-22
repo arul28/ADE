@@ -189,6 +189,13 @@ const mocks = vi.hoisted(() => {
       enabled: true;
     } | null> => null),
     execFileSync: vi.fn((_file?: unknown, _args?: unknown) => ""),
+    execFile: vi.fn((...args: unknown[]) => {
+      const callback = args.at(-1);
+      if (typeof callback === "function") {
+        (callback as (...callbackArgs: unknown[]) => void)(null, "", "");
+      }
+      return { kill: vi.fn() };
+    }),
     spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
   };
 });
@@ -236,6 +243,7 @@ vi.mock("node:crypto", () => ({
 }));
 
 vi.mock("node:child_process", () => ({
+  execFile: mocks.execFile,
   execFileSync: mocks.execFileSync,
   spawnSync: mocks.spawnSync,
 }));
@@ -398,6 +406,7 @@ function createHarness(overrides: {
         ...(args.title !== undefined ? { title: args.title } : {}),
         ...(args.goal !== undefined ? { goal: args.goal } : {}),
         ...(args.manuallyNamed !== undefined ? { manuallyNamed: args.manuallyNamed } : {}),
+        ...(args.resumeMetadata !== undefined ? { resumeMetadata: args.resumeMetadata } : {}),
       });
       return session;
     }),
@@ -484,6 +493,13 @@ describe("ptyService", () => {
     mocks.derivePreviewFromChunk.mockReturnValue({ nextLine: "", preview: "preview" });
     mocks.resolveOpenCodeBinaryPath.mockReturnValue(null);
     mocks.resolveCodexComputerUseMcpConfig.mockResolvedValue(null);
+    mocks.execFile.mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1);
+      if (typeof callback === "function") {
+        (callback as (...callbackArgs: unknown[]) => void)(null, "", "");
+      }
+      return { kill: vi.fn() };
+    });
     mocks.spawnSync.mockReturnValue({ status: 1, stdout: "", stderr: "" });
   });
 
@@ -2776,7 +2792,11 @@ describe("ptyService", () => {
         rows: 40,
         model: "gpt-5.4",
         reasoningEffort: "high",
-        permissionMode: "plan",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
       });
       await Promise.resolve();
       const result = await pending;
@@ -2794,9 +2814,18 @@ describe("ptyService", () => {
       const spawn = (loadPty.mock.results[0]?.value as any).spawn;
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" --sandbox read-only --ask-for-approval on-request resume thread-ended \"fix failing tests\""],
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"high\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox danger-full-access --ask-for-approval on-request resume thread-ended \"fix failing tests\""],
         expect.any(Object),
       );
+      expect(sessionService.get("session-ended-send")?.resumeMetadata?.launch).toMatchObject({
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      });
       expect(mockPty.write).not.toHaveBeenCalled();
     });
 
@@ -2841,6 +2870,71 @@ describe("ptyService", () => {
       expect(spawn).toHaveBeenCalledWith(
         "/bin/bash",
         ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-stored continue"],
+        expect.any(Object),
+      );
+    });
+
+    it("sendToSession persists a coarse Codex permission override across later continuations", async () => {
+      const { service, sessionService, mockPty, loadPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-ended-permission-override",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Codex CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-ended-permission-override.log",
+        toolType: "codex",
+        resumeCommand: "codex --no-alt-screen --sandbox danger-full-access --ask-for-approval never resume thread-permission-override",
+        resumeMetadata: {
+          provider: "codex",
+          targetKind: "thread",
+          targetId: "thread-permission-override",
+          launch: {
+            permissionMode: "full-auto",
+            codexApprovalPolicy: "never",
+            codexSandbox: "danger-full-access",
+            codexConfigSource: "flags",
+          },
+        },
+      });
+      sessionService.end({
+        sessionId: "session-ended-permission-override",
+        endedAt: "2026-04-09T12:30:00.000Z",
+        exitCode: 0,
+        status: "completed",
+      });
+
+      await service.sendToSession({
+        sessionId: "session-ended-permission-override",
+        text: "first continuation",
+        permissionMode: "plan",
+      });
+
+      expect(sessionService.get("session-ended-permission-override")?.resumeMetadata?.launch).toMatchObject({
+        permissionMode: "plan",
+        codexApprovalPolicy: null,
+        codexSandbox: null,
+        codexConfigSource: null,
+      });
+      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+      expect(spawn).toHaveBeenLastCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"first continuation\""],
+        expect.any(Object),
+      );
+
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+
+      await service.sendToSession({
+        sessionId: "session-ended-permission-override",
+        text: "later continuation",
+      });
+
+      const laterSpawn = (loadPty.mock.results[1]?.value as any).spawn;
+      expect(laterSpawn).toHaveBeenCalledWith(
+        "/bin/bash",
+        ["--noprofile", "--norc", "-lc", "codex --no-alt-screen --sandbox read-only --ask-for-approval on-request resume thread-permission-override \"later continuation\""],
         expect.any(Object),
       );
     });
@@ -4329,6 +4423,7 @@ describe("ptyService", () => {
       const { service, mockPty, sessionService, broadcastExit } = createHarness();
       const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "d", cols: 80, rows: 24 });
       service.dispose({ ptyId });
+      await Promise.resolve();
       expect(mockPty.kill).toHaveBeenCalled();
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, status: "disposed" }),
@@ -6424,6 +6519,7 @@ describe("ptyService", () => {
     });
 
     it("signalTerminal sends ^C for SIGINT and forwards SIGTERM to pty.kill", async () => {
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
       const { service, mockPty } = createChatHarness();
       await service.create({
         laneId: "lane-1",
@@ -6436,8 +6532,247 @@ describe("ptyService", () => {
       service.signalTerminal({ chatSessionId: "chat-signal", signal: "SIGINT" });
       expect(mockPty.write).toHaveBeenCalledWith("\x03");
 
+      mocks.spawnSync.mockClear();
       service.signalTerminal({ chatSessionId: "chat-signal", signal: "SIGTERM" });
+      await Promise.resolve();
       expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+      expect(kill).toHaveBeenCalledWith(-12345, "SIGTERM");
+      expect(mocks.spawnSync).not.toHaveBeenCalled();
+      kill.mockRestore();
+    });
+
+    it("uses node-pty's kill fallback without POSIX process-group signals on Windows", async () => {
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
+      setPlatform("win32");
+      try {
+        const { service, mockPty } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-windows",
+        });
+
+        service.signalTerminal({ chatSessionId: "chat-signal-windows", signal: "SIGTERM" });
+        expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+        expect(kill).not.toHaveBeenCalledWith(-12345, "SIGTERM");
+      } finally {
+        setPlatform(originalPlatform);
+        kill.mockRestore();
+      }
+    });
+
+    it("force-kills a stubborn Windows PTY tree without blocking the main process", async () => {
+      vi.useFakeTimers();
+      setPlatform("win32");
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
+      try {
+        const { service, mockPty } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-windows-stubborn",
+        });
+
+        service.signalTerminal({
+          chatSessionId: "chat-signal-windows-stubborn",
+          signal: "SIGTERM",
+        });
+        expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+
+        await vi.advanceTimersByTimeAsync(1_500);
+        expect(kill).toHaveBeenCalledWith(12345, 0);
+        expect(mocks.execFile).toHaveBeenCalledWith(
+          "taskkill",
+          ["/pid", "12345", "/T", "/F"],
+          expect.objectContaining({ windowsHide: true }),
+          expect.any(Function),
+        );
+        expect(mocks.spawnSync).not.toHaveBeenCalled();
+      } finally {
+        setPlatform(originalPlatform);
+        kill.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
+    it("force-kills a live PTY process group after its leader exits", async () => {
+      vi.useFakeTimers();
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        const callback = args.at(-1);
+        if (typeof callback === "function") {
+          (callback as (...callbackArgs: unknown[]) => void)(
+            null,
+            "12345 1 12345 12345\n",
+            "",
+          );
+        }
+        return { kill: vi.fn() };
+      });
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
+      try {
+        const { service } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-group",
+        });
+
+        service.signalTerminal({ chatSessionId: "chat-signal-group", signal: "SIGTERM" });
+        await vi.advanceTimersByTimeAsync(1_500);
+
+        expect(kill).toHaveBeenCalledWith(-12345, "SIGKILL");
+      } finally {
+        kill.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
+    it("kills a foreground job group after the PTY shell group exits", async () => {
+      vi.useFakeTimers();
+      let scanCount = 0;
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        scanCount += 1;
+        const callback = args.at(-1);
+        if (typeof callback === "function") {
+          (callback as (...callbackArgs: unknown[]) => void)(
+            null,
+            scanCount === 1
+              ? [
+                  "12345 1 12345 23456",
+                  "23456 12345 23456 23456",
+                  "34567 23456 34567 -1",
+                ].join("\n")
+              : [
+                  "23456 1 23456 23456",
+                  "34567 23456 34567 -1",
+                ].join("\n"),
+            "",
+          );
+        }
+        return { kill: vi.fn() };
+      });
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
+      try {
+        const { service } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-foreground-group",
+        });
+
+        service.signalTerminal({
+          chatSessionId: "chat-signal-foreground-group",
+          signal: "SIGTERM",
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(kill).toHaveBeenCalledWith(-23456, "SIGTERM");
+        expect(kill).toHaveBeenCalledWith(-34567, "SIGTERM");
+
+        await vi.advanceTimersByTimeAsync(1_500);
+        expect(kill).toHaveBeenCalledWith(-23456, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(23456, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(-34567, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(34567, "SIGKILL");
+        expect(mocks.execFile).toHaveBeenCalledWith(
+          "ps",
+          ["-axo", "pid=,ppid=,pgid=,tpgid="],
+          expect.any(Object),
+          expect.any(Function),
+        );
+      } finally {
+        kill.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
+    it("signals the PTY within a bounded delay when the process scan stalls", async () => {
+      vi.useFakeTimers();
+      mocks.execFile.mockImplementation(() => ({ kill: vi.fn() }));
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
+      try {
+        const { service, mockPty } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-scan-stall",
+        });
+
+        service.signalTerminal({ chatSessionId: "chat-signal-scan-stall", signal: "SIGTERM" });
+        await vi.advanceTimersByTimeAsync(99);
+        expect(mockPty.kill).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(kill).toHaveBeenCalledWith(-12345, "SIGTERM");
+        expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+      } finally {
+        kill.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
+    it("force-kills known PTY groups when the reap scan fails under load", async () => {
+      vi.useFakeTimers();
+      let scanCount = 0;
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        scanCount += 1;
+        const callback = args.at(-1);
+        if (typeof callback === "function") {
+          if (scanCount === 1) {
+            (callback as (...callbackArgs: unknown[]) => void)(
+              null,
+              [
+                "12345 1 12345 23456",
+                "23456 12345 23456 23456",
+              ].join("\n"),
+              "",
+            );
+          } else {
+            (callback as (...callbackArgs: unknown[]) => void)(
+              new Error("process scan timed out"),
+              "",
+              "",
+            );
+          }
+        }
+        return { kill: vi.fn() };
+      });
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true as const);
+      try {
+        const { service } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-reap-scan-failure",
+        });
+
+        service.signalTerminal({
+          chatSessionId: "chat-signal-reap-scan-failure",
+          signal: "SIGTERM",
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        kill.mockClear();
+
+        await vi.advanceTimersByTimeAsync(1_500);
+        expect(kill).toHaveBeenCalledWith(-12345, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(12345, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(-23456, "SIGKILL");
+        expect(kill).toHaveBeenCalledWith(23456, "SIGKILL");
+      } finally {
+        kill.mockRestore();
+        vi.useRealTimers();
+      }
     });
 
     it("fails loudly when chat terminal calls cannot resolve a target", async () => {

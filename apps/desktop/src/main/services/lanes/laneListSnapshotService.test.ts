@@ -151,4 +151,176 @@ describe("laneListSnapshotService", () => {
       sessionCount: 1,
     });
   });
+
+  it("returns core lane rows when optional rebase enrichment exceeds its budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const services = {
+        ...makeHarness({
+          id: "session-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "running",
+          toolType: "shell",
+          lastOutputPreview: "working",
+        }),
+        rebaseSuggestionService: {
+          listSuggestions: vi.fn(() => new Promise(() => {})),
+        },
+      };
+
+      const pending = buildLaneListSnapshots(
+        services as any,
+        [{ id: "lane-1", name: "Lane 1", laneType: "worktree", archivedAt: null }] as any,
+        {
+          includeConflictStatus: false,
+          includeRebaseSuggestions: true,
+          includeAutoRebaseStatus: false,
+          optionalEnrichmentBudgetMs: 25,
+        },
+      );
+      await vi.advanceTimersByTimeAsync(25);
+
+      await expect(pending).resolves.toEqual([
+        expect.objectContaining({
+          lane: expect.objectContaining({ id: "lane-1" }),
+          runtime: expect.objectContaining({ bucket: "running", sessionCount: 1 }),
+          rebaseSuggestion: null,
+        }),
+      ]);
+      expect(services.rebaseSuggestionService.listSuggestions).toHaveBeenCalledTimes(1);
+      expect(services.logger.info).toHaveBeenCalledWith(
+        "lanes.listSnapshots.optional_enrichment_deferred",
+        expect.objectContaining({ budgetMs: 25, laneCount: 1 }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves last-known decorations while a newer enrichment is still pending", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveRefresh!: (value: any[]) => void;
+      const rebaseSuggestions = vi.fn()
+        .mockResolvedValueOnce([{ laneId: "lane-1", behindCount: 1 }])
+        .mockImplementationOnce(() => new Promise<any[]>((resolve) => {
+          resolveRefresh = resolve;
+        }))
+        .mockImplementation(() => new Promise(() => {}));
+      const services = {
+        ...makeHarness({
+          id: "session-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "running",
+          toolType: "shell",
+          lastOutputPreview: "working",
+        }),
+        rebaseSuggestionService: { listSuggestions: rebaseSuggestions },
+      };
+      const lanes = [{ id: "lane-1", name: "Lane 1", laneType: "worktree", archivedAt: null }] as any;
+      const options = {
+        includeConflictStatus: false,
+        includeRebaseSuggestions: true,
+        includeAutoRebaseStatus: false,
+        optionalEnrichmentBudgetMs: 25,
+      };
+
+      const first = await buildLaneListSnapshots(services as any, lanes, options);
+      expect(first[0]?.rebaseSuggestion).toEqual(expect.objectContaining({ behindCount: 1 }));
+
+      const secondPending = buildLaneListSnapshots(services as any, lanes, options);
+      await vi.advanceTimersByTimeAsync(25);
+      const second = await secondPending;
+      expect(second[0]?.rebaseSuggestion).toEqual(expect.objectContaining({ behindCount: 1 }));
+
+      resolveRefresh([{ laneId: "lane-1", behindCount: 2 }]);
+      await Promise.resolve();
+      const thirdPending = buildLaneListSnapshots(services as any, lanes, options);
+      await vi.advanceTimersByTimeAsync(25);
+      const third = await thirdPending;
+      expect(third[0]?.rebaseSuggestion).toEqual(expect.objectContaining({ behindCount: 2 }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("publishes completed decorations when another optional enrichment hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const services = {
+        ...makeHarness({
+          id: "session-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "running",
+          toolType: "shell",
+          lastOutputPreview: "working",
+        }),
+        rebaseSuggestionService: {
+          listSuggestions: vi.fn().mockResolvedValue([{ laneId: "lane-1", behindCount: 3 }]),
+        },
+        conflictService: {
+          getBatchAssessment: vi.fn(() => new Promise(() => {})),
+        },
+      };
+      const pending = buildLaneListSnapshots(
+        services as any,
+        [{ id: "lane-1", name: "Lane 1", laneType: "worktree", archivedAt: null }] as any,
+        {
+          includeConflictStatus: true,
+          includeRebaseSuggestions: true,
+          includeAutoRebaseStatus: false,
+          optionalEnrichmentBudgetMs: 25,
+        },
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      await expect(pending).resolves.toEqual([
+        expect.objectContaining({
+          rebaseSuggestion: expect.objectContaining({ behindCount: 3 }),
+          conflictStatus: null,
+        }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces repeated snapshot calls onto one optional enrichment per lane set", async () => {
+    vi.useFakeTimers();
+    try {
+      const never = () => new Promise<never>(() => {});
+      const services = {
+        ...makeHarness({
+          id: "session-1",
+          laneId: "lane-1",
+          status: "running",
+          runtimeState: "running",
+          toolType: "shell",
+          lastOutputPreview: "working",
+        }),
+        rebaseSuggestionService: { listSuggestions: vi.fn(never) },
+        autoRebaseService: { listStatuses: vi.fn(never) },
+        conflictService: { getBatchAssessment: vi.fn(never) },
+      };
+      const lanes = [{ id: "lane-1", name: "Lane 1", laneType: "worktree", archivedAt: null }] as any;
+      const options = { optionalEnrichmentBudgetMs: 25 };
+
+      const first = buildLaneListSnapshots(services as any, lanes, options);
+      const second = buildLaneListSnapshots(services as any, lanes, options);
+      const otherLaneSet = buildLaneListSnapshots(services as any, [
+        { id: "lane-2", name: "Lane 2", laneType: "worktree", archivedAt: null },
+      ] as any, options);
+      await vi.advanceTimersByTimeAsync(25);
+      await Promise.all([first, second, otherLaneSet]);
+
+      expect(services.rebaseSuggestionService.listSuggestions).toHaveBeenCalledTimes(2);
+      expect(services.autoRebaseService.listStatuses).toHaveBeenCalledTimes(2);
+      expect(services.conflictService.getBatchAssessment).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

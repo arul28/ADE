@@ -7,6 +7,7 @@ import type {
   RemoteRuntimeBufferedEvent,
 } from "../../../shared/types";
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
+import { chatEventDedupKey } from "./infra/chatEventDedup";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
 function fallbackFor(action: PersonalChatAction): unknown {
@@ -30,13 +31,7 @@ export function createPersonalChatsNamespace(infra: AdapterInfra): AdeNamespace<
   let nextEventId = 1;
 
   const pushEvent = (payload: SyncChatEventPayload) => {
-    const seq = typeof payload.seq === "number" ? payload.seq : null;
-    const eventType = payload.event && typeof payload.event === "object" && "type" in payload.event
-      ? String(payload.event.type)
-      : "";
-    const key = seq == null
-      ? `${payload.sessionId}:${payload.timestamp}:${eventType}`
-      : `${payload.sessionId}:${seq}`;
+    const key = chatEventDedupKey(payload);
     if (delivered.has(key)) return;
     delivered.add(key);
     deliveredOrder.push(key);

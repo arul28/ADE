@@ -6192,18 +6192,17 @@ export function createPrService({
 
   const runGh = async (ghArgs: string[], opts: { cwd: string; timeoutMs?: number }): Promise<GhRunResult> => {
     const timeoutMs = opts.timeoutMs ?? 90_000;
+    let ghToken: string | null = null;
+    try {
+      ghToken = await githubService.getTokenOrThrowAsync();
+    } catch {
+      ghToken = null;
+    }
     return await new Promise<GhRunResult>((resolve) => {
       let stdout = "";
       let stderr = "";
       let settled = false;
       let timer: NodeJS.Timeout | null = null;
-
-      let ghToken: string | null = null;
-      try {
-        ghToken = githubService.getTokenOrThrow();
-      } catch {
-        ghToken = null;
-      }
 
       const child = spawn("gh", ghArgs, {
         cwd: opts.cwd,

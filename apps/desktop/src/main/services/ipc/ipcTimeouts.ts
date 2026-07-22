@@ -1,5 +1,12 @@
 import { IPC } from "../../../shared/ipc";
 import { isRetryableRemoteAction } from "../remoteRuntime/retryableRemoteActions";
+import {
+  localRuntimeActionIpcTimeoutMs,
+  LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS,
+  LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS,
+} from "../localRuntime/localRuntimeTimeoutPolicy";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -11,6 +18,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     createChild: IPC.lanesCreateChild,
     createFromUnstaged: IPC.lanesCreateFromUnstaged,
     importBranch: IPC.lanesImportBranch,
+    archive: IPC.lanesArchive,
     delete: IPC.lanesDelete,
   },
   ios_simulator: {
@@ -24,7 +32,6 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   },
 };
 
-const LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS = 150_000;
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
 const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
 
@@ -49,13 +56,16 @@ function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null
 
 export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = []): number {
   if (channel === IPC.localRuntimeCallAction) {
-    const actionTimeoutMs = runtimeActionTimeoutMs(args);
-    if (actionTimeoutMs != null) return actionTimeoutMs;
-    return LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS;
+    const payload = args[0];
+    const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
+    if (typeof request?.domain === "string" && typeof request.action === "string") {
+      return localRuntimeActionIpcTimeoutMs(request.domain, request.action);
+    }
+    return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
   }
-  if (channel === IPC.localRuntimeCallSync || channel === IPC.localRuntimeListActionRegistry || channel === IPC.localRuntimeStreamEvents) {
-    return LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS;
-  }
+  if (channel === IPC.localRuntimeCallSync) return LOCAL_RUNTIME_IPC_SYNC_TIMEOUT_MS;
+  if (channel === IPC.localRuntimeListActionRegistry) return LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS;
+  if (channel === IPC.localRuntimeStreamEvents) return LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS;
   if (channel === IPC.remoteRuntimeCallAction) {
     const actionTimeoutMs = runtimeActionTimeoutMs(args);
     if (actionTimeoutMs != null) return actionTimeoutMs;
@@ -64,6 +74,10 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     return 30_000;
   }
   switch (channel) {
+    // Switching projects can cold-start and bind the local runtime. Keep the
+    // renderer's outcome known through setup and result delivery.
+    case IPC.projectSwitchToPath:
+      return LOCAL_RUNTIME_IPC_PROJECT_COMPLETION_TIMEOUT_MS;
     case IPC.remoteRuntimeConnect:
     case IPC.remoteRuntimeListProjects:
     case IPC.remoteRuntimeAddProject:
@@ -84,6 +98,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.lanesCreateChild:
     case IPC.lanesCreateFromUnstaged:
     case IPC.lanesImportBranch:
+    case IPC.lanesArchive:
     case IPC.lanesDelete:
       return 4 * 60_000;
     // Handoff runs an AI brief + session creation + first-message dispatch

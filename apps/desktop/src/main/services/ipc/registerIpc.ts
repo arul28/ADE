@@ -3797,6 +3797,9 @@ export function registerIpc({
   ipcMain.handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {
     let token: string | null = null;
     try {
+      // ADE's release repository is public. Use only an immediately available
+      // token here so a slow/keyring-backed `gh auth token` lookup cannot hold
+      // the update affordance behind unrelated GitHub authentication.
       token = getCtx().githubService.getTokenOrThrow();
     } catch {
       token = null;
@@ -4122,9 +4125,9 @@ export function registerIpc({
   const runtimeBridge = registerRuntimeBridge({
     appVersion: app.getVersion(),
     bindRemoteProject,
-    getGitHubTokenForRemoteClone: () => {
+    getGitHubTokenForRemoteClone: async () => {
       try {
-        return getCtx().githubService.getTokenOrThrow();
+        return await getCtx().githubService.getTokenOrThrowAsync();
       } catch {
         return null;
       }
@@ -5308,6 +5311,7 @@ export function registerIpc({
       ...(typeof record.cwd === "string" || record.cwd === null ? { cwd: record.cwd } : {}),
       ...(record.scope === "all" || record.scope === "project" ? { scope: record.scope } : {}),
       ...(typeof record.limit === "number" ? { limit: record.limit } : {}),
+      ...(typeof record.sessionId === "string" || record.sessionId === null ? { sessionId: record.sessionId } : {}),
     };
   };
 
@@ -5329,6 +5333,8 @@ export function registerIpc({
       target,
       mode,
       ...(typeof record.model === "string" ? { model: record.model } : {}),
+      ...(typeof record.reasoningEffort === "string" ? { reasoningEffort: record.reasoningEffort } : {}),
+      ...(typeof record.fastMode === "boolean" ? { fastMode: record.fastMode } : {}),
       ...(typeof record.permissionMode === "string" ? { permissionMode: record.permissionMode } : {}),
     };
   };

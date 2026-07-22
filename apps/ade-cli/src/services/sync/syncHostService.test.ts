@@ -14,12 +14,19 @@ import type {
   PersonalChatScopeContract,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
+  SyncInvalidationBatchPayload,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
   SyncProjectCatalogPayload,
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
-import { SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY } from "../../../../desktop/src/shared/types";
+import {
+  SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+  SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
+  SYNC_INVALIDATION_TABLE_MAX_BYTES,
+  SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+  SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
+} from "../../../../desktop/src/shared/types";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
@@ -30,13 +37,18 @@ import {
   CHAT_EVENT_REPLAY_MAX_EVENTS,
   CONNECTION_ATTEMPT_RESERVATION_TTL_MS,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
-  SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS,
+  SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
+  SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
+  SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS,
+  buildSyncInvalidationBatchPayload,
   buildSyncHostHelloOkPayload,
   buildSyncProjectCatalogMessages,
   compactChatEventEnvelopeForSync,
   createChatEventReplayBuffer,
   createSyncHostService,
   createTerminalInputDedupeLedger,
+  adoptedSyncHostCursorForPeer,
+  initialSyncHostCursorForPeer,
   isRuntimeOnlySyncPeer,
   isRuntimeHostPairingRecord,
   planChatEventResume,
@@ -56,7 +68,7 @@ import {
   buildRelayReauthorizationChallenge,
   sha256RelayToken,
 } from "./relayAuthorization";
-import { encodeSyncEnvelope, parseSyncEnvelope, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 
@@ -185,6 +197,99 @@ describe("buildSyncHostHelloOkPayload", () => {
   it("reports the host-observed connection transport", () => {
     expect(syncConnectionTransportForOrigin("direct")).toBe("direct");
     expect(syncConnectionTransportForOrigin("relay-bridge")).toBe("relay");
+  });
+
+  it("acknowledges invalidation-only sync only to peers that requested it", () => {
+    const peer = {
+      deviceId: "browser-1",
+      deviceName: "ADE Browser",
+      platform: "macOS",
+      deviceType: "browser",
+      siteId: "browser-site-1",
+      dbVersion: 0,
+      capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+    } satisfies SyncPeerMetadata;
+    const base = {
+      brain: peer,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+    };
+
+    expect(buildSyncHostHelloOkPayload({ ...base, peer }).features.invalidationOnlyV1).toEqual({ enabled: true });
+    expect(buildSyncHostHelloOkPayload({ ...base, peer }).features).not.toHaveProperty("compactInvalidationV1");
+    expect(buildSyncHostHelloOkPayload({
+      ...base,
+      peer: {
+        ...peer,
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+        ],
+      },
+    }).features.compactInvalidationV1).toEqual({ enabled: true });
+    const phoneFeatures = buildSyncHostHelloOkPayload({
+      ...base,
+      peer: {
+        ...peer,
+        deviceType: "phone",
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+        ],
+      },
+    }).features;
+    expect(phoneFeatures).not.toHaveProperty("invalidationOnlyV1");
+    expect(phoneFeatures).not.toHaveProperty("compactInvalidationV1");
+  });
+
+  it("keeps invalidation envelopes bounded when table metadata is oversized", () => {
+    const oversizedNamePayload = buildSyncInvalidationBatchPayload({
+      fromDbVersion: 4,
+      toDbVersion: 5,
+      changes: [{
+        ...makeChange(5, 0),
+        table: "t".repeat(SYNC_INVALIDATION_TABLE_MAX_BYTES + 1),
+      }],
+      compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+    });
+
+    expect(oversizedNamePayload).toEqual({
+      fromDbVersion: 4,
+      toDbVersion: 5,
+      tables: [],
+      fullRefresh: true,
+    });
+    const oversizedEnvelopePayload = buildSyncInvalidationBatchPayload({
+      fromDbVersion: 5,
+      toDbVersion: 6,
+      changes: Array.from({ length: 128 }, (_, index) => ({
+        ...makeChange(6, index),
+        table: `${String(index).padStart(3, "0")}${"t".repeat(253)}`,
+      })),
+      compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+    });
+    expect(oversizedEnvelopePayload).toEqual({
+      fromDbVersion: 5,
+      toDbVersion: 6,
+      tables: [],
+      fullRefresh: true,
+    });
+
+    for (const payload of [oversizedNamePayload, oversizedEnvelopePayload]) {
+      expect(Buffer.byteLength(encodeSyncEnvelope({
+        type: "invalidation_batch",
+        payload,
+        compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+      }), "utf8")).toBeLessThanOrEqual(SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES);
+    }
   });
 
   it("advertises daemon-hosted project catalog support in hello_ok without desktop", () => {
@@ -3780,6 +3885,681 @@ describe("CTO-gated Linear sync commands", () => {
   });
 });
 
+describe("initial hydration priority", () => {
+  it("keeps historical catch-up for legacy browsers without the invalidation-only capability", () => {
+    expect(initialSyncHostCursorForPeer({
+      peer: {
+        deviceType: "browser",
+        dbVersion: 7,
+        dbVersionBySite: { "site-host": 11 },
+        capabilities: [],
+      },
+      serverDbSiteId: "site-host",
+      serverDbVersion: 99,
+    })).toBe(11);
+  });
+
+  it("preserves an invalidation browser's same-DB handoff cursor but resets for a new DB", () => {
+    const peer = {
+      deviceType: "browser" as const,
+      dbVersion: 0,
+      dbVersionBySite: { "site-host": 4 },
+      capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+    };
+
+    expect(adoptedSyncHostCursorForPeer({
+      peer,
+      serverDbSiteId: "site-host",
+      serverDbVersion: 9,
+      snapshotServerDbSiteId: "site-host",
+      snapshotLastKnownServerDbVersion: 6,
+    })).toBe(6);
+    expect(adoptedSyncHostCursorForPeer({
+      peer,
+      serverDbSiteId: "site-new",
+      serverDbVersion: 9,
+      snapshotServerDbSiteId: "site-host",
+      snapshotLastKnownServerDbVersion: 6,
+    })).toBe(9);
+    expect(adoptedSyncHostCursorForPeer({
+      peer,
+      serverDbSiteId: "site-host",
+      serverDbVersion: 9,
+      snapshotServerDbSiteId: "site-host",
+      snapshotLastKnownServerDbVersion: 12,
+    })).toBe(9);
+  });
+
+  it("admits a queued chat subscription before a replica peer's initial catch-up", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const exportChangesSince = vi.fn(() => [makeChange(1, 0)]);
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 60_000,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-queued-subscribe",
+          getDbVersion: () => 1,
+          exportChangesSince,
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+      client.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "phone-hello",
+        payload: {
+          peer: {
+            deviceId: "phone-initial-hydration",
+            deviceName: "Phone",
+            platform: "iOS",
+            deviceType: "phone",
+            siteId: "phone-initial-hydration-site",
+            dbVersion: 0,
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      client.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "phone-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: "selected-chat" },
+      }));
+
+      await waitForEnvelope(envelopes, "chat_subscribe", "phone-chat-subscribe");
+      expect(exportChangesSince).not.toHaveBeenCalled();
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("serves other peers while one foreground queue is slow, then admits a bounded batch", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 0,
+      changes: Array.from({ length: 200 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const exportChangesSince = vi.fn(
+      (fromDbVersion: number, options?: { maxRows?: number; throughDbVersion?: number }) =>
+        state.changes
+          .filter((change) => Number(change.db_version) > fromDbVersion)
+          .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+          .slice(0, options?.maxRows ?? state.changes.length),
+    );
+    let releaseSummary!: (summary: { status: string }) => void;
+    const summaryGate = new Promise<{ status: string }>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const getSessionSummary = vi.fn((sessionId: string) =>
+      sessionId === "slow-chat" ? summaryGate : Promise.resolve(null)
+    );
+    const logger = createDiscoveryLogger();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 25,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-peer-fairness",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince,
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn(() => ({
+          sessionId: "slow-chat",
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        })),
+        getSessionSummary,
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let slowPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let fastPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      slowPeer = await connectPeer(port, host.getBootstrapToken(), "slow-foreground-peer", {
+        platform: "macOS",
+        deviceType: "browser",
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+          "changesetAck",
+        ],
+      });
+      fastPeer = await connectPeer(port, host.getBootstrapToken(), "independent-peer", {
+        platform: "macOS",
+        deviceType: "browser",
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+          "changesetAck",
+        ],
+      });
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+
+      slowPeer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "slow-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: "slow-chat" },
+      }));
+      await waitForValue(() => getSessionSummary.mock.calls[0], "slow foreground handler");
+      state.dbVersion = 200;
+
+      await waitForValue(
+        () => logger.debug.mock.calls.find(([event, fields]) =>
+          event === "sync_host.changeset_priority_deferral_started"
+          && fields?.peerDeviceId === "slow-foreground-peer"
+        ),
+        "per-peer foreground deferral",
+      );
+      const independentBatch = await waitForValue(
+        () => fastPeer?.envelopes.find((envelope) => envelope.type === "invalidation_batch"),
+        "independent peer invalidation",
+      );
+      expect(independentBatch.payload as SyncInvalidationBatchPayload).toEqual({
+        fromDbVersion: 0,
+        toDbVersion: 200,
+        tables: ["kv"],
+        fullRefresh: false,
+      });
+      expect(slowPeer.envelopes.some((envelope) =>
+        envelope.type === "changeset_batch" || envelope.type === "invalidation_batch"
+      )).toBe(false);
+      expect(getSessionSummary).toHaveBeenCalledWith("slow-chat");
+
+      clockOffsetMs += SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 25;
+      const boundedSlowBatch = await waitForValue(
+        () => slowPeer?.envelopes.find((envelope) => envelope.type === "invalidation_batch"),
+        "bounded slow-peer invalidation",
+      );
+      expect(boundedSlowBatch.payload as SyncInvalidationBatchPayload).toEqual({
+        fromDbVersion: 0,
+        toDbVersion: 64,
+        tables: ["kv"],
+        fullRefresh: false,
+      });
+      expect(logger.debug).toHaveBeenCalledWith(
+        "sync_host.changeset_priority_deferral_ended",
+        expect.objectContaining({
+          peerDeviceId: "slow-foreground-peer",
+          reason: "batch_admitted",
+        }),
+      );
+      expect(slowPeer.envelopes.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
+
+      releaseSummary({ status: "idle" });
+      await waitForEnvelope(slowPeer.envelopes, "chat_subscribe", "slow-chat-subscribe");
+    } finally {
+      releaseSummary({ status: "idle" });
+      dateNowSpy?.mockRestore();
+      slowPeer?.ws.close();
+      fastPeer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps an independent replica delivering and retrying while another peer's transcript read is stalled", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "stalled-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "stalled-chat",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const state = { dbVersion: 0, changes: [] as CrsqlChangeRow[] };
+    const logger = createDiscoveryLogger();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 100,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-transcript-fairness",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince: (fromDbVersion: number) =>
+            state.changes.filter((change) => Number(change.db_version) > fromDbVersion),
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => id === session.id ? session : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId: session.id,
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let stalledPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let replicaPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let openSpy: { mockRestore(): void } | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    let releaseTranscriptRead = () => {};
+
+    try {
+      const port = await host.waitUntilListening();
+      stalledPeer = await connectPeer(port, host.getBootstrapToken(), "stalled-chat-peer", {
+        capabilities: ["changesetAck"],
+      });
+      replicaPeer = await connectPeer(port, host.getBootstrapToken(), "independent-replica-peer", {
+        capabilities: ["changesetAck"],
+      });
+      stalledPeer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "stalled-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: session.id },
+      }));
+      await waitForEnvelope(stalledPeer.envelopes, "chat_subscribe", "stalled-chat-subscribe");
+
+      const realOpen = fs.promises.open.bind(fs.promises);
+      let markTranscriptReadStarted = () => {};
+      const transcriptReadStarted = new Promise<void>((resolve) => {
+        markTranscriptReadStarted = resolve;
+      });
+      const transcriptReadGate = new Promise<void>((resolve) => {
+        releaseTranscriptRead = resolve;
+      });
+      let shouldStallTranscriptRead = true;
+      openSpy = vi.spyOn(fs.promises, "open").mockImplementation((async (
+        ...openArgs: Parameters<typeof fs.promises.open>
+      ) => {
+        if (String(openArgs[0]) === transcriptPath && shouldStallTranscriptRead) {
+          shouldStallTranscriptRead = false;
+          markTranscriptReadStarted();
+          await transcriptReadGate;
+        }
+        return realOpen(...openArgs);
+      }) as typeof fs.promises.open);
+
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      const chatEvent: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-07-22T10:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: "chat must lead its own catch-up" },
+      };
+      fs.appendFileSync(transcriptPath, `${JSON.stringify(chatEvent)}\n`, "utf8");
+      state.dbVersion = 1;
+      state.changes.push(makeChange(1, 0));
+      const stalledEnvelopeStart = stalledPeer.envelopes.length;
+
+      await transcriptReadStarted;
+      const firstReplicaBatch = await waitForValue(
+        () => replicaPeer?.envelopes.find((entry) => entry.type === "changeset_batch"),
+        "independent replica changeset while transcript is stalled",
+      );
+      expect(stalledPeer.envelopes.slice(stalledEnvelopeStart).some((entry) =>
+        entry.type === "changeset_batch" || entry.type === "chat_event"
+      )).toBe(false);
+
+      const firstPayload = firstReplicaBatch.payload as SyncChangesetBatchPayload;
+      replicaPeer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: firstPayload.batchId,
+        projectId: "project-1",
+        payload: {
+          batchId: firstPayload.batchId,
+          fromDbVersion: firstPayload.fromDbVersion,
+          toDbVersion: firstPayload.toDbVersion,
+          appliedDbVersion: firstPayload.fromDbVersion,
+          appliedCount: 0,
+          ok: false,
+          error: { code: "apply_failed", message: "retry deterministically" },
+        } satisfies SyncChangesetAckPayload,
+      }));
+      await waitForValue(
+        () => logger.warn.mock.calls.find(([event, fields]) =>
+          event === "sync_host.changeset_ack_failed"
+          && fields?.peerDeviceId === "independent-replica-peer"
+        ),
+        "independent replica retry scheduling",
+      );
+      clockOffsetMs += 60_000;
+      await waitForValue(
+        () => replicaPeer?.envelopes.filter((entry) =>
+          entry.type === "changeset_batch"
+          && (entry.payload as SyncChangesetBatchPayload).batchId === firstPayload.batchId
+        ).length === 2 ? true : null,
+        "independent replica retry while transcript remains stalled",
+      );
+
+      releaseTranscriptRead();
+      const stalledChatEvent = await waitForValue(
+        () => stalledPeer?.envelopes.slice(stalledEnvelopeStart).find((entry) => entry.type === "chat_event"),
+        "stalled peer chat event after read release",
+      );
+      const stalledBatch = await waitForValue(
+        () => stalledPeer?.envelopes.slice(stalledEnvelopeStart).find((entry) => entry.type === "changeset_batch"),
+        "stalled peer changeset after chat",
+      );
+      expect(stalledChatEvent.payload).toMatchObject({
+        sessionId: session.id,
+        event: { type: "text", text: "chat must lead its own catch-up" },
+      });
+      expect(stalledPeer.envelopes.indexOf(stalledChatEvent)).toBeLessThan(
+        stalledPeer.envelopes.indexOf(stalledBatch),
+      );
+    } finally {
+      releaseTranscriptRead();
+      openSpy?.mockRestore();
+      dateNowSpy?.mockRestore();
+      stalledPeer?.ws.close();
+      replicaPeer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("hydrates the selected browser chat without replaying historical CRDT rows", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "selected-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    const event: AgentChatEventEnvelope = {
+      sessionId: "selected-chat",
+      timestamp: "2026-07-22T04:50:55.000Z",
+      sequence: 1,
+      event: { type: "text", text: "selected transcript" },
+    };
+    fs.writeFileSync(transcriptPath, `${JSON.stringify(event)}\n`, "utf8");
+
+    const state = {
+      dbVersion: 1,
+      changes: [makeChange(1, 0)],
+    };
+    const exportChangesSince = vi.fn(
+      (fromDbVersion: number, options?: { maxRows?: number; throughDbVersion?: number }) =>
+        state.changes
+          .filter((change) => Number(change.db_version) > fromDbVersion)
+          .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
+          .slice(0, options?.maxRows ?? state.changes.length),
+    );
+    const getChatEventHistory = vi.fn(() => ({
+      sessionId: "selected-chat",
+      events: [event],
+      truncated: false,
+      transcriptTruncated: false,
+      windowTruncated: false,
+      sessionFound: true,
+    }));
+    let releaseSummary!: (summary: { status: string }) => void;
+    const summaryGate = new Promise<{ status: string }>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 100,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-initial-hydration",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince,
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      sessionService: {
+        list: () => [],
+        get: (sessionId: string) => sessionId === "selected-chat"
+          ? { id: sessionId, transcriptPath, status: "running" }
+          : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory,
+        getSessionSummary: vi.fn(() => summaryGate),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", resolve);
+        client!.once("error", reject);
+      });
+
+      // Browsers send their selected-chat subscription as soon as hello_ok
+      // arrives. Queue both frames here to make the host ordering contract
+      // deterministic: foreground hydration must beat the initial backlog.
+      client.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "browser-hello",
+        payload: {
+          peer: {
+            deviceId: "browser-initial-hydration",
+            deviceName: "Browser",
+            platform: "macOS",
+            deviceType: "browser",
+            siteId: "browser-initial-hydration-site",
+            dbVersion: 0,
+            capabilities: [
+              SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+              SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+            ],
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      client.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "selected-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: "selected-chat", maxBytes: 64 * 1024 },
+      }));
+
+      await waitForValue(
+        () => getChatEventHistory.mock.calls[0],
+        "selected chat history read",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(exportChangesSince).not.toHaveBeenCalled();
+      releaseSummary({ status: "idle" });
+
+      const snapshot = await waitForEnvelope(
+        envelopes,
+        "chat_subscribe",
+        "selected-chat-subscribe",
+      );
+      expect(snapshot.payload).toMatchObject({
+        sessionId: "selected-chat",
+        events: [event],
+        turnActive: false,
+      });
+      expect(getChatEventHistory).toHaveBeenCalledTimes(1);
+      expect(envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+
+      // A browser is invalidation-only: historical rows are skipped, while a
+      // mutation committed after hello produces a compact live signal even
+      // when the source row itself is larger than the Relay peer budget.
+      state.dbVersion = 2;
+      const oversizedValue = "x".repeat(PEER_BACKPRESSURE_BYTES + 1);
+      state.changes.push({
+        ...makeChange(2, 1, oversizedValue),
+        table: "operations",
+      });
+      const liveInvalidation = await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "invalidation_batch"),
+        "post-connect browser invalidation",
+      );
+      expect(exportChangesSince).toHaveBeenCalledWith(
+        1,
+        expect.objectContaining({ throughDbVersion: 2 }),
+      );
+      const invalidationPayload = liveInvalidation.payload as SyncInvalidationBatchPayload;
+      expect(invalidationPayload).toEqual({
+        fromDbVersion: 1,
+        toDbVersion: 2,
+        tables: ["operations"],
+        fullRefresh: false,
+      });
+      expect(envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(Buffer.byteLength(encodeSyncEnvelope({
+        type: "invalidation_batch",
+        payload: invalidationPayload,
+        compressionThresholdBytes: Number.MAX_SAFE_INTEGER,
+      }), "utf8")).toBeLessThanOrEqual(SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES);
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps older invalidation-only browsers on changeset hints", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 0,
+      changes: [] as CrsqlChangeRow[],
+    };
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 25,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-legacy-browser",
+          getDbVersion: () => state.dbVersion,
+          exportChangesSince: (fromDbVersion: number) =>
+            state.changes.filter((change) => Number(change.db_version) > fromDbVersion),
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let browser: WebSocket | null = null;
+    let envelopes: ParsedSyncEnvelope[] = [];
+
+    try {
+      const port = await host.waitUntilListening();
+      browser = new WebSocket(`ws://127.0.0.1:${port}`);
+      ({ envelopes } = trackClientEnvelopes(browser));
+      await new Promise<void>((resolve, reject) => {
+        browser!.once("open", resolve);
+        browser!.once("error", reject);
+      });
+      browser.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "legacy-browser-hello",
+        payload: {
+          peer: {
+            deviceId: "legacy-invalidation-browser",
+            deviceName: "Legacy Browser",
+            platform: "macOS",
+            deviceType: "browser",
+            siteId: "legacy-invalidation-browser-site",
+            dbVersion: 0,
+            capabilities: [SYNC_INVALIDATION_ONLY_V1_CAPABILITY],
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      const helloOkEnvelope = await waitForEnvelope(envelopes, "hello_ok", "legacy-browser-hello");
+      expect((helloOkEnvelope.payload as { features?: Record<string, unknown> }).features)
+        .not.toHaveProperty("compactInvalidationV1");
+      expect(envelopes.some((envelope) =>
+        envelope.type === "changeset_batch" || envelope.type === "invalidation_batch"
+      )).toBe(false);
+
+      state.dbVersion = 1;
+      state.changes.push(makeChange(1, 0));
+      const legacyBatch = await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "legacy browser changeset hint",
+      );
+      expect((legacyBatch.payload as SyncChangesetBatchPayload).changes).toEqual([
+        expect.objectContaining({ db_version: 1, table: "kv" }),
+      ]);
+      expect(envelopes.some((envelope) => envelope.type === "invalidation_batch")).toBe(false);
+    } finally {
+      browser?.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
 describe("outbound changeset ack retries", () => {
   beforeEach(() => {
     publishMock.mockReset();
@@ -3933,21 +4713,21 @@ describe("outbound changeset ack retries", () => {
       state.dbVersion = 1;
 
       await waitForValue(
-        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_chat_deferral_started"),
+        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_priority_deferral_started"),
         "chat changeset deferral transition",
       );
       await new Promise((resolve) => setTimeout(resolve, 75));
       expect(peer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
 
-      clockOffsetMs += SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 25;
+      clockOffsetMs += SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 25;
       const batch = await waitForValue(
         () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
         "fair changeset admission",
       );
       expect((batch.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
-      expect(logger.debug.mock.calls.filter(([event]) => event === "sync_host.changeset_chat_deferral_started")).toHaveLength(1);
+      expect(logger.debug.mock.calls.filter(([event]) => event === "sync_host.changeset_priority_deferral_started")).toHaveLength(1);
       expect(logger.debug).toHaveBeenCalledWith(
-        "sync_host.changeset_chat_deferral_ended",
+        "sync_host.changeset_priority_deferral_ended",
         expect.objectContaining({ reason: "batch_admitted" }),
       );
     } finally {
@@ -3983,19 +4763,19 @@ describe("outbound changeset ack retries", () => {
         .spyOn(WebSocket.prototype, "bufferedAmount", "get")
         .mockImplementation(() => bufferedAmount);
       const realDateNow = Date.now.bind(Date);
-      let clockOffsetMs = SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 5_000;
+      let clockOffsetMs = SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 5_000;
       dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
       state.dbVersion = 1;
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(peer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
-      expect(logger.debug.mock.calls.some(([event]) => event === "sync_host.changeset_chat_deferral_started")).toBe(false);
+      expect(logger.debug.mock.calls.some(([event]) => event === "sync_host.changeset_priority_deferral_started")).toBe(false);
 
       bufferedAmount = SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES;
       await waitForValue(
-        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_chat_deferral_started"),
+        () => logger.debug.mock.calls.find(([event]) => event === "sync_host.changeset_priority_deferral_started"),
         "soft deferral after hard pressure clears",
       );
-      clockOffsetMs += SYNC_HOST_CHAT_ACTIVE_MAX_CHANGESET_DEFER_MS + 25;
+      clockOffsetMs += SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS + 25;
       await waitForValue(
         () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
         "changeset after hard pressure clears",
@@ -4853,6 +5633,90 @@ describe("sync host handoff over a shared listener", () => {
       await listener.close();
       rootA.cleanup();
       rootB.cleanup();
+    }
+  });
+
+  it("preserves an invalidation browser's cursor across a same-database handoff", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const tokenPath = path.join(projectRoot, "shared-browser-bootstrap-token");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    const db = {
+      siteId: "site-shared-browser-db",
+      dbVersion: 1,
+      changes: [makeHostChange(1, 0)],
+    };
+    let browser: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let hostA: ReturnType<typeof createSyncHostService> | null = null;
+    let hostB: ReturnType<typeof createSyncHostService> | null = null;
+
+    try {
+      const port = await listener.ensureListening([0]);
+      hostA = createSyncHostService({
+        ...createHandoffHostArgs(projectRoot, tokenPath, db),
+        sharedListener: listener,
+        pollIntervalMs: 25,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      await hostA.waitUntilListening();
+      browser = await connectPeer(port, hostA.getBootstrapToken(), "browser-handoff-peer", {
+        platform: "macOS",
+        deviceType: "browser",
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+        ],
+      });
+
+      expect(hostA.getPeerStates()).toEqual([
+        expect.objectContaining({
+          deviceId: "browser-handoff-peer",
+          syncLag: 0,
+        }),
+      ]);
+      expect(browser.envelopes.some((envelope) =>
+        envelope.type === "changeset_batch" || envelope.type === "invalidation_batch"
+      )).toBe(false);
+
+      await hostA.dispose();
+      hostA = null;
+      const envelopeCountAfterDeposit = browser.envelopes.length;
+
+      // This write lands after the old owner deposits the live socket but
+      // before the new owner adopts it. The deposited cursor is the only safe
+      // boundary for a same-DB invalidation-only browser.
+      db.dbVersion = 2;
+      db.changes.push(makeHostChange(2, 1));
+      hostB = createSyncHostService({
+        ...createHandoffHostArgs(projectRoot, tokenPath, db),
+        sharedListener: listener,
+        pollIntervalMs: 25,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      await hostB.waitUntilListening();
+
+      const postHandoffBatch = await waitForValue(
+        () => browser?.envelopes
+          .slice(envelopeCountAfterDeposit)
+          .find((envelope) => envelope.type === "invalidation_batch"),
+        "same-DB post-handoff browser invalidation",
+      );
+      expect(postHandoffBatch.payload as SyncInvalidationBatchPayload).toEqual({
+        fromDbVersion: 1,
+        toDbVersion: 2,
+        tables: ["kv"],
+        fullRefresh: false,
+      });
+      expect(browser.closeEvents).toEqual([]);
+      expect(browser.ws.readyState).toBe(WebSocket.OPEN);
+      expect(hostB.getPeerStates()).toEqual([
+        expect.objectContaining({
+          deviceId: "browser-handoff-peer",
+        }),
+      ]);
+    } finally {
+      browser?.ws.close();
+      await hostA?.dispose();
+      await hostB?.dispose();
+      await listener.close();
+      cleanup();
     }
   });
 
@@ -5891,6 +6755,176 @@ describe("chat_subscribe snapshots", () => {
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("bounds transcript deltas at complete JSONL boundaries and recovers partial and oversized records", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "bounded-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, "", "utf8");
+    const session = {
+      id: "bounded-chat",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const logger = createDiscoveryLogger();
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      logger,
+      pollIntervalMs: 100,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-bounded-chat",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => id === session.id ? session : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockReturnValue({
+          sessionId: session.id,
+          events: [],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let openSpy: { mockRestore(): void } | null = null;
+    let releaseSecondRead = () => {};
+
+    const event = (sequence: number, text: string): AgentChatEventEnvelope => ({
+      sessionId: session.id,
+      timestamp: new Date(Date.UTC(2026, 6, 22, 11, 0, sequence)).toISOString(),
+      sequence,
+      event: { type: "text", text },
+    });
+    const line = (entry: AgentChatEventEnvelope): Buffer =>
+      Buffer.from(`${JSON.stringify(entry)}\n`, "utf8");
+    const deliveredSequences = (): number[] => (peer?.envelopes ?? [])
+      .filter((entry) => entry.type === "chat_event")
+      .map((entry) => Number((entry.payload as AgentChatEventEnvelope).sequence));
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "bounded-chat-peer");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "bounded-chat-subscribe",
+        projectId: "project-1",
+        payload: { sessionId: session.id },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "bounded-chat-subscribe");
+
+      const largeText = "🙂".repeat(18_000);
+      const completeLines = [line(event(1, largeText)), line(event(2, largeText)), line(event(3, largeText))];
+      expect(completeLines[0].length).toBeLessThan(SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES);
+      expect(completeLines[0].length + completeLines[1].length).toBeGreaterThan(
+        SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
+      );
+      const partialLine = line(event(4, "split-🙂-record"));
+      const emojiOffset = partialLine.indexOf(Buffer.from("🙂", "utf8"));
+      expect(emojiOffset).toBeGreaterThan(0);
+      const splitOffset = emojiOffset + 2;
+
+      const realOpen = fs.promises.open.bind(fs.promises);
+      let openCount = 0;
+      let markSecondReadStarted = () => {};
+      const secondReadStarted = new Promise<void>((resolve) => {
+        markSecondReadStarted = resolve;
+      });
+      let markPartialRetryStarted = () => {};
+      const partialRetryStarted = new Promise<void>((resolve) => {
+        markPartialRetryStarted = resolve;
+      });
+      const secondReadGate = new Promise<void>((resolve) => {
+        releaseSecondRead = resolve;
+      });
+      openSpy = vi.spyOn(fs.promises, "open").mockImplementation((async (
+        ...openArgs: Parameters<typeof fs.promises.open>
+      ) => {
+        if (String(openArgs[0]) === transcriptPath) {
+          openCount += 1;
+          if (openCount === 2) {
+            markSecondReadStarted();
+            await secondReadGate;
+          } else if (openCount === 4) {
+            markPartialRetryStarted();
+          }
+        }
+        return realOpen(...openArgs);
+      }) as typeof fs.promises.open);
+
+      fs.writeFileSync(
+        transcriptPath,
+        Buffer.concat([...completeLines, partialLine.subarray(0, splitOffset)]),
+      );
+      await secondReadStarted;
+      await waitForValue(
+        () => deliveredSequences().length === 1 ? true : null,
+        "first bounded transcript chunk",
+      );
+      expect(deliveredSequences()).toEqual([1]);
+
+      releaseSecondRead();
+      await partialRetryStarted;
+      await waitForValue(
+        () => deliveredSequences().length === 3 ? true : null,
+        "three complete bounded transcript records",
+      );
+      expect(deliveredSequences()).toEqual([1, 2, 3]);
+      fs.appendFileSync(transcriptPath, partialLine.subarray(splitOffset));
+      await waitForValue(
+        () => deliveredSequences().includes(4) ? true : null,
+        "UTF-8 split transcript record recovery",
+      );
+
+      const oversized = line(event(
+        5,
+        "x".repeat(SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES + 1_024),
+      ));
+      const recovered = line(event(6, "record after explicit oversized recovery"));
+      fs.appendFileSync(transcriptPath, Buffer.concat([oversized, recovered]));
+      await waitForValue(
+        () => deliveredSequences().includes(6) ? true : null,
+        "record after oversized transcript recovery",
+      );
+      expect(deliveredSequences()).toEqual([1, 2, 3, 4, 6]);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_host.chat_transcript_record_too_large",
+        expect.objectContaining({
+          peerDeviceId: "bounded-chat-peer",
+          sessionId: session.id,
+          recordBytes: oversized.length,
+          maxRecordBytes: SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
+        }),
+      );
+    } finally {
+      releaseSecondRead();
+      openSpy?.mockRestore();
+      peer?.ws.close();
       await host.dispose();
       cleanup();
     }

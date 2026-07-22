@@ -1958,6 +1958,280 @@ describe("createUsageTrackingService", () => {
     service.dispose();
   });
 
+  it("refreshes missing project costs from an established machine snapshot", async () => {
+    const logger = createLogger();
+    const cachedAt = new Date().toISOString();
+    const dependencies = {
+      ...createFastDependencies(),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: "arul28/ADE",
+        available: true,
+        fetchedAt: cachedAt,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const cachedSnapshot = {
+      version: 3,
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        pacingByProvider: {},
+        providerStatus: {},
+        costs: [{
+          provider: "codex",
+          last30dCostUsd: 1,
+          todayCostUsd: 0,
+          tokenBreakdown: {},
+        }],
+        adeCosts: [],
+        extraUsage: [],
+        costsLastPolledAt: cachedAt,
+        lastPolledAt: cachedAt,
+        errors: [],
+      },
+    };
+    const previousVitest = process.env.VITEST;
+    const previousNodeEnv = process.env.NODE_ENV;
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((() => (
+      JSON.stringify(cachedSnapshot)
+    )) as unknown as typeof fs.readFileSync);
+    let service: ReturnType<typeof createUsageTrackingService>;
+    try {
+      process.env.VITEST = "false";
+      process.env.NODE_ENV = "development";
+      service = createUsageTrackingService({ logger, dependencies });
+    } finally {
+      readFileSync.mockRestore();
+      if (previousVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = previousVitest;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+
+    await service.getAdeUsageStats({ preset: "7d", scope: "machine" });
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(dependencies.scanClaudeLogs).not.toHaveBeenCalled();
+
+    const projectStats = await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+    expect(projectStats.freshness?.state).toBe("refreshing");
+    await vi.waitFor(() => expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+    expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(2));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("fresh");
+    expect(dependencies.scanClaudeLogs).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
+
+  it("preserves established costs and backs off failed project scans without blocking explicit refresh", async () => {
+    const logger = createLogger();
+    const now = Date.now();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    const cachedAt = new Date(now).toISOString();
+    const establishedCosts = [{
+      provider: "codex" as const,
+      last30dCostUsd: 1,
+      todayCostUsd: 0,
+      tokenBreakdown: {},
+    }];
+    const scanUsageLedgers = vi.fn()
+      .mockRejectedValueOnce(new Error("automatic ledger worker failed"))
+      .mockRejectedValueOnce(new Error("explicit ledger worker failed"))
+      .mockResolvedValue({
+        costs: [{
+          provider: "codex" as const,
+          last30dCostUsd: 2,
+          todayCostUsd: 1,
+          tokenBreakdown: {},
+        }],
+        projectCosts: [{
+          provider: "codex" as const,
+          last30dCostUsd: 0.5,
+          todayCostUsd: 0.25,
+          tokenBreakdown: {},
+        }],
+        daily7d: {},
+        entryCounts: { codex: 1 },
+        providerErrors: {},
+      });
+    const scanGitHubStats = vi.fn(async () => ({
+      repo: "arul28/ADE",
+      available: true,
+      fetchedAt: cachedAt,
+      error: null,
+      commitsCreated: 0,
+      prsTracked: 0,
+      prsOpen: 0,
+      prsMerged: 0,
+      prsClosed: 0,
+      prAdditions: 0,
+      prDeletions: 0,
+      filesChanged: 0,
+      daily: [],
+    }));
+    const cachedSnapshot = {
+      version: 3,
+      snapshot: {
+        windows: [],
+        pacing: calculatePacing([]),
+        pacingByProvider: {},
+        providerStatus: {},
+        costs: establishedCosts,
+        adeCosts: [],
+        extraUsage: [],
+        costsLastPolledAt: cachedAt,
+        lastPolledAt: cachedAt,
+        errors: [],
+      },
+    };
+    const previousVitest = process.env.VITEST;
+    const previousNodeEnv = process.env.NODE_ENV;
+    const readFileSync = vi.spyOn(fs, "readFileSync").mockImplementation((() => (
+      JSON.stringify(cachedSnapshot)
+    )) as unknown as typeof fs.readFileSync);
+    let service: ReturnType<typeof createUsageTrackingService>;
+    try {
+      process.env.VITEST = "false";
+      process.env.NODE_ENV = "development";
+      service = createUsageTrackingService({
+        logger,
+        dependencies: {
+          pollClaudeUsage: vi.fn(async () => ({ windows: [] as never[], extraUsage: null, errors: [] as never[] })),
+          pollCodexUsage: vi.fn(async () => ({ windows: [] as never[], errors: [] as never[] })),
+          scanUsageLedgers,
+          scanGitHubStats,
+        },
+      });
+    } finally {
+      readFileSync.mockRestore();
+      if (previousVitest === undefined) delete process.env.VITEST;
+      else process.env.VITEST = previousVitest;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+
+    try {
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("refreshing");
+      await vi.waitFor(() => expect(scanUsageLedgers).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(logger.warn).toHaveBeenCalledWith(
+        "usage.refresh.history_failed",
+        expect.objectContaining({ reason: "automatic", failureCount: 1, retryDelayMs: 60_000 }),
+      ));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(service.getUsageSnapshot()).toMatchObject({
+        costs: establishedCosts,
+        costsLastPolledAt: cachedAt,
+      });
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "machine" })).freshness?.state).toBe("fresh");
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("stale");
+      await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(scanUsageLedgers).toHaveBeenCalledTimes(1);
+
+      await expect(service.refreshHistory()).rejects.toThrow("explicit ledger worker failed");
+      expect(scanUsageLedgers).toHaveBeenCalledTimes(2);
+      expect(logger.warn).toHaveBeenCalledWith(
+        "usage.refresh.history_failed",
+        expect.objectContaining({ reason: "user", failureCount: 2, retryDelayMs: 120_000 }),
+      );
+      expect(service.getUsageSnapshot()).toMatchObject({
+        costs: establishedCosts,
+        costsLastPolledAt: cachedAt,
+      });
+
+      await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(scanUsageLedgers).toHaveBeenCalledTimes(2);
+
+      nowSpy.mockReturnValue(now + 2 * 60_000);
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("refreshing");
+      await vi.waitFor(() => expect(scanUsageLedgers).toHaveBeenCalledTimes(3));
+      await new Promise((resolve) => setImmediate(resolve));
+      await service.getAdeUsageStats({ preset: "7d", scope: "project" });
+      await vi.waitFor(() => expect(scanGitHubStats).toHaveBeenCalledTimes(3));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect((await service.getAdeUsageStats({ preset: "7d", scope: "project" })).freshness?.state).toBe("fresh");
+    } finally {
+      service.dispose();
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("serves aged provider history without launching a surprise transcript rescan", async () => {
+    const logger = createLogger();
+    const now = new Date("2026-07-22T12:00:00.000Z").getTime();
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(now);
+    const dependencies = {
+      ...createFastDependencies(),
+      scanGitHubStats: vi.fn(async () => ({
+        repo: null,
+        available: false,
+        fetchedAt: null,
+        error: null,
+        commitsCreated: 0,
+        prsTracked: 0,
+        prsOpen: 0,
+        prsMerged: 0,
+        prsClosed: 0,
+        prAdditions: 0,
+        prDeletions: 0,
+        filesChanged: 0,
+        daily: [],
+      })),
+    };
+    const service = createUsageTrackingService({ logger, dependencies });
+    await service.refreshHistory();
+    for (const scanner of [
+      dependencies.scanClaudeLogs,
+      dependencies.scanCodexLogs,
+      dependencies.scanCursorLogs,
+      dependencies.scanCursorAgentLogs,
+      dependencies.scanOpenClawLogs,
+      dependencies.scanOpenCodeLogs,
+      dependencies.scanDroidLogs,
+      dependencies.scanCopilotLogs,
+      dependencies.scanGeminiLogs,
+    ]) scanner.mockClear();
+
+    nowSpy.mockReturnValue(now + 2 * 60 * 60_000);
+    const stats = await service.getAdeUsageStats({ preset: "7d" });
+    expect(stats.freshness?.state).toBe("refreshing");
+    await vi.waitFor(() => expect(dependencies.scanGitHubStats).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setImmediate(resolve));
+    const settled = await service.getAdeUsageStats({ preset: "7d" });
+    expect(settled.freshness?.state).toBe("stale");
+    for (const scanner of [
+      dependencies.scanClaudeLogs,
+      dependencies.scanCodexLogs,
+      dependencies.scanCursorLogs,
+      dependencies.scanCursorAgentLogs,
+      dependencies.scanOpenClawLogs,
+      dependencies.scanOpenCodeLogs,
+      dependencies.scanDroidLogs,
+      dependencies.scanCopilotLogs,
+      dependencies.scanGeminiLogs,
+    ]) expect(scanner).not.toHaveBeenCalled();
+
+    service.dispose();
+    nowSpy.mockRestore();
+  });
+
   it("runs an explicit history scan independently from a pending startup quota poll", async () => {
     const logger = createLogger();
     const dependencies = createFastDependencies();
@@ -4218,22 +4492,10 @@ describe("ADE database usage aggregation", () => {
     }));
   });
 
-  it("caps raw daily bucket scans newest-first without throwing", async () => {
+  it("caps daily source windows newest-first before aggregating in SQLite", async () => {
     const db = await createStatsDb();
     const logger = createLogger();
     const originalAll = db.all.bind(db);
-    const newestRow = {
-      timestamp: "2026-07-08T12:00:00.000Z",
-      input_tokens: 1,
-      output_tokens: 0,
-      duration_ms: 0,
-    };
-    const oldestRow = {
-      ...newestRow,
-      timestamp: "2026-07-07T12:00:00.000Z",
-    };
-    const rowsBeyondCap = Array(250_001).fill(newestRow);
-    rowsBeyondCap[0] = oldestRow;
     let checkedClientQuery = false;
     let checkedOperationQuery = false;
     let checkedAiQuery = false;
@@ -4241,20 +4503,38 @@ describe("ADE database usage aggregation", () => {
       ...db,
       all: ((sql: string, params = []) => {
         const normalized = sql.replace(/\s+/g, " ").trim();
-        if (normalized.startsWith("select occurred_at, client_surface")) {
-          expect(normalized).toContain("order by occurred_at desc limit ?");
+        if (normalized.startsWith("select date(occurred_at, 'localtime') active_date")) {
+          expect(normalized).toContain("from ( select occurred_at, client_surface");
+          expect(normalized).toContain("order by occurred_at desc limit ? ) group by active_date, client_surface");
           checkedClientQuery = true;
+          return [{
+            active_date: "2026-07-08",
+            client_surface: "desktop",
+            interactions: 250_000,
+          }];
         }
-        if (normalized.startsWith("select started_at, kind")) {
-          expect(normalized).toContain("order by started_at desc limit ?");
+        if (normalized.startsWith("select date(started_at, 'localtime') active_date")) {
+          expect(normalized).toContain("from ( select started_at, kind");
+          expect(normalized).toContain("order by started_at desc limit ? ) group by active_date, kind");
           checkedOperationQuery = true;
+          return [{
+            active_date: "2026-07-08",
+            kind: "git_commit",
+            operations: 250_000,
+          }];
         }
-        if (normalized.startsWith("select timestamp,")) {
-          expect(normalized).toContain("order by timestamp desc limit ?");
-          const limit = Number(params.at(-1));
-          expect(rowsBeyondCap.length).toBeGreaterThan(limit);
+        if (normalized.startsWith("select date(timestamp, 'localtime') active_date")) {
+          expect(normalized).toContain("from ( select timestamp, input_tokens, output_tokens, duration_ms");
+          expect(normalized).toContain("order by timestamp desc limit ? ) group by active_date");
+          expect(params.at(-1)).toBe(250_000);
           checkedAiQuery = true;
-          return rowsBeyondCap.slice(1, limit + 1);
+          return [{
+            active_date: "2026-07-08",
+            input_tokens: 250_000,
+            output_tokens: 0,
+            duration_ms: 0,
+            calls: 250_000,
+          }];
         }
         return originalAll(sql, params);
       }) as AdeDb["all"],
@@ -4272,12 +4552,15 @@ describe("ADE database usage aggregation", () => {
       date: "2026-07-08",
       inputTokens: 250_000,
       totalTokens: 250_000,
+      commits: 250_000,
+      interactions: 250_000,
+      clients: { desktop: 250_000 },
     }));
     expect(stats?.daily.some((point) => point.date === "2026-07-07")).toBe(false);
     expect(logger.debug).toHaveBeenCalledTimes(1);
     expect(logger.debug).toHaveBeenCalledWith("usage.daily_bucket_scan_capped", {
       maxRows: 250_000,
-      sources: ["ai_usage_log"],
+      sources: ["usage_events", "operations", "ai_usage_log"],
     });
   });
 
@@ -4373,11 +4656,13 @@ describe("ADE database usage aggregation", () => {
     );
     db.run(
       `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status)
-       values (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
+       values (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?),
+              (?, ?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?, ?)`,
       [
         "op-1", "project-1", "lane-1", "git_commit", "2026-07-08T12:20:00.000Z", "2026-07-08T12:20:01.000Z", "succeeded",
         "op-2", "project-1", "lane-1", "git_push", "2026-07-08T12:21:00.000Z", "2026-07-08T12:21:01.000Z", "succeeded",
         "op-3", "project-1", "lane-1", "git_commit", "2026-07-08T12:22:00.000Z", "2026-07-08T12:22:01.000Z", "failed",
+        "op-4", "project-1", "lane-1", "pr_land", "2026-07-08T12:23:00.000Z", "2026-07-08T12:23:01.000Z", "succeeded",
       ],
     );
     recordUsageInteraction(db, { projectId: "project-1", client: "desktop", action: "chat.send", sessionId: "session-1", occurredAt: "2026-07-08T12:05:00.000Z" });
@@ -4395,6 +4680,7 @@ describe("ADE database usage aggregation", () => {
       chatSessions: 1,
       commitsCreated: 1,
       pushOperations: 1,
+      prLandings: 1,
       filesChanged: 5,
       insertions: 120,
       deletions: 20,
@@ -4420,10 +4706,14 @@ describe("ADE database usage aggregation", () => {
       }),
       expect.objectContaining({
         date: "2026-07-08",
+        inputTokens: 120,
+        outputTokens: 60,
         totalTokens: 180,
+        durationMs: 1_500,
         sessions: 1,
         filesChanged: 3,
         commits: 1,
+        prs: 1,
         interactions: 2,
         clients: { desktop: 1, mobile: 1 },
       }),

@@ -36,6 +36,14 @@ export type AccountMachineRegistration = {
   deviceType: string;
   pubkey: null;
   reachableEndpoints: AdeAccountMachineEndpoint[];
+  /**
+   * Asks a compatible directory to retain its stored Relay endpoint when this
+   * heartbeat catches the independently asynchronous Relay components between
+   * ready states. The directory scopes retention to the authenticated owner
+   * and machine key; current endpoints remain authoritative for every other
+   * route kind.
+   */
+  retainRelayEndpoints?: true;
 };
 
 type AccountMachinePublisherLogger = {
@@ -53,13 +61,42 @@ export type AccountMachineRegistrationSnapshot = Pick<
   routeHealth: Pick<SyncRouteHealth, "listener" | "tailscale" | "relay">;
 };
 
-type PublisherAccountStatus = Pick<AccountAuthStatus, "signedIn" | "source"> & {
-  sessionReadState: AccountSessionReadState;
-};
+type PublisherAccountStatus = Pick<AccountAuthStatus, "signedIn" | "source"> &
+  Partial<Pick<AccountAuthStatus, "userId">> & {
+    sessionReadState: AccountSessionReadState;
+  };
+
+type PublishedRelayEndpoint = Extract<AdeAccountMachineEndpoint, { kind: "relay" }>;
+
+function relayEndpoints(
+  registration: AccountMachineRegistration,
+): PublishedRelayEndpoint[] {
+  return registration.reachableEndpoints.filter(
+    (endpoint): endpoint is PublishedRelayEndpoint => endpoint.kind === "relay",
+  );
+}
+
+function withRetainedRelayEndpoints(
+  registration: AccountMachineRegistration,
+  retained: readonly PublishedRelayEndpoint[],
+): AccountMachineRegistration {
+  if (retained.length === 0 || relayEndpoints(registration).length > 0) {
+    return registration;
+  }
+  const reachableEndpoints = [...registration.reachableEndpoints];
+  const seen = new Set(reachableEndpoints.map((endpoint) => JSON.stringify(endpoint)));
+  for (const endpoint of retained) {
+    const key = JSON.stringify(endpoint);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    reachableEndpoints.push(endpoint);
+  }
+  return { ...registration, reachableEndpoints };
+}
 
 function isPublisherSignedOut(
   status: PublisherAccountStatus | null,
-): status is PublisherAccountStatus {
+): boolean {
   return status !== null
     && !status.signedIn
     && status.source !== "env-token";
@@ -214,6 +251,11 @@ export function createAccountMachinePublisherService(options: {
   let inFlight: Promise<void> | null = null;
   let triggeredPublishPending = false;
   let lastRelayPublishStateSignature: string | null = null;
+  let lastPublishedRelayState: {
+    machineKey: string;
+    accountOwnerId: string | null;
+    endpoints: PublishedRelayEndpoint[];
+  } | null = null;
   let lastWarning: string | null = null;
   let transientFailureCount = 0;
   let unsubscribeSignIn: (() => void) | null = null;
@@ -243,6 +285,33 @@ export function createAccountMachinePublisherService(options: {
 
   const resetPublishCadence = (): void => {
     transientFailureCount = 0;
+  };
+
+  const clearRetainedRelayState = (): void => {
+    lastPublishedRelayState = null;
+  };
+
+  const reconcileRetainedRelayOwner = (
+    status: PublisherAccountStatus | null,
+  ): string | null => {
+    if (isPublisherSignedOut(status)) {
+      clearRetainedRelayState();
+      return null;
+    }
+    const accountOwnerId = status?.signedIn
+      ? status.userId?.trim() || null
+      : null;
+    if (
+      lastPublishedRelayState
+      && lastPublishedRelayState.accountOwnerId !== accountOwnerId
+      // A missing owner is tolerated only when BOTH observations lack one. The
+      // brain publisher supplies userId, while small embedded/test publishers
+      // may intentionally omit account identity.
+      && (lastPublishedRelayState.accountOwnerId !== null || accountOwnerId !== null)
+    ) {
+      clearRetainedRelayState();
+    }
+    return accountOwnerId;
   };
 
   const recordOutcome = (
@@ -365,12 +434,12 @@ export function createAccountMachinePublisherService(options: {
       return;
     }
 
-    const registration = buildAccountMachineRegistration({
+    const observedRegistration = buildAccountMachineRegistration({
       machineKey,
       snapshot,
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
     });
-    if (!registration) {
+    if (!observedRegistration) {
       recordOutcome("machine_key_unavailable", {
         attemptAt,
         skipReason: "The machine registration could not be built.",
@@ -378,8 +447,8 @@ export function createAccountMachinePublisherService(options: {
       });
       return;
     }
-    observeRelayPublishState(relayPublishStateSignature(snapshot, registration));
-    const reachableEndpointCount = registration.reachableEndpoints.length;
+    observeRelayPublishState(relayPublishStateSignature(snapshot, observedRegistration));
+    const observedReachableEndpointCount = observedRegistration.reachableEndpoints.length;
 
     let accountStatus: PublisherAccountStatus | null = null;
     try {
@@ -389,22 +458,53 @@ export function createAccountMachinePublisherService(options: {
         attemptAt,
         skipReason: "The ADE brain could not read account status.",
         directoryOrigin,
-        reachableEndpointCount,
+        reachableEndpointCount: observedReachableEndpointCount,
       });
       return;
     }
     if (isPublisherSignedOut(accountStatus)) {
-      const unreadable = accountStatus.sessionReadState === "unreadable";
+      clearRetainedRelayState();
+      const unreadable = accountStatus?.sessionReadState === "unreadable";
       recordOutcome(unreadable ? "token_unreadable" : "account_signed_out", {
         attemptAt,
         skipReason: unreadable
           ? "The ADE brain could not read the stored account session."
           : "The ADE brain is signed out of the ADE account.",
         directoryOrigin,
-        reachableEndpointCount,
+        reachableEndpointCount: observedReachableEndpointCount,
       });
       return;
     }
+    const accountOwnerId = reconcileRetainedRelayOwner(accountStatus);
+
+    // Relay readiness is sampled from multiple independently asynchronous
+    // components (control socket, local bridge validation, listener handoff).
+    // A momentary false sample must not overwrite the directory's last verified
+    // Relay route and strand every browser/mobile client. Retain only a route
+    // that THIS publisher successfully registered, for the same machine and
+    // account owner, while Relay remains enabled. Explicit sign-out, owner
+    // change, terminal auth rejection, or a genuinely disabled Relay clears the
+    // retention boundary. The process-local compatibility path below retains
+    // only a route this publisher successfully registered.
+    const relayTemporarilyUnavailable = snapshot.routeHealth.relay.enabled === true
+      && relayEndpoints(observedRegistration).length === 0;
+    const canRetainRelay = relayTemporarilyUnavailable
+      && lastPublishedRelayState?.machineKey === machineKey
+      && lastPublishedRelayState.accountOwnerId === accountOwnerId;
+    const registrationWithRetainedRelay = canRetainRelay
+      ? withRetainedRelayEndpoints(
+          observedRegistration,
+          lastPublishedRelayState?.endpoints ?? [],
+        )
+      : observedRegistration;
+    // The server-side retention hint protects the same invariant across brain
+    // restarts, where this process-local compatibility cache is necessarily
+    // empty. Older directory deployments safely ignore the extra property and
+    // still benefit from the process-local retained route above.
+    const registration: AccountMachineRegistration = relayTemporarilyUnavailable
+      ? { ...registrationWithRetainedRelay, retainRelayEndpoints: true }
+      : registrationWithRetainedRelay;
+    const reachableEndpointCount = registration.reachableEndpoints.length;
 
     let accessToken: string | null = null;
     try {
@@ -467,6 +567,9 @@ export function createAccountMachinePublisherService(options: {
           : responseReason;
         if (response.status >= 500) recordTransientFailure();
         else resetPublishCadence();
+        if (response.status === 401 || response.status === 403) {
+          clearRetainedRelayState();
+        }
         recordOutcome("http_error", {
           attemptAt,
           skipReason: httpReason
@@ -483,6 +586,14 @@ export function createAccountMachinePublisherService(options: {
       await response.body?.cancel().catch(() => {});
       lastWarning = null;
       resetPublishCadence();
+      const publishedRelayEndpoints = relayEndpoints(registration);
+      lastPublishedRelayState = publishedRelayEndpoints.length > 0
+        ? {
+            machineKey,
+            accountOwnerId,
+            endpoints: publishedRelayEndpoints,
+          }
+        : null;
       recordOutcome("published", {
         attemptAt,
         skipReason: null,
@@ -578,7 +689,11 @@ export function createAccountMachinePublisherService(options: {
     if (!started || disposed || options.isSyncEnabled?.() === false) return;
     try {
       const accountStatus = options.getAccountStatus?.() ?? null;
-      if (isPublisherSignedOut(accountStatus)) return;
+      if (isPublisherSignedOut(accountStatus)) {
+        clearRetainedRelayState();
+        return;
+      }
+      reconcileRetainedRelayOwner(accountStatus);
     } catch {
       return;
     }
@@ -651,6 +766,7 @@ export function createAccountMachinePublisherService(options: {
     dispose(): void {
       disposed = true;
       started = false;
+      clearRetainedRelayState();
       clearHeartbeatTimer();
       if (relayStatePollTimer) clearTimeout(relayStatePollTimer);
       relayStatePollTimer = null;
@@ -693,6 +809,7 @@ export function createBrainAccountMachinePublisherService(options: {
       const status = accountAuthService.getStatus();
       return {
         signedIn: status.signedIn,
+        userId: status.userId,
         source: status.source ?? null,
         sessionReadState: accountAuthService.getSessionReadState(),
       };

@@ -1208,9 +1208,13 @@ describe("createSyncRemoteCommandService", () => {
     const result = await service.execute(makePayload("chat.getChatEventHistory", {
       sessionId: "chat-1",
       maxEvents: 128,
+      maxBytes: 131_072,
     }));
 
-    expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", { maxEvents: 128 });
+    expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", {
+      maxEvents: 128,
+      maxBytes: 131_072,
+    });
     expect(result).toEqual({
       sessionId: "chat-1",
       events: [],

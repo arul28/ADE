@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
+import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +21,10 @@ const DEFAULT_MAX_UNIVERSAL_UNPACKED_BYTES = 1600 * 1024 * 1024;
 const EXPECTED_APPLICATION_IDENTIFIER = "VQ372F39G6.com.ade.desktop";
 const EXPECTED_KEYCHAIN_ACCESS_GROUP = "VQ372F39G6.com.ade.desktop.webauthn";
 const ALLOWED_KEYCHAIN_ACCESS_GROUP = "VQ372F39G6.*";
+const {
+  missingRequiredPackagedAdeCliPayloadPaths,
+  packagedAdeCliPayloadFiles,
+} = packagedAdeCliResourcesModule;
 const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
@@ -32,17 +37,20 @@ const bundledAgentSkills = [
   "ade-deeplinks",
   "ade-orchestrator",
 ];
-const bundledAdeCliFiles = [
-  ["cli.cjs", "bundled ADE CLI entry"],
-  ["bootstrap.cjs", "bundled ADE CLI bootstrap entry"],
-  ["ptyHostWorker.cjs", "bundled ADE CLI PTY host worker"],
-  ["cursorSdkWorker.cjs", "bundled ADE CLI Cursor SDK worker"],
-  ["droidSdkWorker.cjs", "bundled ADE CLI Droid SDK worker"],
-  ["adeRpcServer.cjs", "bundled ADE CLI RPC entry"],
-  ["tuiClient/cli.mjs", "bundled ADE CLI TUI entry"],
-  ["bin/ade", "bundled ADE CLI wrapper"],
-  ["install-path.sh", "bundled ADE CLI PATH installer"],
-];
+const bundledAdeCliFiles = packagedAdeCliPayloadFiles({ desktopRoot: appDir })
+  .map((resource) => [
+    resource.relativePath,
+    `bundled ADE CLI resource ${resource.to}`,
+  ]);
+const missingRequiredBundledAdeCliFiles = missingRequiredPackagedAdeCliPayloadPaths(
+  bundledAdeCliFiles.map(([relativePath]) => ({ relativePath })),
+);
+if (missingRequiredBundledAdeCliFiles.length > 0) {
+  throw new Error(
+    `[release:mac] package.json build.extraResources omits required ADE CLI payload: ` +
+      missingRequiredBundledAdeCliFiles.join(", "),
+  );
+}
 
 function readFlag(name) {
   const prefix = `${name}=`;

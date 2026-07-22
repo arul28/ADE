@@ -49,6 +49,7 @@ import {
   DEFAULT_CODEX_REASONING_EFFORT,
   approveToolUse,
   archiveChatSession,
+  buildPtyContinuationLaunchFields,
   cancelSteerMessage,
   createChatSession,
   deleteChatSession,
@@ -8635,6 +8636,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           text,
           cols,
           rows: terminalRows,
+          ...buildPtyContinuationLaunchFields(terminal.resumeMetadata?.launch),
         });
         await refreshTerminalPreview(conn, terminal.terminalId);
         return true;
@@ -8645,6 +8647,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         text,
         cols,
         rows: terminalRows,
+        ...buildPtyContinuationLaunchFields(terminal.resumeMetadata?.launch),
       });
       pendingNewChatTitleRef.current = null;
       setDraftChatMode(false);
@@ -8678,6 +8681,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       sessionId: terminal.terminalId,
       cols,
       rows: terminalRows,
+      ...buildPtyContinuationLaunchFields(terminal.resumeMetadata?.launch),
     });
     pendingNewChatTitleRef.current = null;
     setDraftChatMode(false);

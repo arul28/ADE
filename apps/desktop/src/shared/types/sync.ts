@@ -1,4 +1,10 @@
-import type { AgentChatEventEnvelope, AgentChatPermissionMode } from "./chat";
+import type {
+  AgentChatCodexApprovalPolicy,
+  AgentChatCodexConfigSource,
+  AgentChatCodexSandbox,
+  AgentChatEventEnvelope,
+  AgentChatPermissionMode,
+} from "./chat";
 import type { PersonalChatRemoteCommandAction } from "./personalChats";
 import type {
   CloneProjectInput,
@@ -48,6 +54,20 @@ export type SyncProtocolVersion = 1;
 
 /** Additive hello capability for in-place ADE Relay account reauthorization. */
 export const SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY = "relayReauthorizeV1" as const;
+
+/**
+ * Additive hello capability for browser peers that keep no local CRR replica.
+ * Such peers fully refetch their query domains after hello and consume only
+ * post-connect sync messages as invalidation hints.
+ */
+export const SYNC_INVALIDATION_ONLY_V1_CAPABILITY = "invalidationOnlyV1" as const;
+/** Browser can consume compact `invalidation_batch` envelopes. */
+export const SYNC_COMPACT_INVALIDATION_V1_CAPABILITY = "compactInvalidationV1" as const;
+
+/** Hard bounds for compact browser invalidation hints. */
+export const SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES = 16 * 1024;
+export const SYNC_INVALIDATION_BATCH_MAX_TABLES = 128;
+export const SYNC_INVALIDATION_TABLE_MAX_BYTES = 256;
 
 /** Relay transport readiness protocol used before the ADE sync hello. */
 export const SYNC_RELAY_READY_VERSION = 2 as const;
@@ -418,6 +438,25 @@ export type SyncFeatureFlags = {
   fileAccess: true;
   terminalStreaming: true;
   chatStreaming: {
+    enabled: true;
+  };
+  /**
+   * Browser invalidation-only sync contract. The host includes this only when
+   * the concrete hello requested `invalidationOnlyV1`, confirming it will not
+   * replay CRDT history to a browser with no local replica.
+   *
+   * Older hosts omit this additive feature. Browser clients that require the
+   * contract must fail closed; other clients safely ignore it.
+   */
+  invalidationOnlyV1?: {
+    enabled: true;
+  };
+  /**
+   * Compact invalidation envelope contract. Kept separate from
+   * `invalidationOnlyV1` so hosts remain compatible with older browsers that
+   * negotiated history suppression but only understood `changeset_batch`.
+   */
+  compactInvalidationV1?: {
     enabled: true;
   };
   /**
@@ -908,6 +947,19 @@ export type SyncChangesetBatchPayload = {
   changes: CrsqlChangeRow[];
 };
 
+/**
+ * Compact live-change hint for an invalidation-only browser. The browser has
+ * no CRR replica and therefore needs table names, never row values. When a
+ * table list cannot be represented inside the hard protocol bounds, the host
+ * sends `fullRefresh: true` and the browser invalidates every owned domain.
+ */
+export type SyncInvalidationBatchPayload = {
+  fromDbVersion: number;
+  toDbVersion: number;
+  tables: string[];
+  fullRefresh: boolean;
+};
+
 export type SyncChangesetAckPayload = {
   batchId: string;
   fromDbVersion: number;
@@ -1245,6 +1297,13 @@ export type SyncSendToSessionArgs = {
   text: string;
   cols?: number | null;
   rows?: number | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+  permissionMode?: AgentChatPermissionMode | null;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+  codexSandbox?: AgentChatCodexSandbox | null;
+  codexConfigSource?: AgentChatCodexConfigSource | null;
 };
 
 export type SyncSendToSessionResult = PtySendToSessionResult;
@@ -1633,6 +1692,7 @@ export type SyncProjectListMyGitHubReposResultEnvelope = SyncEnvelopeWithPayload
 export type SyncPairingRequestEnvelope = SyncEnvelopeWithPayload<"pairing_request", SyncPairingRequestPayload>;
 export type SyncPairingResultEnvelope = SyncEnvelopeWithPayload<"pairing_result", SyncPairingResultPayload>;
 export type SyncChangesetBatchEnvelope = SyncEnvelopeWithPayload<"changeset_batch", SyncChangesetBatchPayload>;
+export type SyncInvalidationBatchEnvelope = SyncEnvelopeWithPayload<"invalidation_batch", SyncInvalidationBatchPayload>;
 export type SyncChangesetAckEnvelope = SyncEnvelopeWithPayload<"changeset_ack", SyncChangesetAckPayload>;
 export type SyncHeartbeatEnvelope = SyncEnvelopeWithPayload<"heartbeat", SyncHeartbeatPayload>;
 export type SyncFileRequestEnvelope = SyncEnvelopeWithPayload<"file_request", SyncFileRequest>;
@@ -1700,6 +1760,7 @@ export type SyncEnvelope =
   | SyncPairingRequestEnvelope
   | SyncPairingResultEnvelope
   | SyncChangesetBatchEnvelope
+  | SyncInvalidationBatchEnvelope
   | SyncChangesetAckEnvelope
   | SyncHeartbeatEnvelope
   | SyncFileRequestEnvelope

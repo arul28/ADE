@@ -1,16 +1,21 @@
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  SyncEnvelope,
-  SyncFeatureFlags,
-  SyncHelloOkPayload,
-  SyncPairingQrPayload,
-  SyncPeerMetadata,
+import {
+  SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+  SYNC_INVALIDATION_TABLE_MAX_BYTES,
+  SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+  type SyncBrainStatusPayload,
+  type SyncEnvelope,
+  type SyncFeatureFlags,
+  type SyncHelloOkPayload,
+  type SyncPairingQrPayload,
+  type SyncPeerMetadata,
 } from "../../../../shared/types/sync";
 import type { AdeAccountMachine } from "../../../../shared/types/account";
 import { AdeSyncClient } from "../client";
 import {
   BACKOFF_STABLE_CONNECTED_MS,
+  INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
   RELAY_READY_NEGOTIATION_WINDOW_MS,
   SyncConnection,
   type WebSocketLike,
@@ -69,6 +74,8 @@ const features: SyncFeatureFlags = {
   fileAccess: true,
   terminalStreaming: true,
   chatStreaming: { enabled: true },
+  invalidationOnlyV1: { enabled: true },
+  compactInvalidationV1: { enabled: true },
   projectCatalog: { enabled: true },
   projectActions: { enabled: true },
   changesetAck: { enabled: true },
@@ -138,6 +145,24 @@ function helloOk(projectId = "project-1"): SyncHelloOkPayload {
       },
     ],
     features,
+  };
+}
+
+function legacyHelloOk(projectId = "project-1"): SyncHelloOkPayload {
+  const payload = helloOk(projectId);
+  const { invalidationOnlyV1: _ignored, ...featuresWithoutAcceptance } = payload.features;
+  return {
+    ...payload,
+    features: featuresWithoutAcceptance,
+  };
+}
+
+function changesetHintHelloOk(projectId = "project-1"): SyncHelloOkPayload {
+  const payload = helloOk(projectId);
+  const { compactInvalidationV1: _ignored, ...featuresWithoutCompactInvalidation } = payload.features;
+  return {
+    ...payload,
+    features: featuresWithoutCompactInvalidation,
   };
 }
 
@@ -759,6 +784,84 @@ describe("browser sync connection and client", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("rejects a saved browser pairing when the host only supports legacy changeset hints", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: changesetHintHelloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const outcome = connection.connect(environment, [
+      { url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true },
+      { url: "ws://127.0.0.1:8788", kind: "loopback", dialable: true },
+    ]).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(outcome).resolves.toMatchObject({
+      code: "invalidation_only_v1_unsupported",
+      message: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+
+    expect(script.sockets).toHaveLength(1);
+    expect(script.sockets[0]?.closeHistory).toContainEqual({ code: 4000, reason: "Incompatible ADE host" });
+    expect(connection.getStatus()).toMatchObject({
+      state: "error",
+      error: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(script.sockets).toHaveLength(1);
+    connection.dispose();
+  });
+
+  it("rejects account adoption before creating trust when the host is too old", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    vi.useFakeTimers();
+    const buildEnvironment = vi.fn(() => environment);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        const peer = (envelope.payload as { peer: SyncPeerMetadata }).peer;
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: {
+            ...legacyHelloOk(),
+            accountPairing: { deviceId: peer.deviceId, secret: "new-pairing-secret" },
+          },
+        });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+
+    const outcome = connection.pairWithAccount({
+      endpoints: [
+        { url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true },
+        { url: "ws://127.0.0.1:8788", kind: "loopback", dialable: true },
+      ],
+      peer: { ...hostPeer, deviceId: "new-browser-device", deviceType: "browser" },
+      accountToken: "account-token",
+      createDpop: async () => ({ timestamp: 1, nonce: "nonce", signature: "signature" }),
+      expectedHostDeviceId: hostPeer.deviceId,
+      existingPairing: null,
+      buildEnvironment,
+    }).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(outcome).resolves.toMatchObject({
+      code: "invalidation_only_v1_unsupported",
+      message: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+
+    expect(buildEnvironment).not.toHaveBeenCalled();
+    expect(script.sockets).toHaveLength(1);
+    expect(script.sockets[0]?.closeHistory).toContainEqual({ code: 4000, reason: "Incompatible ADE host" });
+    expect(connection.getStatus()).toMatchObject({
+      state: "error",
+      error: INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE,
+    });
+    connection.dispose();
   });
 
   it("retries an old Worker on a fresh legacy socket without sending hello on ready-v2", async () => {
@@ -1413,7 +1516,7 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
-  it("advertises reauthorization support and refreshes on the host lease schedule", async () => {
+  it("advertises reauthorization support and refreshes ahead of the host lease deadline", async () => {
     const nowMs = 1_800_000_000_000;
     vi.useFakeTimers();
     vi.setSystemTime(nowMs);
@@ -1423,7 +1526,11 @@ describe("browser sync connection and client", () => {
     const relayTokenProvider: () => Promise<string> = vi.fn(async () => `relay-token-${++relayTokenSequence}`);
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
+        });
       } else if (envelope.type === "relay_reauthorize") {
         socket.serverSend({
           type: "relay_reauthorize_result",
@@ -1471,6 +1578,123 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
+  it("paces successful Relay renewals when short token leases stay inside the safety lead", async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    let refreshCount = 0;
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
+        });
+      } else if (envelope.type === "relay_reauthorize") {
+        refreshCount += 1;
+        if (refreshCount === 1) {
+          socket.serverSend({
+            type: "relay_reauthorize_result",
+            requestId: envelope.requestId,
+            payload: {
+              ok: true,
+              relayAuthorization: {
+                expiresAt: nowMs + 120_000,
+                refreshAfter: nowMs + 60_000,
+                challenge: "short-token-lease",
+                graceMs: 10_000,
+              },
+            },
+          });
+        }
+      }
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: null,
+      relayReauthorizationSigner,
+    });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-token",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    completeRelayReadyV2(script.sockets[0]);
+    await connecting;
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refreshCount).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(refreshCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(refreshCount).toBe(2);
+    connection.dispose();
+  });
+
+  it("caps Relay pacing before a short accepted lease expires", async () => {
+    const nowMs = 1_800_000_000_000;
+    vi.useFakeTimers();
+    vi.setSystemTime(nowMs);
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    let refreshCount = 0;
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
+        });
+      } else if (envelope.type === "relay_reauthorize") {
+        refreshCount += 1;
+        if (refreshCount === 1) {
+          socket.serverSend({
+            type: "relay_reauthorize_result",
+            requestId: envelope.requestId,
+            payload: {
+              ok: true,
+              relayAuthorization: {
+                expiresAt: nowMs + 32_000,
+                refreshAfter: nowMs + 12_000,
+                challenge: "short-accepted-lease",
+                graceMs: 10_000,
+              },
+            },
+          });
+        }
+      }
+    });
+    const connection = new SyncConnection({
+      socketFactory: script.factory,
+      document: null,
+      relayReauthorizationSigner,
+    });
+
+    const connecting = connection.connect(
+      environment,
+      [{ url: pairingPayload.relayUrl!, kind: "relay", dialable: true }],
+      async () => "relay-token",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    completeRelayReadyV2(script.sockets[0]);
+    await connecting;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(refreshCount).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(25_999);
+    expect(refreshCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await flushMicrotasks();
+    expect(refreshCount).toBe(2);
+    connection.dispose();
+  });
+
   it("deduplicates refresh preparation and retries an identical request after a lost ACK", async () => {
     const nowMs = 1_800_000_000_000;
     vi.useFakeTimers();
@@ -1482,7 +1706,11 @@ describe("browser sync connection and client", () => {
     let refreshFrames = 0;
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
+        });
       } else if (envelope.type === "relay_reauthorize") {
         refreshFrames += 1;
         if (refreshFrames === 2) {
@@ -1546,7 +1774,7 @@ describe("browser sync connection and client", () => {
         socket.serverSend({
           type: "hello_ok",
           requestId: envelope.requestId,
-          payload: relayHelloOk(nowMs, { expiresAfterMs: 90_000 }),
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
         });
       } else if (envelope.type === "relay_reauthorize") {
         refreshTimes.push(Date.now());
@@ -1649,7 +1877,10 @@ describe("browser sync connection and client", () => {
       socket.serverSend({
         type: "hello_ok",
         requestId: envelope.requestId,
-        payload: relayHelloOk(nowMs, { refreshAfterMs: helloCount === 1 ? 1_000 : 5_000 }),
+        payload: relayHelloOk(nowMs, {
+          expiresAfterMs: 120_000,
+          refreshAfterMs: helloCount === 1 ? 91_000 : 95_000,
+        }),
       });
     });
     const connection = new SyncConnection({
@@ -1685,7 +1916,7 @@ describe("browser sync connection and client", () => {
     connection.dispose();
   });
 
-  it("wakes an overdue hidden refresh on visibility and treats account change as terminal", async () => {
+  it("refreshes a hidden Relay tab before expiry and treats account change as terminal", async () => {
     const nowMs = 1_800_000_000_000;
     vi.useFakeTimers();
     vi.setSystemTime(nowMs);
@@ -1694,7 +1925,11 @@ describe("browser sync connection and client", () => {
     const visibility = new VisibilityDocument();
     const script = createSocketFactory((socket, envelope) => {
       if (envelope.type === "hello") {
-        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: relayHelloOk(nowMs) });
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: relayHelloOk(nowMs, { expiresAfterMs: 120_000, refreshAfterMs: 91_000 }),
+        });
       } else if (envelope.type === "relay_reauthorize") {
         socket.serverSend({
           type: "relay_reauthorize_result",
@@ -1726,7 +1961,7 @@ describe("browser sync connection and client", () => {
     visibility.setVisibility("hidden");
     await vi.advanceTimersByTimeAsync(2_000);
     expect(script.sockets[0]?.sent.filter((envelope) => envelope.type === "relay_reauthorize"))
-      .toHaveLength(0);
+      .toHaveLength(1);
 
     visibility.setVisibility("visible");
     await flushMicrotasks();
@@ -1956,6 +2191,69 @@ describe("browser sync connection and client", () => {
     await flushMicrotasks();
     expect(clientPings()).toHaveLength(1);
     client.dispose();
+  });
+
+  it("uses invalidation-only sync with bounded live hints", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const invalidations: string[][] = [];
+    connection.on("tablesChanged", (tables) => invalidations.push([...tables].sort()));
+    const endpoint = { url: "ws://127.0.0.1:8787", kind: "loopback" as const, dialable: true };
+
+    await connection.connect(environment, [endpoint]);
+    const hello = script.sockets[0]?.sent.find((envelope) => envelope.type === "hello");
+    expect((hello?.payload as { peer?: SyncPeerMetadata }).peer?.capabilities).toContain(
+      SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+    );
+    expect((hello?.payload as { peer?: SyncPeerMetadata }).peer?.capabilities).toContain(
+      SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+    );
+    expect(invalidations).toEqual([[
+      "agent_chats",
+      "files",
+      "github",
+      "lanes",
+      "pull_requests",
+      "rebase",
+      "sessions",
+    ]]);
+
+    script.sockets[0]?.serverSend({
+      type: "invalidation_batch",
+      payload: {
+        fromDbVersion: 12,
+        toDbVersion: 13,
+        tables: ["agent_chats"],
+        fullRefresh: false,
+      },
+    });
+    await flushMicrotasks();
+    expect(invalidations).toHaveLength(2);
+    expect(invalidations[1]).toEqual(["agent_chats"]);
+    expect(script.sockets[0]?.sent.some((envelope) => envelope.type === "changeset_ack")).toBe(false);
+
+    script.sockets[0]?.serverSend({
+      type: "invalidation_batch",
+      payload: {
+        fromDbVersion: 13,
+        toDbVersion: 14,
+        tables: ["t".repeat(SYNC_INVALIDATION_TABLE_MAX_BYTES + 1)],
+        fullRefresh: false,
+      },
+    });
+    await flushMicrotasks();
+    expect(invalidations).toHaveLength(3);
+    expect(invalidations[2]).toEqual(invalidations[0]);
+
+    await connection.connect(environment, [endpoint]);
+    expect(invalidations).toHaveLength(4);
+    expect(invalidations[3]).toEqual(invalidations[0]);
+    connection.dispose();
   });
 
   it("lets a locally paired environment use Relay only after the account directory verifies its host", async () => {
@@ -2744,7 +3042,7 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("rebinds stream subscriptions to the new project after switching", async () => {
+  it("retires old project streams and subscribes only newly requested streams after switching", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
     let helloProjectId = "project-1";
@@ -2783,14 +3081,338 @@ describe("browser sync connection and client", () => {
     expect(script.sockets).toHaveLength(2);
     expect(script.sockets[0].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(true);
     expect(script.sockets[0].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(true);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+
+    client.subscribeChat("chat-2", {}, {});
+    client.subscribeTerminal("term-2", {}, {});
+    await flush();
     expect(script.sockets[1].sent.find((envelope) => envelope.type === "chat_subscribe")).toMatchObject({
       projectId: "project-2",
-      payload: { sessionId: "chat-1" },
+      payload: { sessionId: "chat-2" },
     });
     expect(script.sockets[1].sent.find((envelope) => envelope.type === "terminal_subscribe")).toMatchObject({
       projectId: "project-2",
-      payload: { sessionId: "term-1" },
+      payload: { sessionId: "term-2" },
     });
+
+    client.dispose();
+  });
+
+  it("rebinds /chats foreign streams while retiring active streams on a same-socket project boundary", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const commandProjectIds: Array<string | null | undefined> = [];
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk("project-1") });
+      }
+      if (envelope.type === "command") {
+        commandProjectIds.push(envelope.projectId);
+        const { commandId } = envelope.payload as { commandId: string };
+        socket.serverSend({
+          type: "command_result",
+          requestId: envelope.requestId,
+          payload: { commandId, ok: true, result: { projectId: envelope.projectId } },
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const changes: Array<{ previousProjectId: string | null; projectId: string }> = [];
+    const deliveredChatSessionIds: string[] = [];
+    client.onActiveProjectChanged(({ previousProjectId, project }) => {
+      changes.push({ previousProjectId, projectId: project.id });
+    });
+    client.onChatEvent((payload) => deliveredChatSessionIds.push(payload.sessionId));
+
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await connecting;
+    client.subscribeChat("project-chat", {}, {});
+    client.subscribeChat("personal-chat", { chatScope: "personal" }, {});
+    client.subscribeChat("foreign-chat", {
+      projectId: "project-foreign",
+      projectRootPath: "/repo-foreign",
+    }, {});
+    client.subscribeTerminal("project-terminal", {}, {});
+    await flush();
+    script.sockets[0]?.serverSend({
+      type: "chat_event",
+      payload: {
+        sessionId: "foreign-chat",
+        timestamp: new Date().toISOString(),
+        seq: 9,
+        event: { type: "foreign-event-before-handoff" },
+      },
+    } as never);
+    await flush();
+    deliveredChatSessionIds.length = 0;
+
+    const projectOne = { ...helloOk("project-1").projects![0], isOpen: false };
+    const projectTwo = {
+      ...helloOk("project-2").projects![0],
+      displayName: "Repo Two",
+      rootPath: "/repo-2",
+      isOpen: true,
+    };
+    script.sockets[0]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: [projectOne, projectTwo] },
+    });
+    await flush();
+
+    expect(script.sockets).toHaveLength(1);
+    expect(client.getStatus().activeProjectId).toBe("project-2");
+    expect(changes).toEqual([{ previousProjectId: "project-1", projectId: "project-2" }]);
+    expect(script.sockets[0].sent.filter((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "project-chat"
+    ))).toEqual([expect.objectContaining({ projectId: "project-1" })]);
+    expect(script.sockets[0].sent.filter((envelope) => (
+      envelope.type === "chat_unsubscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "project-chat"
+    ))).toEqual([expect.objectContaining({ projectId: "project-2" })]);
+    expect(script.sockets[0].sent.filter((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+    ))).toHaveLength(1);
+    expect(script.sockets[0].sent.some((envelope) => (
+      envelope.type === "chat_unsubscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+    ))).toBe(false);
+    expect(script.sockets[0].sent.find((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+    ))?.projectId).toBeUndefined();
+    const foreignSubscriptions = script.sockets[0].sent.filter((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "foreign-chat"
+    ));
+    expect(foreignSubscriptions).toHaveLength(2);
+    expect(foreignSubscriptions).toEqual([
+      expect.objectContaining({ projectId: "project-foreign" }),
+      expect.objectContaining({ projectId: "project-foreign" }),
+    ]);
+    expect(foreignSubscriptions[1]?.payload).toMatchObject({
+      sessionId: "foreign-chat",
+      projectId: "project-foreign",
+      projectRootPath: "/repo-foreign",
+    });
+    expect(foreignSubscriptions[1]?.payload).not.toHaveProperty("sinceSeq");
+    expect(script.sockets[0].sent.some((envelope) => (
+      envelope.type === "chat_unsubscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "foreign-chat"
+    ))).toBe(false);
+    expect(script.sockets[0].sent.filter((envelope) => envelope.type === "terminal_subscribe")).toEqual([
+      expect.objectContaining({ projectId: "project-1" }),
+    ]);
+    expect(script.sockets[0].sent.filter((envelope) => envelope.type === "terminal_unsubscribe")).toEqual([
+      expect.objectContaining({
+        projectId: "project-2",
+        payload: { sessionId: "project-terminal" },
+      }),
+    ]);
+
+    script.sockets[0]?.serverSend({
+      type: "chat_event",
+      payload: {
+        sessionId: "project-chat",
+        timestamp: new Date().toISOString(),
+        event: { type: "late-old-project-event" },
+      },
+    } as never);
+    script.sockets[0]?.serverSend({
+      type: "chat_event",
+      payload: {
+        sessionId: "personal-chat",
+        timestamp: new Date().toISOString(),
+        event: { type: "personal-event" },
+      },
+    } as never);
+    await flush();
+    expect(deliveredChatSessionIds).toEqual(["personal-chat"]);
+
+    client.subscribeChat("new-project-chat", {}, {});
+    client.subscribeTerminal("new-project-terminal", {}, {});
+    await flush();
+    expect(script.sockets[0].sent.find((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "new-project-chat"
+    ))).toMatchObject({ projectId: "project-2" });
+    expect(script.sockets[0].sent.find((envelope) => (
+      envelope.type === "terminal_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "new-project-terminal"
+    ))).toMatchObject({ projectId: "project-2" });
+
+    await expect(client.sendCommand("chat.send", { text: "new project" })).resolves.toEqual({
+      projectId: "project-2",
+    });
+    expect(commandProjectIds).toEqual(["project-2"]);
+    await flush();
+    await expect(new WebClientEnvStore(storage).getEnvironment(environment.envId)).resolves.toMatchObject({
+      activeProjectId: "project-2",
+    });
+
+    client.dispose();
+  });
+
+  it("preserves wire order while a compressed project boundary is decoding", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk("project-1") });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const delivered: string[] = [];
+
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await connecting;
+    client.subscribeChat("old-project-chat", {}, {
+      event: (payload) => delivered.push(String((payload.event as { type?: unknown }).type ?? "")),
+    });
+    await flush();
+
+    const projectOne = { ...helloOk("project-1").projects![0], isOpen: false };
+    const projectTwo = {
+      ...helloOk("project-2").projects![0],
+      displayName: `Repo Two ${"x".repeat(50_000)}`,
+      rootPath: "/repo-2",
+      isOpen: true,
+    };
+    script.sockets[0]?.onmessage?.({
+      data: encodeSyncEnvelope({
+        type: "project_catalog",
+        payload: { projects: [projectOne, projectTwo] },
+        compressionThresholdBytes: 0,
+      }),
+    } as MessageEvent<string>);
+    script.sockets[0]?.serverSend({
+      type: "chat_event",
+      payload: {
+        sessionId: "old-project-chat",
+        timestamp: new Date().toISOString(),
+        seq: 1,
+        event: { type: "late-old-project-event" },
+      },
+    } as never);
+
+    for (let attempt = 0; attempt < 20 && client.getStatus().activeProjectId !== "project-2"; attempt += 1) {
+      await flush();
+    }
+    expect(client.getStatus().activeProjectId).toBe("project-2");
+    expect(delivered).toEqual([]);
+    client.dispose();
+  });
+
+  it("continues the ordered inbound queue after one malformed envelope", async () => {
+    const environment = await makeEnvironment(new MemoryStorage(), { dpopPublicKeyX963: null });
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk() });
+      }
+    });
+    const connection = new SyncConnection({ socketFactory: script.factory, document: null });
+    const statuses: SyncBrainStatusPayload[] = [];
+    connection.on("brainStatus", (payload) => statuses.push(payload));
+    await connection.connect(environment, [
+      { url: "ws://127.0.0.1:8787", kind: "loopback", dialable: true },
+    ]);
+
+    script.sockets[0]?.onmessage?.({ data: "{not-json" } as MessageEvent<string>);
+    script.sockets[0]?.serverSend({
+      type: "brain_status",
+      payload: { state: "ready" },
+    });
+    await flushMicrotasks();
+
+    expect(statuses).toEqual([{ state: "ready" }]);
+    expect(connection.getStatus().state).toBe("connected");
+    connection.dispose();
+  });
+
+  it("persists rapid project boundaries in arrival order", async () => {
+    const storage = new DelayedPutStorage();
+    const environment = await makeEnvironment(storage);
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk("project-1") });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await connecting;
+    await flush();
+
+    storage.delayNextEnvironmentPut = true;
+    script.sockets[0]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: [{ ...helloOk("project-2").projects![0], isOpen: true }] },
+    });
+    await storage.waitForPausedPut();
+    script.sockets[0]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: [{ ...helloOk("project-3").projects![0], isOpen: true }] },
+    });
+    await flush();
+    storage.resumePausedPut();
+    for (let attempt = 0; attempt < 10; attempt += 1) await flush();
+
+    expect(client.getStatus().activeProjectId).toBe("project-3");
+    await expect(new WebClientEnvStore(storage).getEnvironment(environment.envId)).resolves.toMatchObject({
+      activeProjectId: "project-3",
+    });
+    client.dispose();
+  });
+
+  it("publishes the same project boundary when reconnect hello opens a different project", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    let helloProjectId = "project-1";
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: helloOk(helloProjectId),
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const changes: Array<{ previousProjectId: string | null; projectId: string }> = [];
+    client.onActiveProjectChanged(({ previousProjectId, project }) => {
+      changes.push({ previousProjectId, projectId: project.id });
+    });
+
+    const initialConnect = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await initialConnect;
+    client.subscribeChat("old-project-chat", {}, {});
+    client.subscribeChat("personal-chat", { chatScope: "personal" }, {});
+    client.subscribeTerminal("old-project-terminal", {}, {});
+    await flush();
+
+    script.sockets[0]?.close(1006, "listener handoff");
+    helloProjectId = "project-2";
+    const reconnect = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 1);
+    await reconnect;
+    await flush();
+
+    expect(client.getStatus().activeProjectId).toBe("project-2");
+    expect(changes).toContainEqual({ previousProjectId: "project-1", projectId: "project-2" });
+    expect(script.sockets[1].sent.some((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "old-project-chat"
+    ))).toBe(false);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+    expect(script.sockets[1].sent.find((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+    ))?.projectId).toBeUndefined();
 
     client.dispose();
   });

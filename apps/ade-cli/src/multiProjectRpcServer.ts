@@ -1,5 +1,6 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +27,10 @@ import {
   type JsonRpcRequest,
 } from "./jsonrpc";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
-import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
+import {
+  REMOTE_ICON_MAX_DATA_URL_BYTES,
+  resolveRemoteProjectIcon,
+} from "./services/projects/projectIconResolver";
 import {
   ProjectRegistry,
   SYSTEM_PROJECT_REGISTRATION,
@@ -251,37 +255,164 @@ const EMPTY_PROJECT_ICON: ResolvedProjectIcon = Object.freeze({
 // most this many icons and this many inlined bytes per call. A large or
 // slow-filesystem registry then can't stall a connect just to render tab
 // artwork — projects past the budget fall back to a null icon.
-const LIST_ICON_COUNT_BUDGET = 64;
-const LIST_ICON_BYTE_BUDGET = 12 * 1024 * 1024;
+const LIST_ICON_COUNT_BUDGET = 24;
+const LIST_ICON_BYTE_BUDGET = 512 * 1024;
+const LIST_ICON_RESOLVE_BUDGET_MS = 750;
+
+type ProjectIconResolver = (
+  rootPath: string,
+  timeoutMs: number,
+) => ResolvedProjectIcon | Promise<ResolvedProjectIcon>;
+
+function projectIconWorkerInvocation(rootPath: string): {
+  command: string;
+  args: string[];
+} {
+  const entryPath = process.argv[1] ?? "";
+  const isCliScript = /(^|[/\\])cli\.(?:ts|js|cjs)$/i.test(entryPath)
+    && fs.existsSync(entryPath);
+  return isCliScript
+    ? {
+        command: process.execPath,
+        args: [
+          ...process.execArgv,
+          entryPath,
+          "__ade-project-icon-worker",
+          rootPath,
+        ],
+      }
+    : {
+        // Node SEA executables re-enter the bundled CLI directly. Its SEA
+        // banner restores the synthetic cli.cjs argv entry before parsing.
+        command: process.execPath,
+        args: ["__ade-project-icon-worker", rootPath],
+      };
+}
+
+function isResolvedProjectIcon(value: unknown): value is ResolvedProjectIcon {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const icon = value as Record<string, unknown>;
+  return [icon.dataUrl, icon.sourcePath, icon.mimeType].every(
+    (field) => field === null || typeof field === "string",
+  );
+}
+
+// Icon discovery includes synchronous directory scans and a native rasterizer.
+// Run it outside the RPC process so the connect-critical event loop remains
+// responsive and the parent can enforce a real wall-clock deadline by killing
+// a worker that outlives its remaining catalog budget.
+function resolveRemoteProjectIconInWorker(
+  rootPath: string,
+  timeoutMs: number,
+): Promise<ResolvedProjectIcon> {
+  if (timeoutMs <= 0) return Promise.resolve(EMPTY_PROJECT_ICON);
+  const invocation = projectIconWorkerInvocation(rootPath);
+  return new Promise((resolve) => {
+    execFile(
+      invocation.command,
+      invocation.args,
+      {
+        timeout: Math.max(1, Math.floor(timeoutMs)),
+        killSignal: "SIGKILL",
+        maxBuffer: REMOTE_ICON_MAX_DATA_URL_BYTES + 16 * 1024,
+        encoding: "utf8",
+      },
+      (error, stdout) => {
+        if (error) {
+          resolve(EMPTY_PROJECT_ICON);
+          return;
+        }
+        try {
+          const icon = JSON.parse(stdout.trim()) as unknown;
+          resolve(isResolvedProjectIcon(icon) ? icon : EMPTY_PROJECT_ICON);
+        } catch {
+          resolve(EMPTY_PROJECT_ICON);
+        }
+      },
+    );
+  });
+}
+
+async function resolveIconBeforeDeadline(
+  resolveIcon: ProjectIconResolver,
+  rootPath: string,
+  timeoutMs: number,
+): Promise<ResolvedProjectIcon> {
+  if (timeoutMs <= 0) return EMPTY_PROJECT_ICON;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => resolveIcon(rootPath, timeoutMs)),
+      new Promise<ResolvedProjectIcon>((resolve) => {
+        timer = setTimeout(() => resolve(EMPTY_PROJECT_ICON), timeoutMs);
+      }),
+    ]);
+  } catch {
+    return EMPTY_PROJECT_ICON;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 // Stamp a single project record with its host-resolved icon so a remote desktop
 // can render the real project logo. Used for the records returned by
 // add/create/clone (which feed the desktop's cached connection.projects), so a
 // freshly registered project opens with its icon instead of a blank folder.
 // Best-effort: a failed resolve degrades to a null icon and never throws.
-function decorateProjectWithIcon<T extends { rootPath: string }>(
+async function decorateProjectWithIcon<T extends { rootPath: string }>(
   record: T,
-): T & { icon: ResolvedProjectIcon } {
-  return { ...record, icon: resolveRemoteProjectIcon(record.rootPath) };
+): Promise<T & { icon: ResolvedProjectIcon }> {
+  return {
+    ...record,
+    icon: await resolveIconBeforeDeadline(
+      resolveRemoteProjectIconInWorker,
+      record.rootPath,
+      LIST_ICON_RESOLVE_BUDGET_MS,
+    ),
+  };
 }
 
 // Decorate a full project list with icons under the connect-path budget above.
 // Icons are resolved for the most-recently-opened projects first (those most
 // likely to be open as tabs) while the returned array stays in registry order.
-function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number }>(
+export async function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number }>(
   records: readonly T[],
-): Array<T & { icon: ResolvedProjectIcon }> {
+  resolveIcon: ProjectIconResolver = resolveRemoteProjectIconInWorker,
+  resolveBudgetMs = LIST_ICON_RESOLVE_BUDGET_MS,
+): Promise<Array<T & { icon: ResolvedProjectIcon }>> {
   const icons = new Map<number, ResolvedProjectIcon>();
   let count = 0;
   let bytes = 0;
+  const startedAt = Date.now();
   const byRecency = records
     .map((record, index) => ({ record, index }))
-    .sort((a, b) => b.record.lastOpenedAt - a.record.lastOpenedAt);
+    .sort((a, b) =>
+      b.record.lastOpenedAt - a.record.lastOpenedAt || a.index - b.index
+    );
   for (const { record, index } of byRecency) {
-    if (count >= LIST_ICON_COUNT_BUDGET || bytes >= LIST_ICON_BYTE_BUDGET) break;
-    const icon = resolveRemoteProjectIcon(record.rootPath);
+    const elapsedMs = Date.now() - startedAt;
+    if (
+      count >= LIST_ICON_COUNT_BUDGET
+      || bytes >= LIST_ICON_BYTE_BUDGET
+      || elapsedMs >= resolveBudgetMs
+    ) break;
+    const icon = await resolveIconBeforeDeadline(
+      resolveIcon,
+      record.rootPath,
+      resolveBudgetMs - elapsedMs,
+    );
     count += 1;
-    if (icon.dataUrl) bytes += icon.dataUrl.length;
+    const iconBytes = icon.dataUrl
+      ? Buffer.byteLength(icon.dataUrl, "utf8")
+      : 0;
+    if (
+      iconBytes > REMOTE_ICON_MAX_DATA_URL_BYTES
+      || bytes + iconBytes > LIST_ICON_BYTE_BUDGET
+    ) {
+      icons.set(index, EMPTY_PROJECT_ICON);
+      continue;
+    }
+    bytes += iconBytes;
     icons.set(index, icon);
   }
   return records.map((record, index) => ({
@@ -1008,7 +1139,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.list") {
-      return decorateProjectListWithIcons(projectRegistry.list());
+      return await decorateProjectListWithIcons(projectRegistry.list());
     }
 
     if (method === "projects.add") {
@@ -1020,7 +1151,7 @@ export function createMultiProjectRpcRequestHandler(
           "projects.add requires rootPath.",
         );
       }
-      return decorateProjectWithIcon(
+      return await decorateProjectWithIcon(
         projectRegistry.add(rootPath, readProjectRegistrationIntent(params)),
       );
     }
@@ -1040,7 +1171,7 @@ export function createMultiProjectRpcRequestHandler(
         registration.catalogVisibility,
         registration.registrationSource,
       );
-      return project ? decorateProjectWithIcon(project) : null;
+      return project ? await decorateProjectWithIcon(project) : null;
     }
 
     if (method === "projects.remove") {
@@ -1120,7 +1251,7 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().createLocalProject(
           readCreateProjectInput(params),
         );
-      return decorateProjectWithIcon(
+      return await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),
@@ -1133,7 +1264,7 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().cloneRepository(
           readCloneProjectInput(params),
         );
-      return decorateProjectWithIcon(
+      return await decorateProjectWithIcon(
         projectRegistry.add(
           result.rootPath,
           readProjectRegistrationIntent(params),

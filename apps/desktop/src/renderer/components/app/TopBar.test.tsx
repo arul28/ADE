@@ -421,6 +421,16 @@ describe("TopBar", () => {
     });
   });
 
+  it("hides the desktop Connections panel controls in hosted web mode", () => {
+    globalThis.window.__adeWebClient = true;
+
+    render(<TopBar />);
+
+    expect(screen.queryByRole("button", { name: /^Connections, (?:not )?connected$/ })).toBeNull();
+    act(() => openConnectionsPanel("machines"));
+    expect(screen.queryByRole("dialog", { name: "Connections" })).toBeNull();
+  });
+
   it("shows a closable Chats pseudo-tab when chats are open without a project", () => {
     const { onNavigate } = renderChatsTopBar({
       personalChatsRouteActive: true,

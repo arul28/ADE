@@ -6,6 +6,7 @@ import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload, Reba
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch, resolveQueueRebaseOverride } from "../shared/queueRebase";
 import { isRecord, nowIso } from "../shared/utils";
+import { serializeLaneCacheKeyFields } from "./laneCacheKey";
 
 type StoredSuggestionState = {
   laneId: string;
@@ -20,12 +21,20 @@ type StoredSuggestionState = {
 const KEY_PREFIX = "rebase:suggestion:";
 const SUGGESTION_CACHE_TTL_MS = 10_000;
 const SUGGESTION_SCAN_CONCURRENCY = 4;
+const SUGGESTION_CACHE_MAX_ENTRIES = 8;
 
 type ListSuggestionsOptions = {
   force?: boolean;
   lanes?: LaneSummary[];
   refreshRemoteTracking?: boolean;
 };
+
+function suggestionCacheKey(options: ListSuggestionsOptions): string {
+  if (!options.lanes) return "default";
+  return JSON.stringify(options.lanes
+    .map(serializeLaneCacheKeyFields)
+    .sort((left, right) => left.id.localeCompare(right.id)));
+}
 
 function keyForLane(laneId: string): string {
   return `${KEY_PREFIX}${laneId}`;
@@ -109,12 +118,13 @@ export function createRebaseSuggestionService(args: {
     db.setJson(keyForLane(state.laneId), state);
   };
 
-  let cachedSuggestions: { atMs: number; suggestions: RebaseSuggestion[] } | null = null;
-  let suggestionsInFlight: Promise<RebaseSuggestion[]> | null = null;
+  const cachedSuggestions = new Map<string, { atMs: number; suggestions: RebaseSuggestion[] }>();
+  const suggestionsInFlight = new Map<string, Promise<RebaseSuggestion[]>>();
   let suggestionsCacheGeneration = 0;
 
   const invalidateSuggestionsCache = () => {
-    cachedSuggestions = null;
+    cachedSuggestions.clear();
+    suggestionsInFlight.clear();
     suggestionsCacheGeneration += 1;
   };
 
@@ -433,33 +443,41 @@ export function createRebaseSuggestionService(args: {
   };
 
   const listSuggestions = async (options: ListSuggestionsOptions = {}): Promise<RebaseSuggestion[]> => {
-    // Only share the global cache and in-flight promise for default (no
-    // request-specific options) requests. Caller-supplied lane subsets and
-    // refreshRemoteTracking each compute different results, so they must not
-    // read or populate the shared default-result cache.
-    const useSharedCache = !options.force && !options.lanes && options.refreshRemoteTracking !== true;
+    // Snapshot callers provide the lanes they already loaded. Cache those
+    // bounded scans too; otherwise every invalidation starts the same slow git
+    // probes again while an earlier timed-out/deferred scan is still running.
+    const useSharedCache = !options.force && options.refreshRemoteTracking !== true;
+    const cacheKey = suggestionCacheKey(options);
     const nowMs = Date.now();
-    if (useSharedCache && cachedSuggestions && nowMs - cachedSuggestions.atMs < SUGGESTION_CACHE_TTL_MS) {
-      return cachedSuggestions.suggestions;
+    const cached = cachedSuggestions.get(cacheKey);
+    if (useSharedCache && cached && nowMs - cached.atMs < SUGGESTION_CACHE_TTL_MS) {
+      return cached.suggestions;
     }
-    if (useSharedCache && suggestionsInFlight) {
-      return suggestionsInFlight;
+    const inFlight = suggestionsInFlight.get(cacheKey);
+    if (useSharedCache && inFlight) {
+      return inFlight;
     }
 
     const generation = suggestionsCacheGeneration;
     const work = computeSuggestions(options);
     if (useSharedCache) {
-      suggestionsInFlight = work;
+      suggestionsInFlight.set(cacheKey, work);
     }
     try {
       const suggestions = await work;
       if (useSharedCache && generation === suggestionsCacheGeneration) {
-        cachedSuggestions = { atMs: Date.now(), suggestions };
+        cachedSuggestions.delete(cacheKey);
+        cachedSuggestions.set(cacheKey, { atMs: Date.now(), suggestions });
+        while (cachedSuggestions.size > SUGGESTION_CACHE_MAX_ENTRIES) {
+          const oldestKey = cachedSuggestions.keys().next().value as string | undefined;
+          if (!oldestKey) break;
+          cachedSuggestions.delete(oldestKey);
+        }
       }
       return suggestions;
     } finally {
-      if (suggestionsInFlight === work) {
-        suggestionsInFlight = null;
+      if (suggestionsInFlight.get(cacheKey) === work) {
+        suggestionsInFlight.delete(cacheKey);
       }
     }
   };

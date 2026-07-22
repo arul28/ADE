@@ -5727,6 +5727,9 @@ export function AgentChatPane({
   }, [
     selectedSession?.sessionId,
     selectedSessionModelId,
+    selectedSession?.reasoningEffort,
+    selectedSession?.fastMode,
+    selectedSession?.executionMode,
     selectedSession?.interactionMode,
     selectedSession?.claudePermissionMode,
     selectedSession?.codexApprovalPolicy,

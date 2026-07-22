@@ -76,15 +76,17 @@ describe("LaunchGate", () => {
     expect(screen.queryByText(/Use ADE on this Mac without an account/i)).toBeNull();
     expect(screen.getByTestId("launch-gate-drag-region").getAttribute("data-app-region")).toBe("drag");
     expect(screen.queryByText("Application")).toBeNull();
-    expect(captureAnalytics).toHaveBeenCalledWith({
-      event: "ade_screen_viewed",
-      properties: {
-        screen: "onboarding",
-        route_kind: "desktop",
-        source: "renderer_startup",
-      },
-      dedupeKey: "desktop_launch_account_choice",
-      minimumIntervalMs: 60 * 60_000,
+    await waitFor(() => {
+      expect(captureAnalytics).toHaveBeenCalledWith({
+        event: "ade_screen_viewed",
+        properties: {
+          screen: "onboarding",
+          route_kind: "desktop",
+          source: "renderer_startup",
+        },
+        dedupeKey: "desktop_launch_account_choice",
+        minimumIntervalMs: 60 * 60_000,
+      });
     });
 
     fireEvent.click(screen.getByRole("button", { name: /continue without an account/i }));

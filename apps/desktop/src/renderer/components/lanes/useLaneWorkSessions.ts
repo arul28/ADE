@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
+import type { AgentChatSession, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
@@ -9,6 +9,7 @@ import {
 } from "../../lib/chatSessionEvents";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import {
+  buildPtyContinuationLaunchFields,
   forgetWorkPtyLaunchPin,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
@@ -781,12 +782,17 @@ export function useLaneWorkSessions(laneId: string | null) {
     void refresh({ showLoading: false, force: true });
   }, [focusSession, laneId, openSessionTab, refresh, selectLane, upsertOptimisticChatSession]);
 
-  const continueCliSession = useCallback(async (session: TerminalSessionSummary, text: string) => {
+  const continueCliSession = useCallback(async (
+    session: TerminalSessionSummary,
+    text: string,
+    launch: TerminalResumeLaunchConfig | null = null,
+  ) => {
     const sendArgs = {
       sessionId: session.id,
       text,
       cols: 100,
       rows: 30,
+      ...buildPtyContinuationLaunchFields(launch),
     };
     const pin = workPtyLaunchPinFor(session);
     const result = pin

@@ -44,7 +44,8 @@ export default defineConfig([
       adeRpcServer: "src/adeRpcServer.ts",
       ptyHostWorker: "../desktop/src/main/services/pty/ptyHostWorker.ts",
       cursorSdkWorker: "../desktop/src/main/services/chat/cursorSdkWorker.ts",
-      droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts"
+      droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts",
+      usageLedgerWorker: "../desktop/src/main/services/usage/usageLedgerWorkerEntry.ts"
     },
     format: ["cjs"],
     platform: "node",

@@ -2387,6 +2387,11 @@ final class SyncService: ObservableObject {
     let completion: (Result<Any, Error>) -> Void
     let timeoutTask: Task<Void, Never>
     let timeoutPolicy: PendingRequestTimeoutPolicy
+    /// Runs synchronously when the matching response frame is resolved, before
+    /// the receive loop can advance to the next frame. Terminal subscriptions
+    /// use this to install their snapshot/subscription barrier before the host's
+    /// immediately queued `terminal_data` frames become eligible for delivery.
+    let acceptResponse: (@MainActor (Any) throws -> Void)?
     /// Monotonic timestamp captured via `ProcessInfo.processInfo.systemUptime`
     /// — RTT calculations must not be skewed by user-initiated wall-clock
     /// adjustments (DST, NTP step, manual time changes).
@@ -6607,9 +6612,28 @@ final class SyncService: ObservableObject {
     // budget on a constrained Relay path. Fail this subscription without
     // probing or replacing the shared sync socket; the caller can retry while
     // chats, CRDT changes, and heartbeats keep flowing.
-    let raw: Any
     do {
-      raw = try await awaitResponse(requestId: requestId, disconnectOnTimeout: false) {
+      _ = try await awaitResponse(
+        requestId: requestId,
+        disconnectOnTimeout: false,
+        acceptResponse: { raw in
+          let snapshot = try self.decode(raw, as: TerminalSnapshot.self)
+          guard self.terminalSnapshotRequestTokens[sessionId] == requestToken,
+                self.desiredTerminalSessionIds.contains(sessionId),
+                self.isCurrentTerminalSnapshotRecoveryScope(scope)
+          else { return }
+          self.terminalSnapshotRequestTokens.removeValue(forKey: sessionId)
+          // Acceptance is the terminal state for any retry job serving this
+          // session. Clear its ownership in the same actor turn as the
+          // subscription barrier; otherwise callers can observe a live stream
+          // alongside a stale recovery marker until the awaiting retry task's
+          // defer gets scheduled.
+          self.terminalSnapshotRecoveryJobs.removeValue(forKey: sessionId)
+          self.applyTerminalSnapshot(snapshot, sessionId: sessionId)
+          self.subscribedTerminalSessionIds.insert(sessionId)
+          self.flushTerminalInputQueue(sessionId: sessionId)
+        }
+      ) {
         self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: payload)
       }
     } catch {
@@ -6618,14 +6642,6 @@ final class SyncService: ObservableObject {
       }
       throw error
     }
-    let snapshot = try decode(raw, as: TerminalSnapshot.self)
-    guard terminalSnapshotRequestTokens[sessionId] == requestToken,
-          desiredTerminalSessionIds.contains(sessionId),
-          isCurrentTerminalSnapshotRecoveryScope(scope)
-    else { return }
-    applyTerminalSnapshot(snapshot, sessionId: sessionId)
-    subscribedTerminalSessionIds.insert(sessionId)
-    flushTerminalInputQueue(sessionId: sessionId)
   }
 
   private func currentTerminalSnapshotRecoveryScope() -> TerminalSnapshotRecoveryScope {
@@ -13254,8 +13270,13 @@ final class SyncService: ObservableObject {
     request.timeoutTask.cancel()
     switch result {
     case .success(let payload):
-      recordConnectionLoadSample(roundTripSeconds: ProcessInfo.processInfo.systemUptime - request.startedAt)
-      request.completion(.success(payload))
+      do {
+        try request.acceptResponse?(payload)
+        recordConnectionLoadSample(roundTripSeconds: ProcessInfo.processInfo.systemUptime - request.startedAt)
+        request.completion(.success(payload))
+      } catch {
+        request.completion(.failure(SyncUserFacingError.error(from: error)))
+      }
     case .failure(let error):
       request.completion(.failure(SyncUserFacingError.error(from: error)))
     }
@@ -13266,6 +13287,7 @@ final class SyncService: ObservableObject {
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds,
+    acceptResponse: (@MainActor (Any) throws -> Void)? = nil,
     send: () -> Void
   ) async throws -> Any {
     try await withCheckedThrowingContinuation { continuation in
@@ -13284,6 +13306,7 @@ final class SyncService: ObservableObject {
         },
         timeoutTask: timeoutTask,
         timeoutPolicy: timeoutPolicy,
+        acceptResponse: acceptResponse,
         startedAt: ProcessInfo.processInfo.systemUptime
       )
       send()

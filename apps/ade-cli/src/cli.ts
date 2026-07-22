@@ -49,6 +49,8 @@ import type {
   ProjectBrowseInput,
 } from "../../desktop/src/shared/types/core";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
+import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
 import {
   findAdeManagedWorktreeRoot,
   normalizeProjectRootPath,
@@ -286,6 +288,8 @@ type CliPlan =
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
+  | { kind: "usage-ledger-worker" }
+  | { kind: "project-icon-worker"; rootPath: string }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "deeplink"; rest: string[] }
@@ -11624,6 +11628,16 @@ function buildCliPlan(
   if (primary === "__ade-pty-host-worker") {
     return { kind: "pty-host-worker" };
   }
+  if (primary === "__ade-usage-ledger-worker") {
+    return { kind: "usage-ledger-worker" };
+  }
+  if (primary === "__ade-project-icon-worker") {
+    const primaryIndex = args.indexOf(primary);
+    return {
+      kind: "project-icon-worker",
+      rootPath: args.slice(primaryIndex + 1).find((arg) => arg !== "--") ?? "",
+    };
+  }
   if (primary === "code") {
     const rest = args;
     return { kind: "ade-code", rest };
@@ -15131,18 +15145,23 @@ async function runServe(
     };
   };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
-    listProjects: async () => ({
-      projects: includeHostProjectInCatalog(
+    listProjects: async () => {
+      const activeHostProjectId = scopeRegistry.getActiveSyncHostProjectId();
+      const catalogHostProjectId = activeHostProjectId ?? preferredSyncProjectId;
+      const projects = includeHostProjectInCatalog(
         projectRegistry.listRecent(),
-        preferredSyncProjectId
-          ? projectRegistry.get(preferredSyncProjectId)
+        catalogHostProjectId
+          ? projectRegistry.get(catalogHostProjectId)
           : null,
       )
         .map((record) =>
           toMobileProjectSummary(record, {
             isAvailable: fs.existsSync(record.rootPath),
-          })),
-    }),
+          }));
+      return {
+        projects: markActiveHostProjectOpen(projects, activeHostProjectId),
+      };
+    },
     prepareProjectConnection: async (
       request: SyncProjectSwitchRequestPayload,
     ): Promise<SyncProjectSwitchResultPayload> => {
@@ -15366,15 +15385,10 @@ async function runServe(
     if (!activeScope && sharedSyncListener) {
       await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
     }
-    if (activeScope) {
-      const prewarmTimer = setImmediate(() => {
-        void scopeRegistry.prewarmRecentScopes({
-          excludeProjectId: activeScope?.registryProjectId,
-          limit: 2,
-        });
-      });
-      prewarmTimer.unref?.();
-    }
+    // A ProjectScope is a complete runtime (DB, search, chat, automation,
+    // polling, PTY, and sync services), not a lightweight metadata cache.
+    // Keep non-host projects lazy; the sync-host handoff keeps the old host
+    // authoritative while a newly selected project boots on demand.
     return activeScope ?? null;
   };
   const disposeServeResources = async () => {
@@ -19035,6 +19049,12 @@ async function runCli(
       output: formatOutput(plan.value, parsed.options, plan.formatter),
       exitCode: 0,
     };
+  if (plan.kind === "project-icon-worker") {
+    return {
+      output: `${JSON.stringify(resolveRemoteProjectIcon(plan.rootPath))}\n`,
+      exitCode: 0,
+    };
+  }
   if (plan.kind === "execute" && plan.laneCreationNudge) {
     const notice = detectUnmergedLaneCreateNudge(plan.laneCreationNudge);
     if (notice) process.stderr.write(`${notice}\n`);
@@ -19109,6 +19129,13 @@ async function runCli(
         process.once("disconnect", resolve);
       });
       return { output: "", exitCode: 0 };
+    }
+    if (plan.kind === "usage-ledger-worker") {
+      const { runUsageLedgerWorkerEntrypoint } = await import(
+        "../../desktop/src/main/services/usage/usageLedgerWorker"
+      );
+      const exitCode = await runUsageLedgerWorkerEntrypoint();
+      return { output: "", exitCode };
     }
     if (plan.kind === "desktop") {
       const result = await runDesktopCommand(plan.rest);

@@ -29,6 +29,23 @@ function writeJsonl(filePath: string, rows: unknown[]): void {
   fs.writeFileSync(filePath, rows.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
 }
 
+function appendLargeCodexAgentMessage(filePath: string, messageBytes: number): void {
+  const fd = fs.openSync(filePath, "a");
+  const chunk = Buffer.alloc(1024 * 1024, 0x78);
+  try {
+    fs.writeSync(fd, '{"type":"event_msg","payload":{"type":"agent_message","message":"');
+    let remaining = messageBytes;
+    while (remaining > 0) {
+      const bytesToWrite = Math.min(remaining, chunk.length);
+      fs.writeSync(fd, chunk, 0, bytesToWrite);
+      remaining -= bytesToWrite;
+    }
+    fs.writeSync(fd, '"}}\n');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-external-discovery-"));
   previousHome = process.env.HOME;
@@ -196,6 +213,17 @@ describe("external session provider discovery", () => {
         type: "session_meta",
         payload: { id, session_id: id, cwd, timestamp: "2026-07-06T10:00:00.000Z", source: "cli", originator: "codex-tui" },
       },
+      {
+        timestamp: "2026-07-06T10:00:10.000Z",
+        type: "turn_context",
+        payload: {
+          model: "gpt-5.6-sol",
+          effort: "max",
+          service_tier: "fast",
+          approval_policy: "never",
+          sandbox_policy: { type: "danger-full-access" },
+        },
+      },
       { timestamp: "2026-07-06T10:00:30.000Z", type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>synthetic</environment_context>" }] } },
       { timestamp: "2026-07-06T10:01:00.000Z", type: "event_msg", payload: { type: "user_message", message: "please fix flakes" } },
     ]);
@@ -212,6 +240,116 @@ describe("external session provider discovery", () => {
       preview: "please fix flakes",
       updatedAt: Date.parse("2026-07-06T11:00:00.000Z"),
       messageCount: 1,
+      launch: {
+        model: "gpt-5.6-sol",
+        reasoningEffort: "max",
+        fastMode: true,
+        permissionMode: "full-auto",
+        codexApprovalPolicy: "never",
+        codexSandbox: "danger-full-access",
+        codexConfigSource: "flags",
+      },
+    });
+  });
+
+  it("finds and merges the latest Codex turn context beyond a 2 MiB tail", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "24242424-2424-4242-8242-242424242424";
+    const prefixFiller = Array.from({ length: 90 }, (_, index) => ({
+      type: "event_msg",
+      payload: { type: "agent_message", message: `prefix-filler-${index}` },
+    }));
+    const filler = [{
+      type: "event_msg",
+      payload: { type: "agent_message", message: `oversized-filler-${"x".repeat(3 * 1024 * 1024)}` },
+    }];
+    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-${id}.jsonl`), [
+      {
+        type: "session_meta",
+        payload: { id, cwd, source: "cli", originator: "codex-tui" },
+      },
+      {
+        type: "turn_context",
+        payload: {
+          model: "gpt-5.4",
+          effort: "low",
+          service_tier: "default",
+          approval_policy: "on-request",
+          sandbox_policy: { type: "read-only" },
+        },
+      },
+      ...prefixFiller,
+      {
+        type: "turn_context",
+        payload: {
+          model: "gpt-5.6-sol",
+          service_tier: "priority",
+        },
+      },
+      ...filler,
+    ]);
+
+    const [broad] = await discoverCodexSessions({ homeDir, limit: 10 });
+    expect(broad?.launch).toMatchObject({
+      model: "gpt-5.4",
+      reasoningEffort: "low",
+      permissionMode: "plan",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+    });
+
+    const [exact] = await discoverCodexSessions({ homeDir, sessionId: id, limit: 1 });
+    expect(exact?.launch).toEqual({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "low",
+      fastMode: null,
+      permissionMode: "plan",
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "read-only",
+      codexConfigSource: "flags",
+    });
+  });
+
+  it("retains only non-security Codex preferences when a large final record truncates exact tail recovery", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "25252525-2525-4252-8252-252525252525";
+    const rolloutPath = path.join(homeDir, ".codex", "sessions", "2026", "07", "06", `rollout-${id}.jsonl`);
+    writeJsonl(rolloutPath, [
+      {
+        type: "session_meta",
+        payload: { id, cwd, source: "cli", originator: "codex-tui" },
+      },
+      {
+        type: "turn_context",
+        payload: {
+          model: "gpt-5.6-sol",
+          effort: "high",
+          service_tier: "fast",
+          approval_policy: "never",
+          sandbox_policy: { type: "danger-full-access" },
+        },
+      },
+    ]);
+    appendLargeCodexAgentMessage(rolloutPath, 65 * 1024 * 1024);
+    const warn = vi.fn();
+
+    const [exact] = await discoverCodexSessions({
+      homeDir,
+      sessionId: id,
+      limit: 1,
+      logger: { warn },
+    });
+
+    expect(warn).toHaveBeenCalledWith("external_sessions.codex_launch_scan_truncated", expect.objectContaining({
+      filePath: rolloutPath,
+      bytesScanned: 64 * 1024 * 1024,
+    }));
+    expect(exact?.launch).toEqual({
+      model: "gpt-5.6-sol",
+      reasoningEffort: "high",
+      fastMode: true,
     });
   });
 

@@ -2224,6 +2224,69 @@ describe("TerminalView", () => {
     expect(window.ade.terminal.preview).not.toHaveBeenCalled();
   });
 
+  it("accepts input immediately when a live terminal is reopened after a project switch", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    let resolvePreview!: (value: unknown) => void;
+    const pendingPreview = new Promise((resolve) => {
+      resolvePreview = resolve;
+    });
+    previewMock.mockImplementation(() => pendingPreview);
+
+    const firstView = render(
+      <TerminalView ptyId="pty-reopen-input" sessionId="session-reopen-input" isActive />,
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120);
+    });
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+    expect(previewMock).toHaveBeenCalled();
+
+    firstView.unmount();
+    mockState.projectRoot = "/project/b";
+    mockState.projectRevision += 1;
+    disposeTerminalRuntimesForProjectChange(mockState.projectRoot, mockState.projectRevision);
+
+    mockState.projectRoot = "/project/a";
+    mockState.projectRevision += 1;
+    render(<TerminalView ptyId="pty-reopen-input" sessionId="session-reopen-input" isActive />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(120);
+    });
+
+    // Reopening reuses the parked live xterm. Its transcript hydration is
+    // deliberately still unresolved, but keyboard input is wired by
+    // createRuntime and must not wait for that snapshot.
+    expect(mockState.terminalInstances).toHaveLength(1);
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+    onData!("\r");
+
+    expect(ptyWrite).toHaveBeenCalledTimes(1);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-reopen-input",
+      data: "\r",
+    });
+
+    await act(async () => {
+      resolvePreview({
+        terminalId: "session-reopen-input",
+        session: null,
+        source: "empty",
+        snapshot: null,
+        transcript: null,
+        capturedAt: new Date().toISOString(),
+      });
+      await Promise.resolve();
+    });
+  });
+
   it("does not force live PTY output back to the bottom after the user scrolls up", async () => {
     render(<TerminalView ptyId="pty-user-scrollback" sessionId="session-user-scrollback" isActive />);
     await flushAnimationFrame();

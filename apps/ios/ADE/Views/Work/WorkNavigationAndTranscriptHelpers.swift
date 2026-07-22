@@ -881,45 +881,14 @@ func buildWorkMobileTimelineToolCards(
   from transcript: [WorkChatEnvelope],
   suppressedPendingItemIds: Set<String> = []
 ) -> [WorkToolCardModel] {
-  var cards: [String: WorkToolCardModel] = [:]
-  var orderedIds: [String] = []
-
-  for envelope in transcript {
-    switch envelope.event {
-    case .toolCall(let tool, let argsText, let itemId, _, _):
-      guard isQuestionInputToolName(tool),
-            !suppressedPendingItemIds.contains(itemId),
-            pendingWorkQuestionFromAskUserToolCall(argsText: argsText, itemId: itemId) == nil
-      else { continue }
-      if cards[itemId] == nil {
-        orderedIds.append(itemId)
-      }
-      cards[itemId] = WorkToolCardModel(
-        id: itemId,
-        toolName: tool,
-        status: .running,
-        startedAt: envelope.timestamp,
-        completedAt: nil,
-        argsText: nonEmpty(argsText),
-        resultText: cards[itemId]?.resultText
-      )
-    case .toolResult(let tool, let resultText, let itemId, _, _, let status):
-      guard isQuestionInputToolName(tool), let existing = cards[itemId] else { continue }
-      cards[itemId] = WorkToolCardModel(
-        id: itemId,
-        toolName: existing.toolName,
-        status: status,
-        startedAt: existing.startedAt,
-        completedAt: envelope.timestamp,
-        argsText: existing.argsText,
-        resultText: nonEmpty(resultText)
-      )
-    default:
-      continue
-    }
-  }
-
-  return orderedIds.compactMap { cards[$0] }
+  // The mobile timeline uses the same normalized tool-card stream as the full
+  // Work surface. `buildWorkToolCards` still suppresses a pending structured
+  // AskUser call (and every pending input id), but preserves ordinary work so
+  // the timeline can collapse Read/Edit/Shell bursts into compact groups.
+  buildWorkToolCards(
+    from: transcript,
+    suppressedPendingItemIds: suppressedPendingItemIds
+  )
 }
 
 func parseANSISegments(_ input: String) -> [ANSISegment] {

@@ -236,12 +236,16 @@
         "to": "ade-cli/droidSdkWorker.cjs"
       },
       {
+        "from": "../ade-cli/dist/usageLedgerWorker.cjs",
+        "to": "ade-cli/usageLedgerWorker.cjs"
+      },
+      {
         "from": "../ade-cli/dist/adeRpcServer.cjs",
         "to": "ade-cli/adeRpcServer.cjs"
       },
       {
-        "from": "../ade-cli/dist/tuiClient",
-        "to": "ade-cli/tuiClient"
+        "from": "../ade-cli/dist/tuiClient/cli.mjs",
+        "to": "ade-cli/tuiClient/cli.mjs"
       },
       {
         "from": "scripts/ade-cli-macos-wrapper.sh",
