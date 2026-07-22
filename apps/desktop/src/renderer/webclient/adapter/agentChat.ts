@@ -93,6 +93,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     chatSubscriptions.clear();
   });
 
+  infra.addDispose(events.on("projectBoundary", () => {
+    for (const unsubscribe of chatSubscriptions.values()) unsubscribe();
+    chatSubscriptions.clear();
+    deliveredEvents.length = 0;
+    deliveredEventSet.clear();
+  }));
+
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
     return commands.call<T>(action, asRecord(args), { fallback, idempotent });
   }

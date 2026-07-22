@@ -70,6 +70,12 @@ export class TerminalRegistry {
     }
     return null;
   }
+
+  clear(): void {
+    this.ptyToSession.clear();
+    this.sessionToPty.clear();
+    this.summaries.clear();
+  }
 }
 
 export function chatTerminalFromSummary(

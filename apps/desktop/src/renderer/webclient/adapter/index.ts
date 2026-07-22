@@ -11,7 +11,7 @@ import { createGitNamespaces } from "./git";
 import { CommandCaller } from "./infra/commandCaller";
 import { EventBus } from "./infra/eventBus";
 import { createInvalidationScheduler } from "./infra/invalidation";
-import type { InvalidationDomain } from "./infra/invalidation";
+import { ALL_INVALIDATION_DOMAINS, type InvalidationDomain } from "./infra/invalidation";
 import { createLocalState } from "./infra/localState";
 import { createProjectState } from "./infra/projectState";
 import { withFallbackProxy } from "./infra/proxy";
@@ -28,6 +28,7 @@ import type { AdapterEvents, AdapterInfra } from "./types";
 export type AdeWebAdapter = {
   ade: Window["ade"];
   bindProject(project: ProjectInfo | null, projectId?: string | null): void;
+  replaceProject(project: ProjectInfo, projectId: string): void;
   dispose(): void;
 };
 
@@ -187,6 +188,19 @@ export function createAdeWebAdapter(
       state.bindProject(project, projectId);
       events.emit("projectChanged", project);
       events.emit("projectBindingChanged", null);
+    },
+    replaceProject(project: ProjectInfo, projectId: string): void {
+      events.emit("projectBoundary", { projectId });
+      terminalRegistry.clear();
+      state.bindProject(project, projectId);
+      commands.invalidateCache();
+      events.emit("projectChanged", project);
+      events.emit("projectBindingChanged", null);
+      events.emit("invalidation", {
+        tables: [],
+        domains: [...ALL_INVALIDATION_DOMAINS],
+        at: new Date().toISOString(),
+      });
     },
     dispose(): void {
       for (const dispose of disposers.splice(0)) dispose();

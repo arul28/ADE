@@ -777,6 +777,50 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("atomically replaces the bound project and refreshes every mounted domain", async () => {
+    fake.descriptors = descriptors(["lanes.list"]);
+    fake.commandResults.set("lanes.list", [{ id: "lane-old" }]);
+    const projectTwoSummary = {
+      ...fake.projects[0]!,
+      id: "project-2",
+      rootPath: "/repo-2",
+      displayName: "Repo Two",
+    };
+    fake.projects.push(projectTwoSummary);
+    const projectTwo = { rootPath: "/repo-2", displayName: "Repo Two", baseRef: "main" };
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    const projects: Array<ProjectInfo | null> = [];
+    const laneEvents: unknown[] = [];
+    const sessionEvents: unknown[] = [];
+    const fileEvents: unknown[] = [];
+    const rebaseEvents: unknown[] = [];
+    adapter.ade.app.onProjectChanged((next) => projects.push(next));
+    adapter.ade.lanes.onLifecycleEvent((event) => laneEvents.push(event));
+    adapter.ade.sessions.onChanged((event) => sessionEvents.push(event));
+    adapter.ade.files.onChange((event) => fileEvents.push(event));
+    adapter.ade.rebase.onEvent((event) => rebaseEvents.push(event));
+
+    await adapter.ade.lanes.list();
+    fake.commandResults.set("lanes.list", [{ id: "lane-new" }]);
+    adapter.replaceProject(projectTwo, "project-2");
+    await expect(adapter.ade.app.getProject()).resolves.toEqual(projectTwo);
+    await expect(adapter.ade.lanes.list()).resolves.toEqual([{ id: "lane-new" }]);
+
+    expect(projects).toEqual([projectTwo]);
+    expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toEqual([
+      expect.objectContaining({ opts: expect.objectContaining({ projectId: "project-1" }) }),
+      expect.objectContaining({ opts: expect.objectContaining({ projectId: "project-2" }) }),
+    ]);
+    expect(laneEvents).toHaveLength(1);
+    expect(sessionEvents).toHaveLength(1);
+    expect(fileEvents).toHaveLength(1);
+    expect(rebaseEvents).toHaveLength(2);
+
+    adapter.dispose();
+  });
+
   it("keeps the current project binding when a remote project switch is rejected", async () => {
     fake.projects.push({
       ...fake.projects[0]!,

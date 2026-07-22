@@ -64,6 +64,12 @@ export type AdeSyncClientStatus = SyncConnectionStatus & {
   readiness: "disconnected" | "restoring" | "ready" | "failed";
 };
 
+export type AdeSyncActiveProjectChange = Readonly<{
+  previousProjectId: string | null;
+  project: SyncMobileProjectSummary;
+  catalog: SyncProjectCatalogPayload;
+}>;
+
 export type WebAccountSessionLease = Readonly<{
   userId: string;
   generation: number;
@@ -144,6 +150,7 @@ type ClientEvents = {
   tablesChanged: Set<string>;
   chatEvent: SyncChatEventPayload;
   projectCatalog: SyncProjectCatalogPayload;
+  activeProjectChanged: AdeSyncActiveProjectChange;
 };
 
 type ListenerMap = {
@@ -247,6 +254,7 @@ export class AdeSyncClient {
     tablesChanged: new Set(),
     chatEvent: new Set(),
     projectCatalog: new Set(),
+    activeProjectChanged: new Set(),
   };
 
   constructor(options: {
@@ -311,13 +319,21 @@ export class AdeSyncClient {
     this.connection.on("tablesChanged", (tables) => this.emit("tablesChanged", tables));
     this.connection.on("projectCatalog", (payload) => {
       this.currentCatalog = payload;
-      const catalogProjectId = openProjectFromCatalog(payload.projects);
-      if (catalogProjectId && catalogProjectId !== this.activeProjectId) {
-        this.activeProjectId = catalogProjectId;
-        this.rebindStreamSubscriptions();
-      }
       this.resolveProjectCatalog(payload, this.clientGeneration);
       this.emit("projectCatalog", payload);
+      const openProject = payload.projects.find((project) => project.isOpen) ?? null;
+      if (openProject && openProject.id !== this.activeProjectId) {
+        const previousProjectId = this.activeProjectId;
+        this.activeProjectId = openProject.id;
+        if (this.readiness === "restoring") {
+          this.rejectTerminalInputQueue(this.activeProjectChangedError());
+        } else {
+          this.advanceActiveProjectBoundary();
+        }
+        this.retireActiveProjectStreams();
+        this.rebindForeignProjectStreams();
+        this.publishActiveProjectBoundary(previousProjectId, openProject, payload);
+      }
       if (this.readiness === "failed" && this.latestHello && this.connection.isConnected()) {
         this.beginRestoration({ ...this.latestHello, projects: payload.projects });
       }
@@ -697,7 +713,7 @@ export class AdeSyncClient {
       payload: { ...opts, sessionId },
       handlers,
       sinceSeq: existing?.sinceSeq ?? null,
-      bindsActiveProject: opts.projectId == null,
+      bindsActiveProject: opts.projectId == null && opts.chatScope !== "personal",
     };
     this.chatSubscriptions.set(sessionId, subscription);
     if (!this.streamSubscriptionsPaused) this.sendChatSubscribe(subscription);
@@ -710,7 +726,9 @@ export class AdeSyncClient {
     if (!subscription || !this.connection.isConnected()) return;
     this.connection.send({
       type: "chat_unsubscribe",
-      projectId: subscription.payload.projectId ?? this.activeProjectId,
+      projectId: subscription.bindsActiveProject
+        ? this.activeProjectId
+        : subscription.payload.projectId ?? null,
       payload: {
         sessionId,
         projectId: subscription.payload.projectId,
@@ -890,7 +908,7 @@ export class AdeSyncClient {
           this.currentCatalog = null;
         }
         this.invalidateGeneration(new AdeSyncError("Project connection changed.", "disconnected"));
-        this.rebindStreamSubscriptions();
+        this.retireActiveProjectStreams();
         await this.persistCurrentEnvironment((environment) => ({
           ...environment,
           port: result.connection?.port ?? environment.port,
@@ -928,6 +946,10 @@ export class AdeSyncClient {
     return this.on("projectCatalog", listener);
   }
 
+  onActiveProjectChanged(listener: (payload: AdeSyncActiveProjectChange) => void): () => void {
+    return this.on("activeProjectChanged", listener);
+  }
+
   dispose(): void {
     this.disconnect();
     this.connection.dispose();
@@ -949,10 +971,17 @@ export class AdeSyncClient {
         "terminal_input_ack_unavailable",
       ));
     }
-    const restoredProjectId = openProjectFromCatalog(payload.projects);
-    if (restoredProjectId && restoredProjectId !== this.activeProjectId) {
-      this.activeProjectId = restoredProjectId;
-      this.rebindStreamSubscriptions();
+    const restoredProject = payload.projects?.find((project) => project.isOpen)
+      ?? payload.projects?.[0]
+      ?? null;
+    const previousProjectId = this.activeProjectId;
+    const crossedProjectBoundary = Boolean(
+      restoredProject && restoredProject.id !== previousProjectId,
+    );
+    if (restoredProject && crossedProjectBoundary) {
+      this.activeProjectId = restoredProject.id;
+      this.retireActiveProjectStreams();
+      this.rejectTerminalInputQueue(this.activeProjectChangedError());
     }
 
     const restoration = (async () => {
@@ -960,6 +989,9 @@ export class AdeSyncClient {
         const catalog = { projects: payload.projects } satisfies SyncProjectCatalogPayload;
         this.currentCatalog = catalog;
         this.resolveProjectCatalog(catalog, generation);
+        if (restoredProject && crossedProjectBoundary) {
+          this.publishActiveProjectBoundary(previousProjectId, restoredProject, catalog);
+        }
       } else {
         await this.requestProjectCatalog(this.restorationTimeoutMs);
       }
@@ -1099,13 +1131,16 @@ export class AdeSyncClient {
 
   private handleChatEvent(payload: SyncChatEventPayload): void {
     const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : null;
-    if (sessionId) {
-      const subscription = this.chatSubscriptions.get(sessionId);
-      if (subscription && typeof payload.seq === "number") {
-        subscription.sinceSeq = Math.max(subscription.sinceSeq ?? 0, payload.seq);
-      }
-      subscription?.handlers.event?.(payload);
+    if (!sessionId) return;
+    const subscription = this.chatSubscriptions.get(sessionId);
+    // A project handoff retires the old project's subscription ownership
+    // before rebinding the UI. A late poll result from that host must not leak
+    // through the global adapter listener into the newly mounted project.
+    if (!subscription) return;
+    if (typeof payload.seq === "number") {
+      subscription.sinceSeq = Math.max(subscription.sinceSeq ?? 0, payload.seq);
     }
+    subscription.handlers.event?.(payload);
     this.emit("chatEvent", payload);
   }
 
@@ -1274,7 +1309,9 @@ export class AdeSyncClient {
     try {
       this.connection.send({
         type: "chat_subscribe",
-        projectId: subscription.payload.projectId ?? this.activeProjectId,
+        projectId: subscription.bindsActiveProject
+          ? this.activeProjectId
+          : subscription.payload.projectId ?? null,
         payload: {
           ...subscription.payload,
           ...(subscription.sinceSeq != null ? { sinceSeq: subscription.sinceSeq } : {}),
@@ -1437,14 +1474,72 @@ export class AdeSyncClient {
     this.pumpTerminalInputQueue();
   }
 
-  private rebindStreamSubscriptions(): void {
+  private retireActiveProjectStreams(): void {
+    for (const [sessionId, subscription] of this.chatSubscriptions) {
+      if (subscription.bindsActiveProject) this.chatSubscriptions.delete(sessionId);
+    }
+    this.terminalSubscriptions.clear();
+  }
+
+  private rebindForeignProjectStreams(): void {
+    if (this.readiness !== "ready" || !this.connection.isConnected()) return;
     for (const subscription of this.chatSubscriptions.values()) {
-      if (subscription.bindsActiveProject) subscription.sinceSeq = null;
+      const isForeignProject = !subscription.bindsActiveProject
+        && subscription.payload.chatScope !== "personal"
+        && Boolean(subscription.payload.projectId);
+      if (!isForeignProject) continue;
+      // The shared-listener handoff deliberately carries only the new active
+      // project's stream state. Re-open explicit foreign-project quick looks
+      // from a full snapshot; their prior cursor belongs to the old host.
+      subscription.sinceSeq = null;
+      this.sendChatSubscribe(subscription);
     }
-    for (const subscription of this.terminalSubscriptions.values()) {
-      subscription.sinceOffset = null;
-      subscription.recoveryInFlight = false;
+  }
+
+  private advanceActiveProjectBoundary(): void {
+    const error = this.activeProjectChangedError();
+    this.clientGeneration += 1;
+    this.rejectPendingCommands(error);
+    for (const [requestId, pending] of this.pendingFiles) {
+      clearTimeout(pending.timer);
+      this.pendingFiles.delete(requestId);
+      pending.reject(error);
     }
+    for (const [requestId, pending] of this.pendingTerminalHistory) {
+      clearTimeout(pending.timer);
+      this.pendingTerminalHistory.delete(requestId);
+      pending.reject(error);
+    }
+    for (const [requestId, pending] of this.pendingProjectSwitches) {
+      clearTimeout(pending.timer);
+      this.pendingProjectSwitches.delete(requestId);
+      pending.reject(error);
+    }
+    this.rejectTerminalInputQueue(error);
+  }
+
+  private activeProjectChangedError(): AdeSyncError {
+    return new AdeSyncError(
+      "The active project changed before the request completed.",
+      "project_changed",
+    );
+  }
+
+  private publishActiveProjectBoundary(
+    previousProjectId: string | null,
+    project: SyncMobileProjectSummary,
+    catalog: SyncProjectCatalogPayload,
+  ): void {
+    this.emit("activeProjectChanged", {
+      previousProjectId,
+      project,
+      catalog,
+    });
+    this.emitStatus();
+    void this.persistCurrentEnvironment((environment) => ({
+      ...environment,
+      activeProjectId: project.id,
+    })).catch(() => undefined);
   }
 
   private resolveProjectCatalog(payload: SyncProjectCatalogPayload, generation: number): void {

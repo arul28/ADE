@@ -29,6 +29,7 @@ import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
 type AdeWebAdapter = {
   ade: Window["ade"];
   bindProject: (project: ProjectInfo | null, projectId?: string | null) => void;
+  replaceProject: (project: ProjectInfo, projectId: string) => void;
   dispose: () => void;
 };
 
@@ -173,6 +174,7 @@ export function WebClientRoot({
   const [connectingAccountMachineKey, setConnectingAccountMachineKey] = useState<string | null>(null);
 
   const adapterRef = useRef<AdeWebAdapter | null>(null);
+  const activeProjectBoundaryRef = useRef<SyncMobileProjectSummary | null>(null);
   const stashedTargetRef = useRef<DeeplinkTarget | null>(null);
   const bootedRef = useRef(false);
   const fatalRebootRef = useRef(false);
@@ -278,7 +280,11 @@ export function WebClientRoot({
       adapterRef.current = await loadAdapter(client, accountClient, catalogSeed);
     }
     window.ade = adapterRef.current.ade;
-    adapterRef.current.bindProject(toProjectInfo(project), project.id);
+    const boundaryProject = activeProjectBoundaryRef.current;
+    const projectToBind = boundaryProject?.id === client.getStatus().activeProjectId
+      ? boundaryProject
+      : project;
+    adapterRef.current.bindProject(toProjectInfo(projectToBind), projectToBind.id);
 
     // Point the address bar at the initial App route before mounting so the
     // App's BrowserRouter renders the right tab on first paint.
@@ -491,6 +497,18 @@ export function WebClientRoot({
     return client.onProjectCatalog((payload) => setCatalog(payload.projects));
   }, [client]);
 
+  useEffect(() => {
+    return client.onActiveProjectChanged(({ project, catalog: nextCatalog }) => {
+      activeProjectBoundaryRef.current = project;
+      setCatalog(nextCatalog.projects);
+      // Personal Chats is intentionally machine-scoped and projectless. Keep
+      // its mounted adapter detached even when the machine hands the shared
+      // listener to another open project.
+      if (isChatsRoute(window.location.pathname)) return;
+      adapterRef.current?.replaceProject(toProjectInfo(project), project.id);
+    });
+  }, [client]);
+
   // Account-owned trust and account-authorized Relay sockets stay usable only
   // while the same browser account remains valid. A local pairing keeps its
   // saved trust after Relay logout so it can reconnect directly later.
@@ -567,7 +585,7 @@ export function WebClientRoot({
       try {
         const result = await client.switchProject(project.id);
         if (!result.ok) return;
-        adapterRef.current?.bindProject(toProjectInfo(project), result.project?.id ?? project.id);
+        adapterRef.current?.replaceProject(toProjectInfo(project), result.project?.id ?? project.id);
       } catch {
         // switchProject surfaces its own failure via status; leave the app up.
       }

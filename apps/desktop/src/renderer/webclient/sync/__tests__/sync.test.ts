@@ -2896,7 +2896,7 @@ describe("browser sync connection and client", () => {
     client.dispose();
   });
 
-  it("rebinds stream subscriptions to the new project after switching", async () => {
+  it("retires old project streams and subscribes only newly requested streams after switching", async () => {
     const storage = new MemoryStorage();
     const environment = await makeEnvironment(storage);
     let helloProjectId = "project-1";
@@ -2935,14 +2935,208 @@ describe("browser sync connection and client", () => {
     expect(script.sockets).toHaveLength(2);
     expect(script.sockets[0].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(true);
     expect(script.sockets[0].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(true);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "chat_subscribe")).toBe(false);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+
+    client.subscribeChat("chat-2", {}, {});
+    client.subscribeTerminal("term-2", {}, {});
+    await flush();
     expect(script.sockets[1].sent.find((envelope) => envelope.type === "chat_subscribe")).toMatchObject({
       projectId: "project-2",
-      payload: { sessionId: "chat-1" },
+      payload: { sessionId: "chat-2" },
     });
     expect(script.sockets[1].sent.find((envelope) => envelope.type === "terminal_subscribe")).toMatchObject({
       projectId: "project-2",
-      payload: { sessionId: "term-1" },
+      payload: { sessionId: "term-2" },
     });
+
+    client.dispose();
+  });
+
+  it("rebinds /chats foreign streams while retiring active streams on a same-socket project boundary", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    const commandProjectIds: Array<string | null | undefined> = [];
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({ type: "hello_ok", requestId: envelope.requestId, payload: helloOk("project-1") });
+      }
+      if (envelope.type === "command") {
+        commandProjectIds.push(envelope.projectId);
+        const { commandId } = envelope.payload as { commandId: string };
+        socket.serverSend({
+          type: "command_result",
+          requestId: envelope.requestId,
+          payload: { commandId, ok: true, result: { projectId: envelope.projectId } },
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const changes: Array<{ previousProjectId: string | null; projectId: string }> = [];
+    const deliveredChatSessionIds: string[] = [];
+    client.onActiveProjectChanged(({ previousProjectId, project }) => {
+      changes.push({ previousProjectId, projectId: project.id });
+    });
+    client.onChatEvent((payload) => deliveredChatSessionIds.push(payload.sessionId));
+
+    const connecting = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await connecting;
+    client.subscribeChat("project-chat", {}, {});
+    client.subscribeChat("personal-chat", { chatScope: "personal" }, {});
+    client.subscribeChat("foreign-chat", {
+      projectId: "project-foreign",
+      projectRootPath: "/repo-foreign",
+    }, {});
+    client.subscribeTerminal("project-terminal", {}, {});
+    await flush();
+    script.sockets[0]?.serverSend({
+      type: "chat_event",
+      payload: {
+        sessionId: "foreign-chat",
+        timestamp: new Date().toISOString(),
+        seq: 9,
+        event: { type: "foreign-event-before-handoff" },
+      },
+    } as never);
+    await flush();
+    deliveredChatSessionIds.length = 0;
+
+    const projectOne = { ...helloOk("project-1").projects![0], isOpen: false };
+    const projectTwo = {
+      ...helloOk("project-2").projects![0],
+      displayName: "Repo Two",
+      rootPath: "/repo-2",
+      isOpen: true,
+    };
+    script.sockets[0]?.serverSend({
+      type: "project_catalog",
+      payload: { projects: [projectOne, projectTwo] },
+    });
+    await flush();
+
+    expect(script.sockets).toHaveLength(1);
+    expect(client.getStatus().activeProjectId).toBe("project-2");
+    expect(changes).toEqual([{ previousProjectId: "project-1", projectId: "project-2" }]);
+    expect(script.sockets[0].sent.filter((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "project-chat"
+    ))).toEqual([expect.objectContaining({ projectId: "project-1" })]);
+    expect(script.sockets[0].sent.filter((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+    ))).toHaveLength(1);
+    expect(script.sockets[0].sent.find((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+    ))?.projectId).toBeUndefined();
+    const foreignSubscriptions = script.sockets[0].sent.filter((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "foreign-chat"
+    ));
+    expect(foreignSubscriptions).toHaveLength(2);
+    expect(foreignSubscriptions).toEqual([
+      expect.objectContaining({ projectId: "project-foreign" }),
+      expect.objectContaining({ projectId: "project-foreign" }),
+    ]);
+    expect(foreignSubscriptions[1]?.payload).toMatchObject({
+      sessionId: "foreign-chat",
+      projectId: "project-foreign",
+      projectRootPath: "/repo-foreign",
+    });
+    expect(foreignSubscriptions[1]?.payload).not.toHaveProperty("sinceSeq");
+    expect(script.sockets[0].sent.filter((envelope) => envelope.type === "terminal_subscribe")).toEqual([
+      expect.objectContaining({ projectId: "project-1" }),
+    ]);
+
+    script.sockets[0]?.serverSend({
+      type: "chat_event",
+      payload: {
+        sessionId: "project-chat",
+        timestamp: new Date().toISOString(),
+        event: { type: "late-old-project-event" },
+      },
+    } as never);
+    script.sockets[0]?.serverSend({
+      type: "chat_event",
+      payload: {
+        sessionId: "personal-chat",
+        timestamp: new Date().toISOString(),
+        event: { type: "personal-event" },
+      },
+    } as never);
+    await flush();
+    expect(deliveredChatSessionIds).toEqual(["personal-chat"]);
+
+    client.subscribeChat("new-project-chat", {}, {});
+    client.subscribeTerminal("new-project-terminal", {}, {});
+    await flush();
+    expect(script.sockets[0].sent.find((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "new-project-chat"
+    ))).toMatchObject({ projectId: "project-2" });
+    expect(script.sockets[0].sent.find((envelope) => (
+      envelope.type === "terminal_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "new-project-terminal"
+    ))).toMatchObject({ projectId: "project-2" });
+
+    await expect(client.sendCommand("chat.send", { text: "new project" })).resolves.toEqual({
+      projectId: "project-2",
+    });
+    expect(commandProjectIds).toEqual(["project-2"]);
+    await flush();
+    await expect(new WebClientEnvStore(storage).getEnvironment(environment.envId)).resolves.toMatchObject({
+      activeProjectId: "project-2",
+    });
+
+    client.dispose();
+  });
+
+  it("publishes the same project boundary when reconnect hello opens a different project", async () => {
+    const storage = new MemoryStorage();
+    const environment = await makeEnvironment(storage);
+    let helloProjectId = "project-1";
+    const script = createSocketFactory((socket, envelope) => {
+      if (envelope.type === "hello") {
+        socket.serverSend({
+          type: "hello_ok",
+          requestId: envelope.requestId,
+          payload: helloOk(helloProjectId),
+        });
+      }
+    });
+    const client = new AdeSyncClient({ storage, socketFactory: script.factory, document: null });
+    const changes: Array<{ previousProjectId: string | null; projectId: string }> = [];
+    client.onActiveProjectChanged(({ previousProjectId, project }) => {
+      changes.push({ previousProjectId, projectId: project.id });
+    });
+
+    const initialConnect = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 0);
+    await initialConnect;
+    client.subscribeChat("old-project-chat", {}, {});
+    client.subscribeChat("personal-chat", { chatScope: "personal" }, {});
+    client.subscribeTerminal("old-project-terminal", {}, {});
+    await flush();
+
+    script.sockets[0]?.close(1006, "listener handoff");
+    helloProjectId = "project-2";
+    const reconnect = client.connect(environment.envId, signedInRelayAccess);
+    await completeRelayReadyV2AfterOpen(script.sockets, 1);
+    await reconnect;
+    await flush();
+
+    expect(client.getStatus().activeProjectId).toBe("project-2");
+    expect(changes).toContainEqual({ previousProjectId: "project-1", projectId: "project-2" });
+    expect(script.sockets[1].sent.some((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "old-project-chat"
+    ))).toBe(false);
+    expect(script.sockets[1].sent.some((envelope) => envelope.type === "terminal_subscribe")).toBe(false);
+    expect(script.sockets[1].sent.find((envelope) => (
+      envelope.type === "chat_subscribe"
+      && (envelope.payload as { sessionId?: string }).sessionId === "personal-chat"
+    ))?.projectId).toBeUndefined();
 
     client.dispose();
   });
