@@ -357,7 +357,10 @@ describe("account machine publisher health", () => {
     let token: string | null = null;
     let signInListener: (() => void) | null = null;
     const emitSignIn = () => signInListener?.();
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 200 }));
     const service = createAccountMachinePublisherService({
       getAccessToken: async () => token,
       getAccountStatus: () => ({
@@ -394,10 +397,17 @@ describe("account machine publisher health", () => {
   it("coalesces relay readiness changes into a publish and resets the heartbeat", async () => {
     vi.useFakeTimers();
     const current = routeSnapshot();
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 200 }));
     const service = createAccountMachinePublisherService({
       getAccessToken: async () => "account-token",
-      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "owner-a",
+        sessionReadState: "available" as const,
+      }),
       getSnapshot: async () => current,
       getMachineKey: () => "machine-studio",
       directoryBaseUrl: () => "https://directory.example",
@@ -412,11 +422,150 @@ describe("account machine publisher health", () => {
     current.routeHealth.relay.relayBridgeValidated = false;
     await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RELAY_STATE_POLL_MS);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        retainRelayEndpoints: true,
+        reachableEndpoints: [
+          { kind: "lan", host: "192.168.1.20", port: 8787 },
+          { kind: "tailnet", host: "studio.tailnet.ts.net", port: 8787 },
+          { kind: "relay", url: "wss://relay.example/connect/machine-studio" },
+        ],
+      }),
+    );
+    expect(service.getPublisherHealth().reachableEndpointCount).toBe(3);
 
     await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_HEARTBEAT_MS - 1);
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(1);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+    service.dispose();
+  });
+
+  it("does not retain a verified Relay route across account-owner changes", async () => {
+    let accountOwnerId = "owner-a";
+    const current = routeSnapshot();
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: accountOwnerId,
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+    current.routeHealth.relay.relayControlConnected = false;
+    current.routeHealth.relay.relayBridgeValidated = false;
+    accountOwnerId = "owner-b";
+    await service.publishNow();
+
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        retainRelayEndpoints: true,
+        reachableEndpoints: [
+          { kind: "lan", host: "192.168.1.20", port: 8787 },
+          { kind: "tailnet", host: "studio.tailnet.ts.net", port: 8787 },
+        ],
+      }),
+    );
+    service.dispose();
+  });
+
+  it("clears retained Relay ownership on explicit sign-out", async () => {
+    let signedIn = true;
+    const current = routeSnapshot();
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn,
+        userId: signedIn ? "owner-a" : null,
+        sessionReadState: signedIn ? "available" as const : "missing" as const,
+      }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+    signedIn = false;
+    await service.publishNow();
+    current.routeHealth.relay.relayControlConnected = false;
+    current.routeHealth.relay.relayBridgeValidated = false;
+    signedIn = true;
+    await service.publishNow();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        retainRelayEndpoints: true,
+        reachableEndpoints: [
+          { kind: "lan", host: "192.168.1.20", port: 8787 },
+          { kind: "tailnet", host: "studio.tailnet.ts.net", port: 8787 },
+        ],
+      }),
+    );
+    service.dispose();
+  });
+
+  it("clears retained Relay ownership after an authoritative authentication rejection", async () => {
+    const current = routeSnapshot();
+    let rejectAuthentication = false;
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => rejectAuthentication
+      ? new Response(JSON.stringify({ error: "invalid token" }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        })
+      : new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "owner-a",
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+    current.routeHealth.relay.relayControlConnected = false;
+    current.routeHealth.relay.relayBridgeValidated = false;
+    rejectAuthentication = true;
+    await service.publishNow();
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "http_error",
+      lastHttpStatus: 401,
+    });
+
+    rejectAuthentication = false;
+    await service.publishNow();
+    expect(JSON.parse(String(fetchImpl.mock.calls[3]?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        retainRelayEndpoints: true,
+        reachableEndpoints: [
+          { kind: "lan", host: "192.168.1.20", port: 8787 },
+          { kind: "tailnet", host: "studio.tailnet.ts.net", port: 8787 },
+        ],
+      }),
+    );
     service.dispose();
   });
 
