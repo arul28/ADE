@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { markActiveHostProjectOpen } from "./projectCatalog";
 import { ProjectRegistry } from "./projectRegistry";
 import { ProjectScopeRegistry } from "./projectScope";
 
@@ -352,5 +353,33 @@ describe("ProjectScopeRegistry", () => {
 
     await scopeRegistry.disposeAll();
   });
+});
 
+describe("markActiveHostProjectOpen", () => {
+  it("marks the current sync host open even when a stale project is first", () => {
+    const catalog = [
+      { id: "project_stale_mru", displayName: "Stale MRU", isOpen: false },
+      { id: "project_active", displayName: "Active host", isOpen: false },
+    ];
+
+    const updated = markActiveHostProjectOpen(catalog, "project_active");
+
+    expect(updated).toEqual([
+      { id: "project_stale_mru", displayName: "Stale MRU", isOpen: false },
+      { id: "project_active", displayName: "Active host", isOpen: true },
+    ]);
+    expect(updated.find((project) => project.isOpen)?.id).toBe("project_active");
+  });
+
+  it("moves the open marker when the active sync host changes", () => {
+    const catalog = [
+      { id: "project_previous", isOpen: true },
+      { id: "project_current", isOpen: false },
+    ];
+
+    expect(markActiveHostProjectOpen(catalog, "project_current")).toEqual([
+      { id: "project_previous", isOpen: false },
+      { id: "project_current", isOpen: true },
+    ]);
+  });
 });

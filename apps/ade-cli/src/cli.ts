@@ -49,6 +49,7 @@ import type {
   ProjectBrowseInput,
 } from "../../desktop/src/shared/types/core";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
 import {
   findAdeManagedWorktreeRoot,
   normalizeProjectRootPath,
@@ -15131,18 +15132,23 @@ async function runServe(
     };
   };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
-    listProjects: async () => ({
-      projects: includeHostProjectInCatalog(
+    listProjects: async () => {
+      const activeHostProjectId = scopeRegistry.getActiveSyncHostProjectId();
+      const catalogHostProjectId = activeHostProjectId ?? preferredSyncProjectId;
+      const projects = includeHostProjectInCatalog(
         projectRegistry.listRecent(),
-        preferredSyncProjectId
-          ? projectRegistry.get(preferredSyncProjectId)
+        catalogHostProjectId
+          ? projectRegistry.get(catalogHostProjectId)
           : null,
       )
         .map((record) =>
           toMobileProjectSummary(record, {
             isAvailable: fs.existsSync(record.rootPath),
-          })),
-    }),
+          }));
+      return {
+        projects: markActiveHostProjectOpen(projects, activeHostProjectId),
+      };
+    },
     prepareProjectConnection: async (
       request: SyncProjectSwitchRequestPayload,
     ): Promise<SyncProjectSwitchResultPayload> => {
