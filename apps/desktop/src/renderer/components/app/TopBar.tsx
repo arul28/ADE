@@ -899,9 +899,10 @@ export function TopBar({
   const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
   const closeConnections = useCallback(() => setConnectionsOpen(false), []);
   const openConnections = useCallback((tab: ConnectionsPanelTab = "machines") => {
+    if (webMode) return;
     setConnectionsTab(tab);
     setConnectionsOpen(true);
-  }, []);
+  }, [webMode]);
   const handleConnectionsPanelKeyDown = useDialogFocusTrap(
     connectionsPanelRef,
     closeConnections,
@@ -911,7 +912,7 @@ export function TopBar({
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
-  const chromePanelOccludesNativeBrowser = connectionsOpen;
+  const chromePanelOccludesNativeBrowser = !webMode && connectionsOpen;
   const workspaceProjectOpen =
     projectHydrated === true &&
     showWelcome !== true &&
@@ -1228,10 +1229,11 @@ export function TopBar({
   // Let other surfaces (e.g. the Account page) open the Connections panel to a
   // specific tab.
   useEffect(() => {
+    if (webMode) return;
     return subscribeOpenConnectionsPanel((tab) => {
       openConnections(tab);
     });
-  }, [openConnections]);
+  }, [openConnections, webMode]);
 
   const checkForActiveWorkloads = useCallback(
     async (projectRootPath: string): Promise<boolean> => {
@@ -1755,7 +1757,7 @@ export function TopBar({
         options?.onActivate?.();
       };
 
-      const connectionsChip = (
+      const connectionsChip = webMode ? null : (
         <ShellConnectionChip
           layout={menuLayout ? "menu-row" : "chip"}
           label="Connections"
@@ -1805,6 +1807,7 @@ export function TopBar({
       connectionsOpen,
       openConnections,
       remoteBinding,
+      webMode,
     ],
   );
 
@@ -2383,7 +2386,7 @@ export function TopBar({
             document.body,
           )
         : null}
-      {typeof document !== "undefined" && connectionsOpen
+      {typeof document !== "undefined" && !webMode && connectionsOpen
         ? createPortal(
             <div
               className="fixed inset-0 z-[120]"

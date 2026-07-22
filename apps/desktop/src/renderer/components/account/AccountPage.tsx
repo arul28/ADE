@@ -48,6 +48,7 @@ import {
 } from "../remoteTargets/remoteMachineModel";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { openExternalUrl } from "../../lib/openExternal";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { docs } from "../../onboarding/docsLinks";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 
@@ -387,6 +388,7 @@ export function SignInCard({
 // ---------------------------------------------------------------------------
 
 function YourMacsCard() {
+  const webMode = isWebClientMode();
   const [result, setResult] = useState<AdeAccountMachinesResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [localIdentity, setLocalIdentity] = useState<AdeAccountLocalMachineIdentity | null>(null);
@@ -544,14 +546,16 @@ function YourMacsCard() {
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{summary}</div>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => openConnectionsPanel("machines")}
-          style={outlineButton({ height: 30, fontSize: 12, padding: "0 12px" })}
-        >
-          Manage connections
-          <ArrowRight size={13} weight="bold" />
-        </button>
+        {!webMode ? (
+          <button
+            type="button"
+            onClick={() => openConnectionsPanel("machines")}
+            style={outlineButton({ height: 30, fontSize: 12, padding: "0 12px" })}
+          >
+            Manage connections
+            <ArrowRight size={13} weight="bold" />
+          </button>
+        ) : null}
       </div>
 
       {result?.state === "ok" && machines.length > 0 ? (
@@ -676,7 +680,9 @@ function YourMacsCard() {
           }}
         >
           <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
-            {result.state === "not_configured"
+            {webMode
+              ? "Use the machine menu above to switch Macs."
+              : result.state === "not_configured"
               ? "Your Macs still connect from Connections — the shared directory just isn't live yet."
               : "Your Macs still connect from Connections while the directory reconnects."}
           </span>

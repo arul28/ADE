@@ -67,6 +67,7 @@ describe("AccountPage signed-out card", () => {
   const originalAde = window.ade;
 
   beforeEach(() => {
+    delete window.__adeWebClient;
     statusRef.current = SIGNED_OUT;
     window.ade = {
       app: { openExternal: vi.fn(async () => undefined) },
@@ -79,6 +80,7 @@ describe("AccountPage signed-out card", () => {
 
   afterEach(() => {
     cleanup();
+    delete window.__adeWebClient;
     beginLogin.mockClear();
     refreshAccount.mockClear();
     window.ade = originalAde;
@@ -142,6 +144,7 @@ describe("AccountPage signed-in", () => {
   const signOut = vi.fn(async () => SIGNED_OUT);
 
   beforeEach(() => {
+    delete window.__adeWebClient;
     statusRef.current = {
       signedIn: true,
       configured: true,
@@ -173,6 +176,7 @@ describe("AccountPage signed-in", () => {
 
   afterEach(() => {
     cleanup();
+    delete window.__adeWebClient;
     listMachines.mockReset();
     getLocalMachineIdentity.mockReset();
     removeMachine.mockClear();
@@ -305,5 +309,23 @@ describe("AccountPage signed-in", () => {
     // The old Mobile / Web clients shortcuts are gone.
     expect(screen.queryByRole("button", { name: "Mobile" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Web clients" })).toBeNull();
+  });
+
+  it("does not offer the desktop Connections panel in hosted web mode", async () => {
+    window.__adeWebClient = true;
+    renderPage();
+    await screen.findByText("MacBook Pro");
+
+    expect(screen.queryByRole("button", { name: /Manage connections/ })).toBeNull();
+  });
+
+  it("directs hosted web users to the machine menu when the directory is unavailable", async () => {
+    window.__adeWebClient = true;
+    listMachines.mockResolvedValueOnce({ state: "unavailable", message: null, machines: [] });
+
+    renderPage();
+
+    expect(await screen.findByText("Use the machine menu above to switch Macs.")).toBeTruthy();
+    expect(screen.queryByText(/still connect from Connections/)).toBeNull();
   });
 });
