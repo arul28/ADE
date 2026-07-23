@@ -1141,6 +1141,9 @@ describe("ADE CLI", () => {
           lastControlError: "Relay control closed (1011): upstream restart",
           lastControlOpenAt: "2026-07-16T11:58:00.000Z",
           lastBridgeValidationAt: "2026-07-16T11:57:30.000Z",
+          relayEndToEndVerifiedAt: new Date(Date.now() - 60_000).toISOString(),
+          relayEndToEndFailure: null,
+          relayEndToEndRoundTripMs: 37,
         },
         accountDirectory: {
           state: "http_error",
@@ -1171,6 +1174,7 @@ describe("ADE CLI", () => {
     expect(output).toContain("Relay control closed (1011): upstream restart");
     expect(output).toContain("2026-07-16T11:58:00.000Z");
     expect(output).toContain("2026-07-16T11:57:30.000Z");
+    expect(output).toMatch(/relay end-to-end\s+verified 1 minute ago \(37ms\)/);
     expect(output).toContain("account directory");
     expect(output).toContain("http_error · 2 reachable endpoints · HTTP 401");
     expect(output).toContain("The account directory returned HTTP 401: invalid issuer");
@@ -1183,7 +1187,10 @@ describe("ADE CLI", () => {
 
   it("formats the authoritative relay blocker without mistaking historical control errors for one", () => {
     const plan = expectExecutePlan(buildCliPlan(["sync", "status"]));
-    const formatRelay = (skipReason: string | null) => formatOutput({
+    const formatRelay = (
+      skipReason: string | null,
+      relayEndToEndFailure: string | null = null,
+    ) => formatOutput({
       mode: "brain",
       role: "brain",
       runtimeRole: "host",
@@ -1198,6 +1205,9 @@ describe("ADE CLI", () => {
           relayBridgeValidated: true,
           skipReason,
           lastControlError: "Relay control closed (1012): historical restart",
+          relayEndToEndVerifiedAt: relayEndToEndFailure ? null : new Date().toISOString(),
+          relayEndToEndFailure,
+          relayEndToEndRoundTripMs: relayEndToEndFailure ? null : 21,
         },
         accountDirectory: {
           state: "published",
@@ -1213,6 +1223,11 @@ describe("ADE CLI", () => {
     const recovered = formatRelay(null);
     expect(recovered).toMatch(/relay\s+reachable/);
     expect(recovered).toContain("Relay control closed (1012): historical restart");
+
+    const failed = formatRelay(null, "Relay self-probe closed before ready (4501): host offline.");
+    expect(failed).toMatch(
+      /relay end-to-end\s+FAILED: Relay self-probe closed before ready \(4501\): host offline\./,
+    );
   });
 
   it("formats sync web pairing info from sync status", () => {
@@ -4774,6 +4789,11 @@ describe("ADE CLI", () => {
         params: { includeTransferReadiness: false },
         optional: true,
       });
+      expect(plan.steps).toContainEqual({
+        key: "relaySelfProbe",
+        method: "sync.runSelfProbe",
+        optional: true,
+      });
       const summary = summarizeExecution({
         plan,
         connection: {
@@ -4807,6 +4827,10 @@ describe("ADE CLI", () => {
               },
             },
           },
+          relaySelfProbe: {
+            ok: false,
+            detail: "Relay self-probe closed before ready (4501): host offline.",
+          },
         },
       } as any) as Record<string, any>;
 
@@ -4822,6 +4846,11 @@ describe("ADE CLI", () => {
       ]);
       expect(summary.sync.message).toContain("404 Not Found");
       expect(summary.sync.message).toContain("HTTP 401: token expired");
+      expect(summary.relaySelfProbe).toMatchObject({
+        ready: false,
+        status: "warning",
+        message: expect.stringContaining("FAILED"),
+      });
       const output = formatOutput(summary, {
         projectRoot,
         workspaceRoot: projectRoot,
@@ -4835,6 +4864,40 @@ describe("ADE CLI", () => {
       }, "doctor");
       expect(output).toContain("Sync route failure");
       expect(output).toContain("listener");
+      expect(output).toContain("relay self-probe");
+      expect(output).toContain("host offline");
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("marks the doctor Relay self-probe skipped when no brain is running", () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-doctor-no-brain-"));
+    fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
+    try {
+      const summary = summarizeExecution({
+        plan: expectExecutePlan(buildCliPlan(["doctor"])),
+        connection: {
+          mode: "headless",
+          projectRoot,
+          workspaceRoot: projectRoot,
+          socketPath: path.join(projectRoot, ".ade", "ade.sock"),
+        },
+        values: {
+          rpcActions: { actions: [{}] },
+          actions: { actions: [{}] },
+          relaySelfProbe: {
+            ok: false,
+            detail: "Relay self-probe skipped because the control socket is not connected.",
+          },
+        },
+      } as any) as Record<string, any>;
+
+      expect(summary.relaySelfProbe).toEqual(expect.objectContaining({
+        ready: true,
+        status: "unavailable",
+        message: "Skipped — no running ADE brain.",
+      }));
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }

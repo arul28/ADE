@@ -5203,6 +5203,9 @@ export function createAdeRpcRequestHandler(args: {
           forceTransferReadiness: params.forceTransferReadiness === true,
         });
       }
+      if (method === "sync.runSelfProbe") {
+        return await syncService.runSelfProbe();
+      }
       if (method === "sync.refreshDiscovery") {
         return await syncService.refreshDiscovery();
       }

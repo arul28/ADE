@@ -58,7 +58,13 @@ export type AccountMachineRegistrationSnapshot = Pick<
   SyncRoleSnapshot,
   "role" | "runtimeRole" | "runtimeName" | "pairingConnectInfo"
 > & {
-  routeHealth: Pick<SyncRouteHealth, "listener" | "tailscale" | "relay">;
+  routeHealth: Pick<SyncRouteHealth, "listener" | "tailscale"> & {
+    relay: SyncRouteHealth["relay"] & {
+      relayEndToEndVerifiedAt?: string | null;
+      relayEndToEndFailure?: string | null;
+      relayEndToEndRoundTripMs?: number | null;
+    };
+  };
 };
 
 type PublisherAccountStatus = Pick<AccountAuthStatus, "signedIn" | "source"> &
@@ -183,6 +189,8 @@ export function buildAccountMachineRegistration(args: {
       && args.snapshot.routeHealth.listener.loopbackAdeValidated
       && args.snapshot.routeHealth.relay.relayControlConnected
       && args.snapshot.routeHealth.relay.relayBridgeValidated
+      && Boolean(args.snapshot.routeHealth.relay.relayEndToEndVerifiedAt)
+      && args.snapshot.routeHealth.relay.relayEndToEndFailure == null
       && args.snapshot.routeHealth.relay.skipReason == null
     ) {
       const url = validatedRelayUrl(host, machineKey);
@@ -217,6 +225,8 @@ function relayPublishStateSignature(
   return JSON.stringify({
     relayControlConnected: snapshot.routeHealth.relay.relayControlConnected,
     relayBridgeValidated: snapshot.routeHealth.relay.relayBridgeValidated,
+    relayEndToEndVerifiedAt: snapshot.routeHealth.relay.relayEndToEndVerifiedAt ?? null,
+    relayEndToEndFailure: snapshot.routeHealth.relay.relayEndToEndFailure ?? null,
     reachableEndpoints,
   });
 }
@@ -488,7 +498,11 @@ export function createAccountMachinePublisherService(options: {
     // only a route this publisher successfully registered.
     const relayTemporarilyUnavailable = snapshot.routeHealth.relay.enabled === true
       && relayEndpoints(observedRegistration).length === 0;
+    const relayVerificationFailed = Boolean(
+      snapshot.routeHealth.relay.relayEndToEndFailure,
+    );
     const canRetainRelay = relayTemporarilyUnavailable
+      && !relayVerificationFailed
       && lastPublishedRelayState?.machineKey === machineKey
       && lastPublishedRelayState.accountOwnerId === accountOwnerId;
     const registrationWithRetainedRelay = canRetainRelay
@@ -502,6 +516,7 @@ export function createAccountMachinePublisherService(options: {
     // empty. Older directory deployments safely ignore the extra property and
     // still benefit from the process-local retained route above.
     const registration: AccountMachineRegistration = relayTemporarilyUnavailable
+      && !relayVerificationFailed
       ? { ...registrationWithRetainedRelay, retainRelayEndpoints: true }
       : registrationWithRetainedRelay;
     const reachableEndpointCount = registration.reachableEndpoints.length;

@@ -14,6 +14,10 @@ import {
   probeAdeLoopbackListener,
   type SyncLoopbackProbeResult,
 } from "./syncLoopbackProbe";
+import {
+  probeRelayEndToEnd,
+  type RelaySelfProbeResult,
+} from "./syncRelaySelfProbe";
 import { SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
 
 type Logger = {
@@ -36,6 +40,9 @@ export type SyncTunnelClientStatus = {
   lastFailureAt: string | null;
   lastControlOpenAt: string | null;
   lastBridgeValidationAt: string | null;
+  relayEndToEndVerifiedAt: string | null;
+  relayEndToEndFailure: string | null;
+  relayEndToEndRoundTripMs: number | null;
   relayUrl: string;
   machineKey: string;
 };
@@ -45,6 +52,8 @@ export type SyncTunnelClientService = {
   stop(): Promise<void>;
   /** Re-probe the active shared listener without opening a Relay pipe. */
   validateCurrentBridge(): Promise<boolean>;
+  /** Dial Relay exactly like a ready-v2 controller and verify bridge readiness. */
+  runSelfProbe(): Promise<{ ok: boolean; detail: string }>;
   getStatus(): SyncTunnelClientStatus;
   dispose(): Promise<void>;
 };
@@ -73,6 +82,8 @@ type SyncTunnelClientArgs = {
   /** Test seams; production uses the exported protocol-liveness defaults. */
   controlPingIntervalMs?: number;
   controlPongDeadlineMs?: number;
+  controlJsonPingIntervalMs?: number;
+  controlJsonPongDeadlineMs?: number;
   controlReadyStableMs?: number;
   reconnectBackoffMs?: (attempt: number) => number;
   createWebSocket?: (
@@ -90,6 +101,9 @@ const BACKOFF_CAP_MS = 60_000;
 const ACCOUNT_STATUS_POLL_MS = 1_000;
 export const CONTROL_PING_INTERVAL_MS = 30_000;
 export const CONTROL_PONG_DEADLINE_MS = 10_000;
+export const CONTROL_JSON_PING_INTERVAL_MS = 180_000;
+export const CONTROL_JSON_PONG_DEADLINE_MS = 30_000;
+export const CONTROL_JSON_INITIAL_PING_DELAY_MS = 1_000;
 export const RELAY_CLOSE_PARTNER_CLOSED = 4000;
 export const RELAY_CLOSE_HOST_UNAVAILABLE = 4501;
 export const RELAY_CLOSE_BRIDGE_REJECTED = 4507;
@@ -98,6 +112,7 @@ export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay."
 export const BRIDGE_VALIDATION_LEASE_MS = 2_000;
 export const CONTROL_READY_STABLE_MS = 5_000;
 export const RELAY_READY_VERSION = 2;
+export const RELAY_SELF_PROBE_DEBOUNCE_MS = 2_000;
 const MAX_UNEXPECTED_RESPONSE_BODY_BYTES = 512;
 const MAX_CONFIRMED_CONFLICT_ROTATIONS = 1;
 
@@ -134,6 +149,15 @@ type PendingBridgeOpen = {
   reject: (code: number, reason: string) => void;
 };
 
+type BridgeOpenFailureSource = "bridge-open" | "self-probe";
+
+type RelaySelfProbeState = {
+  verifiedAtMs: number | null;
+  lastFailure: string | null;
+  lastFailureAtMs: number | null;
+  inFlight: boolean;
+};
+
 /**
  * Exponential backoff with full jitter, capped at 60s. Exposed for tests so the
  * reconnect schedule is verifiable without waiting on real timers.
@@ -143,11 +167,15 @@ export function computeBackoffMs(attempt: number, random: () => number = Math.ra
   return Math.floor(random() * ceiling);
 }
 
-export type ControlMessage = {
+type ControlOpenMessage = {
   t: "open";
   id: string;
   epoch?: string;
   readyVersion?: typeof RELAY_READY_VERSION;
+};
+
+export type ControlMessage = ControlOpenMessage | {
+  t: "pong";
 };
 
 /** Parses a host control frame; returns null for anything unrecognized. */
@@ -178,6 +206,7 @@ export function parseControlMessage(raw: string): ControlMessage | null {
       ...(readyVersion === RELAY_READY_VERSION ? { readyVersion } : {}),
     };
   }
+  if (t === "pong") return { t: "pong" };
   return null;
 }
 
@@ -232,6 +261,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const log = args.logger ?? {};
   let control: WebSocket | null = null;
   let stopControlLiveness: (() => void) | null = null;
+  let stopControlJsonKeepalive: (() => void) | null = null;
   let controlReadyTimer: NodeJS.Timeout | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let accountStatusTimer: NodeJS.Timeout | null = null;
@@ -245,7 +275,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let connected = false;
   let lastError: string | null = null;
   let lastControlError: string | null = null;
-  let bridgeOpenFailure: { key: string; reason: string } | null = null;
+  let bridgeOpenFailure: {
+    key: string;
+    reason: string;
+    source: BridgeOpenFailureSource;
+  } | null = null;
   let validatedPort: number | null = null;
   let validatedLoopbackNonce: string | null = null;
   let lastFailureAt: string | null = null;
@@ -268,10 +302,34 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let transportNegotiationKey: string | null = null;
   let epochFallbackUsed = false;
   let epochControlEstablished = false;
+  let controlOpenedAtMs: number | null = null;
+  let selfProbeBridgeKey: string | null = null;
+  let selfProbeRoundTripMs: number | null = null;
+  let selfProbe: RelaySelfProbeState = {
+    verifiedAtMs: null,
+    lastFailure: null,
+    lastFailureAtMs: null,
+    inFlight: false,
+  };
+  let selfProbeDebounceTimer: NodeJS.Timeout | null = null;
+  let selfProbeScheduled: {
+    key: string;
+    promise: Promise<RelaySelfProbeResult>;
+    resolve: (result: RelaySelfProbeResult) => void;
+  } | null = null;
+  let selfProbeInFlight: {
+    key: string;
+    promise: Promise<RelaySelfProbeResult>;
+  } | null = null;
+  let selfProbeSocket: WebSocket | null = null;
   const tunnels = new Set<Tunnel>();
   const pendingBridgeOpens = new Set<PendingBridgeOpen>();
   const controlSocketStates = new WeakMap<WebSocket, ControlSocketState>();
   const loopbackProbe = args.loopbackProbe ?? probeAdeLoopbackListener;
+  let requestSelfProbe: (
+    key: string,
+    options?: { debounce?: boolean },
+  ) => Promise<RelaySelfProbeResult>;
 
   const recordFailure = (reason: string): void => {
     lastError = reason;
@@ -293,13 +351,59 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       });
   };
 
-  const clearBridgeOpenFailure = (expectedKey?: string): void => {
-    if (!bridgeOpenFailure) return;
-    if (expectedKey && bridgeOpenFailure.key !== expectedKey) return;
+  const clearScheduledSelfProbe = (reason: string): void => {
+    if (selfProbeDebounceTimer) {
+      clearTimeout(selfProbeDebounceTimer);
+      selfProbeDebounceTimer = null;
+    }
+    const scheduled = selfProbeScheduled;
+    selfProbeScheduled = null;
+    scheduled?.resolve({ ok: false, reason });
+  };
+
+  const resetSelfProbeForControlGeneration = (): void => {
+    clearScheduledSelfProbe("Relay bridge identity changed before self-probe.");
+    const probeSocket = selfProbeSocket;
+    selfProbeSocket = null;
+    if (probeSocket) {
+      try {
+        probeSocket.terminate();
+      } catch {
+        // already closed
+      }
+    }
+    selfProbeBridgeKey = null;
+    selfProbeRoundTripMs = null;
+    selfProbe = {
+      verifiedAtMs: null,
+      // A failed relay verdict remains authoritative until a later generation
+      // proves the route healthy; otherwise reconnect would look like benign
+      // startup and the directory could retain the stale endpoint.
+      lastFailure: selfProbe.lastFailure,
+      lastFailureAtMs: selfProbe.lastFailureAtMs,
+      inFlight: false,
+    };
+  };
+
+  const clearBridgeOpenFailure = (
+    expectedKey?: string,
+    expectedSource?: BridgeOpenFailureSource,
+  ): boolean => {
+    if (!bridgeOpenFailure) return false;
+    if (expectedKey && bridgeOpenFailure.key !== expectedKey) return false;
+    if (expectedSource && bridgeOpenFailure.source !== expectedSource) return false;
     const previousFailure = bridgeOpenFailure;
     bridgeOpenFailure = null;
     if (lastError === previousFailure.reason) lastError = null;
     requestPublicationStatePublish("route-state-changed");
+    if (
+      previousFailure.source === "bridge-open"
+      && validatedBridgeKey === previousFailure.key
+      && control?.readyState === WebSocket.OPEN
+    ) {
+      void requestSelfProbe(previousFailure.key);
+    }
+    return true;
   };
 
   const clearBridgeValidation = (): void => {
@@ -319,7 +423,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     controlGeneration += 1;
     clearControlReadyTimer();
     clearBridgeValidation();
-    clearBridgeOpenFailure();
+    bridgeOpenFailure = null;
+    resetSelfProbeForControlGeneration();
   };
 
   const recordControlFailure = (reason: string): void => {
@@ -526,6 +631,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       const socketControlGeneration = controlGeneration;
       control = socket;
       let socketLivenessStop: (() => void) | null = null;
+      let socketJsonKeepaliveStop: (() => void) | null = null;
+      let acceptJsonPong: (() => void) | null = null;
       const activateLegacyFallback = (reason: string): boolean => {
         if (
           socketTransportMode !== "epoch"
@@ -566,6 +673,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         clearReconnect();
         connected = true;
         lastError = null;
+        controlOpenedAtMs = Date.now();
         lastControlOpenAt = new Date().toISOString();
         socketLivenessStop = armControlLiveness(
           socket,
@@ -583,6 +691,52 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           args.controlPongDeadlineMs ?? CONTROL_PONG_DEADLINE_MS,
         );
         stopControlLiveness = socketLivenessStop;
+        const jsonKeepalive = armControlJsonKeepalive(
+          socket,
+          () => {
+            if (control !== socket) return;
+            const reason = "relay control unreachable at relay (zombie socket)";
+            socketState.failureReason = reason;
+            recordControlFailure(reason);
+            const currentBridgeKey = bridgeValidationIdentity().key;
+            const verificationStateChanged = selfProbe.lastFailure !== reason
+              || selfProbe.verifiedAtMs != null
+              || selfProbeBridgeKey !== currentBridgeKey;
+            selfProbeBridgeKey = currentBridgeKey;
+            selfProbeRoundTripMs = null;
+            selfProbe = {
+              verifiedAtMs: null,
+              lastFailure: reason,
+              lastFailureAtMs: Date.now(),
+              inFlight: false,
+            };
+            if (verificationStateChanged) {
+              requestPublicationStatePublish("route-state-changed");
+            }
+            const { machineKey } = identity();
+            log.warn?.("sync_tunnel.zombie_control_detected", {
+              machineKey,
+              controlAgeMs: controlOpenedAtMs == null
+                ? null
+                : Math.max(0, Date.now() - controlOpenedAtMs),
+              transportMode: socketTransportMode,
+              source: "json-ping",
+            });
+            // Product analytics accepts only centrally allowlisted events and
+            // is intentionally not widened from this service layer; this
+            // incident remains available through the structured lifecycle log.
+            try {
+              socket.terminate();
+            } catch {
+              // already dead
+            }
+          },
+          args.controlJsonPingIntervalMs ?? CONTROL_JSON_PING_INTERVAL_MS,
+          args.controlJsonPongDeadlineMs ?? CONTROL_JSON_PONG_DEADLINE_MS,
+        );
+        socketJsonKeepaliveStop = jsonKeepalive.stop;
+        acceptJsonPong = jsonKeepalive.acceptPong;
+        stopControlJsonKeepalive = socketJsonKeepaliveStop;
         log.info?.("sync_tunnel.control_open", {
           machineKey: id.machineKey,
           openedAt: lastControlOpenAt,
@@ -599,6 +753,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           publishRotatedIdentityIfReady();
           const readyIdentity = bridgeValidationIdentity();
           if (validatedBridgeKey !== readyIdentity.key) return;
+          void requestSelfProbe(readyIdentity.key);
           clearControlReadyTimer();
           const markStable = (): void => {
             controlReadyTimer = null;
@@ -629,6 +784,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       socket.on("message", (raw: RawData) => {
         if (control !== socket) return;
         const message = parseControlMessage(rawToText(raw));
+        if (message?.t === "pong") {
+          acceptJsonPong?.();
+          return;
+        }
         if (message?.t !== "open") return;
         if (socketTransportMode === "epoch" && message.epoch !== controlEpoch) {
           sendControlReject(
@@ -704,6 +863,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       socket.on("close", (code: number, rawReason: Buffer) => {
         socketLivenessStop?.();
         if (stopControlLiveness === socketLivenessStop) stopControlLiveness = null;
+        socketJsonKeepaliveStop?.();
+        if (stopControlJsonKeepalive === socketJsonKeepaliveStop) {
+          stopControlJsonKeepalive = null;
+        }
+        acceptJsonPong = null;
         const reason = rawReason.toString("utf8").trim();
         const wasCurrent = control === socket;
         log.info?.("sync_tunnel.control_close", {
@@ -715,6 +879,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         if (!wasCurrent) return;
 
         connected = false;
+        controlOpenedAtMs = null;
         control = null;
         advanceControlGeneration();
         for (const pendingOpen of [...pendingBridgeOpens]) {
@@ -737,7 +902,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           const closeReason = reason
             ? `Relay control closed (${code}): ${reason}`
             : `Relay control closed (${code}).`;
-          if (reason || !socketState.failureReason) {
+          if (!socketState.failureReason) {
             socketState.failureReason = closeReason;
             recordControlFailure(closeReason);
           }
@@ -800,6 +965,10 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       lastBridgeValidationAt = result.checkedAt;
       log.debug?.("sync_tunnel.bridge_validated", { port });
       publishRotatedIdentityIfReady();
+      // The bridge can validate after the control opened (listener came up
+      // later); the end-to-end probe must follow every validation, not only
+      // the control-open path, or Relay publication stays fail-closed.
+      if (connected && !stopped) void requestSelfProbe(identityAtStart.key);
       return true;
     } catch (error) {
       if (stopped || !bridgeIdentityIsCurrent(identityAtStart)) return false;
@@ -854,8 +1023,9 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     reason: string,
     bridgeKey: string,
     failedTunnel?: Tunnel,
+    source: BridgeOpenFailureSource = "bridge-open",
   ): void => {
-    const hasReadyBridge = [...tunnels].some(
+    const hasReadyBridge = source === "bridge-open" && [...tunnels].some(
       (tunnel) => tunnel !== failedTunnel && tunnel.ready && tunnel.bridgeKey === bridgeKey,
     );
     if (hasReadyBridge) {
@@ -867,8 +1037,18 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       });
       return;
     }
-    const stateChanged = bridgeOpenFailure?.key !== bridgeKey;
-    bridgeOpenFailure = { key: bridgeKey, reason };
+    const stateChanged = bridgeOpenFailure?.key !== bridgeKey
+      || bridgeOpenFailure?.reason !== reason
+      || bridgeOpenFailure?.source !== source;
+    bridgeOpenFailure = { key: bridgeKey, reason, source };
+    if (
+      source === "bridge-open"
+      && selfProbeBridgeKey === bridgeKey
+      && selfProbe.verifiedAtMs != null
+    ) {
+      selfProbeRoundTripMs = null;
+      selfProbe = { ...selfProbe, verifiedAtMs: null };
+    }
     recordFailure(reason);
     log.warn?.("sync_tunnel.bridge_open_failed", {
       connectionId: failedTunnel?.connectionId ?? null,
@@ -876,6 +1056,164 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       routeRetained: false,
     });
     if (stateChanged) requestPublicationStatePublish("route-state-changed");
+  };
+
+  const selfProbeReasonClass = (reason: string): string => {
+    if (/timed out/i.test(reason)) return "timeout";
+    if (/closed before/i.test(reason)) return "closed_before_ready";
+    if (/invalid|binary/i.test(reason)) return "protocol";
+    if (/WebSocket error|could not open/i.test(reason)) return "transport";
+    return "unknown";
+  };
+
+  const prepareSelfProbeKey = (key: string): void => {
+    if (selfProbeBridgeKey === key) return;
+    selfProbeBridgeKey = key;
+    selfProbeRoundTripMs = null;
+    selfProbe = {
+      verifiedAtMs: null,
+      lastFailure: selfProbe.lastFailure,
+      lastFailureAtMs: selfProbe.lastFailureAtMs,
+      inFlight: false,
+    };
+  };
+
+  const performSelfProbe = (key: string): Promise<RelaySelfProbeResult> => {
+    if (
+      stopped
+      || !accountSignedIn()
+      || control?.readyState !== WebSocket.OPEN
+      || validatedBridgeKey !== key
+      || bridgeValidationIdentity().key !== key
+    ) {
+      return Promise.resolve({
+        ok: false,
+        reason: "Relay self-probe skipped because the current control and bridge are not ready.",
+      });
+    }
+    prepareSelfProbeKey(key);
+    const controlSocket = control;
+    const machineIdentity = identity();
+    selfProbe = { ...selfProbe, inFlight: true };
+    const current = probeRelayEndToEnd({
+      relayWsBase: httpToWsUrl(relayHttpUrl()),
+      machineKey: machineIdentity.machineKey,
+      createWebSocket: (url) => {
+        const socket = createWebSocket(url);
+        selfProbeSocket = socket;
+        return socket;
+      },
+    }).then((result) => {
+      if (
+        stopped
+        || selfProbeBridgeKey !== key
+        || validatedBridgeKey !== key
+        || bridgeValidationIdentity().key !== key
+      ) {
+        return result;
+      }
+      if (result.ok) {
+        const verifiedAtMs = Date.now();
+        const stateChanged = selfProbe.verifiedAtMs !== verifiedAtMs
+          || selfProbe.lastFailure != null
+          || selfProbeRoundTripMs !== result.roundTripMs;
+        selfProbeRoundTripMs = result.roundTripMs;
+        selfProbe = {
+          verifiedAtMs,
+          lastFailure: null,
+          lastFailureAtMs: null,
+          inFlight: false,
+        };
+        const clearedFailure = clearBridgeOpenFailure(key, "self-probe");
+        if (stateChanged && !clearedFailure) {
+          requestPublicationStatePublish("route-state-changed");
+        }
+        log.debug?.("sync_tunnel.self_probe_ok", {
+          machineKey: machineIdentity.machineKey,
+          roundTripMs: result.roundTripMs,
+        });
+        return result;
+      }
+
+      const failureAtMs = Date.now();
+      selfProbeRoundTripMs = null;
+      selfProbe = {
+        verifiedAtMs: null,
+        lastFailure: result.reason,
+        lastFailureAtMs: failureAtMs,
+        inFlight: false,
+      };
+      recordBridgeOpenFailure(result.reason, key, undefined, "self-probe");
+      log.warn?.("sync_tunnel.self_probe_failed", {
+        machineKey: machineIdentity.machineKey,
+        reason: result.reason,
+        reasonClass: selfProbeReasonClass(result.reason),
+      });
+      if (control === controlSocket && controlSocket.readyState === WebSocket.OPEN) {
+        const controlFailure = `relay end-to-end self-probe failed: ${result.reason}`;
+        const socketState = controlSocketStates.get(controlSocket);
+        if (socketState) socketState.failureReason = controlFailure;
+        recordControlFailure(controlFailure);
+        log.warn?.("sync_tunnel.zombie_control_detected", {
+          machineKey: machineIdentity.machineKey,
+          controlAgeMs: controlOpenedAtMs == null
+            ? null
+            : Math.max(0, Date.now() - controlOpenedAtMs),
+          transportMode,
+          source: "self-probe",
+        });
+        try {
+          controlSocket.terminate();
+        } catch {
+          // already dead
+        }
+      }
+      return result;
+    }).finally(() => {
+      if (selfProbeInFlight?.promise === current) selfProbeInFlight = null;
+      if (selfProbeInFlight == null) selfProbeSocket = null;
+      if (selfProbeBridgeKey === key && selfProbe.inFlight) {
+        selfProbe = { ...selfProbe, inFlight: false };
+      }
+    });
+    selfProbeInFlight = { key, promise: current };
+    return current;
+  };
+
+  requestSelfProbe = (
+    key: string,
+    options: { debounce?: boolean } = {},
+  ): Promise<RelaySelfProbeResult> => {
+    prepareSelfProbeKey(key);
+    if (selfProbeInFlight) {
+      if (selfProbeInFlight.key === key) return selfProbeInFlight.promise;
+      return selfProbeInFlight.promise.then(() => {
+        if (bridgeValidationIdentity().key !== key) {
+          return { ok: false, reason: "Relay bridge identity changed before self-probe." };
+        }
+        return requestSelfProbe(key, options);
+      });
+    }
+    if (selfProbeScheduled?.key === key) return selfProbeScheduled.promise;
+    if (selfProbeScheduled) {
+      clearScheduledSelfProbe("Relay bridge identity changed before self-probe.");
+    }
+    if (options.debounce === false) return performSelfProbe(key);
+
+    let resolveScheduled!: (result: RelaySelfProbeResult) => void;
+    const promise = new Promise<RelaySelfProbeResult>((resolve) => {
+      resolveScheduled = resolve;
+    });
+    selfProbeScheduled = { key, promise, resolve: resolveScheduled };
+    selfProbeDebounceTimer = setTimeout(() => {
+      selfProbeDebounceTimer = null;
+      const scheduled = selfProbeScheduled;
+      if (!scheduled || scheduled.key !== key) return;
+      selfProbeScheduled = null;
+      void performSelfProbe(key).then(scheduled.resolve);
+    }, RELAY_SELF_PROBE_DEBOUNCE_MS);
+    selfProbeDebounceTimer.unref?.();
+    return promise;
   };
 
   const sendControlLifecycle = (
@@ -931,7 +1269,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
   const openTunnel = async (
     id: MachineIdentity,
-    message: ControlMessage,
+    message: ControlOpenMessage,
     controlSocket: WebSocket,
   ): Promise<void> => {
     const { id: connectionId, epoch } = message;
@@ -1071,7 +1409,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         }
       }
       tunnel.ready = true;
-      clearBridgeOpenFailure(validatedKey);
+      clearBridgeOpenFailure(validatedKey, "bridge-open");
       acceptOpen();
       log.debug?.("sync_tunnel.ready", {
         connectionId,
@@ -1148,6 +1486,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const closeRelayConnections = (controlReason: string): void => {
     stopControlLiveness?.();
     stopControlLiveness = null;
+    stopControlJsonKeepalive?.();
+    stopControlJsonKeepalive = null;
     clearControlReadyTimer();
     const socket = control;
     for (const pendingOpen of [...pendingBridgeOpens]) {
@@ -1174,7 +1514,9 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       safeCloseWebSocket(tunnel.local, RELAY_CLOSE_PARTNER_CLOSED, "host unavailable");
     }
     connected = false;
+    controlOpenedAtMs = null;
     clearBridgeValidation();
+    if (!socket) resetSelfProbeForControlGeneration();
   };
 
   const reconcileAccountEligibility = async (): Promise<void> => {
@@ -1184,7 +1526,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       accountGeneration += 1;
       clearControlReadyTimer();
       clearBridgeValidation();
-      clearBridgeOpenFailure();
+      bridgeOpenFailure = null;
+      resetSelfProbeForControlGeneration();
     }
     accountEligible = nextEligibility;
     if (!nextEligibility) {
@@ -1216,7 +1559,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           accountGeneration += 1;
           clearControlReadyTimer();
           clearBridgeValidation();
-          clearBridgeOpenFailure();
+          bridgeOpenFailure = null;
+          resetSelfProbeForControlGeneration();
           closeRelayConnections(nextUserId ? "account identity changed" : "account lease unavailable");
         }
       } catch (error) {
@@ -1277,6 +1621,36 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
 
     validateCurrentBridge,
 
+    async runSelfProbe(): Promise<{ ok: boolean; detail: string }> {
+      if (
+        stopped
+        || !accountSignedIn()
+        || control?.readyState !== WebSocket.OPEN
+      ) {
+        return {
+          ok: false,
+          detail: "Relay self-probe skipped because the control socket is not connected.",
+        };
+      }
+      if (!await validateCurrentBridge()) {
+        return {
+          ok: false,
+          detail: "Relay self-probe skipped because the local bridge is not validated.",
+        };
+      }
+      const currentIdentity = bridgeValidationIdentity();
+      if (validatedBridgeKey !== currentIdentity.key) {
+        return {
+          ok: false,
+          detail: "Relay self-probe skipped because the bridge identity changed.",
+        };
+      }
+      const result = await requestSelfProbe(currentIdentity.key);
+      return result.ok
+        ? { ok: true, detail: `Relay end-to-end verified in ${result.roundTripMs}ms.` }
+        : { ok: false, detail: result.reason };
+    },
+
     getStatus(): SyncTunnelClientStatus {
       const { machineKey } = identity();
       const currentValidationIdentity = bridgeValidationIdentity();
@@ -1285,6 +1659,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       const eligible = accountSignedIn();
       const currentBridgeOpenFailure = bridgeOpenFailure?.key === currentValidationIdentity.key
         ? bridgeOpenFailure.reason
+        : null;
+      const currentSelfProbeVerified = selfProbeBridgeKey === currentValidationIdentity.key
+        ? selfProbe.verifiedAtMs
+        : null;
+      const currentSelfProbeRoundTripMs = selfProbeBridgeKey === currentValidationIdentity.key
+        ? selfProbeRoundTripMs
         : null;
       return {
         accountLeaseValid: eligible,
@@ -1303,6 +1683,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         lastFailureAt,
         lastControlOpenAt,
         lastBridgeValidationAt,
+        relayEndToEndVerifiedAt: eligible && currentSelfProbeVerified != null
+          ? new Date(currentSelfProbeVerified).toISOString()
+          : null,
+        relayEndToEndFailure: eligible ? selfProbe.lastFailure : null,
+        relayEndToEndRoundTripMs: eligible ? currentSelfProbeRoundTripMs : null,
         relayUrl: relayHttpUrl(),
         machineKey,
       };
@@ -1495,6 +1880,79 @@ function armControlLiveness(
   };
   socket.once("close", stop);
   return stop;
+}
+
+function armControlJsonKeepalive(
+  socket: WebSocket,
+  onMiss: () => void,
+  pingIntervalMs: number,
+  pongDeadlineMs: number,
+): { stop: () => void; acceptPong: () => void } {
+  const normalizedIntervalMs = Math.max(1, Math.floor(pingIntervalMs));
+  const normalizedDeadlineMs = Math.max(1, Math.floor(pongDeadlineMs));
+  let stopped = false;
+  let pongDeadline: NodeJS.Timeout | null = null;
+  let initialPingTimer: NodeJS.Timeout | null = null;
+  let nextIntervalDueAt = Date.now() + normalizedIntervalMs;
+
+  const clearPongDeadline = (): void => {
+    if (!pongDeadline) return;
+    clearTimeout(pongDeadline);
+    pongDeadline = null;
+  };
+  const miss = (): void => {
+    clearPongDeadline();
+    if (!stopped) onMiss();
+  };
+  const sendPing = (): void => {
+    if (stopped || socket.readyState !== WebSocket.OPEN || pongDeadline) return;
+    pongDeadline = setTimeout(miss, normalizedDeadlineMs);
+    pongDeadline.unref?.();
+    try {
+      socket.send(JSON.stringify({ t: "ping" }), (error) => {
+        if (error) miss();
+      });
+    } catch {
+      miss();
+    }
+  };
+
+  initialPingTimer = setTimeout(() => {
+    initialPingTimer = null;
+    sendPing();
+  }, CONTROL_JSON_INITIAL_PING_DELAY_MS);
+  initialPingTimer.unref?.();
+  const pingTimer = setInterval(() => {
+    const now = Date.now();
+    // Sleep/wake may delay this tick well beyond two intervals. Sending now is
+    // the recovery action; no separate wake hook or catch-up burst is needed.
+    const delayedAfterSleep = now - nextIntervalDueAt > normalizedIntervalMs;
+    nextIntervalDueAt = now + normalizedIntervalMs;
+    if (delayedAfterSleep) {
+      sendPing();
+      return;
+    }
+    sendPing();
+  }, normalizedIntervalMs);
+  pingTimer.unref?.();
+
+  const acceptPong = (): void => {
+    clearPongDeadline();
+  };
+  const onClose = (): void => {
+    stop();
+  };
+  const stop = (): void => {
+    if (stopped) return;
+    stopped = true;
+    if (initialPingTimer) clearTimeout(initialPingTimer);
+    initialPingTimer = null;
+    clearInterval(pingTimer);
+    clearPongDeadline();
+    socket.off("close", onClose);
+  };
+  socket.once("close", onClose);
+  return { stop, acceptPong };
 }
 
 function safeCloseWebSocket(socket: WebSocket, code: number, reason: string): void {
