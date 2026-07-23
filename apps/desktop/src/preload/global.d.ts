@@ -1407,6 +1407,13 @@ declare global {
         updateMeta: (
           args: UpdateSessionMetaArgs,
         ) => Promise<TerminalSessionSummary | null>;
+        settle: (
+          sessionId: string,
+          opts?: { outcome?: string },
+        ) => Promise<void>;
+        unsettle: (sessionId: string) => Promise<void>;
+        settleMany: (sessionIds: string[]) => Promise<string[]>;
+        unsettleMany: (sessionIds: string[]) => Promise<void>;
         readTranscriptTail: (args: ReadTranscriptTailArgs) => Promise<string>;
         getDelta: (sessionId: string) => Promise<SessionDeltaSummary | null>;
         onChanged: (

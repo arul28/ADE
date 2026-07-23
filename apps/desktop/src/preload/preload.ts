@@ -5287,6 +5287,20 @@ contextBridge.exposeInMainWorld("ade", {
       sessionDeltaCache.clear();
       return updated as TerminalSessionSummary | null;
     },
+    settle: async (
+      sessionId: string,
+      opts?: { outcome?: string },
+    ): Promise<void> => {
+      await ipcRenderer.invoke(IPC.sessionsSettle, { sessionId, opts });
+    },
+    unsettle: async (sessionId: string): Promise<void> => {
+      await ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId });
+    },
+    settleMany: async (sessionIds: string[]): Promise<string[]> =>
+      ipcRenderer.invoke(IPC.sessionsSettleMany, { sessionIds }),
+    unsettleMany: async (sessionIds: string[]): Promise<void> => {
+      await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
+    },
     readTranscriptTail: async (
       args: ReadTranscriptTailArgs,
     ): Promise<string> => {

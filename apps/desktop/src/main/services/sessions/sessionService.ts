@@ -43,6 +43,11 @@ type SessionRow = {
   startedAt: string;
   endedAt: string | null;
   archivedAt: string | null;
+  settledAt: string | null;
+  statusNote: string | null;
+  attentionRequestedAt: string | null;
+  attentionMessage: string | null;
+  lastTurnFailedAt: string | null;
   exitCode: number | null;
   transcriptPath: string;
   headShaStart: string | null;
@@ -85,6 +90,11 @@ const SESSION_COLUMNS = `
   s.started_at as startedAt,
   s.ended_at as endedAt,
   s.archived_at as archivedAt,
+  s.settled_at as settledAt,
+  s.status_note as statusNote,
+  s.attention_requested_at as attentionRequestedAt,
+  s.attention_message as attentionMessage,
+  s.last_turn_failed_at as lastTurnFailedAt,
   s.exit_code as exitCode,
   s.transcript_path as transcriptPath,
   s.head_sha_start as headShaStart,
@@ -290,6 +300,11 @@ function normalizeIsoTimestamp(value: unknown): string | null {
   return Number.isFinite(Date.parse(text)) ? text : null;
 }
 
+function normalizeOptionalText(value: unknown, maxChars: number): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length ? text.slice(0, maxChars) : null;
+}
+
 export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -386,6 +401,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
       resumeMetadata,
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),
       archivedAt: row.archivedAt ?? null,
+      settledAt: normalizeIsoTimestamp(row.settledAt),
+      statusNote: normalizeOptionalText(row.statusNote, 200),
+      attentionRequestedAt: normalizeIsoTimestamp(row.attentionRequestedAt),
+      attentionMessage: normalizeOptionalText(row.attentionMessage, 500),
+      lastTurnFailedAt: normalizeIsoTimestamp(row.lastTurnFailedAt),
       chatSessionId: row.chatSessionId ?? null,
       ownerPid: normalizeOwnerPid(row.ownerPid),
       ownerProcessStartedAt: normalizeOwnerProcessStartedAt(row.ownerProcessStartedAt),
@@ -1059,7 +1079,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     setLastOutputPreview(sessionId: string, preview: string): void {
       db.run(
-        "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
+        "update terminal_sessions set last_output_preview = ?, last_output_at = ?, settled_at = null where id = ?",
         [preview, new Date().toISOString(), sessionId]
       );
     },
@@ -1072,7 +1092,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
      */
     touchSessionActivity(sessionId: string, at: string = new Date().toISOString()): void {
       db.run(
-        "update terminal_sessions set last_output_at = ? where id = ?",
+        "update terminal_sessions set last_output_at = ?, settled_at = null where id = ?",
         [at, sessionId]
       );
     },
@@ -1151,6 +1171,200 @@ export function createSessionService({ db }: { db: AdeDb }) {
       );
       if (!existing) return false;
       db.run("update terminal_sessions set archived_at = null where id = ?", [trimmed]);
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    settleSession(
+      sessionId: string,
+      opts: { outcome?: string | null; settledAt?: string } = {},
+    ): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      const settledAt = normalizeIsoTimestamp(opts.settledAt) ?? new Date().toISOString();
+      const outcome = normalizeOptionalText(opts.outcome, 200);
+      if (outcome) {
+        db.run(
+          `
+            update terminal_sessions
+            set settled_at = coalesce(settled_at, ?),
+                status_note = ?,
+                attention_requested_at = null,
+                attention_message = null
+            where id = ?
+          `,
+          [settledAt, outcome, trimmed],
+        );
+      } else {
+        db.run(
+          `
+            update terminal_sessions
+            set settled_at = coalesce(settled_at, ?),
+                attention_requested_at = null,
+                attention_message = null
+            where id = ?
+          `,
+          [settledAt, trimmed],
+        );
+      }
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    unsettleSession(sessionId: string): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run("update terminal_sessions set settled_at = null where id = ?", [trimmed]);
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    settleSessions(sessionIds: string[]): string[] {
+      const ids = Array.from(new Set(
+        sessionIds
+          .map((sessionId) => typeof sessionId === "string" ? sessionId.trim() : "")
+          .filter(Boolean),
+      ));
+      if (!ids.length) return [];
+      const placeholders = ids.map(() => "?").join(", ");
+      const newlySettled = db.all<{ id: string }>(
+        `select id from terminal_sessions where settled_at is null and id in (${placeholders})`,
+        ids,
+      ).map((row) => row.id);
+      if (!newlySettled.length) return [];
+      const updatePlaceholders = newlySettled.map(() => "?").join(", ");
+      db.run(
+        `
+          update terminal_sessions
+          set settled_at = ?,
+              attention_requested_at = null,
+              attention_message = null
+          where id in (${updatePlaceholders})
+        `,
+        [new Date().toISOString(), ...newlySettled],
+      );
+      for (const id of newlySettled) {
+        emitChanged({ sessionId: id, reason: "meta-updated" });
+      }
+      return newlySettled;
+    },
+
+    unsettleSessions(sessionIds: string[]): void {
+      const ids = Array.from(new Set(
+        sessionIds
+          .map((sessionId) => typeof sessionId === "string" ? sessionId.trim() : "")
+          .filter(Boolean),
+      ));
+      if (!ids.length) return;
+      const placeholders = ids.map(() => "?").join(", ");
+      db.run(
+        `update terminal_sessions set settled_at = null where id in (${placeholders})`,
+        ids,
+      );
+      for (const id of ids) {
+        emitChanged({ sessionId: id, reason: "meta-updated" });
+      }
+    },
+
+    setStatusNote(sessionId: string, note: string | null): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run(
+        "update terminal_sessions set status_note = ? where id = ?",
+        [normalizeOptionalText(note, 200), trimmed],
+      );
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    requestAttention(sessionId: string, message: string | null): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run(
+        `
+          update terminal_sessions
+          set attention_requested_at = ?,
+              attention_message = ?,
+              settled_at = null
+          where id = ?
+        `,
+        [new Date().toISOString(), normalizeOptionalText(message, 500), trimmed],
+      );
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    clearAttentionRequest(sessionId: string): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run(
+        "update terminal_sessions set attention_requested_at = null, attention_message = null where id = ?",
+        [trimmed],
+      );
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    markLastTurnFailed(sessionId: string, at?: string): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run(
+        "update terminal_sessions set last_turn_failed_at = ? where id = ?",
+        [normalizeIsoTimestamp(at) ?? new Date().toISOString(), trimmed],
+      );
+      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+      return true;
+    },
+
+    clearTurnStartMarkers(sessionId: string): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const existing = db.get<{ present: number }>(
+        "select 1 as present from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!existing) return false;
+      db.run(
+        `
+          update terminal_sessions
+          set last_turn_failed_at = null,
+              settled_at = null,
+              attention_requested_at = null,
+              attention_message = null
+          where id = ?
+        `,
+        [trimmed],
+      );
       emitChanged({ sessionId: trimmed, reason: "meta-updated" });
       return true;
     },

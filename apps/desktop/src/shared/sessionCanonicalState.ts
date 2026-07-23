@@ -123,9 +123,11 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   }
 
   // 2. Declared settle. No timestamp math: activity un-settles by clearing
-  // the column where the activity happens (turn start / PTY output), so a
-  // still-set settledAt is always current.
-  if (args.settledAt) {
+  // the column where the activity happens (user turn start / PTY output).
+  // Only honored AT REST — a settled chat woken by scheduled work shows green
+  // while the turn streams, then re-settles when it goes idle again (the
+  // settledAt column survives background wakes; only user activity clears it).
+  if (args.settledAt && (args.status !== "running" || args.runtimeState === "idle")) {
     return { phase: "settled", badge: null };
   }
 

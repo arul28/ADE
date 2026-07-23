@@ -1860,6 +1860,11 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       resume_command text,
       resume_metadata_json text,
       archived_at text,
+      settled_at text,
+      status_note text,
+      attention_requested_at text,
+      attention_message text,
+      last_turn_failed_at text,
       chat_session_id text,
       owner_process_started_at text,
       foreign key(lane_id) references lanes(id)
@@ -1877,6 +1882,11 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table terminal_sessions add column resume_metadata_json text");
   safeAddColumn(db, "alter table terminal_sessions add column manually_named integer not null default 0");
   safeAddColumn(db, "alter table terminal_sessions add column archived_at text");
+  safeAddColumn(db, "alter table terminal_sessions add column settled_at text");
+  safeAddColumn(db, "alter table terminal_sessions add column status_note text");
+  safeAddColumn(db, "alter table terminal_sessions add column attention_requested_at text");
+  safeAddColumn(db, "alter table terminal_sessions add column attention_message text");
+  safeAddColumn(db, "alter table terminal_sessions add column last_turn_failed_at text");
   safeAddColumn(db, "alter table terminal_sessions add column chat_session_id text");
   try { db.run("create index if not exists idx_terminal_sessions_chat_session_id on terminal_sessions(chat_session_id)"); } catch {}
   // owner_pid identifies the ADE OS process that owns this row's runtime

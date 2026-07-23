@@ -594,6 +594,7 @@ type PtyEntry = {
   lastRuntimeSignalAt: number;
   lastRuntimeSignalState: TerminalRuntimeState;
   lastRuntimeSignalPreview: string | null;
+  attentionRequested: boolean;
   disposed: boolean;
   createdAt: number;
   cleanupPaths: string[];
@@ -3104,6 +3105,8 @@ export function createPtyService({
     flushPendingPtyOutput(entry);
     entry.processOutputData = null;
     entry.disposed = true;
+    entry.attentionRequested = false;
+    sessionService.clearAttentionRequest(entry.sessionId);
     if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
       revokeBuiltInBrowserActorCapability(entry.sessionId);
     }
@@ -4548,6 +4551,7 @@ export function createPtyService({
         lastRuntimeSignalAt: 0,
         lastRuntimeSignalState: "running",
         lastRuntimeSignalPreview: null,
+        attentionRequested: false,
         disposed: false,
         createdAt: Date.now(),
         cleanupPaths,
@@ -5102,6 +5106,10 @@ export function createPtyService({
       if (!entry) return;
       try {
         entry.lastUserInputAt = Date.now();
+        if (entry.attentionRequested) {
+          entry.attentionRequested = false;
+          sessionService.clearAttentionRequest(entry.sessionId);
+        }
         entry.pty.write(data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
@@ -5109,6 +5117,11 @@ export function createPtyService({
       } catch (err) {
         logger.warn("pty.write_failed", { ptyId, err: String(err) });
       }
+    },
+
+    markSessionAttentionRequested(sessionId: string): void {
+      const live = liveEntryBySessionId(sessionId);
+      if (live) live[1].attentionRequested = true;
     },
 
     listTerminals(args: ChatTerminalListArgs = {}): ChatTerminalSession[] {
@@ -5865,6 +5878,7 @@ export function createPtyService({
         // The renderer can outlive the pty map (for example after app restart). Allow closing by session id
         // so stale sessions do not get stuck in a "running" state forever.
         const endedAt = new Date().toISOString();
+        sessionService.clearAttentionRequest(sessionId);
         sessionService.end({ sessionId, endedAt, exitCode: null, status: "disposed" });
         if (!session.chatSessionId && isTrackedAgentCliToolType(session.toolType)) {
           revokeBuiltInBrowserActorCapability(sessionId);
@@ -5903,6 +5917,8 @@ export function createPtyService({
       flushPendingPtyOutput(entry);
       entry.processOutputData = null;
       entry.disposed = true;
+      entry.attentionRequested = false;
+      sessionService.clearAttentionRequest(entry.sessionId);
       if (!entry.chatSessionId && isTrackedAgentCliToolType(entry.toolTypeHint)) {
         revokeBuiltInBrowserActorCapability(entry.sessionId);
       }

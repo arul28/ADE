@@ -11795,6 +11795,9 @@ export function createAgentChatService(args: {
       // first finished turn as the child's terminal status in the parent's
       // subagents panel. No-op unless the spawn was tracked this process.
       reportChildSpawnEnded(managed.session.id, normalizedEvent.status);
+      if (normalizedEvent.status === "failed") {
+        sessionService.markLastTurnFailed(managed.session.id);
+      }
     }
 
     if (normalizedEvent.type === "todo_update") {
@@ -32676,6 +32679,7 @@ export function createAgentChatService(args: {
     const prepared = options?.preparedMessage ?? prepareSendMessage(args);
     if (!prepared) return;
     prepared.managed.lastActivityTimestamp = Date.now();
+    sessionService.clearTurnStartMarkers(prepared.managed.session.id);
     let rejectDispatch: ((error: Error) => void) | null = null;
     const dispatchPromise = options?.awaitDispatch || options?.awaitBackendDispatch
       ? new Promise<void>((resolve, reject) => {

@@ -6479,6 +6479,52 @@ export function registerIpc({
     return ctx.sessionService.updateMeta(arg);
   });
 
+  ipcMain.handle(
+    IPC.sessionsSettle,
+    async (
+      _event,
+      arg: { sessionId?: unknown; opts?: { outcome?: unknown } },
+    ): Promise<void> => {
+      const ctx = ensureSessionContext();
+      const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      const outcome = typeof arg?.opts?.outcome === "string" ? arg.opts.outcome : undefined;
+      ctx.sessionService.settleSession(sessionId, { outcome });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsUnsettle,
+    async (_event, arg: { sessionId?: unknown }): Promise<void> => {
+      const ctx = ensureSessionContext();
+      const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+      if (!sessionId) throw new Error("Session id is required.");
+      ctx.sessionService.unsettleSession(sessionId);
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsSettleMany,
+    async (_event, arg: { sessionIds?: unknown }): Promise<string[]> => {
+      const ctx = ensureSessionContext();
+      if (!Array.isArray(arg?.sessionIds)) throw new Error("Session ids are required.");
+      return ctx.sessionService.settleSessions(
+        arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
+      );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.sessionsUnsettleMany,
+    async (_event, arg: { sessionIds?: unknown }): Promise<void> => {
+      const ctx = ensureSessionContext();
+      if (!Array.isArray(arg?.sessionIds)) throw new Error("Session ids are required.");
+      ctx.sessionService.unsettleSessions(
+        arg.sessionIds.filter((sessionId): sessionId is string => typeof sessionId === "string"),
+      );
+    },
+  );
+
   ipcMain.handle(IPC.sessionsReadTranscriptTail, async (_event, arg: { sessionId: string; maxBytes?: number; raw?: boolean }): Promise<string> => {
     const ctx = ensureSessionContext();
     const session = ctx.sessionService.get(arg.sessionId);
