@@ -225,6 +225,16 @@ run a local repair against data owned by the remote machine. See
    While connecting, the machine row reports the route being tried, and a
    failure surfaces inline with a one-tap jump into Nearby + PIN pairing
    when the same machine is discoverable locally.
+
+   `ade-adopt-v1` protects the *credentials* exchanged during adoption (the
+   account bearer, the DPoP proof, and the minted paired secret are all
+   sealed), not the confidentiality of the ongoing session. After adoption
+   over a plaintext `ws://` LAN or tailnet route, the established sync stream
+   has the same on-path exposure as any other direct paired reconnect — an
+   attacker who can already read that LAN can observe the post-adoption
+   traffic, but never the sealed credentials. This matches the pre-existing
+   direct-route trust boundary; relay routes remain trusted-operator
+   plaintext-readable as documented above.
    Without an account, choose **Find nearby Macs**, select a discovered LAN or
    Tailscale machine, and enter the six-digit PIN shown on that Mac's **This
    Mac** Connections card. There is no desktop pairing-link paste/scan or

@@ -215,7 +215,11 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
     name: optionalBoundedString(value.name, MAX_LABEL_CHARS),
     platform: optionalBoundedString(value.platform, MAX_LABEL_CHARS),
     deviceType: optionalBoundedString(value.deviceType, MAX_LABEL_CHARS),
-    pubkey: optionalBoundedString(value.pubkey, 128),
+    // A present host signing key must never collapse to "absent" — that would
+    // silently downgrade adoption to the plaintext relay path. Preserve any
+    // present string (even blank) verbatim so a malformed key fails closed at
+    // verification, matching the iOS client; only a truly missing field is null.
+    pubkey: typeof value.pubkey === "string" ? value.pubkey.slice(0, 128) : null,
     reachableEndpoints: endpoints,
     lastSeenAt,
     online: value.online === true,

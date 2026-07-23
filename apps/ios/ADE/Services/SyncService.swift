@@ -681,13 +681,9 @@ private struct AccountAdoptionRoute: Equatable, Hashable {
     }
   }
 
-  var connectedLabel: String {
-    switch kind {
-    case .relay: return "ADE relay"
-    case .tailnet: return "Tailscale"
-    case .lan: return "local network"
-    }
-  }
+  /// Same route word as `attemptLabel`; kept as a named accessor for the
+  /// "Connected via …" toast call site.
+  var connectedLabel: String { attemptLabel }
 
   var connectionRouteKind: SyncConnectionRouteKind {
     switch kind {

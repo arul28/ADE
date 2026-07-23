@@ -21,7 +21,10 @@ import {
   getSharedAccountAuthService,
   resolveOfficialAccountDirectoryBaseUrl,
 } from "./sharedAccountAuthService";
-import { createMachineIdentitySigningStore } from "../sync/machineIdentitySigningStore";
+import {
+  createMachineIdentitySigningStore,
+  MACHINE_IDENTITY_SIGNING_FILE_NAME,
+} from "../sync/machineIdentitySigningStore";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
 export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
@@ -842,7 +845,7 @@ export function createBrainAccountMachinePublisherService(options: {
     logger: options.logger,
   });
   const signingStore = createMachineIdentitySigningStore({
-    filePath: path.join(options.secretsDir, "machine-identity-signing.json"),
+    filePath: path.join(options.secretsDir, MACHINE_IDENTITY_SIGNING_FILE_NAME),
     logger: options.logger,
   });
   return createAccountMachinePublisherService({

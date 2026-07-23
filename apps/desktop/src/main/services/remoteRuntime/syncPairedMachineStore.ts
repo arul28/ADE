@@ -782,7 +782,18 @@ export class DesktopPairedMachineStore {
           }
           const challengeEnvelope = await challengeResponse;
           if (challengeEnvelope.type === "account_challenge_error") {
-            throw hostIdentityVerificationError();
+            // The host declined to issue a challenge (rate-limit cooldown, an
+            // already-active challenge, etc.). This is NOT an identity-proof
+            // failure — a MITM cannot forge a valid challenge on any other route
+            // either — so surface the host's real reason and fall through to the
+            // next route instead of aborting adoption with a misleading
+            // "older ADE" identity error.
+            const hostMessage = (challengeEnvelope.payload as { message?: unknown } | null)?.message;
+            throw new Error(
+              typeof hostMessage === "string" && hostMessage.trim()
+                ? boundedInlineText(hostMessage, 200)
+                : "The machine declined the account adoption challenge.",
+            );
           }
           const challenge = challengeEnvelope.payload as
             Partial<SyncAccountChallengeOkPayload> | null;

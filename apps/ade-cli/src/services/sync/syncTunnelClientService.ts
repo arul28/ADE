@@ -1135,6 +1135,31 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         return result;
       }
 
+      if (result.atCapacity) {
+        // The relay rejected our own probe only because this machine is at its
+        // tunnel quota — which proves the control socket is registered and the
+        // relay is serving real clients. Treat it as liveness (keep the relay
+        // endpoint published, do NOT declare a zombie or terminate control).
+        const verifiedAtMs = Date.now();
+        const stateChanged = selfProbe.verifiedAtMs == null || selfProbe.lastFailure != null;
+        selfProbeRoundTripMs = null;
+        selfProbe = {
+          verifiedAtMs,
+          lastFailure: null,
+          lastFailureAtMs: null,
+          inFlight: false,
+        };
+        const clearedFailure = clearBridgeOpenFailure(key, "self-probe");
+        if (stateChanged && !clearedFailure) {
+          requestPublicationStatePublish("route-state-changed");
+        }
+        log.debug?.("sync_tunnel.self_probe_at_capacity", {
+          machineKey: machineIdentity.machineKey,
+          reason: result.reason,
+        });
+        return result;
+      }
+
       const failureAtMs = Date.now();
       selfProbeRoundTripMs = null;
       selfProbe = {
@@ -1893,7 +1918,6 @@ function armControlJsonKeepalive(
   let stopped = false;
   let pongDeadline: NodeJS.Timeout | null = null;
   let initialPingTimer: NodeJS.Timeout | null = null;
-  let nextIntervalDueAt = Date.now() + normalizedIntervalMs;
 
   const clearPongDeadline = (): void => {
     if (!pongDeadline) return;
@@ -1923,15 +1947,9 @@ function armControlJsonKeepalive(
   }, CONTROL_JSON_INITIAL_PING_DELAY_MS);
   initialPingTimer.unref?.();
   const pingTimer = setInterval(() => {
-    const now = Date.now();
-    // Sleep/wake may delay this tick well beyond two intervals. Sending now is
-    // the recovery action; no separate wake hook or catch-up burst is needed.
-    const delayedAfterSleep = now - nextIntervalDueAt > normalizedIntervalMs;
-    nextIntervalDueAt = now + normalizedIntervalMs;
-    if (delayedAfterSleep) {
-      sendPing();
-      return;
-    }
+    // A tick delayed by sleep/wake needs no special handling: sending the ping
+    // now is itself the recovery action, and sendPing() no-ops if a deadline is
+    // already outstanding.
     sendPing();
   }, normalizedIntervalMs);
   pingTimer.unref?.();

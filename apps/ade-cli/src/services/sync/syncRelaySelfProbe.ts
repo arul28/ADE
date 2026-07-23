@@ -2,10 +2,19 @@ import { WebSocket, type RawData } from "ws";
 
 export const RELAY_SELF_PROBE_TIMEOUT_MS = 15_000;
 const RELAY_READY_VERSION = 2;
+// Relay application close code for "machine already at MAX_TUNNELS_PER_MACHINE"
+// (see apps/tunnel-relay/src/tunnelDo.ts CLOSE_TOO_MANY). The relay only sends
+// it after confirming this machine's control socket is registered, so it is
+// proof the control is alive — the probe just lost the race for a tunnel slot.
+const RELAY_CLOSE_TOO_MANY = 4503;
 
 export type RelaySelfProbeResult =
   | { ok: true; roundTripMs: number }
-  | { ok: false; reason: string };
+  // `atCapacity` marks a probe that could not complete only because the relay
+  // is already serving this machine's full tunnel quota. The relay — and this
+  // machine's control socket — are demonstrably alive, so callers must treat it
+  // as liveness proof, not a zombie/failure signal.
+  | { ok: false; reason: string; atCapacity?: boolean };
 
 type RelaySelfProbeArgs = {
   relayWsBase: string;
@@ -113,6 +122,7 @@ export function probeRelayEndToEnd(
       finish({
         ok: false,
         reason: `Relay self-probe closed before ${accepted ? "ready" : "accepted"}${closeDetail(code, reason)}.`,
+        ...(code === RELAY_CLOSE_TOO_MANY ? { atCapacity: true } : {}),
       });
     };
     const onError = (error: Error): void => {

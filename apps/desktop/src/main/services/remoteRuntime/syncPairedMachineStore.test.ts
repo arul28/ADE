@@ -854,7 +854,6 @@ describe("DesktopPairedMachineStore", () => {
     { name: "bad signature", mode: "bad_signature" as const },
     { name: "device id mismatch", mode: "device_mismatch" as const },
     { name: "stale timestamp", mode: "stale_timestamp" as const },
-    { name: "challenge error", mode: "challenge_error" as const },
   ])("aborts before hello when signed host verification fails: $name", async ({ mode }) => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-bad-host-"));
     process.env.ADE_HOME = adeHome;
@@ -886,14 +885,6 @@ describe("DesktopPairedMachineStore", () => {
           const envelope = parseSyncEnvelope(wsDataToText(text));
           sentTypes.push(envelope.type);
           if (envelope.type !== "account_challenge") return;
-          if (mode === "challenge_error") {
-            ws.receive(encodeSyncEnvelope({
-              type: "account_challenge_error",
-              requestId: envelope.requestId,
-              payload: { message: "unsupported" },
-            }));
-            return;
-          }
           const request = envelope.payload as {
             nonce: string;
             clientEphemeralPublicKey: string;
@@ -936,6 +927,58 @@ describe("DesktopPairedMachineStore", () => {
     await expect(pairing).rejects.toMatchObject({
       code: "account_host_identity_verification_failed",
     });
+    expect(sentTypes).toEqual(["account_challenge"]);
+  });
+
+  it("surfaces a host challenge decline as a route failure without leaking a hello", async () => {
+    // A host that declines to issue a challenge (e.g. rate-limit cooldown) is
+    // NOT an identity-proof failure: adoption must report the host's real reason
+    // and never send a sealed hello — but it must not be conflated with the
+    // "older ADE" identity-verification abort.
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-challenge-decline-"));
+    process.env.ADE_HOME = adeHome;
+    const signing = generateKeyPairSync("ed25519");
+    const sentTypes: string[] = [];
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-challenge-decline",
+      deviceId: "expected-host",
+      name: "Expected host",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${rawPublicKeyFromSpki(signing.publicKey).toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "relay", url: "wss://relay.example/connect/machine-challenge-decline" },
+      ],
+    };
+
+    const pairing = new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "must-not-leave-client",
+      "Laptop",
+      {
+        accountOwnerUserId: "account-user",
+        pairingTimeoutMs: 500,
+        relayBaseUrls: ["https://relay.example"],
+        createWebSocket: () => new FakeWebSocket((text, ws) => {
+          const envelope = parseSyncEnvelope(wsDataToText(text));
+          sentTypes.push(envelope.type);
+          if (envelope.type !== "account_challenge") return;
+          ws.receive(encodeSyncEnvelope({
+            type: "account_challenge_error",
+            requestId: envelope.requestId,
+            payload: { message: "Too many failed authentication attempts. Try again in 3 minutes." },
+          }));
+        }) as unknown as WebSocket,
+      },
+    );
+    // The host's real reason is surfaced, not the identity-verification error.
+    await expect(pairing).rejects.toThrow(/Try again in 3 minutes/);
+    await expect(pairing).rejects.not.toMatchObject({
+      code: "account_host_identity_verification_failed",
+    });
+    // Credential safety invariant: no sealed hello ever left the client.
     expect(sentTypes).toEqual(["account_challenge"]);
   });
 
