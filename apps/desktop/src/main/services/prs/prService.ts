@@ -2844,22 +2844,50 @@ export function createPrService({
 
     const backfilledIds: string[] = [];
     const ignoredAutoLinks = listAutoLinkIgnores(repo);
+
+    // Select ONE authoritative PR per lane before upserting. A reused branch can
+    // carry MULTIPLE historical PRs in a state:"all" snapshot; upserting all of
+    // them repeatedly adopts the same lane row (upsertRow identifies by lane +
+    // branch), so the last-processed — potentially oldest — PR would win and flip
+    // an active PR to a stale merged/closed one. Since this backfill now runs on
+    // focus reconcile, that could make merely opening a project mis-mark a PR.
+    // Prefer an open/draft PR; otherwise the newest (highest PR number).
+    type BackfillCandidate = {
+      rawPr: any;
+      prNumber: number;
+      headBranch: string;
+      lane: LaneSummary;
+      state: PrSummary["state"];
+      isOpen: boolean;
+    };
+    const bestByLane = new Map<string, BackfillCandidate>();
     for (const rawPr of rawPulls) {
       const headBranch = rawPullHeadBranch(rawPr);
       const lane = headBranch ? activeLaneByBranch.get(headBranch) ?? null : null;
       if (!lane) continue;
-
       if (!rawPullHasSameRepoHead(rawPr, repo)) continue;
-
       const prNumber = asNumber(rawPr?.number);
       if (!prNumber) continue;
       if (ignoredAutoLinks.has(autoLinkIgnoreKey({ owner: repo.owner, repo: repo.name, prNumber, laneId: lane.id }))) {
         continue;
       }
-
       const existingRepoRow = getRowForRepoPr(repo.owner, repo.name, prNumber);
       if (existingRepoRow && existingRepoRow.lane_id !== lane.id) continue;
+      const state = toPrState({
+        state: asString(rawPr?.state) || "open",
+        draft: Boolean(rawPr?.draft),
+        mergedAt: asString(rawPr?.merged_at) || null,
+      });
+      const isOpen = state === "open" || state === "draft";
+      const prev = bestByLane.get(lane.id);
+      const better =
+        !prev
+        || (isOpen && !prev.isOpen)
+        || (isOpen === prev.isOpen && prNumber > prev.prNumber);
+      if (better) bestByLane.set(lane.id, { rawPr, prNumber, headBranch, lane, state, isOpen });
+    }
 
+    for (const { rawPr, prNumber, headBranch, lane, state } of bestByLane.values()) {
       const summary: PrSummary = {
         id: randomUUID(),
         laneId: lane.id,
@@ -2870,11 +2898,7 @@ export function createPrService({
         githubUrl: asString(rawPr?.html_url) || "",
         githubNodeId: asString(rawPr?.node_id) || null,
         title: asString(rawPr?.title) || `PR #${prNumber}`,
-        state: toPrState({
-          state: asString(rawPr?.state) || "open",
-          draft: Boolean(rawPr?.draft),
-          mergedAt: asString(rawPr?.merged_at) || null,
-        }),
+        state,
         baseBranch: asString(rawPr?.base?.ref) || branchNameFromRef(lane.baseRef),
         headBranch,
         checksStatus: "none",
