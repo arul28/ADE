@@ -1,15 +1,38 @@
 ---
 title: "v1.2.35"
-description: "Release notes for ADE v1.2.35 - July 22, 2026"
+description: "Release notes for ADE v1.2.35 - July 23, 2026"
 ---
 
-v1.2.35 closes a lower-level Relay recovery gap found while validating v1.2.34 against a live machine.
+v1.2.35 gives the Work sidebar a real thread lifecycle — finished work settles into a quiet tier, agents write their own status lines, and only genuine questions interrupt you — alongside the machine-connection and Relay-recovery hardening validated against live machines, and a large orchestration reliability pass.
 
 ---
+
+## Settled thread lifecycle
+
+- **Finished threads settle instead of piling up.** A new quiet Settled tier (hollow dot, collapsed section, per-lane tails) holds work that is done — declared by the agent, by you (single, bulk with undo), or by a clean exit — while staying openable in-stream. New activity un-settles instantly.
+- **Two-tier attention.** The loud "Needs you" badge, notifications, and the new Dock badge fire only on deterministic asks (questions, approvals, `ade chat ask`); ordinary turn ends rest as a quiet amber "your move" dot. Chats whose turn dies on a runtime error now show red instead of hiding.
+- **Agents keep their own status current.** `ade chat note` writes the card's status line (replacing the raw terminal tail), `ade chat ask` escalates a blocking question to your phone and Dock, and `ade chat settle --outcome` declares the result — taught to every SDK chat provider and tracked CLI automatically. PR and Linear references in notes are clickable.
+- **Everywhere.** The lifecycle syncs to iOS (settled grouping, canonical filters, roster fields) and `ade code` (drawer status lines, lifecycle slash commands), and the Work TASKS pane no longer freezes mid-session — task updates from background agent turns now apply (previously completions could silently drop).
+
+## Machine connections
+
+- **Zombie Relay sockets are detected and healed.** A relay-answered JSON keepalive catches Cloudflare silently dropping a host's registration within minutes; previously the host could look healthy for hours while refusing every connection.
+- **The Relay endpoint is published only after a verified end-to-end self-dial**, and `ade sync status` / `ade doctor` report the honest verdict.
+- **Sealed account adoption.** The `ade-adopt-v1` handshake (ed25519 identity + X25519 exchange + ChaCha20-Poly1305-sealed credentials) lets account adoption fall back from Relay to Tailscale and LAN on desktop, `ade code remote`, and iOS.
+- **Connect failures are visible** in the desktop Connections panel and iOS, with live route stage text and a one-tap jump to Nearby + PIN pairing.
 
 ## Reliable Relay recovery
 
-- **A failed bridge cannot look healthy.** A real Relay pipe or local-listener setup failure now blocks the current route until a fresh tunnel is fully ready; a cached loopback probe cannot clear it early.
-- **Healthy connections stay healthy.** A failed secondary connection attempt does not poison an already-ready Relay tunnel, and cancelled connection-race candidates are ignored.
-- **Cloud presence follows the real route.** ADE republishes directory state when the active bridge becomes blocked or recovers, while retaining the last verified endpoint during the bounded recovery window.
-- **Diagnostics report the current failure.** Sync status prioritizes authoritative route blockers and no longer presents an old control error as a current outage after recovery.
+- **A failed bridge cannot look healthy.** Real Relay pipe or local-listener setup failures block the current route until a fresh tunnel is fully ready.
+- **Healthy connections stay healthy.** A failed secondary attempt does not poison an already-ready Relay tunnel.
+- **Cloud presence follows the real route**, republishing directory state as the active bridge blocks or recovers.
+
+## Orchestration reliability
+
+- **Delegation is idempotent** with a transactional outbox and event-driven completion, so worker handoffs survive restarts without duplicate or lost work.
+- **Light-plan lifecycle and evidence UI** make orchestrated runs inspectable end to end.
+- **Finishing commands run under a sandbox allowlist**, and scheduled follow-ups upsert instead of duplicating.
+
+## Mobile fixes
+
+- Live chat hydration works across projects, image attachments work across composers, transcript deduplication and scheduled-work timing are fixed, exhausted reseed retries recover, and far-behind replicas compact instead of stalling.

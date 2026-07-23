@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.35] - 2026-07-23
+
+### Work sidebar: settled thread lifecycle
+
+- Added a quiet Settled tier for finished threads (agent-declared via `ade chat settle`, user single/bulk with undo, or clean CLI exit) with a hollow status dot, collapsed sections, per-lane tails, and a "Show settled" filter; new user activity un-settles instantly and scheduled wakes re-settle at rest.
+- Split attention into a loud tier (questions, approvals, `ade chat ask` — badge, notification, Dock badge) and a quiet "your move" tier for ordinary turn ends; chats whose turn dies on a runtime error now surface red.
+- Added the agent-writable status surface: `ade chat note` (card status line replacing the raw output preview), `ade chat ask` (escalation), `ade chat settle/unsettle` — injected into all SDK chat providers and tracked CLIs, with clickable PR/Linear references in notes.
+- Recorded settle/unsettle as product usage under the existing analytics taxonomy, synced the lifecycle to iOS and the `ade code` TUI, and fixed the Work TASKS pane dropping task updates from background agent turns.
+
 ### Machine connections
 
 - Detected "zombie" Relay control sockets with a relay-answered JSON keepalive, reconnecting within minutes when Cloudflare silently loses the host's registration (previously the host could look healthy for hours while every incoming connection was refused).
@@ -14,13 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Introduced the sealed `ade-adopt-v1` adoption handshake: machines publish an ed25519 identity key in their directory row, sign the adopting client's challenge over an ephemeral X25519 exchange, and exchange account credentials ChaCha20-Poly1305-sealed — enabling account adoption to fall back from Relay to Tailscale and LAN routes on desktop, `ade code remote`, and iOS.
 - Surfaced account-machine connect failures in the desktop Connections panel and iOS (previously silent), with live route stage text, a connected-via route/latency note, and a one-tap jump into Nearby + PIN pairing when the machine is discoverable locally.
 
-## [1.2.35] - 2026-07-22
-
 ### Relay recovery
 
 - Kept real Relay pipe and local-listener setup failures fail-closed for the current connection generation until a fresh tunnel is fully ready.
 - Preserved an already-ready Relay route when a secondary connection attempt fails, while republishing directory state when the active route becomes blocked or recovers.
 - Made sync status distinguish current bridge blockers from historical connection errors so reachability is reported truthfully.
+
+### Orchestration
+
+- Made worker delegation idempotent with a transactional outbox and event-driven completion; added the light-plan lifecycle and evidence UI.
+- Ran finishing commands under a sandbox allowlist and made scheduled follow-ups upsert instead of duplicating.
+
+### Mobile
+
+- Fixed live chat hydration across projects, image attachments across composers, transcript deduplication, scheduled-work timing, exhausted reseed retries, and far-behind replica compaction.
 
 ## [1.2.34] - 2026-07-22
 
