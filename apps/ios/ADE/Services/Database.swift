@@ -98,6 +98,11 @@ final class DatabaseService {
     let chatSessionId: String?
     let pendingInputItemId: String?
     let archivedAt: String?
+    let settledAt: String?
+    let statusNote: String?
+    let attentionRequestedAt: String?
+    let attentionMessage: String?
+    let lastTurnFailedAt: String?
   }
 
   private struct ComputerUseArtifactRow {
@@ -1108,8 +1113,8 @@ final class DatabaseService {
             id, lane_id, lane_name, pty_id, tracked, goal, tool_type, pinned, title, started_at, ended_at,
             exit_code, transcript_path, head_sha_start, head_sha_end, status, last_output_preview,
             last_output_at, summary, runtime_state, resume_command, resume_metadata_json, manually_named, chat_idle_since_at, chat_session_id,
-            pending_input_item_id, archived_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            pending_input_item_id, archived_at, settled_at, status_note, attention_requested_at, attention_message, last_turn_failed_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             lane_id = excluded.lane_id,
             lane_name = excluded.lane_name,
@@ -1136,7 +1141,12 @@ final class DatabaseService {
             chat_idle_since_at = excluded.chat_idle_since_at,
             chat_session_id = excluded.chat_session_id,
             pending_input_item_id = excluded.pending_input_item_id,
-            archived_at = excluded.archived_at
+            archived_at = excluded.archived_at,
+            settled_at = excluded.settled_at,
+            status_note = excluded.status_note,
+            attention_requested_at = excluded.attention_requested_at,
+            attention_message = excluded.attention_message,
+            last_turn_failed_at = excluded.last_turn_failed_at
         """) { statement in
           try bindText(session.id, to: statement, index: 1)
           try bindText(session.laneId, to: statement, index: 2)
@@ -1220,6 +1230,31 @@ final class DatabaseService {
             try bindText(archivedAt, to: statement, index: 27)
           } else {
             sqlite3_bind_null(statement, 27)
+          }
+          if let settledAt = session.settledAt {
+            try bindText(settledAt, to: statement, index: 28)
+          } else {
+            sqlite3_bind_null(statement, 28)
+          }
+          if let statusNote = session.statusNote {
+            try bindText(statusNote, to: statement, index: 29)
+          } else {
+            sqlite3_bind_null(statement, 29)
+          }
+          if let attentionRequestedAt = session.attentionRequestedAt {
+            try bindText(attentionRequestedAt, to: statement, index: 30)
+          } else {
+            sqlite3_bind_null(statement, 30)
+          }
+          if let attentionMessage = session.attentionMessage {
+            try bindText(attentionMessage, to: statement, index: 31)
+          } else {
+            sqlite3_bind_null(statement, 31)
+          }
+          if let lastTurnFailedAt = session.lastTurnFailedAt {
+            try bindText(lastTurnFailedAt, to: statement, index: 32)
+          } else {
+            sqlite3_bind_null(statement, 32)
           }
         }
       }
@@ -1805,7 +1840,8 @@ final class DatabaseService {
       select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
-             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at
+             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at,
+             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.last_turn_failed_at
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where l.project_id = ?
@@ -1828,7 +1864,8 @@ final class DatabaseService {
       select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
              s.head_sha_start, s.head_sha_end, s.last_output_preview, s.summary, s.runtime_state,
-             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at
+             s.resume_command, s.resume_metadata_json, s.chat_idle_since_at, s.chat_session_id, s.pending_input_item_id, s.archived_at,
+             s.settled_at, s.status_note, s.attention_requested_at, s.attention_message, s.last_turn_failed_at
         from terminal_sessions s
         left join lanes l on l.id = s.lane_id
        where s.id = ? and (l.project_id = ? or l.id is null)
@@ -1869,7 +1906,12 @@ final class DatabaseService {
       chatIdleSinceAt: stringValue(statement, index: 22),
       chatSessionId: stringValue(statement, index: 23),
       pendingInputItemId: stringValue(statement, index: 24),
-      archivedAt: stringValue(statement, index: 25)
+      archivedAt: stringValue(statement, index: 25),
+      settledAt: stringValue(statement, index: 26),
+      statusNote: stringValue(statement, index: 27),
+      attentionRequestedAt: stringValue(statement, index: 28),
+      attentionMessage: stringValue(statement, index: 29),
+      lastTurnFailedAt: stringValue(statement, index: 30)
     )
   }
 
@@ -1889,6 +1931,11 @@ final class DatabaseService {
       startedAt: row.startedAt,
       endedAt: row.endedAt,
       archivedAt: row.archivedAt,
+      settledAt: row.settledAt,
+      statusNote: row.statusNote,
+      attentionRequestedAt: row.attentionRequestedAt,
+      attentionMessage: row.attentionMessage,
+      lastTurnFailedAt: row.lastTurnFailedAt,
       exitCode: row.exitCode,
       transcriptPath: row.transcriptPath,
       headShaStart: row.headShaStart,
@@ -2712,6 +2759,31 @@ final class DatabaseService {
     try ensureColumn(
       tableName: "terminal_sessions",
       columnName: "archived_at",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "settled_at",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "status_note",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "attention_requested_at",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "attention_message",
+      definition: "text"
+    )
+    try ensureColumn(
+      tableName: "terminal_sessions",
+      columnName: "last_turn_failed_at",
       definition: "text"
     )
     try exec("""

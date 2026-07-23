@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatSession, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
-import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { canonicalInputFromSummary, sessionStatusBucket } from "../../lib/terminalAttention";
 import {
   shouldRefreshSessionListForChatEvent,
   subscribeWorkChatSessionCreated,
@@ -31,10 +31,11 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   draftLaneId: null,
   laneFilter: "all",
   statusFilter: "all",
+  showSettled: true,
   search: "",
   sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
-  workCollapsedSectionIds: [],
+  workCollapsedSectionIds: ["status:settled"],
   workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
   workSidebarOpen: false,
@@ -120,12 +121,8 @@ function arraysEqual(a: string[], b: string[]): boolean {
 }
 
 function isActiveSession(session: TerminalSessionSummary): boolean {
-  return sessionStatusBucket({
-    status: session.status,
-    lastOutputPreview: session.lastOutputPreview,
-    runtimeState: session.runtimeState,
-    toolType: session.toolType,
-  }) !== "ended";
+  const bucket = sessionStatusBucket(canonicalInputFromSummary(session));
+  return bucket !== "ended" && bucket !== "settled";
 }
 
 export function useLaneWorkSessions(laneId: string | null) {

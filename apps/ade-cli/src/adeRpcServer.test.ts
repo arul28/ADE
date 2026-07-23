@@ -214,7 +214,11 @@ function createRuntime() {
     sessionService: {
       get: vi.fn(),
       updateMeta: vi.fn(),
-      readTranscriptTail: vi.fn(() => "")
+      readTranscriptTail: vi.fn(() => ""),
+      requestAttention: vi.fn(() => true),
+      setStatusNote: vi.fn(() => true),
+      settleSession: vi.fn(() => true),
+      unsettleSession: vi.fn(() => true),
     },
     sessionDeltaService: {
       getSessionDelta: vi.fn((sessionId: string) => ({ sessionId, filesChanged: 2 })),
@@ -324,6 +328,9 @@ function createRuntime() {
       }),
       write: vi.fn(),
       resize: vi.fn(),
+      hasLivePty: vi.fn(() => false),
+      markSessionAttentionRequested: vi.fn(),
+      setSessionRuntimeState: vi.fn(() => true),
       readTranscriptTail: vi.fn(async () => ""),
       list: vi.fn(() => []),
       enrichSessions: vi.fn((sessions: unknown[]) => sessions),
@@ -3286,6 +3293,28 @@ describe("adeRpcServer", () => {
       sessionId: "chat-1",
       text: "own-chat write",
     });
+
+    const ownAttentionRequest = await callTool(handler, "run_ade_action", {
+      domain: "session",
+      action: "requestSessionAttention",
+      args: { message: "Which account should I use?" },
+    });
+    expect(ownAttentionRequest?.isError).toBeUndefined();
+    expect(fixture.runtime.sessionService.requestAttention).toHaveBeenCalledWith(
+      "chat-1",
+      "Which account should I use?",
+    );
+
+    const deniedAttentionRequest = await callTool(handler, "run_ade_action", {
+      domain: "session",
+      action: "requestSessionAttention",
+      args: { sessionId: "chat-2", message: "Cross-session question" },
+    });
+    expect(deniedAttentionRequest.isError).toBe(true);
+    expect(fixture.runtime.sessionService.requestAttention).not.toHaveBeenCalledWith(
+      "chat-2",
+      "Cross-session question",
+    );
 
     const ownScheduledWorkCreate = await callTool(handler, "run_ade_action", {
       domain: "chat",

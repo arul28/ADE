@@ -57,6 +57,8 @@ import {
   dispatchSteerMessage,
   deriveClaudeGoalFromEvents,
   editSteerMessage,
+  enrichChatSessionsWithLifecycle,
+  enrichTerminalSessionsWithLifecycle,
   getAvailableModels,
   getAiSettingsStatus,
   getChatHistory,
@@ -85,6 +87,7 @@ import {
   listTerminalSessions,
   listLanes,
   listPrsByLane,
+  listSessionSummaries,
   messageChatSession,
   navigateDesktop,
   newestSession,
@@ -92,6 +95,7 @@ import {
   previewTerminal,
   renameChat,
   recoverCodexTurn,
+  requestSessionAttention,
   resumeTerminalSession,
   resizeTerminal,
   reloadClaudePlugins,
@@ -102,11 +106,14 @@ import {
   sendToTerminalSession,
   signalTerminal,
   setClaudeOutputStyle,
+  setSessionStatusNote,
+  settleSession,
   startCliTerminalSession,
   type CliTerminalProvider,
   steerChatMessage,
   tagChat,
   unarchiveChatSession,
+  unsettleSession,
   updateChatModel,
   writeTerminal,
   type TokenStats,
@@ -6964,11 +6971,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     refreshGenerationRef.current = generation;
     const isCurrentRefresh = () =>
       refreshGenerationRef.current === generation && connectionRef.current === conn;
-    const nextLanes = await listLanes(conn);
-    const listedSessions = await listChatSessions(conn);
-    const nextSessions = mergeOptimisticChatSessions(listedSessions, optimisticChatSessionsRef.current);
-    const listedTerminalSessions = await listTerminalSessions(conn).catch(() => []);
-    const nextTerminalSessions = mergeOptimisticTerminalSessions(listedTerminalSessions, optimisticTerminalSessionsRef.current);
+    const [nextLanes, listedSessions, listedTerminalSessions, sessionSummaries] = await Promise.all([
+      listLanes(conn),
+      listChatSessions(conn),
+      listTerminalSessions(conn).catch(() => []),
+      listSessionSummaries(conn).catch(() => []),
+    ]);
+    const nextSessions = mergeOptimisticChatSessions(
+      enrichChatSessionsWithLifecycle(listedSessions, sessionSummaries),
+      optimisticChatSessionsRef.current,
+    );
+    const enrichedTerminalSessions = enrichTerminalSessionsWithLifecycle(
+      listedTerminalSessions,
+      sessionSummaries,
+    );
+    const nextTerminalSessions = mergeOptimisticTerminalSessions(enrichedTerminalSessions, optimisticTerminalSessionsRef.current);
     const nextDisplaySessions = sortSessionsByRecentActivity([
       ...nextSessions,
       ...nextTerminalSessions.map((session) => terminalSessionToChatSummary(session)),
@@ -10051,6 +10068,50 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       openSubagentsPane();
+      return;
+    }
+    if (
+      name === "/chat ask"
+      || name === "/chat note"
+      || name === "/chat settle"
+      || name === "/chat unsettle"
+    ) {
+      const targetSessionId = activeSessionIdRef.current;
+      if (!targetSessionId) {
+        setRightPane({
+          kind: "details",
+          title: "Session lifecycle",
+          body: "No active chat or CLI session is selected.",
+        });
+        return;
+      }
+      const value = args.trim();
+      try {
+        if (name === "/chat ask") {
+          if (!value) {
+            setRightPane({
+              kind: "details",
+              title: "Chat ask",
+              body: "Usage: /chat ask <blocking question>",
+            });
+            return;
+          }
+          await requestSessionAttention(conn, targetSessionId, value);
+          addNotice("Escalated the blocking question.", "success");
+        } else if (name === "/chat note") {
+          await setSessionStatusNote(conn, targetSessionId, value);
+          addNotice(value ? "Updated the session status line." : "Cleared the session status line.", "success");
+        } else if (name === "/chat settle") {
+          await settleSession(conn, targetSessionId, value || undefined);
+          addNotice("Moved the session into the settled tier.", "success");
+        } else {
+          await unsettleSession(conn, targetSessionId);
+          addNotice("Returned the session to the active lifecycle.", "success");
+        }
+        await refreshState();
+      } catch (err) {
+        addNotice(err instanceof Error ? err.message : String(err), "error");
+      }
       return;
     }
     if (name === "/system") {

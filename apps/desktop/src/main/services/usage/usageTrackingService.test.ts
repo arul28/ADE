@@ -4739,6 +4739,17 @@ describe("ADE database usage aggregation", () => {
     expect(usageActionFromRpcDomain("pty", "write")).toBe("pty.write");
     expect(isMeaningfulUsageAction(usageActionFromRpcDomain("pty", "write"))).toBe(false);
     expect(usageActionFromRpcDomain("external-sessions", "import")).toBe("work.importExternalSession");
+    // Settle lifecycle: single + bulk, IPC + RPC, all collapse to one coarse
+    // meaningful action per direction.
+    expect(usageActionFromIpcChannel("ade.sessions.settle")).toBe("work.settleSession");
+    expect(usageActionFromIpcChannel("ade.sessions.settleMany")).toBe("work.settleSession");
+    expect(usageActionFromIpcChannel("ade.sessions.unsettleMany")).toBe("work.unsettleSession");
+    expect(usageActionFromRpcDomain("session", "settleSelfSession")).toBe("work.settleSession");
+    expect(usageActionFromRpcDomain("session", "unsettleSessions")).toBe("work.unsettleSession");
+    expect(isMeaningfulUsageAction("work.settleSession")).toBe(true);
+    expect(isMeaningfulUsageAction("work.unsettleSession")).toBe(true);
+    // Reads and note-writes stay untracked (agent-frequency mechanics).
+    expect(isMeaningfulUsageAction(usageActionFromRpcDomain("session", "setSessionStatusNote"))).toBe(false);
 
     recordUsageInteraction(db, { client: "desktop", action: "lanes.list" });
     expect(db.get<{ count: number }>("select count(*) count from usage_events")?.count).toBe(0);

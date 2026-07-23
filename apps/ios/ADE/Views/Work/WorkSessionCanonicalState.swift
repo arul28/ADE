@@ -11,7 +11,8 @@ import SwiftUI
 ///   failed     ⇔ failed
 ///   stale      ⇔ stale
 ///   starting/running ⇔ starting/running
-///   ready/idle/stopped/ended have no LA row (terminal or chat-resting states).
+///   ready/idle/stopped/ended/settled have no LA row (terminal or chat-resting
+///   states).
 enum CanonicalSessionPhase: Equatable {
   case starting
   case running
@@ -22,6 +23,7 @@ enum CanonicalSessionPhase: Equatable {
   case idle
   case stopped
   case ended
+  case settled
 }
 
 /// The three attention states that earn a capsule. Calm phases get no badge.
@@ -77,13 +79,15 @@ func isWorkChatToolType(_ toolType: String?) -> Bool {
 }
 
 /// Canonical precedence (highest first), identical to the desktop module:
-///   1. deterministic needs-input — a pending input item or a "waiting-input"
-///      runtime (never outvoted by anything below),
-///   2. stopped — user/system-disposed PTY,
-///   3. failed — non-zero exit / killed,
-///   4. stale — status running but silent ≥ `sessionStaleAfterSeconds`,
-///   5. running (incl. the preview heuristic's needs_you upgrade, consulted LAST),
-///   6. resting states — ready (idle chat), idle, ended.
+///   1. deterministic needs-input — pending item, "waiting-input" runtime, or
+///      an explicit attention request (never outvoted by anything below),
+///   2. settled — explicitly declared,
+///   3. ended branch — stopped, failed, chat ready/ended, clean-exit settled,
+///   4. running-chat turn failure,
+///   5. stale — status running but silent ≥ `sessionStaleAfterSeconds`,
+///   6. idle — ready(chat)/idle,
+///   7. preview heuristic's needs_you upgrade, consulted LAST,
+///   8. running.
 func workCanonicalSessionState(
   status: String,
   runtimeState: String? = nil,
@@ -92,47 +96,82 @@ func workCanonicalSessionState(
   lastOutputPreview: String? = nil,
   lastActivityAt: String? = nil,
   exitCode: Int? = nil,
+  settledAt: String? = nil,
+  attentionRequestedAt: String? = nil,
+  lastTurnFailedAt: String? = nil,
   now: Date = Date(),
   previewSuggestsNeedsInput: (String?) -> Bool = workSessionPreviewSuggestsNeedsInput,
   isChatTool: (String?) -> Bool = isWorkChatToolType
 ) -> CanonicalSessionState {
   let chat = isChatTool(toolType)
+  let statusLower = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   let runtimeLower = runtimeState?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   let pending = pendingInputItemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let attentionRequested = attentionRequestedAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let settled = settledAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let lastTurnFailed = lastTurnFailedAt?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
-  if !pending.isEmpty || runtimeLower == "waiting-input" {
+  if !pending.isEmpty || runtimeLower == "waiting-input" || !attentionRequested.isEmpty {
     return CanonicalSessionState(phase: .needsYou, badge: badgeByKind[.needsYou])
   }
 
-  let ended = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "running"
+  // 2. Declared settle — honored only AT REST, mirroring desktop: a settled
+  // chat woken by scheduled work shows green while the turn streams, then
+  // re-settles at idle (settledAt survives background wakes; only user
+  // activity clears it).
+  if !settled.isEmpty && (statusLower != "running" || runtimeLower == "idle") {
+    return CanonicalSessionState(phase: .settled, badge: nil)
+  }
+
+  let ended = statusLower != "running"
   if ended {
-    // 2. Stopped: an explicitly disposed PTY is resumable/closed, not a task
+    // 3. Stopped: an explicitly disposed PTY is resumable/closed, not a task
     // failure. Check before exit/runtime failures because disposed sessions are
     // currently persisted with runtimeState "killed" and often exitCode 130.
-    if status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "disposed" {
+    if statusLower == "disposed" {
       return CanonicalSessionState(phase: .stopped, badge: nil)
     }
 
-    // 3. Failure: a non-clean exit, an explicit "failed" persisted status
+    // Failure: a non-clean exit, an explicit "failed" persisted status
     // (spawn/setup failures that die before an exit code), or a killed runtime
     // — all deterministic "failed" signals a terminal-backed session reports.
     if let exitCode, exitCode != 0 {
       return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
     }
-    if status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "failed" {
+    if statusLower == "failed" {
       return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
     }
     if runtimeLower == "killed" {
       return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
     }
-    // Chats never "end" like PTYs — they rest between turns, ready for input.
-    if chat { return CanonicalSessionState(phase: .ready, badge: nil) }
+    // Chats rest between turns unless their last turn failed or their backing
+    // runtime detached, which is genuinely ended.
+    if chat {
+      if !lastTurnFailed.isEmpty {
+        return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
+      }
+      if statusLower == "detached" {
+        return CanonicalSessionState(phase: .ended, badge: nil)
+      }
+      return CanonicalSessionState(phase: .ready, badge: nil)
+    }
+
+    // A non-chat clean exit is the process declaring the work done.
+    if exitCode == 0 {
+      return CanonicalSessionState(phase: .settled, badge: nil)
+    }
     return CanonicalSessionState(phase: .ended, badge: nil)
   }
 
-  // 4. Stale: running but silent past the threshold.
+  // Running chats keep status "running" when a turn dies, so carry the
+  // persisted failure marker ahead of calm running/ready states.
+  if chat && !lastTurnFailed.isEmpty {
+    return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
+  }
+
+  // 5. Stale: running but silent past the threshold.
   if isSilentPast(lastActivityAt, now: now, thresholdSeconds: sessionStaleAfterSeconds) {
     return CanonicalSessionState(phase: .stale, badge: badgeByKind[.stale])
   }
@@ -145,7 +184,7 @@ func workCanonicalSessionState(
       : CanonicalSessionState(phase: .idle, badge: nil)
   }
 
-  // 5. Preview heuristic LAST: it may only upgrade running → needs_you.
+  // 7. Preview heuristic LAST: it may only upgrade running → needs_you.
   if previewSuggestsNeedsInput(lastOutputPreview) {
     return CanonicalSessionState(phase: .needsYou, badge: badgeByKind[.needsYou])
   }
@@ -224,6 +263,20 @@ func workSessionCapsuleBadge(
   summary: AgentChatSessionSummary?,
   now: Date = Date()
 ) -> SessionBadge? {
+  return workCanonicalSessionState(
+    session: session,
+    summary: summary,
+    now: now
+  ).badge
+}
+
+/// Canonical state for a concrete Work row. This is the one bridge from the
+/// mobile summary/awaiting projection into the scalar canonical state machine.
+func workCanonicalSessionState(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?,
+  now: Date = Date()
+) -> CanonicalSessionState {
   let statusLower = session.status.lowercased()
   let runtimeLower = session.runtimeState.lowercased()
   let isAwaiting = summary?.awaitingInput == true
@@ -239,8 +292,11 @@ func workSessionCapsuleBadge(
     lastOutputPreview: session.lastOutputPreview,
     lastActivityAt: workSessionStaleActivityTimestamp(session: session, summary: summary),
     exitCode: session.exitCode,
+    settledAt: session.settledAt,
+    attentionRequestedAt: session.attentionRequestedAt,
+    lastTurnFailedAt: session.lastTurnFailedAt,
     now: now
-  ).badge
+  )
 }
 
 /// The genuine last-activity timestamp used ONLY to drive the stale check.

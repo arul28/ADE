@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +76,9 @@ function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {})
         runningFiltered={[session]}
         awaitingInputFiltered={[]}
         endedFiltered={[]}
+        settledFiltered={[]}
+        showSettled
+        setShowSettled={vi.fn()}
         allSessionsUnfiltered={[session]}
         loading={false}
         filterLaneId="all"
@@ -105,6 +108,7 @@ describe("SessionListPane", () => {
   afterEach(() => {
     cleanup();
     useAppStore.setState({ laneDeleteProgressByLaneId: {} });
+    Reflect.deleteProperty(window, "ade");
   });
 
   it("renders by-lane sessions whose lane is missing from the cached lane list", () => {
@@ -226,6 +230,9 @@ describe("SessionListPane", () => {
           runningFiltered={[session]}
           awaitingInputFiltered={[]}
           endedFiltered={[]}
+          settledFiltered={[]}
+          showSettled
+          setShowSettled={vi.fn()}
           allSessionsUnfiltered={[session]}
           loading={false}
           filterLaneId="lane-known"
@@ -259,7 +266,9 @@ describe("SessionListPane", () => {
       laneId: "lane-known",
       laneName: "Known Lane",
       title: "Style target session",
-      lastOutputPreview: "Ran the latest command",
+      // Second line comes from summary/statusNote now — the raw output tail is
+      // a sensor, not a rendered row.
+      summary: "Ran the latest command",
     });
     renderPane({
       runningFiltered: [session],
@@ -497,5 +506,64 @@ describe("SessionListPane", () => {
     });
 
     expect(screen.queryByRole("button", { name: /stop & delete/i })).toBeNull();
+  });
+
+  it("renders a settled session in the Settled section", () => {
+    const settled = makeSession({
+      id: "session-settled",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Prepared release checklist",
+      manuallyNamed: true,
+      runtimeState: "idle",
+      settledAt: "2026-07-23T12:00:00.000Z",
+    });
+
+    renderPane({
+      runningFiltered: [],
+      settledFiltered: [settled],
+      allSessionsUnfiltered: [settled],
+      sessionListOrganization: "all-lanes-by-status",
+      sessionsGroupedByLane: new Map([[settled.laneId, [settled]]]),
+    });
+
+    expect(screen.getByText("Settled")).toBeTruthy();
+    expect(screen.getByText("Prepared release checklist")).toBeTruthy();
+  });
+
+  it("bulk settles selected sessions through the preload surface", async () => {
+    const settleMany = vi.fn().mockResolvedValue(["session-ended"]);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        sessions: {
+          settleMany,
+          unsettleMany: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+    });
+    const ended = makeSession({
+      id: "session-ended",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Ended chat",
+      status: "disposed",
+      runtimeState: "exited",
+    });
+
+    renderPane({
+      runningFiltered: [],
+      endedFiltered: [ended],
+      allSessionsUnfiltered: [ended],
+      selectedSessionIds: new Set([ended.id]),
+      sessionsGroupedByLane: new Map([[ended.laneId, [ended]]]),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Settle 1" }));
+
+    await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ended"]));
+    expect(screen.getByText("Settled 1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
   });
 });

@@ -1,12 +1,50 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { ChatInfoResumeRow, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
+import { ChatInfoResumeRow, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, computeLaneChatCounts, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
 import { theme } from "../theme";
 import { feedbackFormToFormValues } from "../feedbackForm";
 import { newLaneFormFields } from "../newLaneForm";
 import { buildFeedbackDraftInput } from "../feedback";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import type { TuiChatSessionSummary } from "../adeApi";
+
+describe("computeLaneChatCounts", () => {
+  it("counts settled chats as closed and failed turns as killed", () => {
+    const base: TuiChatSessionSummary = {
+      sessionId: "active",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-07-23T11:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-07-23T11:30:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt: null,
+    };
+    const sessions: TuiChatSessionSummary[] = [
+      base,
+      {
+        ...base,
+        sessionId: "settled",
+        settledAt: "2026-07-23T11:31:00.000Z",
+      },
+      {
+        ...base,
+        sessionId: "failed",
+        lastTurnFailedAt: "2026-07-23T11:32:00.000Z",
+      },
+    ];
+
+    expect(computeLaneChatCounts(sessions, "lane-1")).toEqual({
+      active: 1,
+      closed: 1,
+      killed: 1,
+    });
+  });
+});
 
 describe("rightPaneScrollableRowCount", () => {
   it("counts details body lines and list rows; flows full diff bodies for scrolling", () => {

@@ -2775,6 +2775,77 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("builds session lifecycle chat commands without inventing a session id", () => {
+    const cases = [
+      {
+        command: ["ask", "Which account should I use?"],
+        action: "requestSessionAttention",
+        args: { message: "Which account should I use?" },
+      },
+      {
+        command: ["note", "running e2e shard 2/4"],
+        action: "setSessionStatusNote",
+        args: { note: "running e2e shard 2/4" },
+      },
+      {
+        command: ["settle", "--outcome", "opened PR #841, CI green"],
+        action: "settleSelfSession",
+        args: { outcome: "opened PR #841, CI green" },
+      },
+      {
+        command: ["unsettle"],
+        action: "unsettleSelfSession",
+        args: {},
+      },
+    ];
+
+    for (const testCase of cases) {
+      const plan = expectExecutePlan(buildCliPlan(["chat", ...testCase.command]));
+      expect(plan.steps[0]?.params).toEqual({
+        name: "run_ade_action",
+        arguments: {
+          domain: "session",
+          action: testCase.action,
+          args: testCase.args,
+        },
+      });
+    }
+
+    const clearNote = expectExecutePlan(buildCliPlan(["chat", "note", ""]));
+    expect(clearNote.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "session",
+        action: "setSessionStatusNote",
+        args: { note: "" },
+      },
+    });
+  });
+
+  it.each([
+    ["ask", ["q"], "requestSessionAttention", { message: "q" }],
+    ["note", ["working"], "setSessionStatusNote", { note: "working" }],
+    ["settle", ["--outcome", "done"], "settleSelfSession", { outcome: "done" }],
+    ["unsettle", [], "unsettleSelfSession", {}],
+  ])(
+    "passes --session through for chat %s",
+    (subcommand, commandArgs, action, expectedArgs) => {
+      const plan = expectExecutePlan(buildCliPlan([
+        "chat",
+        subcommand,
+        ...commandArgs,
+        "--session",
+        "session-x",
+      ]));
+      expect(plan.steps[0]?.params).toMatchObject({
+        arguments: {
+          domain: "session",
+          action,
+          args: { ...expectedArgs, sessionId: "session-x" },
+        },
+      });
+    },
+  );
+
   it("routes chat send through the normalized message primitive", () => {
     const executePlan = expectExecutePlan(buildCliPlan([
       "chat",

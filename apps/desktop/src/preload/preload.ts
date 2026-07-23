@@ -3271,6 +3271,8 @@ contextBridge.exposeInMainWorld("ade", {
   },
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
+    setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getResourceUsage: async (): Promise<AppResourceUsageSnapshot> =>
       ipcRenderer.invoke(IPC.appGetResourceUsage),
@@ -5286,6 +5288,43 @@ contextBridge.exposeInMainWorld("ade", {
         : await ipcRenderer.invoke(IPC.sessionsUpdateMeta, args);
       sessionDeltaCache.clear();
       return updated as TerminalSessionSummary | null;
+    },
+    settle: async (
+      sessionId: string,
+      opts?: { outcome?: string },
+    ): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "settleSelfSession",
+        { args: { sessionId, ...(opts?.outcome ? { outcome: opts.outcome } : {}) } },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsSettle, { sessionId, opts });
+    },
+    unsettle: async (sessionId: string): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "unsettleSelfSession",
+        { args: { sessionId } },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId });
+    },
+    settleMany: async (sessionIds: string[]): Promise<string[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<string[]>(
+        "session",
+        "settleSessions",
+        { args: { sessionIds } },
+      );
+      return runtime.handled
+        ? runtime.result ?? []
+        : ipcRenderer.invoke(IPC.sessionsSettleMany, { sessionIds });
+    },
+    unsettleMany: async (sessionIds: string[]): Promise<void> => {
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "unsettleSessions",
+        { args: { sessionIds } },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
     },
     readTranscriptTail: async (
       args: ReadTranscriptTailArgs,

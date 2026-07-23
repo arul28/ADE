@@ -787,7 +787,7 @@ Implemented envelope types on iOS:
 | `terminal_input` / `terminal_input_ack` / `terminal_resize` | Phone ↔ runtime | Input is queued in order only after the terminal snapshot is ready. ACK-capable hosts receive a stable `inputId`; the phone sends one item at a time, waits 8 seconds, and retries with 0.5/1/2-second backoff within the host-advertised lease (four total attempts). The host dedupes `(device, session, inputId)` before writing, so a lost ack cannot type twice. `not_subscribed` is the only retryable rejection: iOS re-subscribes through the snapshot barrier and resends the same id. Other errors fail that item and continue the queue. Legacy hosts receive one-shot input without an id or ambiguous retry. Mobile resizes are non-authoritative: the runtime restores the last desktop size when the final phone detaches |
 | `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly. On strained relay connections, the Work detail view stays subscribed to `chat_event` but skips heavyweight `chat.getChatEventHistory` and fallback transcript fetches while the turn is active; idle refresh reconciles the canonical transcript. When the host advertises `crossProjectChat`, `chat_subscribe` / `chat_unsubscribe` also carry an optional `projectId` / `projectRootPath` override so the Hub can open a chat in a **foreign** project read-only (transcript streamed straight off that project's `.ade` JSONL) without switching the phone's active project — see the Hub and Lane-data-projection sections. A `session_meta_updated` `chat_event` carrying a client's permission/interaction/mode change is folded into the cached summary via `applyChatSessionMetaModeUpdateIfNeeded` (decoded through `AgentChatSessionMetaModeUpdate`, a lenient all-optional-string type that no-ops for the bare title/manuallyNamed events older hosts send), so the open composer's mode pill updates live without a refetch |
 | `chat_subscribe` with `chatScope: "personal"` | Phone → runtime / runtime → phone | Explicit projectless transcript/event subscription. `SyncService` marks the session personal, omits project id/root, routes send/steer/approval/update/lifecycle and scheduled-work Cancel/Pause calls to `personalChats.*`, and loads image bytes through `personalChats.getImageDataUrl`. Missing project scope alone never selects this path. |
-| `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended (`run-shell` infrastructure rows are excluded). Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
+| `roster_subscribe` / `roster_unsubscribe` / `roster_snapshot` / `roster_delta` | Phone → runtime / runtime → phone | All-projects session roster feed backing the Hub: agent chats, their attached shell rows, and standalone CLI (tracked terminal) sessions — live **and** ended (`run-shell` infrastructure rows are excluded). Subscribe (optionally with `sinceSeq`) yields a full `roster_snapshot` then incremental `roster_delta` upserts (`changed` = whole project entries) / `removed` project ids. Un-booted projects carry disk-derived status only (a booted scope also overlays PTY liveness for CLI rows); transcripts load on demand when a chat opens. Additive lifecycle fields carry `settledAt`, `statusNote`, `attentionRequestedAt`, `attentionMessage`, `lastTurnFailedAt`, and `exitCode`; disk readers return nulls against legacy databases that do not have those columns. `toolType` passes through so the phone routes chat rows to the chat surface and CLI rows to the terminal — a CLI row must never take the cross-project chat quick-look (it has no chat JSONL and would render blank) |
 | `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode. `SyncEnvelopeChunkAssembler` enforces a 32 MiB reassembly byte cap (`maxChunkedSyncEnvelopeBytes`) and drops chunk sets with inconsistent `total`s so a malformed or oversized stream cannot grow phone memory unbounded |
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
@@ -1092,7 +1092,9 @@ notification banners use:
 - **Awaiting input** — when an `itemId` is present, the row shows
   Approve / Deny buttons backed by `ApproveSessionIntent` /
   `DenySessionIntent`; otherwise the primary action is "Open session"
-  (which still routes through `Reply`-style behaviour via deep link).
+  (which still routes through `Reply`-style behaviour via deep link). An
+  explicit `ade chat ask` uses its persisted question as the drawer subtitle;
+  older approvals without a message fall back to "Approval needed."
 - **Failed** — "Open agent" plus a `RestartSessionIntent` chip.
 - **CI failing** — "Open #N" plus `RetryCheckIntent` to rerun checks.
 - **Review requested / merge ready** — "Review" / "Merge" /
@@ -1311,6 +1313,26 @@ run on the paired host through `work.listExternalSessions` and
 `work.importExternalSession`; the phone never reads provider storage. Import
 results include the persisted chat or terminal summary, which Work caches before
 navigating so replication latency cannot produce a blank destination screen.
+
+### Settled lifecycle and attention parity
+
+iOS mirrors `apps/desktop/src/shared/sessionCanonicalState.ts` in
+`WorkSessionCanonicalState.swift`. The precedence and visual vocabulary match
+desktop: deterministic approval/question/`ade chat ask` is `Needs you`; an
+explicit settle applies only while the session is at rest; failed and stopped
+remain distinct; a non-chat exit code 0 is settled; and a running row with a
+real activity timestamp at least three hours old is `Stale`, not settled.
+
+The replicated `terminal_sessions` lifecycle columns flow through
+`Database.swift`, the active-project session summaries, and
+`RemoteRosterChat`. Status grouping includes a final Settled section. Settled
+rows use the hollow status ring, lower opacity, stay openable, and render
+`statusNote` as `done: …`; an explicit attention request instead puts its
+question in the preview line. Ready/idle rows remain in Your move without a
+capsule, while `Needs you` is the loud tier used by awaiting counts, the
+attention drawer, push, and attention-first roster behavior. A settled chat
+woken by unattended scheduled work shows Running during the turn and returns
+to Settled at idle because only user activity clears its declaration.
 
 ### Shipped
 

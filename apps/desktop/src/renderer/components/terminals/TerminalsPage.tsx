@@ -171,8 +171,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const selectableSessions = useMemo(
-    () => [...work.runningFiltered, ...work.awaitingInputFiltered, ...work.endedFiltered],
-    [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered],
+    () => [
+      ...work.runningFiltered,
+      ...work.awaitingInputFiltered,
+      ...work.endedFiltered,
+      ...(work.showSettled ? work.settledFiltered : []),
+    ],
+    [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered, work.settledFiltered, work.showSettled],
   );
 
   useEffect(() => {
@@ -376,6 +381,24 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     },
     [work],
   );
+
+  const handleSettleSession = useCallback((session: TerminalSessionSummary) => {
+    setSessionActionError(null);
+    void window.ade.sessions.settle(session.id).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      setSessionActionError(`Settle failed: ${message}`);
+      window.setTimeout(() => setSessionActionError(null), 6000);
+    });
+  }, []);
+
+  const handleUnsettleSession = useCallback((session: TerminalSessionSummary) => {
+    setSessionActionError(null);
+    void window.ade.sessions.unsettle(session.id).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      setSessionActionError(`Unsettle failed: ${message}`);
+      window.setTimeout(() => setSessionActionError(null), 6000);
+    });
+  }, []);
 
   const handleStopAndDeleteSession = useCallback(
     (session: TerminalSessionSummary) => {
@@ -1070,6 +1093,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             runningFiltered={work.runningFiltered}
             awaitingInputFiltered={work.awaitingInputFiltered}
             endedFiltered={work.endedFiltered}
+            settledFiltered={work.settledFiltered}
+            showSettled={work.showSettled}
+            setShowSettled={work.setShowSettled}
             allSessionsUnfiltered={work.sessions}
             loading={work.loading}
             filterLaneId={work.filterLaneId}
@@ -1169,6 +1195,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         deletingSessionId={deletingSessionId}
         onGoToLane={handleGoToLane}
         onCopySessionId={(id) => navigator.clipboard.writeText(id).catch(() => {})}
+        onSettle={handleSettleSession}
+        onUnsettle={handleUnsettleSession}
         onCopySessionDeepLink={(session) => {
           void (async () => {
             const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;

@@ -117,6 +117,11 @@ type TerminalSessionRow = {
   pinned: number | null;
   exit_code: number | null;
   started_at: string | null;
+  settled_at: string | null;
+  status_note: string | null;
+  attention_requested_at: string | null;
+  attention_message: string | null;
+  last_turn_failed_at: string | null;
 };
 
 type DiskProjectData = {
@@ -164,6 +169,23 @@ function truncatePreview(text: string | null | undefined): string | null {
   return trimmed.length > PREVIEW_MAX_CHARS
     ? `${trimmed.slice(0, PREVIEW_MAX_CHARS - 1)}…`
     : trimmed;
+}
+
+function latestActivityTimestamp(...values: Array<string | null | undefined>): string | null {
+  let latest: { value: string; timestamp: number } | null = null;
+  for (const value of values) {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!trimmed) continue;
+    const timestamp = Date.parse(trimmed);
+    if (!Number.isFinite(timestamp)) {
+      if (!latest) latest = { value: trimmed, timestamp: Number.NEGATIVE_INFINITY };
+      continue;
+    }
+    if (!latest || timestamp > latest.timestamp) {
+      latest = { value: trimmed, timestamp };
+    }
+  }
+  return latest?.value ?? null;
 }
 
 function normalizedToolType(value: string | null | undefined): string {
@@ -244,11 +266,28 @@ function readProjectFromDisk(projectRoot: string, logger?: Pick<Logger, "warn"> 
           const chatSessionIdColumn = hasColumn(activeDb, "terminal_sessions", "chat_session_id")
             ? "chat_session_id"
             : "null as chat_session_id";
+          const settledAtColumn = hasColumn(activeDb, "terminal_sessions", "settled_at")
+            ? "settled_at"
+            : "null as settled_at";
+          const statusNoteColumn = hasColumn(activeDb, "terminal_sessions", "status_note")
+            ? "status_note"
+            : "null as status_note";
+          const attentionRequestedAtColumn = hasColumn(activeDb, "terminal_sessions", "attention_requested_at")
+            ? "attention_requested_at"
+            : "null as attention_requested_at";
+          const attentionMessageColumn = hasColumn(activeDb, "terminal_sessions", "attention_message")
+            ? "attention_message"
+            : "null as attention_message";
+          const lastTurnFailedAtColumn = hasColumn(activeDb, "terminal_sessions", "last_turn_failed_at")
+            ? "last_turn_failed_at"
+            : "null as last_turn_failed_at";
           return activeDb
             .prepare(
               `
                 select id, lane_id, ${chatSessionIdColumn}, tool_type, title, status, last_output_preview,
-                       last_output_at, pinned, exit_code, started_at
+                       last_output_at, pinned, exit_code, started_at,
+                       ${settledAtColumn}, ${statusNoteColumn}, ${attentionRequestedAtColumn},
+                       ${attentionMessageColumn}, ${lastTurnFailedAtColumn}
                 from terminal_sessions
                 where archived_at is null
               `,
@@ -294,7 +333,9 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
 // Disk-only status (un-booted project): the truthful persisted state. `running`
 // collapses to `idle` because no live runtime is streaming the turn.
 function diskChatStatus(row: TerminalSessionRow, sidecarAwaiting: boolean): SyncRosterChatStatus {
-  if (sidecarAwaiting) return "awaiting";
+  if (row.attention_requested_at || sidecarAwaiting) return "awaiting";
+  if (row.last_turn_failed_at) return "failed";
+  if (row.settled_at) return "ended";
   const status = (row.status ?? "").trim();
   if (status !== "running" && row.exit_code != null && row.exit_code !== 0) return "failed";
   return status === "running" ? "idle" : "ended";
@@ -383,11 +424,18 @@ async function buildRosterProject(
     // CLI (terminal) sessions never appear in agentChatService; on a booted
     // scope their liveness comes from the PTY table instead.
     const hasLivePty = livePtyService?.hasLivePty(row.id) === true;
-    const status: SyncRosterChatStatus = live
+    const liveStatus = live
       ? liveChatStatus(live)
       : hasLivePty
-        ? "running"
-        : diskChatStatus(row, Boolean(sidecar?.awaitingInput));
+        ? "running" as const
+        : null;
+    const status: SyncRosterChatStatus = row.attention_requested_at
+      ? "awaiting"
+      : row.settled_at && liveStatus !== "running"
+        ? "ended"
+        : row.last_turn_failed_at
+          ? "failed"
+          : liveStatus ?? diskChatStatus(row, Boolean(sidecar?.awaitingInput));
     const awaitingInput = status === "awaiting";
     if (status === "running") runningCount += 1;
     // Attention drives hub badges AND attention-first project sorting. Only
@@ -397,7 +445,14 @@ async function buildRosterProject(
     const countsTowardAttention = isRosterTopLevelToolType(row.tool_type)
       || normalizedParentSessionId(row) != null;
     if ((status === "awaiting" || status === "failed") && countsTowardAttention) attentionCount += 1;
-    const lastActivityAt = live?.lastActivityAt ?? row.last_output_at ?? row.started_at ?? null;
+    const lastActivityAt = latestActivityTimestamp(
+      live?.lastActivityAt,
+      row.attention_requested_at,
+      row.settled_at,
+      row.last_turn_failed_at,
+      row.last_output_at,
+      row.started_at,
+    );
     chats.push({
       id: row.id,
       laneId: row.lane_id,
@@ -411,6 +466,12 @@ async function buildRosterProject(
       ...(row.pinned ? { pinned: true } : {}),
       lastActivityAt,
       preview: truncatePreview(row.last_output_preview),
+      settledAt: row.settled_at,
+      statusNote: row.status_note,
+      attentionRequestedAt: row.attention_requested_at,
+      attentionMessage: row.attention_message,
+      lastTurnFailedAt: row.last_turn_failed_at,
+      exitCode: row.exit_code,
     });
   }
 

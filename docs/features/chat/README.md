@@ -350,7 +350,15 @@ Controls and summaries project this runtime state rather than owning it:
   translates SDK retry/refusal/notification/memory/mirror/permission events
   into `system_notice` rows, drains the SDK-documented post-`result`
   `prompt_suggestion` message, maps Claude `TaskCreate`/`TaskUpdate` tool calls
-  into `todo_update` snapshots for the actions-pane task board, preserves
+  into `todo_update` snapshots for the actions-pane task board, and applies
+  streamed tool inputs at `content_block_stop`. Claude background/idle turns can
+  announce a `tool_use` with empty input and deliver the real JSON only through
+  later `input_json_delta` chunks; ADE accumulates those chunks by content index,
+  parses the full object at block stop, re-emits the original stable `tool_call`
+  item with real args, and runs Task/scheduled-work derivation on that full
+  input. Renderer/TUI folds collapse the re-emission by turn + item id, so a
+  TaskUpdate completion advances the existing TASKS row without duplication.
+  The adapter also preserves
   refusal-fallback retraction UUIDs through `transcript_retraction`, maps SDK
   `supersedes` to the same retraction path, and gives new built-in Claude tools
   readable badges in the transcript. ADE leaves full subagent-text forwarding
@@ -1029,6 +1037,15 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   guard: when `getRecentEntries` is called, the service flushes pending
   buffered text first so transcript reads always reflect the latest
   streamed content.
+- **Claude streamed tool input is not optional metadata.** On background/idle
+  turns, `content_block_start` commonly carries `input: {}` and the complete
+  `TaskCreate`/`TaskUpdate` payload arrives as one or more
+  `input_json_delta.partial_json` chunks. Keep the per-content-index input and
+  tool metadata alive until `content_block_stop`, then parse and apply the full
+  input even when a placeholder `tool_call` was already emitted. Gating
+  Task/schedule derivation on “first tool emission” freezes later status
+  transitions (for example TASKS staying at 0/N complete). Re-emission must
+  reuse the same item id so clients update in place.
 - **Provider failures are terminal once, but retry notices are not failures.**
   Codex app-server may send an `error` notification before a failed
   `turn/completed` carrying the same message. ADE emits one visible `error`

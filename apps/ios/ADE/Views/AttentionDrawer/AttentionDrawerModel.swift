@@ -111,12 +111,14 @@ public final class AttentionDrawerModel: ObservableObject {
 
         for agent in snapshot.agents {
             if agent.awaitingInput {
+                let preview = agent.preview?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let subtitle = preview.flatMap { $0.isEmpty ? nil : $0 } ?? "Approval needed"
                 result.append(
                     AttentionItem(
                         id: "awaiting:\(agent.sessionId)",
                         kind: .awaitingInput,
                         title: Self.humanAgentTitle(agent),
-                        subtitle: "Approval needed",
+                        subtitle: subtitle,
                         providerSlug: agent.provider,
                         sessionId: agent.sessionId,
                         itemId: agent.pendingInputItemId,

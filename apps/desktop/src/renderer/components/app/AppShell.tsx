@@ -353,6 +353,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const [commandOpen, setCommandOpen] = useState(false);
   const visitedTabsRef = useRef(new Set<string>());
+  const lastDockBadgeCountRef = useRef<number | null>(null);
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
   const storeToasts = useToasts();
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
@@ -676,6 +677,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!shouldTrackTerminalAttention) {
       setTerminalAttention(EMPTY_TERMINAL_ATTENTION);
+      // Deliberately do NOT zero the dock badge here: navigating away from
+      // Work routes doesn't resolve the sessions that need attention, and
+      // app.setBadgeCount is application-wide. The badge stays at the last
+      // known loud count until attention tracking next refreshes it.
       return;
     }
 
@@ -688,13 +693,22 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         refreshQueued = true;
         return;
       }
-      if (document.visibilityState !== "visible") return;
+      // No visibility gate: the dock badge must keep tracking the loud tier
+      // while the window is hidden/minimized — that is its whole purpose. The
+      // refresh stays event-driven + debounced, so hidden cost is bounded.
       refreshInFlight = true;
       try {
         const sessions: TerminalSessionSummary[] = (
           await listSessionsCached({ limit: 150 })
         ).filter((session) => !isRunOwnedSession(session));
-        setTerminalAttention(summarizeTerminalAttention(sessions));
+        const attention = summarizeTerminalAttention(sessions);
+        setTerminalAttention(attention);
+        // Dock badge mirrors the loud tier only; push on change so a blocked
+        // agent reaches the user even with the window minimized.
+        if (lastDockBadgeCountRef.current !== attention.needsAttentionCount) {
+          lastDockBadgeCountRef.current = attention.needsAttentionCount;
+          void window.ade?.app?.setDockBadgeCount?.(attention.needsAttentionCount)?.catch?.(() => {});
+        }
       } catch {
         // best effort
       } finally {

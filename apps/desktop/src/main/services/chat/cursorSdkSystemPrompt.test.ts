@@ -52,6 +52,16 @@ describe("buildCursorSdkSystemPrompt", () => {
     expect(out.text).toContain("ade_plan_approval");
   });
 
+  it("always emits the shared session status protocol", () => {
+    const out = buildCursorSdkSystemPrompt({ runtime: "local" });
+    expect(out.text).toContain('ade chat note "running e2e shard 2/4"');
+    expect(out.text).toContain('ade chat ask "<the exact question>"');
+    expect(out.text).toContain("ade chat settle --outcome");
+    expect(out.sections.find((section) => section.name === "session-status")).toEqual(
+      expect.objectContaining({ truncated: false }),
+    );
+  });
+
   it("strips secret-looking lines from project rules", () => {
     const rules = [
       "Use these conventions:",

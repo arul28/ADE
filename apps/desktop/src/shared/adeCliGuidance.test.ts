@@ -31,6 +31,9 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("ade actions list --text");
     expect(bootstrap).toContain("ade chat scheduled-work create");
     expect(bootstrap).toContain("tracked provider CLIs");
+    expect(bootstrap).toContain('ade chat note "running e2e shard 2/4"');
+    expect(bootstrap).toContain('ade chat ask "<the exact question>"');
+    expect(bootstrap).toContain("ade chat settle --outcome");
     // The skill index is still advertised so the model knows what exists.
     for (const skillName of adeBundledAgentSkills) {
       expect(bootstrap).toContain(`\`${skillName}\``);
@@ -41,8 +44,9 @@ describe("ADE bootstrap guidance", () => {
     const bootstrap = buildAdeBootstrapGuidance(roots);
 
     // The redesign dropped the ~4,300-char blob; the bootstrap must stay tiny
-    // (~260 tokens). Guard against silent re-growth back into a rulebook.
-    expect(bootstrap.length).toBeLessThan(1600);
+    // Keep the shared lifecycle protocol compact while guarding against
+    // regrowth into the old per-domain rulebook.
+    expect(bootstrap.length).toBeLessThan(2600);
     // The per-domain operating rules now live in their skills, not always-on.
     expect(bootstrap).not.toContain("### Minimum operating rules");
     expect(bootstrap).not.toContain("--socket");

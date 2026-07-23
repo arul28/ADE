@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { TerminalSessionSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { isChatToolType } from "../../lib/sessions";
+import { sessionCanonicalUiState } from "../../lib/terminalAttention";
 
 export type SessionContextMenuState = {
   session: TerminalSessionSummary;
@@ -24,6 +25,8 @@ type SessionContextMenuProps = {
   onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
   onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
+  onSettle?: (session: TerminalSessionSummary) => void;
+  onUnsettle?: (session: TerminalSessionSummary) => void;
   pinnedSessionIds?: string[];
   /** Session ids currently in any work grid (drives the "Remove from grid" item). */
   gridSessionIds?: string[];
@@ -45,6 +48,8 @@ export function SessionContextMenu({
   onCopySessionDeepLink,
   onOpenSessionInWeb,
   onTogglePinned,
+  onSettle,
+  onUnsettle,
   pinnedSessionIds,
   gridSessionIds,
   onRemoveFromGrid,
@@ -81,6 +86,10 @@ export function SessionContextMenu({
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
+  const canonicalPhase = sessionCanonicalUiState(session).phase;
+  const isActivelyRunning = canonicalPhase === "starting"
+    || canonicalPhase === "running"
+    || canonicalPhase === "stale";
 
   const commitRename = () => {
     if (finalizedRef.current) return;
@@ -191,6 +200,22 @@ export function SessionContextMenu({
             onClick={() => { onStopAndDelete(session); onClose(); }}
           >
             {deletingSessionId === session.id ? "Deleting…" : "Stop & delete"}
+          </button>
+        ) : null}
+
+        {session.settledAt && onUnsettle ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            onClick={() => { onUnsettle(session); onClose(); }}
+          >
+            Unsettle
+          </button>
+        ) : canonicalPhase !== "settled" && !isActivelyRunning && onSettle ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            onClick={() => { onSettle(session); onClose(); }}
+          >
+            Settle
           </button>
         ) : null}
 

@@ -14,6 +14,13 @@ export const adeBundledAgentSkills = [
   "ade-search",
 ] as const;
 
+export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
+  "Session status protocol (keeps the Work sidebar truthful):",
+  '- While working, keep a short status line current: `ade chat note "running e2e shard 2/4"` (a few words; update when the activity changes).',
+  '- At turn end, if you need ANY user input to proceed and did not use a structured ask tool, escalate: `ade chat ask "<the exact question>"`. Escalate only when genuinely blocked — not for FYIs or optional follow-ups.',
+  '- When the session\'s goal is fully complete and nothing is pending, declare it: `ade chat settle --outcome "<one-line outcome, e.g. \'opened PR #841, CI green\'>"`. New user activity automatically un-settles.',
+].join("\n");
+
 /**
  * @deprecated Superseded by {@link buildAdeBootstrapGuidance}. Kept as a thin alias so
  * existing call sites stay wired to the (now minimal) bootstrap. The previous ~1,000-token
@@ -51,6 +58,7 @@ export function buildAdeBootstrapGuidance(
     "If the direct `mcp__computer_use` tools are present, use them for Codex Computer Use and honor their per-app approvals; do not initialize `@oai/sky` through `node_repl` as a substitute.",
     "Ground truth for any `ade` invocation is `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Project secrets are available through `ade secrets`; read only the named secret the user asks you to use and avoid printing secret values. Track and clean up processes you start.",
     "`ade chat scheduled-work create` schedules durable self-resume for bound chats and tracked provider CLIs.",
+    ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }
 

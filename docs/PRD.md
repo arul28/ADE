@@ -70,7 +70,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Lane | A task-scoped git worktree with its own process pool, agent chat, work sessions, and PR flow. |
 | Worktree | The filesystem checkout backing a lane, usually under `.ade/worktrees/<lane-id>/`. |
 | Stack | A dependency chain of lanes that maps to stacked PRs. |
-| Work session | A tracked chat, agent CLI, shell, or PTY session associated with a lane or project surface. |
+| Work session | A tracked chat, agent CLI, shell, or PTY session associated with a lane or project surface. Its canonical lifecycle distinguishes active work, quiet “your move,” loud “Needs you,” failed/stale, ended, and settled states; settled sessions remain openable and are not archived. |
 | Agent chat | A structured multi-provider chat session that can call ADE tools, stream events, and attach to a lane. |
 | Personal chat | An `AgentChatSession` with `surface: "personal"`, owned by the machine brain and intentionally detached from the project catalog, lane UI, and Git/PR context. |
 | Terminal session | A PTY-backed work session with transcript, runtime state, and optional chat ownership. |
@@ -89,7 +89,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 ### Brain, runtime, and clients
 
 - [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. A remote machine's brain is authoritative for its projects.
-- [**ADE Code**](./features/ade-code/README.md) — Terminal-native Work chat (Ink + React) inside `apps/ade-cli`. Default attaches to the machine brain and starts it if missing. Same JSON-RPC surface as the desktop app and the iOS controller.
+- [**ADE Code**](./features/ade-code/README.md) — Terminal-native Work chat (Ink + React) inside `apps/ade-cli`. Default attaches to the machine brain and starts it if missing. Same JSON-RPC surface as the desktop app and the iOS controller, including session ask/note/settle lifecycle controls.
 - [**Web Client**](./features/web-client/README.md) — Owner-only hosted browser controller. Static Cloudflare Pages SPA, ADE account sign-in, account-directory machine selection, DPoP-bound sync WebSocket transport, no local DB.
 
 ### Work execution
@@ -113,7 +113,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Workspace surfaces
 
-- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, and managed-process services. Process lifecycle tracking, AI-title pipeline, lazy resume-target hydration, and stale reconciliation.
+- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, and managed-process services. Canonical cross-client session lifecycle, two-tier attention, the quiet settled tier, agent-authored status notes, process tracking, AI titles, lazy resume-target hydration, and stale reconciliation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
 - [**Universal Search**](./features/search/README.md) — One deterministic FTS5 index (disposable `.ade/cache/search-index.db`) over chat/terminal/PR/commit/branch text, unioned at query time with delegated lanes/files/artifacts/Linear. Debounced off-hot-path ingestion, deterministic ranking tiers, one `search` action domain behind ⌘K, the TUI palette, and `ade search`.
 - [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.

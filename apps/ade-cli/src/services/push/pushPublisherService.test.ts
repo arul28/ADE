@@ -823,6 +823,74 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("publishes explicit CLI attention requests through the gated question path", async () => {
+    const { publisher, publish } = makeHarness();
+    await publisher.start();
+
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "cli-ask-1",
+      kind: "cli",
+      title: "Fix auth race",
+      message: "Which account should the e2e test use?",
+      laneId: "auth-lane",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications[0]).toMatchObject({
+      title: "Fix auth race",
+      body: "Which account should the e2e test use?",
+      deepLink: "ade://session/cli-ask-1",
+      sessionId: "cli-ask-1",
+      dedupeKey: "alert:cli-ask-1:question",
+    });
+    expect(payload.liveActivity[0].contentState.runs[0]).toMatchObject({
+      id: "cli-ask-1",
+      phase: "waiting_for_input",
+      detail: "Which account should the e2e test use?",
+    });
+
+    publisher.dispose();
+  });
+
+  it("supersedes a pending approval when an explicit ask arrives for the same session", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit({
+      sessionId: "s-ask-2",
+      timestamp: "",
+      event: { type: "approval_request", itemId: "approval-item-1", kind: "command", description: "Run tests" },
+    });
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "s-ask-2",
+      kind: "chat",
+      title: "Migrate kvDb",
+      message: "jwt or session auth?",
+      laneId: "auth-lane",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    const payload = publish.mock.calls.at(-1)?.[0];
+    const alerts = (payload.notifications ?? []).filter(
+      (n: { sessionId: string }) => n.sessionId === "s-ask-2",
+    );
+    // The stale approval alert must not ride along with the new question, and
+    // the run must carry the question phase without the obsolete approval item.
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      dedupeKey: "alert:s-ask-2:question",
+      body: "jwt or session auth?",
+    });
+    const askRun = payload.liveActivity[0].contentState.runs.find(
+      (r: { id: string }) => r.id === "s-ask-2",
+    );
+    expect(askRun).toMatchObject({ phase: "waiting_for_input" });
+    expect(askRun.itemId).toBeUndefined();
+
+    publisher.dispose();
+  });
+
   it("drops chat-owned shells and unknown sessions from CLI run tracking", async () => {
     const { publisher, publish, emit, cliSessions } = makeHarness();
     cliSessions.set("shell-1", { title: "attached shell", toolType: "shell", chatSessionId: "s-1" });

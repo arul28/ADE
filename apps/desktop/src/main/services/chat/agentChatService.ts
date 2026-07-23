@@ -11795,6 +11795,14 @@ export function createAgentChatService(args: {
       // first finished turn as the child's terminal status in the parent's
       // subagents panel. No-op unless the spawn was tracked this process.
       reportChildSpawnEnded(managed.session.id, normalizedEvent.status);
+      if (normalizedEvent.status === "failed") {
+        sessionService.markLastTurnFailed(managed.session.id);
+      } else if (normalizedEvent.status === "completed") {
+        // A later successful turn supersedes an earlier failure — without
+        // this, background/scheduled chats that hit one transient error would
+        // show red forever (only user sends clear turn-start markers).
+        sessionService.clearLastTurnFailed(managed.session.id);
+      }
     }
 
     if (normalizedEvent.type === "todo_update") {
@@ -15571,6 +15579,38 @@ export function createAgentChatService(args: {
     streamedTextByContentIndex: Map<number, string>;
     recentTextDeltaBuffer: string;
     scheduledWakeAttached: boolean;
+    /** Dedupe for todo/task tracker application per tool_use (ADE-130): a
+     * tool_use may surface twice (streamed content_block path + the final
+     * assistant message); the tracker must apply exactly once, with the FULL
+     * input — content_block_stop, not content_block_start's empty args. */
+    emittedTodoToolIds: Set<string>;
+  };
+
+  /**
+   * Apply a TaskCreate/TaskUpdate/TodoWrite tool input to the runtime task
+   * tracker and emit todo_update — shared by the foreground turn handler and
+   * the idle/background reader (ADE-130). Applies at most once per tool_use
+   * (tracked in the caller's `seen` set); safe to call from both the streamed
+   * content_block_stop path (full input after deltas) and the final
+   * assistant-message path — whichever sees the full input first wins, and
+   * empty-input passes are no-ops the dedupe never latches.
+   */
+  const applyClaudeTodoToolUpdate = (
+    seen: Set<string>,
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    toolName: string,
+    input: unknown,
+    itemId: string,
+    turnId: string,
+  ): void => {
+    if (seen.has(itemId)) return;
+    const todoItems = toolName === "TodoWrite"
+      ? normalizeClaudeTodoItems(input ?? {})
+      : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, input ?? {}, itemId);
+    if (!todoItems) return;
+    seen.add(itemId);
+    emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
   };
 
   const isClaudeForwardedSubagentMessage = (msg: SDKMessage): boolean => {
@@ -16333,13 +16373,14 @@ export function createAgentChatService(args: {
               turnId,
             });
             maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, toolName, block.input, itemId, turnId);
-            const todoItems = toolName === "TodoWrite"
-              ? normalizeClaudeTodoItems(block.input ?? {})
-              : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, block.input ?? {}, itemId);
-            if (todoItems) {
-              emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
-            }
           }
+          // Task/todo tracking runs OUTSIDE the emittedToolIds guard (ADE-130):
+          // the streamed content_block path registers the itemId first with
+          // EMPTY input, and the full input only exists here on the final
+          // assistant message — gating the tracker on first-emission silently
+          // dropped every background-turn TaskUpdate. applyClaudeTodoToolUpdate
+          // has its own apply-once dedupe.
+          applyClaudeTodoToolUpdate(state.emittedTodoToolIds, managed, runtime, toolName, block.input, itemId, turnId);
         }
       }
       const usage = asRecord(betaMessage?.usage);
@@ -16482,6 +16523,11 @@ export function createAgentChatService(args: {
           });
         }
         maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, meta.toolName, parsed, meta.itemId, turnId);
+        // ADE-130: this is the first moment the streamed tool_use has its FULL
+        // input — apply TaskCreate/TaskUpdate/TodoWrite to the tracker here.
+        // Background-turn completions previously never reached the tracker,
+        // freezing the TASKS pane at a prefix of the stream.
+        applyClaudeTodoToolUpdate(state.emittedTodoToolIds, managed, runtime, meta.toolName, parsed, meta.itemId, turnId);
       }
       return;
     }
@@ -16597,6 +16643,7 @@ export function createAgentChatService(args: {
       streamedTextByContentIndex: new Map(),
       recentTextDeltaBuffer: "",
       scheduledWakeAttached: false,
+      emittedTodoToolIds: new Set(),
     };
 
     logger.debug("agent_chat.claude_idle_reader_start", {
@@ -16959,13 +17006,7 @@ export function createAgentChatService(args: {
       }
     };
     const maybeEmitTodoUpdate = (toolName: string, input: unknown, itemId: string): void => {
-      if (emittedClaudeTodoIds.has(itemId)) return;
-      const todoItems = toolName === "TodoWrite"
-        ? normalizeClaudeTodoItems(input ?? {})
-        : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, input ?? {}, itemId);
-      if (!todoItems) return;
-      emittedClaudeTodoIds.add(itemId);
-      emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
+      applyClaudeTodoToolUpdate(emittedClaudeTodoIds, managed, runtime, toolName, input, itemId, turnId);
     };
     let timeoutError: Error | null = null;
     const buildDoneModelPayload = (): { model: string; modelId?: string } =>
@@ -32659,7 +32700,20 @@ export function createAgentChatService(args: {
         return;
       }
     }
+    // A user-originated message clears the lifecycle markers (settled /
+    // attention / turn-failure) whether it starts a fresh turn OR steers an
+    // active one — the user has engaged either way. Scheduled wakes are NOT
+    // user activity (they must leave a declared settle intact so the session
+    // re-settles at rest after the wake), and empty no-op sends that never
+    // dispatch must not un-settle either — so this runs only on the two paths
+    // that actually deliver the message.
+    const clearUserTurnMarkers = (): void => {
+      if (!args.metadata?.scheduledWake) {
+        sessionService.clearTurnStartMarkers(args.sessionId);
+      }
+    };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
+      clearUserTurnMarkers();
       return steer({
         sessionId: args.sessionId,
         text: args.text,
@@ -32675,6 +32729,7 @@ export function createAgentChatService(args: {
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const prepared = options?.preparedMessage ?? prepareSendMessage(args);
     if (!prepared) return;
+    clearUserTurnMarkers();
     prepared.managed.lastActivityTimestamp = Date.now();
     let rejectDispatch: ((error: Error) => void) | null = null;
     const dispatchPromise = options?.awaitDispatch || options?.awaitBackendDispatch

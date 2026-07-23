@@ -45,8 +45,14 @@ describe("canonicalSessionState precedence", () => {
     ["idle chat is ready (no badge)", { runtimeState: "idle", toolType: "claude-chat" }, "ready", null],
     ["idle CLI is idle (no badge)", { runtimeState: "idle" }, "idle", null],
     ["heuristic does NOT fire on idle sessions", { runtimeState: "idle", lastOutputPreview: "continue? (y/n)" }, "idle", null],
-    ["clean exit is ended (no badge)", { status: "detached", exitCode: 0 }, "ended", null],
-    ["ended chat is ready (no badge)", { status: "detached", toolType: "claude-chat", exitCode: null }, "ready", null],
+    ["clean exit auto-settles (no badge)", { status: "detached", exitCode: 0 }, "settled", null],
+    ["unknown exit stays ended (no badge)", { status: "detached", exitCode: null, runtimeState: "exited" }, "ended", null],
+    ["detached chat is ended, not perpetually ready", { status: "detached", toolType: "claude-chat", exitCode: null }, "ended", null],
+    ["declared settle wins over failure", { status: "detached", exitCode: 2, settledAt: "2026-07-06T11:00:00.000Z" }, "settled", null],
+    ["settled chat re-settles at idle rest", { toolType: "claude-chat", runtimeState: "idle", settledAt: "2026-07-06T11:00:00.000Z" }, "settled", null],
+    ["settle is ignored while a turn actively streams", { toolType: "claude-chat", runtimeState: "running", settledAt: "2026-07-06T11:00:00.000Z" }, "running", null],
+    ["ask escalation wins over settle", { settledAt: "2026-07-06T11:00:00.000Z", attentionRequestedAt: "2026-07-06T11:30:00.000Z", toolType: "claude-chat" }, "needs_you", "Needs you"],
+    ["chat turn death is failed while status still running", { toolType: "claude-chat", lastTurnFailedAt: "2026-07-06T11:00:00.000Z" }, "failed", "Failed"],
   ];
 
   it.each(cases)("%s", (_name, overrides, phase, label) => {

@@ -55,7 +55,12 @@ function seedDatabase(): void {
         pinned integer,
         exit_code integer,
         started_at text,
-        archived_at text
+        archived_at text,
+        settled_at text,
+        status_note text,
+        attention_requested_at text,
+        attention_message text,
+        last_turn_failed_at text
       );
   `);
 
@@ -95,6 +100,24 @@ function seedDatabase(): void {
   insertChat.run("chat-arch", "lane-primary", null, "claude-chat", "Old", "ended", null, "2026-01-01T00:00:00Z", 0, 0, "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
   // Chat whose lane was filtered out — orphan, dropped.
   insertChat.run("chat-orphan", "lane-gone", null, "claude-chat", "Orphan", "running", null, "2026-01-05T00:00:00Z", 0, null, "2026-01-05T00:00:00Z", null);
+
+  db.prepare(
+    `
+      update terminal_sessions
+      set settled_at = ?, status_note = ?
+      where id = ?
+    `,
+  ).run("2026-01-02T00:01:00Z", "Index complete", "chat-run");
+  db.prepare(
+    `
+      update terminal_sessions
+      set attention_requested_at = ?, attention_message = ?
+      where id = ?
+    `,
+  ).run("2026-01-03T00:01:00Z", "Choose a release target", "chat-await");
+  db.prepare(
+    "update terminal_sessions set last_turn_failed_at = ? where id = ?",
+  ).run("2026-01-01T12:01:00Z", "cli-fail");
 
   db.close();
 
@@ -207,7 +230,7 @@ describe("buildRosterSnapshot", () => {
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
     const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));
 
-    expect(byId.get("chat-run")!.status).toBe("idle"); // DB running, no live runtime
+    expect(byId.get("chat-run")!.status).toBe("ended"); // declared settled
     expect(byId.get("chat-await")!.status).toBe("awaiting");
     expect(byId.get("chat-await")!.awaitingInput).toBe(true);
     expect(byId.get("cli-end")!.status).toBe("ended");
@@ -219,6 +242,50 @@ describe("buildRosterSnapshot", () => {
     // Failed standalone CLI rows show their per-row status but never count
     // toward attention (which drives attention-first project sorting).
     expect(projects[0]!.attentionCount).toBe(1); // awaiting chat only
+  });
+
+  it("projects settled lifecycle fields and exit codes into the mobile roster", async () => {
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));
+
+    expect(byId.get("chat-run")).toMatchObject({
+      settledAt: "2026-01-02T00:01:00Z",
+      statusNote: "Index complete",
+      exitCode: null,
+    });
+    expect(byId.get("chat-await")).toMatchObject({
+      attentionRequestedAt: "2026-01-03T00:01:00Z",
+      attentionMessage: "Choose a release target",
+      status: "awaiting",
+      awaitingInput: true,
+    });
+    expect(byId.get("cli-fail")).toMatchObject({
+      lastTurnFailedAt: "2026-01-01T12:01:00Z",
+      exitCode: 1,
+    });
+    expect(byId.get("cli-end")!.exitCode).toBe(0);
+  });
+
+  it("tolerates legacy project databases that omit settled lifecycle columns", async () => {
+    const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"));
+    for (const column of [
+      "settled_at",
+      "status_note",
+      "attention_requested_at",
+      "attention_message",
+      "last_turn_failed_at",
+    ]) {
+      db.exec(`alter table terminal_sessions drop column ${column}`);
+    }
+    db.close();
+
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const chat = projects[0]!.chats.find((row) => row.id === "chat-run")!;
+    expect(chat.settledAt).toBeNull();
+    expect(chat.statusNote).toBeNull();
+    expect(chat.attentionRequestedAt).toBeNull();
+    expect(chat.attentionMessage).toBeNull();
+    expect(chat.lastTurnFailedAt).toBeNull();
   });
 
   it("hard-truncates the preview to ~120 chars and reads sidecar provider/model", async () => {

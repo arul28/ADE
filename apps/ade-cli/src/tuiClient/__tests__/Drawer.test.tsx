@@ -13,6 +13,7 @@ import {
   terminalSessionToChatSummary,
   type ClosedCliSessionSummary,
 } from "../closedCliSessions";
+import type { TuiChatSessionSummary } from "../adeApi";
 
 function stripAnsi(text: string): string {
   return text.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
@@ -325,6 +326,62 @@ describe("Drawer lane and chat navigation layout", () => {
     // chats.
     expect(chatModeFrame).not.toContain("lane card");
     expect(chatModeFrame).not.toContain("next lane");
+  });
+
+  it("renders lifecycle asks and settled outcomes in chat rows", () => {
+    const sessions: TuiChatSessionSummary[] = [
+      {
+        sessionId: "chat-ask",
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        title: "Blocked chat",
+        status: "idle",
+        startedAt: "2026-05-12T11:30:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-12T11:31:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+        nextWakeAt: null,
+        attentionRequestedAt: "2026-05-12T11:32:00.000Z",
+        attentionMessage: "Which account?",
+      },
+      {
+        sessionId: "chat-settled",
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-code",
+        title: "Finished chat",
+        status: "idle",
+        startedAt: "2026-05-12T11:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-12T11:20:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+        nextWakeAt: null,
+        settledAt: "2026-05-12T11:21:00.000Z",
+        statusNote: "PR merged",
+      },
+    ];
+
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "Feature", "feature/lifecycle", "2026-05-12T11:55:00.000Z")]}
+        sessions={sessions}
+        activeLaneId="lane-1"
+        activeSessionId={null}
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={30}
+        width={48}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("◔");
+    expect(frame).toContain("Which account?");
+    expect(frame).toContain("○");
+    expect(frame).toContain("done: PR merged");
   });
 
   it("renders ended tracked CLI sessions behind the closed group in chat mode", () => {

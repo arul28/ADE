@@ -6,6 +6,7 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
 import { selectPrimaryLanePr, lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
+import { canonicalInputFromSummary, sessionStatusBucket } from "../../lib/terminalAttention";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
@@ -33,6 +34,7 @@ import {
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
+const EMPTY_SESSION_LIST: TerminalSessionSummary[] = [];
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
@@ -145,6 +147,7 @@ function StickyGroupHeader({
   children,
   subLabel,
   prBadge = null,
+  headerAction = null,
   variant = "default",
   busyLabel = null,
 }: {
@@ -161,6 +164,8 @@ function StickyGroupHeader({
   subLabel?: string | null;
   /** Compact PR badge shown left of the count for `variant="lane"`. */
   prBadge?: React.ReactNode;
+  /** Compact action shown next to the count for non-lane headers. */
+  headerAction?: React.ReactNode;
   /** `lane` uses a larger header and pads the nested session list. */
   variant?: "default" | "lane";
   /** Disables the lane group and overlays lifecycle progress. */
@@ -241,22 +246,23 @@ function StickyGroupHeader({
           ) : null}
         </div>
       ) : (
-      <button
-        type="button"
-        className={cn(
-          "ade-lane-group-header sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
-          laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
-        )}
-        style={{
-          background: laneTint.background,
-          borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
-        }}
-        onClick={onToggleCollapsed}
-        onContextMenu={onContextMenu}
-        data-section-id={sectionId}
-      >
-        {(
-          <>
+        <div
+          className={cn(
+            "ade-lane-group-header sticky top-0 z-10 flex w-full items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-colors backdrop-blur-xl select-none",
+            laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
+          )}
+          style={{
+            background: laneTint.background,
+            borderBottom: "1px solid rgba(255, 255, 255, 0.04)",
+          }}
+          data-section-id={sectionId}
+        >
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
+            onClick={onToggleCollapsed}
+            onContextMenu={onContextMenu}
+          >
             {collapsed ? (
               <CaretRight size={10} className="shrink-0 text-muted-fg/30" />
             ) : (
@@ -269,12 +275,14 @@ function StickyGroupHeader({
             >
               {label}
             </span>
+          </button>
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            {headerAction}
             <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[9px] font-medium text-muted-fg/50">
               {count}
             </span>
-          </>
-        )}
-      </button>
+          </div>
+        </div>
       )}
       {/* Children slide out/retract smoothly; the header stays put (no reflow jump). */}
       <AnimatePresence initial={false}>
@@ -375,6 +383,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   runningFiltered,
   awaitingInputFiltered,
   endedFiltered,
+  settledFiltered,
+  showSettled,
+  setShowSettled,
   allSessionsUnfiltered,
   loading: _loading,
   filterLaneId,
@@ -407,6 +418,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   runningFiltered: TerminalSessionSummary[];
   awaitingInputFiltered: TerminalSessionSummary[];
   endedFiltered: TerminalSessionSummary[];
+  settledFiltered: TerminalSessionSummary[];
+  showSettled: boolean;
+  setShowSettled: (show: boolean) => void;
   /** All sessions before the search/lane filter — the live-children badge counts
    * from this so a filtered-out running child doesn't undercount its parent. */
   allSessionsUnfiltered: TerminalSessionSummary[];
@@ -441,6 +455,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   const prsByLaneId = useLanePrsByLaneId();
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
+  const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
   const orderedLanes = useMemo(() => sortLanesForTabs(lanes), [lanes]);
   const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
 
@@ -463,12 +478,20 @@ export const SessionListPane = React.memo(function SessionListPane({
     return filtered.sort((a, b) => b.createdAtMs - a.createdAtMs);
   }, [allSessionsUnfiltered, handoffJobs, laneFilterActive, normalizedFilterLaneId, q]);
 
+  const visibleSettled = showSettled ? settledFiltered : EMPTY_SESSION_LIST;
   const hasAnySessions =
-    runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length + filteredHandoffJobs.length > 0;
+    runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length
+      + visibleSettled.length + filteredHandoffJobs.length > 0;
 
   const allSessions = useMemo(
-    () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered],
-    [runningFiltered, awaitingInputFiltered, endedFiltered],
+    () => [...runningFiltered, ...awaitingInputFiltered, ...endedFiltered, ...visibleSettled],
+    [runningFiltered, awaitingInputFiltered, endedFiltered, visibleSettled],
+  );
+  // Settled rows live in their own quiet tier: excluded from lane folders' main
+  // run and from time buckets, rendered in a per-group settled tail instead.
+  const settledIdSet = useMemo(
+    () => new Set(settledFiltered.map((session) => session.id)),
+    [settledFiltered],
   );
   const visibleSessionIdSet = useMemo(
     () => new Set(allSessions.map((session) => session.id)),
@@ -533,7 +556,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     (parentId: string) => toggleWorkSectionCollapsed(`chat:${parentId}`),
     [toggleWorkSectionCollapsed],
   );
-  const timeBuckets = useMemo(() => bucketByTime(allSessions), [allSessions]);
+  const timeBuckets = useMemo(
+    () => bucketByTime(allSessions.filter((session) => !settledIdSet.has(session.id))),
+    [allSessions, settledIdSet],
+  );
   const handoffTimeBuckets = useMemo(() => bucketHandoffJobsByTime(filteredHandoffJobs), [filteredHandoffJobs]);
   const selectedCount = selectedSessionIds?.size ?? 0;
   const selectedSessions = useMemo(
@@ -542,6 +568,40 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
   const selectedRunningCount = selectedSessions.filter(canBulkStopSession).length;
   const selectedDeletableCount = selectedSessions.filter(canBulkDeleteSession).length;
+  // Bulk settle targets at-rest rows only — actively working sessions are not
+  // "done" merely because they lack a settled marker.
+  const selectedSettleableSessions = useMemo(
+    () => selectedSessions.filter((session) =>
+      !session.settledAt
+      && sessionStatusBucket(canonicalInputFromSummary(session)) !== "running"),
+    [selectedSessions],
+  );
+  const selectedSettleCount = selectedSettleableSessions.length;
+  const settleSessions = useCallback(async (sessionIds: string[]) => {
+    try {
+      const newlySettled = await window.ade.sessions.settleMany(sessionIds);
+      if (newlySettled.length > 0) {
+        setSettleUndo({ ids: newlySettled, count: newlySettled.length });
+      }
+    } catch (error) {
+      console.error("[SessionListPane] bulk settle failed", { sessionIds, error });
+    }
+  }, []);
+  const undoSettle = useCallback(async () => {
+    const ids = settleUndo?.ids ?? [];
+    if (!ids.length) return;
+    setSettleUndo(null);
+    try {
+      await window.ade.sessions.unsettleMany(ids);
+    } catch (error) {
+      console.error("[SessionListPane] undo settle failed", { sessionIds: ids, error });
+    }
+  }, [settleUndo]);
+  useEffect(() => {
+    if (!settleUndo) return;
+    const timeout = window.setTimeout(() => setSettleUndo(null), 8_000);
+    return () => window.clearTimeout(timeout);
+  }, [settleUndo]);
   const laneById = useMemo(() => {
     const map = new Map<string, LaneSummary>();
     for (const lane of lanes) map.set(lane.id, lane);
@@ -611,13 +671,18 @@ export const SessionListPane = React.memo(function SessionListPane({
   const renderedSessionIds = useMemo(() => {
     if (isByLane) {
       const ids: string[] = [];
+      const laneVisibleIds = (list: TerminalSessionSummary[]): string[] => {
+        const active = list.filter((session) => !settledIdSet.has(session.id));
+        const settled = showSettled ? list.filter((session) => settledIdSet.has(session.id)) : [];
+        return [...collectVisibleIds(active), ...collectVisibleIds(settled)];
+      };
       for (const lane of orderedLanes) {
         if (workCollapsedLaneIds.includes(lane.id)) continue;
-        ids.push(...collectVisibleIds(sessionsGroupedByLane?.get(lane.id) ?? []));
+        ids.push(...laneVisibleIds(sessionsGroupedByLane?.get(lane.id) ?? []));
       }
       for (const [laneId, list] of missingLaneSessionGroups) {
         if (workCollapsedLaneIds.includes(laneId)) continue;
-        ids.push(...collectVisibleIds(list));
+        ids.push(...laneVisibleIds(list));
       }
       return ids;
     }
@@ -626,12 +691,14 @@ export const SessionListPane = React.memo(function SessionListPane({
       if (!workCollapsedSectionIds.includes("time:today")) ids.push(...collectVisibleIds(timeBuckets.today));
       if (!workCollapsedSectionIds.includes("time:yesterday")) ids.push(...collectVisibleIds(timeBuckets.yesterday));
       if (!workCollapsedSectionIds.includes("time:older")) ids.push(...collectVisibleIds(timeBuckets.older));
+      if (!workCollapsedSectionIds.includes("status:settled")) ids.push(...collectVisibleIds(visibleSettled));
       return ids;
     }
     const ids: string[] = [];
     if (!workCollapsedSectionIds.includes("status:running")) ids.push(...collectVisibleIds(runningFiltered));
     if (!workCollapsedSectionIds.includes("status:awaiting")) ids.push(...collectVisibleIds(awaitingInputFiltered));
     if (!workCollapsedSectionIds.includes("status:ended")) ids.push(...collectVisibleIds(endedFiltered));
+    if (!workCollapsedSectionIds.includes("status:settled")) ids.push(...collectVisibleIds(visibleSettled));
     return ids;
   }, [
     awaitingInputFiltered,
@@ -643,9 +710,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     orderedLanes,
     runningFiltered,
     sessionsGroupedByLane,
+    settledIdSet,
+    showSettled,
     timeBuckets.older,
     timeBuckets.today,
     timeBuckets.yesterday,
+    visibleSettled,
     workCollapsedLaneIds,
     workCollapsedSectionIds,
   ]);
@@ -752,6 +822,65 @@ export const SessionListPane = React.memo(function SessionListPane({
     </AnimatePresence>
   );
 
+  // Hollow ring — the settled tier's dot language (visually "less than" every
+  // filled status dot).
+  const settledSectionIcon = (
+    <span
+      className="h-2 w-2 shrink-0 rounded-full border bg-transparent"
+      style={{ borderColor: "rgba(255,255,255,0.35)" }}
+    />
+  );
+
+  /**
+   * Lane folder body: active rows first, then a quiet collapsible settled tail
+   * (`settled:<laneId>` section) so finished work stays openable in-stream
+   * without occupying the folder's prime rows.
+   */
+  const renderLaneSessionLists = (laneKey: string, list: TerminalSessionSummary[]) => {
+    const active = list.filter((session) => !settledIdSet.has(session.id));
+    const settled = showSettled ? list.filter((session) => settledIdSet.has(session.id)) : [];
+    const settledCollapsed = workCollapsedSectionIds.includes(`settled:${laneKey}`);
+    return (
+      <>
+        {renderCards(active)}
+        {settled.length > 0 ? (
+          <div className="mt-px">
+            <button
+              type="button"
+              onClick={() => toggleWorkSectionCollapsed(`settled:${laneKey}`)}
+              className="flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] font-medium uppercase tracking-wide text-muted-fg/40 transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70"
+              aria-expanded={!settledCollapsed}
+            >
+              {settledCollapsed ? (
+                <CaretRight size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+              ) : (
+                <CaretDown size={9} weight="bold" className="shrink-0 text-muted-fg/40" />
+              )}
+              {settledSectionIcon}
+              <span className="truncate">
+                {settled.length === 1 ? "1 settled" : `${settled.length} settled`}
+              </span>
+            </button>
+            {!settledCollapsed ? <div className="space-y-px">{renderCards(settled)}</div> : null}
+          </div>
+        ) : null}
+      </>
+    );
+  };
+
+  const settledStatusSection = visibleSettled.length > 0 ? (
+    <StickyGroupHeader
+      sectionId="status:settled"
+      icon={settledSectionIcon}
+      label="Settled"
+      count={visibleSettled.length}
+      collapsed={workCollapsedSectionIds.includes("status:settled")}
+      onToggleCollapsed={() => toggleWorkSectionCollapsed("status:settled")}
+    >
+      {renderCards(visibleSettled)}
+    </StickyGroupHeader>
+  ) : null;
+
   const groupedByStatusList = (
     <div className="px-1.5 pb-2">
       <StickyGroupHeader
@@ -768,10 +897,22 @@ export const SessionListPane = React.memo(function SessionListPane({
       <StickyGroupHeader
         sectionId="status:awaiting"
         icon={<span className="h-2 w-2 shrink-0 rounded-full" style={{ background: "var(--color-warning)" }} />}
-        label="Awaiting"
+        label="Your move"
         count={awaitingInputFiltered.length}
         collapsed={workCollapsedSectionIds.includes("status:awaiting")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:awaiting")}
+        headerAction={(
+          <button
+            type="button"
+            className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg"
+            onClick={(event) => {
+              event.stopPropagation();
+              void settleSessions(awaitingInputFiltered.map((session) => session.id));
+            }}
+          >
+            Settle all
+          </button>
+        )}
       >
         {renderCards(awaitingInputFiltered)}
       </StickyGroupHeader>
@@ -782,9 +923,22 @@ export const SessionListPane = React.memo(function SessionListPane({
         count={endedFiltered.length}
         collapsed={workCollapsedSectionIds.includes("status:ended")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:ended")}
+        headerAction={(
+          <button
+            type="button"
+            className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg"
+            onClick={(event) => {
+              event.stopPropagation();
+              void settleSessions(endedFiltered.map((session) => session.id));
+            }}
+          >
+            Settle all
+          </button>
+        )}
       >
         {renderCards(endedFiltered)}
       </StickyGroupHeader>
+      {settledStatusSection}
     </div>
   );
 
@@ -832,7 +986,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             onContextMenu={deleteProgress ? undefined : (e) => triggerLaneContextMenu(lane.id, e)}
           >
             {renderHandoffCards(laneHandoffJobs)}
-            {renderCards(list)}
+            {renderLaneSessionLists(lane.id, list)}
           </StickyGroupHeader>
         );
       })}
@@ -853,7 +1007,7 @@ export const SessionListPane = React.memo(function SessionListPane({
             onToggleCollapsed={() => toggleWorkLaneCollapsed(laneId)}
           >
             {renderHandoffCards(laneHandoffJobs)}
-            {renderCards(list)}
+            {renderLaneSessionLists(laneId, list)}
           </StickyGroupHeader>
         );
       })}
@@ -913,12 +1067,13 @@ export const SessionListPane = React.memo(function SessionListPane({
         {renderHandoffCards(handoffTimeBuckets.older)}
         {renderCards(timeBuckets.older)}
       </StickyGroupHeader>
+      {settledStatusSection}
     </div>
   );
 
   return (
     <div
-      className="flex h-full flex-col overflow-hidden"
+      className="relative flex h-full flex-col overflow-hidden"
       style={{ background: "var(--work-sidebar-bg)" }}
     >
       {/* Compact toolbar */}
@@ -999,7 +1154,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                         opt.key === "by-lane"
                           ? "Group sessions by the lane they belong to."
                           : opt.key === "all-lanes-by-status"
-                            ? "Group by status: running, awaiting, or ended."
+                            ? "Group by status: running, your move, ended, or settled."
                             : "Group by when sessions were started.",
                     }}
                   >
@@ -1030,11 +1185,33 @@ export const SessionListPane = React.memo(function SessionListPane({
                 />
               </div>
             </div>
+            <div className="flex items-start gap-1">
+              <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Tiers</span>
+              <div className={FILTER_OPTION_GRID_CLASS}>
+                <SmartTooltip
+                  content={{
+                    label: "Show settled",
+                    description: "Show the quiet Settled tier — finished threads that stay openable in-stream.",
+                  }}
+                >
+                  <button
+                    type="button"
+                    className={FILTER_OPTION_BUTTON_CLASS}
+                    data-active={showSettled ? "true" : undefined}
+                    aria-pressed={showSettled}
+                    style={{ color: showSettled ? "var(--color-fg)" : "var(--color-muted-fg)" }}
+                    onClick={() => setShowSettled(!showSettled)}
+                  >
+                    Settled
+                  </button>
+                </SmartTooltip>
+              </div>
+            </div>
           </div>
         ) : null}
 
         {selectedCount > 0 ? (
-          <div className="ade-chat-drawer-glass flex items-center gap-1.5 p-1.5">
+          <div className="ade-chat-drawer-glass flex flex-wrap items-center gap-1.5 p-1.5">
             <span className="min-w-0 flex-1 truncate text-[10px] font-medium text-fg/80">
               {selectedCount} selected
             </span>
@@ -1047,6 +1224,19 @@ export const SessionListPane = React.memo(function SessionListPane({
                 >
                   <Square size={10} />
                   Stop {selectedRunningCount}
+                </button>
+              </SmartTooltip>
+            ) : null}
+            {selectedSettleCount > 0 ? (
+              <SmartTooltip content={{ label: "Settle selected", description: "Move selected sessions into the quiet Settled tier." }}>
+                <button
+                  type="button"
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] px-2 text-[10px] font-medium text-fg/80"
+                  onClick={() => {
+                    void settleSessions(selectedSettleableSessions.map((session) => session.id));
+                  }}
+                >
+                  Settle {selectedSettleCount}
                 </button>
               </SmartTooltip>
             ) : null}
@@ -1139,6 +1329,21 @@ export const SessionListPane = React.memo(function SessionListPane({
           onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
           onOpenLinearSettings={() => navigate("/settings?tab=general#linear-connection")}
         />
+      ) : null}
+      {settleUndo ? (
+        <div
+          className="ade-chat-drawer-glass absolute bottom-12 left-2 right-2 z-30 flex items-center gap-2 px-2.5 py-2 text-[10px] text-fg/85 shadow-lg"
+          role="status"
+        >
+          <span className="min-w-0 flex-1 truncate">Settled {settleUndo.count}</span>
+          <button
+            type="button"
+            className="shrink-0 font-semibold text-[var(--color-accent)] hover:underline"
+            onClick={() => void undoSettle()}
+          >
+            Undo
+          </button>
+        </div>
       ) : null}
       {laneContextMenuPortal}
     </div>

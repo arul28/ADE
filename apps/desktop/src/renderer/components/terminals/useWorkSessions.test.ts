@@ -1422,7 +1422,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       expect(result.current.filtered.map((session) => session.id)).toEqual(["session-running", "session-ended"]);
     });
     expect(result.current.runningFiltered.map((s) => s.id)).toEqual(["session-running"]);
-    expect(result.current.endedFiltered.map((s) => s.id)).toEqual(["session-ended"]);
+    // exit-0 shells auto-settle (clean exit IS the done declaration).
+    expect(result.current.endedFiltered.map((s) => s.id)).toEqual([]);
+    expect(result.current.settledFiltered.map((s) => s.id)).toEqual(["session-ended"]);
   });
 
   it("includes Claude session tags in the Work sidebar search", async () => {
@@ -2108,7 +2110,8 @@ describe("useWorkSessions — grouping defaults and derived tab order", () => {
       organization: "all-lanes-by-status",
       collapsedGroupIds: ["status:running"],
     });
-    expect(byStatus.groups.map((group) => group.id)).toEqual(["status:running", "status:awaiting-input", "status:ended"]);
+    // The exit-0 session lands in the settled tier, not ended.
+    expect(byStatus.groups.map((group) => group.id)).toEqual(["status:running", "status:awaiting-input", "status:settled"]);
     expect(byStatus.groups[0]!.collapsed).toBe(true);
     expect(byStatus.sessionIds).toEqual(["session-a2", "session-c1"]);
 

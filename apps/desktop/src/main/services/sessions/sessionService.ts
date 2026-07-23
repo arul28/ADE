@@ -43,6 +43,11 @@ type SessionRow = {
   startedAt: string;
   endedAt: string | null;
   archivedAt: string | null;
+  settledAt: string | null;
+  statusNote: string | null;
+  attentionRequestedAt: string | null;
+  attentionMessage: string | null;
+  lastTurnFailedAt: string | null;
   exitCode: number | null;
   transcriptPath: string;
   headShaStart: string | null;
@@ -85,6 +90,11 @@ const SESSION_COLUMNS = `
   s.started_at as startedAt,
   s.ended_at as endedAt,
   s.archived_at as archivedAt,
+  s.settled_at as settledAt,
+  s.status_note as statusNote,
+  s.attention_requested_at as attentionRequestedAt,
+  s.attention_message as attentionMessage,
+  s.last_turn_failed_at as lastTurnFailedAt,
   s.exit_code as exitCode,
   s.transcript_path as transcriptPath,
   s.head_sha_start as headShaStart,
@@ -290,8 +300,30 @@ function normalizeIsoTimestamp(value: unknown): string | null {
   return Number.isFinite(Date.parse(text)) ? text : null;
 }
 
+function normalizeOptionalText(value: unknown, maxChars: number): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text.length ? text.slice(0, maxChars) : null;
+}
+
 export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
+
+  /**
+   * Shared skeleton for the single-session lifecycle mutators: trim, existence
+   * probe, run the update, broadcast. Keeps every SQL literal at its call site.
+   */
+  const mutateSessionMeta = (sessionId: string, run: (id: string) => void): boolean => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return false;
+    const existing = db.get<{ present: number }>(
+      "select 1 as present from terminal_sessions where id = ? limit 1",
+      [trimmed],
+    );
+    if (!existing) return false;
+    run(trimmed);
+    emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    return true;
+  };
 
   const emitChanged = (event: TerminalSessionChangedEvent): void => {
     for (const listener of changeListeners) {
@@ -386,6 +418,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
       resumeMetadata,
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),
       archivedAt: row.archivedAt ?? null,
+      settledAt: normalizeIsoTimestamp(row.settledAt),
+      statusNote: normalizeOptionalText(row.statusNote, 200),
+      attentionRequestedAt: normalizeIsoTimestamp(row.attentionRequestedAt),
+      attentionMessage: normalizeOptionalText(row.attentionMessage, 500),
+      lastTurnFailedAt: normalizeIsoTimestamp(row.lastTurnFailedAt),
       chatSessionId: row.chatSessionId ?? null,
       ownerPid: normalizeOwnerPid(row.ownerPid),
       ownerProcessStartedAt: normalizeOwnerProcessStartedAt(row.ownerProcessStartedAt),
@@ -1057,9 +1094,18 @@ export function createSessionService({ db }: { db: AdeDb }) {
       db.run("update terminal_sessions set head_sha_end = ? where id = ?", [sha, sessionId]);
     },
 
-    setLastOutputPreview(sessionId: string, preview: string): void {
+    /**
+     * PTY output un-settles (`clearSettled: true` from the PTY layer): a live
+     * process producing output is not "done". Chat previews must NOT pass it —
+     * an agent's own final assistant text would otherwise undo the settle it
+     * just declared via `ade chat settle`; chat settles are cleared only by a
+     * user turn start (clearTurnStartMarkers).
+     */
+    setLastOutputPreview(sessionId: string, preview: string, opts?: { clearSettled?: boolean }): void {
       db.run(
-        "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
+        opts?.clearSettled
+          ? "update terminal_sessions set last_output_preview = ?, last_output_at = ?, settled_at = null where id = ?"
+          : "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
         [preview, new Date().toISOString(), sessionId]
       );
     },
@@ -1069,10 +1115,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
      * layer record that a session is still producing output even when the
      * derived preview line is blank or unchanged (spinners, repeated status
      * lines), so the stale-session detector does not treat live work as idle.
+     * PTY-only, so live output also un-settles (see setLastOutputPreview).
      */
     touchSessionActivity(sessionId: string, at: string = new Date().toISOString()): void {
       db.run(
-        "update terminal_sessions set last_output_at = ? where id = ?",
+        "update terminal_sessions set last_output_at = ?, settled_at = null where id = ?",
         [at, sessionId]
       );
     },
@@ -1153,6 +1200,162 @@ export function createSessionService({ db }: { db: AdeDb }) {
       db.run("update terminal_sessions set archived_at = null where id = ?", [trimmed]);
       emitChanged({ sessionId: trimmed, reason: "meta-updated" });
       return true;
+    },
+
+    settleSession(
+      sessionId: string,
+      opts: { outcome?: string | null; settledAt?: string } = {},
+    ): boolean {
+      const settledAt = normalizeIsoTimestamp(opts.settledAt) ?? new Date().toISOString();
+      const outcome = normalizeOptionalText(opts.outcome, 200);
+      return mutateSessionMeta(sessionId, (id) => {
+        if (outcome) {
+          db.run(
+            `
+              update terminal_sessions
+              set settled_at = coalesce(settled_at, ?),
+                  status_note = ?,
+                  attention_requested_at = null,
+                  attention_message = null
+              where id = ?
+            `,
+            [settledAt, outcome, id],
+          );
+        } else {
+          db.run(
+            `
+              update terminal_sessions
+              set settled_at = coalesce(settled_at, ?),
+                  attention_requested_at = null,
+                  attention_message = null
+              where id = ?
+            `,
+            [settledAt, id],
+          );
+        }
+      });
+    },
+
+    unsettleSession(sessionId: string): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run("update terminal_sessions set settled_at = null where id = ?", [id]);
+      });
+    },
+
+    settleSessions(sessionIds: string[]): string[] {
+      const ids = Array.from(new Set(
+        sessionIds
+          .map((sessionId) => typeof sessionId === "string" ? sessionId.trim() : "")
+          .filter(Boolean),
+      ));
+      if (!ids.length) return [];
+      const placeholders = ids.map(() => "?").join(", ");
+      const newlySettled = db.all<{ id: string }>(
+        `select id from terminal_sessions where settled_at is null and id in (${placeholders})`,
+        ids,
+      ).map((row) => row.id);
+      if (!newlySettled.length) return [];
+      const updatePlaceholders = newlySettled.map(() => "?").join(", ");
+      db.run(
+        `
+          update terminal_sessions
+          set settled_at = ?,
+              attention_requested_at = null,
+              attention_message = null
+          where id in (${updatePlaceholders})
+        `,
+        [new Date().toISOString(), ...newlySettled],
+      );
+      for (const id of newlySettled) {
+        emitChanged({ sessionId: id, reason: "meta-updated" });
+      }
+      return newlySettled;
+    },
+
+    unsettleSessions(sessionIds: string[]): void {
+      const ids = Array.from(new Set(
+        sessionIds
+          .map((sessionId) => typeof sessionId === "string" ? sessionId.trim() : "")
+          .filter(Boolean),
+      ));
+      if (!ids.length) return;
+      const placeholders = ids.map(() => "?").join(", ");
+      db.run(
+        `update terminal_sessions set settled_at = null where id in (${placeholders})`,
+        ids,
+      );
+      for (const id of ids) {
+        emitChanged({ sessionId: id, reason: "meta-updated" });
+      }
+    },
+
+    setStatusNote(sessionId: string, note: string | null): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          "update terminal_sessions set status_note = ? where id = ?",
+          [normalizeOptionalText(note, 200), id],
+        );
+      });
+    },
+
+    requestAttention(sessionId: string, message: string | null): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          `
+            update terminal_sessions
+            set attention_requested_at = ?,
+                attention_message = ?,
+                settled_at = null
+            where id = ?
+          `,
+          [new Date().toISOString(), normalizeOptionalText(message, 500), id],
+        );
+      });
+    },
+
+    clearAttentionRequest(sessionId: string): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          "update terminal_sessions set attention_requested_at = null, attention_message = null where id = ?",
+          [id],
+        );
+      });
+    },
+
+    markLastTurnFailed(sessionId: string, at?: string): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        // A turn failure also un-settles: the declared outcome is now in doubt
+        // and the row must surface red, not hide in the quiet tier. This keeps
+        // settled/failed mutually exclusive at write time, so every surface's
+        // precedence order agrees by construction.
+        db.run(
+          "update terminal_sessions set last_turn_failed_at = ?, settled_at = null where id = ?",
+          [normalizeIsoTimestamp(at) ?? new Date().toISOString(), id],
+        );
+      });
+    },
+
+    /** A completed turn supersedes an earlier failure; never touches settle/attention. */
+    clearLastTurnFailed(sessionId: string): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run("update terminal_sessions set last_turn_failed_at = null where id = ?", [id]);
+      });
+    },
+
+    clearTurnStartMarkers(sessionId: string): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          `
+            update terminal_sessions
+            set last_turn_failed_at = null,
+                settled_at = null,
+                attention_requested_at = null,
+                attention_message = null
+            where id = ?
+          `,
+          [id],
+        );
+      });
     },
 
     deleteSession(sessionId: string): boolean {

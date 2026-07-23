@@ -3,8 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, messageChatSession, recoverCodexTurn, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession } from "../adeApi";
-import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
+import { archiveChatSession, buildPtyContinuationLaunchFields, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, deriveClaudeGoalFromEvents, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, enrichChatSessionsWithLifecycle, enrichTerminalSessionsWithLifecycle, getAvailableModels, getChatHistoryPage, getMainTranscript, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listSessionSummaries, listTerminalSessions, messageChatSession, recoverCodexTurn, requestSessionAttention, resumeTerminalSession, runDefaultLaneSetup, sendChatMessage, setSessionStatusNote, settleSession, signalTerminal, startCliTerminalSession, steerChatMessage, trackedCliTerminalProvider, unarchiveChatSession, unsettleSession } from "../adeApi";
+import type { ChatTerminalSession, TerminalSessionSummary } from "../../../../desktop/src/shared/types/sessions";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -54,6 +54,87 @@ describe("listLaneDiffStats", () => {
       },
     ]);
     expect(result["lane-1"]).toEqual({ additions: 12, deletions: 4, files: 3 });
+  });
+});
+
+describe("session lifecycle parity", () => {
+  it("loads lifecycle summaries and merges them into chat and CLI rows", async () => {
+    const lifecycle = {
+      id: "session-1",
+      lastActivityAt: "2026-07-23T12:00:00.000Z",
+      settledAt: "2026-07-23T12:01:00.000Z",
+      statusNote: "PR merged",
+      attentionRequestedAt: null,
+      attentionMessage: null,
+      lastTurnFailedAt: null,
+    } as TerminalSessionSummary;
+    const action = vi.fn().mockResolvedValue([lifecycle]);
+    const connection = { action } as unknown as AdeCodeConnection;
+
+    await expect(listSessionSummaries(connection)).resolves.toEqual([lifecycle]);
+    expect(action).toHaveBeenCalledWith("session", "list", { limit: 500 });
+
+    const chat = enrichChatSessionsWithLifecycle([{
+      sessionId: "session-1",
+      laneId: "lane-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle",
+      startedAt: "2026-07-23T11:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-07-23T11:30:00.000Z",
+      lastOutputPreview: null,
+      summary: null,
+      nextWakeAt: null,
+    }], [lifecycle]);
+    expect(chat[0]).toMatchObject({
+      settledAt: lifecycle.settledAt,
+      statusNote: "PR merged",
+      lastActivityAt: "2026-07-23T11:30:00.000Z",
+    });
+
+    const terminal = enrichTerminalSessionsWithLifecycle([{
+      terminalId: "session-1",
+      ptyId: null,
+      chatSessionId: null,
+      laneId: "lane-1",
+      laneName: "Lane 1",
+      title: "Codex CLI",
+      toolType: "codex",
+      goal: null,
+      status: "running",
+      runtimeState: "idle",
+      active: true,
+      startedAt: "2026-07-23T11:00:00.000Z",
+      endedAt: null,
+      exitCode: null,
+      pid: null,
+      resumeCommand: null,
+      lastOutputPreview: null,
+      summary: null,
+    }], [lifecycle]);
+    expect(terminal[0]).toMatchObject({
+      settledAt: lifecycle.settledAt,
+      statusNote: "PR merged",
+      lastActivityAt: lifecycle.lastActivityAt,
+    });
+  });
+
+  it("maps lifecycle helpers to the allowed session actions", async () => {
+    const action = vi.fn().mockResolvedValue({ ok: true });
+    const connection = { action } as unknown as AdeCodeConnection;
+
+    await requestSessionAttention(connection, "session-1", "Which account?");
+    await setSessionStatusNote(connection, "session-1", "");
+    await settleSession(connection, "session-1", "PR merged");
+    await unsettleSession(connection, "session-1");
+
+    expect(action.mock.calls).toEqual([
+      ["session", "requestSessionAttention", { sessionId: "session-1", message: "Which account?" }],
+      ["session", "setSessionStatusNote", { sessionId: "session-1", note: "" }],
+      ["session", "settleSelfSession", { sessionId: "session-1", outcome: "PR merged" }],
+      ["session", "unsettleSelfSession", { sessionId: "session-1" }],
+    ]);
   });
 });
 

@@ -77,16 +77,12 @@ It also owns the sidebar's multi-select state:
   `ade.agentChat.delete` for chat rows and `ade.sessions.delete` for
   PTY rows. Succeeded ids are removed from the cache and the open-tabs
   list.
-- `handleBulkArchiveSelected` / `handleBulkRestoreSelected` operate on
-  the chat subset of the selection (`isChatToolType` + `archivedAt`
-  state), calling `ade.agentChat.archive` / `ade.agentChat.unarchive`.
-  Terminal sessions in the selection are skipped silently — only chats
-  have an archived flag.
-- `handleBulkExportSelected` builds a markdown bundle through
-  `formatSessionBundleMarkdown` (in `renderer/lib/transcriptExport.ts`)
-  and triggers a browser download via `triggerBrowserDownload`. The
-  bundle is metadata-only (title, lane, status, started/ended, goal);
-  full transcript bodies are not embedded.
+- Bulk settle is owned by `SessionListPane`: it sends the visible selected
+  non-settled ids through `ade.sessions.settleMany`, retains only the ids the
+  service actually changed, and offers an eight-second Unsettle undo. Settle
+  does not stop a runtime, delete a transcript, or archive a chat.
+- `handleBulkStopAndDeleteSelected` stops selected running runtimes, then
+  permanently deletes every selected session once the user confirms.
 
 Any selection-entry that is no longer present in the rendered session
 list is pruned from `selectedSessionIds` automatically so stale ids
@@ -98,11 +94,15 @@ Lists sessions grouped by one of three modes (controlled by
 `sessionListOrganization` in the work view state):
 
 - `by-lane` — one group per active lane
-- `by-status` — running / waiting-input / idle / ended
+- `by-status` — Running / Your move / Ended / Settled
 - `by-time` — today / yesterday / older
 
 Each group uses a `StickyGroupHeader` with collapsed-state persistence
-via `workCollapsedLaneIds` / `workCollapsedSectionIds`.
+via `workCollapsedLaneIds` / `workCollapsedSectionIds`. Settled is a quiet
+fourth tier: status and time views render one final Settled section, while lane
+view renders a collapsible settled tail inside each lane. `showSettled` controls
+whether those rows render at all; it defaults on, while the global Settled
+section starts collapsed.
 
 Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
 actions are available from the session sidebar. Color changes and copy/reveal
@@ -141,7 +141,8 @@ the handoff fails.
 Also renders:
 
 - draft-kind switcher (chat vs terminal) at the top
-- lane filter (`LaneCombobox`) and status filter
+- lane filter (`LaneCombobox`), status filter, and a persisted Show settled tier
+  toggle
 - search input
 - the actual list of `SessionCard` rows (memoized)
 - an "Open new" button that sets `draftKind` and routes to
@@ -152,9 +153,9 @@ Also renders:
   detached from the sidebar component and leaves a sticky retry toast if
   setup fails.
 - a bulk-action footer that appears when `selectedSessionIds` is
-  non-empty: "Close N running", "Archive N" (chats only), "Restore N"
-  (archived chats), "Export" (any selection, opens a markdown bundle
-  download), "Delete N ended", and a clear-selection X. The footer
+  non-empty: "Stop N" for running PTYs, "Settle N", "Delete N" for
+  deletable ended rows, "Stop & delete N" when the selection includes a
+  running runtime, and a clear-selection X. The footer
   totals only count sessions that are still visible in the current
   filter; callers are `TerminalsPage`'s bulk handlers.
 
@@ -177,9 +178,11 @@ Three rows:
    `primarySessionLabel()` drive these. The relative time comes from
    `relativeTimeCompact`. Disposed CLI rows render a small inline
    "Stopped" label immediately before the red status dot rather than an
-   attention capsule. When `orchestrationParentSessionId` is present, a small
-   deterministic `ChatSubagentGlyph` appears immediately left of the status
-   dot. `SessionListPane` supplies the parent title from its unfiltered session
+   attention capsule. Settled rows use a hollow ring; every non-settled phase
+   uses the filled green/amber/red vocabulary. When
+   `orchestrationParentSessionId` is present, a small deterministic
+   `ChatSubagentGlyph` appears immediately left of the status dot.
+   `SessionListPane` supplies the parent title from its unfiltered session
    index for the tooltip; clicking the glyph stops card selection and routes
    to the parent through `navigateToSpawnedChat`. The glyph is a mouse
    shortcut inside the existing card button; a spawned chat's **View parent
@@ -188,11 +191,11 @@ Three rows:
    background AI auto-naming (`useLaneNaming(lane.id)` from
    `renderer/state/laneNamingStore.ts` is true), this row instead shows an
    italic "Auto-naming lane underway…" status. Otherwise it shows
-   `session.summary` first; running sessions may then show sanitized
-   `session.lastOutputPreview`; completed, failed, disposed, and detached
-   sessions fall back to `session.goal` instead of raw last output.
-   Sanitization strips ANSI and control chars via
-   `sanitizeTerminalInlineText`. The title (row 1) gets a brief warm
+   an explicit `attentionMessage` first, then `statusNote` (`done: …` in the
+   settled tier), then `session.summary` / `session.goal`. Raw
+   `lastOutputPreview` remains available to search and needs-input/stale
+   detection but is not row copy. Sanitization strips ANSI and control chars
+   via `sanitizeTerminalInlineText`. The title (row 1) gets a brief warm
    accent-tinted highlight whenever its displayed text changes — e.g. when
    the deterministic/seed name is replaced by the background AI name —
    skipped on first mount.
@@ -213,16 +216,20 @@ Cards in the multi-selection set (`isMultiSelected`) reuse the same
 accent and add a subtle ring so shift / meta click selection reads
 clearly even when the primary single-selection points elsewhere.
 
-A small amber warning pip with a tooltip appears next to the title
-when `getStaleRunningCliSessionAgeHours(session)` returns a value —
-i.e. the session is still `running`, is not chat-typed, is not a
-run-owned shell, and has been *idle* (no new output) for at least 24
-hours. Idleness is measured from the session's last activity
-(`lastActivityAt`, sourced from `terminal_sessions.last_output_at`),
-falling back to `startedAt` when no output has been recorded — so an
-old session that is still actively producing output is never flagged,
-only genuinely untouched ones are. The tooltip reports the rounded
-idle age so the user can decide whether to close it.
+`sessionCapsuleBadge()` renders only three interrupt-relevant facts next to the
+title: amber `Needs you`, red `Failed`, or outlined `Stale` with a clock.
+Stale means a still-running session with a real `lastActivityAt` at least three
+hours old; it remains in Running and is not automatically settled. Ready chats
+and idle CLIs sit in Your move without a capsule. This is the two-tier
+attention contract: the list keeps quiet resting work visible, while only
+canonical `needs_you` contributes to the Work-tab highlight, notifications, and
+Dock badge.
+
+This lifecycle capsule is distinct from the amber process-cleanup warning pip.
+`getStaleRunningCliSessionAgeHours(session)` flags non-chat, non-run-owned
+CLI/shell processes only after 24 hours without output and powers both the
+inline cleanup hint and the AppShell toast. It can coexist with the canonical
+three-hour `Stale` capsule.
 
 ## Work view: `WorkViewArea.tsx`
 
@@ -670,10 +677,13 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
 
 Right-click menu with branches per session type:
 
-- Chat: Rename (inline text input, sets `manuallyNamed: true`), Set tag…
-  (Claude only), Delete, archive/restore, Go to lane, Copy session ID.
-- PTY: Stop runtime (dispatches `ptyDispose`), Go to lane, Copy
-  session ID.
+- All rows: Rename (inline text input, sets `manuallyNamed: true`), Go to lane,
+  Copy session ID, and optional pin/deeplink/grid actions supplied by the
+  parent.
+- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest, and
+  Delete chat.
+- PTY: Stop runtime / Stop & delete while running, Delete session after exit,
+  and Settle/Unsettle when the runtime is not actively working.
 
 The rename input uses a local state and submits via
 `sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble
@@ -708,7 +718,8 @@ A single hook that owns a lot of state:
   would otherwise clobber the optimistic attachment, leaving the new
   `TerminalView` unable to subscribe to live PTY data
 - per-project work view state (open items, active/selected, view mode,
-  draft kind, filters, organization, collapsed IDs, focus-hidden flag)
+  draft kind, filters, `showSettled`, organization, collapsed IDs,
+  focus-hidden flag)
 - lane-scoped work view state keyed as `projectRoot::laneId`
 - persistence to `localStorage` under `ade.workViewState.v1`, written on
   every mutation
@@ -805,7 +816,9 @@ nothing when no delta is available.
   `preferredSessionLabel`, `shortToolTypeLabel`, `isChatToolType`,
   `isRunOwnedSession`, `buildOptimisticChatSessionSummary`.
 - `apps/desktop/src/renderer/lib/terminalAttention.ts` —
-  `sessionStatusDot`, `sessionIndicatorState`, `sessionCapsuleBadge`,
+  `canonicalInputFromSummary`, `sessionCanonicalUiState`,
+  `sessionStatusBucket`, `sessionStatusDot`, `sessionCapsuleBadge`,
+  `sessionNeedsYou`, `summarizeTerminalAttention`,
   `sessionInlineStatusLabel`, `sanitizeTerminalInlineText`.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` —
   `listSessionsCached`, `invalidateSessionListCache`. Normal reads coalesce;
@@ -826,6 +839,14 @@ nothing when no delta is available.
 - The session list cache is per `projectRoot + laneId + statusFilter`.
   Events that should update all views (e.g. a new chat session) should
   call `invalidateSessionListCache()` before the first `refresh()`.
+- Do not infer “loud” from the Your move bucket. That bucket deliberately mixes
+  deterministic `needs_you` with quiet `ready`/`idle`; use
+  `sessionNeedsYou()` or `summarizeTerminalAttention()` for badges,
+  notifications, or interruption.
+- Do not clear `settledAt` on assistant output from a chat that just declared
+  itself done. Chat settle is cleared at the next user turn; only PTY output
+  clears settle on activity. Scheduled/background chat wakes temporarily render
+  Running and return to Settled when idle.
 - Refresh ordering for launches — use the synchronous `ptyCreate` /
   chat-create result to `openSessionTab` before the background forced
   refresh, then merge any stale persisted row with the optimistic row.

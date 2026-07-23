@@ -2405,14 +2405,19 @@ const SCOPED_CHAT_ACTIONS = new Set([
   "getScheduledWorkState",
   "cancelScheduledWork",
   "setScheduledWorkPaused",
+  "requestSessionAttention",
+  "setSessionStatusNote",
+  "settleSelfSession",
+  "unsettleSelfSession",
 ]);
 
 function scopeChatAdeActionArgs(
   session: SessionState,
   action: string,
   chatArgs: Record<string, unknown>,
+  domain: "chat" | "session" = "chat",
 ): Record<string, unknown> {
-  const method = `run_ade_action:chat.${action}`;
+  const method = `run_ade_action:${domain}.${action}`;
   if (!SCOPED_CHAT_ACTIONS.has(action)) return chatArgs;
   if (isUnboundAdeCliCaller(session)) return chatArgs;
 
@@ -3507,6 +3512,17 @@ async function runTool(args: {
         session,
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (
+      !callerIsCto
+      && domain === "session"
+      && SCOPED_CHAT_ACTIONS.has(action)
+    ) {
+      scopedObjectArgs = scopeChatAdeActionArgs(
+        session,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+        "session",
       );
     } else if (!callerIsCto && domain === "search" && action === "query") {
       scopedObjectArgs = scopeSearchAdeActionArgs(

@@ -10,6 +10,7 @@ import type {
   SubagentSnapshot,
 } from "../types";
 import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
+import type { TuiChatSessionSummary } from "../adeApi";
 import { theme } from "../theme";
 import {
   externalSessionActionKey,
@@ -199,6 +200,15 @@ export function computeLaneChatCounts(
   let closed = 0;
   let killed = 0;
   for (const session of laneSessions) {
+    const lifecycle = session as TuiChatSessionSummary;
+    if (lifecycle.lastTurnFailedAt) {
+      killed += 1;
+      continue;
+    }
+    if (lifecycle.settledAt && session.status !== "active") {
+      closed += 1;
+      continue;
+    }
     if (session.status === "active" || session.status === "idle") {
       active += 1;
       continue;

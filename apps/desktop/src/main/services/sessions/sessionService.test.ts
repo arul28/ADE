@@ -1254,4 +1254,167 @@ describe("sessionService resume metadata", () => {
 
     activeDisposers.push(async () => db.close());
   });
+
+  it("settles idempotently, records an outcome, clears attention, and unsets", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-settle-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-settle",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Settle me",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-settle.log",
+      toolType: "codex-chat",
+    });
+
+    service.requestAttention("session-settle", "Need a decision");
+    service.settleSession("session-settle", {
+      outcome: "  Shipped the fix  ",
+      settledAt: "2026-03-17T01:00:00.000Z",
+    });
+    service.settleSession("session-settle", {
+      outcome: "   ",
+      settledAt: "2026-03-17T02:00:00.000Z",
+    });
+
+    expect(service.get("session-settle")).toEqual(expect.objectContaining({
+      settledAt: "2026-03-17T01:00:00.000Z",
+      statusNote: "Shipped the fix",
+      attentionRequestedAt: null,
+      attentionMessage: null,
+    }));
+
+    service.unsettleSession("session-settle");
+    expect(service.get("session-settle")?.settledAt).toBeNull();
+  });
+
+  it("bulk settles only rows that were not already settled", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-settle-many-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    for (const sessionId of ["session-settled", "session-new", "session-other"]) {
+      service.create({
+        sessionId,
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: sessionId,
+        startedAt: "2026-03-17T00:10:00.000Z",
+        transcriptPath: `/tmp/${sessionId}.log`,
+        toolType: "shell",
+      });
+    }
+    service.settleSession("session-settled", { settledAt: "2026-03-17T01:00:00.000Z" });
+
+    expect(service.settleSessions([
+      "session-settled",
+      "session-new",
+      "session-new",
+      "missing-session",
+    ])).toEqual(["session-new"]);
+    expect(service.get("session-settled")?.settledAt).toBe("2026-03-17T01:00:00.000Z");
+    expect(service.get("session-new")?.settledAt).not.toBeNull();
+    expect(service.get("session-other")?.settledAt).toBeNull();
+  });
+
+  it("normalizes status and attention text and clears turn-start markers", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-markers-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-markers",
+      laneId: "lane-1",
+      ptyId: null,
+      tracked: true,
+      title: "Marker session",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-markers.log",
+      toolType: "claude-chat",
+    });
+
+    service.setStatusNote("session-markers", `  ${"n".repeat(210)}  `);
+    expect(service.get("session-markers")?.statusNote).toBe("n".repeat(200));
+    service.setStatusNote("session-markers", "   ");
+    expect(service.get("session-markers")?.statusNote).toBeNull();
+
+    service.settleSession("session-markers", { settledAt: "2026-03-17T01:00:00.000Z" });
+    service.requestAttention("session-markers", `  ${"a".repeat(510)}  `);
+    expect(service.get("session-markers")).toEqual(expect.objectContaining({
+      settledAt: null,
+      attentionMessage: "a".repeat(500),
+    }));
+
+    db.run(
+      `
+        update terminal_sessions
+        set settled_at = ?,
+            attention_requested_at = ?,
+            attention_message = ?,
+            last_turn_failed_at = ?
+        where id = ?
+      `,
+      [
+        "2026-03-17T01:00:00.000Z",
+        "2026-03-17T01:01:00.000Z",
+        "Need help",
+        "2026-03-17T01:02:00.000Z",
+        "session-markers",
+      ],
+    );
+    service.clearTurnStartMarkers("session-markers");
+    expect(service.get("session-markers")).toEqual(expect.objectContaining({
+      settledAt: null,
+      attentionRequestedAt: null,
+      attentionMessage: null,
+      lastTurnFailedAt: null,
+    }));
+  });
+
+  it("clears settled state at both PTY output activity write sites", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-output-");
+    const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
+    activeDisposers.push(async () => db.close());
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+    service.create({
+      sessionId: "session-output",
+      laneId: "lane-1",
+      ptyId: "pty-output",
+      tracked: true,
+      title: "Output session",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: "/tmp/session-output.log",
+      toolType: "codex",
+    });
+
+    // Chat preview writes (no clearSettled) must PRESERVE a declared settle —
+    // an agent's own final assistant text would otherwise undo its
+    // `ade chat settle`. Only PTY-layer activity un-settles.
+    service.settleSession("session-output", { settledAt: "2026-03-17T00:30:00.000Z" });
+    service.setLastOutputPreview("session-output", "final assistant text");
+    expect(service.get("session-output")?.settledAt).toBe("2026-03-17T00:30:00.000Z");
+
+    service.setLastOutputPreview("session-output", "working", { clearSettled: true });
+    expect(service.get("session-output")?.settledAt).toBeNull();
+
+    service.settleSession("session-output", { settledAt: "2026-03-17T02:00:00.000Z" });
+    service.touchSessionActivity("session-output", "2026-03-17T02:01:00.000Z");
+    expect(service.get("session-output")?.settledAt).toBeNull();
+
+    // A turn failure un-settles: the declared outcome is in doubt, and keeping
+    // the markers mutually exclusive lets every surface agree on precedence.
+    service.settleSession("session-output", { settledAt: "2026-03-17T03:00:00.000Z" });
+    service.markLastTurnFailed("session-output", "2026-03-17T03:05:00.000Z");
+    expect(service.get("session-output")?.settledAt).toBeNull();
+    expect(service.get("session-output")?.lastTurnFailedAt).toBe("2026-03-17T03:05:00.000Z");
+  });
 });

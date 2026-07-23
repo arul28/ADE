@@ -1,5 +1,6 @@
 import type { AgentChatScheduledWorkState, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { ChatTerminalSession } from "../../../desktop/src/shared/types/sessions";
+import type { TuiChatTerminalSession, TuiSessionLifecycleFields } from "./adeApi";
 import { formatRelativePastTime } from "./relativeTime";
 import { theme } from "./theme";
 import type { AdeCodeProvider } from "./types";
@@ -10,7 +11,7 @@ export type ClosedCliSessionSummary = AgentChatSessionSummary & {
   terminalStatus?: ChatTerminalSession["status"];
   terminalExitCode?: ChatTerminalSession["exitCode"];
   terminalRuntimeState?: ChatTerminalSession["runtimeState"];
-};
+} & TuiSessionLifecycleFields;
 
 export type DrawerChatAction = "new-chat" | "closed-toggle";
 
@@ -58,6 +59,7 @@ export function terminalSessionToChatSummary(
   session: ChatTerminalSession,
   scheduledWorkState?: AgentChatScheduledWorkState | null,
 ): ClosedCliSessionSummary {
+  const lifecycle = session as TuiChatTerminalSession;
   const status: AgentChatSessionSummary["status"] = session.status === "running"
     ? session.runtimeState === "idle" ? "idle" : "active"
     : "ended";
@@ -73,7 +75,7 @@ export function terminalSessionToChatSummary(
     status,
     startedAt: session.startedAt,
     endedAt: session.endedAt,
-    lastActivityAt: session.endedAt ?? session.startedAt,
+    lastActivityAt: lifecycle.lastActivityAt ?? session.endedAt ?? session.startedAt,
     lastOutputPreview: session.lastOutputPreview,
     summary: session.summary,
     nextWakeAt: scheduledWorkState?.nextWakeAt ?? null,
@@ -89,6 +91,11 @@ export function terminalSessionToChatSummary(
     terminalStatus: session.status,
     terminalExitCode: session.exitCode,
     terminalRuntimeState: session.runtimeState,
+    settledAt: lifecycle.settledAt ?? null,
+    statusNote: lifecycle.statusNote ?? null,
+    attentionRequestedAt: lifecycle.attentionRequestedAt ?? null,
+    attentionMessage: lifecycle.attentionMessage ?? null,
+    lastTurnFailedAt: lifecycle.lastTurnFailedAt ?? null,
   };
 }
 

@@ -1,5 +1,6 @@
 export const IPC = {
   appPing: "ade.app.ping",
+  appSetDockBadgeCount: "ade.app.setDockBadgeCount",
   appGetInfo: "ade.app.getInfo",
   appGetResourceUsage: "ade.app.getResourceUsage",
   appGetRuntimeHealth: "ade.app.getRuntimeHealth",
@@ -200,6 +201,10 @@ export const IPC = {
   sessionsGet: "ade.sessions.get",
   sessionsDelete: "ade.sessions.delete",
   sessionsUpdateMeta: "ade.sessions.updateMeta",
+  sessionsSettle: "ade.sessions.settle",
+  sessionsUnsettle: "ade.sessions.unsettle",
+  sessionsSettleMany: "ade.sessions.settleMany",
+  sessionsUnsettleMany: "ade.sessions.unsettleMany",
   sessionsChanged: "ade.sessions.changed",
   sessionsReadTranscriptTail: "ade.sessions.readTranscriptTail",
   agentChatList: "ade.agentChat.list",

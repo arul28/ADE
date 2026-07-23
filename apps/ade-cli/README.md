@@ -399,6 +399,10 @@ ade chat create --lane lane-id --provider codex --no-parent   # spawned chats de
 ade chat read session-id --limit 20 --text
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
+ade chat note "running e2e shard 2/4"                       # update the caller's Work sidebar status; add --session <id> to target explicitly
+ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
+ade chat settle --outcome "opened PR #841, CI green"       # mark the caller settled; add --session <id> to target explicitly
+ade chat unsettle                                           # return the caller to the active lifecycle; add --session <id> to target explicitly
 ade chat schedules session-id --pause              # pause this agent session's durable wakeups/cron/loops (omit flag to inspect, --resume to re-arm)
 ade chat scheduled-work list [session-id] --all     # list durable jobs; --all includes recent terminal history
 ade chat scheduled-work create --in 12m --prompt "Check CI and report" --reason "CI check" --session session-id              # safest one-shot form; omit --session inside the bound agent

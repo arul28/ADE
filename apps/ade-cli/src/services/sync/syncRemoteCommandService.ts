@@ -3304,7 +3304,17 @@ function sessionStatusBucket(argsIn: {
   status: string;
   lastOutputPreview: string | null | undefined;
   runtimeState?: string | null;
+  settledAt?: string | null;
+  attentionRequestedAt?: string | null;
+  lastTurnFailedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
+  // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
+  // an escalated ask outranks everything; a declared settle is the quiet
+  // bucket but only AT REST (background wakes count as running); a dead chat
+  // turn is not running.
+  if (argsIn.attentionRequestedAt) return "awaiting-input";
+  if (argsIn.settledAt && (argsIn.status !== "running" || argsIn.runtimeState === "idle")) return "ended";
+  if (argsIn.lastTurnFailedAt) return "ended";
   if (argsIn.status === "running") {
     if (argsIn.runtimeState === "waiting-input") return "awaiting-input";
     const preview = argsIn.lastOutputPreview ?? "";

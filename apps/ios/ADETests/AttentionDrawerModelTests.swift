@@ -47,7 +47,7 @@ final class AttentionDrawerModelTests: XCTestCase {
             awaitingInput: true,
             lastActivityAt: now,
             elapsedSeconds: 30,
-            preview: nil,
+            preview: "Choose the release target",
             pendingInputItemId: "pending-approval-1",
             progress: nil,
             phase: nil,
@@ -141,7 +141,7 @@ final class AttentionDrawerModelTests: XCTestCase {
         XCTAssertEqual(awaiting?.sessionId, "s-awaiting")
         XCTAssertEqual(awaiting?.itemId, "pending-approval-1")
         XCTAssertEqual(awaiting?.deepLink, URL(string: "ade://session/s-awaiting"))
-        XCTAssertEqual(awaiting?.subtitle, "Approval needed")
+        XCTAssertEqual(awaiting?.subtitle, "Choose the release target")
 
         let ci = model.items.first(where: { $0.kind == .ciFailing })
         XCTAssertEqual(ci?.prNumber, 412)
