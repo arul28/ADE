@@ -66,6 +66,13 @@ export function IntegrationBannerHost({
   const [appStatusLoaded, setAppStatusLoaded] = useState(false);
   const mountedRef = useRef(true);
   const seqRef = useRef(0);
+  // Bind a completed App-status read to the project it was for. On a direct
+  // project switch the reset effect runs after React has already painted with
+  // the new `currentProjectRoot` but the previous project's appInstall/appAuth;
+  // gating on loadedRoot === currentProjectRoot prevents that stale one-frame flash.
+  const currentRootRef = useRef<string | null>(currentProjectRoot);
+  currentRootRef.current = currentProjectRoot;
+  const [loadedRoot, setLoadedRoot] = useState<string | null>(null);
 
   // Fetch the two independent GitHub App axes (per-repo install + account token).
   // Mirrors GitHubAppInstallPanel.loadStatus: read auth AFTER the install check,
@@ -92,7 +99,10 @@ export function IntegrationBannerHost({
       if (!isCurrent()) return;
       setAppAuth(null);
     }
-    if (isCurrent()) setAppStatusLoaded(true);
+    if (isCurrent()) {
+      setLoadedRoot(currentRootRef.current);
+      setAppStatusLoaded(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -151,10 +161,10 @@ export function IntegrationBannerHost({
   const { clear: clearDismissal } = dismissals;
   useEffect(() => {
     if (!currentProjectRoot) return;
-    if (appStatusLoaded) {
+    if (appStatusLoaded && loadedRoot === currentProjectRoot) {
       const account = deriveGithubAccountAuthState(appAuth);
       const repo = deriveGithubRepoConnectionState(appInstall);
-      if (account === "valid") clearDismissal(`github-app-account:${currentProjectRoot}`);
+      if (account === "valid") clearDismissal("github-app-account");
       if (repo === "connected") {
         const repoKey = appInstall?.repo ? `${appInstall.repo.owner}/${appInstall.repo.name}` : currentProjectRoot;
         clearDismissal(`github-app-repo:${repoKey}`);
@@ -175,14 +185,17 @@ export function IntegrationBannerHost({
     providerMode,
     aiMockProvider,
     clearDismissal,
+    loadedRoot,
   ]);
 
   const models = useMemo<BannerModel[]>(() => {
     const list: BannerModel[] = [];
 
-    // 1) GitHub App real-time block (NEW). Only once a real read has landed, so an
-    // unloaded/absent API never masquerades as "not authorized".
-    if (appStatusLoaded && currentProjectRoot) {
+    // 1) GitHub App real-time block (NEW). Only once a real read has landed FOR
+    // the current project (loadedRoot === currentProjectRoot), so an unloaded/
+    // absent API never masquerades as "not authorized" and a project switch
+    // can't paint the previous repo's state.
+    if (appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot) {
       const account = deriveGithubAccountAuthState(appAuth);
       const repo = deriveGithubRepoConnectionState(appInstall);
       const block = deriveGithubRealtimeBlock(account, repo);
@@ -200,7 +213,10 @@ export function IntegrationBannerHost({
               onClick: () => navigate(GITHUB_CONNECTION_SETTINGS_ROUTE),
             },
           ],
-          dismiss: { key: `github-app-account:${currentProjectRoot}`, fingerprint: block.account },
+          // Account (App user-token) auth is machine/account-wide, so its dismiss
+          // key is global — a per-project key would leave a stale dismissal in one
+          // project suppressing the same account warning after a cross-project regress.
+          dismiss: { key: "github-app-account", fingerprint: block.account },
         });
       } else if (block?.kind === "repo") {
         const repoLabel = appInstall?.repo ? `${appInstall.repo.owner}/${appInstall.repo.name}` : null;
@@ -299,6 +315,7 @@ export function IntegrationBannerHost({
     aiMockProvider,
     navigate,
     loadAppStatus,
+    loadedRoot,
   ]);
 
   const active = useMemo(() => {
