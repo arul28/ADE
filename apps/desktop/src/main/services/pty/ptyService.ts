@@ -3385,7 +3385,7 @@ export function createPtyService({
     if (!candidate) return;
     if (candidate === entry.lastPreviewWritten) return;
     entry.lastPreviewWritten = candidate;
-    sessionService.setLastOutputPreview(entry.sessionId, candidate);
+    sessionService.setLastOutputPreview(entry.sessionId, candidate, { clearSettled: true });
   };
 
   const updatePreviewThrottled = (entry: PtyEntry, chunk: string) => {

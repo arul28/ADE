@@ -11797,6 +11797,11 @@ export function createAgentChatService(args: {
       reportChildSpawnEnded(managed.session.id, normalizedEvent.status);
       if (normalizedEvent.status === "failed") {
         sessionService.markLastTurnFailed(managed.session.id);
+      } else if (normalizedEvent.status === "completed") {
+        // A later successful turn supersedes an earlier failure — without
+        // this, background/scheduled chats that hit one transient error would
+        // show red forever (only user sends clear turn-start markers).
+        sessionService.clearLastTurnFailed(managed.session.id);
       }
     }
 
@@ -15583,14 +15588,15 @@ export function createAgentChatService(args: {
 
   /**
    * Apply a TaskCreate/TaskUpdate/TodoWrite tool input to the runtime task
-   * tracker and emit todo_update — the idle-turn twin of the foreground
-   * `maybeEmitTodoUpdate` (ADE-130). Applies at most once per tool_use; safe
-   * to call from both the streamed content_block_stop path (full input after
-   * deltas) and the final assistant-message path (whichever sees the full
-   * input first wins; empty-input passes are no-ops the dedupe ignores).
+   * tracker and emit todo_update — shared by the foreground turn handler and
+   * the idle/background reader (ADE-130). Applies at most once per tool_use
+   * (tracked in the caller's `seen` set); safe to call from both the streamed
+   * content_block_stop path (full input after deltas) and the final
+   * assistant-message path — whichever sees the full input first wins, and
+   * empty-input passes are no-ops the dedupe never latches.
    */
-  const maybeEmitIdleTodoUpdate = (
-    state: ClaudeIdleTurnState,
+  const applyClaudeTodoToolUpdate = (
+    seen: Set<string>,
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     toolName: string,
@@ -15598,12 +15604,12 @@ export function createAgentChatService(args: {
     itemId: string,
     turnId: string,
   ): void => {
-    if (state.emittedTodoToolIds.has(itemId)) return;
+    if (seen.has(itemId)) return;
     const todoItems = toolName === "TodoWrite"
       ? normalizeClaudeTodoItems(input ?? {})
       : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, input ?? {}, itemId);
     if (!todoItems) return;
-    state.emittedTodoToolIds.add(itemId);
+    seen.add(itemId);
     emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
   };
 
@@ -16372,9 +16378,9 @@ export function createAgentChatService(args: {
           // the streamed content_block path registers the itemId first with
           // EMPTY input, and the full input only exists here on the final
           // assistant message — gating the tracker on first-emission silently
-          // dropped every background-turn TaskUpdate. maybeEmitIdleTodoUpdate
+          // dropped every background-turn TaskUpdate. applyClaudeTodoToolUpdate
           // has its own apply-once dedupe.
-          maybeEmitIdleTodoUpdate(state, managed, runtime, toolName, block.input, itemId, turnId);
+          applyClaudeTodoToolUpdate(state.emittedTodoToolIds, managed, runtime, toolName, block.input, itemId, turnId);
         }
       }
       const usage = asRecord(betaMessage?.usage);
@@ -16521,7 +16527,7 @@ export function createAgentChatService(args: {
         // input — apply TaskCreate/TaskUpdate/TodoWrite to the tracker here.
         // Background-turn completions previously never reached the tracker,
         // freezing the TASKS pane at a prefix of the stream.
-        maybeEmitIdleTodoUpdate(state, managed, runtime, meta.toolName, parsed, meta.itemId, turnId);
+        applyClaudeTodoToolUpdate(state.emittedTodoToolIds, managed, runtime, meta.toolName, parsed, meta.itemId, turnId);
       }
       return;
     }
@@ -17000,13 +17006,7 @@ export function createAgentChatService(args: {
       }
     };
     const maybeEmitTodoUpdate = (toolName: string, input: unknown, itemId: string): void => {
-      if (emittedClaudeTodoIds.has(itemId)) return;
-      const todoItems = toolName === "TodoWrite"
-        ? normalizeClaudeTodoItems(input ?? {})
-        : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, input ?? {}, itemId);
-      if (!todoItems) return;
-      emittedClaudeTodoIds.add(itemId);
-      emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
+      applyClaudeTodoToolUpdate(emittedClaudeTodoIds, managed, runtime, toolName, input, itemId, turnId);
     };
     let timeoutError: Error | null = null;
     const buildDoneModelPayload = (): { model: string; modelId?: string } =>
@@ -32700,7 +32700,20 @@ export function createAgentChatService(args: {
         return;
       }
     }
+    // A user-originated message clears the lifecycle markers (settled /
+    // attention / turn-failure) whether it starts a fresh turn OR steers an
+    // active one — the user has engaged either way. Scheduled wakes are NOT
+    // user activity (they must leave a declared settle intact so the session
+    // re-settles at rest after the wake), and empty no-op sends that never
+    // dispatch must not un-settle either — so this runs only on the two paths
+    // that actually deliver the message.
+    const clearUserTurnMarkers = (): void => {
+      if (!args.metadata?.scheduledWake) {
+        sessionService.clearTurnStartMarkers(args.sessionId);
+      }
+    };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
+      clearUserTurnMarkers();
       return steer({
         sessionId: args.sessionId,
         text: args.text,
@@ -32716,8 +32729,8 @@ export function createAgentChatService(args: {
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const prepared = options?.preparedMessage ?? prepareSendMessage(args);
     if (!prepared) return;
+    clearUserTurnMarkers();
     prepared.managed.lastActivityTimestamp = Date.now();
-    sessionService.clearTurnStartMarkers(prepared.managed.session.id);
     let rejectDispatch: ((error: Error) => void) | null = null;
     const dispatchPromise = options?.awaitDispatch || options?.awaitBackendDispatch
       ? new Promise<void>((resolve, reject) => {

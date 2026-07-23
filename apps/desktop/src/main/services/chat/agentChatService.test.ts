@@ -1332,6 +1332,7 @@ function createMockSessionService() {
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
     markLastTurnFailed: vi.fn(),
+    clearLastTurnFailed: vi.fn(),
     setSummary: vi.fn(),
     setResumeCommand: vi.fn((sessionId: string, resumeCommand: string | null) => {
       const row = sessions.get(sessionId);

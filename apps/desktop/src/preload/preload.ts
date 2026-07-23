@@ -5293,15 +5293,38 @@ contextBridge.exposeInMainWorld("ade", {
       sessionId: string,
       opts?: { outcome?: string },
     ): Promise<void> => {
-      await ipcRenderer.invoke(IPC.sessionsSettle, { sessionId, opts });
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "settleSelfSession",
+        { args: { sessionId, ...(opts?.outcome ? { outcome: opts.outcome } : {}) } },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsSettle, { sessionId, opts });
     },
     unsettle: async (sessionId: string): Promise<void> => {
-      await ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId });
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "unsettleSelfSession",
+        { args: { sessionId } },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId });
     },
-    settleMany: async (sessionIds: string[]): Promise<string[]> =>
-      ipcRenderer.invoke(IPC.sessionsSettleMany, { sessionIds }),
+    settleMany: async (sessionIds: string[]): Promise<string[]> => {
+      const runtime = await callProjectRuntimeActionIfBound<string[]>(
+        "session",
+        "settleSessions",
+        { args: { sessionIds } },
+      );
+      return runtime.handled
+        ? runtime.result ?? []
+        : ipcRenderer.invoke(IPC.sessionsSettleMany, { sessionIds });
+    },
     unsettleMany: async (sessionIds: string[]): Promise<void> => {
-      await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
+      const runtime = await callProjectRuntimeActionIfBound<unknown>(
+        "session",
+        "unsettleSessions",
+        { args: { sessionIds } },
+      );
+      if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsUnsettleMany, { sessionIds });
     },
     readTranscriptTail: async (
       args: ReadTranscriptTailArgs,

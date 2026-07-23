@@ -618,7 +618,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "requestSessionAttention",
     "setSessionStatusNote",
     "settleSelfSession",
+    "settleSessions",
     "unsettleSelfSession",
+    "unsettleSessions",
     "updateMeta",
   ],
   operation: ["finish", "get", "list", "start"],
@@ -1711,6 +1713,24 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         throw new Error(`Session '${sessionId}' was not found.`);
       }
       return { ok: true, sessionId };
+    },
+    // Bulk settle/unsettle for renderer surfaces on remote-bound projects
+    // (mirrors deleteSession's generic trust posture; the *SelfSession pair
+    // stays caller-scoped for env-bound agents).
+    settleSessions: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.settleSessions");
+      const sessionIds = Array.isArray(record.sessionIds)
+        ? record.sessionIds.filter((id): id is string => typeof id === "string")
+        : [];
+      return sessionService.settleSessions(sessionIds);
+    },
+    unsettleSessions: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.unsettleSessions");
+      const sessionIds = Array.isArray(record.sessionIds)
+        ? record.sessionIds.filter((id): id is string => typeof id === "string")
+        : [];
+      sessionService.unsettleSessions(sessionIds);
+      return { ok: true };
     },
     deleteSession: (arg?: { sessionId?: string } | string) => {
       const sessionId = typeof arg === "string"

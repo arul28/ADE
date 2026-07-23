@@ -308,6 +308,23 @@ function normalizeOptionalText(value: unknown, maxChars: number): string | null 
 export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
+  /**
+   * Shared skeleton for the single-session lifecycle mutators: trim, existence
+   * probe, run the update, broadcast. Keeps every SQL literal at its call site.
+   */
+  const mutateSessionMeta = (sessionId: string, run: (id: string) => void): boolean => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return false;
+    const existing = db.get<{ present: number }>(
+      "select 1 as present from terminal_sessions where id = ? limit 1",
+      [trimmed],
+    );
+    if (!existing) return false;
+    run(trimmed);
+    emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    return true;
+  };
+
   const emitChanged = (event: TerminalSessionChangedEvent): void => {
     for (const listener of changeListeners) {
       try {
@@ -1077,9 +1094,18 @@ export function createSessionService({ db }: { db: AdeDb }) {
       db.run("update terminal_sessions set head_sha_end = ? where id = ?", [sha, sessionId]);
     },
 
-    setLastOutputPreview(sessionId: string, preview: string): void {
+    /**
+     * PTY output un-settles (`clearSettled: true` from the PTY layer): a live
+     * process producing output is not "done". Chat previews must NOT pass it —
+     * an agent's own final assistant text would otherwise undo the settle it
+     * just declared via `ade chat settle`; chat settles are cleared only by a
+     * user turn start (clearTurnStartMarkers).
+     */
+    setLastOutputPreview(sessionId: string, preview: string, opts?: { clearSettled?: boolean }): void {
       db.run(
-        "update terminal_sessions set last_output_preview = ?, last_output_at = ?, settled_at = null where id = ?",
+        opts?.clearSettled
+          ? "update terminal_sessions set last_output_preview = ?, last_output_at = ?, settled_at = null where id = ?"
+          : "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
         [preview, new Date().toISOString(), sessionId]
       );
     },
@@ -1089,6 +1115,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
      * layer record that a session is still producing output even when the
      * derived preview line is blank or unchanged (spinners, repeated status
      * lines), so the stale-session detector does not treat live work as idle.
+     * PTY-only, so live output also un-settles (see setLastOutputPreview).
      */
     touchSessionActivity(sessionId: string, at: string = new Date().toISOString()): void {
       db.run(
@@ -1179,54 +1206,40 @@ export function createSessionService({ db }: { db: AdeDb }) {
       sessionId: string,
       opts: { outcome?: string | null; settledAt?: string } = {},
     ): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
       const settledAt = normalizeIsoTimestamp(opts.settledAt) ?? new Date().toISOString();
       const outcome = normalizeOptionalText(opts.outcome, 200);
-      if (outcome) {
-        db.run(
-          `
-            update terminal_sessions
-            set settled_at = coalesce(settled_at, ?),
-                status_note = ?,
-                attention_requested_at = null,
-                attention_message = null
-            where id = ?
-          `,
-          [settledAt, outcome, trimmed],
-        );
-      } else {
-        db.run(
-          `
-            update terminal_sessions
-            set settled_at = coalesce(settled_at, ?),
-                attention_requested_at = null,
-                attention_message = null
-            where id = ?
-          `,
-          [settledAt, trimmed],
-        );
-      }
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
+      return mutateSessionMeta(sessionId, (id) => {
+        if (outcome) {
+          db.run(
+            `
+              update terminal_sessions
+              set settled_at = coalesce(settled_at, ?),
+                  status_note = ?,
+                  attention_requested_at = null,
+                  attention_message = null
+              where id = ?
+            `,
+            [settledAt, outcome, id],
+          );
+        } else {
+          db.run(
+            `
+              update terminal_sessions
+              set settled_at = coalesce(settled_at, ?),
+                  attention_requested_at = null,
+                  attention_message = null
+              where id = ?
+            `,
+            [settledAt, id],
+          );
+        }
+      });
     },
 
     unsettleSession(sessionId: string): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run("update terminal_sessions set settled_at = null where id = ?", [trimmed]);
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run("update terminal_sessions set settled_at = null where id = ?", [id]);
+      });
     },
 
     settleSessions(sessionIds: string[]): string[] {
@@ -1277,96 +1290,68 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     setStatusNote(sessionId: string, note: string | null): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run(
-        "update terminal_sessions set status_note = ? where id = ?",
-        [normalizeOptionalText(note, 200), trimmed],
-      );
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          "update terminal_sessions set status_note = ? where id = ?",
+          [normalizeOptionalText(note, 200), id],
+        );
+      });
     },
 
     requestAttention(sessionId: string, message: string | null): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run(
-        `
-          update terminal_sessions
-          set attention_requested_at = ?,
-              attention_message = ?,
-              settled_at = null
-          where id = ?
-        `,
-        [new Date().toISOString(), normalizeOptionalText(message, 500), trimmed],
-      );
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          `
+            update terminal_sessions
+            set attention_requested_at = ?,
+                attention_message = ?,
+                settled_at = null
+            where id = ?
+          `,
+          [new Date().toISOString(), normalizeOptionalText(message, 500), id],
+        );
+      });
     },
 
     clearAttentionRequest(sessionId: string): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run(
-        "update terminal_sessions set attention_requested_at = null, attention_message = null where id = ?",
-        [trimmed],
-      );
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          "update terminal_sessions set attention_requested_at = null, attention_message = null where id = ?",
+          [id],
+        );
+      });
     },
 
     markLastTurnFailed(sessionId: string, at?: string): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run(
-        "update terminal_sessions set last_turn_failed_at = ? where id = ?",
-        [normalizeIsoTimestamp(at) ?? new Date().toISOString(), trimmed],
-      );
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          "update terminal_sessions set last_turn_failed_at = ? where id = ?",
+          [normalizeIsoTimestamp(at) ?? new Date().toISOString(), id],
+        );
+      });
+    },
+
+    /** A completed turn supersedes an earlier failure; never touches settle/attention. */
+    clearLastTurnFailed(sessionId: string): boolean {
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run("update terminal_sessions set last_turn_failed_at = null where id = ?", [id]);
+      });
     },
 
     clearTurnStartMarkers(sessionId: string): boolean {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return false;
-      const existing = db.get<{ present: number }>(
-        "select 1 as present from terminal_sessions where id = ? limit 1",
-        [trimmed],
-      );
-      if (!existing) return false;
-      db.run(
-        `
-          update terminal_sessions
-          set last_turn_failed_at = null,
-              settled_at = null,
-              attention_requested_at = null,
-              attention_message = null
-          where id = ?
-        `,
-        [trimmed],
-      );
-      emitChanged({ sessionId: trimmed, reason: "meta-updated" });
-      return true;
+      return mutateSessionMeta(sessionId, (id) => {
+        db.run(
+          `
+            update terminal_sessions
+            set last_turn_failed_at = null,
+                settled_at = null,
+                attention_requested_at = null,
+                attention_message = null
+            where id = ?
+          `,
+          [id],
+        );
+      });
     },
 
     deleteSession(sessionId: string): boolean {

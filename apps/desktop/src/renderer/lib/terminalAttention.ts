@@ -10,7 +10,6 @@ import { isChatToolType } from "./sessions";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
 export type SessionStatusFilter = "all" | "running" | "awaiting-input" | "ended" | "settled";
-export type SessionUiState = "running-active" | "running-needs-attention" | "ended";
 export type SessionStatusBucket = Exclude<SessionStatusFilter, "all">;
 
 export type LaneTerminalAttentionSummary = {
@@ -115,27 +114,23 @@ type SessionCanonicalUiInput = {
 };
 
 /**
- * Legacy tri-state view of the canonical phase. Resting chats and idle agent
- * CLIs stay "running-needs-attention" (they are your move, amber dot) — but
- * note the LOUD tier (badges/notifications/tab+dock counts) keys off canonical
- * needs_you only; this coarser view exists for callers that just need
- * green/amber/red-ish grouping.
+ * Project a session summary onto the canonical-state input — the ONE place
+ * that knows which summary fields feed the state machine, so call sites can't
+ * drift as fields are added.
  */
-export function sessionIndicatorState(args: SessionCanonicalUiInput): SessionUiState {
-  const phase = sessionCanonicalUiState(args).phase;
-  switch (phase) {
-    case "starting":
-    case "running":
-    case "stale":
-      return "running-active";
-    case "needs_you":
-    case "ready":
-      return "running-needs-attention";
-    case "idle":
-      return idleRuntimeNeedsAttention(args.toolType) ? "running-needs-attention" : "running-active";
-    default:
-      return "ended";
-  }
+export function canonicalInputFromSummary(session: TerminalSessionSummary): SessionCanonicalUiInput {
+  return {
+    status: session.status,
+    lastOutputPreview: session.lastOutputPreview,
+    runtimeState: session.runtimeState,
+    toolType: session.toolType,
+    pendingInputItemId: session.pendingInputItemId,
+    lastActivityAt: session.lastActivityAt,
+    exitCode: session.exitCode,
+    settledAt: session.settledAt,
+    attentionRequestedAt: session.attentionRequestedAt,
+    lastTurnFailedAt: session.lastTurnFailedAt,
+  };
 }
 
 export function sessionCanonicalUiState(session: SessionCanonicalUiInput): CanonicalSessionState {
@@ -279,18 +274,7 @@ export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): 
   const byLane: Record<string, { runningCount: number; activeCount: number; needsAttentionCount: number }> = {};
 
   for (const session of sessions) {
-    const phase = sessionCanonicalUiState({
-      status: session.status,
-      lastOutputPreview: session.lastOutputPreview,
-      runtimeState: session.runtimeState,
-      toolType: session.toolType,
-      pendingInputItemId: session.pendingInputItemId,
-      lastActivityAt: session.lastActivityAt,
-      exitCode: session.exitCode,
-      settledAt: session.settledAt,
-      attentionRequestedAt: session.attentionRequestedAt,
-      lastTurnFailedAt: session.lastTurnFailedAt,
-    }).phase;
+    const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
     const isLoud = phase === "needs_you";
     const isWorking = phase === "starting" || phase === "running" || phase === "stale";
     if (!isLoud && !isWorking) continue;

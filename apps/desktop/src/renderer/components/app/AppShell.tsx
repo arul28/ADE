@@ -677,10 +677,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!shouldTrackTerminalAttention) {
       setTerminalAttention(EMPTY_TERMINAL_ATTENTION);
-      if (lastDockBadgeCountRef.current !== 0) {
-        lastDockBadgeCountRef.current = 0;
-        void window.ade?.app?.setDockBadgeCount?.(0)?.catch?.(() => {});
-      }
+      // Deliberately do NOT zero the dock badge here: navigating away from
+      // Work routes doesn't resolve the sessions that need attention, and
+      // app.setBadgeCount is application-wide. The badge stays at the last
+      // known loud count until attention tracking next refreshes it.
       return;
     }
 

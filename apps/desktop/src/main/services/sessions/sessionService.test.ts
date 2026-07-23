@@ -1396,8 +1396,14 @@ describe("sessionService resume metadata", () => {
       toolType: "codex",
     });
 
-    service.settleSession("session-output", { settledAt: "2026-03-17T01:00:00.000Z" });
-    service.setLastOutputPreview("session-output", "working");
+    // Chat preview writes (no clearSettled) must PRESERVE a declared settle —
+    // an agent's own final assistant text would otherwise undo its
+    // `ade chat settle`. Only PTY-layer activity un-settles.
+    service.settleSession("session-output", { settledAt: "2026-03-17T00:30:00.000Z" });
+    service.setLastOutputPreview("session-output", "final assistant text");
+    expect(service.get("session-output")?.settledAt).toBe("2026-03-17T00:30:00.000Z");
+
+    service.setLastOutputPreview("session-output", "working", { clearSettled: true });
     expect(service.get("session-output")?.settledAt).toBeNull();
 
     service.settleSession("session-output", { settledAt: "2026-03-17T02:00:00.000Z" });

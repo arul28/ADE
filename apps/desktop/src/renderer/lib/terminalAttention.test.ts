@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   runningSessionNeedsAttention,
   sanitizeTerminalInlineText,
-  sessionIndicatorState,
   sessionNeedsChatTabHighlight,
   sessionNeedsUserInput,
   sessionStatusBucket,
@@ -13,21 +12,21 @@ describe("terminalAttention", () => {
   it("does not treat a plain shell prompt as awaiting user input", () => {
     expect(runningSessionNeedsAttention("admin@Mac test-4-6a625aeb %")).toBe(false);
     expect(
-      sessionIndicatorState({
+      sessionStatusBucket({
         status: "running",
         lastOutputPreview: "admin@Mac test-4-6a625aeb %",
       }),
-    ).toBe("running-active");
+    ).toBe("running");
   });
 
   it("still detects explicit confirmation prompts", () => {
     expect(runningSessionNeedsAttention("Confirm continue? (y/n)")).toBe(true);
     expect(
-      sessionIndicatorState({
+      sessionStatusBucket({
         status: "running",
         lastOutputPreview: "Confirm continue? (y/n)",
       }),
-    ).toBe("running-needs-attention");
+    ).toBe("awaiting-input");
   });
 
   it("removes cursor save and restore escapes from inline previews", () => {
@@ -39,41 +38,41 @@ describe("terminalAttention", () => {
   });
 
   it("treats idle chat sessions as a static ready state", () => {
-    expect(
-      sessionIndicatorState({
-        status: "running",
-        lastOutputPreview: "Completed response",
-        runtimeState: "idle",
-        toolType: "claude-chat",
-      }),
-    ).toBe("running-needs-attention");
+    const dot = sessionStatusDot({
+      status: "running",
+      lastOutputPreview: "Completed response",
+      runtimeState: "idle",
+      toolType: "claude-chat",
+    });
+    expect(dot.label).toBe("Ready");
+    expect(dot.cls).toContain("bg-amber");
   });
 
   it("treats idle AI CLI sessions as needing attention", () => {
-    expect(
-      sessionIndicatorState({
-        status: "running",
-        lastOutputPreview: "Analyzed project state",
-        runtimeState: "idle",
-        toolType: "codex",
-      }),
-    ).toBe("running-needs-attention");
+    const dot = sessionStatusDot({
+      status: "running",
+      lastOutputPreview: "Analyzed project state",
+      runtimeState: "idle",
+      toolType: "codex",
+    });
+    expect(dot.label).toBe("Idle");
+    expect(dot.cls).toContain("bg-amber");
   });
 
   it("keeps plain shell sessions active when they simply go idle", () => {
-    expect(
-      sessionIndicatorState({
-        status: "running",
-        lastOutputPreview: "admin@Mac test-4-6a625aeb %",
-        runtimeState: "idle",
-        toolType: "shell",
-      }),
-    ).toBe("running-active");
+    const dot = sessionStatusDot({
+      status: "running",
+      lastOutputPreview: "admin@Mac test-4-6a625aeb %",
+      runtimeState: "idle",
+      toolType: "shell",
+    });
+    expect(dot.label).toBe("Running");
+    expect(dot.cls).toContain("bg-emerald");
   });
 
   it("treats detached sessions as ended instead of ready chat state", () => {
     expect(
-      sessionIndicatorState({
+      sessionStatusBucket({
         status: "detached",
         lastOutputPreview: "Last preserved output",
         runtimeState: "exited",

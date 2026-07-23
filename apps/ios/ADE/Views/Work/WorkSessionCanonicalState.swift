@@ -117,9 +117,11 @@ func workCanonicalSessionState(
     return CanonicalSessionState(phase: .needsYou, badge: badgeByKind[.needsYou])
   }
 
-  // 2. Declared settle. Activity clears this column at the write site, so its
-  // presence alone is authoritative and needs no timestamp comparison here.
-  if !settled.isEmpty {
+  // 2. Declared settle — honored only AT REST, mirroring desktop: a settled
+  // chat woken by scheduled work shows green while the turn streams, then
+  // re-settles at idle (settledAt survives background wakes; only user
+  // activity clears it).
+  if !settled.isEmpty && (statusLower != "running" || runtimeLower == "idle") {
     return CanonicalSessionState(phase: .settled, badge: nil)
   }
 

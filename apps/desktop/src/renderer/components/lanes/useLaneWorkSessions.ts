@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatSession, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
-import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { canonicalInputFromSummary, sessionStatusBucket } from "../../lib/terminalAttention";
 import {
   shouldRefreshSessionListForChatEvent,
   subscribeWorkChatSessionCreated,
@@ -121,18 +121,7 @@ function arraysEqual(a: string[], b: string[]): boolean {
 }
 
 function isActiveSession(session: TerminalSessionSummary): boolean {
-  const bucket = sessionStatusBucket({
-    status: session.status,
-    lastOutputPreview: session.lastOutputPreview,
-    runtimeState: session.runtimeState,
-    toolType: session.toolType,
-    pendingInputItemId: session.pendingInputItemId,
-    lastActivityAt: session.lastActivityAt,
-    exitCode: session.exitCode,
-    settledAt: session.settledAt,
-    attentionRequestedAt: session.attentionRequestedAt,
-    lastTurnFailedAt: session.lastTurnFailedAt,
-  });
+  const bucket = sessionStatusBucket(canonicalInputFromSummary(session));
   return bucket !== "ended" && bucket !== "settled";
 }
 

@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import type { AgentChatSpawnKind, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import {
+  canonicalInputFromSummary,
   sessionStatusDot,
   sanitizeTerminalInlineText,
   sessionNeedsChatTabHighlight,
@@ -364,18 +365,7 @@ export const SessionCard = React.memo(function SessionCard({
   // Canonical one-word status capsule (Needs you / Failed / Stale). When the
   // chat-specific "Awaiting you" chip is already showing the same needs-input
   // condition, suppress the capsule so a chat card never doubles up amber pills.
-  const sessionAttentionInput = {
-    status: session.status,
-    lastOutputPreview: session.lastOutputPreview,
-    runtimeState: session.runtimeState,
-    toolType: session.toolType,
-    pendingInputItemId: session.pendingInputItemId,
-    lastActivityAt: session.lastActivityAt,
-    exitCode: session.exitCode,
-    settledAt: session.settledAt,
-    attentionRequestedAt: session.attentionRequestedAt,
-    lastTurnFailedAt: session.lastTurnFailedAt,
-  };
+  const sessionAttentionInput = canonicalInputFromSummary(session);
   const canonicalPhase = sessionCanonicalUiState(sessionAttentionInput).phase;
   const capsuleBadge = sessionCapsuleBadge(sessionAttentionInput);
   const attentionBadge =

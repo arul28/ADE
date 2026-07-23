@@ -18,7 +18,7 @@ import {
   type WorkStatusFilter,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
-import { sessionStatusBucket, sessionNeedsYou } from "../../lib/terminalAttention";
+import { canonicalInputFromSummary, sessionStatusBucket, sessionNeedsYou } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import {
   shouldRefreshSessionListForChatEvent,
@@ -262,18 +262,7 @@ export function buildWorkTabGroupModel(args: {
 
   const statusBuckets = new Map<"running" | "awaiting-input" | "ended" | "settled", TerminalSessionSummary[]>();
   for (const session of orderedSessions) {
-    const bucket = sessionStatusBucket({
-      status: session.status,
-      lastOutputPreview: session.lastOutputPreview,
-      runtimeState: session.runtimeState,
-      toolType: session.toolType,
-      pendingInputItemId: session.pendingInputItemId,
-      lastActivityAt: session.lastActivityAt,
-      exitCode: session.exitCode,
-      settledAt: session.settledAt,
-      attentionRequestedAt: session.attentionRequestedAt,
-      lastTurnFailedAt: session.lastTurnFailedAt,
-    });
+    const bucket = sessionStatusBucket(canonicalInputFromSummary(session));
     const list = statusBuckets.get(bucket) ?? [];
     list.push(session);
     statusBuckets.set(bucket, list);
@@ -1311,18 +1300,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     const ended: TerminalSessionSummary[] = [];
     const settled: TerminalSessionSummary[] = [];
     for (const session of filtered) {
-      const attentionInput = {
-        status: session.status,
-        lastOutputPreview: session.lastOutputPreview,
-        runtimeState: session.runtimeState,
-        toolType: session.toolType,
-        pendingInputItemId: session.pendingInputItemId,
-        lastActivityAt: session.lastActivityAt,
-        exitCode: session.exitCode,
-        settledAt: session.settledAt,
-        attentionRequestedAt: session.attentionRequestedAt,
-        lastTurnFailedAt: session.lastTurnFailedAt,
-      };
+      const attentionInput = canonicalInputFromSummary(session);
       const bucket = sessionStatusBucket(attentionInput);
       if (bucket === "running") running.push(session);
       else if (bucket === "awaiting-input") {
