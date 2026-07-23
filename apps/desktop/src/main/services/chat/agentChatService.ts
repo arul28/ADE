@@ -415,7 +415,10 @@ import {
   subagentAgentKey,
   subagentSnapshotsFromEvents,
 } from "../../../shared/chatSubagents";
-import { deriveBackgroundItems } from "../../../shared/chatScheduledWork";
+import {
+  deriveBackgroundItems,
+  resolveScheduledWorkTiming,
+} from "../../../shared/chatScheduledWork";
 import { readTranscriptHistoryPage, type TranscriptHistoryPageRead } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
@@ -34759,38 +34762,34 @@ export function createAgentChatService(args: {
     if (prompt.length > 4_000) {
       throw new Error("Scheduled work prompt must be 4000 characters or fewer.");
     }
-    const cron = typeof args.cron === "string" ? args.cron.trim() : "";
     const createdAt = Date.now();
-    const fireAt = nextChatScheduledCronFireAt(cron, createdAt);
-    if (fireAt == null) {
-      throw new Error("Scheduled work cron must be a valid 5-field cron expression.");
-    }
-    if (args.recurring != null && typeof args.recurring !== "boolean") {
-      throw new Error("Scheduled work recurring must be a boolean.");
-    }
     if (args.reason != null && typeof args.reason !== "string") {
       throw new Error("Scheduled work reason must be a string.");
     }
 
-    const recurring = args.recurring !== false;
+    const timing = resolveScheduledWorkTiming(args, createdAt);
+
     const reason = args.reason?.trim();
     const id = `action:${normalizedSessionId}:${randomUUID()}`;
     if (chatBacked) ensureManagedSession(normalizedSessionId);
     const schedule = await scheduledWorkScheduler.upsert({
       id,
       sessionId: normalizedSessionId,
-      kind: recurring ? "cron" : "wakeup",
+      kind: timing.kind,
       prompt,
       ...(reason ? { reason } : {}),
-      cron,
-      fireAt,
+      ...(timing.cron ? { cron: timing.cron } : {}),
+      fireAt: timing.fireAt,
       createdAt,
-      ...(recurring ? { expiresAt: createdAt + claudeRecurringCronTtlMs } : {}),
+      ...(timing.recurring ? { expiresAt: createdAt + claudeRecurringCronTtlMs } : {}),
       status: "scheduled",
       lateFlag: false,
       durable: true,
     });
-    return { item: toScheduledWorkItem(schedule) };
+    return {
+      item: toScheduledWorkItem(schedule),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    };
   };
 
   const listScheduledWork = async ({

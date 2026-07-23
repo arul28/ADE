@@ -500,15 +500,16 @@ private func workStreamingTextTailRemovingAdjacentRepeats(_ text: String) -> Str
 
 func makeWorkChatTranscript(from entries: [AgentChatTranscriptEntry], sessionId: String) -> [WorkChatEnvelope] {
   entries.map { entry in
-    let messageId = entry.messageId?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let fallbackItemId = entry.itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let itemId = messageId?.isEmpty == false ? messageId : (fallbackItemId?.isEmpty == false ? fallbackItemId : nil)
     return WorkChatEnvelope(
       sessionId: sessionId,
       timestamp: entry.timestamp,
       sequence: nil,
       event: entry.role == "assistant"
-        ? .assistantText(text: entry.text, turnId: entry.turnId, itemId: itemId)
+        ? .assistantText(
+          text: entry.text,
+          turnId: entry.turnId,
+          itemId: workAssistantMessageStableId(messageId: entry.messageId, itemId: entry.itemId)
+        )
         : .userMessage(text: entry.text, attachments: nil, turnId: entry.turnId, steerId: nil, deliveryState: nil, processed: nil)
     )
   }

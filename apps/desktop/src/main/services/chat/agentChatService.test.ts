@@ -852,7 +852,7 @@ import { mapPermissionToCodex } from "./permissionMapping";
 import { acquireCursorSdkConnection, releaseCursorSdkConnection } from "./cursorSdkPool";
 import { acquireDroidSdkConnection } from "./droidSdkPool";
 import { clearCursorCliModelsCache } from "./cursorModelsDiscovery";
-import type { AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
+import type { AgentChatCreateScheduledWorkArgs, AgentChatCrossMachineHandoffCapsule, AgentChatEventEnvelope, ComputerUseBackendStatus, LaneLinearIssue, PendingInputRequest } from "../../../shared/types";
 import { PTY_SEND_PRE_DELIVERY_ERROR_CODE } from "../../../shared/types";
 import { makeLinearIssueContextAttachment } from "../../../shared/chatContextAttachments";
 import { stableStringify } from "../shared/utils";
@@ -12780,6 +12780,18 @@ describe("createAgentChatService", () => {
         prompt: "Prepare the weekly report.",
         recurring: false,
       });
+      const relativeOneShotCreatedAt = Date.now();
+      const relativeOneShot = await service.createScheduledWork({
+        sessionId: session.id,
+        delaySeconds: 720,
+        prompt: "Check CI in twelve minutes.",
+      });
+      const absoluteRunAt = "2100-01-02T03:04:05.000-05:00";
+      const absoluteOneShot = await service.createScheduledWork({
+        sessionId: session.id,
+        runAt: absoluteRunAt,
+        prompt: "Run at an explicit instant.",
+      });
 
       expect(recurring.item).toMatchObject({
         id: `action:${session.id}:test-uuid-2`,
@@ -12791,15 +12803,33 @@ describe("createAgentChatService", () => {
         cron: "9,29,49 * * * *",
         durable: true,
       });
+      expect(recurring.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
       expect(oneShot.item).toMatchObject({
         id: `action:${session.id}:test-uuid-3`,
         kind: "wakeup",
         status: "scheduled",
         durable: true,
       });
+      expect(relativeOneShot.item).toMatchObject({
+        id: `action:${session.id}:test-uuid-4`,
+        kind: "wakeup",
+        status: "scheduled",
+        durable: true,
+      });
+      expect(Date.parse(relativeOneShot.item.nextRunAt ?? "")).toBeGreaterThanOrEqual(
+        relativeOneShotCreatedAt + 720_000,
+      );
+      expect(absoluteOneShot.item).toMatchObject({
+        id: `action:${session.id}:test-uuid-5`,
+        kind: "wakeup",
+        nextRunAt: new Date(absoluteRunAt).toISOString(),
+        durable: true,
+      });
       expect(await service.listScheduledWork({ sessionId: session.id })).toEqual([
         recurring.item,
         oneShot.item,
+        relativeOneShot.item,
+        absoluteOneShot.item,
       ]);
       const storedSchedules = scheduledWork.readState()?.schedules ?? [];
       expect(storedSchedules).toEqual([
@@ -12811,6 +12841,16 @@ describe("createAgentChatService", () => {
         expect.objectContaining({
           id: oneShot.item.id,
           kind: "wakeup",
+        }),
+        expect.objectContaining({
+          id: relativeOneShot.item.id,
+          kind: "wakeup",
+          fireAt: expect.any(Number),
+        }),
+        expect.objectContaining({
+          id: absoluteOneShot.item.id,
+          kind: "wakeup",
+          fireAt: Date.parse(absoluteRunAt),
         }),
       ]);
       expect(storedSchedules[0]?.provider).toBeUndefined();
@@ -12848,7 +12888,39 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         cron: "not a cron",
         prompt: "Check CI.",
-      })).rejects.toThrow(/cron.*valid 5-field cron/i);
+      })).rejects.toThrow(/cron.*valid 5-field cron.*local timezone/i);
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        cron: "0 * * * *",
+        delaySeconds: 60,
+        prompt: "Ambiguous schedule.",
+      } as unknown as AgentChatCreateScheduledWorkArgs)).rejects.toThrow(/exactly one of cron, runAt, or delaySeconds/i);
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        runAt: "2100-01-02T03:04:05",
+        prompt: "Missing timezone.",
+      })).rejects.toThrow(/explicit offset or Z/i);
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        runAt: "2000-01-02T03:04:05Z",
+        prompt: "Past timestamp.",
+      })).rejects.toThrow(/valid future timestamp/i);
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        delaySeconds: 0,
+        prompt: "Invalid delay.",
+      })).rejects.toThrow(/positive whole number/i);
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        delaySeconds: 1.5,
+        prompt: "Fractional delay.",
+      })).rejects.toThrow(/positive whole number/i);
+      await expect(service.createScheduledWork({
+        sessionId: session.id,
+        delaySeconds: 60,
+        prompt: "Recurring relative delay.",
+        recurring: true,
+      } as unknown as AgentChatCreateScheduledWorkArgs)).rejects.toThrow(/one-shot and cannot recur/i);
       await expect(service.createScheduledWork({
         sessionId: session.id,
         cron: "0 * * * *",

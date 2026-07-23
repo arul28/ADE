@@ -12736,6 +12736,107 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(itemId, "message-1")
   }
 
+  func testAssistantTextUsesMessageIdAcrossCanonicalAndLiveTranscripts() {
+    let response = "You’re right—the wake was scheduled incorrectly because I computed the cron in UTC while ADE interprets it in the machine’s local timezone. I’m cancelling that bad wake, polling PR #399 immediately, and I’ll reschedule using local time only if CI or reviewers are still running."
+    let canonical = makeWorkChatTranscript(
+      from: [
+        AgentChatTranscriptEntry(
+          role: "assistant",
+          text: response,
+          timestamp: "2026-07-22T20:51:00.000Z",
+          turnId: "turn-1",
+          messageId: "message-1",
+          itemId: "item-1"
+        ),
+      ],
+      sessionId: "chat-1"
+    )
+    let live = makeWorkChatTranscript(from: [
+      AgentChatEventEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-22T20:51:00.000Z",
+        event: .text(
+          text: response,
+          messageId: "message-1",
+          turnId: "turn-1",
+          itemId: "item-1"
+        ),
+        sequence: 1,
+        provenance: nil
+      ),
+    ])
+    let parsedRaw = parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-07-22T20:51:00.000Z","sequence":1,"event":{"type":"text","text":"\(response)","messageId":"message-1","itemId":"item-1","turnId":"turn-1"}}
+    """)
+
+    guard case .assistantText(_, _, let canonicalId) = canonical.first?.event,
+          case .assistantText(_, _, let liveId) = live.first?.event,
+          case .assistantText(_, _, let parsedRawId) = parsedRaw.first?.event else {
+      return XCTFail("Expected canonical, live, and raw-parser assistant text.")
+    }
+    let eventTranscript = mergeWorkChatTranscripts(base: parsedRaw, live: live)
+    let preferred = preferredWorkTranscript(
+      current: canonical,
+      fallback: canonical,
+      eventTranscript: eventTranscript
+    )
+    let messages = buildWorkChatMessages(from: preferred).filter { $0.role == "assistant" }
+
+    XCTAssertEqual(canonicalId, "message-1")
+    XCTAssertEqual(liveId, "message-1")
+    XCTAssertEqual(parsedRawId, "message-1")
+    XCTAssertEqual(eventTranscript.count, 1)
+    XCTAssertEqual(preferred.count, 1)
+    XCTAssertEqual(messages.count, 1)
+    XCTAssertEqual(messages.first?.markdown, response)
+  }
+
+  func testAssistantTextFallsBackToItemIdWhenMessageIdIsMissing() {
+    let response = "Provider-only item identity"
+    let canonical = makeWorkChatTranscript(
+      from: [
+        AgentChatTranscriptEntry(
+          role: "assistant",
+          text: response,
+          timestamp: "2026-07-22T20:51:00.000Z",
+          turnId: "turn-1",
+          messageId: "  ",
+          itemId: " item-1 "
+        ),
+      ],
+      sessionId: "chat-1"
+    )
+    let live = makeWorkChatTranscript(from: [
+      AgentChatEventEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-22T20:51:00.000Z",
+        event: .text(
+          text: response,
+          messageId: nil,
+          turnId: "turn-1",
+          itemId: " item-1 "
+        ),
+        sequence: 1,
+        provenance: nil
+      ),
+    ])
+    let parsedRaw = parseWorkChatTranscript("""
+    {"sessionId":"chat-1","timestamp":"2026-07-22T20:51:00.000Z","sequence":1,"event":{"type":"text","text":"\(response)","itemId":" item-1 ","turnId":"turn-1"}}
+    """)
+
+    guard case .assistantText(let canonicalText, _, let canonicalId) = canonical.first?.event,
+          case .assistantText(let liveText, _, let liveId) = live.first?.event,
+          case .assistantText(let rawText, _, let rawId) = parsedRaw.first?.event else {
+      return XCTFail("Expected canonical, live, and raw-parser assistant text.")
+    }
+    let merged = mergeWorkChatTranscripts(base: canonical, live: parsedRaw + live)
+
+    XCTAssertEqual([canonicalText, liveText, rawText], [response, response, response])
+    XCTAssertEqual([canonicalId, liveId, rawId], ["item-1", "item-1", "item-1"])
+    XCTAssertEqual(merged.count, 1)
+    XCTAssertEqual(buildWorkChatMessages(from: merged).map(\.markdown), [response])
+  }
+
   func testWorkChatMessagesMergeDuplicateUserMessageVariantsByTurn() {
     let prompt = "as this turn is underway, the auto scroll is clearly broken"
     let transcript: [WorkChatEnvelope] = [

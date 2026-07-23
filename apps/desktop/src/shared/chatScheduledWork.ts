@@ -347,6 +347,83 @@ export function nextCronFireAt(cron: string, nowMs: number): number | null {
   return null;
 }
 
+export type ResolvedScheduledWorkTiming = {
+  kind: "cron" | "wakeup";
+  recurring: boolean;
+  fireAt: number;
+  cron?: string;
+};
+
+export function resolveScheduledWorkTiming(
+  input: {
+    cron?: unknown;
+    runAt?: unknown;
+    delaySeconds?: unknown;
+    recurring?: unknown;
+  },
+  nowMs: number,
+): ResolvedScheduledWorkTiming {
+  if (input.recurring != null && typeof input.recurring !== "boolean") {
+    throw new Error("Scheduled work recurring must be a boolean.");
+  }
+  if (input.cron != null && typeof input.cron !== "string") {
+    throw new Error("Scheduled work cron must be a string.");
+  }
+  if (input.runAt != null && typeof input.runAt !== "string") {
+    throw new Error("Scheduled work runAt must be a string.");
+  }
+  const cron = typeof input.cron === "string" ? input.cron.trim() : "";
+  const runAt = typeof input.runAt === "string" ? input.runAt.trim() : "";
+  if (typeof input.cron === "string" && !cron) {
+    throw new Error("Scheduled work cron must not be empty.");
+  }
+  if (typeof input.runAt === "string" && !runAt) {
+    throw new Error("Scheduled work runAt must not be empty.");
+  }
+  const hasDelaySeconds = input.delaySeconds != null;
+  const scheduleInputCount = Number(Boolean(cron)) + Number(Boolean(runAt)) + Number(hasDelaySeconds);
+  if (scheduleInputCount !== 1) {
+    throw new Error("Scheduled work requires exactly one of cron, runAt, or delaySeconds.");
+  }
+
+  if (cron) {
+    const fireAt = nextCronFireAt(cron, nowMs);
+    if (fireAt == null) {
+      throw new Error("Scheduled work cron must be a valid 5-field cron expression in the ADE brain machine's local timezone.");
+    }
+    return {
+      kind: input.recurring === false ? "wakeup" : "cron",
+      recurring: input.recurring !== false,
+      fireAt,
+      cron,
+    };
+  }
+
+  if (input.recurring === true) {
+    throw new Error("Scheduled work runAt and delaySeconds schedules are one-shot and cannot recur.");
+  }
+  if (runAt) {
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(runAt)) {
+      throw new Error("Scheduled work runAt must be an ISO 8601 timestamp with an explicit offset or Z.");
+    }
+    const fireAt = Date.parse(runAt);
+    if (!Number.isFinite(fireAt) || fireAt <= nowMs) {
+      throw new Error("Scheduled work runAt must be a valid future timestamp.");
+    }
+    return { kind: "wakeup", recurring: false, fireAt };
+  }
+
+  const delaySeconds = input.delaySeconds;
+  if (typeof delaySeconds !== "number" || !Number.isFinite(delaySeconds) || !Number.isInteger(delaySeconds) || delaySeconds < 1) {
+    throw new Error("Scheduled work delaySeconds must be a positive whole number.");
+  }
+  const fireAt = nowMs + delaySeconds * 1_000;
+  if (!Number.isSafeInteger(fireAt) || !Number.isFinite(new Date(fireAt).getTime())) {
+    throw new Error("Scheduled work delaySeconds is too large.");
+  }
+  return { kind: "wakeup", recurring: false, fireAt };
+}
+
 export function compactRelativeDuration(durationMs: number): string {
   const totalMinutes = Math.max(0, Math.ceil(durationMs / 60_000));
   if (totalMinutes < 60) return `${totalMinutes}m`;

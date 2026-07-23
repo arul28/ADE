@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type {
   AgentChatCreateArgs,
+  AgentChatCreateScheduledWorkArgs,
   AgentChatAcceptCrossMachineHandoffArgs,
   AgentChatArchiveArgs,
   AgentChatClaudePermissionMode,
@@ -3946,13 +3947,49 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.createScheduledWork", { viewerAllowed: false, queueable: false }, async (payload) => {
     const recurring = asOptionalBoolean(payload.recurring);
     const reason = asTrimmedString(payload.reason);
-    return requireService(args.agentChatService, "Agent chat service not available.").createScheduledWork({
+    if (payload.cron != null && (typeof payload.cron !== "string" || payload.cron.trim().length === 0)) {
+      throw new Error("chat.createScheduledWork cron must be a non-empty string.");
+    }
+    if (payload.runAt != null && (typeof payload.runAt !== "string" || payload.runAt.trim().length === 0)) {
+      throw new Error("chat.createScheduledWork runAt must be a non-empty string.");
+    }
+    const cron = asTrimmedString(payload.cron);
+    const runAt = asTrimmedString(payload.runAt);
+    if (payload.delaySeconds != null && typeof payload.delaySeconds !== "number") {
+      throw new Error("chat.createScheduledWork delaySeconds must be a number.");
+    }
+    const base = {
       sessionId: requireString(payload.sessionId, "chat.createScheduledWork requires sessionId."),
-      cron: requireString(payload.cron, "chat.createScheduledWork requires cron."),
       prompt: requireString(payload.prompt, "chat.createScheduledWork requires prompt."),
-      ...(recurring !== undefined ? { recurring } : {}),
       ...(reason ? { reason } : {}),
-    });
+    };
+    const scheduleInputCount = Number(Boolean(cron))
+      + Number(Boolean(runAt))
+      + Number(typeof payload.delaySeconds === "number");
+    if (scheduleInputCount !== 1) {
+      throw new Error("chat.createScheduledWork requires exactly one of cron, runAt, or delaySeconds.");
+    }
+    let createArgs: AgentChatCreateScheduledWorkArgs;
+    if (cron) {
+      createArgs = {
+        ...base,
+        cron,
+        ...(recurring !== undefined ? { recurring } : {}),
+      };
+    } else if (runAt) {
+      if (recurring === true) {
+        throw new Error("chat.createScheduledWork runAt schedules cannot recur.");
+      }
+      createArgs = { ...base, runAt, recurring: false };
+    } else if (typeof payload.delaySeconds === "number") {
+      if (recurring === true) {
+        throw new Error("chat.createScheduledWork delaySeconds schedules cannot recur.");
+      }
+      createArgs = { ...base, delaySeconds: payload.delaySeconds, recurring: false };
+    } else {
+      throw new Error("chat.createScheduledWork requires delaySeconds.");
+    }
+    return requireService(args.agentChatService, "Agent chat service not available.").createScheduledWork(createArgs);
   });
   register("chat.listScheduledWork", { viewerAllowed: true, queueable: false }, async (payload) => {
     const sessionId = asTrimmedString(payload.sessionId);

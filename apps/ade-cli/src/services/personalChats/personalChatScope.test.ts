@@ -52,11 +52,22 @@ describe("PersonalChatScope", () => {
       interrupt: vi.fn(async () => undefined),
       respondToInput: vi.fn(async () => undefined),
       approveToolUse: vi.fn(async () => undefined),
-      createScheduledWork: vi.fn(async ({ sessionId, cron, prompt }: {
+      createScheduledWork: vi.fn(async ({ sessionId, cron, runAt, prompt }: {
         sessionId: string;
-        cron: string;
+        cron?: string;
+        runAt?: string;
         prompt: string;
-      }) => ({ item: { id: "cron-created", sessionId, cron, prompt, status: "scheduled" } })),
+      }) => ({
+        item: {
+          id: "cron-created",
+          sessionId,
+          ...(cron ? { cron } : {}),
+          ...(runAt ? { nextRunAt: runAt } : {}),
+          prompt,
+          status: "scheduled",
+        },
+        timeZone: "America/New_York",
+      })),
       cancelScheduledWork: vi.fn(async ({ sessionId, scheduleId }: {
         sessionId: string;
         scheduleId: string;
@@ -204,6 +215,39 @@ describe("PersonalChatScope", () => {
       sessionId: "chat-1",
       cron: "*/20 * * * *",
       prompt: "Check PR CI",
+    });
+
+    await expect(scope.call("createScheduledWork", {
+      sessionId: "chat-1",
+      delaySeconds: 720,
+      prompt: "Check PR CI again",
+    })).resolves.toMatchObject({
+      action: "createScheduledWork",
+      result: { item: { id: "cron-created", sessionId: "chat-1" } },
+    });
+    expect(service.createScheduledWork).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      delaySeconds: 720,
+      prompt: "Check PR CI again",
+    });
+
+    await expect(scope.call("createScheduledWork", {
+      sessionId: "chat-1",
+      runAt: "2026-07-23T01:05:00-04:00",
+      prompt: "Check PR CI at the requested time",
+    })).resolves.toMatchObject({
+      action: "createScheduledWork",
+      result: {
+        item: {
+          id: "cron-created",
+          sessionId: "chat-1",
+        },
+      },
+    });
+    expect(service.createScheduledWork).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      runAt: "2026-07-23T01:05:00-04:00",
+      prompt: "Check PR CI at the requested time",
     });
 
     await expect(scope.call("setScheduledWorkPaused", {

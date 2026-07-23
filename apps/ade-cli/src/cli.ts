@@ -203,6 +203,7 @@ type FormatterId =
   | "run-runtime"
   | "chat-list"
   | "chat-read"
+  | "scheduled-work-create"
   | "tests-runs"
   | "proof-list"
   | "ios-sim-status"
@@ -1667,7 +1668,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat schedules <session> --pause           Pause this agent session's durable wakeups/cron/loops
     $ ade chat schedules <session>                   Inspect pause state + next armed wake (--resume to re-arm)
     $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
+    $ ade chat scheduled-work create --in 12m --prompt "<text>"
+                                                    Relative one-shot; supports s, m, h, d, w
+    $ ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "<text>"
+                                                    Absolute one-shot; offset or Z is required
     $ ade chat scheduled-work create --cron "<expr>" --prompt "<text>" [--once]
+                                                    Cron uses the brain machine's local timezone
                                                     Optional: --reason "<text>" --session <id>
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
     $ ade new chat --mode cli --lane <lane> --provider claude --reasoning-effort ultracode --prompt "fix"
@@ -2386,6 +2392,26 @@ function readFlag(args: string[], names: string[]): boolean {
     return true;
   }
   return false;
+}
+
+function parseScheduledWorkDelaySeconds(value: string): number {
+  const match = /^(\d+)(s|m|h|d|w)$/i.exec(value.trim());
+  if (!match) {
+    throw new CliUsageError("--in must be a positive duration such as 30s, 12m, 2h, 3d, or 1w.");
+  }
+  const amount = Number(match[1]);
+  const unitSeconds: Record<string, number> = {
+    s: 1,
+    m: 60,
+    h: 60 * 60,
+    d: 24 * 60 * 60,
+    w: 7 * 24 * 60 * 60,
+  };
+  const seconds = amount * unitSeconds[match[2]!.toLowerCase()]!;
+  if (!Number.isSafeInteger(seconds) || seconds < 1) {
+    throw new CliUsageError("--in must resolve to a positive, safely representable number of seconds.");
+  }
+  return seconds;
 }
 
 function readCommandTextValue(args: string[], names: string[]): string | null {
@@ -3498,7 +3524,7 @@ function listActionsStep(key: string, domain?: string): InvocationStep {
   return actionCallStep(key, "list_ade_actions", domain ? { domain } : {});
 }
 
-function buildActionRunStep(args: string[]): InvocationStep {
+function parseActionRunTarget(args: string[]): { domain: string; action: string } {
   const target = firstPositional(args);
   if (!target)
     throw new CliUsageError(
@@ -3515,7 +3541,14 @@ function buildActionRunStep(args: string[]): InvocationStep {
     domain = target;
     action = requireValue(firstPositional(args), "action");
   }
+  return { domain, action };
+}
 
+function buildActionRunStep(
+  args: string[],
+  target = parseActionRunTarget(args),
+): InvocationStep {
+  const { domain, action } = target;
   const argsListJson = readValue(args, ["--args-list-json", "--params-json"]);
   if (argsListJson != null) {
     const argsList = parseJson(argsListJson, "--args-list-json");
@@ -7329,12 +7362,31 @@ function buildChatPlan(args: string[]): CliPlan {
     sub === "scheduled-work"
   ) {
     if (scheduledWorkOperation === "create") {
-      const cron = requireValue(readValue(args, ["--cron"]), "cron");
+      const cron = readValue(args, ["--cron"]);
+      const runAt = readValue(args, ["--at"]);
+      const delay = readValue(args, ["--in"]);
+      const scheduleInputs = [cron, runAt, delay].filter((value) => value != null);
+      if (scheduleInputs.length !== 1) {
+        throw new CliUsageError("scheduled-work create requires exactly one of --cron, --at, or --in.");
+      }
       const prompt = requireValue(readValue(args, ["--prompt", "--text"]), "prompt");
       const reason = readValue(args, ["--reason"]);
+      const once = readFlag(args, ["--once"]);
+      let schedule: JsonObject;
+      if (cron != null) {
+        schedule = { cron: requireValue(cron, "cron"), recurring: !once };
+      } else if (runAt != null) {
+        schedule = { runAt: requireValue(runAt, "at"), recurring: false };
+      } else {
+        schedule = {
+          delaySeconds: parseScheduledWorkDelaySeconds(requireValue(delay, "in")),
+          recurring: false,
+        };
+      }
       return {
         kind: "execute",
         label: "chat scheduled-work create",
+        formatter: "scheduled-work-create",
         steps: [
           actionStep(
             "result",
@@ -7342,9 +7394,8 @@ function buildChatPlan(args: string[]): CliPlan {
             "createScheduledWork",
             collectGenericObjectArgs(args, {
               ...(sessionId ? { sessionId } : {}),
-              cron,
+              ...schedule,
               prompt,
-              recurring: !readFlag(args, ["--once"]),
               ...(reason ? { reason } : {}),
             }),
           ),
@@ -10360,12 +10411,17 @@ function buildActionsPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "run")
+  if (sub === "run") {
+    const target = parseActionRunTarget(args);
     return {
       kind: "execute",
       label: "action run",
-      steps: [buildActionRunStep(args)],
+      ...(target.domain === "chat" && target.action === "createScheduledWork"
+        ? { formatter: "scheduled-work-create" as const }
+        : {}),
+      steps: [buildActionRunStep(args, target)],
     };
+  }
   if (sub === "status")
     return {
       kind: "execute",
@@ -11287,6 +11343,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--app",
   "--action",
   "--app-bundle",
+  "--at",
   "--arg",
   "--arg-json",
   "--arg-value",
@@ -11358,6 +11415,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--id",
   "--image",
   "--image-url",
+  "--in",
   "--index",
   "--initial-input",
   "--input",
@@ -17904,6 +17962,30 @@ function formatTextOutput(
       return formatChatList(value);
     case "chat-read":
       return formatChatRead(value);
+    case "scheduled-work-create": {
+      const result = isRecord(value) && isRecord(value.result) ? value.result : value;
+      const item = isRecord(result) && isRecord(result.item) ? result.item : {};
+      const nextRunAt = asString(item.nextRunAt);
+      const parsedNextRunAt = nextRunAt ? new Date(nextRunAt) : null;
+      const brainTimeZone = isRecord(result) ? asString(result.timeZone) : null;
+      let brainNextRun: string | null = null;
+      if (parsedNextRunAt && Number.isFinite(parsedNextRunAt.getTime()) && brainTimeZone) {
+        try {
+          brainNextRun = `${parsedNextRunAt.toLocaleString(undefined, { timeZone: brainTimeZone })} (${brainTimeZone})`;
+        } catch {
+          brainNextRun = null;
+        }
+      }
+      return renderKeyValues("Scheduled work created", [
+        ["schedule id", item.id],
+        ["kind", item.kind],
+        ["status", item.status],
+        ["cron", item.cron],
+        ["brain timezone", brainTimeZone],
+        ["next run (brain local)", brainNextRun],
+        ["next run (ISO)", nextRunAt],
+      ]);
+    }
     case "tests-runs":
       return formatTestsRuns(value);
     case "proof-list":
