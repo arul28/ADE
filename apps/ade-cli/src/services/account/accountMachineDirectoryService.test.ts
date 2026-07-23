@@ -325,6 +325,7 @@ describe("AccountMachineDirectoryService", () => {
   });
 
   it("pairs stale directory presence through a verified account relay and saves an ADE Code target", async () => {
+    const onStage = vi.fn();
     const pairWithAccountMachine = vi.fn(async (): Promise<Pick<
       DesktopPairedMachineCredentials,
       "hostIdentity" | "endpoints"
@@ -358,7 +359,11 @@ describe("AccountMachineDirectoryService", () => {
       getAccessToken: async () => "account-token",
     }, {
       directoryBaseUrl: () => "https://directory.example",
-      fetchImpl: directoryFetch([machine({ online: false, lastSeenAt: 1 })]),
+      fetchImpl: directoryFetch([machine({
+        online: false,
+        lastSeenAt: 1,
+        pubkey: "ed25519:directory-key",
+      })]),
       deviceName: () => "ADE Code test",
       pairedStore: { pairWithAccountMachine },
       targetRegistry: { save },
@@ -366,14 +371,18 @@ describe("AccountMachineDirectoryService", () => {
       relayBaseUrls: ["https://relay.example"],
     });
 
-    await expect(service.pairMachine("mk-studio")).resolves.toEqual({
+    await expect(service.pairMachine("mk-studio", { onStage })).resolves.toEqual({
       targetId: "target-account-studio",
       machineKey: "mk-studio",
       deviceId: "device-studio",
       name: "Studio",
     });
     expect(pairWithAccountMachine).toHaveBeenCalledWith(
-      expect.objectContaining({ machineKey: "mk-studio", online: false }),
+      expect.objectContaining({
+        machineKey: "mk-studio",
+        online: false,
+        pubkey: "ed25519:directory-key",
+      }),
       "account-token",
       "ADE Code test",
       {
@@ -381,6 +390,7 @@ describe("AccountMachineDirectoryService", () => {
         relayBaseUrls: ["https://relay.example"],
         accountOwnerUserId: "user",
         authorizeAccountCommit: expect.any(Function),
+        onStage,
       },
     );
     expect(save).toHaveBeenCalledWith(expect.objectContaining({

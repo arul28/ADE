@@ -5,6 +5,9 @@ import { WebSocket, WebSocketServer } from "ws";
 import {
   BRIDGE_VALIDATION_LEASE_MS,
   CONNECT_DEADLINE_MS,
+  CONTROL_JSON_INITIAL_PING_DELAY_MS,
+  CONTROL_JSON_PING_INTERVAL_MS,
+  CONTROL_JSON_PONG_DEADLINE_MS,
   CONTROL_PING_INTERVAL_MS,
   CONTROL_PONG_DEADLINE_MS,
   computeBackoffMs,
@@ -18,6 +21,7 @@ import {
   RELAY_CLOSE_FORWARD_FAILED,
   RELAY_CLOSE_HOST_UNAVAILABLE,
   RELAY_READY_VERSION,
+  RELAY_SELF_PROBE_DEBOUNCE_MS,
 } from "./syncTunnelClientService";
 import type { SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import type { SyncCloudRelayStore } from "./syncCloudRelayStore";
@@ -68,6 +72,7 @@ class StubWebSocket extends EventEmitter {
   readonly sent: string[] = [];
   readonly closes: Array<{ code: number; reason: string }> = [];
   sendCallbackError: Error | null = null;
+  terminateCalls = 0;
 
   constructor(readonly url: string) {
     super();
@@ -114,6 +119,7 @@ class StubWebSocket extends EventEmitter {
   }
 
   terminate(): void {
+    this.terminateCalls += 1;
     this.close(1006, "terminated");
   }
 }
@@ -162,9 +168,9 @@ describe("parseControlMessage", () => {
     }))).toBeNull();
   });
 
-  it("rejects JSON ping/pong and junk", () => {
+  it("recognizes JSON pong without weakening strict open parsing", () => {
     expect(parseControlMessage(JSON.stringify({ t: "ping" }))).toBeNull();
-    expect(parseControlMessage(JSON.stringify({ t: "pong" }))).toBeNull();
+    expect(parseControlMessage(JSON.stringify({ t: "pong" }))).toEqual({ t: "pong" });
     expect(parseControlMessage("not json")).toBeNull();
     expect(parseControlMessage(JSON.stringify({ t: "other" }))).toBeNull();
   });
@@ -277,8 +283,14 @@ describe("createSyncTunnelClientService", () => {
     const address = relay.address();
     const relayPort = typeof address === "object" && address ? address.port : 0;
     const connections: string[] = [];
-    relay.on("connection", (_socket, request) => {
-      connections.push(request.url ?? "");
+    relay.on("connection", (socket, request) => {
+      const url = request.url ?? "";
+      connections.push(url);
+      if (url.startsWith("/connect/")) {
+        // Answer the end-to-end self-probe like a ready-v2 relay would.
+        socket.send(JSON.stringify({ t: "accepted", v: 2 }));
+        socket.send(JSON.stringify({ t: "ready", v: 2 }));
+      }
     });
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response(null, { status: 204 });
@@ -310,6 +322,9 @@ describe("createSyncTunnelClientService", () => {
           validatedPort: syncPort,
         });
       });
+      await vi.waitFor(() => {
+        expect(service.getStatus().relayEndToEndVerifiedAt).not.toBeNull();
+      }, { timeout: 10_000 });
 
       const tunnelStatus = service.getStatus();
       const listenerStatus = listener.getLoopbackValidationStatus();
@@ -354,14 +369,18 @@ describe("createSyncTunnelClientService", () => {
             lastControlError: tunnelStatus.lastControlError,
             lastControlOpenAt: tunnelStatus.lastControlOpenAt,
             lastBridgeValidationAt: tunnelStatus.lastBridgeValidationAt,
+            relayEndToEndVerifiedAt: tunnelStatus.relayEndToEndVerifiedAt,
+            relayEndToEndFailure: tunnelStatus.relayEndToEndFailure,
+            relayEndToEndRoundTripMs: tunnelStatus.relayEndToEndRoundTripMs,
           },
         },
       } satisfies AccountMachineRegistrationSnapshot;
       expect(buildAccountMachineRegistration({ machineKey, snapshot })?.reachableEndpoints).toEqual([
         { kind: "relay", url: relayUrl },
       ]);
-      // The Relay never sent an external {t:"open"}; only its control socket exists.
-      expect(connections).toHaveLength(1);
+      // Control socket plus the end-to-end self-probe's client connection.
+      expect(connections).toHaveLength(2);
+      expect(connections.some((url) => url.startsWith(`/connect/${machineKey}`))).toBe(true);
       expect(connections[0]).not.toContain("/pipe/");
     } finally {
       await service.dispose();
@@ -2241,6 +2260,319 @@ describe("createSyncTunnelClientService", () => {
       globalThis.fetch = originalFetch;
       await listener.close();
       await new Promise<void>((resolve) => relay.close(() => resolve()));
+    }
+  });
+
+  it("sends JSON control pings after open and on the interval, and pong clears each deadline", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      controlJsonPingIntervalMs: 5_000,
+      controlJsonPongDeadlineMs: 500,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      expect(CONTROL_JSON_PING_INTERVAL_MS).toBe(180_000);
+      expect(CONTROL_JSON_PONG_DEADLINE_MS).toBe(30_000);
+      await service.start();
+      const control = sockets[0]!;
+      control.open();
+
+      await vi.advanceTimersByTimeAsync(CONTROL_JSON_INITIAL_PING_DELAY_MS);
+      expect(control.sent).toEqual([JSON.stringify({ t: "ping" })]);
+      control.receive(JSON.stringify({ t: "pong" }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(control.terminateCalls).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(3_500);
+      expect(control.sent).toEqual([
+        JSON.stringify({ t: "ping" }),
+        JSON.stringify({ t: "ping" }),
+      ]);
+      control.receive(JSON.stringify({ t: "pong" }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(control.terminateCalls).toBe(0);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("terminates and reconnects a zombie control that misses its JSON pong", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const logger = { warn: vi.fn() };
+    const service = createSyncTunnelClientService({
+      logger,
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      controlJsonPingIntervalMs: 5_000,
+      controlJsonPongDeadlineMs: 100,
+      reconnectBackoffMs: () => 0,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const control = sockets[0]!;
+      control.open();
+      await vi.advanceTimersByTimeAsync(CONTROL_JSON_INITIAL_PING_DELAY_MS + 100);
+      await vi.runAllTicks();
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(control.terminateCalls).toBe(1);
+      expect(sockets).toHaveLength(2);
+      expect(service.getStatus().lastControlError)
+        .toBe("relay control unreachable at relay (zombie socket)");
+      expect(service.getStatus().relayEndToEndFailure)
+        .toBe("relay control unreachable at relay (zombie socket)");
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_tunnel.zombie_control_detected",
+        expect.objectContaining({
+          machineKey: "a".repeat(32),
+          source: "json-ping",
+          transportMode: "epoch",
+        }),
+      );
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not stack JSON pong deadlines and tears timers down on socket replacement", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => null,
+      getRelayBridgeProof: () => null,
+      configStore: fakeStore(),
+      controlJsonPingIntervalMs: 1_100,
+      controlJsonPongDeadlineMs: 10_000,
+      reconnectBackoffMs: () => 0,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const first = sockets[0]!;
+      first.open();
+      await vi.advanceTimersByTimeAsync(2_200);
+      expect(first.sent.filter((raw) => raw === JSON.stringify({ t: "ping" }))).toHaveLength(1);
+
+      first.remoteClose(4505, "replaced");
+      await vi.advanceTimersByTimeAsync(0);
+      const second = sockets[1]!;
+      second.open();
+      await vi.advanceTimersByTimeAsync(CONTROL_JSON_INITIAL_PING_DELAY_MS);
+
+      expect(first.terminateCalls).toBe(0);
+      expect(second.sent).toContain(JSON.stringify({ t: "ping" }));
+      second.receive(JSON.stringify({ t: "pong" }));
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(first.terminateCalls).toBe(0);
+      expect(second.terminateCalls).toBe(0);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("records a successful automatic self-probe for the current control generation", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const expectedNonce = "c".repeat(32);
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(),
+      loopbackProbe: async (port) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const control = sockets[0]!;
+      control.open();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(CONTROL_JSON_INITIAL_PING_DELAY_MS);
+      control.receive(JSON.stringify({ t: "pong" }));
+      await vi.advanceTimersByTimeAsync(
+        RELAY_SELF_PROBE_DEBOUNCE_MS - CONTROL_JSON_INITIAL_PING_DELAY_MS,
+      );
+      const probe = sockets.find((socket) => socket.url.includes("?ready=2"));
+      expect(probe).toBeTruthy();
+      probe!.receive(JSON.stringify({ t: "accepted", v: 2 }));
+      probe!.receive(JSON.stringify({ t: "ready", v: 2 }));
+      await Promise.resolve();
+
+      expect(service.getStatus()).toMatchObject({
+        relayEndToEndFailure: null,
+        relayEndToEndRoundTripMs: expect.any(Number),
+      });
+      expect(service.getStatus().relayEndToEndVerifiedAt).toEqual(expect.any(String));
+      expect(control.terminateCalls).toBe(0);
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails publication state closed and reconnects when the self-probe cannot reach ready", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const expectedNonce = "c".repeat(32);
+    const logger = { warn: vi.fn() };
+    const onPublicationStateChanged = vi.fn();
+    const service = createSyncTunnelClientService({
+      logger,
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(),
+      loopbackProbe: async (port) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+      onPublicationStateChanged,
+      reconnectBackoffMs: () => 0,
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      const control = sockets[0]!;
+      control.open();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(RELAY_SELF_PROBE_DEBOUNCE_MS);
+      const probe = sockets.find((socket) => socket.url.includes("?ready=2"));
+      expect(probe).toBeTruthy();
+      probe!.receive(JSON.stringify({ t: "accepted", v: 2 }));
+      probe!.remoteClose(4501, "host offline");
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(service.getStatus()).toMatchObject({
+        relayEndToEndVerifiedAt: null,
+        relayEndToEndFailure: expect.stringContaining("host offline"),
+      });
+      expect(control.terminateCalls).toBe(1);
+      expect(sockets.filter((socket) => socket.url.includes("/host/"))).toHaveLength(2);
+      expect(onPublicationStateChanged).toHaveBeenCalledWith("route-state-changed");
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_tunnel.self_probe_failed",
+        expect.objectContaining({ reasonClass: "closed_before_ready" }),
+      );
+      expect(logger.warn).toHaveBeenCalledWith(
+        "sync_tunnel.zombie_control_detected",
+        expect.objectContaining({ source: "self-probe" }),
+      );
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns the on-demand self-probe verdict", async () => {
+    vi.useFakeTimers();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(null, { status: 204 });
+    const sockets: StubWebSocket[] = [];
+    const expectedNonce = "c".repeat(32);
+    const service = createSyncTunnelClientService({
+      getSyncPort: () => 8787,
+      getExpectedLoopbackNonce: () => expectedNonce,
+      getRelayBridgeProof: () => "e".repeat(43),
+      configStore: fakeStore(),
+      loopbackProbe: async (port) => ({
+        ok: true,
+        port,
+        statusCode: 426,
+        statusMessage: "Upgrade Required",
+        markerValue: expectedNonce,
+        checkedAt: new Date().toISOString(),
+        reason: null,
+      }),
+      createWebSocket: (url) => {
+        const socket = new StubWebSocket(url);
+        sockets.push(socket);
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    try {
+      await service.start();
+      sockets[0]!.open();
+      await Promise.resolve();
+      const result = service.runSelfProbe();
+      await vi.advanceTimersByTimeAsync(RELAY_SELF_PROBE_DEBOUNCE_MS);
+      const probe = sockets.find((socket) => socket.url.includes("?ready=2"));
+      expect(probe).toBeTruthy();
+      probe!.receive(JSON.stringify({ t: "accepted", v: 2 }));
+      probe!.receive(JSON.stringify({ t: "ready", v: 2 }));
+
+      await expect(result).resolves.toEqual({
+        ok: true,
+        detail: expect.stringMatching(/^Relay end-to-end verified in \d+ms\.$/),
+      });
+    } finally {
+      await service.dispose();
+      globalThis.fetch = originalFetch;
+      vi.useRealTimers();
     }
   });
 });

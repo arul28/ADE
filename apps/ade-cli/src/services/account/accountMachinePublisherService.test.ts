@@ -73,6 +73,9 @@ function snapshot(
         enabled: false,
         relayControlConnected: false,
         relayBridgeValidated: false,
+        relayEndToEndVerifiedAt: null,
+        relayEndToEndFailure: null,
+        relayEndToEndRoundTripMs: null,
         lastFailureAt: null,
         skipReason: null,
         lastControlError: null,
@@ -111,6 +114,9 @@ function routeSnapshot(
     enabled: true,
     relayControlConnected: true,
     relayBridgeValidated: true,
+    relayEndToEndVerifiedAt: "2026-07-16T00:00:01.000Z",
+    relayEndToEndFailure: null,
+    relayEndToEndRoundTripMs: 42,
     lastFailureAt: null,
     skipReason: null,
     lastControlError: null,
@@ -157,6 +163,33 @@ describe("account machine publisher health", () => {
       lastHttpStatus: 204,
       lastHttpReason: null,
       reachableEndpointCount: 1,
+    });
+  });
+
+  it("includes the machine Ed25519 signing key in the registration payload", async () => {
+    let body: unknown = null;
+    const publicKeyRawBase64 = Buffer.alloc(32, 9).toString("base64");
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      getMachineIdentitySigningPublicKey: () => publicKeyRawBase64,
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async (_input, init) => {
+        body = JSON.parse(String(init?.body));
+        return new Response(null, { status: 204 });
+      }),
+    });
+
+    await service.publishNow();
+
+    expect(body).toMatchObject({
+      machineKey: "machine-studio",
+      pubkey: `ed25519:${publicKeyRawBase64}`,
     });
   });
 
@@ -489,6 +522,68 @@ describe("account machine publisher health", () => {
     service.dispose();
   });
 
+  it("retains the directory Relay endpoint while end-to-end verification is pending at startup", async () => {
+    const current = routeSnapshot();
+    current.routeHealth.relay.relayEndToEndVerifiedAt = null;
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "owner-a",
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+
+    const registration = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(registration.retainRelayEndpoints).toBe(true);
+    expect(registration.reachableEndpoints).not.toContainEqual(
+      expect.objectContaining({ kind: "relay" }),
+    );
+    service.dispose();
+  });
+
+  it("drops a stale Relay endpoint and retention hint after end-to-end verification fails", async () => {
+    const current = routeSnapshot();
+    const fetchImpl = vi.fn(async (
+      _input: string | URL | Request,
+      _init?: RequestInit,
+    ) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        userId: "owner-a",
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+    current.routeHealth.relay.relayEndToEndVerifiedAt = null;
+    current.routeHealth.relay.relayEndToEndFailure = "Relay self-probe closed before ready (4501): host offline.";
+    await service.publishNow();
+
+    const registration = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+    expect(registration.retainRelayEndpoints).toBeUndefined();
+    expect(registration.reachableEndpoints).not.toContainEqual(
+      expect.objectContaining({ kind: "relay" }),
+    );
+    service.dispose();
+  });
+
   it("does not retain a verified Relay route across account-owner changes", async () => {
     let accountOwnerId = "owner-a";
     const current = routeSnapshot();
@@ -772,6 +867,26 @@ describe("account machine registration publisher", () => {
         { kind: "tailnet", host: "studio.tailnet.ts.net", port: 8787 },
         { kind: "relay", url: "wss://relay.example/connect/machine-studio" },
       ],
+    });
+  });
+
+  it("publishes Relay only after end-to-end verification", () => {
+    const pending = routeSnapshot();
+    pending.routeHealth.relay.relayEndToEndVerifiedAt = null;
+    expect(buildAccountMachineRegistration({
+      machineKey: "machine-studio",
+      snapshot: pending,
+    })?.reachableEndpoints).not.toContainEqual(
+      expect.objectContaining({ kind: "relay" }),
+    );
+
+    const verified = routeSnapshot();
+    expect(buildAccountMachineRegistration({
+      machineKey: "machine-studio",
+      snapshot: verified,
+    })?.reachableEndpoints).toContainEqual({
+      kind: "relay",
+      url: "wss://relay.example/connect/machine-studio",
     });
   });
 

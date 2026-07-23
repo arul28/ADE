@@ -28,6 +28,7 @@ struct SettingsConnectionHeader: View {
   let snapshot: SettingsConnectionSnapshot
   let onDisconnect: () -> Void
   let onReconnect: () -> Void
+  var onPairWithPin: (() -> Void)?
 
   @State private var pulsing = false
 
@@ -85,7 +86,11 @@ struct SettingsConnectionHeader: View {
 
       if let errorMessage,
          !health.transport.isConnected {
-        SettingsInlineErrorBanner(message: errorMessage)
+        SettingsInlineErrorBanner(
+          message: errorMessage,
+          actionTitle: snapshot.canPairWithPin ? "Pair with PIN instead" : nil,
+          onAction: onPairWithPin
+        )
       }
 
       if let compatibilityMessage {
@@ -184,7 +189,7 @@ struct SettingsConnectionHeader: View {
       // Name the machine you're attached to, right under the status word.
       return snapshot.hostDisplayName
     case .connecting:
-      return "Connecting to saved machine"
+      return snapshot.accountConnectStageLabel ?? "Connecting to saved machine"
     case .unreachable:
       return "Unable to reach your machine"
     case .disconnected:
@@ -357,16 +362,27 @@ private struct SettingsStatusDot: View {
 
 private struct SettingsInlineErrorBanner: View {
   let message: String
+  var actionTitle: String?
+  var onAction: (() -> Void)?
 
   var body: some View {
     HStack(alignment: .top, spacing: 8) {
       Image(systemName: "exclamationmark.triangle.fill")
         .font(.caption.weight(.semibold))
         .foregroundStyle(ADEColor.danger)
-      Text(message)
-        .font(.caption)
-        .foregroundStyle(ADEColor.danger)
-        .fixedSize(horizontal: false, vertical: true)
+      VStack(alignment: .leading, spacing: 7) {
+        Text(message)
+          .font(.caption)
+          .foregroundStyle(ADEColor.danger)
+          .fixedSize(horizontal: false, vertical: true)
+        if let actionTitle, let onAction {
+          Button(actionTitle, action: onAction)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .frame(minHeight: 44)
+            .buttonStyle(.plain)
+        }
+      }
     }
     .padding(.horizontal, 10)
     .padding(.vertical, 8)

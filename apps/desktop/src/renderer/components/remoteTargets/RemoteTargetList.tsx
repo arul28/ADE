@@ -68,9 +68,46 @@ type RemoteTargetListProps = {
 
 type ConnectTargetOptions = {
   skipHostKeyTrustCheck?: boolean;
+  onError?: (message: string) => void;
 };
 
 type AddMode = "choose" | "nearby" | "pair" | "ssh";
+
+type AccountConnectionToast = {
+  targetId: string;
+  label: string;
+};
+
+const ACCOUNT_CONNECTION_TOAST_MS = 4_000;
+
+function accountMachineMatchesNearby(
+  accountMachine: AdeAccountMachine,
+  discoveredMachine: RemoteRuntimeDiscoveredMachine,
+): boolean {
+  const accountDeviceId = accountMachine.deviceId?.trim() ?? "";
+  const discoveredDeviceId = discoveredMachine.hostIdentity?.trim() ?? "";
+  if (accountDeviceId && discoveredDeviceId) {
+    return accountDeviceId === discoveredDeviceId;
+  }
+  const accountName = accountMachine.name?.trim().toLowerCase() ?? "";
+  const discoveredName = discoveredMachine.machineName.trim().toLowerCase();
+  return Boolean(accountName && discoveredName && accountName === discoveredName);
+}
+
+function connectedViaLabel(result: RemoteRuntimeConnectResult): string | null {
+  if (!result.route) return null;
+  const routeLabel = {
+    lan: "local network",
+    tailnet: "Tailscale",
+    relay: "ADE relay",
+    ssh: "SSH",
+  }[result.route.kind];
+  const latency =
+    typeof result.route.latencyMs === "number"
+      ? ` · ${Math.round(result.route.latencyMs)}ms`
+      : "";
+  return `Connected via ${routeLabel}${latency}`;
+}
 
 function targetFormPrefill(
   target: RemoteRuntimeTarget,
@@ -140,6 +177,65 @@ export function RemoteTargetList({
   const [localMachineIdentity, setLocalMachineIdentity] =
     useState<{ machineKey: string; deviceId: string } | null>(null);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
+  const [accountConnectingMachineKey, setAccountConnectingMachineKey] =
+    useState<string | null>(null);
+  const [accountRowErrors, setAccountRowErrors] = useState<
+    Record<string, string>
+  >({});
+  const [accountRowStages, setAccountRowStages] = useState<
+    Record<string, string>
+  >({});
+  const [accountConnectionToasts, setAccountConnectionToasts] = useState<
+    Record<string, AccountConnectionToast>
+  >({});
+  const accountConnectionToastTimers = useRef<
+    Map<string, number>
+  >(new Map());
+
+  const clearAccountConnectionToast = useCallback((machineKey: string) => {
+    const timer = accountConnectionToastTimers.current.get(machineKey);
+    if (timer != null) window.clearTimeout(timer);
+    accountConnectionToastTimers.current.delete(machineKey);
+    setAccountConnectionToasts((current) => {
+      if (!(machineKey in current)) return current;
+      const next = { ...current };
+      delete next[machineKey];
+      return next;
+    });
+  }, []);
+
+  const showAccountConnectionToast = useCallback(
+    (machineKey: string, targetId: string, label: string) => {
+      const existingTimer =
+        accountConnectionToastTimers.current.get(machineKey);
+      if (existingTimer != null) window.clearTimeout(existingTimer);
+      setAccountConnectionToasts((current) => ({
+        ...current,
+        [machineKey]: { targetId, label },
+      }));
+      const timer = window.setTimeout(() => {
+        accountConnectionToastTimers.current.delete(machineKey);
+        setAccountConnectionToasts((current) => {
+          if (!(machineKey in current)) return current;
+          const next = { ...current };
+          delete next[machineKey];
+          return next;
+        });
+      }, ACCOUNT_CONNECTION_TOAST_MS);
+      accountConnectionToastTimers.current.set(machineKey, timer);
+    },
+    [],
+  );
+
+  useEffect(
+    () => () => {
+      for (const timer of accountConnectionToastTimers.current.values()) {
+        window.clearTimeout(timer);
+      }
+      accountConnectionToastTimers.current.clear();
+    },
+    [],
+  );
 
   // Never surface THIS Mac in its own account list. Match on the stable
   // machineKey OR deviceId reported by the local identity IPC (#A3).
@@ -221,6 +317,17 @@ export function RemoteTargetList({
   useEffect(() => {
     if (!accountSignedIn) void loadTargets();
   }, [accountSignedIn, loadTargets]);
+
+  useEffect(() => {
+    const subscribe = window.ade.account?.onPairMachineProgress;
+    if (!subscribe) return;
+    return subscribe((progress) => {
+      setAccountRowStages((current) => ({
+        ...current,
+        [progress.machineKey]: progress.label,
+      }));
+    });
+  }, []);
 
   useEffect(() => {
     if (!window.ade.remoteRuntime.onConnectionSnapshotChanged) return;
@@ -354,7 +461,7 @@ export function RemoteTargetList({
       try {
         if (!options.skipHostKeyTrustCheck) {
           const trusted = await ensureHostKeyTrust(targetId);
-          if (!trusted) return false;
+          if (!trusted) return null;
         }
         const result = await window.ade.remoteRuntime.connect(targetId);
         setConnected(result);
@@ -408,7 +515,7 @@ export function RemoteTargetList({
         setError(null);
         setTestingId(null);
         onConnected?.(result);
-        return true;
+        return result;
       } catch (err) {
         let trustRequired = false;
         try {
@@ -416,8 +523,12 @@ export function RemoteTargetList({
         } catch {
           // Preserve the connect failure when a follow-up trust probe also fails.
         }
-        if (!trustRequired) setError(formatRemoteTargetError(err));
-        return false;
+        if (!trustRequired) {
+          const message = formatRemoteTargetError(err);
+          if (options.onError) options.onError(message);
+          else setError(message);
+        }
+        return null;
       } finally {
         setBusyId(null);
       }
@@ -485,18 +596,24 @@ export function RemoteTargetList({
     [formPrefill?.targetId, saveTargetAndConnect],
   );
 
+  const openNearbyPairing = useCallback(
+    (machine: RemoteRuntimeDiscoveredMachine): boolean => {
+      const directPairingInput = discoveredPairingInput(machine);
+      if (!directPairingInput) return false;
+      setSelectedId(null);
+      setHostKeyTrust(null);
+      setError(null);
+      setPairingPrefill(directPairingInput);
+      setAddMode("pair");
+      return true;
+    },
+    [],
+  );
+
   const connectDiscoveredMachine = useCallback(
     async (machine: RemoteRuntimeDiscoveredMachine) => {
       if (machine.connectable === false) return;
-      const directPairingInput = discoveredPairingInput(machine);
-      if (directPairingInput) {
-        setSelectedId(null);
-        setHostKeyTrust(null);
-        setError(null);
-        setPairingPrefill(directPairingInput);
-        setAddMode("pair");
-        return;
-      }
+      if (openNearbyPairing(machine)) return;
       if (isSshOnlyDiscovered(machine)) return;
       const input = discoveredTargetInput(machine);
       if (!input) return;
@@ -510,26 +627,84 @@ export function RemoteTargetList({
         setBusyId(null);
       }
     },
-    [saveTargetAndConnect],
+    [openNearbyPairing, saveTargetAndConnect],
   );
 
   const connectAccountMachine = useCallback(
     async (machine: AdeAccountMachine) => {
-      setBusyId(`account:${machine.machineKey}`);
+      const machineKey = machine.machineKey;
+      clearAccountConnectionToast(machineKey);
+      setAccountRowErrors((current) => {
+        if (!(machineKey in current)) return current;
+        const next = { ...current };
+        delete next[machineKey];
+        return next;
+      });
+      setAccountRowStages((current) => {
+        if (!(machineKey in current)) return current;
+        const next = { ...current };
+        delete next[machineKey];
+        return next;
+      });
+      setAccountConnectingMachineKey(machineKey);
+      setBusyId(`account:${machineKey}`);
       setSelectedId(null);
       setHostKeyTrust(null);
-      setError(null);
       try {
-        const paired = await window.ade.account.pairMachine(machine.machineKey);
+        const paired = await window.ade.account.pairMachine(machineKey);
         await loadTargets();
-        await connectTarget(paired.targetId, { skipHostKeyTrustCheck: true });
+        let connectionErrorReported = false;
+        const result = await connectTarget(paired.targetId, {
+          skipHostKeyTrustCheck: true,
+          onError: (message) => {
+            connectionErrorReported = true;
+            setAccountRowErrors((current) => ({
+              ...current,
+              [machineKey]: message,
+            }));
+          },
+        });
+        if (!result) {
+          if (!connectionErrorReported) {
+            setAccountRowErrors((current) => ({
+              ...current,
+              [machineKey]: "Couldn't open the connection. Try again.",
+            }));
+          }
+          return;
+        }
+        const label = connectedViaLabel(result);
+        if (label) {
+          showAccountConnectionToast(
+            machineKey,
+            result.target.id,
+            label,
+          );
+        }
       } catch (err) {
-        setError(formatRemoteTargetError(err));
+        setAccountRowErrors((current) => ({
+          ...current,
+          [machineKey]: formatRemoteTargetError(err),
+        }));
       } finally {
+        setAccountRowStages((current) => {
+          if (!(machineKey in current)) return current;
+          const next = { ...current };
+          delete next[machineKey];
+          return next;
+        });
+        setAccountConnectingMachineKey((current) =>
+          current === machineKey ? null : current,
+        );
         setBusyId(null);
       }
     },
-    [connectTarget, loadTargets],
+    [
+      clearAccountConnectionToast,
+      connectTarget,
+      loadTargets,
+      showAccountConnectionToast,
+    ],
   );
 
   const onPaired = useCallback(
@@ -647,6 +822,27 @@ export function RemoteTargetList({
     sections.available.length +
     sections.unavailable.length;
 
+  const nearbyPairingByAccountMachineKey = useMemo(() => {
+    const matches = new Map<string, RemoteRuntimeDiscoveredMachine>();
+    for (const accountMachine of visibleAccountMachines ?? []) {
+      const discovered = discoveredMachines.find(
+        (machine) =>
+          accountMachineMatchesNearby(accountMachine, machine) &&
+          discoveredPairingInput(machine) != null,
+      );
+      if (discovered) matches.set(accountMachine.machineKey, discovered);
+    }
+    return matches;
+  }, [discoveredMachines, visibleAccountMachines]);
+
+  const accountToastByTargetId = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const toast of Object.values(accountConnectionToasts)) {
+      labels.set(toast.targetId, toast.label);
+    }
+    return labels;
+  }, [accountConnectionToasts]);
+
   function renderSection(section: MachineSection) {
     const rows = sections[section];
     if (rows.length === 0) return null;
@@ -666,12 +862,41 @@ export function RemoteTargetList({
                 saving={saving}
                 formPrefill={formPrefill}
                 testOpen={testingId === row.target.id}
-                error={error}
+                error={
+                  (row.target.pairedMachine?.machineKey
+                    ? accountRowErrors[
+                        row.target.pairedMachine.machineKey
+                      ] ?? null
+                    : null) ?? error
+                }
+                stageLabel={
+                  row.target.pairedMachine?.machineKey &&
+                  accountConnectingMachineKey ===
+                    row.target.pairedMachine.machineKey
+                    ? accountRowStages[
+                        row.target.pairedMachine.machineKey
+                      ] ?? null
+                    : null
+                }
+                transientStatus={
+                  accountToastByTargetId.get(row.target.id) ?? null
+                }
                 hostKeyTrust={
                   selectedId === row.target.id ? selectedHostKeyTrust : null
                 }
                 trustingHostKey={trustingHostKey}
-                onConnect={(targetId) => void connectTarget(targetId)}
+                onConnect={(targetId) => {
+                  const machineKey = row.target.pairedMachine?.machineKey;
+                  if (machineKey) {
+                    setAccountRowErrors((current) => {
+                      if (!(machineKey in current)) return current;
+                      const next = { ...current };
+                      delete next[machineKey];
+                      return next;
+                    });
+                  }
+                  void connectTarget(targetId);
+                }}
                 onDisconnect={(targetId) => void disconnectTarget(targetId)}
                 onToggleTest={toggleTest}
                 onToggleEdit={toggleEditForm}
@@ -692,7 +917,33 @@ export function RemoteTargetList({
                 row={row}
                 section={section}
                 busy={busyId != null}
-                connecting={busyId === row.id}
+                connecting={
+                  accountConnectingMachineKey === row.machine.machineKey
+                }
+                error={accountRowErrors[row.machine.machineKey] ?? null}
+                stageLabel={accountRowStages[row.machine.machineKey] ?? null}
+                successLabel={
+                  accountConnectionToasts[row.machine.machineKey]?.label ?? null
+                }
+                onPairNearby={
+                  nearbyPairingByAccountMachineKey.has(row.machine.machineKey)
+                    ? () => {
+                        const machine = nearbyPairingByAccountMachineKey.get(
+                          row.machine.machineKey,
+                        );
+                        if (!machine) return;
+                        setAccountRowErrors((current) => {
+                          if (!(row.machine.machineKey in current)) {
+                            return current;
+                          }
+                          const next = { ...current };
+                          delete next[row.machine.machineKey];
+                          return next;
+                        });
+                        openNearbyPairing(machine);
+                      }
+                    : null
+                }
                 detailOpen={testingId === row.id}
                 onToggleDetail={toggleTest}
                 onConnect={(machine) => void connectAccountMachine(machine)}

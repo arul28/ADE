@@ -55,6 +55,8 @@ export type AdeAccountMachine = {
   name: string | null;
   platform: string | null;
   deviceType: string | null;
+  /** Long-lived machine identity key used to verify sealed account adoption. */
+  pubkey?: string | null;
   reachableEndpoints: AdeAccountMachineEndpoint[];
   lastSeenAt: number | null;
   online: boolean;
@@ -90,4 +92,10 @@ export type AdeAccountMachinePairResult = {
   machineKey: string;
   deviceId: string;
   name: string;
+};
+
+export type AdeAccountPairMachineProgress = {
+  machineKey: string;
+  stage: "relay" | "tailnet" | "lan" | "verifying" | "opening";
+  label: string;
 };

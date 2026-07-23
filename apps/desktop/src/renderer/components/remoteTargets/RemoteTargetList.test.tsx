@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -49,6 +50,7 @@ const appMock = {
 const accountMock = {
   pairMachine: vi.fn(),
   getLocalMachineIdentity: vi.fn(),
+  onPairMachineProgress: vi.fn(),
 };
 
 function installAdeMock(): void {
@@ -62,6 +64,7 @@ function installAdeMock(): void {
   });
   remoteRuntimeMock.runDoctor.mockResolvedValue({ checks: [] });
   accountMock.getLocalMachineIdentity.mockResolvedValue({ machineKey: "local-mk", deviceId: "local-dev" });
+  accountMock.onPairMachineProgress.mockReturnValue(() => {});
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -73,6 +76,33 @@ function installAdeMock(): void {
   });
 }
 
+function accountMachine(
+  overrides: Partial<AdeAccountMachine> & Pick<AdeAccountMachine, "machineKey" | "name">,
+): AdeAccountMachine {
+  return {
+    deviceId: `${overrides.machineKey}-device`,
+    platform: "darwin",
+    deviceType: "desktop",
+    reachableEndpoints: [
+      {
+        kind: "relay",
+        url: `${DEFAULT_ADE_TUNNEL_RELAY_URL.replace("https:", "wss:")}/connect/${overrides.machineKey}`,
+      },
+    ],
+    lastSeenAt: Date.now(),
+    online: true,
+    ...overrides,
+  };
+}
+
+function getAccountRow(name: string): HTMLElement {
+  const row = screen.getByText(name).closest("[data-account-machine-key]");
+  if (!(row instanceof HTMLElement)) {
+    throw new Error(`Account row not found for ${name}`);
+  }
+  return row;
+}
+
 function openAddMode(label: "Find nearby Macs" | "Add over SSH"): void {
   fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
   fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label}`) }));
@@ -81,6 +111,7 @@ function openAddMode(label: "Find nearby Macs" | "Add over SSH"): void {
 describe("RemoteTargetList", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
     Reflect.deleteProperty(remoteRuntimeMock, "getConnectionSnapshot");
@@ -1112,6 +1143,271 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-account"),
     );
+  });
+
+  it("shows an account connect failure only on the machine that failed", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    accountMock.pairMachine.mockRejectedValue(
+      new Error("Account relay adoption failed."),
+    );
+    installAdeMock();
+
+    render(
+      <RemoteTargetList
+        accountMachines={[
+          accountMachine({ machineKey: "mk-failing", name: "Failing Studio" }),
+          accountMachine({ machineKey: "mk-other", name: "Other Studio" }),
+        ]}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+
+    await screen.findByText("Failing Studio");
+    const failingRow = getAccountRow("Failing Studio");
+    const otherRow = getAccountRow("Other Studio");
+    fireEvent.click(
+      within(failingRow).getByRole("button", { name: "Connect" }),
+    );
+
+    await waitFor(() =>
+      expect(
+        within(failingRow).getByText("Account relay adoption failed."),
+      ).toBeTruthy(),
+    );
+    expect(
+      within(otherRow).queryByText("Account relay adoption failed."),
+    ).toBeNull();
+  });
+
+  it("offers nearby pairing only for a failed account row with a matching discovered machine", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [
+        {
+          id: "nearby-studio",
+          serviceName: "ADE Sync Nearby Studio",
+          machineName: "Nearby Studio",
+          hostIdentity: "nearby-device",
+          hostName: "nearby-studio.local",
+          port: 8787,
+          addresses: ["192.168.1.55"],
+          primaryRoute: "192.168.1.55",
+          tailscaleAddress: null,
+          runtimeKind: "daemon",
+          runtimeVersion: "1.0.0",
+          connectable: true,
+          projectIds: [],
+          projectCount: 0,
+          lastSeenAt: Date.now(),
+        },
+      ],
+      diagnostics: [],
+    });
+    remoteRuntimeMock.parsePairingInput.mockResolvedValue({
+      hostIdentity: {
+        deviceId: "nearby-device",
+        siteId: "",
+        name: "Nearby Studio",
+        platform: "macOS",
+        deviceType: "desktop",
+      },
+      machineName: "Nearby Studio",
+      endpoints: ["wss://192.168.1.55:8787"],
+      requiresPin: true,
+    });
+    accountMock.pairMachine.mockRejectedValue(
+      new Error("ADE relay was unavailable."),
+    );
+    installAdeMock();
+
+    render(
+      <RemoteTargetList
+        accountMachines={[
+          accountMachine({
+            machineKey: "mk-nearby",
+            deviceId: "nearby-device",
+            name: "Nearby Studio",
+          }),
+          accountMachine({
+            machineKey: "mk-unmatched",
+            deviceId: "unmatched-device",
+            name: "No Nearby Match",
+          }),
+        ]}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+
+    await screen.findByText("Nearby Studio");
+    const matchingRow = getAccountRow("Nearby Studio");
+    const unmatchedRow = getAccountRow("No Nearby Match");
+
+    fireEvent.click(
+      within(matchingRow).getByRole("button", { name: "Connect" }),
+    );
+    await waitFor(() =>
+      expect(
+        within(matchingRow).getByRole("button", {
+          name: "It's on your network — Pair nearby instead ›",
+        }),
+      ).toBeTruthy(),
+    );
+
+    fireEvent.click(
+      within(unmatchedRow).getByRole("button", { name: "Connect" }),
+    );
+    await waitFor(() =>
+      expect(
+        within(unmatchedRow).getByText("ADE relay was unavailable."),
+      ).toBeTruthy(),
+    );
+    expect(
+      within(unmatchedRow).queryByRole("button", {
+        name: "It's on your network — Pair nearby instead ›",
+      }),
+    ).toBeNull();
+
+    fireEvent.click(
+      within(matchingRow).getByRole("button", {
+        name: "It's on your network — Pair nearby instead ›",
+      }),
+    );
+
+    const pinInput = await screen.findByLabelText("6-digit code");
+    await waitFor(() =>
+      expect(remoteRuntimeMock.parsePairingInput).toHaveBeenCalledWith(
+        expect.stringMatching(/^https:\/\/ade-app\.dev\/pair#/),
+      ),
+    );
+    expect(document.activeElement).toBe(pinInput);
+  });
+
+  it("shows account pairing progress on the matching row while it is connecting", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    accountMock.pairMachine.mockReturnValue(new Promise(() => {}));
+    installAdeMock();
+
+    render(
+      <RemoteTargetList
+        accountMachines={[
+          accountMachine({ machineKey: "mk-progress", name: "Progress Studio" }),
+        ]}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+
+    await screen.findByText("Progress Studio");
+    const row = getAccountRow("Progress Studio");
+    fireEvent.click(within(row).getByRole("button", { name: "Connect" }));
+    await waitFor(() =>
+      expect(accountMock.pairMachine).toHaveBeenCalledWith("mk-progress"),
+    );
+
+    const progressListener = accountMock.onPairMachineProgress.mock.calls[0]?.[0] as
+      | ((progress: {
+          machineKey: string;
+          stage: "relay";
+          label: string;
+        }) => void)
+      | undefined;
+    expect(progressListener).toBeTypeOf("function");
+    act(() => {
+      progressListener?.({
+        machineKey: "mk-progress",
+        stage: "relay",
+        label: "Connecting through ADE relay…",
+      });
+    });
+
+    expect(
+      within(row).getByText("Connecting through ADE relay…"),
+    ).toBeTruthy();
+  });
+
+  it("shows the winning account route briefly after connecting", async () => {
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    const savedTarget = {
+      id: "target-toast",
+      name: "Toast Studio",
+      hostname: "100.92.14.3",
+      transport: "paired" as const,
+      pairedMachine: {
+        hostIdentity: "toast-device",
+        machineKey: "mk-toast",
+      },
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([savedTarget]);
+    accountMock.pairMachine.mockResolvedValue({
+      targetId: savedTarget.id,
+      machineKey: "mk-toast",
+      deviceId: "toast-device",
+      name: "Toast Studio",
+    });
+    remoteRuntimeMock.connect.mockResolvedValue({
+      target: savedTarget,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      route: {
+        kind: "tailnet",
+        endpoint: "100.92.14.3",
+        latencyMs: 12,
+      },
+      projects: [],
+    });
+    installAdeMock();
+
+    render(
+      <RemoteTargetList
+        accountMachines={[
+          accountMachine({
+            machineKey: "mk-toast",
+            deviceId: "toast-device",
+            name: "Toast Studio",
+          }),
+        ]}
+        accountMachinesState="ok"
+        accountSignedIn
+      />,
+    );
+
+    await screen.findByText("Toast Studio");
+    const row = getAccountRow("Toast Studio");
+    vi.useFakeTimers();
+    fireEvent.click(within(row).getByRole("button", { name: "Connect" }));
+    await act(async () => {
+      for (let index = 0; index < 12; index += 1) {
+        await Promise.resolve();
+      }
+    });
+
+    expect(screen.getByText("Connected via Tailscale · 12ms")).toBeTruthy();
+    act(() => {
+      vi.advanceTimersByTime(4_000);
+    });
+    expect(screen.queryByText("Connected via Tailscale · 12ms")).toBeNull();
   });
 
   it("never lists this Mac as its own remote target (self-filter by machineKey or deviceId)", async () => {

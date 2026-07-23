@@ -1143,6 +1143,37 @@ describe("machine directory", () => {
     expect(await response.json()).toEqual({ error: "invalid request body" });
   });
 
+  it("stores and lists a bounded Ed25519 machine public key", async () => {
+    const env = makeEnv();
+    const token = await mintToken();
+    const pubkey = `ed25519:${Buffer.alloc(32, 4).toString("base64")}`;
+    const registered = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      { ...registerBody("machine-keyed"), pubkey },
+    ), env);
+    expect(registered.status).toBe(200);
+    expect(await registered.json()).toEqual(expect.objectContaining({ pubkey }));
+
+    const listed = await handleRequest(
+      request("GET", "/account/machines", token),
+      env,
+    );
+    expect(await listed.json()).toMatchObject({
+      machines: [expect.objectContaining({ pubkey })],
+    });
+
+    const oversized = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      token,
+      { ...registerBody("machine-oversized-key"), pubkey: "x".repeat(129) },
+    ), env);
+    expect(oversized.status).toBe(400);
+    expect(await oversized.json()).toEqual({ error: "invalid request body" });
+  });
+
   it("returns online and offline machines, online first and newest first", async () => {
     const env = makeEnv();
     const token = await mintToken({ sub: "user_1" });

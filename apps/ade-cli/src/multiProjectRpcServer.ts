@@ -123,6 +123,7 @@ const RUNTIME_METHODS = new Set([
   "runtimeEvents.unsubscribe",
   "sync.switchHost",
   "sync.getStatus",
+  "sync.runSelfProbe",
   "sync.refreshDiscovery",
   "sync.listDevices",
   "sync.updateLocalDevice",
@@ -1294,6 +1295,18 @@ export function createMultiProjectRpcRequestHandler(
         includeTransferReadiness: params.includeTransferReadiness === true,
         forceTransferReadiness: params.forceTransferReadiness === true,
       });
+    }
+
+    if (method === "sync.runSelfProbe") {
+      const scope = await scopeRegistry.resolveActiveSyncHost();
+      const syncService = scope?.runtime.syncService ?? null;
+      if (!syncService) {
+        return {
+          ok: false,
+          detail: "Relay self-probe skipped because no active sync host is available.",
+        };
+      }
+      return await syncService.runSelfProbe();
     }
 
     if (method === "sync.refreshDiscovery") {

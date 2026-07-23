@@ -26,6 +26,7 @@ import type {
   AdeAccountMachinePairResult,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
+  AdeAccountPairMachineProgress,
   AdeAccountLoginPoll,
   AdeAccountStatus,
 } from "../../../shared/types";
@@ -130,12 +131,26 @@ export type AccountBridge = {
   cancelLogin(sessionId: string): void;
   signOut(): AdeAccountStatus;
   listMachines(): Promise<AdeAccountMachinesResult>;
-  pairMachine(machineKey: string): Promise<AdeAccountMachinePairResult>;
+  pairMachine(
+    machineKey: string,
+    options?: AccountBridgePairMachineOptions,
+  ): Promise<AdeAccountMachinePairResult>;
+  onPairMachineProgress(
+    listener: (progress: AdeAccountPairMachineProgress) => void,
+  ): () => void;
   removeMachine(machineKey: string): Promise<AdeAccountMachineRemovalResult>;
+};
+
+export type AccountBridgePairMachineOptions = {
+  onProgress?: (progress: AdeAccountPairMachineProgress) => void;
 };
 
 export function createAccountBridge(options: AccountBridgeOptions): AccountBridge {
   const secretsDir = resolveMachineAdeLayout().secretsDir;
+  const pairMachineProgressListeners = new Set<
+    (progress: AdeAccountPairMachineProgress) => void
+  >();
+  const accountMachineNames = new Map<string, string>();
 
   const service = () =>
     getSharedAccountAuthService({
@@ -194,21 +209,89 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     signOut: () => {
       const accountService = service();
       const status = accountService.signOut();
+      accountMachineNames.clear();
       reconcileLocalMachines(null);
       return toAccountStatus(status, configured());
     },
 
     listMachines: async (): Promise<AdeAccountMachinesResult> => {
       const result = await directoryService().listMachines();
-      if (result.state === "auth_expired") reconcileLocalMachines(null);
+      if (result.state === "ok") {
+        accountMachineNames.clear();
+        for (const machine of result.machines) {
+          const name = machine.name?.trim() || machine.machineKey;
+          accountMachineNames.set(machine.machineKey, name);
+          if (machine.deviceId?.trim()) {
+            accountMachineNames.set(machine.deviceId.trim(), name);
+          }
+          if (machine.name?.trim()) {
+            accountMachineNames.set(machine.name.trim().toLowerCase(), name);
+          }
+        }
+      }
+      if (result.state === "auth_expired") {
+        accountMachineNames.clear();
+        reconcileLocalMachines(null);
+      }
       if (result.state === "unavailable") {
         options.logger?.warn("account.machines_fetch_failed", { state: result.state });
       }
       return result;
     },
 
-    pairMachine: async (machineKey: string): Promise<AdeAccountMachinePairResult> => {
-      return await directoryService().pairMachine(machineKey);
+    pairMachine: async (
+      machineKey: string,
+      pairOptions: AccountBridgePairMachineOptions = {},
+    ): Promise<AdeAccountMachinePairResult> => {
+      const emitProgress = (progress: AdeAccountPairMachineProgress): void => {
+        try {
+          pairOptions.onProgress?.(progress);
+        } catch {
+          // Progress reporting is best-effort and must not abort adoption.
+        }
+        for (const listener of pairMachineProgressListeners) {
+          try {
+            listener(progress);
+          } catch {
+            // One window listener must not prevent the pair attempt or other listeners.
+          }
+        }
+      };
+      const result = await directoryService().pairMachine(machineKey, {
+        onStage: ({ kind, phase }) => {
+          const machineName = accountMachineNames.get(machineKey)
+            ?? accountMachineNames.get(machineKey.trim().toLowerCase())
+            ?? machineKey;
+          if (phase === "verifying") {
+            emitProgress({
+              machineKey,
+              stage: "verifying",
+              label: `Verifying it's really ${machineName}…`,
+            });
+            return;
+          }
+          emitProgress({
+            machineKey,
+            stage: kind,
+            label: kind === "relay"
+              ? "Connecting through ADE relay…"
+              : kind === "tailnet"
+                ? "Trying Tailscale…"
+                : "Trying local network…",
+          });
+        },
+      });
+      emitProgress({
+        machineKey,
+        stage: "opening",
+        label: "Opening connection…",
+      });
+      return result;
+    },
+
+    onPairMachineProgress: (listener) => {
+      pairMachineProgressListeners.add(listener);
+      return () => pairMachineProgressListeners.delete(listener);
     },
 
     removeMachine: async (machineKey: string): Promise<AdeAccountMachineRemovalResult> => {

@@ -99,7 +99,7 @@ export function reconcileAccountOwnedMachineTrust(
 
 export type AccountMachinePairOptions = Pick<
   PairWithAccountMachineOptions,
-  "connectTimeoutMs" | "pairingTimeoutMs" | "signal"
+  "connectTimeoutMs" | "pairingTimeoutMs" | "signal" | "onStage"
 >;
 
 export type AccountMachineListOptions = {

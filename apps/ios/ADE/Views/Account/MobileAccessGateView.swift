@@ -10,6 +10,8 @@ struct MobileAccessGateView: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var presentedSheet: MobileAccessGateSheet?
   @State private var accountConnectionError: String?
+  @State private var pinPreset: PinPreset?
+  @State private var pinSetupRoute: PinSetupRoute?
 
   var body: some View {
     NavigationStack {
@@ -86,11 +88,31 @@ struct MobileAccessGateView: View {
               }
               .buttonStyle(.plain)
 
-              if let accountConnectionError {
-                Text(accountConnectionError)
-                  .font(.footnote)
-                  .foregroundStyle(ADEColor.danger)
+              if syncService.connectionState == .connecting,
+                 let stage = syncService.accountConnectStageLabel {
+                Text(stage)
+                  .font(.footnote.weight(.medium))
+                  .foregroundStyle(ADEColor.textSecondary)
                   .multilineTextAlignment(.center)
+                  .transition(.opacity)
+              }
+
+              if let accountConnectionError {
+                VStack(spacing: 8) {
+                  Text(accountConnectionError)
+                    .font(.footnote)
+                    .foregroundStyle(ADEColor.danger)
+                    .multilineTextAlignment(.center)
+                  if let fallbackHost = syncService.accountPairingPinFallbackHost {
+                    Button("Pair with PIN instead") {
+                      pinPreset = .discover(fallbackHost)
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(ADEColor.accent)
+                    .frame(minHeight: 44)
+                    .buttonStyle(.plain)
+                  }
+                }
               }
             }
             .frame(maxWidth: 420)
@@ -116,19 +138,46 @@ struct MobileAccessGateView: View {
         ConnectionSettingsView(syncService: syncService, pairingOnly: true)
       }
     }
+    .sheet(item: $pinPreset) { preset in
+      SettingsPinSheet(
+        preset: preset,
+        syncService: syncService,
+        onNeedsPinSetup: { route in
+          pinPreset = nil
+          pinSetupRoute = route
+        }
+      )
+      .presentationDetents([.large])
+    }
+    .sheet(item: $pinSetupRoute) { route in
+      SettingsPinSetupSheet(
+        route: route,
+        onTryAgain: { preset in
+          pinSetupRoute = nil
+          pinPreset = preset
+        }
+      )
+      .presentationDetents([.large])
+    }
     .onChange(of: syncService.requestedPairingQrNavigation?.id) { _, requestId in
       guard requestId != nil else { return }
       presentedSheet = .pairMachine
     }
     .onChange(of: syncService.hasPairedHost) { _, isPaired in
-      guard isPaired, presentedSheet == .pairMachine else { return }
-      presentedSheet = nil
-      onContinue()
+      guard isPaired else { return }
+      if presentedSheet == .pairMachine {
+        presentedSheet = nil
+        onContinue()
+      } else if pinPreset != nil {
+        pinPreset = nil
+        onContinue()
+      }
     }
   }
 
   private func connectToAccountMachine(_ machine: AccountMachine) {
     Task { @MainActor in
+      accountConnectionError = nil
       guard let authorization = AccountService.shared.currentPairingAuthorization else {
         accountConnectionError = "Your account session ended. Sign in again, then choose your Mac."
         return
@@ -138,6 +187,7 @@ struct MobileAccessGateView: View {
         authorization: authorization
       )
       if connected {
+        ADEHaptics.medium()
         onContinue()
       } else {
         accountConnectionError = syncService.lastError ?? "ADE could not connect to that Mac. Try again."

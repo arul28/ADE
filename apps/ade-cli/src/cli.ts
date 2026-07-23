@@ -11824,6 +11824,11 @@ function buildCliPlan(
           params: { includeTransferReadiness: false },
           optional: true,
         },
+        {
+          key: "relaySelfProbe",
+          method: "sync.runSelfProbe",
+          optional: true,
+        },
       ],
     };
   }
@@ -12576,6 +12581,49 @@ function checkSyncReadiness(value: unknown): ReadinessCheck & {
   };
 }
 
+function checkRelaySelfProbeReadiness(
+  value: unknown,
+  brainRunning: boolean,
+): ReadinessCheck {
+  if (!brainRunning) {
+    return {
+      ready: true,
+      status: "unavailable",
+      message: "Skipped — no running ADE brain.",
+    };
+  }
+  if (!isRecord(value)) {
+    return {
+      ready: false,
+      status: "unavailable",
+      message: "Relay self-probe verdict is unavailable.",
+    };
+  }
+  const detail = asString(value.detail)
+    ?? asString(isRecord(value.error) ? value.error.message : value.error)
+    ?? "Relay self-probe returned no detail.";
+  if (value.ok === true) {
+    return {
+      ready: true,
+      status: "ready",
+      message: detail,
+    };
+  }
+  if (/skipped/i.test(detail)) {
+    return {
+      ready: true,
+      status: "unavailable",
+      message: detail,
+    };
+  }
+  return {
+    ready: false,
+    status: "warning",
+    message: `FAILED: ${detail}`,
+    nextAction: "Run 'ade sync status --text' and resolve the Relay failure.",
+  };
+}
+
 function requireAdeLayout(): {
   resolveAdeLayout: (projectRoot: string) => { secretsDir: string };
 } {
@@ -12634,6 +12682,10 @@ function buildReadinessSnapshot(args: {
     path: checkPathReadiness(),
     storage: checkStorageReadiness(connection.projectRoot),
     sync: checkSyncReadiness(values.syncStatus),
+    relaySelfProbe: checkRelaySelfProbeReadiness(
+      values.relaySelfProbe,
+      connection.mode !== "headless",
+    ),
   };
   const recommendations = Object.entries(checks)
     .filter(([, check]) => check.nextAction)
@@ -12710,6 +12762,7 @@ function buildReadinessSnapshot(args: {
     path: checks.path,
     storage: checks.storage,
     sync: checks.sync,
+    relaySelfProbe: checks.relaySelfProbe,
     auth: {
       localProjectAccess: projectInitialized && actions.length > 0,
       providerSecretsExposed: false,
@@ -16108,6 +16161,25 @@ function isSyncWebPairingCliOutput(value: unknown): value is SyncWebPairingCliOu
   );
 }
 
+function relativeTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return value;
+  const deltaMs = Date.now() - timestamp;
+  const future = deltaMs < 0;
+  const seconds = Math.max(0, Math.round(Math.abs(deltaMs) / 1_000));
+  if (seconds < 5) return "just now";
+  const units: Array<[number, string]> = [
+    [86_400, "day"],
+    [3_600, "hour"],
+    [60, "minute"],
+    [1, "second"],
+  ];
+  const [unitSeconds, label] = units.find(([size]) => seconds >= size) ?? units.at(-1)!;
+  const amount = Math.max(1, Math.floor(seconds / unitSeconds));
+  const phrase = `${amount} ${label}${amount === 1 ? "" : "s"}`;
+  return future ? `in ${phrase}` : `${phrase} ago`;
+}
+
 function formatSyncStatus(value: unknown): string {
   const snapshot = isRecord(value) ? value : {};
   const routeHealth = isRecord(snapshot.routeHealth) ? snapshot.routeHealth : {};
@@ -16163,6 +16235,19 @@ function formatSyncStatus(value: unknown): string {
     relayState = asString(relay.lastControlError)
       ?? (relay.enabled === true ? "not reachable" : "disabled");
   }
+  const relayEndToEndFailure = asString(relay.relayEndToEndFailure);
+  const relayEndToEndVerifiedAt = asString(relay.relayEndToEndVerifiedAt);
+  const relayEndToEndRoundTripMs = typeof relay.relayEndToEndRoundTripMs === "number"
+    && Number.isFinite(relay.relayEndToEndRoundTripMs)
+    ? Math.max(0, Math.round(relay.relayEndToEndRoundTripMs))
+    : null;
+  const relayEndToEndState = relayEndToEndFailure
+    ? `FAILED: ${relayEndToEndFailure}`
+    : relayEndToEndVerifiedAt
+      ? `verified ${relativeTime(relayEndToEndVerifiedAt)}${
+          relayEndToEndRoundTripMs == null ? "" : ` (${relayEndToEndRoundTripMs}ms)`
+        }`
+      : "not yet verified";
   const transferReadiness = isRecord(snapshot.transferReadiness)
     ? snapshot.transferReadiness
     : null;
@@ -16194,6 +16279,7 @@ function formatSyncStatus(value: unknown): string {
     ["relay control error", relay.lastControlError],
     ["relay control opened", relay.lastControlOpenAt],
     ["relay bridge validated", relay.lastBridgeValidationAt],
+    ["relay end-to-end", relayEndToEndState],
     ["account directory", accountParts.join(" · ")],
     ["directory reason", skipReason],
     ["directory attempt", lastAttempt],
@@ -17843,6 +17929,10 @@ function formatTextOutput(
         isRecord(value) && isRecord(value.storage) ? value.storage : {};
       const sync =
         isRecord(value) && isRecord(value.sync) ? value.sync : {};
+      const relaySelfProbe =
+        isRecord(value) && isRecord(value.relaySelfProbe)
+          ? value.relaySelfProbe
+          : {};
       const recommendations =
         isRecord(value) && Array.isArray(value.recommendations)
           ? value.recommendations
@@ -17867,6 +17957,7 @@ function formatTextOutput(
           ["path", pathStatus.message],
           ["storage", storage.message],
           ["sync", sync.message],
+          ["relay self-probe", relaySelfProbe.message],
           ["recommendation", isRecord(value) ? value.recommendation : null],
         ]),
         ...(recommendations.length

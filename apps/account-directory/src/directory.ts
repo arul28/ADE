@@ -62,6 +62,7 @@ type AccountRoute =
   | { kind: "delete"; machineKey: string };
 
 export const DEFAULT_ONLINE_WINDOW_MS = 90_000;
+const MAX_PUBKEY_CHARS = 128;
 const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 type CallerTokenFailureReason =
@@ -181,6 +182,7 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
     || !platform
     || !deviceType
     || pubkey === undefined
+    || (pubkey !== null && pubkey.length > MAX_PUBKEY_CHARS)
     || !reachableEndpoints
     || typeof retainRelayEndpoints !== "boolean"
   ) {

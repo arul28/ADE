@@ -23,6 +23,8 @@ struct HubQuickConnectSection: View {
 
   @State private var connectingId: String?
   @State private var errorText: String?
+  @State private var pinPreset: PinPreset?
+  @State private var pinSetupRoute: PinSetupRoute?
 
   private enum Target: Identifiable {
     case account(AccountMachine)
@@ -105,12 +107,30 @@ struct HubQuickConnectSection: View {
             .font(.subheadline.bold())
             .frame(minHeight: 44)
           }
-          if let errorText {
-            Text(errorText)
-              .font(.caption)
-              .foregroundStyle(ADEColor.danger)
+          if connectingId != nil, let stage = syncService.accountConnectStageLabel {
+            Text(stage)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(ADEColor.textSecondary)
               .multilineTextAlignment(.center)
               .frame(maxWidth: .infinity)
+          }
+          if let errorText {
+            VStack(spacing: 7) {
+              Text(errorText)
+                .font(.caption)
+                .foregroundStyle(ADEColor.danger)
+                .multilineTextAlignment(.center)
+              if let fallbackHost = syncService.accountPairingPinFallbackHost {
+                Button("Pair with PIN instead") {
+                  pinPreset = .discover(fallbackHost)
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(ADEColor.accent)
+                .frame(minHeight: 44)
+                .buttonStyle(.plain)
+              }
+            }
+            .frame(maxWidth: .infinity)
           }
         }
       } else if showsEmptyNote {
@@ -129,6 +149,27 @@ struct HubQuickConnectSection: View {
     }
     .frame(maxWidth: 420)
     .task { await account.loadMachines() }
+    .sheet(item: $pinPreset) { preset in
+      SettingsPinSheet(
+        preset: preset,
+        syncService: syncService,
+        onNeedsPinSetup: { route in
+          pinPreset = nil
+          pinSetupRoute = route
+        }
+      )
+      .presentationDetents([.large])
+    }
+    .sheet(item: $pinSetupRoute) { route in
+      SettingsPinSetupSheet(
+        route: route,
+        onTryAgain: { preset in
+          pinSetupRoute = nil
+          pinPreset = preset
+        }
+      )
+      .presentationDetents([.large])
+    }
   }
 
   private func accountKey(_ machine: AccountMachine) -> String { "account-\(machine.id)" }

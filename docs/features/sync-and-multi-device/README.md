@@ -239,9 +239,20 @@ Runtime support files outside `services/sync/`:
   because `syncPairingConnectInfo.buildAddressCandidates` now classifies the
   saved `lastHost` as `lan`/`tailscale` when it matches the current address set
   (instead of the opaque `saved` kind that was silently dropped from the
-  directory), a machine's LAN routes publish correctly. The `relay` endpoint is
+  directory), a machine's LAN routes publish correctly. Each row also carries
+  the machine's long-lived Ed25519 identity key as `pubkey`
+  (`ed25519:<base64>`, from `machineIdentitySigningStore`); the publisher fails
+  the publication closed (`machine_key_unavailable`) rather than advertise a
+  row with a missing key, because that key is what a client verifies before
+  trusting a sealed `ade-adopt-v1` adoption over a non-relay route (see
+  *Sealed account adoption* in the Security model). The `relay` endpoint is
   gated on `routeHealth.relay.relayBridgeValidated`, which the tunnel client now
-  sets proactively (see `syncTunnelClientService.ts`) so the relay route appears
+  sets proactively (see `syncTunnelClientService.ts`), **and** on the tunnel
+  client's end-to-end verdict — a present `relayEndToEndVerifiedAt` with no
+  `relayEndToEndFailure` — so a control that connects but cannot actually
+  round-trip through the relay never publishes a `relay` endpoint. A verified
+  route can be retained across a transient drop, but a route with a live
+  end-to-end failure is never retained. The relay route therefore appears
   in the directory without waiting for an external client to open the first
   tunnel. A 30-second heartbeat keeps the Worker row inside its 90-second online
   window. Failed publications retry after 1, 2, 5, 10, then 20 seconds so a
@@ -311,7 +322,10 @@ Runtime support files outside `services/sync/`:
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
   reset stale cursors when a daemon restarts or history was evicted.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — machine-level JSON-RPC
-  surface for `projects.*`, `sync.*`, `runtimeEvents.*`, project-scoped
+  surface for `projects.*`, `sync.*` (including `sync.runSelfProbe`, which
+  resolves the active sync host and runs the tunnel client's relay end-to-end
+  probe, or returns a skipped verdict when no host is active),
+  `runtimeEvents.*`, project-scoped
   `ade/actions/call`, and project-independent `personalChats.call` /
   `personalChats.streamEvents`. Runtime-event subscribe replies include the gap
   fields above; `projects.list` resolves at most 24 host-side icons within
@@ -430,7 +444,17 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   rejection is attributed with the rejecting machine's
   `host: { deviceId, name }` — read from `readBrainMetadata()` — so a
   client can only ever drop a saved pairing when the rejection came from
-  the machine it is actually paired with), per-peer state,
+  the machine it is actually paired with), the sealed `ade-adopt-v1`
+  account-adoption handshake (`account_challenge` → `account_challenge_ok` →
+  a `hello` whose `auth.kind` is `account_sealed`: the host signs the client's
+  nonce over an ephemeral X25519 exchange with its `machineIdentitySigningStore`
+  key, derives the session key, unseals the account credentials from the sealed
+  hello, and returns the paired credentials in a sealed `hello_ok`; a completed
+  single-use challenge is required, well-formed challenges feed no rate limiter
+  while malformed/anomalous ones charge a per-IP + global cooldown, and unsealed
+  `account_sealed` adoption is the one account path allowed over a direct
+  LAN/tailnet route — plaintext `account` bearers still require the
+  `relay-bridge` transport origin), per-peer state,
   changeset fan-out + ack tracking (bounded, windowed exports and smaller-batch
   recovery from the last acknowledged cursor — see `crdt-model.md`), per-peer
   foreground-first scheduling (each peer has its own serialized
@@ -695,6 +719,20 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `~/.ade/secrets/sync-security.json` (chmod `0600`). Owns the
   `requireDpop` flag with the `ADE_SYNC_REQUIRE_DPOP=1|0` env override; both
   the per-project host and the brain ingress handler read it.
+- `machineIdentitySigningStore.ts` — the machine's long-lived Ed25519 identity
+  keypair at `~/.ade/secrets/machine-identity-signing.json` (chmod `0600`,
+  lazily generated, cached per file path, regenerated if corrupt). The public
+  key is published as the directory row's `pubkey`; the private key signs the
+  `ade-adopt-v1` challenge so a client can verify it is talking to the machine
+  it selected before releasing any account credential. Shared by the host
+  service and the account-directory publisher.
+- `apps/desktop/src/shared/sync/adoptChannelCrypto.ts` — the shared
+  `ade-adopt-v1` primitives used on both sides of sealed account adoption:
+  X25519 ephemeral key generation, the canonical challenge signature input,
+  HKDF-SHA256 session-key derivation over the X25519 shared secret + nonce,
+  ChaCha20-Poly1305 `seal`/`unseal` with context-bound AAD, and Ed25519
+  sign/verify against the raw published key. Also imported by
+  `machineIdentitySigningStore.ts` for SPKI↔raw key conversion.
 - `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity at
   `~/.ade/secrets/sync-cloud-relay.json` (lazily-minted 32-hex `machineKey` +
   HMAC `secret`, chmod `0600`). The identity is stable in normal operation.
@@ -733,9 +771,32 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   strictly serialized, and the port plus loopback identity
   are checked again before pipe creation so a listener change cannot reuse a
   stale result. The control socket uses native WebSocket ping frames every 30
-  seconds with a 10-second pong deadline; a miss terminates it and enters the
-  guarded reconnect state machine without waking the hibernated Durable Object
-  with JSON traffic. Opens that fail validation, local-listener setup, or pipe
+  seconds with a 10-second pong deadline. Because a hibernated or wedged
+  Durable Object can leave the Cloudflare edge answering those transport-level
+  pings while the machine's control registration is already dead (a "zombie"
+  control), a **low-frequency application-level JSON keepalive** runs alongside
+  it: the client sends `{t:"ping"}` on the control every
+  `CONTROL_JSON_PING_INTERVAL_MS` (180 s, first ping after ~1 s) and expects a
+  `{t:"pong"}` within `CONTROL_JSON_PONG_DEADLINE_MS` (30 s). A miss on either
+  liveness path terminates the socket and enters the guarded reconnect state
+  machine; a JSON-keepalive miss additionally records a
+  `relay control unreachable at relay (zombie socket)` failure, drops
+  end-to-end verification, and logs `sync_tunnel.zombie_control_detected`.
+  Beyond liveness, the client verifies the relay path **end-to-end** with
+  `runSelfProbe()`: it dials the relay exactly like a ready-v2 controller
+  (`syncRelaySelfProbe.probeRelayEndToEnd`) and only treats the route as
+  verified once it sees `accepted`+`ready` v2 back through its own bridge. The
+  probe runs (debounced ~2 s) whenever the control reaches ready and whenever
+  the local bridge re-validates, and its verdict — `relayEndToEndVerifiedAt`,
+  `relayEndToEndFailure`, `relayEndToEndRoundTripMs` on the status — is what
+  the account-directory publisher additionally gates the `relay` endpoint on
+  (see `accountMachinePublisherService.ts`), so a control that connects but
+  whose bridge cannot actually round-trip stays unpublished. A probe failure
+  terminates the control as a zombie; an `atCapacity` close (relay code `4503`
+  `CLOSE_TOO_MANY`, sent only after the machine's control is confirmed
+  registered) is treated as liveness proof and renders no verdict, leaving
+  prior verification/publication state untouched. Opens that fail validation,
+  local-listener setup, or pipe
   setup send a bounded `{t:"reject"}` signal so the waiting controller closes
   immediately instead of hanging. A real pipe/local setup error or timeout is
   also a generation-scoped publication blocker until a fresh tunnel reaches
@@ -748,11 +809,21 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   preserves the causal failure rather than replacing it with a generic WebSocket error:
   upgrade rejection captures the HTTP status and at most 512 sanitized response
   bytes; close telemetry records code, reason, and whether the socket opened.
-  `sync_tunnel.claimed`, `.claim_failed`, `.control_open`, `.control_error`, and
-  `.control_close` are the structured lifecycle events. `routeHealth.relay`
-  exposes `skipReason` / `lastControlError`, while
+  `sync_tunnel.claimed`, `.claim_failed`, `.control_open`, `.control_error`,
+  `.control_close`, `.self_probe_ok`, `.self_probe_failed`,
+  `.self_probe_at_capacity`, and `.zombie_control_detected` are the structured
+  lifecycle events. `routeHealth.relay`
+  exposes `skipReason` / `lastControlError` plus the end-to-end verdict, while
   `lastControlOpenAt` and `lastBridgeValidationAt` retain the two independent
   success histories.
+- `syncRelaySelfProbe.ts` — `probeRelayEndToEnd`, the stateless relay
+  round-trip check used by the tunnel client's `runSelfProbe`. It opens
+  `wss://<relay>/connect/<machineKey>?ready=2`, requires an `accepted` v2 first
+  frame then a `ready` v2 second frame within a 15 s timeout, and reports
+  `{ ok, roundTripMs }` on success. A close before `ready` is a failure, but a
+  `4503` `CLOSE_TOO_MANY` close (the relay's at-capacity signal, sent only for a
+  registered control) is flagged `atCapacity` so the caller treats it as
+  liveness proof rather than a zombie/failure.
 - `relayAuthorization.ts` — lease renewal for already-authenticated Relay
   peers. A capable controller refreshes before expiry with a DPoP signature
   bound to the exact token bytes, device id, host challenge, timestamp, and
@@ -838,7 +909,10 @@ iOS service files (`apps/ios/ADE/Services/`):
   snapshots, PR mobile snapshot persistence, and integration proposal
   fields mirrored from desktop schema.
 - `SyncService.swift` — WebSocket client, envelope encoding (zlib),
-  command routing, keychain integration, PIN-based pairing, lane
+  command routing, keychain integration, PIN-based pairing, the sealed
+  `ade-adopt-v1` account-adoption client (challenge/verify against the
+  directory `pubkey`, sealed `account_sealed` hello, and relay → Tailscale →
+  LAN route fallback with per-stage progress and a PIN-pairing fallback), lane
   presence announcements, terminal subscribe/unsubscribe tracking,
   terminal input/resize senders, mobile CLI launch/continuation,
   external-session list/import commands for Work,
@@ -1125,7 +1199,10 @@ Envelopes are JSON with fields:
 {
   version: 1,
   type: "hello" | "hello_ok" | "hello_error" | "pairing_request" |
-        "pairing_result" | "changeset_batch" | "changeset_ack" |
+        "pairing_result" |
+        "account_challenge" | "account_challenge_ok" |
+        "account_challenge_error" |
+        "changeset_batch" | "changeset_ack" |
         "heartbeat" | "file_request" | "file_response" |
         "terminal_subscribe" | "terminal_unsubscribe" |
         "terminal_snapshot" | "terminal_data" | "terminal_exit" |
@@ -1366,14 +1443,16 @@ feature is merged or because a deliberately isolated-port host is running.
   active), so a paired hello cannot skip proof-of-possession by racing a
   connection during a host restart. Keys are not restorable from
   device backups — a restored phone re-pairs with the PIN.
-- **Account bearer transport**: every `hello.auth.kind = "account"` is
+- **Account bearer transport (plaintext `account`)**: every
+  `hello.auth.kind = "account"` is
   accepted only when the shared listener verified that the socket came from
   ADE's in-process cloud-relay bridge. The tunnel client attaches a private,
   per-process 256-bit proof to its loopback WebSocket upgrade; the listener
   validates the decoded proof with a constant-time comparison and carries the
   resulting `relay-bridge` provenance through parked-socket host handoffs.
   Missing, forged, or stale proof fails closed as a direct connection. The
-  runtime rejects account auth on LAN, tailnet, loopback, and every other
+  runtime rejects the plaintext `account` bearer on LAN, tailnet, loopback, and
+  every other
   direct route before verifying the bearer, even when that device already has
   a pairing record. Existing devices use `auth.kind = "paired"` with their
   durable per-device secret and pinned DPoP key on direct routes; PIN pairing
@@ -1382,6 +1461,27 @@ feature is merged or because a deliberately isolated-port host is running.
   bearer stolen outside ADE: generic bearer replay through a TLS relay remains
   possible until the account session/token is sender-constrained to a device
   key or equivalent platform attestation.
+- **Sealed account adoption (`ade-adopt-v1`)**: the account credential can also
+  reach a machine over a **direct** LAN/tailnet route — not just the relay —
+  without ever exposing the bearer in plaintext, using a sealed handshake keyed
+  to the host's published `pubkey`. The client sends `account_challenge` with a
+  nonce and an ephemeral X25519 public key; the host replies
+  `account_challenge_ok` with its own X25519 ephemeral key and an Ed25519
+  signature (from `machineIdentitySigningStore`) over the canonical
+  `ade-adopt-v1 | hostDeviceId | nonce | clientEph | hostEph | ts` string. The
+  client **verifies that signature against the directory-published `pubkey`
+  before releasing any credential**, so a machine cannot be impersonated on a
+  LAN. Both sides derive the same ChaCha20-Poly1305 key via HKDF-SHA256 over the
+  X25519 shared secret and nonce; the client then sends a `hello` with
+  `auth.kind = "account_sealed"` carrying the sealed account attestation, and
+  the host returns the minted paired credentials in a sealed `hello_ok`. The
+  challenge is single-use and TTL-bounded (60 s); it is required before a sealed
+  hello is accepted. `ade-adopt-v1` protects the exchanged *credentials* (bearer,
+  DPoP proof, minted secret), not the confidentiality of the subsequent session:
+  after adopting over a plaintext `ws://` route the ongoing sync stream has the
+  same on-path exposure as any other direct paired reconnect. See the client
+  connect-flow narrative in
+  [Remote Runtime](../remote-runtime/README.md#connect-flow).
 - **Pairing**: direct machine-to-machine Nearby and phone QR/Nearby pairing use
   the same user-approved PIN + DPoP flow. The desktop synthesizes its Nearby
   pairing input from discovery; it does not expose a Share link or manual
@@ -1446,7 +1546,15 @@ feature is merged or because a deliberately isolated-port host is running.
   when signed in after this release. The live relay URL is also advertised to
   already-paired phones in `hello_ok` / `brain_status`
   (`cloudRelayWssUrl`), so devices paired before the relay existed learn
-  the route without re-scanning a QR.
+  the route without re-scanning a QR. Relay publication is **honest**: the host
+  advertises a `relay` endpoint in the account directory only after an
+  end-to-end self-probe (`syncRelaySelfProbe`) confirms a controller-shaped dial
+  actually round-trips back through its own bridge, and it keeps that route
+  live with an application-level `{t:"ping"}`/`{t:"pong"}` control keepalive
+  that catches "zombie" controls the Cloudflare edge still answers at the
+  transport layer after the Durable Object has died (see
+  `syncTunnelClientService.ts`). A control that connects but cannot round-trip,
+  or that goes zombie, is torn down and never publishes a relay route.
 - **Secret isolation**: each device stores its own pairing secret in
   its OS keychain.
 - **One-release trust reset**: the first packaged desktop launch carrying the
@@ -1504,6 +1612,8 @@ feature is merged or because a deliberately isolated-port host is running.
 | QR pairing UX | Implemented (payload v3 smart URL + iOS camera scanner; PIN entered separately) |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
 | Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented whenever the host is signed in, with no separate toggle and with same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
+| Relay end-to-end self-probe + zombie-control detection (honest relay publication) | Implemented (`syncRelaySelfProbe`, JSON control keepalive, `sync.runSelfProbe`, `ade doctor` relay check) |
+| Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, relay → tailnet → LAN fallback) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
 | Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |

@@ -38,6 +38,11 @@ struct ConnectionSettingsView: View {
                 onDisconnect: { syncService.disconnectForUserConnectionChange() },
                 onReconnect: {
                   Task { await syncService.reconnectForUserConnectionChange() }
+                },
+                onPairWithPin: {
+                  if let host = syncService.accountPairingPinFallbackHost {
+                    pinPreset = .discover(host)
+                  }
                 }
               )
 
@@ -66,6 +71,11 @@ struct ConnectionSettingsView: View {
                 onDisconnect: { syncService.disconnectForUserConnectionChange() },
                 onReconnect: {
                   Task { await syncService.reconnectForUserConnectionChange() }
+                },
+                onPairWithPin: {
+                  if let host = syncService.accountPairingPinFallbackHost {
+                    pinPreset = .discover(host)
+                  }
                 }
               )
             }
@@ -73,7 +83,12 @@ struct ConnectionSettingsView: View {
 
             // 3. Connections: your machines (top 3 + See all), then how to add.
             VStack(alignment: .leading, spacing: 16) {
-              SettingsMachinesSection(syncService: syncService)
+              SettingsMachinesSection(
+                syncService: syncService,
+                onPairWithPin: { host in
+                  pinPreset = .discover(host)
+                }
+              )
 
               SettingsPairingSection(
                 snapshot: presentationModel.pairingSnapshot,
@@ -141,6 +156,15 @@ struct ConnectionSettingsView: View {
         .presentationDetents([.large])
       }
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
+      .overlay(alignment: .top) {
+        if let label = syncService.accountConnectSuccessLabel {
+          AccountConnectStatusToast(label: label)
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+      }
+      .animation(.spring(response: 0.35, dampingFraction: 0.86), value: syncService.accountConnectSuccessLabel)
       .onAppear {
         presentationModel.bind(to: syncService)
         if let request = syncService.requestedPairingQrNavigation {
@@ -186,10 +210,13 @@ struct ConnectionSettingsView: View {
       guard let authorization = AccountService.shared.currentPairingAuthorization else {
         return
       }
-      _ = await syncService.pairWithAccountMachine(
+      let connected = await syncService.pairWithAccountMachine(
         machine,
         authorization: authorization
       )
+      if connected {
+        ADEHaptics.medium()
+      }
     }
   }
 
@@ -228,6 +255,8 @@ struct SettingsConnectionSnapshot: Equatable {
   var pendingHostName: String?
   var canReconnectToSavedHost: Bool
   var errorMessage: String?
+  var accountConnectStageLabel: String?
+  var canPairWithPin = false
   var hostCompatibilityMode: SyncHostCompatibilityMode = .unknown
   var hostCompatibilityMissingActions: [String] = []
 }
@@ -311,6 +340,8 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         pendingHostName: health.transport == .connecting || health.transport == .unreachable ? hostDisplayName : nil,
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
         errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
+        accountConnectStageLabel: syncService.accountConnectStageLabel,
+        canPairWithPin: syncService.accountPairingPinFallbackHost != nil,
         hostCompatibilityMode: syncService.hostCompatibilityMode,
         hostCompatibilityMissingActions: syncService.hostCompatibilityMissingActions
       )
@@ -636,6 +667,7 @@ private func mobileUsageSettingsResetLabel(_ iso: String) -> String {
 /// tapped row (M14) rather than in a separate lower banner.
 struct SettingsMachinesSection: View {
   let syncService: SyncService
+  let onPairWithPin: (DiscoveredSyncHost) -> Void
   @ObservedObject private var account = AccountService.shared
 
   @State private var seeAllPresented = false
@@ -832,9 +864,27 @@ struct SettingsMachinesSection: View {
       .accessibilityHint(tappable ? "Connect." : "")
 
       if let error = rowErrors[entry.id] {
-        Text(error)
+        VStack(alignment: .leading, spacing: 7) {
+          Text(error)
+            .font(.caption)
+            .foregroundStyle(ADEColor.danger)
+            .fixedSize(horizontal: false, vertical: true)
+          if let fallbackHost = pinFallbackHost(for: entry) {
+            Button("Pair with PIN instead") {
+              onPairWithPin(fallbackHost)
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+            .frame(minHeight: 44)
+            .buttonStyle(.plain)
+          }
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+      } else if isConnecting, let stage = syncService.accountConnectStageLabel {
+        Text(stage)
           .font(.caption)
-          .foregroundStyle(ADEColor.danger)
+          .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
           .padding(.horizontal, 12)
           .padding(.top, 6)
@@ -855,6 +905,15 @@ struct SettingsMachinesSection: View {
     case .saved:
       return machineDeviceSymbol(deviceType: nil, platform: nil)
     }
+  }
+
+  private func pinFallbackHost(for entry: Entry) -> DiscoveredSyncHost? {
+    guard case .account(let machine) = entry.kind,
+          let fallback = syncService.accountPairingPinFallbackHost,
+          fallback.hostIdentity == machine.deviceId else {
+      return nil
+    }
+    return fallback
   }
 
   private func connect(_ entry: Entry) {

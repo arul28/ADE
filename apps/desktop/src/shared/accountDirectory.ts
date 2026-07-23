@@ -215,6 +215,11 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
     name: optionalBoundedString(value.name, MAX_LABEL_CHARS),
     platform: optionalBoundedString(value.platform, MAX_LABEL_CHARS),
     deviceType: optionalBoundedString(value.deviceType, MAX_LABEL_CHARS),
+    // A present host signing key must never collapse to "absent" — that would
+    // silently downgrade adoption to the plaintext relay path. Preserve any
+    // present string (even blank) verbatim so a malformed key fails closed at
+    // verification, matching the iOS client; only a truly missing field is null.
+    pubkey: typeof value.pubkey === "string" ? value.pubkey.slice(0, 128) : null,
     reachableEndpoints: endpoints,
     lastSeenAt,
     online: value.online === true,
@@ -549,9 +554,11 @@ function isLanHostname(value: string): boolean {
 }
 
 /**
- * Routes that may be used only after account authentication has produced a
- * normal DPoP-bound paired secret. Plain WS is allowed here for LAN/tailnet
- * parity because the Clerk bearer never traverses these routes.
+ * Directory-verified routes that may carry either `ade-adopt-v1` sealed
+ * account adoption or an already-paired DPoP session. Plain WS is allowed for
+ * LAN/tailnet routes because adoption credentials are sealed to the
+ * directory-published host key; legacy plaintext account auth still uses only
+ * `accountMachineSecureSyncEndpoints`.
  */
 export function accountMachinePairedSyncEndpoints(
   machine: AdeAccountMachine,
@@ -595,6 +602,49 @@ export function accountMachinePairedSyncEndpoints(
     }
   }
   return endpoints;
+}
+
+export type AccountMachineAdoptionRoute = {
+  endpoint: string;
+  kind: "relay" | "tailnet" | "lan";
+};
+
+/**
+ * Account-adoption routes in failover order. Endpoint validation remains
+ * centralized in the secure/paired endpoint helpers above; this helper only
+ * classifies their already-validated output.
+ */
+export function accountMachineAdoptionRoutes(
+  machine: AdeAccountMachine,
+  relayBaseUrls: readonly string[] = [],
+): AccountMachineAdoptionRoute[] {
+  const relayEndpoints = accountMachineSecureSyncEndpoints(
+    machine,
+    relayBaseUrls,
+  );
+  const relaySet = new Set(relayEndpoints);
+  const tailnet: AccountMachineAdoptionRoute[] = [];
+  const lan: AccountMachineAdoptionRoute[] = [];
+
+  for (const endpoint of accountMachinePairedSyncEndpoints(machine, relayBaseUrls)) {
+    if (relaySet.has(endpoint)) continue;
+    const route = {
+      endpoint,
+      kind: isTailnetHostname(new URL(endpoint).hostname)
+        ? "tailnet" as const
+        : "lan" as const,
+    };
+    (route.kind === "tailnet" ? tailnet : lan).push(route);
+  }
+
+  return [
+    ...relayEndpoints.map((endpoint) => ({
+      endpoint,
+      kind: "relay" as const,
+    })),
+    ...tailnet,
+    ...lan,
+  ];
 }
 
 export function selectAccountMachine(

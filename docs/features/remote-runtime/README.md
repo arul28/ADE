@@ -54,13 +54,19 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   current LAN/Tailscale set is now classified as `lan`/`tailscale` rather than
   the opaque `saved` kind, so LAN endpoints publish correctly instead of being
   dropped), a `tailnet` endpoint per reachable Tailscale address, and a `relay`
-  endpoint once the tunnel bridge is validated. Bridge validation is now
+  endpoint once the tunnel bridge is validated **and** an end-to-end self-probe
+  confirms the relay path round-trips (`relayEndToEndVerifiedAt` with no
+  failure). Bridge validation is now
   proactive (`syncTunnelClientService.validateCurrentBridge`, run on
   control-open and on listener-ready), so the relay endpoint appears in the
-  directory as soon as the machine is signed in and its listener is confirmed —
-  it no longer waits for an external client to open the first relay tunnel.
-  The published machine name is channel-suffixed (`<name> · Beta` / `<name> ·
-  Alpha`, stable left bare) so two channels on one Mac are distinguishable rows.
+  directory as soon as the machine is signed in, its listener is confirmed, and
+  the self-probe passes — it no longer waits for an external client to open the
+  first relay tunnel. The row also carries the host's Ed25519 identity as
+  `pubkey`, which same-account clients verify before a sealed `ade-adopt-v1`
+  adoption over a direct route (see the [Sync](../sync-and-multi-device/README.md)
+  security model). The published machine name is channel-suffixed (`<name> ·
+  Beta` / `<name> · Alpha`, stable left bare) so two channels on one Mac are
+  distinguishable rows.
 - `apps/ade-cli/src/tuiClient/remoteLauncher.ts` and `remoteBridge.ts` —
   `ade code remote` target resolution, legacy account-target migration,
   paired/SSH launch ordering, bounded cancellation, project/session selection,
@@ -211,8 +217,30 @@ run a local repair against data owned by the remote machine. See
    removes this machine's own Bonjour advertisement, and merges routes that
    identify the same machine. Discovered paired-capable ADE desktops appear in
    Available; offline or unsupported machines remain visible in Unavailable.
-2. Select a same-account Mac for the primary PIN-less flow; ADE adopts it over
-   the directory-verified Relay and saves the returned DPoP-bound credentials.
+2. Select a same-account Mac for the primary PIN-less flow. ADE dials the
+   directory-verified Relay first; when the target publishes an ed25519
+   identity key in its directory row (`pubkey`), adoption can also fall back
+   to Tailscale and LAN routes using the sealed `ade-adopt-v1` handshake —
+   the host signs the client's challenge nonce over an ephemeral X25519
+   exchange, the client verifies that signature against the directory key
+   before releasing any account credential, and both the account attestation
+   and the returned paired credentials travel ChaCha20-Poly1305-sealed. A
+   host-identity verification failure aborts adoption immediately (no route
+   is retried); hosts without a published key remain relay-only-adoptable.
+   Successful adoption saves the returned DPoP-bound credentials either way.
+   While connecting, the machine row reports the route being tried, and a
+   failure surfaces inline with a one-tap jump into Nearby + PIN pairing
+   when the same machine is discoverable locally.
+
+   `ade-adopt-v1` protects the *credentials* exchanged during adoption (the
+   account bearer, the DPoP proof, and the minted paired secret are all
+   sealed), not the confidentiality of the ongoing session. After adoption
+   over a plaintext `ws://` LAN or tailnet route, the established sync stream
+   has the same on-path exposure as any other direct paired reconnect — an
+   attacker who can already read that LAN can observe the post-adoption
+   traffic, but never the sealed credentials. This matches the pre-existing
+   direct-route trust boundary; relay routes remain trusted-operator
+   plaintext-readable as documented above.
    Without an account, choose **Find nearby Macs**, select a discovered LAN or
    Tailscale machine, and enter the six-digit PIN shown on that Mac's **This
    Mac** Connections card. There is no desktop pairing-link paste/scan or

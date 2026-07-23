@@ -1,4 +1,5 @@
 import Combine
+import CryptoKit
 import Foundation
 import Network
 import SwiftUI
@@ -214,6 +215,143 @@ func adeJSONData(withJSONObject object: Any, options: JSONSerialization.WritingO
     throw NSError(domain: "ADE", code: 30, userInfo: [NSLocalizedDescriptionKey: "Invalid JSON payload."])
   }
   return try JSONSerialization.data(withJSONObject: object, options: writingOptions)
+}
+
+/// Byte-for-byte counterpart of
+/// `apps/desktop/src/shared/sync/adoptChannelCrypto.ts`.
+enum AdoptChannelCrypto {
+  static let context = "ade-adopt-v1"
+  static let helloOkContext = "ade-adopt-v1-hellook"
+  static let challengeTimeoutNanoseconds: UInt64 = 3_000_000_000
+  static let maximumClockSkewMilliseconds: Double = 120_000
+
+  static func decodeCanonicalBase64(_ value: String, expectedBytes: Int? = nil) -> Data? {
+    guard !value.isEmpty,
+          let decoded = Data(base64Encoded: value),
+          decoded.base64EncodedString() == value,
+          expectedBytes.map({ decoded.count == $0 }) ?? true else {
+      return nil
+    }
+    return decoded
+  }
+
+  static func signingPublicKey(fromDirectoryValue value: String) throws -> Curve25519.Signing.PublicKey {
+    let prefix = "ed25519:"
+    guard value.hasPrefix(prefix),
+          let raw = decodeCanonicalBase64(String(value.dropFirst(prefix.count)), expectedBytes: 32) else {
+      throw NSError(
+        domain: "ADE.AdoptChannel",
+        code: 1,
+        userInfo: [NSLocalizedDescriptionKey: "The directory returned an invalid machine identity key."]
+      )
+    }
+    return try Curve25519.Signing.PublicKey(rawRepresentation: raw)
+  }
+
+  /// Only an absent directory field selects the legacy Relay path. A present
+  /// but malformed value must fail closed rather than downgrading credentials.
+  static func signingPublicKey(
+    fromOptionalDirectoryValue value: String?
+  ) throws -> Curve25519.Signing.PublicKey? {
+    guard let value else { return nil }
+    return try signingPublicKey(fromDirectoryValue: value)
+  }
+
+  static func challengeSignatureInput(
+    hostDeviceId: String,
+    nonce: String,
+    clientEphemeralPublicKey: String,
+    hostEphemeralPublicKey: String,
+    timestampMilliseconds: Int64
+  ) -> String {
+    [
+      context,
+      hostDeviceId,
+      nonce,
+      clientEphemeralPublicKey,
+      hostEphemeralPublicKey,
+      String(timestampMilliseconds),
+    ].joined(separator: "|")
+  }
+
+  static func helloAAD(hostDeviceId: String, clientDeviceId: String) -> Data {
+    Data("\(context)|\(hostDeviceId)|\(clientDeviceId)".utf8)
+  }
+
+  static func helloOkAAD(hostDeviceId: String, clientDeviceId: String) -> Data {
+    Data("\(helloOkContext)|\(hostDeviceId)|\(clientDeviceId)".utf8)
+  }
+
+  static func deriveSessionKey(
+    clientPrivateKey: Curve25519.KeyAgreement.PrivateKey,
+    hostPublicKeyRaw: Data,
+    nonce: Data
+  ) throws -> SymmetricKey {
+    guard hostPublicKeyRaw.count == 32, nonce.count == 32 else {
+      throw NSError(
+        domain: "ADE.AdoptChannel",
+        code: 2,
+        userInfo: [NSLocalizedDescriptionKey: "The machine returned an invalid adoption challenge."]
+      )
+    }
+    let hostPublicKey = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: hostPublicKeyRaw)
+    let sharedSecret = try clientPrivateKey.sharedSecretFromKeyAgreement(with: hostPublicKey)
+    return sharedSecret.hkdfDerivedSymmetricKey(
+      using: SHA256.self,
+      salt: nonce,
+      sharedInfo: Data(context.utf8),
+      outputByteCount: 32
+    )
+  }
+
+  static func seal(_ plaintext: Data, key: SymmetricKey, aad: Data) throws -> String {
+    let box = try ChaChaPoly.seal(plaintext, using: key, authenticating: aad)
+    return box.combined.base64EncodedString()
+  }
+
+  static func unseal(_ blobBase64: String, key: SymmetricKey, aad: Data) throws -> Data {
+    guard let combined = decodeCanonicalBase64(blobBase64), combined.count >= 28 else {
+      throw NSError(
+        domain: "ADE.AdoptChannel",
+        code: 3,
+        userInfo: [NSLocalizedDescriptionKey: "The sealed adoption payload is malformed."]
+      )
+    }
+    let box = try ChaChaPoly.SealedBox(combined: combined)
+    return try ChaChaPoly.open(box, using: key, authenticating: aad)
+  }
+}
+
+struct AccountAdoptionIdentityVerificationError: LocalizedError, Equatable {
+  let machineName: String
+
+  var errorDescription: String? {
+    "Couldn't verify that \(machineName)'s identity. Open ADE on that Mac and try again."
+  }
+}
+
+private struct AccountAdoptionRoutesExhaustedError: LocalizedError {
+  let machineName: String
+  let routeLabels: [String]
+  let finalFailure: Error?
+
+  var errorDescription: String? {
+    let routeSummary: String
+    switch routeLabels.count {
+    case 0:
+      routeSummary = "any secure route"
+    case 1:
+      routeSummary = routeLabels[0]
+    case 2:
+      routeSummary = routeLabels.joined(separator: " and ")
+    default:
+      routeSummary = "\(routeLabels.dropLast().joined(separator: ", ")), and \(routeLabels.last ?? "")"
+    }
+    let failure = finalFailure.map { SyncUserFacingError.message(for: $0) }?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let suffix = failure.flatMap { $0.isEmpty ? nil : $0 }.map { " \($0)" } ?? ""
+    return "Couldn't connect to \(machineName) after trying \(routeSummary).\(suffix)"
+  }
 }
 
 private func adeIsValidJSONFragment(_ object: Any) -> Bool {
@@ -520,6 +658,69 @@ enum SyncConnectionRouteKind: Int, Equatable {
   case lan = 0
   case tailnet = 1
   case relay = 2
+}
+
+private struct AccountAdoptionRoute: Equatable, Hashable {
+  let endpoint: SyncConnectionEndpointAttempt
+  let kind: AccountMachineEndpoint.Kind
+  let usesSealedCredentials: Bool
+
+  var attemptLabel: String {
+    switch kind {
+    case .relay: return "ADE relay"
+    case .tailnet: return "Tailscale"
+    case .lan: return "local network"
+    }
+  }
+
+  var stageLabel: String {
+    switch kind {
+    case .relay: return "Connecting through ADE relay…"
+    case .tailnet: return "Trying Tailscale…"
+    case .lan: return "Trying local network…"
+    }
+  }
+
+  /// Same route word as `attemptLabel`; kept as a named accessor for the
+  /// "Connected via …" toast call site.
+  var connectedLabel: String { attemptLabel }
+
+  var connectionRouteKind: SyncConnectionRouteKind {
+    switch kind {
+    case .relay: return .relay
+    case .tailnet: return .tailnet
+    case .lan: return .lan
+    }
+  }
+}
+
+private func syncAccountAdoptionEndpointAttempt(
+  _ endpoint: AccountMachineEndpoint
+) -> SyncConnectionEndpointAttempt? {
+  switch endpoint.kind {
+  case .relay:
+    guard let route = endpoint.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !route.isEmpty,
+          syncIsFullWebSocketRoute(route),
+          URL(string: route)?.scheme?.lowercased() == "wss" else {
+      return nil
+    }
+    return SyncConnectionEndpointAttempt(
+      address: route,
+      port: syncParseRouteEndpoint(route)?.port
+        ?? endpoint.port
+        ?? SyncDirectHostPorts.defaultPort
+    )
+  case .tailnet, .lan:
+    let host = endpoint.host.flatMap(syncEndpointHost)
+      ?? endpoint.url.flatMap(syncEndpointHost)
+    guard let host else { return nil }
+    let urlPort = endpoint.url.flatMap { URLComponents(string: $0)?.port }
+    return SyncConnectionEndpointAttempt(
+      address: host,
+      port: endpoint.port ?? urlPort ?? SyncDirectHostPorts.defaultPort
+    )
+  }
 }
 
 /// Closed pairing failures the UI can act on without parsing host strings.
@@ -2229,6 +2430,15 @@ final class SyncService: ObservableObject {
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastConnectDurationMs: Int?
   @Published private(set) var lastConnectedRouteKind: SyncConnectionRouteKind?
+  /// Short, route-specific progress shown while a fresh account machine is
+  /// being adopted. This is intentionally separate from the general reconnect
+  /// state so background reconnects do not overwrite the guided account flow.
+  @Published private(set) var accountConnectStageLabel: String?
+  /// A brief success affordance shared by the access gate, Hub, and Settings.
+  @Published private(set) var accountConnectSuccessLabel: String?
+  /// Direct route to offer when a legacy (no identity pubkey) Relay adoption
+  /// fails and PIN pairing is the only safe fallback.
+  @Published private(set) var accountPairingPinFallbackHost: DiscoveredSyncHost?
   @Published private(set) var lastError: String?
   @Published private(set) var relayAuthorizationRequirement: SyncRelayAuthorizationRequirement?
   /// Host error CODE from the most recent pairing attempt (e.g. `pin_not_set`),
@@ -2278,6 +2488,7 @@ final class SyncService: ObservableObject {
     return formatter
   }()
   @Published private(set) var workspaceSnapshotRevision = 0
+  private var accountConnectSuccessClearTask: Task<Void, Never>?
   // All-projects chat roster (mobile hub). `rosterProjects` is the machine-wide
   // projection of every project's lanes + chats; the hub reads it overlaid on
   // `projects` (the catalog). Mutated only by the roster apply path below.
@@ -2736,6 +2947,11 @@ final class SyncService: ObservableObject {
   /// in-project screen can keep rendering state owned by the previous machine.
   func prepareForUserConnectionChange() {
     projectHomePresented = true
+    accountConnectSuccessClearTask?.cancel()
+    accountConnectSuccessClearTask = nil
+    accountConnectSuccessLabel = nil
+    accountConnectStageLabel = nil
+    accountPairingPinFallbackHost = nil
   }
 
   func disconnectForUserConnectionChange() {
@@ -4476,6 +4692,295 @@ final class SyncService: ObservableObject {
     return true
   }
 
+  private struct AccountAdoptionChallengeSession {
+    let key: SymmetricKey
+    let hostDeviceId: String
+  }
+
+  private func accountAdoptionRoutes(
+    for machine: AccountMachine,
+    hasSigningKey: Bool
+  ) -> [AccountAdoptionRoute] {
+    let orderedKinds: [AccountMachineEndpoint.Kind] = [.relay, .tailnet, .lan]
+    var seen = Set<SyncConnectionEndpointAttempt>()
+    var routes: [AccountAdoptionRoute] = []
+    for kind in orderedKinds {
+      if kind != .relay && !hasSigningKey { continue }
+      for directoryEndpoint in machine.reachableEndpoints where directoryEndpoint.kind == kind {
+        guard let endpoint = syncAccountAdoptionEndpointAttempt(directoryEndpoint),
+              seen.insert(endpoint).inserted else {
+          continue
+        }
+        routes.append(AccountAdoptionRoute(
+          endpoint: endpoint,
+          kind: kind,
+          usesSealedCredentials: hasSigningKey
+        ))
+      }
+    }
+    return routes
+  }
+
+  private func pinFallbackHost(for machine: AccountMachine) -> DiscoveredSyncHost? {
+    let directEndpoints = machine.reachableEndpoints
+      .filter { $0.kind == .lan || $0.kind == .tailnet }
+      .compactMap { endpoint -> (AccountMachineEndpoint.Kind, SyncConnectionEndpointAttempt)? in
+        syncAccountAdoptionEndpointAttempt(endpoint).map { (endpoint.kind, $0) }
+      }
+    guard let preferred = directEndpoints.first(where: { $0.0 == .lan })
+      ?? directEndpoints.first(where: { $0.0 == .tailnet }) else {
+      return nil
+    }
+    let lanAddresses = deduplicatedAddresses(
+      directEndpoints.compactMap { $0.0 == .lan ? $0.1.address : nil }
+    )
+    let tailscaleAddress = directEndpoints.first(where: { $0.0 == .tailnet })?.1.address
+    return DiscoveredSyncHost(
+      id: "account-pin-\(machine.id)",
+      serviceName: "ADE account machine",
+      hostName: machine.displayName,
+      hostIdentity: syncNonEmpty(machine.deviceId),
+      port: preferred.1.port,
+      addresses: lanAddresses,
+      tailscaleAddress: tailscaleAddress,
+      lastResolvedAt: syncDateFormatter.string(from: Date())
+    )
+  }
+
+  private func publishAccountConnectSuccess(
+    route: AccountAdoptionRoute,
+    attemptStartedAt: TimeInterval
+  ) {
+    let elapsed = max(0, ProcessInfo.processInfo.systemUptime - attemptStartedAt)
+    let latencyMs = Int((elapsed * 1_000).rounded())
+    let latencySuffix = latencyMs <= 10_000 ? " · \(latencyMs)ms" : ""
+    let label = "Connected via \(route.connectedLabel)\(latencySuffix)"
+    accountConnectSuccessClearTask?.cancel()
+    accountConnectSuccessLabel = label
+    announceAccountConnectStatus(label)
+    accountConnectSuccessClearTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 4_000_000_000)
+      guard !Task.isCancelled else { return }
+      self?.accountConnectSuccessLabel = nil
+      self?.accountConnectSuccessClearTask = nil
+    }
+  }
+
+  private func publishAccountConnectStage(_ label: String) {
+    guard accountConnectStageLabel != label else { return }
+    accountConnectStageLabel = label
+    announceAccountConnectStatus(label)
+  }
+
+  private func announceAccountConnectStatus(_ label: String) {
+    guard UIAccessibility.isVoiceOverRunning else { return }
+    UIAccessibility.post(notification: .announcement, argument: label)
+  }
+
+  private func performAccountAdoptionChallenge(
+    expectedHostIdentity: String,
+    signingPublicKey: Curve25519.Signing.PublicKey,
+    machineName: String,
+    isCurrentCandidate: () -> Bool
+  ) async throws -> AccountAdoptionChallengeSession {
+    let clientPrivateKey = Curve25519.KeyAgreement.PrivateKey()
+    var generator = SystemRandomNumberGenerator()
+    var nonceBytes = [UInt8](repeating: 0, count: 32)
+    for index in nonceBytes.indices {
+      nonceBytes[index] = UInt8.random(in: .min ... .max, using: &generator)
+    }
+    let nonce = Data(nonceBytes)
+    let nonceBase64 = nonce.base64EncodedString()
+    let clientEphemeralPublicKey = clientPrivateKey.publicKey.rawRepresentation.base64EncodedString()
+    let requestId = makeRequestId()
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: "That Mac did not answer the secure identity challenge.",
+      timeoutNanoseconds: AdoptChannelCrypto.challengeTimeoutNanoseconds
+    ) {
+      self.sendEnvelope(type: "account_challenge", requestId: requestId, payload: [
+        "v": 1,
+        "nonce": nonceBase64,
+        "clientEphemeralPublicKey": clientEphemeralPublicKey,
+      ])
+    }
+    guard isCurrentCandidate() else {
+      throw AccountPairingConnectionSupersededError()
+    }
+    guard let payload = raw as? [String: Any],
+          (payload["v"] as? NSNumber)?.intValue == 1,
+          let hostDeviceId = syncNonEmpty(payload["hostDeviceId"] as? String),
+          hostDeviceId == expectedHostIdentity,
+          let timestampNumber = payload["ts"] as? NSNumber,
+          let hostEphemeralPublicKeyBase64 = payload["hostEphemeralPublicKey"] as? String,
+          let hostEphemeralPublicKey = AdoptChannelCrypto.decodeCanonicalBase64(
+            hostEphemeralPublicKeyBase64,
+            expectedBytes: 32
+          ),
+          let signatureBase64 = payload["signature"] as? String,
+          let signature = AdoptChannelCrypto.decodeCanonicalBase64(signatureBase64, expectedBytes: 64) else {
+      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+    let timestampValue = timestampNumber.doubleValue
+    // `Double(Int64.max)` rounds up to 2^63, so `<=` would admit a value that
+    // traps in `Int64(...)`. Strict `<` keeps a malformed challenge timestamp
+    // from crashing the app before skew validation; real ms timestamps are far
+    // below this bound.
+    guard timestampValue.isFinite,
+          timestampValue.rounded(.towardZero) == timestampValue,
+          timestampValue >= 0,
+          timestampValue < Double(Int64.max) else {
+      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+    let timestampMilliseconds = Int64(timestampValue)
+    let nowMilliseconds = Date().timeIntervalSince1970 * 1_000
+    guard abs(Double(timestampMilliseconds) - nowMilliseconds)
+      <= AdoptChannelCrypto.maximumClockSkewMilliseconds else {
+      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+    let canonical = AdoptChannelCrypto.challengeSignatureInput(
+      hostDeviceId: hostDeviceId,
+      nonce: nonceBase64,
+      clientEphemeralPublicKey: clientEphemeralPublicKey,
+      hostEphemeralPublicKey: hostEphemeralPublicKeyBase64,
+      timestampMilliseconds: timestampMilliseconds
+    )
+    guard signingPublicKey.isValidSignature(signature, for: Data(canonical.utf8)) else {
+      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+    do {
+      return AccountAdoptionChallengeSession(
+        key: try AdoptChannelCrypto.deriveSessionKey(
+          clientPrivateKey: clientPrivateKey,
+          hostPublicKeyRaw: hostEphemeralPublicKey,
+          nonce: nonce
+        ),
+        hostDeviceId: hostDeviceId
+      )
+    } catch {
+      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+  }
+
+  private func performAccountAdoptionHello(
+    route: AccountAdoptionRoute,
+    expectedHostIdentity: String,
+    signingPublicKey: Curve25519.Signing.PublicKey?,
+    machineName: String,
+    owner: String,
+    authorization: AccountPairingAuthorization,
+    generation: UInt64,
+    isCurrentCandidate: @escaping () -> Bool
+  ) async throws -> Any {
+    guard isCurrentConnectAttempt(generation) else {
+      throw AccountPairingConnectionSupersededError()
+    }
+    let challenge: AccountAdoptionChallengeSession?
+    if route.usesSealedCredentials {
+      guard let signingPublicKey else {
+        throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+      }
+      publishAccountConnectStage("Verifying it's really \(machineName)…")
+      challenge = try await performAccountAdoptionChallenge(
+        expectedHostIdentity: expectedHostIdentity,
+        signingPublicKey: signingPublicKey,
+        machineName: machineName,
+        isCurrentCandidate: isCurrentCandidate
+      )
+    } else {
+      guard route.kind == .relay else {
+        throw NSError(
+          domain: "ADE.AdoptChannel",
+          code: 4,
+          userInfo: [NSLocalizedDescriptionKey: "Refusing to send account credentials over an unsealed direct route."]
+        )
+      }
+      challenge = nil
+    }
+
+    let relaySession = try await AccountService.shared.freshRelaySession(
+      expectedAuthorization: authorization
+    )
+    guard isCurrentCandidate() else {
+      throw AccountPairingConnectionSupersededError()
+    }
+    guard relaySession.authorization.ownerId == owner,
+          let dpop = DpopKeyService.shared.buildProof(
+            deviceId: deviceId,
+            secret: relaySession.token
+          ) else {
+      throw NSError(
+        domain: "ADE",
+        code: 31,
+        userInfo: [NSLocalizedDescriptionKey: "This iPhone could not create a secure account proof."]
+      )
+    }
+
+    let legacyAccountAuth: [String: Any] = [
+      "deviceId": deviceId,
+      "accountToken": relaySession.token,
+      "dpop": dpop,
+    ]
+    let auth: [String: Any]
+    if let challenge {
+      let plaintext = try adeJSONData(withJSONObject: legacyAccountAuth)
+      auth = [
+        "kind": "account_sealed",
+        "v": 1,
+        "deviceId": deviceId,
+        "sealed": try AdoptChannelCrypto.seal(
+          plaintext,
+          key: challenge.key,
+          aad: AdoptChannelCrypto.helloAAD(
+            hostDeviceId: challenge.hostDeviceId,
+            clientDeviceId: deviceId
+          )
+        ),
+      ]
+    } else {
+      var unsealedAuth = legacyAccountAuth
+      unsealedAuth["kind"] = "account"
+      auth = unsealedAuth
+    }
+
+    let requestId = makeRequestId()
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      timeoutMessage: "That Mac did not finish account connection. Try again."
+    ) {
+      self.sendEnvelope(type: "hello", requestId: requestId, payload: [
+        "peer": self.currentPeerMetadata(),
+        "auth": auth,
+      ])
+    }
+    guard isCurrentCandidate() else {
+      throw AccountPairingConnectionSupersededError()
+    }
+    guard let challenge else { return raw }
+    guard let sealedPayload = raw as? [String: Any],
+          (sealedPayload["v"] as? NSNumber)?.intValue == 1,
+          let sealed = sealedPayload["sealed"] as? String else {
+      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+    do {
+      let plaintext = try AdoptChannelCrypto.unseal(
+        sealed,
+        key: challenge.key,
+        aad: AdoptChannelCrypto.helloOkAAD(
+          hostDeviceId: challenge.hostDeviceId,
+          clientDeviceId: deviceId
+        )
+      )
+      guard let payload = try JSONSerialization.jsonObject(with: plaintext) as? [String: Any] else {
+        throw NSError(domain: "ADE.AdoptChannel", code: 5)
+      }
+      return payload
+    } catch {
+      throw AccountAdoptionIdentityVerificationError(machineName: machineName)
+    }
+  }
+
   /// Connects a directory machine using the signed-in Clerk session. The
   /// bearer token is used over the directory-verified WSS relay to mint the
   /// same device-bound paired secret used by QR/PIN/SSH. Later direct reconnects
@@ -4487,6 +4992,7 @@ final class SyncService: ObservableObject {
     authorization: AccountPairingAuthorization
   ) async -> Bool {
     prepareForUserConnectionChange()
+    defer { accountConnectStageLabel = nil }
     ProductAnalytics.shared.captureQuickConnect(.accountMachine)
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
     let expectedHostIdentity = syncNonEmpty(machine.deviceId)
@@ -4539,14 +5045,54 @@ final class SyncService: ObservableObject {
       return reconnected
     }
 
-    guard !relayRoutes.isEmpty else {
-      lastError = "That Mac is not ready for account connection yet. Open ADE on the Mac and try again."
+    let signingPublicKey: Curve25519.Signing.PublicKey?
+    do {
+      signingPublicKey = try AdoptChannelCrypto.signingPublicKey(
+        fromOptionalDirectoryValue: machine.pubkey
+      )
+    } catch {
+      let identityError = AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
+      lastError = identityError.localizedDescription
+      connectionState = .error
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
+      ProductAnalytics.shared.captureError(.pairing)
+      return false
+    }
+
+    let routes = accountAdoptionRoutes(
+      for: machine,
+      hasSigningKey: signingPublicKey != nil
+    )
+    guard !routes.isEmpty else {
+      if signingPublicKey == nil {
+        lastError = "That Mac is not ready for account connection yet. Open ADE on the Mac and try again."
+      } else {
+        lastError = "That Mac did not advertise a secure account connection route. Open ADE on the Mac and try again."
+      }
       connectionState = .error
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       return false
     }
 
+    let classifiedDirectEndpoints = machine.reachableEndpoints.compactMap {
+      endpoint -> (kind: AccountMachineEndpoint.Kind, attempt: SyncConnectionEndpointAttempt)? in
+      guard endpoint.kind != .relay,
+            let attempt = syncAccountAdoptionEndpointAttempt(endpoint) else {
+        return nil
+      }
+      return (endpoint.kind, attempt)
+    }
+    let lanHosts = deduplicatedAddresses(
+      classifiedDirectEndpoints.compactMap { $0.kind == .lan ? $0.attempt.address : nil }
+    )
+    let tailnetHosts = deduplicatedAddresses(
+      classifiedDirectEndpoints.compactMap { $0.kind == .tailnet ? $0.attempt.address : nil }
+    )
+    let preferredDirectPort = classifiedDirectEndpoints.first(where: { $0.kind == .lan })?.attempt.port
+      ?? classifiedDirectEndpoints.first(where: { $0.kind == .tailnet })?.attempt.port
+
     var pairingGeneration: UInt64?
+    var relayRouteFailed = false
     do {
       try ensureDatabaseReady()
       refreshPhoneTailnetInterfaceState()
@@ -4559,16 +5105,23 @@ final class SyncService: ObservableObject {
       resetChatEventState(clearHistory: true)
       connectionState = .connecting
 
+      markConnectAttemptStarted(generation)
       var lastFailure: Error?
-      for relay in relayRoutes {
+      var triedRouteLabels: [String] = []
+      for route in routes {
         var candidateSocket: URLSessionWebSocketTask?
+        let routeAttemptStartedAt = ProcessInfo.processInfo.systemUptime
+        publishAccountConnectStage(route.stageLabel)
+        if !triedRouteLabels.contains(route.attemptLabel) {
+          triedRouteLabels.append(route.attemptLabel)
+        }
         do {
           guard AccountService.shared.isPairingCommitAuthorized(authorization) else {
             throw AccountPairingAuthorizationChangedError()
           }
           try await openSocket(
-            host: relay,
-            port: syncParseRouteEndpoint(relay)?.port ?? SyncDirectHostPorts.defaultPort,
+            host: route.endpoint.address,
+            port: route.endpoint.port,
             connectAttemptGeneration: generation
           )
           guard let openedSocket = socket else {
@@ -4582,41 +5135,15 @@ final class SyncService: ObservableObject {
           let isCurrentCandidate = {
             self.isCurrentConnectAttempt(generation) && self.socket === openedSocket
           }
-          let raw = try await performCurrentAccountPairingRelayHello(
-            refreshSession: {
-              try await AccountService.shared.freshRelaySession(
-                expectedAuthorization: authorization
-              )
-            },
-            isCurrentCandidate: isCurrentCandidate,
-            sendHello: { relaySession in
-              guard relaySession.authorization.ownerId == owner,
-                    let dpop = DpopKeyService.shared.buildProof(
-                      deviceId: self.deviceId,
-                      secret: relaySession.token
-                    ) else {
-                throw NSError(
-                  domain: "ADE",
-                  code: 31,
-                  userInfo: [NSLocalizedDescriptionKey: "This iPhone could not create a secure account proof."]
-                )
-              }
-              let requestId = self.makeRequestId()
-              return try await self.awaitResponse(
-                requestId: requestId,
-                timeoutMessage: "That Mac did not finish account connection. Try again."
-              ) {
-                self.sendEnvelope(type: "hello", requestId: requestId, payload: [
-                  "peer": self.currentPeerMetadata(),
-                  "auth": [
-                    "kind": "account",
-                    "deviceId": self.deviceId,
-                    "accountToken": relaySession.token,
-                    "dpop": dpop,
-                  ],
-                ])
-              }
-            }
+          let raw = try await performAccountAdoptionHello(
+            route: route,
+            expectedHostIdentity: expectedHostIdentity,
+            signingPublicKey: signingPublicKey,
+            machineName: machine.displayName,
+            owner: owner,
+            authorization: authorization,
+            generation: generation,
+            isCurrentCandidate: isCurrentCandidate
           )
           _ = try await performAuthorizedAccountPairingCommit(
             authorization: authorization,
@@ -4625,11 +5152,7 @@ final class SyncService: ObservableObject {
               guard let payload = raw as? [String: Any],
                     let brain = payload["brain"] as? [String: Any],
                     self.syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
-                throw NSError(
-                  domain: "ADE",
-                  code: 32,
-                  userInfo: [NSLocalizedDescriptionKey: "The connected Mac did not match your account."]
-                )
+                throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
               }
               let pairing = payload["accountPairing"] as? [String: Any]
               guard self.syncNonEmpty(pairing?["deviceId"] as? String) == self.deviceId,
@@ -4643,22 +5166,19 @@ final class SyncService: ObservableObject {
 
               let advertisedRelay = self.syncNonEmpty(payload["cloudRelayWssUrl"] as? String)
               let allRelays = self.deduplicatedAddresses(relayRoutes + (advertisedRelay.map { [$0] } ?? []))
-              let relayPort = syncParseRouteEndpoint(relay)?.port ?? SyncDirectHostPorts.defaultPort
               let profile = HostConnectionProfile(
                 hostIdentity: expectedHostIdentity,
                 hostName: self.syncNonEmpty(brain["deviceName"] as? String) ?? machine.displayName,
                 siteId: self.syncNonEmpty(brain["siteId"] as? String),
-                port: machine.directConnectTarget?.port ?? relayPort,
+                port: preferredDirectPort ?? route.endpoint.port,
                 authKind: "paired",
                 pairedDeviceId: self.deviceId,
                 lastRemoteDbVersion: 0,
                 lastHostDeviceId: expectedHostIdentity,
-                lastSuccessfulAddress: relay,
+                lastSuccessfulAddress: route.endpoint.address,
                 savedAddressCandidates: directHosts,
-                discoveredLanAddresses: directHosts.filter {
-                  !$0.contains(":") && $0 != "127.0.0.1" && !syncIsTailscaleRoute($0)
-                },
-                tailscaleAddress: directHosts.first(where: syncIsTailscaleRoute),
+                discoveredLanAddresses: lanHosts,
+                tailscaleAddress: tailnetHosts.first,
                 savedRelayCandidates: allRelays,
                 accountOwnerId: owner,
                 relayAccountOwnerId: owner
@@ -4677,7 +5197,7 @@ final class SyncService: ObservableObject {
               self.saveProfile(prepared.profile)
               try self.applyHelloPayload(
                 prepared.payload,
-                connectedHost: relay,
+                connectedHost: route.endpoint.address,
                 port: prepared.profile.port,
                 authKind: "paired",
                 pairedDeviceId: self.deviceId,
@@ -4686,27 +5206,37 @@ final class SyncService: ObservableObject {
               )
             }
           )
+          lastConnectedRouteKind = route.connectionRouteKind
           schedulePostHelloWork(for: generation)
           Task { await PushNotificationService.shared.enableIfPaired() }
           LiveActivityService.shared.start()
+          accountPairingPinFallbackHost = nil
+          publishAccountConnectSuccess(
+            route: route,
+            attemptStartedAt: routeAttemptStartedAt
+          )
           ProductAnalytics.shared.captureMachineAdoptionOutcome(.adopted)
           return true
         } catch {
           lastFailure = error
+          if route.kind == .relay {
+            relayRouteFailed = true
+          }
           if let candidateSocket, socket === candidateSocket {
             teardownSocket()
           }
-          if error is AccountPairingAuthorizationChangedError
+          if error is AccountAdoptionIdentityVerificationError
+              || error is AccountPairingAuthorizationChangedError
               || error is AccountPairingConnectionSupersededError
               || !isCurrentConnectAttempt(generation) {
             throw error
           }
         }
       }
-      throw lastFailure ?? NSError(
-        domain: "ADE",
-        code: 34,
-        userInfo: [NSLocalizedDescriptionKey: "Could not reach that Mac."]
+      throw AccountAdoptionRoutesExhaustedError(
+        machineName: machine.displayName,
+        routeLabels: triedRouteLabels,
+        finalFailure: lastFailure
       )
     } catch {
       if error is AccountPairingConnectionSupersededError
@@ -4719,6 +5249,12 @@ final class SyncService: ObservableObject {
       setAutoReconnectPausedByUser(true)
       teardownSocket(reason: message)
       clearConnectTimingMetrics()
+      accountConnectSuccessClearTask?.cancel()
+      accountConnectSuccessClearTask = nil
+      accountConnectSuccessLabel = nil
+      accountPairingPinFallbackHost = signingPublicKey == nil && relayRouteFailed
+        ? pinFallbackHost(for: machine)
+        : nil
       lastError = message
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: message)
@@ -13071,6 +13607,17 @@ final class SyncService: ObservableObject {
           try await handleIncoming(nested)
         }
       }
+    case "account_challenge_ok":
+      resolve(requestId: requestId, result: .success(payload))
+    case "account_challenge_error":
+      let challengeError = payload as? [String: Any]
+      let message = syncNonEmpty(challengeError?["message"] as? String)
+        ?? "That route could not verify the Mac's identity."
+      resolve(requestId: requestId, result: .failure(NSError(
+        domain: "ADE.AdoptChannel",
+        code: 6,
+        userInfo: [NSLocalizedDescriptionKey: message]
+      )))
     case "hello_ok":
       resolve(requestId: requestId, result: .success(payload))
     case "relay_reauthorize_result":

@@ -35,6 +35,7 @@ import {
 import {
   helperTextStyle,
   inlineDetailStyle,
+  inlineSuccessTextStyle,
   machineRowStyle,
   nameStyle,
   subTextStyle,
@@ -50,6 +51,8 @@ type SavedMachineRowProps = {
   formPrefill: RemoteTargetFormPrefill | null;
   testOpen: boolean;
   error: string | null;
+  stageLabel?: string | null;
+  transientStatus?: string | null;
   hostKeyTrust: RemoteRuntimeSshHostKeyTrustStatus | null;
   trustingHostKey: boolean;
   onConnect: (targetId: string) => void;
@@ -73,6 +76,8 @@ export function SavedMachineRow({
   formPrefill,
   testOpen,
   error,
+  stageLabel = null,
+  transientStatus = null,
   hostKeyTrust,
   trustingHostKey,
   onConnect,
@@ -239,6 +244,18 @@ export function SavedMachineRow({
             </button>
           </div>
         </div>
+
+        {stageLabel ? (
+          <div role="status" style={helperTextStyle}>
+            {stageLabel}
+          </div>
+        ) : null}
+
+        {transientStatus ? (
+          <div role="status" style={inlineSuccessTextStyle}>
+            {transientStatus}
+          </div>
+        ) : null}
 
         {errorCard ? (
           <RemoteErrorCard

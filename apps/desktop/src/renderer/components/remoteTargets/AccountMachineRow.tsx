@@ -9,13 +9,25 @@ import {
   type AccountMachineRow as AccountMachineRowModel,
   type MachineSection,
 } from "./remoteMachineModel";
-import { helperTextStyle, inlineDetailStyle, machineRowStyle, nameStyle, subTextStyle } from "./remoteTargetListStyles";
+import {
+  helperTextStyle,
+  inlineDetailStyle,
+  inlineErrorTextStyle,
+  inlineSuccessTextStyle,
+  machineRowStyle,
+  nameStyle,
+  subTextStyle,
+} from "./remoteTargetListStyles";
 
 type AccountMachineRowProps = {
   row: AccountMachineRowModel;
   section: MachineSection;
   busy: boolean;
   connecting: boolean;
+  error?: string | null;
+  stageLabel?: string | null;
+  successLabel?: string | null;
+  onPairNearby?: (() => void) | null;
   detailOpen: boolean;
   onToggleDetail: (rowId: string) => void;
   onConnect: (machine: AdeAccountMachine) => void;
@@ -42,6 +54,10 @@ export function AccountMachineRow({
   section,
   busy,
   connecting,
+  error = null,
+  stageLabel = null,
+  successLabel = null,
+  onPairNearby = null,
   detailOpen,
   onToggleDetail,
   onConnect,
@@ -54,7 +70,10 @@ export function AccountMachineRow({
   const canExplain = trulyOffline || needsSetup;
 
   return (
-    <div style={{ display: "grid", gap: 8 }}>
+    <div
+      data-account-machine-key={machine.machineKey}
+      style={{ display: "grid", gap: 8 }}
+    >
       <div style={{ ...machineRowStyle, opacity: trulyOffline && section === "unavailable" ? 0.62 : 1 }}>
         <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) auto", gap: 12, alignItems: "start" }}>
           <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
@@ -106,6 +125,43 @@ export function AccountMachineRow({
             ) : null}
           </div>
         </div>
+
+        {connecting && stageLabel ? (
+          <div role="status" style={helperTextStyle}>
+            {stageLabel}
+          </div>
+        ) : null}
+
+        {successLabel ? (
+          <div role="status" style={inlineSuccessTextStyle}>
+            {successLabel}
+          </div>
+        ) : null}
+
+        {error ? (
+          <div role="alert" style={{ display: "grid", gap: 3 }}>
+            <div style={inlineErrorTextStyle}>{error}</div>
+            {onPairNearby ? (
+              <button
+                type="button"
+                onClick={onPairNearby}
+                style={{
+                  justifySelf: "start",
+                  padding: 0,
+                  border: "none",
+                  background: "transparent",
+                  color: COLORS.accent,
+                  fontFamily: SANS_FONT,
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                  cursor: "pointer",
+                }}
+              >
+                It's on your network — Pair nearby instead ›
+              </button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
 
       {canExplain && detailOpen ? (

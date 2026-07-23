@@ -90,6 +90,15 @@ struct ContentView: View {
       .adeScreenBackground()
       .adeNavigationGlass()
       .adeInspectorHost()
+      .overlay(alignment: .top) {
+        if let label = syncService.accountConnectSuccessLabel {
+          AccountConnectStatusToast(label: label)
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+      }
+      .animation(.spring(response: 0.35, dampingFraction: 0.86), value: syncService.accountConnectSuccessLabel)
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)
@@ -247,6 +256,29 @@ struct ContentView: View {
       .tabItem {
         Label("CTO", systemImage: "brain")
       }
+  }
+}
+
+struct AccountConnectStatusToast: View {
+  let label: String
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "checkmark.circle.fill")
+        .foregroundStyle(ADEColor.success)
+      Text(label)
+        .font(.system(.footnote, design: .rounded).weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .background(ADEColor.cardBackground.opacity(0.92), in: Capsule())
+    .glassEffect()
+    .overlay(Capsule().stroke(ADEColor.success.opacity(0.3), lineWidth: 0.75))
+    .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
+    .accessibilityElement(children: .combine)
   }
 }
 

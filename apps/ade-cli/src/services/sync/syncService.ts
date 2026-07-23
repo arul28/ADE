@@ -175,7 +175,9 @@ type SyncServiceArgs = {
    * absent a store is created under the pairing state dir.
    */
   cloudRelayStore?: SyncCloudRelayStore;
-  syncTunnelClientService?: Pick<SyncTunnelClientService, "getStatus"> | null;
+  syncTunnelClientService?: Pick<SyncTunnelClientService, "getStatus">
+    & Partial<Pick<SyncTunnelClientService, "runSelfProbe">>
+    | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
@@ -1393,6 +1395,20 @@ export function createSyncService(args: SyncServiceArgs) {
           "Account-directory publisher health is unavailable.",
         );
       }
+      const relayRouteHealth = {
+        enabled: relayEnabled,
+        relayControlConnected,
+        relayBridgeValidated,
+        lastFailureAt: tunnelStatus?.lastFailureAt
+          ?? (relayEnabled && relayReason ? rawListenerValidation.lastFailureAt : null),
+        skipReason: relayReason,
+        lastControlError: tunnelStatus?.lastControlError ?? null,
+        lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
+        lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
+        relayEndToEndVerifiedAt: tunnelStatus?.relayEndToEndVerifiedAt ?? null,
+        relayEndToEndFailure: tunnelStatus?.relayEndToEndFailure ?? null,
+        relayEndToEndRoundTripMs: tunnelStatus?.relayEndToEndRoundTripMs ?? null,
+      };
       const routeHealth: SyncRouteHealth = {
         listener: {
           listenerBound,
@@ -1414,17 +1430,7 @@ export function createSyncService(args: SyncServiceArgs) {
           reason: tailscaleReason,
           lastSuccessAt: tailscaleReachable ? tailnetDiscovery.updatedAt : null,
         },
-        relay: {
-          enabled: relayEnabled,
-          relayControlConnected,
-          relayBridgeValidated,
-          lastFailureAt: tunnelStatus?.lastFailureAt
-            ?? (relayEnabled && relayReason ? rawListenerValidation.lastFailureAt : null),
-          skipReason: relayReason,
-          lastControlError: tunnelStatus?.lastControlError ?? null,
-          lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
-          lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
-        },
+        relay: relayRouteHealth,
         accountDirectory,
       };
       return {
@@ -1652,7 +1658,7 @@ export function createSyncService(args: SyncServiceArgs) {
       const tunnelStatus = args.syncTunnelClientService?.getStatus() ?? null;
       const accountSignedIn = isRelayAccountSignedIn()
         && (tunnelStatus?.accountLeaseValid ?? true);
-      return {
+      const status = {
         relayWssUrl: cloudRelayStore.getRelayWssUrl(),
         machineKey: config.machineKey,
         relayUrl: cloudRelayStore.getRelayUrl(),
@@ -1662,11 +1668,25 @@ export function createSyncService(args: SyncServiceArgs) {
         lastFailureAt: tunnelStatus?.lastFailureAt ?? null,
         lastControlOpenAt: tunnelStatus?.lastControlOpenAt ?? null,
         lastBridgeValidationAt: tunnelStatus?.lastBridgeValidationAt ?? null,
+        relayEndToEndVerifiedAt: tunnelStatus?.relayEndToEndVerifiedAt ?? null,
+        relayEndToEndFailure: tunnelStatus?.relayEndToEndFailure ?? null,
+        relayEndToEndRoundTripMs: tunnelStatus?.relayEndToEndRoundTripMs ?? null,
         lastControlError: tunnelStatus?.lastControlError ?? null,
         lastError: accountSignedIn
           ? tunnelStatus?.lastError ?? null
           : "Sign in to ADE to use ADE Relay.",
       };
+      return status;
+    },
+
+    async runSelfProbe(): Promise<{ ok: boolean; detail: string }> {
+      if (!args.syncTunnelClientService?.runSelfProbe) {
+        return {
+          ok: false,
+          detail: "Relay self-probe skipped because the tunnel client is unavailable.",
+        };
+      }
+      return await args.syncTunnelClientService.runSelfProbe();
     },
 
     async setActiveLanePresence(laneIds: string[]): Promise<void> {

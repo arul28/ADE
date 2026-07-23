@@ -3283,6 +3283,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           deviceId: "dev_studio",
           name: "Studio",
         }),
+        onPairMachineProgress: () => () => {},
       };
     })(),
     app: {

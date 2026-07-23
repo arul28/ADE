@@ -589,6 +589,7 @@ export const IPC = {
   accountSignOut: "ade.account.signOut",
   accountListMachines: "ade.account.listMachines",
   accountPairMachine: "ade.account.pairMachine",
+  accountPairMachineProgress: "account:pairMachineProgress",
   accountGetLocalMachineIdentity: "ade.account.getLocalMachineIdentity",
   accountRemoveMachine: "ade.account.removeMachine",
   prsCreateFromLane: "ade.prs.createFromLane",

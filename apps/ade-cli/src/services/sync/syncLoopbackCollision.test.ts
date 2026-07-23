@@ -313,6 +313,9 @@ describe("sync loopback collision recovery", () => {
         lastFailureAt: null,
         lastControlOpenAt: null,
         lastBridgeValidationAt: null,
+        relayEndToEndVerifiedAt: null,
+        relayEndToEndFailure: null,
+        relayEndToEndRoundTripMs: null,
         relayUrl: "https://relay.test.ade",
         machineKey: "a".repeat(32),
       };
@@ -377,6 +380,9 @@ describe("sync loopback collision recovery", () => {
         lastFailureAt: "2026-07-22T12:00:00.000Z",
         lastControlOpenAt: "2026-07-22T11:59:00.000Z",
         lastBridgeValidationAt: "2026-07-22T11:59:30.000Z",
+        relayEndToEndVerifiedAt: "2026-07-22T11:59:45.000Z",
+        relayEndToEndFailure: null,
+        relayEndToEndRoundTripMs: 42,
         relayUrl: "https://relay.test.ade",
         machineKey: "a".repeat(32),
       };
