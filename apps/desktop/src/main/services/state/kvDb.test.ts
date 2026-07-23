@@ -713,4 +713,42 @@ describe("sweepOrphanedRepairStagingTables", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("preserves crsql shadow siblings of an ambiguous staging table while still sweeping non-ambiguous ones", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-sweep-shadow-"));
+    const dbPath = path.join(root, "ade.db");
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec(`
+        create table gamma (id integer primary key);
+        create table __ade_crr_repair_gamma (id integer primary key);
+        create table __ade_crr_repair_gamma__crsql_clock (id integer primary key);
+        create table __ade_crr_repair_gamma__crsql_pks (id integer primary key);
+        create table __ade_crr_repair_delta (id integer primary key);
+        create table __ade_crr_repair_delta__crsql_clock (id integer primary key);
+      `);
+
+      // `gamma` is ambiguous. Its shadow siblings share the `__ade_crr_repair_%`
+      // prefix, so a naive sweep would strip the prefix to `gamma__crsql_clock`
+      // (not `gamma`), miss the ambiguous check, and drop them — silently
+      // breaking the deliberately-preserved base. Non-ambiguous `delta` + its
+      // shadow must still be swept.
+      sweepOrphanedRepairStagingTables(db, new Set(["gamma"]));
+
+      const remaining = db
+        .prepare(
+          "select name from sqlite_master where type = 'table' and name like '__ade_%_repair_%' order by name",
+        )
+        .all()
+        .map((row) => (row as { name: string }).name);
+      expect(remaining).toEqual([
+        "__ade_crr_repair_gamma",
+        "__ade_crr_repair_gamma__crsql_clock",
+        "__ade_crr_repair_gamma__crsql_pks",
+      ]);
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

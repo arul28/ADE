@@ -154,13 +154,19 @@ export function IntegrationBannerHost({
         const repoLabel = appInstall?.repo ? `${appInstall.repo.owner}/${appInstall.repo.name}` : null;
         const copy = githubRepoIssueCopy(block.repo, repoLabel);
         const actions: BannerAction[] = [];
-        const installUrl = appInstall?.installUrl;
-        const manageUrl = appInstall?.manageUrl;
-        if (installUrl) {
-          actions.push({ label: "Install", variant: "primary", onClick: () => openExternalUrl(installUrl) });
-        }
-        if (manageUrl) {
-          actions.push({ label: "Manage", variant: "secondary", onClick: () => openExternalUrl(manageUrl) });
+        if (block.repo === "access_pending") {
+          // Matches the Settings panel: access is still propagating from GitHub,
+          // so the action is to re-check status, not Install/Manage.
+          actions.push({ label: copy.action, variant: "primary", onClick: () => void loadAppStatus(true) });
+        } else {
+          const installUrl = appInstall?.installUrl;
+          const manageUrl = appInstall?.manageUrl;
+          if (installUrl) {
+            actions.push({ label: "Install", variant: "primary", onClick: () => openExternalUrl(installUrl) });
+          }
+          if (manageUrl) {
+            actions.push({ label: "Manage", variant: "secondary", onClick: () => openExternalUrl(manageUrl) });
+          }
         }
         const repoKey = repoLabel ?? currentProjectRoot;
         list.push({
@@ -232,6 +238,7 @@ export function IntegrationBannerHost({
     providerMode,
     aiMockProvider,
     navigate,
+    loadAppStatus,
   ]);
 
   const active = useMemo(() => {

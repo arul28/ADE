@@ -1241,9 +1241,19 @@ export function sweepOrphanedRepairStagingTables(
   logger?: Logger,
 ): void {
   try {
+    // Enumerate only base repair staging tables, not their cr-sqlite shadow
+    // siblings (`<staging>__crsql_clock`/`__crsql_pks`) — those also match the
+    // `__ade_crr_repair_%` prefix, but stripping the prefix yields
+    // `<base>__crsql_clock` (not `<base>`), so the ambiguous-preservation check
+    // would miss them and drop the shadow tables of a deliberately-preserved
+    // ambiguous base. dropRepairStagingTable() drops each base's siblings.
     const orphans = allRows<{ name: string }>(
       db,
-      "select name from sqlite_master where type = 'table' and (name like '__ade_crr_repair_%' or name like '__ade_fk_repair_%')",
+      `select name from sqlite_master
+         where type = 'table'
+           and (name like '__ade_crr_repair_%' or name like '__ade_fk_repair_%')
+           and name not like '%__crsql_clock'
+           and name not like '%__crsql_pks'`,
     );
     let dropped = 0;
     for (const { name } of orphans) {

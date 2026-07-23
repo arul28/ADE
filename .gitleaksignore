@@ -17,3 +17,8 @@
 # is not a real secret. The same value is asserted in code (line 123) and in the
 # iOS mirror to lock TS<->Swift byte-compatibility. Scope to its original commit.
 4809aba24a34362fd2014774abf67c85b1251cd0:apps/desktop/src/shared/sync/adoptChannelCrypto.test.ts:generic-api-key:83
+
+# Banner-dismiss localStorage key name (`ade.bannerDismiss.v1`), not a secret.
+# gitleaks' generic-api-key rule fired only because the const identifier ends in
+# `KEY` and the namespaced value has mild entropy. Scoped to its original commit.
+86e23824a491bc8de59697b62169783f917e63b1:apps/desktop/src/renderer/lib/bannerDismiss.ts:generic-api-key:24

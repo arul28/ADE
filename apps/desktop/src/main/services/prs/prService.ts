@@ -9816,7 +9816,11 @@ export function createPrService({
       // snapshot's internal branch backfill. This is the #402 heal.
       try {
         if (force || startedMs - lastClosedSweepAtMs > RECONCILE_CLOSED_SWEEP_INTERVAL_MS) {
-          await getGithubSnapshot({ includeExternalClosed: true });
+          // force: true is REQUIRED — without it getGithubSnapshot returns the
+          // projected (local github_pr_projections) snapshot when projections
+          // exist and only dispatches the live fetch in the background, so the
+          // merged/closed backfill never runs synchronously. This is the #402 heal.
+          await getGithubSnapshot({ force: true, includeExternalClosed: true });
           lastClosedSweepAtMs = Date.now();
           closedSwept = true;
         }
@@ -9855,7 +9859,9 @@ export function createPrService({
       }
       // Not mapped (or an unmapped GitHub projection): pull state:"all" so a
       // merged PR on the lane branch gets backfilled/mapped, then re-read.
-      await getGithubSnapshot({ includeExternalClosed: true });
+      // force: true so this manual ⟳ does a live fetch (+ runs the backfill)
+      // instead of returning possibly-stale local projections.
+      await getGithubSnapshot({ force: true, includeExternalClosed: true });
       return getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null;
     } catch (error) {
       logger.warn("prs.sync_lane_pr_failed", {
