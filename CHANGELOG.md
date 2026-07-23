@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Machine connections
+
+- Detected "zombie" Relay control sockets with a relay-answered JSON keepalive, reconnecting within minutes when Cloudflare silently loses the host's registration (previously the host could look healthy for hours while every incoming connection was refused).
+- Verified the full Relay path end-to-end by self-dialing this machine's own connect route after every control open and bridge validation, and published the Relay endpoint to the account directory only after that probe passes; `ade sync status` and `ade doctor` now report the honest end-to-end verdict.
+- Introduced the sealed `ade-adopt-v1` adoption handshake: machines publish an ed25519 identity key in their directory row, sign the adopting client's challenge over an ephemeral X25519 exchange, and exchange account credentials ChaCha20-Poly1305-sealed — enabling account adoption to fall back from Relay to Tailscale and LAN routes on desktop, `ade code remote`, and iOS.
+- Surfaced account-machine connect failures in the desktop Connections panel and iOS (previously silent), with live route stage text, a connected-via route/latency note, and a one-tap jump into Nearby + PIN pairing when the machine is discoverable locally.
+
 ## [1.2.35] - 2026-07-22
 
 ### Relay recovery

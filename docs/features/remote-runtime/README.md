@@ -211,8 +211,20 @@ run a local repair against data owned by the remote machine. See
    removes this machine's own Bonjour advertisement, and merges routes that
    identify the same machine. Discovered paired-capable ADE desktops appear in
    Available; offline or unsupported machines remain visible in Unavailable.
-2. Select a same-account Mac for the primary PIN-less flow; ADE adopts it over
-   the directory-verified Relay and saves the returned DPoP-bound credentials.
+2. Select a same-account Mac for the primary PIN-less flow. ADE dials the
+   directory-verified Relay first; when the target publishes an ed25519
+   identity key in its directory row (`pubkey`), adoption can also fall back
+   to Tailscale and LAN routes using the sealed `ade-adopt-v1` handshake —
+   the host signs the client's challenge nonce over an ephemeral X25519
+   exchange, the client verifies that signature against the directory key
+   before releasing any account credential, and both the account attestation
+   and the returned paired credentials travel ChaCha20-Poly1305-sealed. A
+   host-identity verification failure aborts adoption immediately (no route
+   is retried); hosts without a published key remain relay-only-adoptable.
+   Successful adoption saves the returned DPoP-bound credentials either way.
+   While connecting, the machine row reports the route being tried, and a
+   failure surfaces inline with a one-tap jump into Nearby + PIN pairing
+   when the same machine is discoverable locally.
    Without an account, choose **Find nearby Macs**, select a discovered LAN or
    Tailscale machine, and enter the six-digit PIN shown on that Mac's **This
    Mac** Connections card. There is no desktop pairing-link paste/scan or
