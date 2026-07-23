@@ -2037,13 +2037,40 @@ describe("sync host account authentication", () => {
         message: expect.stringMatching(/expired/i),
       });
 
-      // The successful sealed hello above cleared its issuance budget. The
-      // expired challenge counts as one new unauthenticated signing operation;
-      // four more are admitted, and the following connection is throttled.
-      for (let index = 0; index < 4; index += 1) {
-        const rateClient = await openAccountClient(port);
-        clients.push(rateClient);
-        await issueChallenge(rateClient, `rate-${index}`);
+      // Well-formed challenges only trigger a public signature and are the
+      // normal adoption operation, so they must NEVER trip the abuse throttle —
+      // otherwise a few normal relay adoptions (all sharing the loopback origin)
+      // would lock every adopter out. Issue several in a row; all are admitted.
+      for (let index = 0; index < 8; index += 1) {
+        const okClient = await openAccountClient(port);
+        clients.push(okClient);
+        await issueChallenge(okClient, `well-formed-${index}`);
+      }
+
+      // Only MALFORMED challenges (genuine abuse signals) count toward the
+      // limiter. Five trip the cooldown; the sixth is throttled — and once
+      // tripped, even a subsequent well-formed challenge is refused.
+      const sendMalformedChallenge = (
+        client: Awaited<ReturnType<typeof openAccountClient>>,
+        requestId: string,
+      ): void => {
+        client.ws.send(encodeSyncEnvelope({
+          type: "account_challenge",
+          requestId,
+          payload: { v: 1, nonce: "not-32-bytes", clientEphemeralPublicKey: "bad" },
+        }));
+      };
+      for (let index = 0; index < 5; index += 1) {
+        const badClient = await openAccountClient(port);
+        clients.push(badClient);
+        sendMalformedChallenge(badClient, `malformed-${index}`);
+        await waitForValue(
+          () => badClient.envelopes.find((entry) =>
+            entry.type === "account_challenge_error"
+            && entry.requestId === `malformed-${index}`
+          ),
+          `malformed-${index} rejection`,
+        );
       }
       const throttledClient = await openAccountClient(port);
       clients.push(throttledClient);

@@ -1136,23 +1136,17 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       }
 
       if (result.atCapacity) {
-        // The relay rejected our own probe only because this machine is at its
-        // tunnel quota — which proves the control socket is registered and the
-        // relay is serving real clients. Treat it as liveness (keep the relay
-        // endpoint published, do NOT declare a zombie or terminate control).
-        const verifiedAtMs = Date.now();
-        const stateChanged = selfProbe.verifiedAtMs == null || selfProbe.lastFailure != null;
-        selfProbeRoundTripMs = null;
-        selfProbe = {
-          verifiedAtMs,
-          lastFailure: null,
-          lastFailureAtMs: null,
-          inFlight: false,
-        };
-        const clearedFailure = clearBridgeOpenFailure(key, "self-probe");
-        if (stateChanged && !clearedFailure) {
-          requestPublicationStatePublish("route-state-changed");
-        }
+        // The probe could not get a tunnel slot because this machine is at its
+        // relay quota. That is inconclusive, not proof of health: a stale
+        // control could also be at capacity if clients filled every slot. So we
+        // render NO verdict here — neither claim end-to-end verified nor declare
+        // a zombie/terminate control. The JSON control keepalive independently
+        // owns zombie detection (it pings the control socket directly and does
+        // not depend on tunnel slots), so a genuinely dead control is still
+        // caught. Prior verification/publication state is left untouched: a
+        // relay that verified before filling up stays published; one that never
+        // verified stays unpublished.
+        selfProbe = { ...selfProbe, inFlight: false };
         log.debug?.("sync_tunnel.self_probe_at_capacity", {
           machineKey: machineIdentity.machineKey,
           reason: result.reason,

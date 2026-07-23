@@ -2448,21 +2448,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       resetPairFailureEntry(globalAdoptChallengeIssuances);
     }
   };
-  const registerAdoptChallengeIssuance = (
-    ip: string | null,
-    options: { countsGlobally?: boolean } = {},
-  ): void => {
+  // Only called for malformed/anomalous challenges (genuine abuse signals);
+  // well-formed challenges deliberately feed no limiter. Counts both per-IP and
+  // globally so a distributed malformed flood is bounded as well as a single
+  // origin's.
+  const registerAdoptChallengeIssuance = (ip: string | null): void => {
     const now = Date.now();
     pruneExpiredAdoptChallengeIssuances(now);
-    // A well-formed challenge only triggers a public host signature and guards
-    // no secret, so it must not feed the cross-tenant global counter — else a
-    // handful of cheap frames (or one failed multi-route adoption) would lock
-    // out account adoption host-wide. Only malformed/anomalous issuances, which
-    // are genuine abuse signals, count globally. All issuances still count
-    // per-IP so a single origin's signing load stays bounded.
-    if (options.countsGlobally) {
-      incrementPairFailureEntry(globalAdoptChallengeIssuances, now);
-    }
+    incrementPairFailureEntry(globalAdoptChallengeIssuances, now);
     if (ip) {
       const entry = adoptChallengeIssuances.get(ip)
         ?? { count: 0, cooldownUntilMs: 0, updatedAtMs: now };
@@ -6235,7 +6228,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           return;
         }
         if (peer.adoptChallenge) {
-          registerAdoptChallengeIssuance(peer.remoteAddress, { countsGlobally: true });
+          registerAdoptChallengeIssuance(peer.remoteAddress);
           send(peer.ws, "account_challenge_error", {
             message: "An account adoption challenge is already active on this connection.",
           }, envelope.requestId);
@@ -6246,16 +6239,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           : null;
         if (!challenge) {
           peer.adoptChallenge = null;
-          registerAdoptChallengeIssuance(peer.remoteAddress, { countsGlobally: true });
+          registerAdoptChallengeIssuance(peer.remoteAddress);
           send(peer.ws, "account_challenge_error", {
             message: "Invalid account adoption challenge.",
           }, envelope.requestId);
           return;
         }
-        // A well-formed challenge only triggers a public signature, so it counts
-        // per-IP but never globally (see registerAdoptChallengeIssuance). A
-        // successful sealed hello is the only operation that clears the budget.
-        registerAdoptChallengeIssuance(peer.remoteAddress);
+        // A well-formed challenge only triggers one public signature and is the
+        // normal adoption operation, so it feeds no cooldown at all. Signing
+        // load is already bounded by the per-connection single-active-challenge
+        // guard above and the relay's per-machine connection cap. Crucially,
+        // every relay adopter reaches this host from 127.0.0.1 (the relay bridge
+        // dials the loopback listener), so charging well-formed challenges to
+        // any shared bucket would let a few normal adoptions lock out all relay
+        // adoption. Only malformed/anomalous challenges (the branches above and
+        // the catch below) count toward the abuse limiter.
         try {
           const identity = machineIdentitySigningStore.getOrCreate();
           const hostDeviceId = readBrainMetadata().deviceId;
@@ -6293,7 +6291,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // A signing/derivation failure here means a rejected peer ephemeral
           // (malformed X25519 point) or missing host identity — an anomaly, so
           // it counts globally in addition to the per-IP charge above.
-          registerAdoptChallengeIssuance(peer.remoteAddress, { countsGlobally: true });
+          registerAdoptChallengeIssuance(peer.remoteAddress);
           args.logger.warn("sync_host.account_challenge_failed", {
             remoteAddress: peer.remoteAddress,
             reason: error instanceof Error ? error.message : String(error),

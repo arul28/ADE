@@ -74,6 +74,40 @@ describe("probeRelayEndToEnd", () => {
     });
   });
 
+  it("flags a too-many-tunnels (4503) close as atCapacity, not a plain failure", async () => {
+    const socket = new ProbeWebSocket();
+    const probing = probeRelayEndToEnd({
+      relayWsBase: "wss://relay.example",
+      machineKey: "machine-key",
+      createWebSocket: () => socket as unknown as WebSocket,
+    });
+
+    socket.open();
+    socket.close(4503, "too many tunnels");
+
+    await expect(probing).resolves.toEqual({
+      ok: false,
+      reason: "Relay self-probe closed before accepted (4503): too many tunnels.",
+      atCapacity: true,
+    });
+  });
+
+  it("does not flag a non-4503 close as atCapacity", async () => {
+    const socket = new ProbeWebSocket();
+    const probing = probeRelayEndToEnd({
+      relayWsBase: "wss://relay.example",
+      machineKey: "machine-key",
+      createWebSocket: () => socket as unknown as WebSocket,
+    });
+
+    socket.open();
+    socket.close(4501, "host offline");
+
+    const result = await probing;
+    expect(result.ok).toBe(false);
+    expect((result as { atCapacity?: boolean }).atCapacity).toBeUndefined();
+  });
+
   it("times out and terminates the probe socket", async () => {
     vi.useFakeTimers();
     const socket = new ProbeWebSocket();
