@@ -80,6 +80,25 @@ describe("commands", () => {
     );
   });
 
+  it("routes session lifecycle commands through the namespaced ADE chat surface", () => {
+    const cases = [
+      ["/chat ask Which account?", "/chat ask", "Which account?"],
+      ["/chat note running e2e", "/chat note", "running e2e"],
+      ["/chat settle PR merged", "/chat settle", "PR merged"],
+      ["/chat unsettle", "/chat unsettle", ""],
+    ] as const;
+
+    for (const [input, name, args] of cases) {
+      const parsed = parseCommand(input, [
+        { name: "/chat", description: "Provider chat command", source: "sdk" },
+      ]);
+      expect(parsed?.name).toBe(name);
+      expect(parsed?.args).toBe(args);
+      expect(parsed ? commandPlacement(parsed) : null).toBe("right");
+      expect(parsed?.userCommand).toBeNull();
+    }
+  });
+
   it("routes /effort to the ADE Code right pane", () => {
     const parsed = parseCommand("/effort");
     expect(parsed?.spec?.name).toBe("/effort");

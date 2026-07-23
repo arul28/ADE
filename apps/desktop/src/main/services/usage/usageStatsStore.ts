@@ -81,6 +81,8 @@ const MEANINGFUL_ACTIONS = new Set([
   "work.runQuickCommand",
   "work.sendToSession",
   "work.stopRuntime",
+  "work.settleSession",
+  "work.unsettleSession",
   "lanes.create",
   "lanes.createChild",
   "lanes.createFromUnstaged",
@@ -150,6 +152,9 @@ export function usageActionFromIpcChannel(channel: string): string {
   if (action === "pty.resumeSession") return "work.resumeCliSession";
   if (action === "pty.sendToSession") return "work.sendToSession";
   if (action === "externalSessions.import") return "work.importExternalSession";
+  // Settle lifecycle: single + bulk collapse to one coarse action each.
+  if (action === "sessions.settle" || action === "sessions.settleMany") return "work.settleSession";
+  if (action === "sessions.unsettle" || action === "sessions.unsettleMany") return "work.unsettleSession";
   return action;
 }
 
@@ -209,6 +214,10 @@ export function usageActionFromRpcDomain(domain: string, action: string): string
       revertCommit: "revert",
     };
     return `git.${aliases[action] ?? action}`;
+  }
+  if (domain === "session") {
+    if (action === "settleSelfSession" || action === "settleSessions") return "work.settleSession";
+    if (action === "unsettleSelfSession" || action === "unsettleSessions") return "work.unsettleSession";
   }
   return `${domain}.${action}`;
 }

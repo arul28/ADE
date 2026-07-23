@@ -142,6 +142,95 @@ export async function listChatSessions(
   });
 }
 
+export type TuiSessionLifecycleFields = Pick<
+  TerminalSessionSummary,
+  | "settledAt"
+  | "statusNote"
+  | "attentionRequestedAt"
+  | "attentionMessage"
+  | "lastTurnFailedAt"
+>;
+
+export type TuiChatSessionSummary = AgentChatSessionSummary & TuiSessionLifecycleFields;
+export type TuiChatTerminalSession = ChatTerminalSession
+  & TuiSessionLifecycleFields
+  & Pick<TerminalSessionSummary, "lastActivityAt">;
+
+export async function listSessionSummaries(
+  connection: AdeCodeConnection,
+): Promise<TerminalSessionSummary[]> {
+  return (await connection.action<TerminalSessionSummary[]>("session", "list", { limit: 500 })) ?? [];
+}
+
+function lifecycleFields(
+  summary: TerminalSessionSummary | undefined,
+): TuiSessionLifecycleFields {
+  return {
+    settledAt: summary?.settledAt ?? null,
+    statusNote: summary?.statusNote ?? null,
+    attentionRequestedAt: summary?.attentionRequestedAt ?? null,
+    attentionMessage: summary?.attentionMessage ?? null,
+    lastTurnFailedAt: summary?.lastTurnFailedAt ?? null,
+  };
+}
+
+export function enrichChatSessionsWithLifecycle(
+  sessions: AgentChatSessionSummary[],
+  summaries: TerminalSessionSummary[],
+): TuiChatSessionSummary[] {
+  const byId = new Map(summaries.map((summary) => [summary.id, summary] as const));
+  return sessions.map((session) => ({
+    ...session,
+    ...lifecycleFields(byId.get(session.sessionId)),
+  }));
+}
+
+export function enrichTerminalSessionsWithLifecycle(
+  sessions: ChatTerminalSession[],
+  summaries: TerminalSessionSummary[],
+): TuiChatTerminalSession[] {
+  const byId = new Map(summaries.map((summary) => [summary.id, summary] as const));
+  return sessions.map((session) => ({
+    ...session,
+    ...lifecycleFields(byId.get(session.terminalId)),
+    lastActivityAt: byId.get(session.terminalId)?.lastActivityAt ?? null,
+  }));
+}
+
+export async function requestSessionAttention(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  message: string,
+): Promise<void> {
+  await connection.action("session", "requestSessionAttention", { sessionId, message });
+}
+
+export async function setSessionStatusNote(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  note: string,
+): Promise<void> {
+  await connection.action("session", "setSessionStatusNote", { sessionId, note });
+}
+
+export async function settleSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  outcome?: string,
+): Promise<void> {
+  await connection.action("session", "settleSelfSession", {
+    sessionId,
+    ...(outcome ? { outcome } : {}),
+  });
+}
+
+export async function unsettleSession(
+  connection: AdeCodeConnection,
+  sessionId: string,
+): Promise<void> {
+  await connection.action("session", "unsettleSelfSession", { sessionId });
+}
+
 export async function getScheduledWorkState(
   connection: AdeCodeConnection,
   sessionId: string,
@@ -276,7 +365,7 @@ export type StartCliTerminalSessionResult = {
   session: ChatTerminalSession | null;
 };
 
-function terminalSummaryToChatSession(session: TerminalSessionSummary): ChatTerminalSession {
+function terminalSummaryToChatSession(session: TerminalSessionSummary): TuiChatTerminalSession {
   return {
     terminalId: session.id,
     ptyId: session.ptyId,
@@ -297,12 +386,14 @@ function terminalSummaryToChatSession(session: TerminalSessionSummary): ChatTerm
     resumeMetadata: session.resumeMetadata,
     lastOutputPreview: session.lastOutputPreview,
     summary: session.summary,
+    lastActivityAt: session.lastActivityAt ?? null,
+    ...lifecycleFields(session),
   };
 }
 
 export function normalizeChatTerminalSession(
   session: ChatTerminalSession | TerminalSessionSummary | null,
-): ChatTerminalSession | null {
+): TuiChatTerminalSession | null {
   if (!session) return null;
   if ("terminalId" in session) return session;
   return terminalSummaryToChatSession(session);

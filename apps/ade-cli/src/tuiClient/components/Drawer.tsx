@@ -11,6 +11,7 @@ import { closedCliSessionStatusKind } from "../closedCliSessions";
 import { useSpinFrame } from "../spinTick";
 import { theme, type LaneStatusKind } from "../theme";
 import type { AdeCodeProvider } from "../types";
+import type { TuiChatSessionSummary } from "../adeApi";
 import { useHoveredHitId } from "../hitTestRegistry";
 import {
   computeDrawerLayout,
@@ -48,7 +49,9 @@ function deriveLaneStatus(
   if (unavailableLaneIds.has(lane.id)) return "failed";
   const laneSessions = sessions.filter((s) => s.laneId === lane.id);
   const hasActive = laneSessions.some((s) => s.status === "active");
-  const awaiting = laneSessions.some((s) => s.awaitingInput);
+  const awaiting = laneSessions.some((s) =>
+    s.awaitingInput || (s as TuiChatSessionSummary).attentionRequestedAt
+  );
   if (lane.status?.rebaseInProgress) return "failed";
   if (awaiting) return "attention";
   if (hasActive || lane.id === activeLaneId) return "running";
@@ -74,8 +77,11 @@ function laneStatusDot(status: LaneStatusKind): StatusKind {
 
 /** Map a chat session onto the shared design-kit status glyph set. */
 function chatStatusDot(session: AgentChatSessionSummary): StatusKind {
+  const lifecycle = session as TuiChatSessionSummary;
+  if (session.awaitingInput || lifecycle.attentionRequestedAt) return "pending";
+  if (lifecycle.settledAt && session.status !== "active") return "idle";
+  if (lifecycle.lastTurnFailedAt) return "failed";
   if (session.status === "active") return "live";
-  if (session.awaitingInput) return "pending";
   if (session.status === "ended" || session.endedAt) return "done";
   return "idle";
 }
@@ -622,7 +628,11 @@ function ChatRow({
   hovered: boolean;
   dimTitle: boolean;
 }) {
-  const running = session.status === "active";
+  const lifecycle = session as TuiChatSessionSummary;
+  const attention = Boolean(session.awaitingInput || lifecycle.attentionRequestedAt);
+  const settled = Boolean(lifecycle.settledAt && session.status !== "active");
+  const failed = Boolean(lifecycle.lastTurnFailedAt);
+  const running = session.status === "active" && !attention && !failed;
   const provider = (session.provider as AdeCodeProvider) ?? null;
   const exec = theme.provider(provider);
   const dot = statusGlyph(chatStatusDot(session));
@@ -644,26 +654,41 @@ function ChatRow({
     : null;
   const spawnLabel = spawnKind === "subagent" ? "sub" : spawnKind;
   const spawnReserve = spawnLabel ? spawnLabel.length + 1 : 0;
+  const lifecycleText = lifecycle.attentionRequestedAt
+    ? lifecycle.attentionMessage?.trim() || "needs you"
+    : lifecycle.statusNote?.trim()
+      ? `${settled ? "done: " : ""}${lifecycle.statusNote.trim()}`
+      : null;
+  const lifecycleSuffix = lifecycleText
+    ? truncate(lifecycleText, Math.max(8, Math.floor(max / 2)))
+    : null;
+  const lifecycleReserve = lifecycleSuffix ? lifecycleSuffix.length + 3 : 0;
   // The age used to reserve trailing room; without it the title can run wider,
   // keeping just a little space for the spinner + active dot.
-  const label = truncate(formatSessionLabel(session), drawerChatLabelWidth(max, wakeReserve + tagReserve + spawnReserve));
+  const label = truncate(
+    formatSessionLabel(session),
+    drawerChatLabelWidth(max, wakeReserve + tagReserve + spawnReserve + lifecycleReserve),
+  );
   // Selection/hover wins with violet; awaiting-input tints amber as a calm
   // "needs you" signal; otherwise the title sits a touch dimmer under a
   // non-selected lane (dimTitle) than under the focused one.
   const titleColor: string = selected || hovered
     ? theme.color.violet
-    : session.awaitingInput && !running
+    : attention
       ? theme.color.attention
+      : settled ? theme.color.t4
+      : failed ? theme.color.error
       : dimTitle ? theme.color.t2 : theme.color.t1;
   return (
     <Box>
       <Text wrap="truncate-end">
-        {running ? <Text>{"  "}</Text> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
+        {running ? <Text>{"  "}</Text> : <Text color={dot.color} bold={attention}>{dot.glyph} </Text>}
         <Text color={exec.color}>{exec.glyph} </Text>
         <Text color={titleColor}>{label}</Text>
         {spawnLabel ? (
           <Text color={spawnKind === "subagent" ? theme.color.violet : theme.color.t4}>{` ${spawnLabel}`}</Text>
         ) : null}
+        {lifecycleSuffix ? <Text color={attention ? theme.color.attention : theme.color.t4}>{` · ${lifecycleSuffix}`}</Text> : null}
         {tag ? <Text color={theme.color.t4}>{` ${tag}`}</Text> : null}
         {wake ? <Text color={theme.color.t4}>{` ⏰${wake}`}</Text> : null}
         {running ? <Text> <ActiveChatSpin /></Text> : null}
@@ -967,7 +992,11 @@ function MiniDrawer({
           </Box>
           {sessions.map((session, index) => {
             const selected = index === selectedChatIndex;
-            const running = session.status === "active";
+            const lifecycle = session as TuiChatSessionSummary;
+            const attention = Boolean(session.awaitingInput || lifecycle.attentionRequestedAt);
+            const failed = Boolean(lifecycle.lastTurnFailedAt);
+            const settled = Boolean(lifecycle.settledAt && session.status !== "active");
+            const running = session.status === "active" && !attention && !failed;
             const hovered = hoveredId?.startsWith(`drawer:chat:${session.sessionId}:`) ?? false;
             const provider = (session.provider as AdeCodeProvider) ?? null;
             const exec = theme.provider(provider);
@@ -975,14 +1004,22 @@ function MiniDrawer({
             const nameMax = Math.max(4, inner - 4);
             return (
               <Box key={session.sessionId} paddingX={1}>
-                {running ? <ActiveChatSpin /> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
+                {running ? <ActiveChatSpin /> : <Text color={dot.color} bold={attention}>{dot.glyph} </Text>}
                 <Text color={exec.color}>{exec.glyph}</Text>
                 <Text> </Text>
                 <Text
                   color={
-                    selected || hovered || session.sessionId === activeSessionId || running
+                    selected || hovered
                       ? theme.color.violet
-                      : theme.color.t2
+                      : attention
+                        ? theme.color.attention
+                        : failed
+                          ? theme.color.error
+                          : settled
+                            ? theme.color.t4
+                            : session.sessionId === activeSessionId || running
+                              ? theme.color.violet
+                              : theme.color.t2
                   }
                   bold={selected || running}
                 >

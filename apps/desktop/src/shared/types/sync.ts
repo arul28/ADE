@@ -589,6 +589,17 @@ export type SyncRosterChat = {
   archived?: boolean;
   lastActivityAt?: string | null;
   preview?: string | null; // last-output preview, hard-truncated (~120 chars)
+  /**
+   * Additive settled-lifecycle projection. Optional so current phones remain
+   * compatible with older hosts and current hosts remain compatible with older
+   * phones. `exitCode` is needed for canonical clean-exit auto-settle.
+   */
+  settledAt?: string | null;
+  statusNote?: string | null;
+  attentionRequestedAt?: string | null;
+  attentionMessage?: string | null;
+  lastTurnFailedAt?: string | null;
+  exitCode?: number | null;
 };
 
 export type SyncRosterLane = {

@@ -39,6 +39,14 @@ struct RemoteRosterChat: Codable, Equatable, Identifiable {
   var archived: Bool?
   var lastActivityAt: String?
   var preview: String?
+  // Additive settled-lifecycle projection. Defaults preserve decoding and
+  // memberwise-call compatibility with hosts/builds that predate the fields.
+  var settledAt: String? = nil
+  var statusNote: String? = nil
+  var attentionRequestedAt: String? = nil
+  var attentionMessage: String? = nil
+  var lastTurnFailedAt: String? = nil
+  var exitCode: Int? = nil
 }
 
 struct RemoteRosterLane: Codable, Equatable, Identifiable {
@@ -447,12 +455,12 @@ extension RemoteRosterChat {
       startedAt: lastActivityAt ?? "",
       endedAt: status == .ended ? lastActivityAt : nil,
       archivedAt: archived == true ? (lastActivityAt ?? "") : nil,
-      settledAt: nil,
-      statusNote: nil,
-      attentionRequestedAt: nil,
-      attentionMessage: nil,
-      lastTurnFailedAt: nil,
-      exitCode: nil,
+      settledAt: settledAt,
+      statusNote: statusNote,
+      attentionRequestedAt: attentionRequestedAt,
+      attentionMessage: attentionMessage,
+      lastTurnFailedAt: lastTurnFailedAt,
+      exitCode: exitCode,
       transcriptPath: "",
       headShaStart: nil,
       headShaEnd: nil,

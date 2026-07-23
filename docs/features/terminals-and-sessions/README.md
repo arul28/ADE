@@ -114,11 +114,14 @@ and in tests.
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
   layer for `terminal_sessions` rows. CRUD, continuation metadata
-  normalization, `reattach`, `reconcileStaleRunningSessions`. Normalized
+  normalization, `reattach`, `reconcileStaleRunningSessions`, and the durable
+  settled/status-note/attention/last-turn-failure mutations. Normalized
   `TerminalResumeMetadata` retains optional `orchestrationParentSessionId` /
   `spawnKind`; tracked agent CLI rows project those fields onto
   `TerminalSessionSummary`, and resume-command backfill merges the existing
-  metadata so lineage survives continuation. Reconcile and
+  metadata so lineage survives continuation. New user turns clear settle,
+  attention, and failure markers; PTY output clears settle without erasing
+  an agent-authored status note. Reconcile and
   ownership-aware queries gate row sweeps on both live owners and known local
   owners from `processRegistryService`: a `running` row whose owner is live
   belongs to a sibling and must be left alone; a row whose owner is known on
@@ -199,6 +202,11 @@ Shared types and IPC:
   `TerminalSerializedSnapshot`, `ChatTerminalPreviewArgs`,
   `ChatTerminalPreviewResult`) used by the `ade.terminal.*` IPC
   surface and the `terminal` ADE action domain.
+- `apps/desktop/src/shared/sessionCanonicalState.ts` — canonical phase and
+  status-bucket derivation shared by desktop and mirrored on iOS. Precedence is
+  deterministic attention → declared settle at rest → stopped/failure/clean
+  exit → stale/running/resting. It is the source of the one-word row capsule,
+  Work grouping, and the loud-vs-quiet attention split.
 - `apps/desktop/src/shared/types/externalSessions.ts` —
   `ExternalSessionProvider`, `ExternalSessionCapabilities`,
   `ExternalSessionSummary`, `ExternalSessionListArgs`,
@@ -270,7 +278,8 @@ Preload bridge:
 IPC registration:
 
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — registers
-  `sessionsList`, `sessionsGet`, `sessionsUpdateMeta`,
+  `sessionsList`, `sessionsGet`, `sessionsUpdateMeta`, `sessionsSettle`,
+  `sessionsUnsettle`, `sessionsSettleMany`, `sessionsUnsettleMany`,
   `sessionsReadTranscriptTail`, `sessionsGetDelta`, `ptyCreate`,
   `ptyResumeSession`, `ptySendToSession`, `ptyWrite`, `ptyResize`,
   `ptyDispose`, the `processes.*` handlers,
@@ -375,9 +384,14 @@ Renderer surfaces:
   buttons while preserving stable hit targets and tooltips.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
-  sticky group headers, search/filter. Renders a bulk action bar at the
-  bottom when sessions are multi-selected (Close N running / Delete N
-  ended / clear selection). The filter panel is width-constrained by
+  sticky group headers, search/filter, and a quiet Settled tail. Status mode
+  renders a fourth collapsed-by-default Settled section; lane mode puts a
+  collapsible settled tail inside each lane; time mode keeps settled rows in one
+  final section rather than mixing them into creation-time buckets. The
+  Show settled tier toggle is persisted with the rest of Work view state.
+  Renders a bulk action bar at the bottom when sessions are multi-selected
+  (Stop N running / Settle N / Delete N ended / clear selection), and offers an
+  eight-second undo after bulk settle. The filter panel is width-constrained by
   the surrounding Work split, so status/group options wrap in an
   auto-fit grid and the embedded lane selector can fill its parent.
   Lane group headers expose the same lane context menu used by the Work
@@ -401,9 +415,14 @@ Renderer surfaces:
   `nextWakeAt` render a compact
   `⏰ <duration>` chip that refreshes while the row is mounted; paused or
   overdue schedules omit the chip because their session summary reports no
-  future wake. Surfaces a small amber warning pip next to the title
-  when `getStaleRunningCliSessionAgeHours` returns a value, so users
-  can spot long-running CLI/shell sessions without opening them. The
+  future wake. The canonical phase drives a filled status dot or the hollow
+  settled ring plus one-word attention capsules: amber `Needs you`, red
+  `Failed`, and an outlined muted `Stale` after three hours without activity.
+  The preview line prefers an escalated `ade chat ask` question, then
+  `statusNote` (prefixed `done:` when settled), then summary/goal; raw terminal
+  output remains a detection/search signal instead of row copy. Long-running
+  non-chat CLI/shell rows can additionally show the separate 24-hour process
+  cleanup warning pip described below. The
   card also reports its multi-select state via `isMultiSelected`. While
   the card's lane is mid background AI auto-naming it swaps the preview
   line for an "Auto-naming lane underway…" status and warm-highlights the
@@ -661,16 +680,17 @@ Renderer surfaces:
   cannot reuse a pre-mutation snapshot. Promise identity guards prevent a
   superseded response from repopulating the cache.
 - `apps/desktop/src/renderer/lib/sessions.ts` — session-label helpers
-  plus `getStaleRunningCliSessionAgeHours`, the canonical check that
-  returns a rounded age in hours when a non-run, non-chat session has
-  been `running` for at least `STALE_RUNNING_CLI_SESSION_MS` (12 h).
-  Used by both `SessionCard` (inline pip) and `AppShell` (stale-CLI
-  toast).
+  plus `getStaleRunningCliSessionAgeHours`, a separate process-cleanup
+  heuristic that returns a rounded age when a non-run, non-chat session
+  has been `running` without output for at least
+  `STALE_RUNNING_CLI_SESSION_MS` (24 h). It drives the legacy inline
+  warning pip and AppShell cleanup toast; it is not the canonical
+  three-hour `stale` lifecycle threshold.
 - `apps/desktop/src/renderer/lib/transcriptExport.ts` —
   `formatSessionBundleMarkdown` builds a metadata-only markdown bundle
   for a list of selected sessions; `triggerBrowserDownload` writes it
-  to disk via a transient anchor + Object URL. Used by the bulk-export
-  action in the session list.
+  to disk via a transient anchor + Object URL. The utility is retained,
+  but the current session-list footer does not expose an export action.
 
 ADE CLI / TUI runtime surfaces:
 
@@ -813,6 +833,13 @@ Status transitions: `running` → `completed` | `failed` | `disposed` |
 `detached`. `detached` means the durable row and transcript remain, but the
 process-local PTY is no longer reachable from the current ADE runtime.
 
+Those persisted process statuses are intentionally separate from the canonical
+UI phase. `CanonicalSessionPhase` adds `needs_you`, `stale`, `ready`, `idle`,
+`stopped`, `ended`, and `settled` projections without rewriting the underlying
+process status. A settled session remains in the live Work inventory and is
+still openable/resumable; archive remains a separate chat-only visibility
+lifecycle.
+
 Fields that feed UI and downstream systems:
 
 - identity: `id`, `laneId`, `laneName`, `ptyId`, `tracked`, `pinned`,
@@ -821,7 +848,8 @@ Fields that feed UI and downstream systems:
   for CLI-owned attached terminals; stored as `chat_session_id` and indexed)
 - title and intent: `title`, `goal`, `toolType`
 - lifecycle: `status`, `startedAt`, `endedAt`, `exitCode`, `runtimeState`
-  (derived), `chatIdleSinceAt`
+  (derived), `chatIdleSinceAt`, `settledAt`, `statusNote`,
+  `attentionRequestedAt`, `attentionMessage`, `lastTurnFailedAt`
 - content: `transcriptPath`, `lastOutputPreview`, `summary`
 - git anchoring: `headShaStart`, `headShaEnd` (used by
   `sessionDeltaService`)
@@ -881,7 +909,26 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    waiting input prompt. Close/stop is explicit, so a resumed provider
    TUI is preserved even if ADE cannot prove that it is ready for input.
 
-6. **Continue** — `work.sendToSession` reuses an existing session row
+6. **Classify and settle** — `canonicalSessionState()` projects persisted
+   facts in a fixed order. Deterministic pending input or `ade chat ask` is
+   loud `needs_you`; an explicit `settledAt` wins at rest; disposed and failed
+   sessions remain distinct; a non-chat exit code 0 auto-classifies as settled;
+   a still-running session with no activity for three hours is `stale` but is
+   not settled. Chat idle between turns is the quiet `ready` phase. Explicit
+   Settle/Unsettle is available from the session context menu and multi-select
+   footer. `ade chat settle --outcome ...` also stores the outcome as
+   `statusNote`.
+
+7. **Activity and escalation** — a new user turn clears a chat's settle,
+   explicit attention, and last-turn-failure markers. PTY output clears settle
+   because the process is active again. Scheduled/background wakes are
+   different: an explicitly settled chat shows running while the unattended
+   turn streams, retains `settledAt`, and returns to Settled when it rests.
+   `ade chat ask` clears settle, persists the blocking question, marks a live
+   tracked CLI as waiting-input, and publishes a time-sensitive push; the next
+   user turn clears it. `ade chat note ""` clears only the status line.
+
+8. **Continue** — `work.sendToSession` reuses an existing session row
    when the user sends text to an ended agent CLI session and the PTY
    service opens the transcript in append mode. When the runtime is still
    live, it submits to that PTY directly. When the PTY is gone, it rebuilds
@@ -895,7 +942,7 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    association, and transcript history intact without killing the resumed
    runtime on a readiness timeout.
 
-7. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
+9. **Reconcile** — on startup, `reconcileStaleRunningSessions` marks
    orphaned `running` rows as `detached`. Ownership is gated through the
    process registry's live and known local owner sets: a row whose owner is
    live belongs to a sibling process (another desktop window, the `ade serve`
@@ -911,7 +958,7 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    confusion. Ended chat sessions stay in the table and are resumable
    through the SDK (or removable via `ade.agentChat.delete`).
 
-8. **Delete** — `sessionService.deleteSession(sessionId)` removes a
+10. **Delete** — `sessionService.deleteSession(sessionId)` removes a
    row outright and emits `terminalSessionChanged` with
    `reason: "deleted"` so renderer caches drop it immediately.
    `agentChatService.deleteSession` wraps this for chat rows: it
@@ -925,8 +972,12 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
 
 - **Session list cache** — the renderer shares `listSessionsCached()`
   (`sessionListCache.ts`) across Work, lanes, graph, and top-bar
-  attention. Invalidate it when a new session is created outside the
-  normal paths.
+  attention. Invalidate it when a new session is created or lifecycle metadata
+  changes outside the normal paths.
+- **Two-tier attention** — the Your move bucket contains loud `needs_you` rows
+  and quiet resting chats/idle CLIs. Only canonical `needs_you` increments the
+  Work-tab highlight, notification count, and macOS Dock badge. A ready chat is
+  visible in Your move but does not interrupt the user.
 - **Refresh-before-activate** — every surface that creates or opens a
   session awaits `refresh()` before activating a tab, so
   `sessionsById.get(activeItemId)` resolves on the first render.
@@ -952,6 +1003,8 @@ Sessions:
 | `ade.sessions.list` | list by lane/status; cached at renderer |
 | `ade.sessions.get` | single session detail including runtime state |
 | `ade.sessions.updateMeta` | rename (sets `manuallyNamed`), pin, edit goal, update resume metadata |
+| `ade.sessions.settle` / `.unsettle` | set or clear `settled_at` for one session |
+| `ade.sessions.settleMany` / `.unsettleMany` | bulk lifecycle mutation used by the Work multi-select footer; settle returns only newly-settled ids for precise undo |
 | `ade.sessions.delete` | remove a row outright; emits `terminalSessionChanged` with `reason: "deleted"` |
 | `ade.sessions.readTranscriptTail` | tail bytes of transcript (raw or ANSI-stripped) |
 | `ade.sessions.getDelta` | `SessionDeltaSummary` |

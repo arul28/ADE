@@ -16110,24 +16110,27 @@ extension SyncService {
     let runningRecencyCutoff = now.addingTimeInterval(-120)
 
     for session in sessions {
-      let isChat = (session.toolType?.contains("chat") == true)
+      let isChat = isWorkChatToolType(session.toolType)
       guard isChat else { continue }
       guard session.archivedAt == nil else { continue }
 
+      let summary = chatSummaryCache[session.id]
+      let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
       let status = session.status.lowercased()
-      let isFailedStatus = status == "failed" || status == "error"
-      guard status != "completed" && status != "ended" || isFailedStatus else {
+      let isFailedStatus = canonical.phase == .failed
+      let isAwaiting = canonical.phase == .needsYou
+      let isSettled = canonical.phase == .settled
+      guard !isSettled && canonical.phase != .stopped && canonical.phase != .ended else {
         continue
       }
 
       let runtime = session.runtimeState.lowercased()
-      let isAwaiting = runtime == "waiting-input" || status == "awaiting_input"
       let isRunningRuntime = runtime == "running"
-      let isIdleRuntime = runtime == "idle"
+      let isIdleRuntime = canonical.phase == .ready || canonical.phase == .idle
       let isEndedRuntime = runtime == "exited" || runtime == "killed" || runtime == "stopped"
 
       if isEndedRuntime && !isFailedStatus && !isAwaiting { continue }
-      if isRunningRuntime && !isFailedStatus { runningChatCount += 1 }
+      if isRunningRuntime && !isFailedStatus && !isAwaiting { runningChatCount += 1 }
 
       let started = parseIso8601(session.startedAt) ?? now
       // For active sessions there is no `endedAt`. Use the chat summary's
@@ -16138,11 +16141,15 @@ extension SyncService {
       // while they're still streaming output. Idle / awaiting sessions still
       // get filtered out by their runtime state, so this fallback only
       // affects the running roster when activity timestamps are missing.
-      let summary = chatSummaryCache[session.id]
-      let lastActivity =
-        parseIso8601(summary?.lastActivityAt ?? "")
-        ?? parseIso8601(session.endedAt ?? "")
-        ?? parseIso8601(session.chatIdleSinceAt ?? "")
+      let lastActivity = [
+        session.attentionRequestedAt,
+        session.lastTurnFailedAt,
+        summary?.lastActivityAt,
+        session.endedAt,
+        session.chatIdleSinceAt,
+      ]
+        .compactMap { parseIso8601($0 ?? "") }
+        .max()
         ?? (isRunningRuntime ? now : started)
       let elapsed = Int(max(0, lastActivity.timeIntervalSince(started)))
 
@@ -16157,11 +16164,13 @@ extension SyncService {
         modelId: resolvedModelId,
         laneName: session.laneName.isEmpty ? nil : session.laneName,
         title: session.title.isEmpty ? session.goal : session.title,
-        status: isFailedStatus ? "failed" : (isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status)),
+        status: isFailedStatus
+          ? "failed"
+          : (isAwaiting ? "awaiting-input" : (isRunningRuntime ? "running" : (isIdleRuntime ? "idle" : status))),
         awaitingInput: isAwaiting,
         lastActivityAt: lastActivity,
         elapsedSeconds: elapsed,
-        preview: session.lastOutputPreview,
+        preview: session.attentionMessage ?? session.statusNote ?? session.lastOutputPreview,
         pendingInputItemId: isAwaiting ? (session.pendingInputItemId ?? pendingInputItemIdForSnapshot(sessionId: session.id)) : nil,
         progress: nil,
         phase: nil,
@@ -16177,10 +16186,10 @@ extension SyncService {
       // LA roster: ONLY truly streaming chats (runtime == running and seen
       // recently). Idle / awaiting / stale-running drop out entirely so the
       // lock screen never shows a session that isn't producing output now.
-      if isRunningRuntime && lastActivity >= runningRecencyCutoff {
-        runningAgents.append(snap)
-      } else if isAwaiting {
+      if isAwaiting {
         awaitingInputCount += 1
+      } else if isRunningRuntime && lastActivity >= runningRecencyCutoff {
+        runningAgents.append(snap)
       } else if isIdleRuntime {
         idleCount += 1
       }
@@ -17140,8 +17149,18 @@ extension SyncService {
         awaitingInput: status == .awaiting,
         pinned: session.pinned,
         archived: false,
-        lastActivityAt: session.endedAt ?? session.startedAt,
-        preview: session.lastOutputPreview
+        lastActivityAt: session.attentionRequestedAt
+          ?? session.settledAt
+          ?? session.lastTurnFailedAt
+          ?? session.endedAt
+          ?? session.startedAt,
+        preview: session.lastOutputPreview,
+        settledAt: session.settledAt,
+        statusNote: session.statusNote,
+        attentionRequestedAt: session.attentionRequestedAt,
+        attentionMessage: session.attentionMessage,
+        lastTurnFailedAt: session.lastTurnFailedAt,
+        exitCode: session.exitCode
       )
     }
     let rosterLanes: [RemoteRosterLane] = lanes.map { lane in
@@ -17237,6 +17256,12 @@ extension SyncService {
       merged.lastActivityAt = nonEmptyRosterString(local.lastActivityAt) ?? remote.lastActivityAt
       merged.title = nonEmptyRosterString(local.title) ?? remote.title
       merged.preview = nonEmptyRosterString(local.preview) ?? remote.preview
+      merged.settledAt = local.settledAt
+      merged.statusNote = local.statusNote
+      merged.attentionRequestedAt = local.attentionRequestedAt
+      merged.attentionMessage = local.attentionMessage
+      merged.lastTurnFailedAt = local.lastTurnFailedAt
+      merged.exitCode = local.exitCode
     }
 
     merged.provider = nonEmptyRosterString(remote.provider) ?? local.provider
@@ -17269,24 +17294,17 @@ extension SyncService {
   }
 
   private func rosterStatus(forSession session: TerminalSessionSummary) -> RemoteRosterChatStatus {
-    let runtimeState = session.runtimeState.lowercased()
-    let status = session.status.lowercased()
-    if status == "awaiting-input" || status == "awaiting_input" || runtimeState == "waiting-input" {
+    switch workCanonicalSessionState(session: session, summary: nil).phase {
+    case .starting, .running, .stale:
+      return .running
+    case .needsYou:
       return .awaiting
-    }
-    switch runtimeState {
-    case "running": return .running
-    case "idle": return .idle
-    case "stopped", "exited", "completed", "interrupted": return .ended
-    case "failed": return .failed
-    default: break
-    }
-    switch status {
-    case "running", "active": return .running
-    case "idle", "paused": return .idle
-    case "failed": return .failed
-    case "ended", "completed", "interrupted", "exited": return .ended
-    default: return .ended
+    case .ready, .idle:
+      return .idle
+    case .failed:
+      return .failed
+    case .stopped, .ended, .settled:
+      return .ended
     }
   }
 

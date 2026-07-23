@@ -5049,6 +5049,44 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(projects.allSatisfy(\.isCached))
 
     database.setActiveProjectId("project-1")
+    var explicitAttention = makeTerminalSessionSummary(
+      id: "explicit-attention-chat",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      status: "running",
+      title: "Needs a release decision",
+      startedAt: "2026-04-20T00:02:40.000Z"
+    )
+    explicitAttention.attentionRequestedAt = "2026-04-20T00:02:45.000Z"
+    explicitAttention.attentionMessage = "Choose the release target"
+
+    var settledChat = makeTerminalSessionSummary(
+      id: "settled-chat",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      status: "running",
+      title: "Finished chat",
+      startedAt: "2026-04-20T00:02:50.000Z"
+    )
+    settledChat.settledAt = "2026-04-20T00:02:55.000Z"
+    settledChat.statusNote = "All checks passed"
+
+    var failedTurnChat = makeTerminalSessionSummary(
+      id: "failed-turn-chat",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      status: "running",
+      title: "Transient failure",
+      startedAt: "2026-04-20T00:03:00.000Z"
+    )
+    failedTurnChat.lastTurnFailedAt = "2026-04-20T00:03:05.000Z"
+
     try database.replaceTerminalSessions([
       makeTerminalSessionSummary(
         id: "session-one",
@@ -5503,8 +5541,11 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
     XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
+    XCTAssertFalse(service.supportsRemoteAction("work.updateSessionMeta"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-legacy"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-legacy"))
+    try await service.updateSessionMeta(sessionId: "chat-legacy", title: "Local-only rename")
+    XCTAssertEqual(service.pendingOperationCount, 0)
     do {
       _ = try await service.cancelScheduledWork(sessionId: "chat-legacy", scheduleId: "cron-1")
       XCTFail("A legacy host must reject scheduled-work cancellation before transport")
@@ -5709,8 +5750,11 @@ final class ADETests: XCTestCase {
     ])
 
     XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertFalse(service.supportsRemoteAction("work.updateSessionMeta"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
     XCTAssertFalse(service.canInvokeChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
+    try await service.updateSessionMeta(sessionId: "chat-1", title: "Local-only rename")
+    XCTAssertEqual(service.pendingOperationCount, 0)
     do {
       _ = try await service.cancelScheduledWork(sessionId: "chat-1", scheduleId: "cron-1")
       XCTFail("An unadvertised cancellation action must be rejected before transport")
@@ -8377,15 +8421,30 @@ final class ADETests: XCTestCase {
       resumeCommand: nil
     )
     session.chatSessionId = "chat-abc"
+    session.settledAt = "2026-03-17T00:12:00.000Z"
+    session.statusNote = "Finished the mobile mirror"
+    session.attentionRequestedAt = "2026-03-17T00:13:00.000Z"
+    session.attentionMessage = "Choose the release target"
+    session.lastTurnFailedAt = "2026-03-17T00:14:00.000Z"
     try database.replaceTerminalSessions([session])
 
     let stored = try XCTUnwrap(database.fetchSessions().first)
     XCTAssertEqual(stored.chatSessionId, "chat-abc")
+    XCTAssertEqual(stored.settledAt, "2026-03-17T00:12:00.000Z")
+    XCTAssertEqual(stored.statusNote, "Finished the mobile mirror")
+    XCTAssertEqual(stored.attentionRequestedAt, "2026-03-17T00:13:00.000Z")
+    XCTAssertEqual(stored.attentionMessage, "Choose the release target")
+    XCTAssertEqual(stored.lastTurnFailedAt, "2026-03-17T00:14:00.000Z")
 
     // Round-trip via JSON to confirm the wire-format Codable layer preserves the field too.
     let encoded = try JSONEncoder().encode(stored)
     let decoded = try JSONDecoder().decode(TerminalSessionSummary.self, from: encoded)
     XCTAssertEqual(decoded.chatSessionId, "chat-abc")
+    XCTAssertEqual(decoded.settledAt, stored.settledAt)
+    XCTAssertEqual(decoded.statusNote, stored.statusNote)
+    XCTAssertEqual(decoded.attentionRequestedAt, stored.attentionRequestedAt)
+    XCTAssertEqual(decoded.attentionMessage, stored.attentionMessage)
+    XCTAssertEqual(decoded.lastTurnFailedAt, stored.lastTurnFailedAt)
 
     // Decoding a payload that omits the new field (older desktop builds) still succeeds.
     let legacyJson = """
@@ -8404,6 +8463,11 @@ final class ADETests: XCTestCase {
     """
     let legacy = try JSONDecoder().decode(TerminalSessionSummary.self, from: Data(legacyJson.utf8))
     XCTAssertNil(legacy.chatSessionId)
+    XCTAssertNil(legacy.settledAt)
+    XCTAssertNil(legacy.statusNote)
+    XCTAssertNil(legacy.attentionRequestedAt)
+    XCTAssertNil(legacy.attentionMessage)
+    XCTAssertNil(legacy.lastTurnFailedAt)
 
     database.close()
   }
@@ -13810,6 +13874,9 @@ final class ADETests: XCTestCase {
         title: "Failed shell",
         startedAt: "2026-04-20T00:03:00.000Z"
       ),
+      explicitAttention,
+      settledChat,
+      failedTurnChat,
     ])
 
     let service = SyncService(database: database)
@@ -13829,11 +13896,18 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(failed.preview, "Tool call failed")
     XCTAssertFalse(failed.awaitingInput)
     let awaiting = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "awaiting-chat" }))
-    XCTAssertEqual(awaiting.status, "awaiting_input")
+    XCTAssertEqual(awaiting.status, "awaiting-input")
     XCTAssertEqual(awaiting.title, "Mobile awaiting chat")
     XCTAssertTrue(awaiting.awaitingInput)
-    XCTAssertEqual(service.awaitingInputSessionsCount, 1)
+    let explicit = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "explicit-attention-chat" }))
+    XCTAssertEqual(explicit.status, "awaiting-input")
+    XCTAssertTrue(explicit.awaitingInput)
+    XCTAssertEqual(explicit.preview, "Choose the release target")
+    let failedTurn = try XCTUnwrap(service.activeSessions.first(where: { $0.sessionId == "failed-turn-chat" }))
+    XCTAssertEqual(failedTurn.status, "failed")
+    XCTAssertEqual(service.awaitingInputSessionsCount, 2)
     XCTAssertEqual(service.runningChatSessionCount, 1)
+    XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "settled-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "stale-running-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "completed-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "failed-shell" }))
@@ -19904,6 +19978,97 @@ final class RosterDeltaTests: XCTestCase {
       return XCTFail("expected applied")
     }
     XCTAssertEqual(projects.map(\.projectId).sorted(), ["a"])
+  }
+
+  func testRosterLifecyclePayloadBuildsSettledAndAttentionCanonicalStates() throws {
+    let settledData = Data("""
+      {
+        "id": "chat-settled",
+        "laneId": "lane-1",
+        "toolType": "codex-chat",
+        "status": "ended",
+        "lastActivityAt": "2026-07-23T10:00:00.000Z",
+        "settledAt": "2026-07-23T10:00:00.000Z",
+        "statusNote": "Shipped the lifecycle mirror"
+      }
+      """.utf8)
+    let settled = try JSONDecoder().decode(RemoteRosterChat.self, from: settledData)
+    let settledSession = settled.asTerminalSessionSummary(laneName: "Feature")
+
+    XCTAssertEqual(settledSession.settledAt, "2026-07-23T10:00:00.000Z")
+    XCTAssertEqual(settledSession.statusNote, "Shipped the lifecycle mirror")
+    XCTAssertEqual(workCanonicalSessionState(session: settledSession, summary: nil).phase, .settled)
+    XCTAssertEqual(
+      workSessionGroupsByStatus(
+        sessions: [settledSession],
+        chatSummaries: [:],
+        archivedSessionIds: []
+      ).map(\.id),
+      ["status:settled"]
+    )
+
+    var activeSettledSession = settledSession
+    activeSettledSession.status = "running"
+    activeSettledSession.runtimeState = "running"
+    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil).phase, .running)
+    activeSettledSession.runtimeState = "idle"
+    XCTAssertEqual(workCanonicalSessionState(session: activeSettledSession, summary: nil).phase, .settled)
+
+    let attentionData = Data("""
+      {
+        "id": "chat-attention",
+        "laneId": "lane-1",
+        "toolType": "claude-chat",
+        "status": "awaiting",
+        "awaitingInput": true,
+        "settledAt": "2026-07-23T09:00:00.000Z",
+        "attentionRequestedAt": "2026-07-23T10:01:00.000Z",
+        "attentionMessage": "Choose the release target",
+        "lastTurnFailedAt": "2026-07-23T09:30:00.000Z"
+      }
+      """.utf8)
+    let attention = try JSONDecoder().decode(RemoteRosterChat.self, from: attentionData)
+    let attentionSession = attention.asTerminalSessionSummary(laneName: "Feature")
+
+    XCTAssertEqual(attentionSession.attentionMessage, "Choose the release target")
+    XCTAssertEqual(attentionSession.lastTurnFailedAt, "2026-07-23T09:30:00.000Z")
+    XCTAssertEqual(workCanonicalSessionState(session: attentionSession, summary: nil).phase, .needsYou)
+  }
+
+  func testRosterCleanExitAndLegacyPayloadRemainCompatible() throws {
+    let cleanExitData = Data("""
+      {
+        "id": "cli-clean",
+        "laneId": "lane-1",
+        "toolType": "codex",
+        "status": "ended",
+        "exitCode": 0
+      }
+      """.utf8)
+    let cleanExit = try JSONDecoder().decode(RemoteRosterChat.self, from: cleanExitData)
+    XCTAssertEqual(
+      workCanonicalSessionState(
+        session: cleanExit.asTerminalSessionSummary(laneName: "Feature"),
+        summary: nil
+      ).phase,
+      .settled
+    )
+
+    let legacyData = Data("""
+      {
+        "id": "legacy-chat",
+        "laneId": "lane-1",
+        "toolType": "codex-chat",
+        "status": "idle"
+      }
+      """.utf8)
+    let legacy = try JSONDecoder().decode(RemoteRosterChat.self, from: legacyData)
+    XCTAssertNil(legacy.settledAt)
+    XCTAssertNil(legacy.statusNote)
+    XCTAssertNil(legacy.attentionRequestedAt)
+    XCTAssertNil(legacy.attentionMessage)
+    XCTAssertNil(legacy.lastTurnFailedAt)
+    XCTAssertNil(legacy.exitCode)
   }
 }
 

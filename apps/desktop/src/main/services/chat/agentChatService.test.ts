@@ -10427,6 +10427,49 @@ describe("createAgentChatService", () => {
       expect(close).toHaveBeenCalled();
     });
 
+    it("preserves lifecycle markers on scheduled wakes and clears them on user sends", async () => {
+      // Regression for the settle lifecycle: a scheduled wake is not user
+      // activity (a declared settle must survive it and re-settle at rest),
+      // while a genuine user send clears settled/attention/turn-failure.
+      let streamCall = 0;
+      let warmupComplete = false;
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-markers", slash_commands: [] };
+          warmupComplete = true;
+        }
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send, stream, close: vi.fn(), sessionId: "sdk-markers", setPermissionMode,
+      } as any);
+      const { service, sessionService } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+
+      sessionService.clearTurnStartMarkers.mockClear();
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "wake prompt",
+        metadata: {
+          scheduledWake: {
+            scheduleId: "cron-1",
+            kind: "cron",
+            firedAt: new Date().toISOString(),
+            reason: "tick",
+          },
+        } as never,
+      });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+
+      await service.sendMessage({ sessionId: session.id, text: "real user reply" });
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
+    });
+
     it("settles a still-open background task as stopped on interrupt (genuine teardown)", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let streamCall = 0;
