@@ -2,6 +2,12 @@ import SwiftUI
 import UIKit
 import AVKit
 
+private struct WorkPersistedProjectionLoad {
+  let sessions: [TerminalSessionSummary]
+  let lanes: [LaneSummary]
+  let pullRequests: [PullRequestListItem]
+}
+
 extension WorkRootScreen {
   @MainActor
   func scheduleSessionPresentationRebuild() {
@@ -142,48 +148,20 @@ extension WorkRootScreen {
         try? await syncService.refreshWorkSessions()
         guard requestedProjectId == syncService.activeProjectId else { return }
       }
-      async let sessionsTask = syncService.fetchSessions()
-      async let lanesTask = syncService.fetchLanes()
-      async let pullRequestsTask = syncService.fetchPullRequestListItems()
-      var loadedSessions = try await sessionsTask
-      var loadedLanes = try await lanesTask
-      let loadedPullRequests = try await pullRequestsTask
-      guard requestedProjectId == syncService.activeProjectId else { return }
-      if refreshRemote, loadedLanes.filter({ $0.archivedAt == nil }).isEmpty {
+      guard var projection = try await loadPersistedWorkProjection(for: requestedProjectId) else { return }
+      if refreshRemote, projection.lanes.filter({ $0.archivedAt == nil }).isEmpty {
         try? await syncService.refreshLaneSnapshots()
         guard requestedProjectId == syncService.activeProjectId else { return }
-        loadedSessions = try await syncService.fetchSessions()
-        loadedLanes = try await syncService.fetchLanes()
+        guard let refreshed = try await loadPersistedWorkProjection(for: requestedProjectId) else { return }
+        projection = refreshed
       }
-      guard requestedProjectId == syncService.activeProjectId else { return }
-      if loadedProjectionProjectId != requestedProjectId {
-        chatSummaries = [:]
-        optimisticSessions = [:]
-      }
-      loadedProjectionProjectId = requestedProjectId
-      if sessions != loadedSessions {
-        sessions = loadedSessions
-      }
-      let activeLanes = loadedLanes.filter { $0.archivedAt == nil }
-      if lanes != activeLanes {
-        lanes = activeLanes
-      }
-      if pullRequests != loadedPullRequests {
-        pullRequests = loadedPullRequests
-      }
+      guard installPersistedWorkProjection(projection, for: requestedProjectId) else { return }
       // Layer in GitHub PRs opened outside ADE (matched by branch). Best-effort,
       // non-blocking, internally throttled; pull-to-refresh forces a fresh fetch.
       Task { await syncService.refreshLaneGithubPrItems(force: refreshRemote) }
-      var nextOptimisticSessions = optimisticSessions
-      for session in loadedSessions where nextOptimisticSessions[session.id] != nil {
-        nextOptimisticSessions[session.id] = nil
-      }
-      if optimisticSessions != nextOptimisticSessions {
-        optimisticSessions = nextOptimisticSessions
-      }
       if isLive {
         lastCoalescedChatSummaryRefresh = Date()
-        await refreshChatSummaries(for: loadedLanes, projectId: requestedProjectId)
+        await refreshChatSummaries(for: projection.lanes, projectId: requestedProjectId)
       }
       if errorMessage != nil {
         errorMessage = nil
@@ -197,6 +175,53 @@ extension WorkRootScreen {
     }
   }
 
+  @MainActor
+  private func loadPersistedWorkProjection(
+    for projectId: String
+  ) async throws -> WorkPersistedProjectionLoad? {
+    async let sessionsTask = syncService.fetchSessions()
+    async let lanesTask = syncService.fetchLanes()
+    async let pullRequestsTask = syncService.fetchPullRequestListItems()
+    let projection = try await WorkPersistedProjectionLoad(
+      sessions: sessionsTask,
+      lanes: lanesTask,
+      pullRequests: pullRequestsTask
+    )
+    guard projectId == syncService.activeProjectId else { return nil }
+    return projection
+  }
+
+  @MainActor
+  private func installPersistedWorkProjection(
+    _ projection: WorkPersistedProjectionLoad,
+    for projectId: String
+  ) -> Bool {
+    guard projectId == syncService.activeProjectId else { return false }
+    if loadedProjectionProjectId != projectId {
+      chatSummaries = [:]
+      optimisticSessions = [:]
+    }
+    loadedProjectionProjectId = projectId
+    if sessions != projection.sessions {
+      sessions = projection.sessions
+    }
+    let activeLanes = projection.lanes.filter { $0.archivedAt == nil }
+    if lanes != activeLanes {
+      lanes = activeLanes
+    }
+    if pullRequests != projection.pullRequests {
+      pullRequests = projection.pullRequests
+    }
+    var nextOptimisticSessions = optimisticSessions
+    for session in projection.sessions where nextOptimisticSessions[session.id] != nil {
+      nextOptimisticSessions[session.id] = nil
+    }
+    if optimisticSessions != nextOptimisticSessions {
+      optimisticSessions = nextOptimisticSessions
+    }
+    return true
+  }
+
   /// Applies replicated SQLite rows to the Work list without fanning out per-lane host `listChatSessions` on every CRDT tick.
   @MainActor
   func reloadFromPersistedProjection() async {
@@ -205,42 +230,16 @@ extension WorkRootScreen {
       return
     }
     do {
-      async let sessionsTask = syncService.fetchSessions()
-      async let lanesTask = syncService.fetchLanes()
-      async let pullRequestsTask = syncService.fetchPullRequestListItems()
-      let loadedSessions = try await sessionsTask
-      let loadedLanes = try await lanesTask
-      let loadedPullRequests = try await pullRequestsTask
-      guard requestedProjectId == syncService.activeProjectId else { return }
-      if loadedProjectionProjectId != requestedProjectId {
-        chatSummaries = [:]
-        optimisticSessions = [:]
-      }
-      loadedProjectionProjectId = requestedProjectId
-      if sessions != loadedSessions {
-        sessions = loadedSessions
-      }
-      let activeLanes = loadedLanes.filter { $0.archivedAt == nil }
-      if lanes != activeLanes {
-        lanes = activeLanes
-      }
-      if pullRequests != loadedPullRequests {
-        pullRequests = loadedPullRequests
-      }
+      guard let projection = try await loadPersistedWorkProjection(for: requestedProjectId),
+            installPersistedWorkProjection(projection, for: requestedProjectId)
+      else { return }
       Task { await syncService.refreshLaneGithubPrItems() }
-      var nextOptimisticSessions = optimisticSessions
-      for session in loadedSessions where nextOptimisticSessions[session.id] != nil {
-        nextOptimisticSessions[session.id] = nil
-      }
-      if optimisticSessions != nextOptimisticSessions {
-        optimisticSessions = nextOptimisticSessions
-      }
       if isLive {
         let now = Date()
         let minimumSummaryRefreshInterval = syncService.prefersReducedSyncLoad ? 8.0 : 2.6
         if now.timeIntervalSince(lastCoalescedChatSummaryRefresh) >= minimumSummaryRefreshInterval {
           lastCoalescedChatSummaryRefresh = now
-          await refreshChatSummaries(for: loadedLanes, projectId: requestedProjectId)
+          await refreshChatSummaries(for: projection.lanes, projectId: requestedProjectId)
         }
       }
       if errorMessage != nil {
@@ -484,10 +483,7 @@ extension WorkRootScreen {
     // project happens to own this mounted Work view. Leave the request intact
     // and hand it to Hub's roster resolver, including on a cold app launch
     // where ContentView's onChange may not observe the initial value.
-    if request.hasProjectScope
-      || syncService.rosterNavigationTarget(for: request).map({
-        !syncService.isActiveProject($0.project)
-      }) == true {
+    if syncService.navigationDestination(request) == .hub {
       syncService.showProjectHome()
       return
     }

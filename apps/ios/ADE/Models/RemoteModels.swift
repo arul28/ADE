@@ -134,6 +134,11 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
   var id: String
   var displayName: String
   var rootPath: String?
+  /// Canonical origin identity when the host can resolve it. Older hosts omit
+  /// these fields; repository-scoped navigation must then fail closed instead
+  /// of guessing from a same-named local directory.
+  var repoOwner: String?
+  var repoName: String?
   var defaultBaseRef: String?
   var lastOpenedAt: String?
   var iconDataUrl: String?
@@ -146,6 +151,8 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
     id: String,
     displayName: String,
     rootPath: String? = nil,
+    repoOwner: String? = nil,
+    repoName: String? = nil,
     defaultBaseRef: String? = nil,
     lastOpenedAt: String? = nil,
     iconDataUrl: String? = nil,
@@ -157,6 +164,8 @@ struct MobileProjectSummary: Codable, Equatable, Identifiable {
     self.id = id
     self.displayName = displayName
     self.rootPath = rootPath
+    self.repoOwner = repoOwner
+    self.repoName = repoName
     self.defaultBaseRef = defaultBaseRef
     self.lastOpenedAt = lastOpenedAt
     self.iconDataUrl = iconDataUrl

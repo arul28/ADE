@@ -149,8 +149,20 @@ struct HubScreen: View {
   private func handleRequestedWorkSessionNavigation() {
     guard openChatTarget == nil,
           let request = syncService.requestedWorkSessionNavigation else { return }
+    // ContentView and Work observe the same request concurrently during a root
+    // transition. Hub only consumes requests assigned to Hub by the shared
+    // decision table; active-project rows remain for Work to open.
+    guard syncService.navigationDestination(request) == .hub else {
+      // Hub is also the cold-launch root. An active/legacy request may already
+      // exist before ContentView installs its onChange observer, so hand it to
+      // the newly mounted Work root instead of leaving both surfaces waiting.
+      syncService.closeProjectHome()
+      return
+    }
     guard let target = syncService.rosterNavigationTarget(for: request) else {
-      if requestedRosterLookupRequestId != request.id, canShowProjects {
+      if !canShowProjects {
+        requestedRosterLookupRequestId = nil
+      } else if requestedRosterLookupRequestId != request.id {
         requestedRosterLookupRequestId = request.id
         syncService.requestRosterSnapshot()
       }
@@ -320,7 +332,12 @@ struct HubScreen: View {
     guard syncService.shouldShowProjectHome,
           openChatTarget == nil,
           let request = syncService.requestedWorkSessionNavigation else { return nil }
-    return "\(request.id)|\(syncService.rosterRevision)"
+    return [
+      request.id,
+      String(syncService.rosterRevision),
+      rosterNavigationCatalogRevisionKey(syncService.projects),
+      String(describing: syncService.connectionState),
+    ].joined(separator: "|")
   }
 
   /// Display order: the user's persisted manual order first, with any project

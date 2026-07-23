@@ -152,10 +152,12 @@ apps/ios/
 │   │   │                               # backed by runtime-scoped
 │   │   │                               # project action envelopes
 │   │   ├── DeepLinkRouter.swift     # ade:// and https://ade-app.dev/open
-│   │   │                            # handler. Session and compact PR links
-│   │   │                            # flip tabs via .adeDeepLinkRequested;
-│   │   │                            # session event/offset anchors ride
-│   │   │                            # WorkSessionNavigationRequest.
+│   │   │                            # handler. Compact PR links flip tabs via
+│   │   │                            # .adeDeepLinkRequested. Session links publish
+│   │   │                            # WorkSessionNavigationRequest with lane/repo/
+│   │   │                            # branch/event/offset scope; the app-root task
+│   │   │                            # routes the request to Hub or Work, including
+│   │   │                            # when it is already present at cold launch.
 │   │   │                            # Linear issue links route in-app when a
 │   │   │                            # project is open; lane/file/commit/artifact/
 │   │   │                            # repo-branch, full PR, and projectless
@@ -704,11 +706,24 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    newly created lanes/chats that arrive before the project CRR replica: Hub
    navigation and the Work list can render and subscribe immediately, while
    richer local rows replace the temporary projection by id when they land.
+   Persisted roster snapshots are keyed by stable machine identity. Switching
+   Macs clears the in-memory sequence/support state and loads only that Mac's
+   cache; the legacy unscoped cache is discarded so identical project paths on
+   two machines cannot leak stale session rows across connections.
 5. After the active project row exists locally, receive catchup
    changesets and hydrate lane, file, Work, and PR projections scoped
    to that project. A manual Work refresh preserves the database's lane
    integrity boundary by fetching a lightweight lane snapshot before installing
-   any session snapshot that references a lane missing locally.
+   any session snapshot that references a lane missing locally. Every async
+   hydration request captures its connection + project selection scope, sends
+   that scope explicitly to the host, and revalidates it before status,
+   signature, or SQLite mutation. Database replacement also rejects an
+   expected-project mismatch as a final guard against late responses after a
+   project switch. The guarded replacement paths cover lane lists, lane detail,
+   Work sessions, PR snapshots, and the Files workspace catalog. Overlapping
+   refreshes are tracked as separate domain attempts: cancelling a stale
+   attempt restores the prior or newer completed status instead of leaving the
+   domain stuck in `hydrating` or overwriting a newer result.
 6. Enter continuous bidirectional sync. Inbound processing runs off
    the main actor: envelope JSON parse, gunzip, payload JSON parse,
    chunked-envelope reassembly, and changeset decode + apply all run
@@ -800,6 +815,13 @@ turns a raw response dict into either the `result` value or throws an
   running twice. An attempted live `chat.send` is the exception: its outcome is
   ambiguous, so iOS restores the draft for manual retry rather than enqueueing
   an automatic replay that could duplicate a turn.
+- Project-scoped lane, Work, and PR commands carry their chosen project id/root
+  in both the live command payload and any pending-operation record. Replay uses
+  that stored scope rather than the project active at drain time, so a project
+  switch cannot retarget a mutation. Command envelopes can therefore drain as
+  soon as their host reconnects, including foreign-project chat commands; file
+  operations still wait for their project to be active because `file_request`
+  has no cross-project command router.
 - A `command_result` with `error.code: "host_unavailable"` (the brain-level
   ingress answering while the project sync host is restarting — see
   `remote-commands.md`) is treated exactly like a timeout, never like an
@@ -1126,8 +1148,15 @@ projection. Local rows win by id; roster-only lanes and chats fill the CRR
 arrival gap and disappear naturally when the authoritative row replaces them.
 This keeps both the active Hub card and the Work list current when another
 client creates a chat, without persisting foreign/stub rows or activating every
-project. Tapping a project card opens its
-detailed tabbed view; tapping a chat opens that chat directly over the Hub (the
+project. The Work bridge intentionally admits only non-archived chat-tool rows,
+caps them at the same 200-session limit as `work.listSessions`, and synthesizes
+only the lanes referenced by those chats; roster CLI stubs wait for their real
+local PTY rows. The loaded local Work projection is tagged with its project and
+cleared before a project switch can merge it with the next roster.
+Pending offline chat rows are filtered by active project id/root, and Work keys
+its presentation rebuild on that project's roster revision so activity in a
+different project does not repaint the current list. Tapping a project card
+opens its detailed tabbed view; tapping a chat opens that chat directly over the Hub (the
 Hub stays mounted underneath so Back returns to it, and it keeps rebuilding
 roster cards while a chat is open). Opening a chat that belongs to a project
 other than the active one uses **cross-project quick look**
@@ -1148,7 +1177,23 @@ activation + terminal path (a CLI session has no chat JSONL; routing it
 through the chat transcript surface would render permanently blank). The
 hub row context menu also narrows for CLI rows: only "Open session" is
 offered, since `chat.archive` / `chat.delete` reject non-chat sessions on the
-host. The composer's "Created in …" toast follows the same rule — its Open
+host.
+
+Session deeplinks use the repository envelope as a hard project boundary;
+lane/branch hints are resolved only inside that project, and an announced
+chat's own lane always outranks stale URL hints. An already-hydrated active
+session opens through Work even when a copied link contains lane metadata,
+which preserves compatibility with pre-roster hosts. Foreign or not-yet-
+hydrated repository-scoped sessions route through Hub, whose retry key includes
+roster, project-catalog, and connection changes. The app-root navigation task
+also processes a request already present at cold launch rather than relying on
+a later `onChange` event. Current hosts populate the paired `repoOwner` /
+`repoName` fields only when they can resolve a canonical GitHub origin; older
+hosts omit them and unrecognized origins leave both values null. An owner-scoped
+link fails closed when that identity is unavailable instead of guessing from a
+same-named folder.
+
+The composer's "Created in …" toast follows the same rule — its Open
 shortcut stub carries `toolType: "cli"` for CLI launches and the
 provider-derived chat tool type otherwise (`HubCreatedChat.stubToolType`). A bottom
 "type to vibecode" bar is now an **inline composer** (`HubInlineComposer`, in
@@ -1313,7 +1358,11 @@ calls `resetChatEventState(clearHistory: false)` and
 terminal subscriptions bound to the previous project's session ids
 are dropped. Without this reset, the phone would resubscribe to stale
 ids after reconnect and either leak foreign chat events into the new
-project view or collide with newly-assigned session ids on the runtime.
+project view or collide with newly-assigned session ids on the runtime. Pending
+requests are likewise owned by the socket generation that sent them: teardown
+fails only the retiring generation and cancels its timeout tasks, while the
+timeout handler rejects any stale generation defensively. An old project-switch
+request therefore cannot probe or recover the replacement socket.
 
 The switch is engineered to feel instant rather than blanking to a spinner:
 
@@ -1384,7 +1433,9 @@ Projection reloads are keyed by narrow revision counters:
 `proofArtifactsProjectionRevision`. `prsProjectionRevision` tracks replicated
 mapped-PR changes; `prsRemoteRevision` is the coalescing key for the host's
 lightweight `prs_updated` invalidation when local-only GitHub projections
-change.
+change. Work's roster overlay additionally keys on `rosterRevision(for:)`, a
+per-project token, so unrelated-project roster churn does not invalidate the
+active Work presentation.
 Top-level tabs and detail screens observe only the revision that maps
 to their data, so a chat transcript changeset no longer causes Files,
 Lanes, and PRs to all re-query together.
@@ -1841,7 +1892,14 @@ different machine's cached limits.
   fallback cache keys use per-session terminal-buffer revisions, and any
   needed transcript cache entries are built on a utility task. Detail
   screens still fetch full history through `chat.getTranscript` cursor
-  paging and `chat_subscribe` resume.
+  paging and `chat_subscribe` resume. Assistant preview classification is
+  computed from the authoritative full message and stored with the preview:
+  unfenced wireframe glyphs or layout-dominant aligned columns select the
+  fixed-width renderer, while fenced code and Markdown table rows keep their
+  dedicated Markdown renderers. A bounded tail reuses that full-message
+  classification, and when it begins inside a fenced block it restores the
+  original opening fence (including its language) so the closing fence and
+  following prose still parse correctly.
 - **Work transcript parser uses `messageId` as a fallback item id.**
   `makeWorkChatEvent` (`WorkEventMapping.swift`) and
   `parseWorkChatTranscript` (`WorkTranscriptParser.swift`) now fall back

@@ -1005,7 +1005,7 @@ describe("githubService.getStatus", () => {
     expect(status.repoAccessError).toBeNull();
   });
 
-  it("reports hasOrigin=true with repo=null when origin is non-GitHub (GitLab/Bitbucket)", async () => {
+  it("reports hasOrigin=true with repo=null when origin is non-GitHub or a GitHub lookalike", async () => {
     runGitMock.mockResolvedValueOnce({
       exitCode: 0,
       stdout: "git@gitlab.com:acme/internal.git\n",
@@ -1020,6 +1020,15 @@ describe("githubService.getStatus", () => {
 
     expect(status.repo).toBeNull();
     expect(status.hasOrigin).toBe(true);
+
+    runGitMock.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: "https://notgithub.com/acme/internal.git\n",
+      stderr: "",
+    });
+    const lookalike = await makeService().getRemoteStatus();
+    expect(lookalike.repo).toBeNull();
+    expect(lookalike.hasOrigin).toBe(true);
   });
 
   it("reports hasOrigin=false when no origin remote is configured", async () => {

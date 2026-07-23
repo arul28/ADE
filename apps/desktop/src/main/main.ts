@@ -105,6 +105,7 @@ import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
 import { resolveAdeLayout } from "../shared/adeLayout";
+import { mobileProjectRepositoryIdentityFromGitOrigin } from "../shared/syncMobileProjectIdentity";
 import type {
   OpenProjectBinding,
   AppNavigationRequest,
@@ -4755,6 +4756,7 @@ app.whenReady().then(async () => {
   async function mobileProjectSummaryForContext(
     ctx: AppContext,
     recent?: RecentProjectInspection | null,
+    gitOriginUrl?: string | null,
   ): Promise<SyncMobileProjectSummary> {
     let laneCount = recent?.summary.laneCount ?? 0;
     if (!recent?.summary.laneCount && ctx.laneService) {
@@ -4764,10 +4766,26 @@ app.whenReady().then(async () => {
         laneCount = 0;
       }
     }
+    let repositoryIdentity = mobileProjectRepositoryIdentityFromGitOrigin(gitOriginUrl);
+    if (!repositoryIdentity.repoOwner || !repositoryIdentity.repoName) {
+      try {
+        const remote = await ctx.githubService.getRemoteStatus();
+        if (remote.repo) {
+          repositoryIdentity = {
+            repoOwner: remote.repo.owner,
+            repoName: remote.repo.name,
+          };
+        }
+      } catch {
+        // Repository identity is optional. Keep the paired null fallback so a
+        // client never guesses ownership from the project display name.
+      }
+    }
     return {
       id: ctx.projectId || recent?.projectId || `root:${normalizeProjectRoot(ctx.project.rootPath)}`,
       displayName: ctx.project.displayName,
       rootPath: ctx.project.rootPath,
+      ...repositoryIdentity,
       defaultBaseRef: ctx.project.baseRef,
       lastOpenedAt: recent?.summary.lastOpenedAt ?? null,
       iconDataUrl: mobileProjectIconDataUrl(ctx.project.rootPath),
@@ -4778,12 +4796,16 @@ app.whenReady().then(async () => {
     };
   }
 
-  function mobileProjectSummaryForRecent(recent: RecentProjectInspection): SyncMobileProjectSummary {
+  function mobileProjectSummaryForRecent(
+    recent: RecentProjectInspection,
+    gitOriginUrl?: string | null,
+  ): SyncMobileProjectSummary {
     const normalizedRoot = normalizeProjectRoot(recent.summary.rootPath);
     return {
       id: recent.projectId ?? `root:${normalizedRoot}`,
       displayName: recent.summary.displayName,
       rootPath: recent.summary.rootPath,
+      ...mobileProjectRepositoryIdentityFromGitOrigin(gitOriginUrl),
       defaultBaseRef: recent.defaultBaseRef,
       lastOpenedAt: recent.summary.lastOpenedAt,
       iconDataUrl: mobileProjectIconDataUrl(recent.summary.rootPath),
@@ -4810,15 +4832,38 @@ app.whenReady().then(async () => {
     const recentByRoot = new Map(
       recentProjects.map((entry) => [normalizeProjectRoot(entry.summary.rootPath), entry] as const),
     );
+    // Do not start or repair the machine runtime just to decorate a desktop
+    // fallback catalog. When it is already connected, its registry is the
+    // canonical and cheap source of git origins; otherwise current hosts send
+    // paired null coordinates and mobile treats repository-scoped links as
+    // unverified instead of guessing from a same-named folder.
+    const runtimeProjects = localRuntimePool.getStatus().connectionState === "connected"
+      ? await localRuntimePool.projects().catch(() => [])
+      : [];
+    const runtimeProjectByRoot = new Map(
+      runtimeProjects
+        .map((project) => [normalizeProjectRoot(project.rootPath), project] as const),
+    );
     const byRoot = new Map<string, SyncMobileProjectSummary>();
     for (const recent of recentProjects) {
-      byRoot.set(normalizeProjectRoot(recent.summary.rootPath), mobileProjectSummaryForRecent(recent));
+      const root = normalizeProjectRoot(recent.summary.rootPath);
+      byRoot.set(
+        root,
+        mobileProjectSummaryForRecent(recent, runtimeProjectByRoot.get(root)?.gitOriginUrl),
+      );
     }
     const contextSummaries = await Promise.all(
       [...projectContexts.entries()]
         .filter(([root]) => recentByRoot.has(root))
         .map(async ([root, ctx]) =>
-          [root, await mobileProjectSummaryForContext(ctx, recentByRoot.get(root) ?? null)] as const
+          [
+            root,
+            await mobileProjectSummaryForContext(
+              ctx,
+              recentByRoot.get(root) ?? null,
+              runtimeProjectByRoot.get(root)?.gitOriginUrl,
+            ),
+          ] as const
         ),
     );
     for (const [root, summary] of contextSummaries) {
@@ -4859,13 +4904,14 @@ app.whenReady().then(async () => {
   async function mobileProjectSummaryForRoot(rootPath: string | null | undefined): Promise<SyncMobileProjectSummary> {
     const normalizedRoot = await resolveMobileSyncProjectRoot(rootPath);
     const ctx = await ensureProjectContextForMobileSync(normalizedRoot);
-    await localRuntimePool.ensureProject(normalizedRoot, {
+    const runtimeProject = await localRuntimePool.ensureProject(normalizedRoot, {
       catalogVisibility: "recent",
       registrationSource: "mobile",
     });
     return await mobileProjectSummaryForContext(
       ctx,
       recentProjectInspectionForRoot(normalizedRoot),
+      runtimeProject.gitOriginUrl,
     );
   }
 

@@ -1489,10 +1489,11 @@ private func workTimelineEntriesWithAssistantPreviews(
 
     visibleAssistantMessageIds.insert(message.id)
     let previewAnchor: WorkAssistantMessagePreviewAnchor = message.id == tailAnchoredAssistantMessageId ? .tail : .head
+    let baselinePreview = cache.preview(for: message, anchor: previewAnchor)
     let tailCanRenderFull = previewAnchor == .tail
-      && !workAssistantMessageUsesMonospacedPreview(message.markdown)
-      && workAssistantMessageLineCount(message.markdown) <= workAssistantMessageTailFullLineBudget
-      && message.markdown.count <= workAssistantMessageTailFullCharacterBudget
+      && !baselinePreview.usesMonospacedRendering
+      && baselinePreview.totalLineCount <= workAssistantMessageTailFullLineBudget
+      && baselinePreview.totalCharacterCount <= workAssistantMessageTailFullCharacterBudget
     let lineBudget = assistantLineBudgets[message.id]
       ?? (tailCanRenderFull ? workAssistantMessageTailFullLineBudget : workAssistantMessageInitialLineBudget)
     let characterBudget = workAssistantMessageCharacterBudget(
@@ -1500,13 +1501,14 @@ private func workTimelineEntriesWithAssistantPreviews(
       tailCanRenderFull: tailCanRenderFull && assistantLineBudgets[message.id] == nil
     )
     if lineBudget == workAssistantMessageInitialLineBudget {
-      message.assistantPreview = cache.preview(for: message, anchor: previewAnchor)
+      message.assistantPreview = baselinePreview
     } else {
       message.assistantPreview = workAssistantMessagePreview(
         message.markdown,
         lineBudget: lineBudget,
         characterBudget: characterBudget,
-        anchor: previewAnchor
+        anchor: previewAnchor,
+        classification: baselinePreview.usesMonospacedRendering
       )
     }
     return WorkTimelineEntry(
@@ -1568,14 +1570,16 @@ func workTimelineRenderEntries(
     }
 
     let requestedLineBudget = assistantLineBudgets[message.id] ?? workAssistantMessageInitialLineBudget
-    let maxLineBudget = workAssistantMessageMaxLineBudget(for: message.markdown)
+    let maxLineBudget = preview.usesMonospacedRendering
+      ? workAssistantMessageWideMaxLineBudget
+      : workAssistantMessageMaxLineBudget
     let nextLineBudget = min(requestedLineBudget + workAssistantMessageLineBudgetStep, maxLineBudget)
     let accessibilityLabel = workAssistantMessageAccessibilityLabel(preview)
 
     // A truncated tail can start inside a fenced tree and omit the opening
     // fence. Classify the authoritative full message so markdown prose never
     // flips into the tiny whole-message monospace renderer while paginating.
-    if workAssistantMessageUsesMonospacedPreview(message.markdown) {
+    if preview.usesMonospacedRendering {
       let model = WorkAssistantMonospacedRenderModel(
         id: "\(entry.id)-assistant-monospace",
         messageId: message.id,

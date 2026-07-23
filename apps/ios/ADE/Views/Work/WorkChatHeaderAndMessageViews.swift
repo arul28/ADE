@@ -355,10 +355,10 @@ struct WorkChatMessageBubble: View {
     // reads like a document. The truncation / "Show more" affordance stays but
     // unstyled so it doesn't reintroduce a boxed feel.
     let preview = assistantPreview
-    // Classify the complete markdown, not a tail slice that may begin halfway
-    // through a fenced tree/code block and therefore look like raw wireframe.
-    let usesMonospacedPreview = workAssistantMessageUsesMonospacedPreview(message.markdown)
-    let maxLineBudget = workAssistantMessageMaxLineBudget(for: message.markdown)
+    let usesMonospacedPreview = preview.usesMonospacedRendering
+    let maxLineBudget = usesMonospacedPreview
+      ? workAssistantMessageWideMaxLineBudget
+      : workAssistantMessageMaxLineBudget
 
     return VStack(alignment: .leading, spacing: 10) {
       if preview.isTruncated {
@@ -520,7 +520,8 @@ struct WorkChatMessageBubble: View {
       message.markdown,
       lineBudget: assistantLineBudget,
       characterBudget: workAssistantMessageCharacterBudget(forLineBudget: assistantLineBudget),
-      anchor: .head
+      anchor: .head,
+      classification: message.assistantPreview?.usesMonospacedRendering
     )
   }
 
@@ -636,6 +637,10 @@ enum WorkAssistantMessagePreviewAnchor: Equatable {
 struct WorkAssistantMessagePreview: Equatable {
   let text: String
   let isTruncated: Bool
+  /// Classification of the complete authoritative message, never the sliced
+  /// preview text. Cached with the preview so streaming rows do not rescan a
+  /// growing answer several times per render.
+  let usesMonospacedRendering: Bool
   let visibleLineCount: Int
   let totalLineCount: Int
   let visibleCharacterCount: Int
@@ -700,13 +705,15 @@ func workAssistantMessagePreview(
   _ markdown: String,
   lineBudget: Int,
   characterBudget: Int,
-  anchor: WorkAssistantMessagePreviewAnchor = .head
+  anchor: WorkAssistantMessagePreviewAnchor = .head,
+  classification: Bool? = nil
 ) -> WorkAssistantMessagePreview {
   let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
   guard !normalized.isEmpty else {
     return WorkAssistantMessagePreview(
       text: markdown,
       isTruncated: false,
+      usesMonospacedRendering: false,
       visibleLineCount: 0,
       totalLineCount: 0,
       visibleCharacterCount: 0,
@@ -715,7 +722,7 @@ func workAssistantMessagePreview(
     )
   }
 
-  let usesMonospacedPreview = workAssistantMessageUsesMonospacedPreview(normalized)
+  let usesMonospacedPreview = classification ?? workAssistantMessageUsesMonospacedPreview(normalized)
   let clampedLineBudget = workAssistantMessageEffectiveLineBudget(
     requestedLineBudget: max(lineBudget, 1),
     usesMonospacedPreview: usesMonospacedPreview
@@ -733,6 +740,7 @@ func workAssistantMessagePreview(
     return WorkAssistantMessagePreview(
       text: markdown,
       isTruncated: false,
+      usesMonospacedRendering: usesMonospacedPreview,
       visibleLineCount: totalLineCount,
       totalLineCount: totalLineCount,
       visibleCharacterCount: totalCharacterCount,
@@ -747,7 +755,8 @@ func workAssistantMessagePreview(
       lineBudget: clampedLineBudget,
       characterBudget: clampedCharacterBudget,
       totalLineCount: totalLineCount,
-      totalCharacterCount: totalCharacterCount
+      totalCharacterCount: totalCharacterCount,
+      usesMonospacedRendering: usesMonospacedPreview
     )
   }
 
@@ -788,6 +797,7 @@ func workAssistantMessagePreview(
   return WorkAssistantMessagePreview(
     text: rendered,
     isTruncated: visibleLineCount < totalLineCount || rendered.count < normalized.count,
+    usesMonospacedRendering: usesMonospacedPreview,
     visibleLineCount: visibleLineCount,
     totalLineCount: totalLineCount,
     visibleCharacterCount: rendered.count,
@@ -801,7 +811,8 @@ private func workAssistantMessageTailPreview(
   lineBudget: Int,
   characterBudget: Int,
   totalLineCount: Int,
-  totalCharacterCount: Int
+  totalCharacterCount: Int,
+  usesMonospacedRendering: Bool
 ) -> WorkAssistantMessagePreview {
   var segments: [Substring] = []
   segments.reserveCapacity(min(lineBudget, 16))
@@ -835,73 +846,43 @@ private func workAssistantMessageTailPreview(
     lineEnd = normalized.index(before: lineStart)
   }
 
-  let rendered = segments.reversed().joined(separator: "\n")
+  let sourceRendered = segments.reversed().joined(separator: "\n")
+  let openingFence = workOpeningMarkdownFenceBeforeTail(
+    in: normalized,
+    tailStart: segments.last?.startIndex ?? normalized.endIndex
+  )
+  let rendered = openingFence.map { "\($0)\n\(sourceRendered)" } ?? sourceRendered
   return WorkAssistantMessagePreview(
     text: rendered,
-    isTruncated: visibleLineCount < totalLineCount || rendered.count < normalized.count,
+    isTruncated: visibleLineCount < totalLineCount || sourceRendered.count < normalized.count,
+    usesMonospacedRendering: usesMonospacedRendering,
     visibleLineCount: visibleLineCount,
     totalLineCount: totalLineCount,
-    visibleCharacterCount: rendered.count,
+    visibleCharacterCount: sourceRendered.count,
     totalCharacterCount: totalCharacterCount,
     anchor: .tail
   )
 }
 
-/// Whether an assistant message should render as one fixed-column monospace
-/// block (with the tighter wide line budgets) instead of parsed markdown.
-///
-/// Unlike `workPreviewIsWireframe` — which classifies raw question-card
-/// option previews — assistant messages are markdown, so this classifier must
-/// not let ordinary markdown constructs force the whole message into the
-/// tiny monospaced path:
-/// - fenced ``` content is ignored: the block renderer already shows fences
-///   monospaced in a horizontally scrolling code card, so aligned columns or
-///   box glyphs inside a fence say nothing about the prose around it;
-/// - markdown table rows are ignored: padded `| a    | b |` cells are the
-///   most common source of wide space runs in normal answers.
-/// What remains classifies as a wireframe when any prose line carries a
-/// box-drawing glyph, or when column-aligned lines dominate the prose (a raw
-/// ASCII layout pasted without fences). Genuinely huge wireframes therefore
-/// keep the bounded monospaced rendering.
-func workAssistantMessageUsesMonospacedPreview(_ text: String) -> Bool {
-  var insideFence = false
-  var proseLineCount = 0
-  var alignedColumnLineCount = 0
-  for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+/// If a bounded tail begins inside a fenced block, restore the authoritative
+/// opening marker (including its language). Without it, the original closing
+/// fence is parsed as a new opener and trailing prose is swallowed into code.
+private func workOpeningMarkdownFenceBeforeTail(
+  in normalized: String,
+  tailStart: String.Index
+) -> String? {
+  guard tailStart > normalized.startIndex else { return nil }
+  var openingFence: String?
+  for line in normalized[..<tailStart].split(separator: "\n", omittingEmptySubsequences: false) {
     let trimmed = line.trimmingCharacters(in: .whitespaces)
-    if trimmed.hasPrefix("```") {
-      insideFence.toggle()
-      continue
-    }
-    if insideFence || trimmed.isEmpty { continue }
-    if trimmed.contains(where: { workWireframeGlyphs.contains($0) }) {
-      return true
-    }
-    proseLineCount += 1
-    if trimmed.contains("|") { continue }
-    if workLineHasAlignedColumnGap(trimmed) {
-      alignedColumnLineCount += 1
-    }
-  }
-  return alignedColumnLineCount >= 2 && alignedColumnLineCount * 2 >= proseLineCount
-}
-
-/// True when the line has an interior run of 3+ spaces/tabs between two
-/// non-whitespace characters — the "aligned columns" wireframe signal.
-/// Equivalent to the `\S\s{3,}\S` regex without per-line regex cost.
-private func workLineHasAlignedColumnGap(_ line: String) -> Bool {
-  var sawNonWhitespace = false
-  var whitespaceRun = 0
-  for character in line {
-    if character == " " || character == "\t" {
-      if sawNonWhitespace { whitespaceRun += 1 }
+    guard trimmed.hasPrefix("```") else { continue }
+    if openingFence == nil {
+      openingFence = trimmed
     } else {
-      if whitespaceRun >= 3 { return true }
-      sawNonWhitespace = true
-      whitespaceRun = 0
+      openingFence = nil
     }
   }
-  return false
+  return openingFence
 }
 
 func workAssistantMessageMaxLineBudget(for text: String) -> Int {

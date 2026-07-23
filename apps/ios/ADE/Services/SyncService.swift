@@ -1709,7 +1709,13 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   let offset: Int?
 
   var hasProjectScope: Bool {
-    laneId != nil || repoOwner != nil || repoName != nil || branch != nil
+    [laneId, repoName, branch].contains {
+      $0?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    }
+  }
+
+  var hasRepositoryScope: Bool {
+    repoName?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
   }
 
   init(
@@ -1730,6 +1736,36 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
     self.event = event
     self.offset = offset
   }
+}
+
+enum WorkSessionNavigationDestination: Equatable {
+  case activeWork
+  case hub
+}
+
+/// One decision table shared by the app root and both possible consumers. The
+/// active project's persisted row wins even when a copied link carries lane or
+/// branch hints, preserving compatibility with hosts that predate the roster.
+/// Repository-scoped synthetic targets stay in Hub so it can activate and
+/// hydrate the named project before opening the session.
+func workSessionNavigationDestination(
+  hasActiveSession: Bool,
+  targetIsActiveProject: Bool?,
+  targetIsKnownChat: Bool,
+  hasRepositoryScope: Bool
+) -> WorkSessionNavigationDestination {
+  // A canonical repository envelope is an authorization boundary, not a hint.
+  // Never let a coincidentally matching active-project session id bypass it.
+  if hasRepositoryScope {
+    guard targetIsActiveProject == true else { return .hub }
+    return hasActiveSession || targetIsKnownChat ? .activeWork : .hub
+  }
+  if hasActiveSession { return .activeWork }
+  if let targetIsActiveProject {
+    if !targetIsActiveProject { return .hub }
+    return .activeWork
+  }
+  return .activeWork
 }
 
 /// A request to open the global Linear pane on a specific issue identifier
@@ -2148,6 +2184,18 @@ func performGenerationScopedPostHelloWork(
   complete()
 }
 
+private struct SyncHydrationProjectScope: Equatable {
+  let projectId: String
+  let rootPath: String?
+  let projectSelectionGeneration: UInt64
+  let connectionGeneration: UInt64
+}
+
+private struct SyncDomainHydrationAttempt {
+  let id: UUID
+  let domains: [SyncDomain]
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected
@@ -2174,6 +2222,9 @@ final class SyncService: ObservableObject {
   @Published private(set) var domainStatuses: [SyncDomain: SyncDomainStatus] = Dictionary(
     uniqueKeysWithValues: SyncDomain.allCases.map { ($0, .disconnected) }
   )
+  private var domainHydrationAttemptIds: [SyncDomain: Set<UUID>] = [:]
+  private var domainHydrationBaselines: [SyncDomain: SyncDomainStatus] = [:]
+  private var domainHydrationPendingCompletions: [SyncDomain: SyncDomainStatus] = [:]
   @Published private(set) var lastSyncAt: Date?
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastConnectDurationMs: Int?
@@ -2413,7 +2464,7 @@ final class SyncService: ObservableObject {
   private var socket: URLSessionWebSocketTask?
   #if DEBUG
   private var capturesOutboundEnvelopesForTesting = false
-  private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?)] = []
+  private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?, projectId: String?)] = []
   private var capturesExactEnvelopesForTesting = false
   private var capturedExactEnvelopesForTesting: [String] = []
   private var completesCapturedRefreshRequestsForTesting = false
@@ -2427,6 +2478,11 @@ final class SyncService: ObservableObject {
     let completion: (Result<Any, Error>) -> Void
     let timeoutTask: Task<Void, Never>
     let timeoutPolicy: PendingRequestTimeoutPolicy
+    /// Connection generation that owned the request when it was sent. A
+    /// project switch replaces the socket in place; retaining the generation
+    /// prevents the retired request's timeout from probing or recovering the
+    /// replacement connection.
+    let connectionGeneration: UInt64
     /// Runs synchronously when the matching response frame is resolved, before
     /// the receive loop can advance to the next frame. Terminal subscriptions
     /// use this to install their snapshot/subscription barrier before the host's
@@ -5501,7 +5557,6 @@ final class SyncService: ObservableObject {
       activeHostProfile = nil
       hostName = nil
     }
-    failPendingRequests(with: NSError(domain: "ADE", code: 21, userInfo: [NSLocalizedDescriptionKey: "Connection closed."]))
   }
 
   func forgetHost() {
@@ -5653,7 +5708,21 @@ final class SyncService: ObservableObject {
   }
 
   func refreshLaneSnapshots(includeStatus: Bool = true, includeDecorations: Bool = true) async throws {
-    setDomainStatus([.lanes, .files], phase: .hydrating)
+    let scope = try captureHydrationProjectScope()
+    try await refreshLaneSnapshots(
+      includeStatus: includeStatus,
+      includeDecorations: includeDecorations,
+      expectedScope: scope
+    )
+  }
+
+  private func refreshLaneSnapshots(
+    includeStatus: Bool,
+    includeDecorations: Bool,
+    expectedScope scope: SyncHydrationProjectScope
+  ) async throws {
+    try requireCurrentHydrationProjectScope(scope)
+    let statusAttempt = beginDomainHydrationAttempt([.lanes, .files])
     do {
       let signatureKey = laneSnapshotSignatureKey(includeStatus: includeStatus, includeDecorations: includeDecorations)
       var args: [String: Any] = [
@@ -5666,13 +5735,21 @@ final class SyncService: ObservableObject {
       if let signature = laneSnapshotSignatures[signatureKey] {
         args["ifNoneMatch"] = signature
       }
-      let raw = try await sendCommand(action: "lanes.refreshSnapshots", args: args)
+      let raw = try await sendCommand(
+        action: "lanes.refreshSnapshots",
+        args: args,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath,
+        fallbackToActiveProjectScope: false
+      )
+      try requireCurrentHydrationProjectScope(scope)
       let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
       if payload.notModified == true {
+        try requireCurrentHydrationProjectScope(scope)
         if let signature = payload.signature {
           laneSnapshotSignatures[signatureKey] = signature
         }
-        setDomainStatus([.lanes, .files], phase: .ready)
+        finishDomainHydrationAttempt(statusAttempt, phase: .ready)
         return
       }
       let lanes = includeStatus
@@ -5684,17 +5761,31 @@ final class SyncService: ObservableObject {
       let snapshots = includeStatus
         ? decoratedSnapshots
         : laneSnapshotsPreservingStatus(decoratedSnapshots)
-      try database.replaceLaneSnapshots(lanes, snapshots: snapshots)
+      try requireCurrentHydrationProjectScope(scope)
+      try database.replaceLaneSnapshots(
+        lanes,
+        snapshots: snapshots,
+        expectedProjectId: scope.projectId
+      )
       if let signature = payload.signature {
         laneSnapshotSignatures[signatureKey] = signature
       }
-      setDomainStatus([.lanes, .files], phase: .ready)
+      finishDomainHydrationAttempt(statusAttempt, phase: .ready)
+    } catch is CancellationError {
+      restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+      throw CancellationError()
     } catch {
+      do {
+        try requireCurrentHydrationProjectScope(scope)
+      } catch {
+        restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+        throw CancellationError()
+      }
       let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
-        setDomainStatus([.lanes, .files], phase: .disconnected)
+        finishDomainHydrationAttempt(statusAttempt, phase: .disconnected)
       } else {
-        setDomainStatus([.lanes, .files], phase: .failed, error: friendlyMessage)
+        finishDomainHydrationAttempt(statusAttempt, phase: .failed, error: friendlyMessage)
       }
       throw error
     }
@@ -5750,9 +5841,18 @@ final class SyncService: ObservableObject {
   }
 
   func refreshWorkSessions() async throws {
-    setDomainStatus([.work], phase: .hydrating)
+    let scope = try captureHydrationProjectScope()
+    try requireCurrentHydrationProjectScope(scope)
+    let statusAttempt = beginDomainHydrationAttempt([.work])
     do {
-      let raw = try await sendCommand(action: "work.listSessions", args: ["limit": 200])
+      let raw = try await sendCommand(
+        action: "work.listSessions",
+        args: ["limit": 200],
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath,
+        fallbackToActiveProjectScope: false
+      )
+      try requireCurrentHydrationProjectScope(scope)
       let sessions = try decodeHydrationPayload(raw, as: [TerminalSessionSummary].self, domainLabel: "work session", decoder: decoder)
       let knownLaneIds = Set(database.fetchLanes(includeArchived: true).map(\.id))
       if !syncMissingWorkSessionLaneIds(sessions: sessions, knownLaneIds: knownLaneIds).isEmpty {
@@ -5760,19 +5860,60 @@ final class SyncService: ObservableObject {
         // satisfy the session foreign-key boundary. Rich git/conflict/rebase
         // decorations stay lazy and must not turn a Work refresh into a large
         // multi-domain request.
-        try await refreshLaneSnapshots(includeStatus: false, includeDecorations: false)
+        try await refreshLaneSnapshots(
+          includeStatus: false,
+          includeDecorations: false,
+          expectedScope: scope
+        )
       }
-      try database.replaceTerminalSessions(sessions)
-      setDomainStatus([.work], phase: .ready)
+      try requireCurrentHydrationProjectScope(scope)
+      try database.replaceTerminalSessions(sessions, expectedProjectId: scope.projectId)
+      finishDomainHydrationAttempt(statusAttempt, phase: .ready)
+    } catch is CancellationError {
+      restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+      throw CancellationError()
     } catch {
+      do {
+        try requireCurrentHydrationProjectScope(scope)
+      } catch {
+        restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+        throw CancellationError()
+      }
       let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
-        setDomainStatus([.work], phase: .disconnected)
+        finishDomainHydrationAttempt(statusAttempt, phase: .disconnected)
       } else {
-        setDomainStatus([.work], phase: .failed, error: friendlyMessage)
+        finishDomainHydrationAttempt(statusAttempt, phase: .failed, error: friendlyMessage)
       }
       throw error
     }
+  }
+
+  private func captureHydrationProjectScope() throws -> SyncHydrationProjectScope {
+    guard let projectId = normalizedProjectId(activeProjectId) else {
+      throw NSError(
+        domain: "ADE",
+        code: 26,
+        userInfo: [NSLocalizedDescriptionKey: SyncHydrationMessaging.waitingForProjectData]
+      )
+    }
+    return SyncHydrationProjectScope(
+      projectId: projectId,
+      rootPath: normalizedProjectRoot(activeProjectRootPath),
+      projectSelectionGeneration: projectSelectionGeneration,
+      connectionGeneration: connectionGeneration
+    )
+  }
+
+  private func requireCurrentHydrationProjectScope(
+    _ scope: SyncHydrationProjectScope
+  ) throws {
+    guard !Task.isCancelled,
+          projectSelectionGeneration == scope.projectSelectionGeneration,
+          connectionGeneration == scope.connectionGeneration,
+          normalizedProjectId(activeProjectId) == scope.projectId,
+          normalizedProjectRoot(activeProjectRootPath) == scope.rootPath
+    else { throw CancellationError() }
   }
 
   func ensureCtoSession() async throws -> AgentChatSessionSummary {
@@ -5926,23 +6067,46 @@ final class SyncService: ObservableObject {
   }
 
   func refreshPullRequestSnapshots(prId: String? = nil) async throws {
-    setDomainStatus([.prs], phase: .hydrating)
+    let scope = try captureHydrationProjectScope()
+    try requireCurrentHydrationProjectScope(scope)
+    let statusAttempt = beginDomainHydrationAttempt([.prs])
     var args: [String: Any] = [:]
     if let prId {
       args["prId"] = prId
     }
     do {
-      let raw = try await sendCommand(action: "prs.refresh", args: args)
+      let raw = try await sendCommand(
+        action: "prs.refresh",
+        args: args,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath,
+        fallbackToActiveProjectScope: false
+      )
+      try requireCurrentHydrationProjectScope(scope)
       let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
-      try database.replacePullRequestHydration(payload, pruneStale: prId == nil)
+      try requireCurrentHydrationProjectScope(scope)
+      try database.replacePullRequestHydration(
+        payload,
+        pruneStale: prId == nil,
+        expectedProjectId: scope.projectId
+      )
       scheduleWorkspaceSnapshotWrite()
-      setDomainStatus([.prs], phase: .ready)
+      finishDomainHydrationAttempt(statusAttempt, phase: .ready)
+    } catch is CancellationError {
+      restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+      throw CancellationError()
     } catch {
+      do {
+        try requireCurrentHydrationProjectScope(scope)
+      } catch {
+        restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+        throw CancellationError()
+      }
       let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
-        setDomainStatus([.prs], phase: .disconnected)
+        finishDomainHydrationAttempt(statusAttempt, phase: .disconnected)
       } else {
-        setDomainStatus([.prs], phase: .failed, error: friendlyMessage)
+        finishDomainHydrationAttempt(statusAttempt, phase: .failed, error: friendlyMessage)
       }
       throw error
     }
@@ -5957,24 +6121,31 @@ final class SyncService: ObservableObject {
   }
 
   func refreshLaneDetail(laneId: String) async throws -> LaneDetailPayload {
-    let laneStatus = status(for: .lanes)
-    if laneStatus.phase != .ready {
-      setDomainStatus([.lanes], phase: .hydrating)
-    }
+    let scope = try captureHydrationProjectScope()
+    try requireCurrentHydrationProjectScope(scope)
+    let statusAttempt = beginDomainHydrationAttempt([.lanes])
     do {
       var args: [String: Any] = ["laneId": laneId]
       let hasCachedDetail = database.fetchLaneDetail(laneId: laneId) != nil
       if hasCachedDetail, let signature = laneDetailSignatures[laneId] {
         args["ifNoneMatch"] = signature
       }
-      var raw = try await sendCommand(action: "lanes.getDetail", args: args)
+      var raw = try await sendCommand(
+        action: "lanes.getDetail",
+        args: args,
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath,
+        fallbackToActiveProjectScope: false
+      )
+      try requireCurrentHydrationProjectScope(scope)
       if let envelope = try? decodeHydrationPayload(raw, as: LaneNotModifiedEnvelope.self, domainLabel: "lane detail", decoder: decoder),
          envelope.notModified == true {
+        try requireCurrentHydrationProjectScope(scope)
         if let signature = envelope.signature {
           laneDetailSignatures[laneId] = signature
         }
         if let cachedDetail = database.fetchLaneDetail(laneId: laneId) {
-          setDomainStatus([.lanes], phase: .ready)
+          finishDomainHydrationAttempt(statusAttempt, phase: .ready)
           return cachedDetail
         }
         // The cached row vanished between request and response (a concurrent
@@ -5983,21 +6154,38 @@ final class SyncService: ObservableObject {
         // of failing the screen on a field-less decode.
         laneDetailSignatures[laneId] = nil
         args["ifNoneMatch"] = nil
-        raw = try await sendCommand(action: "lanes.getDetail", args: args)
+        raw = try await sendCommand(
+          action: "lanes.getDetail",
+          args: args,
+          targetProjectId: scope.projectId,
+          targetProjectRootPath: scope.rootPath,
+          fallbackToActiveProjectScope: false
+        )
+        try requireCurrentHydrationProjectScope(scope)
       }
       let detail = try decodeHydrationPayload(raw, as: LaneDetailPayload.self, domainLabel: "lane detail", decoder: decoder)
-      try database.replaceLaneDetail(detail)
+      try requireCurrentHydrationProjectScope(scope)
+      try database.replaceLaneDetail(detail, expectedProjectId: scope.projectId)
       if let signature = detail.signature {
         laneDetailSignatures[laneId] = signature
       }
-      setDomainStatus([.lanes], phase: .ready)
+      finishDomainHydrationAttempt(statusAttempt, phase: .ready)
       return detail
+    } catch is CancellationError {
+      restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+      throw CancellationError()
     } catch {
+      do {
+        try requireCurrentHydrationProjectScope(scope)
+      } catch {
+        restoreDomainStatusesAfterCancelledAttempt(statusAttempt)
+        throw CancellationError()
+      }
       let friendlyMessage = SyncUserFacingError.message(for: error)
       if connectionState == .disconnected || connectionState == .error {
-        setDomainStatus([.lanes], phase: .disconnected)
+        finishDomainHydrationAttempt(statusAttempt, phase: .disconnected)
       } else {
-        setDomainStatus([.lanes], phase: .failed, error: friendlyMessage)
+        finishDomainHydrationAttempt(statusAttempt, phase: .failed, error: friendlyMessage)
       }
       throw error
     }
@@ -6009,14 +6197,27 @@ final class SyncService: ObservableObject {
 
   func listWorkspaces() async throws -> [FilesWorkspace] {
     if canSendLiveRequests() {
+      let scope = try captureHydrationProjectScope()
+      try requireCurrentHydrationProjectScope(scope)
       do {
         let live = try decode(
-          try await performFileRequest(action: "listWorkspaces", args: [:]),
+          try await performFileRequest(
+            action: "listWorkspaces",
+            args: [:],
+            targetProjectId: scope.projectId
+          ),
           as: [FilesWorkspace].self
         )
-        try? database.replaceFilesWorkspaces(live)
+        try requireCurrentHydrationProjectScope(scope)
+        try database.replaceFilesWorkspaces(
+          live,
+          expectedProjectId: scope.projectId
+        )
         return database.listWorkspaces()
+      } catch is CancellationError {
+        throw CancellationError()
       } catch {
+        try requireCurrentHydrationProjectScope(scope)
         let cached = database.listWorkspaces()
         if !cached.isEmpty {
           return cached
@@ -9475,6 +9676,7 @@ final class SyncService: ObservableObject {
     if activeHostStorageKey() != previousHostKey {
       personalChatSessions = loadCachedPersonalChats()
       personalChatsRevision &+= 1
+      reloadRosterForActiveHost()
     }
   }
 
@@ -9601,11 +9803,23 @@ final class SyncService: ObservableObject {
 
   private func activeHostStorageKey() -> String? {
     let profile = activeHostProfile
-    return normalizedHostStorageKey(profile?.hostIdentity)
-      ?? normalizedHostStorageKey(profile?.lastHostDeviceId)
-      ?? normalizedHostStorageKey(profile?.lastSuccessfulAddress)
-      ?? normalizedHostStorageKey(currentAddress)
-      ?? normalizedHostStorageKey(hostName)
+    if let identity = normalizedHostStorageKey(profile?.hostIdentity)
+      ?? normalizedHostStorageKey(profile?.lastHostDeviceId) {
+      return identity
+    }
+    // Identity-less legacy hosts can share a hostname or IP while listening on
+    // different ADE ports. Keep the port in every route/name fallback so their
+    // cursors, hidden projects, personal chats, and roster caches never merge.
+    if let address = normalizedHostStorageKey(profile?.lastSuccessfulAddress) {
+      return "\(address):\(profile?.port ?? SyncDirectHostPorts.defaultPort)"
+    }
+    if let address = normalizedHostStorageKey(currentAddress) {
+      return profile.map { "\(address):\($0.port)" } ?? address
+    }
+    if let name = normalizedHostStorageKey(hostName) {
+      return profile.map { "\(name):\($0.port)" } ?? name
+    }
+    return nil
   }
 
   private func outboundStateMatchesActiveHost(_ hostId: String?) -> Bool {
@@ -10548,7 +10762,7 @@ final class SyncService: ObservableObject {
         domain: "ADE",
         code: 26,
         userInfo: [NSLocalizedDescriptionKey: "The network route changed while that request was running."]
-      ))
+      ), connectionGeneration: connectionGeneration)
     }
     let connectedEndpoint = connectedCandidate.scheduled.endpoint
     teardownSocket(closeCode: .goingAway)
@@ -12300,6 +12514,24 @@ final class SyncService: ObservableObject {
     completesCapturedRefreshRequestsForTesting = true
   }
 
+  func completeCapturedRequestForTesting(requestId: String, result: Any) {
+    resolve(requestId: requestId, result: .success(result))
+  }
+
+  func failCapturedRequestForTesting(requestId: String, error: Error) {
+    resolve(requestId: requestId, result: .failure(error))
+  }
+
+  func persistRosterForTesting() {
+    rosterPersistTask?.cancel()
+    rosterPersistTask = nil
+    persistRoster(rosterProjects, cacheKey: rosterCacheKey)
+  }
+
+  func rosterCacheKeyForTesting() -> String {
+    rosterCacheKey
+  }
+
   func resetOutboundEnvelopeCaptureForTesting() {
     capturedOutboundEnvelopesForTesting = []
   }
@@ -12314,12 +12546,24 @@ final class SyncService: ObservableObject {
     }
   }
 
+  func capturedOutboundProjectIdForTesting(requestId: String) -> String? {
+    capturedOutboundEnvelopesForTesting.first { $0.requestId == requestId }?.projectId
+  }
+
   func firePendingRequestTimeoutForTesting(requestId: String) {
     firePendingRequestTimeout(requestId: requestId)
   }
 
   func pendingRequestDisconnectsOnTimeoutForTesting(requestId: String) -> Bool? {
     pending[requestId]?.timeoutPolicy.disconnectOnTimeout
+  }
+
+  func pendingRequestGenerationForTesting(requestId: String) -> UInt64? {
+    pending[requestId]?.connectionGeneration
+  }
+
+  func hasTransportProbeForTesting() -> Bool {
+    transportProbeTask != nil
   }
 
   func connectionGenerationForTesting() -> UInt64 {
@@ -12686,12 +12930,21 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func failPendingRequests(with error: Error) {
+  private func failPendingRequests(
+    with error: Error,
+    connectionGeneration expectedGeneration: UInt64
+  ) {
     let friendlyError = SyncUserFacingError.error(from: error)
-    let completions = pending
-    pending.removeAll()
-    pendingProjectCatalogChunks.removeAll()
-    for request in completions.values {
+    let requestIds = pending.compactMap { requestId, request in
+      request.connectionGeneration == expectedGeneration
+        ? requestId
+        : nil
+    }
+    let completions = requestIds.compactMap { pending.removeValue(forKey: $0) }
+    if expectedGeneration == connectionGeneration {
+      pendingProjectCatalogChunks.removeAll()
+    }
+    for request in completions {
       request.timeoutTask.cancel()
       request.completion(.failure(friendlyError))
     }
@@ -13354,6 +13607,7 @@ final class SyncService: ObservableObject {
         },
         timeoutTask: timeoutTask,
         timeoutPolicy: timeoutPolicy,
+        connectionGeneration: connectionGeneration,
         acceptResponse: acceptResponse,
         startedAt: ProcessInfo.processInfo.systemUptime
       )
@@ -13361,10 +13615,17 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func sendEnvelope(type: String, requestId: String?, payload: Any) {
+  private func sendEnvelope(
+    type: String,
+    requestId: String?,
+    payload: Any,
+    projectIdOverride: String? = nil
+  ) {
     #if DEBUG
     if capturesOutboundEnvelopesForTesting {
-      capturedOutboundEnvelopesForTesting.append((type: type, requestId: requestId))
+      let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
+        ?? syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId)
+      capturedOutboundEnvelopesForTesting.append((type: type, requestId: requestId, projectId: projectId))
       if completesCapturedRefreshRequestsForTesting,
          let requestId,
          let response = capturedRefreshResponseForTesting(type: type, payload: payload) {
@@ -13399,7 +13660,8 @@ final class SyncService: ObservableObject {
     if let requestId, !requestId.isEmpty {
       envelope["requestId"] = requestId
     }
-    if let projectId = syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId) {
+    if let projectId = syncNormalizedCommandScopeValue(projectIdOverride)
+      ?? syncOutboundEnvelopeProjectId(type: type, activeProjectId: activeProjectId) {
       envelope["projectId"] = projectId
     }
 
@@ -13565,11 +13827,11 @@ final class SyncService: ObservableObject {
       // the existing route walker can try its next ranked candidate; scheduling
       // a second reconnect owner here would race that in-flight attempt.
       teardownSocket(reason: error.localizedDescription)
-      failPendingRequests(with: error)
     }
   }
 
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
+    let retiringConnectionGeneration = connectionGeneration
     // The roster subscription is bound to the live socket; a reconnect must
     // re-subscribe. Keep `rosterProjects` for offline render, but drop the
     // seq baseline so the next subscribe asks for (and applies) a fresh snapshot.
@@ -13625,6 +13887,17 @@ final class SyncService: ObservableObject {
     pendingProjectCatalogChunks.removeAll()
     envelopeChunkAssembler.reset()
     connectionGeneration &+= 1
+    // Requests are owned by the socket generation that sent them. Retire only
+    // that generation: a stale project-switch request must not remain armed
+    // long enough to time out against and recover the replacement socket.
+    failPendingRequests(
+      with: NSError(
+        domain: "ADE",
+        code: 26,
+        userInfo: [NSLocalizedDescriptionKey: reason ?? "Connection closed."]
+      ),
+      connectionGeneration: retiringConnectionGeneration
+    )
   }
 
   private func resetTerminalTransportStateForReconnect() {
@@ -13657,15 +13930,28 @@ final class SyncService: ObservableObject {
     } else {
       setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     }
-    failPendingRequests(with: friendlyError)
     // Oversized-message errors no longer pause reconnect permanently — see
     // handleIncomingFailure.
     scheduleReconnectIfNeeded(after: reconnectDelayNanoseconds ?? reconnectDelay())
   }
 
   private func firePendingRequestTimeout(requestId: String) {
-    guard let timeoutPolicy = pending[requestId]?.timeoutPolicy else { return }
-    handlePendingRequestTimeout(requestId: requestId, policy: timeoutPolicy)
+    guard let request = pending[requestId] else { return }
+    guard request.connectionGeneration == connectionGeneration else {
+      // A retired request must never classify or recover the replacement
+      // connection. Teardown normally removes it; this is a defensive guard
+      // for any future socket-replacement path that misses retirement.
+      failPendingRequests(
+        with: NSError(
+          domain: "ADE",
+          code: 26,
+          userInfo: [NSLocalizedDescriptionKey: "Connection closed."]
+        ),
+        connectionGeneration: request.connectionGeneration
+      )
+      return
+    }
+    handlePendingRequestTimeout(requestId: requestId, policy: request.timeoutPolicy)
   }
 
   private func handlePendingRequestTimeout(
@@ -14848,19 +15134,98 @@ final class SyncService: ObservableObject {
   }
 
   private func setDomainStatus(_ domains: [SyncDomain], phase: SyncDomainPhase, error: String? = nil) {
-    let hydratedAt = phase == .ready ? Date() : nil
     for domain in domains {
-      var next = domainStatuses[domain] ?? .disconnected
-      next.phase = phase
-      next.lastError = error
-      if let hydratedAt {
-        next.lastHydratedAt = hydratedAt
-      }
-      domainStatuses[domain] = next
+      // An explicit connection/domain transition supersedes every in-flight
+      // refresh. Their later completions become harmless no-ops.
+      domainHydrationAttemptIds[domain] = nil
+      domainHydrationBaselines[domain] = nil
+      domainHydrationPendingCompletions[domain] = nil
+      domainStatuses[domain] = domainStatus(phase: phase, error: error, basedOn: domainStatuses[domain])
     }
   }
 
-  private func performFileRequest(action: String, args: [String: Any]) async throws -> Any {
+  private func beginDomainHydrationAttempt(
+    _ domains: [SyncDomain]
+  ) -> SyncDomainHydrationAttempt {
+    let attempt = SyncDomainHydrationAttempt(id: UUID(), domains: domains)
+    for domain in domains {
+      var attempts = domainHydrationAttemptIds[domain] ?? []
+      if attempts.isEmpty {
+        domainHydrationBaselines[domain] = domainStatuses[domain] ?? .disconnected
+        domainHydrationPendingCompletions[domain] = nil
+      }
+      attempts.insert(attempt.id)
+      domainHydrationAttemptIds[domain] = attempts
+      domainStatuses[domain] = domainStatus(
+        phase: .hydrating,
+        error: nil,
+        basedOn: domainStatuses[domain]
+      )
+    }
+    return attempt
+  }
+
+  private func finishDomainHydrationAttempt(
+    _ attempt: SyncDomainHydrationAttempt,
+    phase: SyncDomainPhase,
+    error: String? = nil
+  ) {
+    for domain in attempt.domains {
+      guard var attempts = domainHydrationAttemptIds[domain], attempts.remove(attempt.id) != nil else {
+        continue
+      }
+      let completion = domainStatus(phase: phase, error: error, basedOn: domainStatuses[domain])
+      domainHydrationPendingCompletions[domain] = completion
+      if attempts.isEmpty {
+        domainHydrationAttemptIds[domain] = nil
+        domainHydrationBaselines[domain] = nil
+        domainStatuses[domain] = completion
+        domainHydrationPendingCompletions[domain] = nil
+      } else {
+        domainHydrationAttemptIds[domain] = attempts
+      }
+    }
+  }
+
+  private func restoreDomainStatusesAfterCancelledAttempt(
+    _ attempt: SyncDomainHydrationAttempt
+  ) {
+    for domain in attempt.domains {
+      guard var attempts = domainHydrationAttemptIds[domain], attempts.remove(attempt.id) != nil else {
+        continue
+      }
+      if attempts.isEmpty {
+        domainHydrationAttemptIds[domain] = nil
+        domainStatuses[domain] = domainHydrationPendingCompletions[domain]
+          ?? domainHydrationBaselines[domain]
+          ?? .disconnected
+        domainHydrationBaselines[domain] = nil
+        domainHydrationPendingCompletions[domain] = nil
+      } else {
+        domainHydrationAttemptIds[domain] = attempts
+      }
+    }
+  }
+
+  private func domainStatus(
+    phase: SyncDomainPhase,
+    error: String?,
+    basedOn current: SyncDomainStatus?
+  ) -> SyncDomainStatus {
+    var next = current ?? .disconnected
+    next.phase = phase
+    next.lastError = error
+    if phase == .ready {
+      next.lastHydratedAt = Date()
+    }
+    return next
+  }
+
+  private func performFileRequest(
+    action: String,
+    args: [String: Any],
+    targetProjectId: String? = nil
+  ) async throws -> Any {
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: 16, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this Mac right now."])
     }
@@ -14869,7 +15234,7 @@ final class SyncService: ObservableObject {
       self.sendEnvelope(type: "file_request", requestId: requestId, payload: [
         "action": action,
         "args": args,
-      ])
+      ], projectIdOverride: targetProjectId)
     }
     if let response = raw as? [String: Any], let ok = response["ok"] as? Bool, ok == false {
       let message = (response["error"] as? [String: Any])?["message"] as? String ?? "File request failed."
@@ -15999,7 +16364,13 @@ struct PrAutoMapCreateResult: Decodable, Equatable {
 // declaration so it can write the `private(set)` store. See the contract in
 // `apps/desktop/src/shared/types/sync.ts` (search `SyncRoster`).
 extension SyncService {
-  private static let rosterCacheKey = "ade.roster.cache.v1"
+  private static let legacyRosterCacheKey = "ade.roster.cache.v1"
+
+  private var rosterCacheKey: String {
+    let host = activeHostStorageKey() ?? "unpaired"
+    let encoded = Data(host.utf8).base64EncodedString()
+    return "ade.roster.cache.v2.\(encoded)"
+  }
 
   /// Subscribe to the all-projects roster once per live connection. Older hosts
   /// that don't implement the feed simply never answer, leaving `rosterSupported`
@@ -16102,8 +16473,24 @@ extension SyncService {
       rosterProjects: rosterProjects,
       sessionId: request.sessionId,
       laneId: request.laneId,
+      repoOwner: request.repoOwner,
       repoName: request.repoName,
       branch: request.branch
+    )
+  }
+
+  /// Resolve against active persisted state first, then the machine roster.
+  /// All three observers (app root, Work, and Hub) use this same result so only
+  /// the selected surface may consume the request.
+  func navigationDestination(
+    _ request: WorkSessionNavigationRequest
+  ) -> WorkSessionNavigationDestination {
+    let target = rosterNavigationTarget(for: request)
+    return workSessionNavigationDestination(
+      hasActiveSession: database.fetchSession(id: request.sessionId) != nil,
+      targetIsActiveProject: target.map { isActiveProject($0.project) },
+      targetIsKnownChat: target?.chat.isChatTool == true,
+      hasRepositoryScope: request.hasRepositoryScope
     )
   }
 
@@ -16128,23 +16515,39 @@ extension SyncService {
   private func schedulePersistRoster() {
     rosterPersistTask?.cancel()
     let snapshot = rosterProjects
+    let cacheKey = rosterCacheKey
     rosterPersistTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: 600_000_000)
       guard let self, !Task.isCancelled else { return }
-      self.persistRoster(snapshot)
+      self.persistRoster(snapshot, cacheKey: cacheKey)
     }
   }
 
-  private func persistRoster(_ projects: [RemoteRosterProject]) {
+  private func persistRoster(_ projects: [RemoteRosterProject], cacheKey: String) {
     guard let data = try? JSONEncoder().encode(projects) else { return }
-    ADESharedContainer.defaults.set(data, forKey: Self.rosterCacheKey)
+    ADESharedContainer.defaults.set(data, forKey: cacheKey)
   }
 
   func loadCachedRoster() -> [RemoteRosterProject] {
-    guard let data = ADESharedContainer.defaults.data(forKey: Self.rosterCacheKey),
+    // The v1 cache had no machine identity and is therefore unsafe to migrate:
+    // two Macs can contain the same project id/root but different sessions.
+    ADESharedContainer.defaults.removeObject(forKey: Self.legacyRosterCacheKey)
+    guard let data = ADESharedContainer.defaults.data(forKey: rosterCacheKey),
           let projects = try? JSONDecoder().decode([RemoteRosterProject].self, from: data)
     else { return [] }
-    return projects
+    return sortRosterProjects(projects)
+  }
+
+  private func reloadRosterForActiveHost() {
+    rosterPersistTask?.cancel()
+    rosterPersistTask = nil
+    rosterProjects = loadCachedRoster()
+    rosterSeq = nil
+    rosterSupported = false
+    rosterSubscribed = false
+    rosterProjectRevisions.removeAll()
+    rosterRevision &+= 1
+    markRosterProjectsChanged(Set(rosterProjects.map(\.projectId)))
   }
 
   /// Build the active project's roster entry from the phone's local DB (its

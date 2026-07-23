@@ -184,22 +184,7 @@ struct ContentView: View {
           selectedTab = .prs
         }
       }
-      .onChange(of: syncService.requestedWorkSessionNavigation?.id) { _, requestId in
-        guard requestId != nil,
-              let request = syncService.requestedWorkSessionNavigation else { return }
-        // A scoped or roster-resolved session may belong to any project. Keep
-        // the machine-wide Hub mounted so it can open the correct chat directly
-        // instead of sending the id into whichever project's Work tab happens
-        // to be active (which produces a misleading blank-cache state).
-        if request.hasProjectScope || syncService.rosterNavigationTarget(for: request) != nil {
-          syncService.showProjectHome()
-          return
-        }
-        syncService.closeProjectHome()
-        if selectedTab != .work {
-          selectedTab = .work
-        }
-      }
+      .modifier(WorkSessionNavigationModifier(syncService: syncService, selectedTab: $selectedTab))
   }
 
   private var hasMobileAccess: Bool {
@@ -262,5 +247,30 @@ struct ContentView: View {
       .tabItem {
         Label("CTO", systemImage: "brain")
       }
+  }
+}
+
+/// Kept out of ContentView's already-long modifier chain so SwiftUI does not
+/// have to infer the entire app root and the cold-start task in one expression.
+private struct WorkSessionNavigationModifier: ViewModifier {
+  @ObservedObject var syncService: SyncService
+  @Binding var selectedTab: RootTab
+
+  func body(content: Content) -> some View {
+    // A task runs for an already-present cold-launch request as well as later
+    // changes; onChange alone misses the initial value before this root mounts.
+    content.task(id: syncService.requestedWorkSessionNavigation?.id) {
+      guard let request = syncService.requestedWorkSessionNavigation else { return }
+      // A scoped or roster-resolved session may belong to any project. Keep
+      // the machine-wide Hub mounted so it can activate and hydrate the target.
+      if syncService.navigationDestination(request) == .hub {
+        syncService.showProjectHome()
+        return
+      }
+      syncService.closeProjectHome()
+      if selectedTab != .work {
+        selectedTab = .work
+      }
+    }
   }
 }

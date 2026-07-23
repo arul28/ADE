@@ -522,6 +522,13 @@ export type SyncMobileProjectSummary = {
   id: string;
   displayName: string;
   rootPath: string | null;
+  /**
+   * Canonical coordinates parsed from the project's GitHub origin. Additive
+   * for wire compatibility: older hosts omit both fields, while current hosts
+   * send both strings or both nulls.
+   */
+  repoOwner?: string | null;
+  repoName?: string | null;
   defaultBaseRef: string | null;
   lastOpenedAt: string | null;
   iconDataUrl?: string | null;

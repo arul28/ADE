@@ -51,6 +51,7 @@ import type {
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
 import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
+import type { ProjectRecord } from "./services/projects/projectRegistry";
 import {
   findAdeManagedWorktreeRoot,
   normalizeProjectRootPath,
@@ -76,6 +77,7 @@ import {
   withRpcAuthParam,
 } from "./rpcAuth";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
+import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
 import {
   isLaunchProfile,
   isTrackedCliPermissionMode,
@@ -14969,28 +14971,15 @@ async function runServe(
       );
     }
   }
-  type ProjectRecord = ReturnType<
-    InstanceType<typeof ProjectRegistry>["list"]
-  >[number];
   const toMobileProjectSummary = (
     record: ProjectRecord,
     overrides: Partial<SyncMobileProjectSummary> = {},
-  ): SyncMobileProjectSummary => ({
-    id: record.projectId,
-    displayName: record.displayName,
-    rootPath: record.rootPath,
-    defaultBaseRef: null,
-    lastOpenedAt:
-      record.lastOpenedAt > 0
-        ? new Date(record.lastOpenedAt).toISOString()
-        : null,
-    iconDataUrl: resolveMobileProjectIconDataUrl(record.rootPath),
-    laneCount: 0,
-    isAvailable: true,
-    isCached: true,
-    isOpen: false,
-    ...overrides,
-  });
+  ): SyncMobileProjectSummary =>
+    headlessMobileProjectSummary(
+      record,
+      resolveMobileProjectIconDataUrl(record.rootPath),
+      overrides,
+    );
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
   const headlessProjectLogger: Logger = {
     debug: () => {},

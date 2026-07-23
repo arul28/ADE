@@ -656,9 +656,6 @@ struct WorkRootScreen: View {
         if syncService.requestedWorkLaneNavigation != nil {
           Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
         }
-        if syncService.requestedWorkSessionNavigation != nil {
-          Task { await handleRequestedWorkSessionNavigation() }
-        }
       }
       .onChange(of: isTabActive) { _, active in
         guard active else { return }
@@ -668,10 +665,6 @@ struct WorkRootScreen: View {
         if syncService.requestedWorkSessionNavigation != nil {
           Task { await handleRequestedWorkSessionNavigation() }
         }
-      }
-      .onChange(of: syncService.requestedWorkSessionNavigation?.id) { _, requestId in
-        guard isTabActive, requestId != nil else { return }
-        Task { await handleRequestedWorkSessionNavigation() }
       }
       .onChange(of: syncService.requestedWorkLaneNavigation?.id) { _, requestId in
         guard isTabActive, requestId != nil else { return }

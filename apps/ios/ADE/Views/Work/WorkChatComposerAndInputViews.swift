@@ -854,15 +854,6 @@ struct WorkQueuedSteerRow: View {
   }
 }
 
-/// Box-drawing and block glyphs that mark fixed-column layout art. Shared by
-/// the question-card preview classifier below and the assistant-message
-/// classifier in WorkChatHeaderAndMessageViews.
-let workWireframeGlyphs: Set<Character> = [
-  "│", "┌", "┐", "└", "┘", "├", "┤", "┼", "─",
-  "╭", "╮", "╰", "╯", "║", "═", "╔", "╗", "╚", "╝", "╠", "╣", "╬",
-  "▌", "▐", "█", "▓", "▒", "░", "▢", "▣", "□", "■",
-]
-
 /// Whether an option preview should render as a fixed-column monospace block
 /// rather than markdown. True when the text contains ASCII box-drawing or
 /// wireframe glyphs (│┌┐└┘├┤┼─ ╭╮╰╯ ●○◉◯ ▢▣ etc.) or repeated indentation
@@ -876,9 +867,7 @@ func workPreviewIsWireframe(_ text: String) -> Bool {
   }
   let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
   guard lines.count >= 2 else { return false }
-  let alignedColumnLines = lines.filter { line in
-    line.range(of: #"\S\s{3,}\S"#, options: .regularExpression) != nil
-  }
+  let alignedColumnLines = lines.filter { workLineHasAlignedColumnGap($0) }
   return alignedColumnLines.count >= 2
 }
 
