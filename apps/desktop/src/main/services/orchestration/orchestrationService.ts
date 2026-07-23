@@ -280,13 +280,27 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     | ((ctx: { runId: string; bundlePath: string }) => void)
     | null = null;
 
+  // Runs that hydrated with undelivered outbox entries while no drainer was
+  // registered. Delivery must not depend on hydration happening after the
+  // chat-backed drainer wires up (a run opened/listed on boot can hydrate before
+  // any orchestration turn constructs its tool map). We record the request here
+  // and flush it on registration, so the hydration-vs-registration order is
+  // irrelevant — no boot-order coupling. Keyed by runId → bundlePath; bounded
+  // because registration happens eagerly at service availability (see main.ts).
+  const pendingActivationDrains = new Map<string, string>();
+
   function fireRunActivationDrain(runtime: RunRuntime): void {
-    if (!runActivationDrainer) return;
     const outbox = runtime.manifest?.outbox ?? [];
     const hasUndelivered = outbox.some(
       (entry) => entry.status === "pending" || entry.status === "delivering",
     );
     if (!hasUndelivered) return;
+    if (!runActivationDrainer) {
+      // Defer until a drainer registers, then flush (see below).
+      pendingActivationDrains.set(runtime.runId, runtime.bundlePath);
+      return;
+    }
+    pendingActivationDrains.delete(runtime.runId);
     try {
       runActivationDrainer({
         runId: runtime.runId,
@@ -308,12 +322,119 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     fn: (ctx: { runId: string; bundlePath: string }) => void,
   ): () => void {
     runActivationDrainer = fn;
+    // Flush runs that hydrated before this drainer wired up. Resident runtimes
+    // are re-evaluated against their live manifest (most accurate); this also
+    // clears their pending-queue entry via fireRunActivationDrain.
     for (const runtime of runs.values()) {
       if (runtime.manifest) fireRunActivationDrain(runtime);
     }
+    // Then flush any queued runs no longer resident (hydrated then evicted before
+    // registration). drainOutbox re-reads the durable manifest, so a stale entry
+    // is harmless/idempotent.
+    for (const [runId, bundlePath] of pendingActivationDrains) {
+      if (runs.has(runId)) continue; // already handled by the sweep above
+      try {
+        fn({ runId, bundlePath });
+      } catch {
+        // Best-effort: registration must never throw.
+      }
+    }
+    pendingActivationDrains.clear();
     return () => {
       if (runActivationDrainer === fn) runActivationDrainer = null;
     };
+  }
+
+  // --- Self-arming heartbeat-stall detection ------------------------------
+  // The stall flag + one-time lead notification are produced by
+  // buildStallDetectionOps, but that sweep only ran inside the lead-invoked
+  // releaseStaleClaims/recoverStaleTasks path — so a worker that simply goes
+  // silent (no heartbeat, no event) would never be flagged unless the lead
+  // already suspected a stall and manually invoked recovery, defeating the
+  // feature. Mirror the outbox deferred-retry timer: while a run has running
+  // non-lead agents that are not yet flagged, arm ONE coalesced unref'd timer
+  // for the soonest stall horizon (effective liveness + threshold). It is
+  // re-armed on hydration, mutations, heartbeats, and after each sweep, and
+  // cleared on run teardown. Armed only while workers are running — a single
+  // pending-work timer, not a poll loop.
+  const stallTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function clearStallTimer(runId: string): void {
+    const existing = stallTimers.get(runId);
+    if (existing) {
+      clearTimeout(existing);
+      stallTimers.delete(runId);
+    }
+  }
+
+  /** Tear down all armed stall timers (service dispose). */
+  function disposeAllStallTimers(): void {
+    for (const timer of stallTimers.values()) clearTimeout(timer);
+    stallTimers.clear();
+  }
+
+  /**
+   * (Re)arm the single coalesced stall timer for a run against its current
+   * in-memory state. Clears any prior timer first (idempotent — last arm wins),
+   * so it is safe to call from every liveness-affecting path. No-op when the run
+   * has no running, not-yet-flagged non-lead agent (nothing can newly stall).
+   */
+  function scheduleStallDetection(runtime: RunRuntime): void {
+    clearStallTimer(runtime.runId);
+    const manifest = runtime.manifest;
+    if (!manifest || runtime.suspended) return;
+    const nowMs = now().getTime();
+    let soonest = Number.POSITIVE_INFINITY;
+    for (const agent of manifest.agents) {
+      if (agent.role === "lead") continue;
+      if (agent.status !== "running") continue;
+      if (agent.stalled === true) continue; // already flagged + notified — no repeat.
+      const lastMs = effectiveLivenessMs(runtime, agent);
+      if (!Number.isFinite(lastMs)) continue;
+      const horizon = lastMs + HEARTBEAT_STALL_THRESHOLD_MS;
+      if (horizon < soonest) soonest = horizon;
+    }
+    if (!Number.isFinite(soonest)) return; // no armable worker → no timer.
+    const delay = Math.max(0, soonest - nowMs);
+    const timer = setTimeout(() => {
+      stallTimers.delete(runtime.runId);
+      void runStallDetectionSweep(runtime.runId);
+    }, delay);
+    if (typeof timer.unref === "function") timer.unref();
+    stallTimers.set(runtime.runId, timer);
+  }
+
+  /**
+   * Timer-fired stall sweep for a single run: runs buildStallDetectionOps under
+   * the run mutex, persists any flag/notify/clear ops, then re-arms for the next
+   * horizon. Best-effort — a failure just defers to the next re-arm.
+   */
+  async function runStallDetectionSweep(runId: string): Promise<void> {
+    const runtime = runs.get(runId);
+    if (!runtime) return; // torn down between arm and fire.
+    try {
+      await runtime.mutex.run(async () => {
+        await loadIntoRuntime(runtime);
+        if (runtime.suspended || !runtime.manifest) return;
+        const nowMs = now().getTime();
+        const stall = buildStallDetectionOps(runtime, runtime.manifest, nowMs);
+        if (!stall.ops.length) return;
+        try {
+          await directPatch(
+            runtime,
+            stall.ops,
+            `stall sweep${stall.flagged ? `: flag ${stall.flagged} stalled agent(s)` : ""}`,
+          );
+        } catch (err) {
+          if (!(err instanceof OrchestrationRunSuspendedError)) throw err;
+        }
+      });
+    } catch {
+      // Best-effort liveness sweep; the next mutation/heartbeat re-arms.
+    } finally {
+      const live = runs.get(runId);
+      if (live) scheduleStallDetection(live);
+    }
   }
 
   function nowIso(): string {
@@ -736,6 +857,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     // it never blocks or fails the load; the drainer's mutex work queues behind
     // the caller's current mutex frame.
     fireRunActivationDrain(runtime);
+    // Arm stall detection on hydration so a run restored on boot (with running
+    // workers) starts watching for silence even if no orchestration turn runs.
+    scheduleStallDetection(runtime);
   }
 
   async function hydrateRunForList(entry: RunIndexEntry): Promise<void> {
@@ -936,6 +1060,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     }
     await writeServerGeneration(bundlePath, manifest.serverGeneration);
     runtime.manifest = manifest;
+    // Re-arm stall detection against the committed agent set — the single write
+    // chokepoint for every mutation path (directPatch AND manifestPatch), so a
+    // spawn that adds a running worker or a status change is always reflected.
+    scheduleStallDetection(runtime);
     await appendRunIndexEntry(
       manifest.laneId,
       runIndexEntryFromManifest(manifest, runtime.suspended ? "suspended" : "active"),
@@ -1753,6 +1881,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       // Always record the freshest observation in memory — this is the cheap side
       // of the coalesce and the signal the stall sweep reads. No disk, no clone.
       runtime.heartbeatFreshnessMs.set(req.sessionId, nowMs);
+      // Push the stall horizon out to reflect this liveness signal. Runs on every
+      // heartbeat, including the coalesced fast path that skips the disk write.
+      scheduleStallDetection(runtime);
       const lastPersistedMs = runtime.heartbeatPersistedAtMs.get(req.sessionId) ?? 0;
       const wasStalled = current.stalled === true;
       // Coalesce: skip the disk write + manifest clone unless the persisted marker
@@ -1853,12 +1984,14 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           if (runtime.refCount === 0) {
             runs.delete(runId);
             disposeRunOutbox(runId);
+            clearStallTimer(runId);
           }
         }, WATCHER_IDLE_CLOSE_MS);
         runtime.watcherIdleTimer.unref?.();
       } else {
         runs.delete(runId);
         disposeRunOutbox(runId);
+        clearStallTimer(runId);
       }
     }
   }
@@ -1870,6 +2003,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
     }
     runs.clear();
+    pendingActivationDrains.clear();
+    disposeAllStallTimers();
     // Clear any armed deferred-retry drain timers so a disposed service can't
     // fire a stray outbox drain after teardown.
     disposeAllOutbox();

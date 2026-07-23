@@ -2561,6 +2561,32 @@ describe("lead read-only ADE capability tools", () => {
     expect(thrown.error).toBe("read_failed");
     expect(thrown.message).toContain("linear exploded");
   });
+
+  it("validates mintDeeplink targets with a discriminated schema", async () => {
+    setup = await setupWithRun("lead");
+    const lead = makeToolSet(setup, "lead", "S-lead");
+    const schema = lead.mintDeeplink!.inputSchema;
+    // Valid targets across kinds parse.
+    expect(schema.safeParse({ target: { kind: "lane", laneId: "L-1" } }).success).toBe(true);
+    expect(
+      schema.safeParse({ target: { kind: "pr", repoOwner: "o", repoName: "r", prNumber: 12 } }).success,
+    ).toBe(true);
+    expect(schema.safeParse({ target: { kind: "file", path: "src/a.ts", line: 3 } }).success).toBe(true);
+    expect(
+      schema.safeParse({ target: { kind: "linear-issue", issueIdentifier: "ADE-1" } }).success,
+    ).toBe(true);
+    // Unknown kind rejected (previously passed as a loose record and produced a
+    // malformed/undefined URL while still reporting success).
+    expect(schema.safeParse({ target: { kind: "bogus", laneId: "x" } }).success).toBe(false);
+    // Missing a kind-specific required field rejected (pr without prNumber).
+    expect(schema.safeParse({ target: { kind: "pr", repoOwner: "o", repoName: "r" } }).success).toBe(false);
+    // Wrong field type rejected (prNumber must be a positive integer, not a string).
+    expect(
+      schema.safeParse({ target: { kind: "pr", repoOwner: "o", repoName: "r", prNumber: "12" } }).success,
+    ).toBe(false);
+    // Missing discriminant entirely rejected.
+    expect(schema.safeParse({ target: { laneId: "x" } }).success).toBe(false);
+  });
 });
 
 describe("registerAsset accepts Unit S evidence kinds + externalRef", () => {

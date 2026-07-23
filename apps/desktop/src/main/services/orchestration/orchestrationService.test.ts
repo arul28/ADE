@@ -1334,6 +1334,149 @@ describe("orchestration heartbeat auto-recovery", () => {
     expect((after.receipts ?? []).map((r) => r.requestId)).toContain("spawn:done");
     await svc.dispose();
   });
+
+  // --- Self-arming stall detection (no manual sweep required) --------------
+
+  it("auto-flags a silent worker via the self-arming timer with no manual recovery call", async () => {
+    // Real timers: the worker is already silent past the 10m threshold at seed
+    // time, so its stall horizon is in the past and the timer (armed by the
+    // seeding mutation) fires on the next macrotask. Crucially, no lead ever
+    // calls releaseStaleClaims/recoverStaleTasks — the flag lands on its own.
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+    expect(
+      svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled,
+    ).toBeFalsy();
+
+    await vi.waitFor(() => {
+      expect(
+        svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled,
+      ).toBe(true);
+    });
+
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect(leadStatusEntries(after)).toHaveLength(1);
+    await svc.dispose();
+  });
+
+  it("arms no stall timer when the run has no running non-lead agent", async () => {
+    vi.useFakeTimers();
+    try {
+      const svc = makeSvc();
+      const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+      const beforeSeed = vi.getTimerCount();
+      // A completed (non-running) worker, even long silent, is not armable.
+      await seedWorker(svc, manifest, {
+        sessionId: "done-1",
+        status: "completed",
+        spawnedAtMs: BASE - 30 * MIN,
+        lastHeartbeatAtMs: BASE - 25 * MIN,
+      });
+      expect(vi.getTimerCount()).toBe(beforeSeed);
+      // Advancing well past any threshold flags nothing (no timer was armed).
+      await vi.advanceTimersByTimeAsync(30 * MIN);
+      expect(
+        svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "done-1")?.stalled,
+      ).toBeFalsy();
+      await svc.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the armed stall timer on run teardown", async () => {
+    vi.useFakeTimers();
+    try {
+      const svc = makeSvc();
+      const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+      const beforeSeed = vi.getTimerCount();
+      // Running worker fresh at seed → a timer is armed for a future horizon.
+      await seedWorker(svc, manifest, {
+        sessionId: "impl-1",
+        spawnedAtMs: BASE,
+        lastHeartbeatAtMs: BASE,
+      });
+      expect(vi.getTimerCount()).toBe(beforeSeed + 1);
+      // Tear the run down (never subscribed → immediate eviction) → timer cleared.
+      await svc.release(manifest.runId);
+      expect(vi.getTimerCount()).toBe(beforeSeed);
+      expect(svc.getManifestForRun(manifest.runId)).toBeNull();
+      await svc.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("orchestration run-activation drainer registration ordering", () => {
+  let lane: string;
+  let clock: number;
+  const BASE = Date.parse("2026-07-22T00:00:00.000Z");
+  beforeEach(async () => {
+    lane = await makeTempLane();
+    clock = BASE;
+  });
+  afterEach(async () => {
+    await rmTree(lane);
+  });
+
+  function makeSvc() {
+    return createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+      now: () => new Date(clock),
+    });
+  }
+
+  async function enqueuePending(
+    svc: ReturnType<typeof createOrchestrationService>,
+    manifest: { runId: string; bundlePath: string },
+  ): Promise<void> {
+    const enq = await svc.enqueueOutbox(manifest.runId, manifest.bundlePath, [
+      { kind: "lead_status", targetSessionId: "S-lead", delivery: { op: "steer", text: "persisted brief" } },
+    ]);
+    expect(enq.ok).toBe(true);
+  }
+
+  it("delivers a resident run's pending outbox when a drainer registers afterwards (exactly once)", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await enqueuePending(svc, manifest);
+    const calls: { runId: string; bundlePath: string }[] = [];
+    svc.registerRunActivationDrainer((ctx) => calls.push(ctx));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.runId).toBe(manifest.runId);
+    await svc.dispose();
+  });
+
+  it("delivers a run that hydrated then was evicted before the drainer registered (queue path)", async () => {
+    // Persist a run holding an undelivered outbox entry, then simulate a fresh
+    // process: a new service cold-hydrates the run (queuing the drain because no
+    // drainer is wired yet) and evicts it before any orchestration turn registers
+    // a drainer. Registration must still deliver via the pending queue — this
+    // fails if registration only sweeps currently-resident runs.
+    const seed = makeSvc();
+    const { manifest } = await seed.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await enqueuePending(seed, manifest);
+    await seed.dispose();
+
+    const svc = makeSvc();
+    // Cold hydrate with no drainer registered → the drain request is queued.
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    // Evict from residency (no watcher was started) before registration.
+    await svc.release(manifest.runId);
+    expect(svc.getManifestForRun(manifest.runId)).toBeNull();
+
+    const calls: { runId: string; bundlePath: string }[] = [];
+    svc.registerRunActivationDrainer((ctx) => calls.push(ctx));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.runId).toBe(manifest.runId);
+    await svc.dispose();
+  });
 });
 
 describe("model routing precedence", () => {

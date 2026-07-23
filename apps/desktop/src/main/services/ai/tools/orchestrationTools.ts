@@ -41,6 +41,7 @@ import {
   ORCHESTRATION_SPAWN_BRIEF_REQUIRED_SECTIONS,
   type OrchestrationSpawnAgentRequest,
 } from "../../../../shared/types/orchestration";
+import type { DeeplinkTarget } from "../../../../shared/deeplinks";
 import type {
   createOrchestrationService,
   NewOutboxEntry,
@@ -161,7 +162,7 @@ export type OrchestrationLeadReadServices = {
   listProofArtifacts?: (args: { limit?: number }) => Promise<OrchestrationLeadReadResult>;
   /** Mint an ADE deeplink (pure; side-effect-free) for a target. */
   mintDeeplink?: (args: {
-    target: Record<string, unknown>;
+    target: DeeplinkTarget;
   }) => Promise<OrchestrationLeadReadResult>;
 };
 
@@ -2366,6 +2367,80 @@ async function runLeadRead(
   }
 }
 
+// Discriminated schema for `mintDeeplink` targets — one variant per
+// `DeeplinkTarget` kind with its required fields. A loose record let an
+// unsupported `kind` or a target missing kind-specific fields pass validation
+// and reach `buildDeeplink`, which then returns `undefined` (unknown kind) or a
+// URL containing literal "undefined" (missing field) while the tool still
+// reported success. Rejecting malformed targets at the tool boundary keeps such
+// links from being minted or recorded as evidence.
+const deeplinkEnvelopeSchema = z
+  .object({
+    repoOwner: z.string().min(1).optional(),
+    repoName: z.string().min(1).optional(),
+    branch: z.string().min(1).optional(),
+    prNumber: z.number().int().positive().optional(),
+    linearIssue: z.string().min(1).optional(),
+  })
+  .optional();
+
+const deeplinkTargetSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("lane"),
+    laneId: z.string().min(1),
+    envelope: deeplinkEnvelopeSchema,
+  }),
+  z.object({
+    kind: z.literal("session"),
+    sessionId: z.string().min(1),
+    laneId: z.string().min(1).optional(),
+    event: z.number().int().nonnegative().optional(),
+    offset: z.number().int().nonnegative().optional(),
+    envelope: deeplinkEnvelopeSchema,
+  }),
+  z.object({
+    kind: z.literal("file"),
+    path: z.string().min(1),
+    line: z.number().int().positive().optional(),
+    laneId: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal("commit"),
+    sha: z.string().min(1),
+    laneId: z.string().min(1).optional(),
+    envelope: deeplinkEnvelopeSchema,
+  }),
+  z.object({
+    kind: z.literal("artifact"),
+    artifactId: z.string().min(1),
+    envelope: deeplinkEnvelopeSchema,
+  }),
+  z.object({
+    kind: z.literal("branch"),
+    repoOwner: z.string().min(1),
+    repoName: z.string().min(1),
+    branch: z.string().min(1),
+    prNumber: z.number().int().positive().optional(),
+  }),
+  z.object({
+    kind: z.literal("pr"),
+    repoOwner: z.string().min(1),
+    repoName: z.string().min(1),
+    prNumber: z.number().int().positive(),
+  }),
+  z.object({
+    kind: z.literal("linear-issue"),
+    issueIdentifier: z.string().min(1),
+    branch: z.string().min(1).optional(),
+  }),
+]);
+// Compile-time guard: the inferred target type must stay assignable to the
+// canonical `DeeplinkTarget` union (drift in either fails the build).
+const _deeplinkTargetAssignable: DeeplinkTarget = null as unknown as z.infer<
+  typeof deeplinkTargetSchema
+>;
+void _deeplinkTargetAssignable;
+
 function createLeadReadTools(
   ctx: OrchestrationSessionContext,
   svc: ReturnType<typeof createOrchestrationService>,
@@ -2448,7 +2523,7 @@ function createLeadReadTools(
       "`{ kind: 'pr', repoOwner, repoName, prNumber }`, `{ kind: 'linear-issue', issueIdentifier }`. " +
       "Returns the ade:// and https:// forms. Nothing is created or changed.",
     inputSchema: z.object({
-      target: z.record(z.string(), z.unknown()),
+      target: deeplinkTargetSchema,
     }),
     execute: async (input) =>
       withHeartbeat(ctx, svc, async () =>

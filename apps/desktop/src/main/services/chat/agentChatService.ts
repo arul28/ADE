@@ -39644,6 +39644,18 @@ export function createAgentChatService(args: {
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
       computerUseArtifactBrokerRef = svc;
     },
+    /**
+     * Register the chat-backed outbox drainer eagerly, as soon as the
+     * orchestration service is available (called from main.ts wiring). Without
+     * this, registration only happens lazily when an orchestration turn first
+     * builds its tool map — so a run hydrated on boot (opened/listed) but with no
+     * turn yet would never drain its persisted brief/ping after a restart. Idempotent.
+     */
+    registerOrchestrationOutboxDrainer() {
+      const orchestrationService = getOrchestrationService?.() ?? null;
+      if (!orchestrationService) return;
+      ensureOrchestrationDrainerRegistered(orchestrationService);
+    },
   };
 }
 
