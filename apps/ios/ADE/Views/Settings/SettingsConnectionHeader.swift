@@ -379,6 +379,7 @@ private struct SettingsInlineErrorBanner: View {
           Button(actionTitle, action: onAction)
             .font(.caption.weight(.semibold))
             .foregroundStyle(ADEColor.accent)
+            .frame(minHeight: 44)
             .buttonStyle(.plain)
         }
       }

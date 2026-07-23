@@ -185,6 +185,23 @@ final class PairingAndDpopTests: XCTestCase {
     )
   }
 
+  func testAdoptChannelRejectsPresentMalformedDirectorySigningKey() throws {
+    XCTAssertNil(
+      try AdoptChannelCrypto.signingPublicKey(fromOptionalDirectoryValue: nil)
+    )
+    XCTAssertThrowsError(
+      try AdoptChannelCrypto.signingPublicKey(fromOptionalDirectoryValue: "")
+    )
+    XCTAssertThrowsError(
+      try AdoptChannelCrypto.signingPublicKey(fromOptionalDirectoryValue: "   ")
+    )
+    XCTAssertThrowsError(
+      try AdoptChannelCrypto.signingPublicKey(
+        fromOptionalDirectoryValue: "ed25519:not-canonical-base64"
+      )
+    )
+  }
+
   // MARK: - Pairing QR codec
 
   func testParsesCanonicalSmartUrl() throws {

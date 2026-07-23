@@ -248,6 +248,15 @@ enum AdoptChannelCrypto {
     return try Curve25519.Signing.PublicKey(rawRepresentation: raw)
   }
 
+  /// Only an absent directory field selects the legacy Relay path. A present
+  /// but malformed value must fail closed rather than downgrading credentials.
+  static func signingPublicKey(
+    fromOptionalDirectoryValue value: String?
+  ) throws -> Curve25519.Signing.PublicKey? {
+    guard let value else { return nil }
+    return try signingPublicKey(fromDirectoryValue: value)
+  }
+
   static func challengeSignatureInput(
     hostDeviceId: String,
     nonce: String,
@@ -2942,6 +2951,11 @@ final class SyncService: ObservableObject {
   /// in-project screen can keep rendering state owned by the previous machine.
   func prepareForUserConnectionChange() {
     projectHomePresented = true
+    accountConnectSuccessClearTask?.cancel()
+    accountConnectSuccessClearTask = nil
+    accountConnectSuccessLabel = nil
+    accountConnectStageLabel = nil
+    accountPairingPinFallbackHost = nil
   }
 
   func disconnectForUserConnectionChange() {
@@ -4744,14 +4758,27 @@ final class SyncService: ObservableObject {
     let elapsed = max(0, ProcessInfo.processInfo.systemUptime - attemptStartedAt)
     let latencyMs = Int((elapsed * 1_000).rounded())
     let latencySuffix = latencyMs <= 10_000 ? " · \(latencyMs)ms" : ""
+    let label = "Connected via \(route.connectedLabel)\(latencySuffix)"
     accountConnectSuccessClearTask?.cancel()
-    accountConnectSuccessLabel = "Connected via \(route.connectedLabel)\(latencySuffix)"
+    accountConnectSuccessLabel = label
+    announceAccountConnectStatus(label)
     accountConnectSuccessClearTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: 4_000_000_000)
       guard !Task.isCancelled else { return }
       self?.accountConnectSuccessLabel = nil
       self?.accountConnectSuccessClearTask = nil
     }
+  }
+
+  private func publishAccountConnectStage(_ label: String) {
+    guard accountConnectStageLabel != label else { return }
+    accountConnectStageLabel = label
+    announceAccountConnectStatus(label)
+  }
+
+  private func announceAccountConnectStatus(_ label: String) {
+    guard UIAccessibility.isVoiceOverRunning else { return }
+    UIAccessibility.post(notification: .announcement, argument: label)
   }
 
   private func performAccountAdoptionChallenge(
@@ -4854,7 +4881,7 @@ final class SyncService: ObservableObject {
       guard let signingPublicKey else {
         throw AccountAdoptionIdentityVerificationError(machineName: machineName)
       }
-      accountConnectStageLabel = "Verifying it's really \(machineName)…"
+      publishAccountConnectStage("Verifying it's really \(machineName)…")
       challenge = try await performAccountAdoptionChallenge(
         expectedHostIdentity: expectedHostIdentity,
         signingPublicKey: signingPublicKey,
@@ -4965,11 +4992,6 @@ final class SyncService: ObservableObject {
     authorization: AccountPairingAuthorization
   ) async -> Bool {
     prepareForUserConnectionChange()
-    accountConnectSuccessClearTask?.cancel()
-    accountConnectSuccessClearTask = nil
-    accountConnectSuccessLabel = nil
-    accountConnectStageLabel = nil
-    accountPairingPinFallbackHost = nil
     defer { accountConnectStageLabel = nil }
     ProductAnalytics.shared.captureQuickConnect(.accountMachine)
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5023,12 +5045,11 @@ final class SyncService: ObservableObject {
       return reconnected
     }
 
-    let directoryPubkey = syncNonEmpty(machine.pubkey)
     let signingPublicKey: Curve25519.Signing.PublicKey?
     do {
-      signingPublicKey = try directoryPubkey.map {
-        try AdoptChannelCrypto.signingPublicKey(fromDirectoryValue: $0)
-      }
+      signingPublicKey = try AdoptChannelCrypto.signingPublicKey(
+        fromOptionalDirectoryValue: machine.pubkey
+      )
     } catch {
       let identityError = AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
       lastError = identityError.localizedDescription
@@ -5090,7 +5111,7 @@ final class SyncService: ObservableObject {
       for route in routes {
         var candidateSocket: URLSessionWebSocketTask?
         let routeAttemptStartedAt = ProcessInfo.processInfo.systemUptime
-        accountConnectStageLabel = route.stageLabel
+        publishAccountConnectStage(route.stageLabel)
         if !triedRouteLabels.contains(route.attemptLabel) {
           triedRouteLabels.append(route.attemptLabel)
         }

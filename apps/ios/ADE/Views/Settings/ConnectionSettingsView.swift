@@ -210,10 +210,13 @@ struct ConnectionSettingsView: View {
       guard let authorization = AccountService.shared.currentPairingAuthorization else {
         return
       }
-      _ = await syncService.pairWithAccountMachine(
+      let connected = await syncService.pairWithAccountMachine(
         machine,
         authorization: authorization
       )
+      if connected {
+        ADEHaptics.medium()
+      }
     }
   }
 
@@ -872,6 +875,7 @@ struct SettingsMachinesSection: View {
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(ADEColor.accent)
+            .frame(minHeight: 44)
             .buttonStyle(.plain)
           }
         }

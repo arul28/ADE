@@ -269,7 +269,8 @@ struct AccountConnectStatusToast: View {
       Text(label)
         .font(.system(.footnote, design: .rounded).weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
+        .multilineTextAlignment(.center)
+        .fixedSize(horizontal: false, vertical: true)
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 10)

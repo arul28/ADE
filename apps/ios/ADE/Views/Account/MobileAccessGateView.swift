@@ -109,6 +109,7 @@ struct MobileAccessGateView: View {
                     }
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(ADEColor.accent)
+                    .frame(minHeight: 44)
                     .buttonStyle(.plain)
                   }
                 }
