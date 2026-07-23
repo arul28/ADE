@@ -208,7 +208,7 @@ describe("createPushPublisherService flush", () => {
     expect(publish).toHaveBeenCalledTimes(1);
     const payload = publish.mock.calls[0][0];
     expect(payload.notifications).toHaveLength(1);
-    expect(payload.notifications[0].title).toBe("Codex needs your approval");
+    expect(payload.notifications[0].title).toBe("Codex needs you");
     expect(payload.notifications[0].body).toBe("auth-lane · Fix login");
     expect(payload.notifications[0].deviceIds).toEqual(["dev-1"]);
     expect(payload.notifications[0].dedupeKey).toBe("alert:s-1:approval");
@@ -223,6 +223,39 @@ describe("createPushPublisherService flush", () => {
     emit(approval);
     await vi.advanceTimersByTimeAsync(2_500);
     expect(publish).toHaveBeenCalledTimes(1);
+
+    publisher.dispose();
+  });
+
+  it("alerts native structured questions with the unified needs-you copy immediately", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+
+    emit({
+      sessionId: "s-structured",
+      timestamp: "",
+      event: {
+        type: "approval_request",
+        itemId: "question-1",
+        kind: "tool_call",
+        description: "Choose a rollout strategy",
+        detail: {
+          request: {
+            kind: "structured_question",
+            title: "Rollout strategy",
+          },
+        },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0][0].notifications[0]).toMatchObject({
+      title: "Codex needs you",
+      sessionId: "s-structured",
+      itemId: "question-1",
+      interruptionLevel: "time-sensitive",
+    });
 
     publisher.dispose();
   });
@@ -838,7 +871,7 @@ describe("createPushPublisherService flush", () => {
 
     const payload = publish.mock.calls[0][0];
     expect(payload.notifications[0]).toMatchObject({
-      title: "Fix auth race",
+      title: "Fix auth race needs you",
       body: "Which account should the e2e test use?",
       deepLink: "ade://session/cli-ask-1",
       sessionId: "cli-ask-1",

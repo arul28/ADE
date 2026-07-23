@@ -8,6 +8,11 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import {
+  fallbackUnprojectedChatSession,
+  isChatToolType,
+  projectChatOntoSession,
+} from "../sessions/chatSessionProjection";
 import { serializeLaneCacheKeyFields } from "./laneCacheKey";
 
 type LanePresenceHost = {
@@ -31,7 +36,7 @@ type LaneListSnapshotServices = {
   agentChatService?: {
     listSessions: (
       laneId?: string,
-      options?: { includeIdentity?: boolean },
+      options?: { includeIdentity?: boolean; includeAutomation?: boolean },
     ) => Promise<AgentChatSessionSummary[]> | AgentChatSessionSummary[];
   } | null;
   rebaseSuggestionService?: {
@@ -95,12 +100,6 @@ export type LaneListSnapshotOptions = {
 };
 
 export const OPTIONAL_LANE_ENRICHMENT_BUDGET_MS = 250;
-
-function isChatToolType(toolType: string | null | undefined): boolean {
-  if (!toolType) return false;
-  const t = toolType.trim().toLowerCase();
-  return t === "cursor" || t.endsWith("-chat");
-}
 
 const IDLE_ATTENTION_TOOL_TYPES = new Set([
   "claude",
@@ -227,7 +226,10 @@ async function enrichSessionsForLaneList(
   let sessions = args.ptyService.enrichSessions(args.sessionService.list({}));
   let allChats: AgentChatSessionSummary[] = [];
   try {
-    allChats = await (args.agentChatService?.listSessions(undefined, { includeIdentity: true }) ?? []);
+    allChats = await (args.agentChatService?.listSessions(undefined, {
+      includeIdentity: true,
+      includeAutomation: true,
+    }) ?? []);
   } catch {
     allChats = [];
   }
@@ -240,26 +242,15 @@ async function enrichSessionsForLaneList(
     sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
   }
   const chats = allChats.filter((chat) => !chat.identityKey);
-  if (chats.length === 0) return sessions;
   const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
   return sessions.map((session) => {
     if (!isChatToolType(session.toolType)) return session;
     const chat = chatSummaryBySessionId.get(session.id);
-    if (!chat) return session;
-    if (chat.awaitingInput) {
-      return {
-        ...session,
-        runtimeState: "waiting-input" as const,
-        chatIdleSinceAt: null,
-        pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
-        pendingInputWaiting: true,
-      };
-    }
-    if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };
-    if (chat.status === "idle" || chat.status === "ended") {
-      return { ...session, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
-    }
-    return session;
+    if (!chat) return fallbackUnprojectedChatSession(session);
+    const projected = projectChatOntoSession(session, chat);
+    return chat.awaitingInput
+      ? { ...projected, pendingInputWaiting: true }
+      : projected;
   });
 }
 

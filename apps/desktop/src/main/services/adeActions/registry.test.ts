@@ -1005,7 +1005,7 @@ describe("runtime session actions", () => {
     expect(runtime.sessionDeltaService?.getSessionDelta).toHaveBeenCalledWith("session-1");
   });
 
-  it("serves caller lifecycle writes without requiring agentChatService", () => {
+  it("serves caller lifecycle writes without requiring agentChatService", async () => {
     const requestAttention = vi.fn(() => true);
     const setStatusNote = vi.fn(() => true);
     const settleSession = vi.fn(() => true);
@@ -1021,6 +1021,7 @@ describe("runtime session actions", () => {
           laneId: "lane-1",
           title: "Fix auth race",
           toolType: "codex",
+          attentionRequestedAt: "2026-07-23T12:00:00.000Z",
         })),
         list: vi.fn(),
         requestAttention,
@@ -1041,7 +1042,11 @@ describe("runtime session actions", () => {
     const sessionActions = getAdeActionDomainServices(runtime).session as {
       requestSessionAttention: (args: { sessionId: string; message: string }) => unknown;
       setSessionStatusNote: (args: { sessionId: string; note: string }) => unknown;
-      settleSelfSession: (args: { sessionId: string; outcome?: string }) => unknown;
+      settleSelfSession: (args: {
+        sessionId: string;
+        outcome?: string;
+        dismissPendingInput?: boolean;
+      }) => unknown;
       unsettleSelfSession: (args: { sessionId: string }) => unknown;
     } & Record<string, unknown>;
 
@@ -1072,13 +1077,81 @@ describe("runtime session actions", () => {
       .toEqual({ ok: true, sessionId: "session-1" });
     expect(setStatusNote).toHaveBeenCalledWith("session-1", null);
 
-    expect(sessionActions.settleSelfSession({ sessionId: "session-1", outcome: "PR #841 merged" }))
-      .toEqual({ ok: true, sessionId: "session-1" });
+    await expect(sessionActions.settleSelfSession({
+      sessionId: "session-1",
+      outcome: "PR #841 merged",
+      dismissPendingInput: true,
+    }))
+      .resolves.toEqual({ ok: true, sessionId: "session-1" });
+    expect(setSessionRuntimeState).toHaveBeenLastCalledWith("session-1", "idle");
     expect(settleSession).toHaveBeenCalledWith("session-1", { outcome: "PR #841 merged" });
 
     expect(sessionActions.unsettleSelfSession({ sessionId: "session-1" }))
       .toEqual({ ok: true, sessionId: "session-1" });
     expect(unsettleSession).toHaveBeenCalledWith("session-1");
+  });
+
+  it("dismisses pending chat input before settling through the session action", async () => {
+    const dismissPendingInputForSettlement = vi.fn(async () => undefined);
+    const settleSession = vi.fn(() => true);
+    const runtime = {
+      sessionService: {
+        get: vi.fn(() => ({ id: "chat-1", toolType: "codex-chat" })),
+        list: vi.fn(),
+        settleSession,
+      },
+      agentChatService: {
+        dismissPendingInputForSettlement,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as {
+      settleSelfSession: (args: {
+        sessionId: string;
+        dismissPendingInput?: boolean;
+      }) => Promise<unknown>;
+    };
+
+    await expect(sessionActions.settleSelfSession({
+      sessionId: "chat-1",
+      dismissPendingInput: true,
+    })).resolves.toEqual({ ok: true, sessionId: "chat-1" });
+    expect(dismissPendingInputForSettlement).toHaveBeenCalledWith({ sessionId: "chat-1" });
+    expect(settleSession).toHaveBeenCalledWith("chat-1", {});
+    expect(dismissPendingInputForSettlement.mock.invocationCallOrder[0]).toBeLessThan(
+      settleSession.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("does not pretend a native CLI prompt was dismissed while its process is still blocked", async () => {
+    const settleSession = vi.fn(() => true);
+    const setSessionRuntimeState = vi.fn(() => true);
+    const runtime = {
+      sessionService: {
+        get: vi.fn(() => ({
+          id: "cli-1",
+          toolType: "codex",
+          attentionRequestedAt: null,
+        })),
+        list: vi.fn(),
+        settleSession,
+      },
+      ptyService: {
+        setSessionRuntimeState,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as {
+      settleSelfSession: (args: {
+        sessionId: string;
+        dismissPendingInput?: boolean;
+      }) => Promise<unknown>;
+    };
+
+    await expect(sessionActions.settleSelfSession({
+      sessionId: "cli-1",
+      dismissPendingInput: true,
+    })).rejects.toThrow("Resolve the terminal input before settling this session.");
+    expect(setSessionRuntimeState).not.toHaveBeenCalled();
+    expect(settleSession).not.toHaveBeenCalled();
   });
 
   it("routes readTranscriptTail through ptyService so live PTY output is included", async () => {

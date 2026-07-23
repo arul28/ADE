@@ -5049,44 +5049,6 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(projects.allSatisfy(\.isCached))
 
     database.setActiveProjectId("project-1")
-    var explicitAttention = makeTerminalSessionSummary(
-      id: "explicit-attention-chat",
-      laneId: "lane-1",
-      laneName: "Primary",
-      toolType: "codex-chat",
-      runtimeState: "idle",
-      status: "running",
-      title: "Needs a release decision",
-      startedAt: "2026-04-20T00:02:40.000Z"
-    )
-    explicitAttention.attentionRequestedAt = "2026-04-20T00:02:45.000Z"
-    explicitAttention.attentionMessage = "Choose the release target"
-
-    var settledChat = makeTerminalSessionSummary(
-      id: "settled-chat",
-      laneId: "lane-1",
-      laneName: "Primary",
-      toolType: "codex-chat",
-      runtimeState: "idle",
-      status: "running",
-      title: "Finished chat",
-      startedAt: "2026-04-20T00:02:50.000Z"
-    )
-    settledChat.settledAt = "2026-04-20T00:02:55.000Z"
-    settledChat.statusNote = "All checks passed"
-
-    var failedTurnChat = makeTerminalSessionSummary(
-      id: "failed-turn-chat",
-      laneId: "lane-1",
-      laneName: "Primary",
-      toolType: "codex-chat",
-      runtimeState: "idle",
-      status: "running",
-      title: "Transient failure",
-      startedAt: "2026-04-20T00:03:00.000Z"
-    )
-    failedTurnChat.lastTurnFailedAt = "2026-04-20T00:03:05.000Z"
-
     try database.replaceTerminalSessions([
       makeTerminalSessionSummary(
         id: "session-one",
@@ -13810,6 +13772,44 @@ final class ADETests: XCTestCase {
       );
     """)
 
+    var explicitAttention = makeTerminalSessionSummary(
+      id: "explicit-attention-chat",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      status: "running",
+      title: "Needs a release decision",
+      startedAt: "2026-04-20T00:02:40.000Z"
+    )
+    explicitAttention.attentionRequestedAt = "2026-04-20T00:02:45.000Z"
+    explicitAttention.attentionMessage = "Choose the release target"
+
+    var settledChat = makeTerminalSessionSummary(
+      id: "settled-chat",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      status: "running",
+      title: "Finished chat",
+      startedAt: "2026-04-20T00:02:50.000Z"
+    )
+    settledChat.settledAt = "2026-04-20T00:02:55.000Z"
+    settledChat.statusNote = "All checks passed"
+
+    var failedTurnChat = makeTerminalSessionSummary(
+      id: "failed-turn-chat",
+      laneId: "lane-1",
+      laneName: "Primary",
+      toolType: "codex-chat",
+      runtimeState: "idle",
+      status: "running",
+      title: "Transient failure",
+      startedAt: "2026-04-20T00:03:00.000Z"
+    )
+    failedTurnChat.lastTurnFailedAt = "2026-04-20T00:03:05.000Z"
+
     try database.replaceTerminalSessions([
       makeTerminalSessionSummary(
         id: "running-chat",
@@ -13911,6 +13911,19 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "stale-running-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "completed-chat" }))
     XCTAssertFalse(service.activeSessions.contains(where: { $0.sessionId == "failed-shell" }))
+
+    // A follow-up ask can change only its copy/item id. The active-session
+    // signature must still publish that content-only delta to the drawer.
+    explicitAttention.attentionMessage = "Choose the production target"
+    explicitAttention.pendingInputItemId = "release-target-input"
+    try database.replaceTerminalSessions([explicitAttention])
+    service.refreshActiveSessionsAndSnapshot()
+    let updatedExplicit = try XCTUnwrap(
+      service.activeSessions.first(where: { $0.sessionId == "explicit-attention-chat" })
+    )
+    XCTAssertEqual(updatedExplicit.preview, "Choose the production target")
+    XCTAssertEqual(updatedExplicit.pendingInputItemId, "release-target-input")
+
     database.close()
   }
 

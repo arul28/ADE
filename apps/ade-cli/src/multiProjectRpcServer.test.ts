@@ -420,6 +420,44 @@ describe("multi-project RPC server", () => {
     }
   });
 
+  it("rejects cto-only account actions for a session-bound caller under a cto runtime", async () => {
+    const { registry } = createRegistry();
+    const accountAuthService = makeAccountAuthServiceMock();
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        accountAuthService,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: {
+          identity: {
+            callerId: "chat-1",
+            role: "cto",
+            chatSessionId: "chat-1",
+          },
+        },
+      });
+      await expect(
+        handler({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "account.call",
+          params: { action: "getToken" },
+        }),
+      ).rejects.toThrow(/requires the cto role/);
+      expect(accountAuthService.getAccessToken).not.toHaveBeenCalled();
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+    }
+  });
+
   it("rejects cto-only account actions when the caller sends no identity", async () => {
     const { registry } = createRegistry();
     const accountAuthService = makeAccountAuthServiceMock();
@@ -1306,6 +1344,102 @@ describe("multi-project RPC server", () => {
     expect(scopeRegistry.get).toHaveBeenCalledTimes(2);
 
     handler.dispose();
+  });
+
+  it("preserves session-bound lifecycle scoping through the multi-project router", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const added = registry.add(projectRoot);
+    const runtime = makeRuntime("session-scope");
+    const setStatusNote = vi.fn(() => true);
+    runtime.sessionService = {
+      get: vi.fn(() => ({
+        id: "chat-1",
+        laneId: "lane-1",
+        title: "Tracked CLI",
+        toolType: "codex",
+      })),
+      setStatusNote,
+    } as unknown as typeof runtime.sessionService;
+    const scopeRegistry = {
+      get: vi.fn(async () => ({
+        registryProjectId: added.projectId,
+        record: added,
+        runtime,
+        dispose: vi.fn(),
+      })),
+      ensureSyncHost: vi.fn(),
+      switchSyncHost: vi.fn(),
+      resolveActiveSyncHost: vi.fn(),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const previousDefaultRole = process.env.ADE_DEFAULT_ROLE;
+    const previousChatSessionId = process.env.ADE_CHAT_SESSION_ID;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    delete process.env.ADE_CHAT_SESSION_ID;
+
+    try {
+      const handler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        projectRegistry: registry,
+        scopeRegistry,
+      });
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: {
+          identity: {
+            callerId: "chat-1",
+            role: "cto",
+            chatSessionId: "chat-1",
+          },
+        },
+      });
+
+      const result = await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "ade/actions/call",
+        params: {
+          projectId: added.projectId,
+          name: "run_ade_action",
+          arguments: {
+            domain: "session",
+            action: "setSessionStatusNote",
+            args: { note: "Routed through the machine runtime" },
+          },
+        },
+      }) as { result?: { ok?: boolean; sessionId?: string }; isError?: boolean };
+      expect(result.isError).toBeUndefined();
+      expect(result.result).toEqual({ ok: true, sessionId: "chat-1" });
+      expect(setStatusNote).toHaveBeenCalledWith(
+        "chat-1",
+        "Routed through the machine runtime",
+      );
+
+      const denied = await handler({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "ade/actions/call",
+        params: {
+          projectId: added.projectId,
+          name: "run_ade_action",
+          arguments: {
+            domain: "session",
+            action: "setSessionStatusNote",
+            args: { sessionId: "chat-2", note: "Cross-session write" },
+          },
+        },
+      }) as { ok?: boolean; error?: { message?: string } };
+      expect(denied.ok).toBe(false);
+      expect(denied.error?.message).toContain("Unsupported chat method");
+      expect(setStatusNote).not.toHaveBeenCalledWith("chat-2", "Cross-session write");
+      handler.dispose();
+    } finally {
+      restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
+      restoreEnvVar("ADE_CHAT_SESSION_ID", previousChatSessionId);
+    }
   });
 
   it("subscribes to project runtime events and emits JSON-RPC notifications", async () => {

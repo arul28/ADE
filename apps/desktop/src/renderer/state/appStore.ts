@@ -124,7 +124,6 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type WorkSidebarTab = "terminal" | "git" | "files" | "ios" | "app-control" | "browser";
-export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended" | "settled";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
@@ -160,13 +159,6 @@ export type WorkProjectViewState = {
   orchestratorEnabled: boolean;
   draftLaneId: string | null;
   laneFilter: string;
-  statusFilter: WorkStatusFilter;
-  /**
-   * Whether the Settled tier renders at all ("Show settled" funnel chip).
-   * Defaults on — the section itself starts collapsed, so settled rows cost
-   * one header line until expanded.
-   */
-  showSettled: boolean;
   search: string;
   /** Session list grouping mode. */
   sessionListOrganization: WorkSessionListOrganization;
@@ -225,8 +217,6 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     orchestratorEnabled: false,
     draftLaneId: null,
     laneFilter: "all",
-    statusFilter: "all",
-    showSettled: true,
     search: "",
     sessionListOrganization: "by-lane",
     workCollapsedLaneIds: [],
@@ -292,14 +282,6 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
         || (candidate as { draftKind?: unknown }).draftKind === "chat-orchestrator"),
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
-    statusFilter:
-      candidate.statusFilter === "running"
-      || candidate.statusFilter === "awaiting-input"
-      || candidate.statusFilter === "ended"
-      || candidate.statusFilter === "settled"
-        ? candidate.statusFilter
-        : "all",
-    showSettled: candidate.showSettled !== false,
     search: typeof candidate.search === "string" ? candidate.search : "",
     sessionListOrganization:
       candidate.sessionListOrganization === "all-lanes-by-status"
@@ -308,12 +290,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
         : "by-lane",
     workCollapsedLaneIds: normalizeStringArray(candidate.workCollapsedLaneIds),
     workCollapsedTabGroupIds: normalizeStringArray(candidate.workCollapsedTabGroupIds),
-    // Pre-settled-tier persisted state (no showSettled key) gets the settled
-    // section collapsed once, matching the fresh-state default.
-    workCollapsedSectionIds: candidate.showSettled === undefined
-      && !normalizeStringArray(candidate.workCollapsedSectionIds).includes("status:settled")
-      ? [...normalizeStringArray(candidate.workCollapsedSectionIds), "status:settled"]
-      : normalizeStringArray(candidate.workCollapsedSectionIds),
+    workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
     workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
     workSidebarOpen: candidate.workSidebarOpen === true,
     workSidebarTab: normalizeWorkSidebarTab(candidate.workSidebarTab),
@@ -360,6 +337,8 @@ function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
   return out;
 }
 
+const WORK_VIEW_STATE_VERSION = 2;
+
 function readPersistedWorkViewState(): {
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
@@ -370,15 +349,28 @@ function readPersistedWorkViewState(): {
       return { workViewByProject: {}, laneWorkViewByScope: {} };
     }
     const parsed = JSON.parse(raw) as {
+      version?: unknown;
       workViewByProject?: Record<string, unknown>;
       laneWorkViewByScope?: Record<string, unknown>;
     };
+    const persistedVersion =
+      typeof parsed.version === "number" && Number.isFinite(parsed.version)
+        ? parsed.version
+        : 1;
+    const migrateSettledCollapse = persistedVersion < WORK_VIEW_STATE_VERSION;
     const workViewByProject: Record<string, WorkProjectViewState> = {};
     const laneWorkViewByScope: Record<string, WorkProjectViewState> = {};
     for (const [projectRoot, viewState] of Object.entries(parsed.workViewByProject ?? {})) {
       const key = normalizeProjectKey(projectRoot);
       if (!key) continue;
-      workViewByProject[key] = normalizeWorkProjectViewState(viewState);
+      const normalized = normalizeWorkProjectViewState(viewState);
+      workViewByProject[key] = migrateSettledCollapse
+        && !normalized.workCollapsedSectionIds.includes("status:settled")
+        ? {
+            ...normalized,
+            workCollapsedSectionIds: [...normalized.workCollapsedSectionIds, "status:settled"],
+          }
+        : normalized;
     }
     for (const [scopeKey, viewState] of Object.entries(parsed.laneWorkViewByScope ?? {})) {
       const dividerIndex = scopeKey.indexOf("::");
@@ -386,7 +378,14 @@ function readPersistedWorkViewState(): {
       const projectRoot = normalizeProjectKey(scopeKey.slice(0, dividerIndex));
       const laneId = scopeKey.slice(dividerIndex + 2).trim();
       if (!projectRoot || !laneId) continue;
-      laneWorkViewByScope[`${projectRoot}::${laneId}`] = normalizeWorkProjectViewState(viewState);
+      const normalized = normalizeWorkProjectViewState(viewState);
+      laneWorkViewByScope[`${projectRoot}::${laneId}`] = migrateSettledCollapse
+        && !normalized.workCollapsedSectionIds.includes("status:settled")
+        ? {
+            ...normalized,
+            workCollapsedSectionIds: [...normalized.workCollapsedSectionIds, "status:settled"],
+          }
+        : normalized;
     }
     return { workViewByProject, laneWorkViewByScope };
   } catch {
@@ -405,7 +404,10 @@ function persistWorkViewState(args: {
     _debouncePersistTimer = null;
   }
   try {
-    window.localStorage.setItem(WORK_VIEW_STORAGE_KEY, JSON.stringify(args));
+    window.localStorage.setItem(
+      WORK_VIEW_STORAGE_KEY,
+      JSON.stringify({ version: WORK_VIEW_STATE_VERSION, ...args }),
+    );
   } catch {
     // ignore
   }

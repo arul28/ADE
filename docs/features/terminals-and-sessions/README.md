@@ -145,6 +145,19 @@ and in tests.
   [ARCHITECTURE.md §3.4](../../ARCHITECTURE.md#34-cross-process-ownership).
 - `apps/desktop/src/main/services/sessions/sessionService.test.ts` —
   session persistence tests.
+- `apps/desktop/src/main/services/sessions/chatSessionProjection.ts` —
+  canonical bridge from `AgentChatSessionSummary` runtime truth to the
+  `terminal_sessions` row used by Work, detail reads, and lane snapshots.
+  It projects active/idle/waiting state, pending input, wake time, and
+  orchestration lineage. If chat hydration fails, a persisted resumable
+  `status = "running"` row falls back to quiet idle/waiting instead of
+  presenting a false live/green agent.
+- `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
+  single settlement transaction shared by direct IPC and the ADE action
+  registry. Plain settle writes lifecycle state. `dismissPendingInput: true`
+  first quiets an SDK chat through `agentChatService`, or clears a tracked
+  CLI's explicit `ade chat ask` marker through `ptyService`; arbitrary native
+  terminal prompts are rejected because ADE cannot answer them truthfully.
 - `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` —
   `ade new chat --mode cli` forwards the parent chat id and spawn kind for
   agent providers; `start_cli_session` validates them and persists them in
@@ -207,6 +220,13 @@ Shared types and IPC:
   deterministic attention → declared settle at rest → stopped/failure/clean
   exit → stale/running/resting. It is the source of the one-word row capsule,
   Work grouping, and the loud-vs-quiet attention split.
+- `apps/desktop/src/renderer/hooks/useAppWideSessionAttention.ts` —
+  event-driven application-wide session attention owner. It refreshes the
+  active project's shared session cache on PTY/chat/session events, focus, and
+  a visible-window recovery interval; publishes canonical counts to the app
+  store; and mirrors only loud `needs_you` rows to the macOS Dock badge.
+  Project switch/close cleanup prevents an old async refresh from leaking
+  counts into the new surface.
 - `apps/desktop/src/shared/types/externalSessions.ts` —
   `ExternalSessionProvider`, `ExternalSessionCapabilities`,
   `ExternalSessionSummary`, `ExternalSessionListArgs`,
@@ -387,8 +407,11 @@ Renderer surfaces:
   sticky group headers, search/filter, and a quiet Settled tail. Status mode
   renders a fourth collapsed-by-default Settled section; lane mode puts a
   collapsible settled tail inside each lane; time mode keeps settled rows in one
-  final section rather than mixing them into creation-time buckets. The
-  Show settled tier toggle is persisted with the rest of Work view state.
+  final section rather than mixing them into creation-time buckets. Settled
+  rows are always reachable through those sections; there is no separate
+  Tiers/Show settled filter because Status grouping already exposes the full
+  lifecycle. Collapsed tails are excluded from shift-range selection so a
+  hidden settled row cannot enter a bulk action accidentally.
   Renders a bulk action bar at the bottom when sessions are multi-selected
   (Stop N running / Settle N / Delete N ended / clear selection), and offers an
   eight-second undo after bulk settle. The filter panel is width-constrained by
@@ -419,8 +442,10 @@ Renderer surfaces:
   settled ring plus one-word attention capsules: amber `Needs you`, red
   `Failed`, and an outlined muted `Stale` after three hours without activity.
   The preview line prefers an escalated `ade chat ask` question, then
-  `statusNote` (prefixed `done:` when settled), then summary/goal; raw terminal
-  output remains a detection/search signal instead of row copy. Long-running
+  `statusNote` (prefixed `done:` when settled), then a sanitized 120-character
+  `lastOutputPreview`, then summary, then goal. Terminal output fallback strips
+  ANSI/control sequences, collapses whitespace, and stays plain text rather
+  than linkifying output controlled by a subprocess. Long-running
   non-chat CLI/shell rows can additionally show the separate 24-hour process
   cleanup warning pip described below. The
   card also reports its multi-select state via `isMultiSelected`. While
@@ -917,7 +942,12 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    not settled. Chat idle between turns is the quiet `ready` phase. Explicit
    Settle/Unsettle is available from the session context menu and multi-select
    footer. `ade chat settle --outcome ...` also stores the outcome as
-   `statusNote`.
+   `statusNote`. A `needs_you` row becomes **Dismiss & settle**. For an SDK
+   chat, the service interrupts Claude/Codex/OpenCode/Cursor/Droid work,
+   cancels live and restored waiters, removes Codex plan follow-ups, persists
+   idle state, and only then settles. A tracked CLI may dismiss an explicit
+   `ade chat ask` marker; a raw provider TUI prompt instead shows **Resolve
+   input to settle** and must be handled in the terminal.
 
 7. **Activity and escalation** — a new user turn clears a chat's settle,
    explicit attention, and last-turn-failure markers. PTY output clears settle
@@ -973,11 +1003,16 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
 - **Session list cache** — the renderer shares `listSessionsCached()`
   (`sessionListCache.ts`) across Work, lanes, graph, and top-bar
   attention. Invalidate it when a new session is created or lifecycle metadata
-  changes outside the normal paths.
+  changes outside the normal paths. Main-process list/get handlers and the
+  lane-list snapshot service all use `chatSessionProjection.ts`, include
+  automation chats when building the projection index, and fall back to quiet
+  chat state if runtime hydration fails.
 - **Two-tier attention** — the Your move bucket contains loud `needs_you` rows
   and quiet resting chats/idle CLIs. Only canonical `needs_you` increments the
   Work-tab highlight, notification count, and macOS Dock badge. A ready chat is
-  visible in Your move but does not interrupt the user.
+  visible in Your move but does not interrupt the user. The attention hook is
+  mounted at `AppShell`, so Files, PRs, and other project routes keep the count
+  truthful without route-scoped Work polling.
 - **Refresh-before-activate** — every surface that creates or opens a
   session awaits `refresh()` before activating a tab, so
   `sessionsById.get(activeItemId)` resolves on the first render.
@@ -992,7 +1027,10 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
   `workSidebarOpen: boolean`, `workSidebarTab: "git" | "files" | "ios"
   | "app-control" | "browser"`, and `workSidebarWidthPct: number`
   (clamped to 26–55). Lane-scoped state uses a composite
-  `projectRoot::laneId` key.
+  `projectRoot::laneId` key. The payload is version 2: its one-shot migration
+  starts the Status-mode Settled section collapsed without re-collapsing a
+  section the user expands later. Per-lane settled tails use
+  `settled-open:<laneId>` markers and also start collapsed.
 
 ## IPC surface summary
 
@@ -1003,7 +1041,7 @@ Sessions:
 | `ade.sessions.list` | list by lane/status; cached at renderer |
 | `ade.sessions.get` | single session detail including runtime state |
 | `ade.sessions.updateMeta` | rename (sets `manuallyNamed`), pin, edit goal, update resume metadata |
-| `ade.sessions.settle` / `.unsettle` | set or clear `settled_at` for one session |
+| `ade.sessions.settle` / `.unsettle` | Set or clear `settled_at` for one session. Settle accepts `{ outcome?, dismissPendingInput? }`; dismissal is handled atomically by `settleTerminalSession` before the settle mutation. |
 | `ade.sessions.settleMany` / `.unsettleMany` | bulk lifecycle mutation used by the Work multi-select footer; settle returns only newly-settled ids for precise undo |
 | `ade.sessions.delete` | remove a row outright; emits `terminalSessionChanged` with `reason: "deleted"` |
 | `ade.sessions.readTranscriptTail` | tail bytes of transcript (raw or ANSI-stripped) |
@@ -1073,6 +1111,16 @@ Processes (managed):
 
 ## Gotchas
 
+- **Settlement is not a pending-input response.** Never restore the old
+  renderer sequence of `respondToInput` then settle. A provider decline may
+  resume work, Codex plan declines may stage a revision, and a stale persisted
+  waiter may have no live provider request. Keep dismissal and settle inside
+  `settleTerminalSession`, and keep raw native CLI prompts non-dismissible.
+- **Persisted chat `running` is not UI running.** Chat rows remain resumable
+  across provider restarts, so the database status alone cannot drive the
+  green/running projection. Route list, detail, lane snapshot, and automation
+  rows through `chatSessionProjection.ts`; hydration failure must degrade to
+  quiet idle/waiting.
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.

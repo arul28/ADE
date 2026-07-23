@@ -86,6 +86,50 @@ function chatStatusDot(session: AgentChatSessionSummary): StatusKind {
   return "idle";
 }
 
+const STATUS_OSC_REGEX = /\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g;
+const STATUS_APC_REGEX = /\u001b_[\s\S]*?(?:\u0007|\u001b\\)/g;
+const STATUS_DCS_REGEX = /\u001bP[\s\S]*?(?:\u0007|\u001b\\)/g;
+const STATUS_PM_REGEX = /\u001b\^[\s\S]*?(?:\u0007|\u001b\\)/g;
+const STATUS_CSI_REGEX = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const STATUS_CHARSET_REGEX = /\u001b[\(\)][0-9A-Za-z]/g;
+const STATUS_TWO_CHAR_ESC_REGEX = /\u001b(?:[@-Z\\-_]|[0-9=>])/g;
+
+function sanitizeChatStatusLine(raw: string | null | undefined, maxChars = 120): string {
+  if (!raw) return "";
+  const normalized = raw
+    .replace(STATUS_OSC_REGEX, "")
+    .replace(STATUS_APC_REGEX, "")
+    .replace(STATUS_DCS_REGEX, "")
+    .replace(STATUS_PM_REGEX, "")
+    .replace(STATUS_CSI_REGEX, "")
+    .replace(STATUS_CHARSET_REGEX, "")
+    .replace(STATUS_TWO_CHAR_ESC_REGEX, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+    .replace(/\t/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized.length <= maxChars) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function chatStatusLine(
+  session: AgentChatSessionSummary,
+  settled: boolean,
+): string | null {
+  const lifecycle = session as TuiChatSessionSummary;
+  if (lifecycle.attentionRequestedAt || session.awaitingInput) {
+    return sanitizeChatStatusLine(lifecycle.attentionMessage) || "needs you";
+  }
+  const note = sanitizeChatStatusLine(lifecycle.statusNote);
+  if (note) return settled ? `done: ${note}` : note;
+  const primary = formatSessionLabel(session);
+  for (const candidate of [session.lastOutputPreview, session.summary, session.goal]) {
+    const fallback = sanitizeChatStatusLine(candidate);
+    if (fallback && fallback !== primary) return fallback;
+  }
+  return null;
+}
+
 function truncate(text: string, max: number): string {
   if (max <= 1) return text.slice(0, max);
   if (text.length <= max) return text;
@@ -654,11 +698,7 @@ function ChatRow({
     : null;
   const spawnLabel = spawnKind === "subagent" ? "sub" : spawnKind;
   const spawnReserve = spawnLabel ? spawnLabel.length + 1 : 0;
-  const lifecycleText = lifecycle.attentionRequestedAt
-    ? lifecycle.attentionMessage?.trim() || "needs you"
-    : lifecycle.statusNote?.trim()
-      ? `${settled ? "done: " : ""}${lifecycle.statusNote.trim()}`
-      : null;
+  const lifecycleText = chatStatusLine(session, settled);
   const lifecycleSuffix = lifecycleText
     ? truncate(lifecycleText, Math.max(8, Math.floor(max / 2)))
     : null;

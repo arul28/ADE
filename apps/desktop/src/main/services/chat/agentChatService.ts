@@ -5779,11 +5779,14 @@ function buildSpawnSelfReportGuidance(
 
 function buildAdeGuidanceForLane(
   laneWorktreePath: string,
-  session?: Pick<AgentChatSession, "orchestrationParentSessionId" | "spawnKind">,
+  session?: Pick<AgentChatSession, "id" | "orchestrationParentSessionId" | "spawnKind">,
 ): string {
   const base = buildAdeCliAgentGuidance(getAdeAgentSkillRootsForPrompt({ cwd: laneWorktreePath }));
   const spawnGuidance = session ? buildSpawnSelfReportGuidance(session) : null;
-  return spawnGuidance ? `${base}\n${spawnGuidance}` : base;
+  const sessionBinding = session
+    ? `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`
+    : null;
+  return [base, sessionBinding, spawnGuidance].filter(Boolean).join("\n");
 }
 
 function buildCodexDeveloperInstructions(args: {
@@ -6408,6 +6411,7 @@ export function createAgentChatService(args: {
     | null
     | Promise<CodexComputerUseMcpConfig | null>;
   claudeSubprocessReaper?: ClaudeSubprocessReaper;
+  createScheduledWorkScheduler?: typeof createChatScheduledWorkScheduler;
   onEvent?: (event: AgentChatEventEnvelope) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
@@ -6454,6 +6458,7 @@ export function createAgentChatService(args: {
     getLocalGitHubToken,
     resolveCodexComputerUseMcp: resolveCodexComputerUseMcpOverride,
     claudeSubprocessReaper: injectedClaudeSubprocessReaper,
+    createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
     onTurnSettled,
     onSessionEnded,
@@ -6562,6 +6567,9 @@ export function createAgentChatService(args: {
     const personalSession = isPersonalSession(managed.session);
     const env: NodeJS.ProcessEnv = {
       ...(getAdeCliAgentEnv?.(process.env) ?? process.env),
+      ADE_DEFAULT_ROLE: managed.session.orchestrationRole === "lead"
+        ? "orchestrator"
+        : "agent",
       ADE_CHAT_SESSION_ID: managed.session.id,
       ADE_BROWSER_ACTOR_TOKEN: issueBuiltInBrowserActorCapability({
         chatSessionId: managed.session.id,
@@ -31885,6 +31893,7 @@ export function createAgentChatService(args: {
         resumeSessionId: persisted?.droidSdkSessionId ?? null,
         settings: buildDroidSdkSessionSettings(managed, launchModelId),
         ...(droidOrchestrationMcpServers ? { mcpServers: droidOrchestrationMcpServers } : {}),
+        baseEnv: buildAgentRuntimeEnv(managed),
         logger,
       });
       pooled = acquired.pooled;
@@ -34748,6 +34757,26 @@ export function createAgentChatService(args: {
     const claudeTag = provider === "claude"
       ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
       : undefined;
+    let nextWakeAt: string | null = null;
+    let scheduledWorkPaused = false;
+    let scheduledWork: AgentChatScheduledWorkItem[] = [];
+    try {
+      scheduledWorkPaused =
+        projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true;
+      const next = scheduledWorkScheduler?.nextWakeAt(row.id) ?? null;
+      nextWakeAt = next == null ? null : new Date(next).toISOString();
+      scheduledWorkPaused =
+        scheduledWorkScheduler?.isSessionPaused(row.id) === true
+        || scheduledWorkPaused;
+      scheduledWork = (scheduledWorkScheduler?.list(row.id) ?? [])
+        .filter((schedule) => schedule.status !== "done" && schedule.status !== "cancelled")
+        .map(toScheduledWorkItem);
+    } catch (error) {
+      logger.warn("agent_chat.scheduled_work_summary_failed", {
+        sessionId: row.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -34834,16 +34863,9 @@ export function createAgentChatService(args: {
       lastOutputPreview: row.lastOutputPreview,
       summary: row.summary ?? null,
       ...(provider === "claude" ? { claudeTag } : {}),
-      nextWakeAt: (() => {
-        const next = scheduledWorkScheduler?.nextWakeAt(row.id) ?? null;
-        return next == null ? null : new Date(next).toISOString();
-      })(),
-      scheduledWorkPaused:
-        scheduledWorkScheduler?.isSessionPaused(row.id) === true
-        || projectConfigService.get().effective.ai?.chat?.scheduledWorkPaused === true,
-      scheduledWork: (scheduledWorkScheduler?.list(row.id) ?? [])
-        .filter((schedule) => schedule.status !== "done" && schedule.status !== "cancelled")
-        .map(toScheduledWorkItem),
+      nextWakeAt,
+      scheduledWorkPaused,
+      scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),
       ...(pendingInputItemId ? { pendingInputItemId } : {}),
       ...(liveSession?.threadId || persisted?.threadId
@@ -35488,6 +35510,145 @@ export function createAgentChatService(args: {
     await refreshHeadShaStartForManagedExecutionLane(managed);
     persistChatState(managed);
     return managed.session;
+  };
+
+  /**
+   * Cancel every pending-input surface before a user settles the session.
+   *
+   * This deliberately does not route through respondToInput: provider-facing
+   * declines can resume the current turn (and Codex plan declines explicitly
+   * stage a revision turn). Settlement means "make this quiet", so interrupt
+   * any live turn, resolve local waiters as cancelled, discard staged plan
+   * follow-ups, and persist the cleared awaitingInput marker even when the
+   * original provider waiter disappeared during restart/recovery.
+   */
+  const dismissPendingInputForSettlement = async (
+    { sessionId }: { sessionId: string },
+  ): Promise<void> => {
+    const managed = ensureManagedSession(sessionId);
+    const persisted = readPersistedState(sessionId);
+    const pendingItems = new Map<string, string | null>();
+    const rememberPendingItem = (itemId: string | null | undefined, turnId?: string | null): void => {
+      const normalizedItemId = typeof itemId === "string" ? itemId.trim() : "";
+      if (!normalizedItemId.length || pendingItems.has(normalizedItemId)) return;
+      pendingItems.set(
+        normalizedItemId,
+        typeof turnId === "string" && turnId.trim().length ? turnId.trim() : null,
+      );
+    };
+
+    for (const [itemId, pending] of managed.localPendingInputs) {
+      rememberPendingItem(itemId, pending.request.turnId);
+    }
+    const runtime = managed.runtime;
+    if (runtime?.kind === "codex") {
+      for (const [itemId, pending] of runtime.approvals) {
+        rememberPendingItem(itemId, pending.request?.turnId);
+      }
+      // A previously-clicked plan response must never drain after settlement.
+      for (const followup of runtime.pendingPlanFollowups.splice(0)) {
+        rememberPendingItem(followup.itemId, followup.turnId);
+      }
+    } else if (runtime?.kind === "claude") {
+      for (const [itemId, pending] of runtime.approvals) {
+        rememberPendingItem(itemId, pending.request?.turnId);
+      }
+    } else if (runtime?.kind === "opencode") {
+      for (const [itemId, pending] of runtime.pendingApprovals) {
+        rememberPendingItem(itemId, pending.request?.turnId);
+      }
+    } else if (runtime?.kind === "cursor" || runtime?.kind === "droid") {
+      for (const itemId of runtime.permissionWaiters.keys()) {
+        rememberPendingItem(itemId, runtime.activeTurnId);
+      }
+    }
+    if (persisted?.awaitingInput === true) {
+      rememberPendingItem(latestPendingInputItemIdForSession(sessionId, managed));
+    }
+
+    if (runtime) {
+      try {
+        await interrupt({ sessionId });
+      } catch (error) {
+        // Provider interruption is best-effort. The local lifecycle contract
+        // still has to clear a restored/stale request and settle the card.
+        logger.warn("agent_chat.pending_input_settle_interrupt_failed", {
+          sessionId,
+          provider: managed.session.provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    for (const pending of managed.localPendingInputs.values()) {
+      pending.resolve({ decision: "cancel" });
+    }
+    managed.localPendingInputs.clear();
+
+    if (runtime?.kind === "codex") {
+      for (const pending of runtime.approvals.values()) {
+        if (!runtime.process.stdin.writable || pending.kind === "plan_approval") continue;
+        try {
+          if (pending.kind === "mcp_elicitation") {
+            runtime.sendResponse(pending.requestId, {
+              action: "cancel",
+              content: null,
+              _meta: null,
+            });
+          } else if (pending.kind === "permissions") {
+            runtime.sendResponse(pending.requestId, {
+              permissions: {},
+              scope: "turn",
+            });
+          } else if (pending.kind === "structured_question") {
+            runtime.sendResponse(pending.requestId, { answers: {} });
+          } else {
+            runtime.sendResponse(pending.requestId, {
+              decision: mapApprovalDecisionForCodex("decline"),
+            });
+          }
+        } catch {
+          // The turn interrupt may already have closed the server request.
+        }
+      }
+      runtime.approvals.clear();
+      runtime.pendingPlanFollowups.splice(0);
+    } else if (runtime?.kind === "claude") {
+      for (const pending of runtime.approvals.values()) {
+        pending.resolve({ decision: "cancel" });
+      }
+      runtime.approvals.clear();
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+    } else if (runtime?.kind === "opencode") {
+      runtime.pendingApprovals.clear();
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+    } else if (runtime?.kind === "cursor") {
+      for (const waiter of runtime.permissionWaiters.values()) {
+        cancelCursorPermissionWaiter(waiter, "Cursor input was dismissed because the session was settled.");
+      }
+      runtime.permissionWaiters.clear();
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+    } else if (runtime?.kind === "droid") {
+      for (const waiter of runtime.permissionWaiters.values()) {
+        cancelDroidPermissionWaiter(waiter, "Droid input was dismissed because the session was settled.");
+      }
+      runtime.permissionWaiters.clear();
+      runtime.busy = false;
+      runtime.activeTurnId = null;
+    }
+
+    for (const [itemId, turnId] of pendingItems) {
+      emitPendingInputResolved(managed, {
+        itemId,
+        decision: "cancel",
+        turnId,
+      });
+    }
+    markSessionIdleWithFreshCache(managed);
+    persistChatState(managed);
   };
 
   const respondToInput = async ({
@@ -39424,7 +39585,7 @@ export function createAgentChatService(args: {
   };
 
   let fallbackScheduledWorkState: unknown = null;
-  scheduledWorkScheduler = createChatScheduledWorkScheduler({
+  scheduledWorkScheduler = createScheduledWorkScheduler({
     loadState: () => db?.getJson(scheduledWorkStateKey) ?? fallbackScheduledWorkState,
     saveState: (state) => {
       fallbackScheduledWorkState = state;
@@ -39627,6 +39788,7 @@ export function createAgentChatService(args: {
     ensureIdentitySession,
     approveToolUse,
     respondToInput,
+    dismissPendingInputForSettlement,
     requestChatInput,
     getAvailableModels,
     getModelCatalog,

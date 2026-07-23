@@ -67,7 +67,7 @@ import {
   usageClientSurfaceFromRpcName,
 } from "../../desktop/src/main/services/usage/usageStatsStore";
 import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcRequest } from "./jsonrpc";
-import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
+import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
@@ -2918,7 +2918,13 @@ function resolveEnvCallerContext(): CallerContext {
   const envAttemptId = process.env.ADE_ATTEMPT_ID?.trim() || null;
   return {
     callerId: envChatSessionId ?? envAttemptId ?? null,
-    role: envRole,
+    role: envRole
+      ? resolveSessionBoundRole({
+          defaultRole: envRole,
+          requestedRole: null,
+          chatSessionId: envChatSessionId,
+        })
+      : null,
     chatSessionId: envChatSessionId,
     standaloneChatSession: Boolean(envChatSessionId) && !envRunId && !envStepId && !envAttemptId,
     runId: envRunId,
@@ -3000,12 +3006,14 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const data = safeObject(params);
   const identity = safeObject(data.identity);
   const envContext = resolveEnvCallerContext();
-  const validRole = resolveSessionRole(
-    envContext.role,
-    normalizeAdeRuntimeRole(identity.role),
-  );
+  const requestedRole = normalizeAdeRuntimeRole(identity.role);
   const requestedChatSessionId = asOptionalTrimmedString(identity.chatSessionId);
   const resolvedChatSessionId = envContext.chatSessionId ?? requestedChatSessionId;
+  const validRole = resolveSessionBoundRole({
+    defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+    requestedRole,
+    chatSessionId: resolvedChatSessionId,
+  });
   const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
   const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
   const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);

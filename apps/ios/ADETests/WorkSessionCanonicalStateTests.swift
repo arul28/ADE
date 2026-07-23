@@ -106,9 +106,9 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     let killed = workCanonicalSessionState(status: "ended", runtimeState: "killed", toolType: "codex", exitCode: nil, now: now)
     XCTAssertEqual(killed.phase, .failed)
 
-    // Clean exit (0) → calm ended, no badge.
+    // Clean exit (0) → settled: the process itself declared completion.
     let clean = workCanonicalSessionState(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 0, now: now)
-    XCTAssertEqual(clean.phase, .ended)
+    XCTAssertEqual(clean.phase, .settled)
     XCTAssertNil(clean.badge)
 
     // A non-zero exit while still running is ignored (failure is an ended-only
@@ -185,7 +185,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       exitCode: 0,
       now: now
     )
-    XCTAssertEqual(state.phase, .ended)
+    XCTAssertEqual(state.phase, .settled)
     XCTAssertNil(state.badge)
   }
 
@@ -262,6 +262,66 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     let session = makeSession(status: "running", runtimeState: "running", toolType: "codex", startedAt: iso(now))
     let badge = workSessionCapsuleBadge(session: session, summary: nil, now: now)
     XCTAssertNil(badge)
+  }
+
+  func testWorkSessionRowPreviewUsesFreshOutputBeforeSummaryAndGoal() {
+    var session = makeSession(
+      status: "running",
+      runtimeState: "idle",
+      toolType: "claude-chat",
+      lastOutputPreview: "\u{001B}[32mLegacy output\u{001B}[0m"
+    )
+    session.goal = "Fallback goal"
+    session.summary = "Older session summary"
+    var summary = makeChatSummary(status: "paused", awaitingInput: false)
+    summary.title = "Session"
+    summary.goal = "Older chat goal"
+    summary.summary = "Older chat summary"
+    summary.lastOutputPreview = "\u{001B}[33mFresh provider output\u{001B}[0m"
+
+    XCTAssertEqual(
+      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false),
+      "Fresh provider output"
+    )
+
+    summary.lastOutputPreview = nil
+    session.lastOutputPreview = nil
+    XCTAssertEqual(
+      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false),
+      "Older chat summary"
+    )
+
+    summary.summary = nil
+    session.summary = nil
+    XCTAssertEqual(
+      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false),
+      "Older chat goal"
+    )
+  }
+
+  func testWorkSessionRowPreviewKeepsAskAndStatusNoteAboveOutput() {
+    var session = makeSession(
+      status: "running",
+      runtimeState: "idle",
+      toolType: "droid-chat",
+      lastOutputPreview: "Provider output"
+    )
+    session.statusNote = "Running focused tests"
+    XCTAssertEqual(
+      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: false),
+      "Running focused tests"
+    )
+    XCTAssertEqual(
+      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: true),
+      "Done: Running focused tests"
+    )
+
+    session.attentionRequestedAt = iso(now)
+    session.attentionMessage = "Choose the release target"
+    XCTAssertEqual(
+      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: true),
+      "Choose the release target"
+    )
   }
 
   // MARK: - Local echo rendering

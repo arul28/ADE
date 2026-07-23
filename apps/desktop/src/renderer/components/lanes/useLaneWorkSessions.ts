@@ -30,8 +30,6 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   orchestratorEnabled: false,
   draftLaneId: null,
   laneFilter: "all",
-  statusFilter: "all",
-  showSettled: true,
   search: "",
   sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],

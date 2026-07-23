@@ -364,6 +364,10 @@ function createHarness(overrides: {
         laneId: args.laneId,
         manuallyNamed: false,
         ownerPid: args.ownerPid ?? null,
+        settledAt: null,
+        attentionRequestedAt: null,
+        attentionMessage: null,
+        lastTurnFailedAt: null,
       });
     }),
     end: vi.fn((args: any) => {
@@ -390,9 +394,43 @@ function createHarness(overrides: {
     }),
     get: vi.fn((id: string) => sessionStore.get(id) ?? null),
     setSummary: vi.fn(),
-    setLastOutputPreview: vi.fn(),
-    touchSessionActivity: vi.fn(),
-    clearAttentionRequest: vi.fn(() => true),
+    setLastOutputPreview: vi.fn((sessionId: string, preview: string, opts?: { clearSettled?: boolean }) => {
+      const session = sessionStore.get(sessionId);
+      if (!session) return;
+      session.lastOutputPreview = preview;
+      session.lastOutputAt = new Date().toISOString();
+      if (opts?.clearSettled) session.settledAt = null;
+    }),
+    touchSessionActivity: vi.fn((sessionId: string, at: string, opts?: { clearSettled?: boolean }) => {
+      const session = sessionStore.get(sessionId);
+      if (!session) return;
+      session.lastOutputAt = at;
+      if (opts?.clearSettled !== false) session.settledAt = null;
+    }),
+    settleSession: vi.fn((sessionId: string, opts?: { settledAt?: string }) => {
+      const session = sessionStore.get(sessionId);
+      if (!session) return false;
+      session.settledAt = opts?.settledAt ?? new Date().toISOString();
+      session.attentionRequestedAt = null;
+      session.attentionMessage = null;
+      return true;
+    }),
+    clearTurnStartMarkers: vi.fn((sessionId: string) => {
+      const session = sessionStore.get(sessionId);
+      if (!session) return false;
+      session.settledAt = null;
+      session.attentionRequestedAt = null;
+      session.attentionMessage = null;
+      session.lastTurnFailedAt = null;
+      return true;
+    }),
+    clearAttentionRequest: vi.fn((sessionId: string) => {
+      const session = sessionStore.get(sessionId);
+      if (!session) return false;
+      session.attentionRequestedAt = null;
+      session.attentionMessage = null;
+      return true;
+    }),
     setResumeCommand: vi.fn((sessionId: string, resumeCommand: string | null) => {
       const session = sessionStore.get(sessionId);
       if (!session) return;
@@ -920,6 +958,7 @@ describe("ptyService", () => {
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: "/tmp/test-project",
       }));
+      expect(opts?.env?.ADE_DEFAULT_ROLE).not.toBe("agent");
     });
 
     it("exports tracked CLI session identity as the attached terminal owner", async () => {
@@ -938,6 +977,7 @@ describe("ptyService", () => {
       const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
       const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
       expect(opts?.env).toEqual(expect.objectContaining({
+        ADE_DEFAULT_ROLE: "agent",
         ADE_CHAT_SESSION_ID: result.sessionId,
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: "/tmp/test-project",
@@ -2806,6 +2846,9 @@ describe("ptyService", () => {
         exitCode: 0,
         status: "completed",
       });
+      sessionService.settleSession("session-ended-send", {
+        settledAt: "2026-04-09T12:31:00.000Z",
+      });
 
       const pending = service.sendToSession({
         sessionId: "session-ended-send",
@@ -2828,6 +2871,8 @@ describe("ptyService", () => {
         resumed: true,
         reusedExistingRuntime: false,
       }));
+      expect(sessionService.get("session-ended-send")?.settledAt).toBeNull();
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith("session-ended-send");
       expect(sessionService.reattach).toHaveBeenCalledWith({
         sessionId: "session-ended-send",
         ptyId: expect.any(String),
@@ -4709,6 +4754,77 @@ describe("ptyService", () => {
   });
 
   describe("PTY data handling", () => {
+    it.each([
+      "claude",
+      "codex",
+      "cursor-cli",
+      "droid",
+      "opencode",
+      "claude-orchestrated",
+      "codex-orchestrated",
+      "opencode-orchestrated",
+    ] as const)("preserves %s settlement through final PTY output until the next user input", async (toolType) => {
+      const { service, mockPty, sessionService } = createHarness();
+      const { ptyId, sessionId } = await service.create({
+        laneId: "lane-1",
+        title: `${toolType} CLI`,
+        cols: 80,
+        rows: 24,
+        toolType,
+      });
+      sessionService.settleSession(sessionId, {
+        settledAt: "2026-07-23T12:00:00.000Z",
+      });
+
+      mockPty._emitter.emit("data", "final answer\n");
+
+      expect(sessionService.get(sessionId)?.settledAt).toBe("2026-07-23T12:00:00.000Z");
+      expect(sessionService.touchSessionActivity).toHaveBeenLastCalledWith(
+        sessionId,
+        expect.any(String),
+        { clearSettled: false },
+      );
+      expect(sessionService.setLastOutputPreview).toHaveBeenLastCalledWith(
+        sessionId,
+        "preview",
+        { clearSettled: false },
+      );
+
+      service.write({ ptyId, data: "continue\r" });
+
+      expect(sessionService.get(sessionId)?.settledAt).toBeNull();
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(sessionId);
+    });
+
+    it("keeps ordinary shell output as the signal that a settled session is active again", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const { sessionId } = await service.create({
+        laneId: "lane-1",
+        title: "Shell",
+        cols: 80,
+        rows: 24,
+        toolType: "shell",
+      });
+      sessionService.settleSession(sessionId, {
+        settledAt: "2026-07-23T12:00:00.000Z",
+      });
+
+      mockPty._emitter.emit("data", "background job produced output\n");
+
+      expect(sessionService.get(sessionId)?.settledAt).toBeNull();
+      expect(sessionService.touchSessionActivity).toHaveBeenLastCalledWith(
+        sessionId,
+        expect.any(String),
+        { clearSettled: true },
+      );
+      expect(sessionService.setLastOutputPreview).toHaveBeenLastCalledWith(
+        sessionId,
+        "preview",
+        { clearSettled: true },
+      );
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+    });
+
     it("broadcasts data events when the PTY emits data", async () => {
       vi.useFakeTimers();
       try {

@@ -3037,7 +3037,7 @@ describe("createAgentChatService", () => {
       } as any);
 
       const { service } = createService();
-      await service.createSession({
+      const session = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
@@ -3052,6 +3052,9 @@ describe("createAgentChatService", () => {
       expect(opts?.systemPrompt?.append).toContain("read the matching `ade-*` skill");
       expect(opts?.systemPrompt?.append).toContain("ade help <command>");
       expect(opts?.systemPrompt?.append).toContain("clean up processes you start");
+      expect(opts?.systemPrompt?.append).toContain(
+        `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
+      );
     });
 
     it("rebuilds the Claude query with the per-turn reasoning effort, not the stale warm-query effort (FIX 3)", async () => {
@@ -6533,6 +6536,9 @@ describe("createAgentChatService", () => {
       expect(firstUserContent).toContain("mutating commands only inside that worktree");
       expect(firstUserContent).toContain("control plane for ADE state");
       expect(firstUserContent).toContain("ade actions list --text");
+      expect(firstUserContent).toContain(
+        `This ADE chat session is \`${session.id}\`. Pass \`--session ${session.id}\` to its status commands.`,
+      );
       expect(secondUserContent).not.toContain("[ADE launch directive]");
       expect(secondUserContent).toContain("control plane for ADE state");
     });
@@ -6612,6 +6618,14 @@ describe("createAgentChatService", () => {
           approvalPolicy: "never",
           sandbox: "danger-full-access",
         });
+        const spawnCall = vi.mocked(spawn).mock.calls.find((call) =>
+          call[0] === "codex" && Array.isArray(call[1]) && call[1].includes("app-server")
+        );
+        expect(spawnCall?.[2]).toEqual(expect.objectContaining({
+          env: expect.objectContaining({
+            ADE_DEFAULT_ROLE: "orchestrator",
+          }),
+        }));
 
         expect(toolNames.length).toBeGreaterThan(5);
       } finally {
@@ -6913,6 +6927,7 @@ describe("createAgentChatService", () => {
             PATH: "/tmp/ade-cli/bin",
             ADE_CLI_PATH: "/tmp/ade-cli/bin/ade",
             ADE_CLI_BIN_DIR: "/tmp/ade-cli/bin",
+            ADE_DEFAULT_ROLE: "agent",
           }),
         }),
       );
@@ -6966,6 +6981,7 @@ describe("createAgentChatService", () => {
         ADE_CLI_ENTRY_PATH: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
         ADE_CLI_JS: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
         ADE_CLI_INSTALL_NAME: "ade-beta",
+        ADE_DEFAULT_ROLE: "agent",
         ADE_CHAT_SESSION_ID: session.id,
         ADE_LANE_ID: "lane-1",
         ADE_PROJECT_ROOT: tmpRoot,
@@ -7153,6 +7169,66 @@ describe("createAgentChatService", () => {
           requestedCwd: "apps/ios/ADE",
         }),
       ]);
+    });
+
+    it("keeps lifecycle projection when one session's scheduled-work summary is malformed", async () => {
+      let brokenSessionId = "";
+      const scheduledWorkScheduler = {
+        start: vi.fn(async () => undefined),
+        dispose: vi.fn(),
+        upsert: vi.fn(async () => { throw new Error("not used"); }),
+        cancel: vi.fn(async () => null),
+        setSchedulePaused: vi.fn(async () => null),
+        setSessionPaused: vi.fn(async () => undefined),
+        refreshGlobalPause: vi.fn(async () => undefined),
+        list: vi.fn(() => []),
+        isSessionPaused: vi.fn(() => false),
+        nextWakeAt: vi.fn((sessionId: string) => {
+          if (sessionId === brokenSessionId) throw new Error("malformed scheduled-work row");
+          return null;
+        }),
+        claimNativeFire: vi.fn(() => null),
+        recordTurnStarted: vi.fn(async () => undefined),
+        recordTurnFinished: vi.fn(async () => undefined),
+      };
+      const { service, logger } = createService({
+        createScheduledWorkScheduler: () => scheduledWorkScheduler,
+      });
+
+      const broken = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5-codex",
+      });
+      brokenSessionId = broken.id;
+      const healthy = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+      writePersistedChatState(broken.id, {
+        ...readPersistedChatState(broken.id),
+        awaitingInput: true,
+      });
+
+      await expect(service.listSessions()).resolves.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          sessionId: broken.id,
+          awaitingInput: true,
+          scheduledWork: [],
+          nextWakeAt: null,
+        }),
+        expect.objectContaining({
+          sessionId: healthy.id,
+        }),
+      ]));
+      expect(logger.warn).toHaveBeenCalledWith(
+        "agent_chat.scheduled_work_summary_failed",
+        expect.objectContaining({
+          sessionId: broken.id,
+          error: "malformed scheduled-work row",
+        }),
+      );
     });
   });
 
@@ -22625,6 +22701,75 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(session.id))?.permissionMode).toBe("full-auto");
     });
 
+    it("dismisses a completed Codex plan approval without staging a revision turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        codexApprovalPolicy: "untrusted",
+        codexSandbox: "read-only",
+        codexConfigSource: "flags",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Plan the fix before coding.",
+      }, { awaitDispatch: true });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/completed",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "codex-plan-dismiss-1",
+            type: "plan",
+            text: "<proposed_plan>Inspect the lifecycle and patch it.</proposed_plan>",
+          },
+        },
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await vi.waitFor(async () => {
+        expect((await service.getSessionSummary(session.id))?.status).toBe("idle");
+      });
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+
+      const turnStartsBeforeDismiss = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+      await service.dismissPendingInputForSettlement({ sessionId: session.id });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "turn/start"))
+        .toHaveLength(turnStartsBeforeDismiss);
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+      await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
+        awaitingInput: true,
+      });
+      expect(events).toContainEqual(expect.objectContaining({
+        sessionId: session.id,
+        event: expect.objectContaining({
+          type: "pending_input_resolved",
+          itemId: approvalEvent.event.itemId,
+          resolution: "cancelled",
+        }),
+      }));
+    });
+
     it("emits a terminal event when a streamed native Codex plan item completes", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
@@ -32632,6 +32777,87 @@ describe("createAgentChatService", () => {
     expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
   });
 
+  it.each([
+    ["claude", "sonnet", undefined],
+    ["codex", "gpt-5.4", undefined],
+    ["opencode", "", "opencode/anthropic/claude-sonnet-5"],
+    ["cursor", "composer-2", "cursor/composer-2"],
+    ["droid", "claude-opus-4-6", "droid/claude-opus-4-6"],
+  ] as const)(
+    "clears pending input and persisted awaitingInput when a %s session is settled",
+    async (provider, model, modelId) => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider,
+        model,
+        ...(modelId ? { modelId } : {}),
+      });
+      const requestPromise = service.requestChatInput({
+        chatSessionId: session.id,
+        title: "Pending settlement question",
+        body: "Should this session remain open?",
+        questions: [{
+          id: "answer",
+          header: "Question",
+          question: "Should this session remain open?",
+          allowsFreeform: true,
+        }],
+      });
+      const approvalEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } =>
+          event.event.type === "approval_request"
+          && ((event.event.detail as { request?: { title?: string } } | undefined)?.request?.title === "Pending settlement question"),
+      );
+
+      expect(readPersistedChatState(session.id).awaitingInput).toBe(true);
+      await service.dismissPendingInputForSettlement({ sessionId: session.id });
+
+      await expect(requestPromise).resolves.toMatchObject({ decision: "cancel" });
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+      await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
+        awaitingInput: true,
+        pendingInputItemId: approvalEvent.event.itemId,
+      });
+    },
+  );
+
+  it.each([
+    ["claude", "sonnet", undefined],
+    ["codex", "gpt-5.4", undefined],
+    ["opencode", "", "opencode/anthropic/claude-sonnet-5"],
+    ["cursor", "composer-2", "cursor/composer-2"],
+    ["droid", "claude-opus-4-6", "droid/claude-opus-4-6"],
+  ] as const)(
+    "clears a restored stale awaitingInput marker for %s without a live provider waiter",
+    async (provider, model, modelId) => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider,
+        model,
+        ...(modelId ? { modelId } : {}),
+      });
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        awaitingInput: true,
+      });
+
+      await service.dismissPendingInputForSettlement({ sessionId: session.id });
+
+      expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
+      await expect(service.getSessionSummary(session.id)).resolves.not.toMatchObject({
+        awaitingInput: true,
+      });
+    },
+  );
+
   it("rejects normal chat sends while a pending input request is waiting", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const { service } = createService({
@@ -33495,6 +33721,12 @@ describe("createAgentChatService", () => {
     expect(mockState.droidAcquireCalls[0]?.settings).toMatchObject({
       modelId: "custom:claude-sonnet-5-thinking-32000",
     });
+    expect(mockState.droidAcquireCalls[0]?.baseEnv).toEqual(expect.objectContaining({
+      ADE_DEFAULT_ROLE: "agent",
+      ADE_CHAT_SESSION_ID: session.id,
+      ADE_LANE_ID: "lane-1",
+      ADE_PROJECT_ROOT: tmpRoot,
+    }));
     expect(mockState.droidSettingsUpdates.at(-1)).toMatchObject({
       modelId: "custom:claude-sonnet-5-thinking-32000",
       interactionMode: "auto",

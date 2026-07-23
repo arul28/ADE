@@ -222,7 +222,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: null as string | null,
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -411,7 +410,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: null as string | null,
       draftKind: "cli" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -619,7 +617,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: "existing-session" as string | null,
       draftKind: "cli" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -783,7 +780,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: null as string | null,
       draftKind: "cli" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -849,7 +845,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: "session-2",
       draftKind: "cli",
       laneFilter: "lane-1",
-      statusFilter: "running",
       search: "alpha",
       sessionListOrganization: "by-time",
       workCollapsedLaneIds: ["lane-1"],
@@ -898,7 +893,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: "session-a",
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -937,7 +931,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: "session-a",
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -1020,7 +1013,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: null as string | null,
       draftKind: "chat" as const,
       laneFilter: "lane-2",
-      statusFilter: "completed" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -1050,7 +1042,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     expect(selectLaneSpy).toHaveBeenCalledWith("lane-1");
     expect(workState.laneFilter).toBe("lane-2");
-    expect(workState.statusFilter).toBe("completed");
     expect(workState.openItemIds).toContain("session-1");
     expect(workState.activeItemId).toBe("session-1");
     expect(workState.selectedItemId).toBe("session-1");
@@ -1094,11 +1085,11 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: null as string | null,
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
+      workCollapsedSectionIds: ["status:running", "status:settled"],
       workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
@@ -1120,8 +1111,9 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     await waitFor(() => {
       expect(workState.laneFilter).toBe("lane-1");
-      expect(workState.statusFilter).toBe("running");
+      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
     });
+    expect(workState.workCollapsedSectionIds).toEqual(["status:settled"]);
 
     // The stale session never existed, so focusSession must not fire for it.
     expect(focusSessionSpy).not.toHaveBeenCalledWith("missing-session");
@@ -1145,7 +1137,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -1234,7 +1225,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: null as string | null,
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as "all" | "running" | "ended",
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -1257,11 +1247,11 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     await waitFor(() => {
       expect(workState.laneFilter).toBe("lane-1");
-      expect(workState.statusFilter).toBe("running");
+      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
     });
 
     workState.laneFilter = "all";
-    workState.statusFilter = "ended";
+    (workState as { sessionListOrganization: string }).sessionListOrganization = "by-time";
     routerLocation.pathname = "/files";
     currentSearchParams = new URLSearchParams("tab=preview");
     act(() => {
@@ -1275,7 +1265,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     expect(workState.laneFilter).toBe("all");
-    expect(workState.statusFilter).toBe("ended");
+    expect(workState.sessionListOrganization).toBe("by-time");
   });
 
   it("does not keep reapplying a partially applied URL status while lanes are loading", async () => {
@@ -1313,7 +1303,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: null as string | null,
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as "all" | "running" | "completed",
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -1335,18 +1324,18 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     const { result, rerender } = renderHook(() => useWorkSessions());
 
     await waitFor(() => {
-      expect(workState.statusFilter).toBe("running");
+      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
     });
     expect(workState.laneFilter).toBe("all");
 
-    workState.statusFilter = "completed";
+    (workState as { sessionListOrganization: string }).sessionListOrganization = "by-time";
     listSessionsCachedMock.mockResolvedValue([{ ...session, id: "session-3" }]);
 
     await act(async () => {
       await result.current.refresh({ force: true });
     });
 
-    expect(workState.statusFilter).toBe("completed");
+    expect(workState.sessionListOrganization).toBe("by-time");
     expect(workState.laneFilter).toBe("all");
 
     fakeAppStoreState = {
@@ -1361,10 +1350,10 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     await waitFor(() => {
       expect(workState.laneFilter).toBe("lane-1");
     });
-    expect(workState.statusFilter).toBe("completed");
+    expect(workState.sessionListOrganization).toBe("by-time");
   });
 
-  it("filters the Work list by the stored status filter", async () => {
+  it("keeps every status visible without an implicit status filter", async () => {
     const runningSession = {
       id: "session-running",
       laneId: "lane-1",
@@ -1406,7 +1395,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           selectedItemId: null,
           draftKind: "chat",
           laneFilter: "all",
-          statusFilter: "running",
           search: "",
           sessionListOrganization: "by-lane",
           workCollapsedLaneIds: [],
@@ -1445,7 +1433,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           selectedItemId: null,
           draftKind: "chat",
           laneFilter: "all",
-          statusFilter: "all",
           search: "customer-ready",
           sessionListOrganization: "by-lane",
           workCollapsedLaneIds: [],
@@ -1497,7 +1484,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: null as string | null,
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as "all" | "running" | "completed",
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
@@ -1520,7 +1506,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     await waitFor(() => {
       expect(workState.laneFilter).toBe("lane-1");
-      expect(workState.statusFilter).toBe("running");
+      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
     });
 
     currentSearchParams = new URLSearchParams("sessionId=session-2");
@@ -1529,7 +1515,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     workState.laneFilter = "all";
-    workState.statusFilter = "completed";
+    (workState as { sessionListOrganization: string }).sessionListOrganization = "by-time";
     currentSearchParams = deepLinkParams;
     act(() => {
       rerender();
@@ -1537,7 +1523,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     await waitFor(() => {
       expect(workState.laneFilter).toBe("lane-1");
-      expect(workState.statusFilter).toBe("running");
+      expect(workState.sessionListOrganization).toBe("all-lanes-by-status");
     });
   });
 
@@ -1575,7 +1561,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: "session-b",
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [],
@@ -1661,7 +1646,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: "session-b",
       draftKind: "chat" as const,
       laneFilter: "all",
-      statusFilter: "all" as const,
       search: "",
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [],

@@ -90,6 +90,10 @@ export function SessionContextMenu({
   const isActivelyRunning = canonicalPhase === "starting"
     || canonicalPhase === "running"
     || canonicalPhase === "stale";
+  const canDismissNeedsYou =
+    canonicalPhase !== "needs_you"
+    || isChat
+    || Boolean(session.attentionRequestedAt);
 
   const commitRename = () => {
     if (finalizedRef.current) return;
@@ -210,12 +214,21 @@ export function SessionContextMenu({
           >
             Unsettle
           </button>
-        ) : canonicalPhase !== "settled" && !isActivelyRunning && onSettle ? (
+        ) : canonicalPhase !== "settled" && !isActivelyRunning && onSettle && canDismissNeedsYou ? (
           <button
             className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
             onClick={() => { onSettle(session); onClose(); }}
           >
-            Settle
+            {canonicalPhase === "needs_you" ? "Dismiss & settle" : "Settle"}
+          </button>
+        ) : canonicalPhase === "needs_you" && !canDismissNeedsYou ? (
+          <button
+            type="button"
+            className="flex w-full cursor-not-allowed items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-muted-fg/45"
+            disabled
+            title="Resolve the terminal prompt before settling this session"
+          >
+            Resolve input to settle
           </button>
         ) : null}
 

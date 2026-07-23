@@ -154,6 +154,19 @@ describe("Drawer closed CLI sessions", () => {
     });
   });
 
+  it("projects native CLI waiting input into the shared attention state", () => {
+    const summary = terminalSessionToChatSummary(terminal({
+      status: "running",
+      runtimeState: "waiting-input",
+      endedAt: null,
+      exitCode: null,
+    }));
+
+    expect(summary.awaitingInput).toBe(true);
+    expect(summary.status).toBe("active");
+    expect(summary.terminalRuntimeState).toBe("waiting-input");
+  });
+
   it.each([
     ["failed status", { status: "failed", exitCode: 1, runtimeState: "killed" }, "failed"],
     ["non-zero exit", { status: "completed", exitCode: 2, runtimeState: "exited" }, "failed"],
@@ -328,7 +341,7 @@ describe("Drawer lane and chat navigation layout", () => {
     expect(chatModeFrame).not.toContain("next lane");
   });
 
-  it("renders lifecycle asks and settled outcomes in chat rows", () => {
+  it("renders lifecycle asks, settled outcomes, and last-output fallbacks in chat rows", () => {
     const sessions: TuiChatSessionSummary[] = [
       {
         sessionId: "chat-ask",
@@ -362,6 +375,20 @@ describe("Drawer lane and chat navigation layout", () => {
         settledAt: "2026-05-12T11:21:00.000Z",
         statusNote: "PR merged",
       },
+      {
+        sessionId: "chat-output",
+        laneId: "lane-1",
+        provider: "droid",
+        model: "droid cli",
+        title: "Build chat",
+        status: "idle",
+        startedAt: "2026-05-12T10:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-12T10:05:00.000Z",
+        lastOutputPreview: "\u001b[32mtests green\u001b[0m",
+        summary: "Older summary",
+        nextWakeAt: null,
+      },
     ];
 
     const frame = stripAnsi(render(
@@ -382,6 +409,8 @@ describe("Drawer lane and chat navigation layout", () => {
     expect(frame).toContain("Which account?");
     expect(frame).toContain("○");
     expect(frame).toContain("done: PR merged");
+    expect(frame).toContain("tests green");
+    expect(frame).not.toContain("Older summary");
   });
 
   it("renders ended tracked CLI sessions behind the closed group in chat mode", () => {

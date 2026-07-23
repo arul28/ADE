@@ -5291,12 +5291,18 @@ contextBridge.exposeInMainWorld("ade", {
     },
     settle: async (
       sessionId: string,
-      opts?: { outcome?: string },
+      opts?: { outcome?: string; dismissPendingInput?: boolean },
     ): Promise<void> => {
       const runtime = await callProjectRuntimeActionIfBound<unknown>(
         "session",
         "settleSelfSession",
-        { args: { sessionId, ...(opts?.outcome ? { outcome: opts.outcome } : {}) } },
+        {
+          args: {
+            sessionId,
+            ...(opts?.outcome ? { outcome: opts.outcome } : {}),
+            ...(opts?.dismissPendingInput ? { dismissPendingInput: true } : {}),
+          },
+        },
       );
       if (!runtime.handled) await ipcRenderer.invoke(IPC.sessionsSettle, { sessionId, opts });
     },

@@ -116,6 +116,7 @@ import {
   unsettleSession,
   updateChatModel,
   writeTerminal,
+  type TuiChatSessionSummary,
   type TokenStats,
 } from "./adeApi";
 import { aggregateChatBlocks, derivePendingSteers, type AggregatedBlock } from "./aggregate";
@@ -1217,7 +1218,13 @@ function resolveLaneReference(lanes: LaneSummary[], reference: string): LaneSumm
 function seedLaneDetails(
   lane: LaneSummary,
   worktreeAvailable = isLaneWorktreeAvailable(lane),
-  chats: Extract<RightPaneContent, { kind: "lane-details" }>["chats"] = { active: 0, closed: 0, killed: 0 },
+  chats: Extract<RightPaneContent, { kind: "lane-details" }>["chats"] = {
+    active: 0,
+    needsYou: 0,
+    settled: 0,
+    closed: 0,
+    failed: 0,
+  },
 ): Extract<RightPaneContent, { kind: "lane-details" }> {
   return {
     kind: "lane-details",
@@ -10102,11 +10109,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           await setSessionStatusNote(conn, targetSessionId, value);
           addNotice(value ? "Updated the session status line." : "Cleared the session status line.", "success");
         } else if (name === "/chat settle") {
-          await settleSession(conn, targetSessionId, value || undefined);
-          addNotice("Moved the session into the settled tier.", "success");
+          const targetSession = displaySessions.find((session) => session.sessionId === targetSessionId);
+          const dismissPendingInput = Boolean(
+            targetSession?.awaitingInput
+              || (targetSession as TuiChatSessionSummary | undefined)?.attentionRequestedAt,
+          );
+          await settleSession(conn, targetSessionId, value || undefined, { dismissPendingInput });
+          addNotice(
+            dismissPendingInput
+              ? "Dismissed the pending input and settled the session."
+              : "Marked the session settled.",
+            "success",
+          );
         } else {
           await unsettleSession(conn, targetSessionId);
-          addNotice("Returned the session to the active lifecycle.", "success");
+          addNotice("Removed the session's settled state.", "success");
         }
         await refreshState();
       } catch (err) {

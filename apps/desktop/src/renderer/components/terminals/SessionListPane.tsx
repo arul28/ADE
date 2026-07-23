@@ -6,7 +6,11 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
 import { selectPrimaryLanePr, lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
-import { canonicalInputFromSummary, sessionStatusBucket } from "../../lib/terminalAttention";
+import {
+  canonicalInputFromSummary,
+  sessionNeedsYou,
+  sessionStatusBucket,
+} from "../../lib/terminalAttention";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
@@ -34,7 +38,6 @@ import {
 
 
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
-const EMPTY_SESSION_LIST: TerminalSessionSummary[] = [];
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
@@ -384,8 +387,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   awaitingInputFiltered,
   endedFiltered,
   settledFiltered,
-  showSettled,
-  setShowSettled,
   allSessionsUnfiltered,
   loading: _loading,
   filterLaneId,
@@ -419,8 +420,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   awaitingInputFiltered: TerminalSessionSummary[];
   endedFiltered: TerminalSessionSummary[];
   settledFiltered: TerminalSessionSummary[];
-  showSettled: boolean;
-  setShowSettled: (show: boolean) => void;
   /** All sessions before the search/lane filter — the live-children badge counts
    * from this so a filtered-out running child doesn't undercount its parent. */
   allSessionsUnfiltered: TerminalSessionSummary[];
@@ -478,7 +477,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     return filtered.sort((a, b) => b.createdAtMs - a.createdAtMs);
   }, [allSessionsUnfiltered, handoffJobs, laneFilterActive, normalizedFilterLaneId, q]);
 
-  const visibleSettled = showSettled ? settledFiltered : EMPTY_SESSION_LIST;
+  const visibleSettled = settledFiltered;
   const hasAnySessions =
     runningFiltered.length + awaitingInputFiltered.length + endedFiltered.length
       + visibleSettled.length + filteredHandoffJobs.length > 0;
@@ -573,8 +572,15 @@ export const SessionListPane = React.memo(function SessionListPane({
   const selectedSettleableSessions = useMemo(
     () => selectedSessions.filter((session) =>
       !session.settledAt
-      && sessionStatusBucket(canonicalInputFromSummary(session)) !== "running"),
+      && sessionStatusBucket(canonicalInputFromSummary(session)) !== "running"
+      && !sessionNeedsYou(canonicalInputFromSummary(session))),
     [selectedSessions],
+  );
+  const quietlyAwaitingSessions = useMemo(
+    () => awaitingInputFiltered.filter(
+      (session) => !sessionNeedsYou(canonicalInputFromSummary(session)),
+    ),
+    [awaitingInputFiltered],
   );
   const selectedSettleCount = selectedSettleableSessions.length;
   const settleSessions = useCallback(async (sessionIds: string[]) => {
@@ -671,18 +677,22 @@ export const SessionListPane = React.memo(function SessionListPane({
   const renderedSessionIds = useMemo(() => {
     if (isByLane) {
       const ids: string[] = [];
-      const laneVisibleIds = (list: TerminalSessionSummary[]): string[] => {
+      const laneVisibleIds = (laneId: string, list: TerminalSessionSummary[]): string[] => {
         const active = list.filter((session) => !settledIdSet.has(session.id));
-        const settled = showSettled ? list.filter((session) => settledIdSet.has(session.id)) : [];
-        return [...collectVisibleIds(active), ...collectVisibleIds(settled)];
+        const activeIds = collectVisibleIds(active);
+        if (!workCollapsedSectionIds.includes(`settled-open:${laneId}`)) {
+          return activeIds;
+        }
+        const settled = list.filter((session) => settledIdSet.has(session.id));
+        return [...activeIds, ...collectVisibleIds(settled)];
       };
       for (const lane of orderedLanes) {
         if (workCollapsedLaneIds.includes(lane.id)) continue;
-        ids.push(...laneVisibleIds(sessionsGroupedByLane?.get(lane.id) ?? []));
+        ids.push(...laneVisibleIds(lane.id, sessionsGroupedByLane?.get(lane.id) ?? []));
       }
       for (const [laneId, list] of missingLaneSessionGroups) {
         if (workCollapsedLaneIds.includes(laneId)) continue;
-        ids.push(...laneVisibleIds(list));
+        ids.push(...laneVisibleIds(laneId, list));
       }
       return ids;
     }
@@ -711,7 +721,6 @@ export const SessionListPane = React.memo(function SessionListPane({
     runningFiltered,
     sessionsGroupedByLane,
     settledIdSet,
-    showSettled,
     timeBuckets.older,
     timeBuckets.today,
     timeBuckets.yesterday,
@@ -838,8 +847,11 @@ export const SessionListPane = React.memo(function SessionListPane({
    */
   const renderLaneSessionLists = (laneKey: string, list: TerminalSessionSummary[]) => {
     const active = list.filter((session) => !settledIdSet.has(session.id));
-    const settled = showSettled ? list.filter((session) => settledIdSet.has(session.id)) : [];
-    const settledCollapsed = workCollapsedSectionIds.includes(`settled:${laneKey}`);
+    const settled = list.filter((session) => settledIdSet.has(session.id));
+    // Settled tails start collapsed without needing to persist one entry per
+    // lane. Presence of the open marker means the user explicitly expanded it.
+    const settledOpenMarker = `settled-open:${laneKey}`;
+    const settledCollapsed = !workCollapsedSectionIds.includes(settledOpenMarker);
     return (
       <>
         {renderCards(active)}
@@ -847,7 +859,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           <div className="mt-px">
             <button
               type="button"
-              onClick={() => toggleWorkSectionCollapsed(`settled:${laneKey}`)}
+              onClick={() => toggleWorkSectionCollapsed(settledOpenMarker)}
               className="flex w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[9px] font-medium uppercase tracking-wide text-muted-fg/40 transition-colors hover:bg-white/[0.03] hover:text-muted-fg/70"
               aria-expanded={!settledCollapsed}
             >
@@ -901,18 +913,18 @@ export const SessionListPane = React.memo(function SessionListPane({
         count={awaitingInputFiltered.length}
         collapsed={workCollapsedSectionIds.includes("status:awaiting")}
         onToggleCollapsed={() => toggleWorkSectionCollapsed("status:awaiting")}
-        headerAction={(
+        headerAction={quietlyAwaitingSessions.length > 0 ? (
           <button
             type="button"
             className="rounded px-1 py-0.5 text-[9px] font-medium text-muted-fg/55 transition-colors hover:bg-white/[0.06] hover:text-fg"
             onClick={(event) => {
               event.stopPropagation();
-              void settleSessions(awaitingInputFiltered.map((session) => session.id));
+              void settleSessions(quietlyAwaitingSessions.map((session) => session.id));
             }}
           >
             Settle all
           </button>
-        )}
+        ) : null}
       >
         {renderCards(awaitingInputFiltered)}
       </StickyGroupHeader>
@@ -1183,28 +1195,6 @@ export const SessionListPane = React.memo(function SessionListPane({
                   showAllOption
                   fullWidth
                 />
-              </div>
-            </div>
-            <div className="flex items-start gap-1">
-              <span className="w-10 shrink-0 pt-1.5 text-[9px] font-medium uppercase tracking-wider text-muted-fg/50">Tiers</span>
-              <div className={FILTER_OPTION_GRID_CLASS}>
-                <SmartTooltip
-                  content={{
-                    label: "Show settled",
-                    description: "Show the quiet Settled tier — finished threads that stay openable in-stream.",
-                  }}
-                >
-                  <button
-                    type="button"
-                    className={FILTER_OPTION_BUTTON_CLASS}
-                    data-active={showSettled ? "true" : undefined}
-                    aria-pressed={showSettled}
-                    style={{ color: showSettled ? "var(--color-fg)" : "var(--color-muted-fg)" }}
-                    onClick={() => setShowSettled(!showSettled)}
-                  >
-                    Settled
-                  </button>
-                </SmartTooltip>
               </div>
             </div>
           </div>

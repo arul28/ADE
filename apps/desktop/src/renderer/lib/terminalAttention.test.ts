@@ -155,7 +155,7 @@ describe("terminalAttention", () => {
       });
       expect(dot.spinning).toBe(false);
       expect(dot.cls).toContain("amber");
-      expect(dot.label).toBe("Awaiting input");
+      expect(dot.label).toBe("Needs you");
     });
 
     it("returns a solid amber dot for an idle chat session", () => {

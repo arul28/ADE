@@ -1,5 +1,5 @@
 import React from "react";
-import { CircleNotch, GridFour, WarningCircle, Question, Clock } from "@phosphor-icons/react";
+import { CircleNotch, GridFour, WarningCircle, Clock } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type { AgentChatSpawnKind, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
@@ -7,7 +7,6 @@ import {
   canonicalInputFromSummary,
   sessionStatusDot,
   sanitizeTerminalInlineText,
-  sessionNeedsChatTabHighlight,
   sessionCapsuleBadge,
   sessionCanonicalUiState,
   sessionInlineStatusLabel,
@@ -199,13 +198,14 @@ function AttentionCapsule({ badge, compact }: { badge: SessionBadge; compact: bo
  *      as the question while it blocks,
  *   2. the agent-authored statusNote (prefixed "done:" once settled — the
  *      outcome line),
- *   3. the AI session summary / goal.
- * The raw terminal output tail (`lastOutputPreview`) is deliberately NOT
- * rendered here anymore — it stays a detection/search sensor only.
+ *   3. the sanitized terminal output tail,
+ *   4. the AI session summary,
+ *   5. the session goal.
  */
 type SessionPreviewLine = {
   text: string;
   linkify: boolean;
+  source: "ask" | "note" | "output" | "summary" | "goal";
 };
 
 function getPreviewLine(
@@ -215,14 +215,28 @@ function getPreviewLine(
 ): SessionPreviewLine | null {
   if (session.attentionRequestedAt) {
     const ask = sanitizeTerminalInlineText(session.attentionMessage, 120);
-    if (ask) return { text: ask, linkify: true };
+    if (ask) return { text: ask, linkify: true, source: "ask" };
   }
   const note = sanitizeTerminalInlineText(session.statusNote, 120);
-  if (note) return { text: settled ? `done: ${note}` : note, linkify: true };
+  if (note) {
+    return {
+      text: settled ? `done: ${note}` : note,
+      linkify: true,
+      source: "note",
+    };
+  }
+  const output = sanitizeTerminalInlineText(session.lastOutputPreview, 120);
+  if (output && output !== primaryText) {
+    return { text: output, linkify: false, source: "output" };
+  }
   const summary = preferredSessionLabel(session.summary);
-  if (summary && summary !== primaryText) return { text: summary, linkify: false };
+  if (summary && summary !== primaryText) {
+    return { text: summary, linkify: false, source: "summary" };
+  }
   const goal = preferredSessionLabel(session.goal);
-  if (goal && goal !== primaryText) return { text: goal, linkify: false };
+  if (goal && goal !== primaryText) {
+    return { text: goal, linkify: false, source: "goal" };
+  }
   return null;
 }
 
@@ -354,27 +368,32 @@ export const SessionCard = React.memo(function SessionCard({
 }) {
   const navigate = useNavigate();
   const dot = sessionStatusDot(session);
-  // Blocked on a chat question/plan only the user can answer (distinct from a
-  // merely idle/ready chat, which the amber status dot can't disambiguate).
-  const awaitingUser = sessionNeedsChatTabHighlight({
-    runtimeState: session.runtimeState,
-    toolType: session.toolType,
-    pendingInputItemId: session.pendingInputItemId,
-    attentionRequestedAt: session.attentionRequestedAt,
-  });
-  // Canonical one-word status capsule (Needs you / Failed / Stale). When the
-  // chat-specific "Awaiting you" chip is already showing the same needs-input
-  // condition, suppress the capsule so a chat card never doubles up amber pills.
+  // Canonical one-word status capsule (Needs you / Failed / Stale). Quiet Ready
+  // sessions intentionally render only the amber dot.
   const sessionAttentionInput = canonicalInputFromSummary(session);
   const canonicalPhase = sessionCanonicalUiState(sessionAttentionInput).phase;
   const capsuleBadge = sessionCapsuleBadge(sessionAttentionInput);
-  const attentionBadge =
-    capsuleBadge && !(awaitingUser && capsuleBadge.kind === "needs_you") ? capsuleBadge : null;
   const inlineStatusLabel = sessionInlineStatusLabel(sessionAttentionInput);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
   const primaryText = primarySessionLabel(session);
   const previewLine = getPreviewLine(session, primaryText, canonicalPhase === "settled");
+  // Pulse once when an already-mounted row transitions into the loud Needs-you
+  // state. First render stays calm, and motion-safe suppresses it for users who
+  // prefer reduced motion.
+  const previousCanonicalPhaseRef = React.useRef(canonicalPhase);
+  const [needsYouJustChanged, setNeedsYouJustChanged] = React.useState(false);
+  React.useEffect(() => {
+    const previousPhase = previousCanonicalPhaseRef.current;
+    previousCanonicalPhaseRef.current = canonicalPhase;
+    if (canonicalPhase !== "needs_you" || previousPhase === "needs_you") {
+      setNeedsYouJustChanged(false);
+      return undefined;
+    }
+    setNeedsYouJustChanged(true);
+    const timer = window.setTimeout(() => setNeedsYouJustChanged(false), 900);
+    return () => window.clearTimeout(timer);
+  }, [canonicalPhase]);
   // True while this lane's AI auto-name is being generated in the background.
   const isAutoNaming = useLaneNaming(lane?.id ?? null);
   // Brief warm highlight when the displayed title actually changes (e.g. the
@@ -426,7 +445,10 @@ export const SessionCard = React.memo(function SessionCard({
         disabledReason && "opacity-60",
         // Settled rows read as the quietest tier: dimmed but fully openable.
         !disabledReason && canonicalPhase === "settled" && "opacity-70",
+        needsYouJustChanged
+          && "motion-safe:animate-[ade-session-needs-you_900ms_ease-out_1]",
       )}
+      data-needs-you-pulse={needsYouJustChanged ? "true" : undefined}
       onContextMenu={disabledReason ? undefined : onContextMenu}
       draggable={!disabledReason}
       onDragStart={(event) => {
@@ -502,7 +524,7 @@ export const SessionCard = React.memo(function SessionCard({
                   {session.claudeTag.trim()}
                 </span>
               ) : null}
-              {attentionBadge ? <AttentionCapsule badge={attentionBadge} compact={compact} /> : null}
+              {capsuleBadge ? <AttentionCapsule badge={capsuleBadge} compact={compact} /> : null}
               <div className="flex shrink-0 items-center gap-1.5">
                 {importedFrom ? (
                   <span
@@ -560,24 +582,6 @@ export const SessionCard = React.memo(function SessionCard({
                     aria-label={gridLabel}
                   >
                     <GridFour size={11} weight={isActiveGrid ? "fill" : "bold"} />
-                  </span>
-                ) : null}
-                {awaitingUser ? (
-                  <span
-                    className={cn(
-                      "inline-flex shrink-0 items-center gap-0.5 rounded-full font-semibold uppercase tracking-wide leading-none",
-                      compact ? "px-1 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[9px]",
-                    )}
-                    style={{
-                      color: laneAccent ?? "rgb(252, 211, 77)",
-                      background: `color-mix(in srgb, ${laneAccent ?? "rgb(252, 211, 77)"} 16%, transparent)`,
-                      border: `1px solid color-mix(in srgb, ${laneAccent ?? "rgb(252, 211, 77)"} 34%, transparent)`,
-                    }}
-                    title="This chat is waiting for your answer"
-                    aria-label="Awaiting your input"
-                  >
-                    <Question size={compact ? 9 : 10} weight="bold" />
-                    {compact ? null : "Awaiting you"}
                   </span>
                 ) : null}
                 {inlineStatusLabel ? (
@@ -643,7 +647,11 @@ export const SessionCard = React.memo(function SessionCard({
               </div>
             ) : previewLine && !compact ? (
               <div className="mt-0.5 min-w-0">
-                <span className="block truncate text-[10px] text-muted-fg/50 leading-snug">
+                <span
+                  key={`${previewLine.source}:${previewLine.text}`}
+                  className="block truncate text-[10px] text-muted-fg/50 leading-snug motion-safe:animate-[ade-session-preview-in_180ms_ease-out_1]"
+                  data-session-preview-source={previewLine.source}
+                >
                   {previewLine.linkify ? (
                     <LinkifiedPreviewLine
                       text={previewLine.text}

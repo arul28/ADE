@@ -77,10 +77,11 @@ It also owns the sidebar's multi-select state:
   `ade.agentChat.delete` for chat rows and `ade.sessions.delete` for
   PTY rows. Succeeded ids are removed from the cache and the open-tabs
   list.
-- Bulk settle is owned by `SessionListPane`: it sends the visible selected
-  non-settled ids through `ade.sessions.settleMany`, retains only the ids the
-  service actually changed, and offers an eight-second Unsettle undo. Settle
-  does not stop a runtime, delete a transcript, or archive a chat.
+- Bulk settle is owned by `SessionListPane`: it sends only visible selected
+  at-rest, non-settled, non-`Needs you` ids through
+  `ade.sessions.settleMany`, retains only the ids the service actually changed,
+  and offers an eight-second Unsettle undo. Bulk settle does not dismiss
+  pending input, stop a runtime, delete a transcript, or archive a chat.
 - `handleBulkStopAndDeleteSelected` stops selected running runtimes, then
   permanently deletes every selected session once the user confirms.
 
@@ -94,15 +95,17 @@ Lists sessions grouped by one of three modes (controlled by
 `sessionListOrganization` in the work view state):
 
 - `by-lane` — one group per active lane
-- `by-status` — Running / Your move / Ended / Settled
+- `all-lanes-by-status` — Running / Your move / Ended / Settled
 - `by-time` — today / yesterday / older
 
 Each group uses a `StickyGroupHeader` with collapsed-state persistence
 via `workCollapsedLaneIds` / `workCollapsedSectionIds`. Settled is a quiet
 fourth tier: status and time views render one final Settled section, while lane
-view renders a collapsible settled tail inside each lane. `showSettled` controls
-whether those rows render at all; it defaults on, while the global Settled
-section starts collapsed.
+view renders a collapsible settled tail inside each lane. Settled rows are
+always reachable; there is no separate visibility tier because Status grouping
+already exposes the complete lifecycle. The global Settled section and every
+per-lane tail start collapsed. User-expanded state is persisted, and collapsed
+tails do not contribute ids to shift-range selection.
 
 Lane group headers also wire into `useWorkLaneContextMenu`, so right-click
 actions are available from the session sidebar. Color changes and copy/reveal
@@ -141,8 +144,7 @@ the handoff fails.
 Also renders:
 
 - draft-kind switcher (chat vs terminal) at the top
-- lane filter (`LaneCombobox`), status filter, and a persisted Show settled tier
-  toggle
+- group selector (Lane / Status / Time) and lane filter (`LaneCombobox`)
 - search input
 - the actual list of `SessionCard` rows (memoized)
 - an "Open new" button that sets `draftKind` and routes to
@@ -168,7 +170,7 @@ sees, not the underlying data order.
 The pane derives `liveChildrenByParentId` and `sessionTitleById` from the
 unfiltered session inventory. The latter uses `primarySessionLabel()` and is
 passed to each child card as `parentSessionTitle`, so lineage tooltips can name
-a parent even when search, lane, or status filters hide its row.
+a parent even when search, lane filtering, or a collapsed group hides its row.
 
 ### `SessionCard.tsx`
 
@@ -192,10 +194,10 @@ Three rows:
    `renderer/state/laneNamingStore.ts` is true), this row instead shows an
    italic "Auto-naming lane underway…" status. Otherwise it shows
    an explicit `attentionMessage` first, then `statusNote` (`done: …` in the
-   settled tier), then `session.summary` / `session.goal`. Raw
-   `lastOutputPreview` remains available to search and needs-input/stale
-   detection but is not row copy. Sanitization strips ANSI and control chars
-   via `sanitizeTerminalInlineText`. The title (row 1) gets a brief warm
+   settled tier), then a sanitized `lastOutputPreview`, then
+   `session.summary`, then `session.goal`. Output fallback is plain text (never
+   linkified), capped at 120 characters, and strips ANSI/control sequences plus
+   repeated whitespace via `sanitizeTerminalInlineText`. The title (row 1) gets a brief warm
    accent-tinted highlight whenever its displayed text changes — e.g. when
    the deterministic/seed name is replaced by the background AI name —
    skipped on first mount.
@@ -223,7 +225,10 @@ hours old; it remains in Running and is not automatically settled. Ready chats
 and idle CLIs sit in Your move without a capsule. This is the two-tier
 attention contract: the list keeps quiet resting work visible, while only
 canonical `needs_you` contributes to the Work-tab highlight, notifications, and
-Dock badge.
+Dock badge. `useAppWideSessionAttention` owns that count at `AppShell` rather
+than inside Work, so Files, PRs, Lanes, and other project routes continue to
+receive PTY/chat/session events. It cancels old refreshes on project switch and
+clears the badge when the project closes.
 
 This lifecycle capsule is distinct from the amber process-cleanup warning pip.
 `getStaleRunningCliSessionAgeHours(session)` flags non-chat, non-run-owned
@@ -680,10 +685,15 @@ Right-click menu with branches per session type:
 - All rows: Rename (inline text input, sets `manuallyNamed: true`), Go to lane,
   Copy session ID, and optional pin/deeplink/grid actions supplied by the
   parent.
-- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest, and
-  Delete chat.
+- Chat: Set tag… (running Claude only), Settle/Unsettle when at rest,
+  **Dismiss & settle** for `Needs you`, and Delete chat. Dismissal routes
+  through the backend settlement transaction; it interrupts the provider and
+  clears live/restored pending input before writing settle instead of sending a
+  synthetic decline.
 - PTY: Stop runtime / Stop & delete while running, Delete session after exit,
-  and Settle/Unsettle when the runtime is not actively working.
+  and Settle/Unsettle when the runtime is not actively working. A tracked CLI's
+  explicit `ade chat ask` marker can use **Dismiss & settle**; a raw native TUI
+  prompt shows the disabled **Resolve input to settle** row.
 
 The rename input uses a local state and submits via
 `sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble
@@ -718,7 +728,7 @@ A single hook that owns a lot of state:
   would otherwise clobber the optimistic attachment, leaving the new
   `TerminalView` unable to subscribe to live PTY data
 - per-project work view state (open items, active/selected, view mode,
-  draft kind, filters, `showSettled`, organization, collapsed IDs,
+  draft kind, filters, organization, collapsed IDs,
   focus-hidden flag)
 - lane-scoped work view state keyed as `projectRoot::laneId`
 - persistence to `localStorage` under `ade.workViewState.v1`, written on
@@ -836,7 +846,9 @@ nothing when no delta is available.
   because a tab is hidden; use `terminalVisible={false}` instead so the
   PTY stays attached. The cached runtime has a 400 ms dispose timer
   that fires only when refs hit zero and stay there.
-- The session list cache is per `projectRoot + laneId + statusFilter`.
+- The session list cache keys normalized `ListSessionsArgs` by
+  `projectRoot + laneId + status + toolTypes`; Work requests the full inventory
+  and derives its Status grouping locally.
   Events that should update all views (e.g. a new chat session) should
   call `invalidateSessionListCache()` before the first `refresh()`.
 - Do not infer “loud” from the Your move bucket. That bucket deliberately mixes

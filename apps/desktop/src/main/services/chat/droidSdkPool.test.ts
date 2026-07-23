@@ -96,6 +96,11 @@ describe("Droid SDK pool", () => {
         autonomyLevel: "medium" as const,
         interactionMode: "auto" as const,
       },
+      baseEnv: {
+        PATH: "/tmp/ade-cli/bin",
+        ADE_CHAT_SESSION_ID: "session-1",
+        ADE_DEFAULT_ROLE: "agent",
+      },
     };
 
     const [first, second] = await Promise.all([
@@ -104,6 +109,17 @@ describe("Droid SDK pool", () => {
     ]);
 
     expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(forkMock).toHaveBeenCalledWith(
+      expect.any(String),
+      [],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PATH: "/tmp/ade-cli/bin",
+          ADE_CHAT_SESSION_ID: "session-1",
+          ADE_DEFAULT_ROLE: "agent",
+        }),
+      }),
+    );
     expect(second.pooled).toBe(first.pooled);
     expect(second.generation).toBe(first.generation);
 

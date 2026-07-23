@@ -6,7 +6,10 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
-import { listSessionsCached } from "../../lib/sessionListCache";
+import {
+  invalidateSessionListCache,
+  listSessionsCached,
+} from "../../lib/sessionListCache";
 import { useAppStore } from "../../state/appStore";
 import { AppShell } from "./AppShell";
 
@@ -40,6 +43,7 @@ vi.mock("../../lib/debugLog", () => ({
 
 vi.mock("../../lib/sessionListCache", () => ({
   listSessionsCached: vi.fn(async () => []),
+  invalidateSessionListCache: vi.fn(),
 }));
 
 const project = { rootPath: "/tmp/ai-project", displayName: "AI Project", baseRef: "main" } as any;
@@ -79,6 +83,13 @@ function resetStore() {
     dismissedMissingAiBannerRoots: {},
     dismissedGithubBannerRoots: {},
     isNewTabOpen: false,
+    terminalAttention: {
+      runningCount: 0,
+      activeCount: 0,
+      needsAttentionCount: 0,
+      indicator: "none",
+      byLaneId: {},
+    },
   } as any);
 }
 
@@ -86,7 +97,11 @@ describe("AppShell AI provider status", () => {
   const getStatusMock = vi.fn();
   const githubGetStatusMock = vi.fn();
   const analyticsCaptureMock = vi.fn();
-  let chatEventListener: ((envelope: AgentChatEventEnvelope) => void) | null = null;
+  const chatEventListeners = new Set<(envelope: AgentChatEventEnvelope) => void>();
+  let sessionChangedListener: (() => void) | null = null;
+  const emitChatEvent = (envelope: AgentChatEventEnvelope) => {
+    for (const listener of chatEventListeners) listener(envelope);
+  };
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -98,8 +113,11 @@ describe("AppShell AI provider status", () => {
     analyticsCaptureMock.mockReset();
     analyticsCaptureMock.mockResolvedValue({ accepted: true, reason: "accepted" });
     vi.mocked(listSessionsCached).mockClear();
+    vi.mocked(listSessionsCached).mockResolvedValue([]);
+    vi.mocked(invalidateSessionListCache).mockClear();
     githubGetStatusMock.mockResolvedValue(null);
-    chatEventListener = null;
+    chatEventListeners.clear();
+    sessionChangedListener = null;
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: {
@@ -112,12 +130,13 @@ describe("AppShell AI provider status", () => {
           getWindowSession: vi.fn(async () => ({ project, binding: null })),
           onProjectChanged: vi.fn(() => () => {}),
           onProjectBindingChanged: vi.fn(() => () => {}),
+          setDockBadgeCount: vi.fn(async () => undefined),
         },
         agentChat: {
           onEvent: vi.fn((listener: (envelope: AgentChatEventEnvelope) => void) => {
-            chatEventListener = listener;
+            chatEventListeners.add(listener);
             return () => {
-              if (chatEventListener === listener) chatEventListener = null;
+              chatEventListeners.delete(listener);
             };
           }),
         },
@@ -159,6 +178,14 @@ describe("AppShell AI provider status", () => {
         pty: {
           onData: vi.fn(() => () => {}),
           onExit: vi.fn(() => () => {}),
+        },
+        sessions: {
+          onChanged: vi.fn((listener: () => void) => {
+            sessionChangedListener = listener;
+            return () => {
+              if (sessionChangedListener === listener) sessionChangedListener = null;
+            };
+          }),
         },
         sync: {
           onEvent: vi.fn(() => () => {}),
@@ -295,7 +322,7 @@ describe("AppShell AI provider status", () => {
     expect(screen.queryByText(/No AI provider configured/i)).toBeNull();
 
     await act(async () => {
-      chatEventListener?.({
+      emitChatEvent({
         sessionId: "session-1",
         timestamp: "2026-05-28T12:00:00.000Z",
         event: {
@@ -312,6 +339,249 @@ describe("AppShell AI provider status", () => {
       force: true,
       refreshOpenCodeInventory: false,
     });
+  });
+
+  it("refreshes app-wide attention immediately for native structured questions", async () => {
+    vi.mocked(listSessionsCached).mockResolvedValue([{
+      id: "session-needs-you",
+      laneId: "lane-1",
+      toolType: "codex-chat",
+      status: "running",
+      runtimeState: "waiting-input",
+      pendingInputItemId: "question-1",
+      title: "Plan rollout",
+      goal: null,
+      startedAt: "2026-07-20T12:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-07-20T12:01:00.000Z",
+      lastOutputPreview: null,
+    } as any]);
+
+    render(
+      <MemoryRouter initialEntries={["/files"]}>
+        <AppShell>
+          <div>Files content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    vi.mocked(listSessionsCached).mockClear();
+
+    await act(async () => {
+      emitChatEvent({
+        sessionId: "session-needs-you",
+        timestamp: "2026-07-20T12:01:00.000Z",
+        event: {
+          type: "approval_request",
+          itemId: "question-1",
+          kind: "tool_call",
+          description: "Choose a rollout strategy",
+          detail: { request: { kind: "structured_question" } },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(invalidateSessionListCache).toHaveBeenCalledWith({
+      projectRoot: project.rootPath,
+    });
+    expect(listSessionsCached).toHaveBeenCalledWith(
+      { limit: 150 },
+      { force: true },
+    );
+    expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
+    expect(window.ade.app.setDockBadgeCount).toHaveBeenCalledWith(1);
+  });
+
+  it("refreshes attention immediately when an explicit ask changes session metadata", async () => {
+    vi.mocked(listSessionsCached).mockResolvedValue([{
+      id: "session-asked",
+      laneId: "lane-1",
+      toolType: "claude",
+      status: "running",
+      runtimeState: "idle",
+      attentionRequestedAt: "2026-07-20T12:02:00.000Z",
+      attentionMessage: "Which account should I use?",
+      title: "Auth migration",
+      goal: null,
+      startedAt: "2026-07-20T12:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-07-20T12:02:00.000Z",
+      lastOutputPreview: null,
+    } as any]);
+
+    render(
+      <MemoryRouter initialEntries={["/prs"]}>
+        <AppShell>
+          <div>PR content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    vi.mocked(listSessionsCached).mockClear();
+
+    await act(async () => {
+      sessionChangedListener?.();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(listSessionsCached).toHaveBeenCalledWith(
+      { limit: 150 },
+      { force: true },
+    );
+    expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
+    expect(window.ade.app.setDockBadgeCount).toHaveBeenCalledWith(1);
+  });
+
+  it("ignores an in-flight attention refresh after switching projects", async () => {
+    let resolveOldProject: ((sessions: any[]) => void) | null = null;
+    const oldProjectResult = new Promise<any[]>((resolve) => {
+      resolveOldProject = resolve;
+    });
+    vi.mocked(listSessionsCached)
+      .mockImplementationOnce(() => oldProjectResult)
+      .mockResolvedValueOnce([{
+        id: "new-project-needs-you",
+        laneId: "lane-new",
+        toolType: "codex-chat",
+        status: "running",
+        runtimeState: "idle",
+        attentionRequestedAt: "2026-07-20T12:02:00.000Z",
+        title: "New project work",
+        goal: null,
+        startedAt: "2026-07-20T12:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-07-20T12:02:00.000Z",
+        lastOutputPreview: null,
+      } as any]);
+    useAppStore.setState({
+      project,
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(2_500);
+    });
+    expect(listSessionsCached).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      useAppStore.setState({
+        project: {
+          ...project,
+          rootPath: "/tmp/other-project",
+          displayName: "Other project",
+        },
+      } as any);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500);
+      await Promise.resolve();
+    });
+
+    expect(listSessionsCached).toHaveBeenCalledTimes(2);
+    expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
+    expect(window.ade.app.setDockBadgeCount).toHaveBeenLastCalledWith(1);
+
+    await act(async () => {
+      resolveOldProject?.([{
+        id: "old-project-needs-you-1",
+        laneId: "lane-old",
+        toolType: "claude-chat",
+        status: "running",
+        runtimeState: "idle",
+        attentionRequestedAt: "2026-07-20T12:03:00.000Z",
+        title: "Old project work 1",
+        goal: null,
+        startedAt: "2026-07-20T12:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-07-20T12:03:00.000Z",
+        lastOutputPreview: null,
+      }, {
+        id: "old-project-needs-you-2",
+        laneId: "lane-old",
+        toolType: "claude-chat",
+        status: "running",
+        runtimeState: "idle",
+        attentionRequestedAt: "2026-07-20T12:03:00.000Z",
+        title: "Old project work 2",
+        goal: null,
+        startedAt: "2026-07-20T12:00:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-07-20T12:03:00.000Z",
+        lastOutputPreview: null,
+      } as any]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
+    expect(window.ade.app.setDockBadgeCount).not.toHaveBeenCalledWith(2);
+  });
+
+  it("clears app-wide attention and the dock badge when the project closes", async () => {
+    vi.mocked(listSessionsCached).mockResolvedValue([{
+      id: "session-needs-you",
+      laneId: "lane-1",
+      toolType: "codex-chat",
+      status: "running",
+      runtimeState: "idle",
+      attentionRequestedAt: "2026-07-20T12:02:00.000Z",
+      title: "Current project work",
+      goal: null,
+      startedAt: "2026-07-20T12:00:00.000Z",
+      endedAt: null,
+      lastActivityAt: "2026-07-20T12:02:00.000Z",
+      lastOutputPreview: null,
+    } as any]);
+    useAppStore.setState({
+      project,
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/files"]}>
+        <AppShell>
+          <div>Files content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500);
+    });
+    expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(1);
+    expect(window.ade.app.setDockBadgeCount).toHaveBeenLastCalledWith(1);
+
+    act(() => {
+      useAppStore.setState({
+        project: null,
+        projectHydrated: true,
+        showWelcome: true,
+      } as any);
+    });
+
+    expect(useAppStore.getState().terminalAttention.needsAttentionCount).toBe(0);
+    expect(window.ade.app.setDockBadgeCount).toHaveBeenLastCalledWith(0);
   });
 
   it("warms AI status on the main menu before a project is open", async () => {
@@ -447,7 +717,13 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(getStatusMock).not.toHaveBeenCalled();
-    expect(listSessionsCached).not.toHaveBeenCalled();
+    expect(listSessionsCached).toHaveBeenCalledWith(
+      { limit: 150 },
+      { force: true },
+    );
+    expect(vi.mocked(listSessionsCached).mock.calls.some(
+      ([args]) => (args as { status?: string } | undefined)?.status === "running",
+    )).toBe(false);
   });
 
   it("ignores stale auth-related chat history while remote AI status is cached", async () => {
@@ -489,7 +765,7 @@ describe("AppShell AI provider status", () => {
       await Promise.resolve();
     });
     await act(async () => {
-      chatEventListener?.({
+      emitChatEvent({
         sessionId: "session-1",
         timestamp: "2026-06-04T11:59:00.000Z",
         event: {
