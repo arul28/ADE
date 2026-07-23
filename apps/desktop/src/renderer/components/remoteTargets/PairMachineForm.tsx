@@ -167,6 +167,7 @@ export function PairMachineForm({
             style={{ ...fieldStyle, letterSpacing: "0.24em" }}
             disabled={busy || submitting}
             autoComplete="off"
+            autoFocus
           />
         </label>
         <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.4 }}>

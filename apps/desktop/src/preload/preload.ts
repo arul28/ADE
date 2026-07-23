@@ -241,6 +241,7 @@ import type {
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
+  AdeAccountPairMachineProgress,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -7766,6 +7767,17 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.accountGetLocalMachineIdentity),
     pairMachine: (machineKey: string): Promise<AdeAccountMachinePairResult> =>
       ipcRenderer.invoke(IPC.accountPairMachine, { machineKey }),
+    onPairMachineProgress: (
+      cb: (progress: AdeAccountPairMachineProgress) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        progress: AdeAccountPairMachineProgress,
+      ) => cb(progress);
+      ipcRenderer.on(IPC.accountPairMachineProgress, listener);
+      return () =>
+        ipcRenderer.removeListener(IPC.accountPairMachineProgress, listener);
+    },
     removeMachine: (machineKey: string): Promise<AdeAccountMachineRemovalResult> =>
       ipcRenderer.invoke(IPC.accountRemoveMachine, { machineKey }),
   },

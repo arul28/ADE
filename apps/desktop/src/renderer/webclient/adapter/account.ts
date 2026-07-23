@@ -73,6 +73,7 @@ export function createAccountNamespace(
     pairMachine: async () => {
       throw new Error("Choose this machine from the web machine switcher.");
     },
+    onPairMachineProgress: () => () => {},
     removeMachine: async (machineKey: string) => await accountClient.removeMachine(machineKey),
   };
 }

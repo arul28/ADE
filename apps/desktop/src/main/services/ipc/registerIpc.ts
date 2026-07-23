@@ -8809,6 +8809,16 @@ export function registerIpc({
       warn: (message, meta) => getCtx().logger.warn(message, meta),
     },
   });
+  accountBridge.onPairMachineProgress((progress) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue;
+      try {
+        win.webContents.send(IPC.accountPairMachineProgress, progress);
+      } catch {
+        // Ignore a window that closes while progress is being broadcast.
+      }
+    }
+  });
 
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     return accountBridge.status();

@@ -26,6 +26,7 @@ import type {
   AdeAccountMachinePairResult,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
+  AdeAccountPairMachineProgress,
   AdeAccountLoginPoll,
   AdeAccountStatus,
 } from "../../../shared/types";
@@ -130,12 +131,25 @@ export type AccountBridge = {
   cancelLogin(sessionId: string): void;
   signOut(): AdeAccountStatus;
   listMachines(): Promise<AdeAccountMachinesResult>;
-  pairMachine(machineKey: string): Promise<AdeAccountMachinePairResult>;
+  pairMachine(
+    machineKey: string,
+    options?: AccountBridgePairMachineOptions,
+  ): Promise<AdeAccountMachinePairResult>;
+  onPairMachineProgress(
+    listener: (progress: AdeAccountPairMachineProgress) => void,
+  ): () => void;
   removeMachine(machineKey: string): Promise<AdeAccountMachineRemovalResult>;
+};
+
+export type AccountBridgePairMachineOptions = {
+  onProgress?: (progress: AdeAccountPairMachineProgress) => void;
 };
 
 export function createAccountBridge(options: AccountBridgeOptions): AccountBridge {
   const secretsDir = resolveMachineAdeLayout().secretsDir;
+  const pairMachineProgressListeners = new Set<
+    (progress: AdeAccountPairMachineProgress) => void
+  >();
 
   const service = () =>
     getSharedAccountAuthService({
@@ -207,8 +221,44 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
       return result;
     },
 
-    pairMachine: async (machineKey: string): Promise<AdeAccountMachinePairResult> => {
-      return await directoryService().pairMachine(machineKey);
+    pairMachine: async (
+      machineKey: string,
+      pairOptions: AccountBridgePairMachineOptions = {},
+    ): Promise<AdeAccountMachinePairResult> => {
+      const emitProgress = (progress: AdeAccountPairMachineProgress): void => {
+        try {
+          pairOptions.onProgress?.(progress);
+        } catch {
+          // Progress reporting is best-effort and must not abort adoption.
+        }
+        for (const listener of pairMachineProgressListeners) {
+          try {
+            listener(progress);
+          } catch {
+            // One window listener must not prevent the pair attempt or other listeners.
+          }
+        }
+      };
+      emitProgress({
+        machineKey,
+        stage: "relay",
+        label: "Connecting through ADE relay…",
+      });
+      // AccountMachineDirectoryService does not expose adoption progress yet.
+      // When it does, its onProgress callback can be wired directly to
+      // emitProgress without changing this bridge or the renderer contract.
+      const result = await directoryService().pairMachine(machineKey);
+      emitProgress({
+        machineKey,
+        stage: "opening",
+        label: "Opening connection…",
+      });
+      return result;
+    },
+
+    onPairMachineProgress: (listener) => {
+      pairMachineProgressListeners.add(listener);
+      return () => pairMachineProgressListeners.delete(listener);
     },
 
     removeMachine: async (machineKey: string): Promise<AdeAccountMachineRemovalResult> => {

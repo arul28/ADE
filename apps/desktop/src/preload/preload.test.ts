@@ -79,12 +79,14 @@ describe("preload OAuth bridge", () => {
 
   it("exposes local account identity and machine removal IPC", async () => {
     const invoke = vi.fn(async () => undefined);
+    const on = vi.fn();
+    const removeListener = vi.fn();
     const exposeInMainWorld = vi.fn((_name: string, value: unknown) => {
       (globalThis as any).__adeBridge = value;
     });
     vi.doMock("electron", () => ({
       contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      ipcRenderer: { invoke, on, removeListener },
       webFrame: {
         getZoomLevel: vi.fn(() => 0),
         setZoomLevel: vi.fn(),
@@ -96,11 +98,33 @@ describe("preload OAuth bridge", () => {
     const bridge = (globalThis as any).__adeBridge;
     await bridge.account.getLocalMachineIdentity();
     await bridge.account.removeMachine("machine-a");
+    const progressCallback = vi.fn();
+    const unsubscribe = bridge.account.onPairMachineProgress(progressCallback);
 
     expect(invoke).toHaveBeenCalledWith(IPC.accountGetLocalMachineIdentity);
     expect(invoke).toHaveBeenCalledWith(IPC.accountRemoveMachine, {
       machineKey: "machine-a",
     });
+    expect(on).toHaveBeenCalledWith(
+      IPC.accountPairMachineProgress,
+      expect.any(Function),
+    );
+    const listener = on.mock.calls.at(-1)?.[1];
+    listener({}, {
+      machineKey: "machine-a",
+      stage: "relay",
+      label: "Connecting through ADE relay…",
+    });
+    expect(progressCallback).toHaveBeenCalledWith({
+      machineKey: "machine-a",
+      stage: "relay",
+      label: "Connecting through ADE relay…",
+    });
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(
+      IPC.accountPairMachineProgress,
+      listener,
+    );
   });
 
   it("exposes per-window project tab session IPC", async () => {

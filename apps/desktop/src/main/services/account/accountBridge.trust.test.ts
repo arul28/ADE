@@ -34,6 +34,7 @@ const pollLogin = vi.hoisted(() => vi.fn());
 const signOut = vi.hoisted(() => vi.fn());
 const deleteMachine = vi.hoisted(() => vi.fn());
 const listMachines = vi.hoisted(() => vi.fn());
+const pairMachine = vi.hoisted(() => vi.fn());
 const observedDirectoryBaseUrls = vi.hoisted(() => [] as Array<string | null>);
 const resolveOfficialAccountDirectoryBaseUrl = vi.hoisted(() => vi.fn(
   () => "https://ade-account-directory-production.arulsharma1028.workers.dev",
@@ -76,8 +77,8 @@ vi.mock(
         return listMachines();
       }
 
-      async pairMachine() {
-        throw new Error("not used");
+      async pairMachine(machineKey: string) {
+        return pairMachine(machineKey);
       }
 
       async deleteMachine(machineKey: string) {
@@ -423,6 +424,7 @@ describe("desktop account machine lifecycle", () => {
     signOut.mockReset().mockReturnValue({ ...accountStatus });
     deleteMachine.mockReset();
     listMachines.mockReset().mockResolvedValue({ state: "ok", machines: [], message: null });
+    pairMachine.mockReset();
     observedDirectoryBaseUrls.splice(0);
     resolveOfficialAccountDirectoryBaseUrl.mockClear();
   });
@@ -492,6 +494,51 @@ describe("desktop account machine lifecycle", () => {
       machineKey: "machine-a",
     });
     expect(deleteMachine).toHaveBeenCalledWith("machine-a");
+  });
+
+  it("emits account machine progress at the bridge and per-call boundaries", async () => {
+    pairMachine.mockResolvedValue({
+      targetId: "target-a",
+      machineKey: "machine-a",
+      deviceId: "device-a",
+      name: "Studio",
+    });
+    const { createAccountBridge } = await import("./accountBridge");
+    const bridge = createAccountBridge({ getProjectRoot: () => null });
+    const listener = vi.fn();
+    const onProgress = vi.fn();
+    const unsubscribe = bridge.onPairMachineProgress(listener);
+
+    await expect(
+      bridge.pairMachine("machine-a", { onProgress }),
+    ).resolves.toMatchObject({
+      targetId: "target-a",
+      machineKey: "machine-a",
+    });
+
+    const expectedProgress = [
+      {
+        machineKey: "machine-a",
+        stage: "relay",
+        label: "Connecting through ADE relay…",
+      },
+      {
+        machineKey: "machine-a",
+        stage: "opening",
+        label: "Opening connection…",
+      },
+    ];
+    expect(pairMachine).toHaveBeenCalledWith("machine-a");
+    expect(listener.mock.calls.map(([progress]) => progress)).toEqual(
+      expectedProgress,
+    );
+    expect(onProgress.mock.calls.map(([progress]) => progress)).toEqual(
+      expectedProgress,
+    );
+
+    unsubscribe();
+    await bridge.pairMachine("machine-a");
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 
   it("preserves a classified directory auth failure for the desktop surface", async () => {

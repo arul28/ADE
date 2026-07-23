@@ -320,6 +320,7 @@ import type {
   AdeAccountMachineRemovalResult,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
+  AdeAccountPairMachineProgress,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
@@ -2028,6 +2029,9 @@ declare global {
         listMachines: () => Promise<AdeAccountMachinesResult>;
         getLocalMachineIdentity: () => Promise<AdeAccountLocalMachineIdentity>;
         pairMachine: (machineKey: string) => Promise<AdeAccountMachinePairResult>;
+        onPairMachineProgress: (
+          cb: (progress: AdeAccountPairMachineProgress) => void,
+        ) => () => void;
         removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
       };
       prs: {

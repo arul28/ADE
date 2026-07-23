@@ -91,3 +91,9 @@ export type AdeAccountMachinePairResult = {
   deviceId: string;
   name: string;
 };
+
+export type AdeAccountPairMachineProgress = {
+  machineKey: string;
+  stage: "relay" | "tailnet" | "lan" | "verifying" | "opening";
+  label: string;
+};
