@@ -341,7 +341,7 @@ If it isn't in the bundle, it didn't happen: chat prose about "I captured a scre
 
 `registerAsset` accepts all of these kinds at the tool boundary (`html_spec`, `screenshot`, `test_log`, `doc`, `proof_artifact`, `computer_use`, `video`, `pr_link`, `linear_issue`, `deeplink`) plus the optional `externalRef` (`{ artifactId?, prNumber?, linearId?, url? }`) — pass the `externalRef` whenever the asset points at something outside the bundle so a reader can jump straight to it.
 
-**Lead scoping.** The lead may declare which capabilities a run should use in `manifest.capabilities` (`allowed` / `required` / `notes`) and surface them in each spawn brief so workers know what to reach for and what evidence to bring back. Absent a declaration, workers use judgement — capture proof whenever the outcome is only convincing if you see it.
+**Lead scoping.** There is no dedicated capabilities tool. If you want to record which capabilities a run should use, write them as optional metadata to `manifest.capabilities` (`allowed` / `required` / `notes`) with a plain `manifestPatch` — it's a lead-writable field, not enforced by the service today. The value of scoping is in the spawn brief: name the capabilities each worker should reach for and the evidence to bring back, whether or not you also record them on the manifest. Absent any declaration, workers use judgement — capture proof whenever the outcome is only convincing if you see it.
 
 ## §14 — Plain-language narrator discipline
 

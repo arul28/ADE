@@ -1088,7 +1088,7 @@ describe("orchestration heartbeat auto-recovery", () => {
     expect(after.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(true);
     const notes = leadStatusEntries(after);
     expect(notes).toHaveLength(1);
-    const note = notes[0] as { targetSessionId: string; delivery: { text?: string } };
+    const note = notes[0] as unknown as { targetSessionId: string; delivery: { text?: string } };
     expect(note.targetSessionId).toBe("S-lead");
     expect(note.delivery.text).toContain("hasn't shown signs of life for 12m");
     expect(note.delivery.text).toContain("messageAgent / awaitAgent / spawnAgent");
@@ -1179,6 +1179,61 @@ describe("orchestration heartbeat auto-recovery", () => {
     // The lead itself is never flagged even though it has no heartbeat.
     expect(after.agents.find((a) => a.role === "lead")?.stalled).toBeFalsy();
     expect(leadStatusEntries(after)).toHaveLength(0);
+    await svc.dispose();
+  });
+
+  it("reaps a wedged pending receipt past its TTL and frees the requestId; leaves a fresh one", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    // Simulate a crash between reserveReceipt and completeReceipt: a `pending`
+    // receipt reserved "now" that never completes.
+    const wedged = await svc.reserveReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:wedged",
+      kind: "spawnAgent",
+    });
+    expect(wedged).toEqual({ ok: true, status: "reserved" });
+
+    // Advance past the 15-minute pending TTL, then reserve a fresh receipt.
+    clock = BASE + 16 * MIN;
+    const fresh = await svc.reserveReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:fresh",
+      kind: "spawnAgent",
+    });
+    expect(fresh).toEqual({ ok: true, status: "reserved" });
+
+    const swept = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(swept.ok).toBe(true);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    const ids = (after.receipts ?? []).map((r) => r.requestId);
+    expect(ids).not.toContain("spawn:wedged"); // reaped: older than TTL
+    expect(ids).toContain("spawn:fresh"); // untouched: within TTL
+
+    // The reaped requestId is reservable again (no longer permanently deduped).
+    const reReserved = await svc.reserveReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:wedged",
+      kind: "spawnAgent",
+    });
+    expect(reReserved).toEqual({ ok: true, status: "reserved" });
+    await svc.dispose();
+  });
+
+  it("does not reap a completed receipt regardless of age", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await svc.reserveReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:done",
+      kind: "spawnAgent",
+    });
+    await svc.completeReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:done",
+      result: { sessionId: "S-worker" },
+    });
+    // Far past the pending TTL — completed receipts are capped at normalization,
+    // never reaped by the stale sweep.
+    clock = BASE + 60 * MIN;
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect((after.receipts ?? []).map((r) => r.requestId)).toContain("spawn:done");
     await svc.dispose();
   });
 });
@@ -2339,6 +2394,43 @@ describe("orchestration watcher resilience", () => {
       expect(edge.resultSummary).toBe("done: T-1");
       expect(edge.completedAt).toBeTruthy();
       expect(edge.taskIds).toContain("T-1");
+      await svc.dispose();
+    });
+
+    it("does not enqueue a second completion outbox entry when an already-terminal task is re-released", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      await seedChild(svc, manifest, { sessionId: "S-worker", taskId: "T-1" });
+      await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      const completionEntries = () =>
+        (svc.getManifestForRun(manifest.runId)!.outbox ?? []).filter(
+          (entry) => entry.kind === "completion",
+        );
+
+      // First release closes the edge and emits exactly one completion → lead.
+      await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "done" },
+        manifest.bundlePath,
+      );
+      expect(completionEntries()).toHaveLength(1);
+
+      // A duplicate release (e.g. an LLM retry): the edge is already closed, so
+      // no second completion is enqueued.
+      await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "done" },
+        manifest.bundlePath,
+      );
+      expect(completionEntries()).toHaveLength(1);
+
+      // A failed-after-done re-release also emits nothing further.
+      await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "failed" },
+        manifest.bundlePath,
+      );
+      expect(completionEntries()).toHaveLength(1);
       await svc.dispose();
     });
 

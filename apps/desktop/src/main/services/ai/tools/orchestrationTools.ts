@@ -15,7 +15,11 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import { executableTool as tool, type ExecutableTool } from "./executableTool";
-import { createUniversalToolSet, type UniversalToolSetOptions } from "./universalTools";
+import {
+  createUniversalToolSet,
+  type AskUserToolResult,
+  type UniversalToolSetOptions,
+} from "./universalTools";
 import type {
   EvidenceRef,
   ManifestPatchOp,
@@ -37,7 +41,10 @@ import {
   ORCHESTRATION_SPAWN_BRIEF_REQUIRED_SECTIONS,
   type OrchestrationSpawnAgentRequest,
 } from "../../../../shared/types/orchestration";
-import type { createOrchestrationService } from "../../orchestration/orchestrationService";
+import type {
+  createOrchestrationService,
+  NewOutboxEntry,
+} from "../../orchestration/orchestrationService";
 import {
   buildOutboxEnqueueOps,
   validateSpawnBrief,
@@ -445,6 +452,56 @@ function createSpawnAgentTool(
   });
 }
 
+/**
+ * Shared delivery epilogue for messageAgent's cancellation and ping branches:
+ * enqueue the single outbox entry, complete the idempotency receipt, then drain.
+ * On any failure the reserved receipt is released so its deterministic requestId
+ * stays reservable — mirroring spawnAgent's cleanup and single-sourcing the
+ * receipt-release-on-failure invariant across both branches (previously the
+ * completeReceipt-failure path leaked a pending receipt).
+ */
+async function finalizeDelivery(
+  svc: ReturnType<typeof createOrchestrationService>,
+  chat: OrchestrationAgentChatHandle,
+  ctx: OrchestrationSessionContext,
+  args: { requestId: string; entry: NewOutboxEntry },
+): Promise<{ ok: true } | { ok: false; error: "delivery_failed"; message: string }> {
+  const enqueued = await svc.enqueueOutbox(ctx.runId, ctx.bundlePath, [args.entry]);
+  if (!enqueued.ok) {
+    await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId: args.requestId });
+    return { ok: false, error: "delivery_failed", message: enqueued.message };
+  }
+  const completed = await svc.completeReceipt(ctx.runId, ctx.bundlePath, {
+    requestId: args.requestId,
+    result: {},
+  });
+  if (!completed.ok) {
+    await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId: args.requestId });
+    return { ok: false, error: "delivery_failed", message: completed.message };
+  }
+  await drainOutbox(svc, chat, ctx);
+  return { ok: true };
+}
+
+/**
+ * Normalize a single-choice askUser response. Returns the selected option value
+ * (if any) and whether the user dismissed the card (cancel/decline). A raw
+ * string response (no structured answer) is treated as not-dismissed with no
+ * answer — matching the prior inline handling at both call sites.
+ */
+function readSingleChoice(
+  response: string | AskUserToolResult,
+  questionId: string,
+): { answer?: string; dismissed: boolean } {
+  if (typeof response === "string") {
+    return { dismissed: false };
+  }
+  return {
+    answer: response.answers?.[questionId]?.[0],
+    dismissed: response.decision === "cancel" || response.decision === "decline",
+  };
+}
+
 function createMessageAgentTool(args: {
   ctx: OrchestrationSessionContext;
   chat: OrchestrationAgentChatHandle;
@@ -627,42 +684,15 @@ function createMessageAgentTool(args: {
               detail: "message" in patchRes ? patchRes.message : patchRes.error,
             };
           }
-          const enqueued = await args.svc.enqueueOutbox(
-            args.ctx.runId,
-            args.ctx.bundlePath,
-            [{
+          return finalizeDelivery(args.svc, args.chat, args.ctx, {
+            requestId,
+            entry: {
               kind: "cancel_interrupt",
               targetSessionId: input.targetSessionId,
               delivery: { op: "interrupt" },
               requestId,
-            }],
-          );
-          if (!enqueued.ok) {
-            await args.svc.releaseReceipt(
-              args.ctx.runId,
-              args.ctx.bundlePath,
-              { requestId },
-            );
-            return {
-              ok: false as const,
-              error: "delivery_failed",
-              message: enqueued.message,
-            };
-          }
-          const completed = await args.svc.completeReceipt(
-            args.ctx.runId,
-            args.ctx.bundlePath,
-            { requestId, result: {} },
-          );
-          if (!completed.ok) {
-            return {
-              ok: false as const,
-              error: "delivery_failed",
-              message: completed.message,
-            };
-          }
-          await drainOutbox(args.svc, args.chat, args.ctx);
-          return { ok: true as const };
+            },
+          });
         }
 
         const deliveryOp =
@@ -671,10 +701,9 @@ function createMessageAgentTool(args: {
             : input.kind === "interrupt-replace"
               ? "interrupt-replace"
               : "sendMessage";
-        const enqueued = await args.svc.enqueueOutbox(
-          args.ctx.runId,
-          args.ctx.bundlePath,
-          [{
+        return finalizeDelivery(args.svc, args.chat, args.ctx, {
+          requestId,
+          entry: {
             kind: "ping",
             targetSessionId: input.targetSessionId,
             delivery: {
@@ -683,34 +712,8 @@ function createMessageAgentTool(args: {
               metadata,
             },
             requestId,
-          }],
-        );
-        if (!enqueued.ok) {
-          await args.svc.releaseReceipt(
-            args.ctx.runId,
-            args.ctx.bundlePath,
-            { requestId },
-          );
-          return {
-            ok: false as const,
-            error: "delivery_failed",
-            message: enqueued.message,
-          };
-        }
-        const completed = await args.svc.completeReceipt(
-          args.ctx.runId,
-          args.ctx.bundlePath,
-          { requestId, result: {} },
-        );
-        if (!completed.ok) {
-          return {
-            ok: false as const,
-            error: "delivery_failed",
-            message: completed.message,
-          };
-        }
-        await drainOutbox(args.svc, args.chat, args.ctx);
-        return { ok: true as const };
+          },
+        });
       });
     },
   });
@@ -2066,14 +2069,10 @@ function createOfferLightPlanTool(
             },
           ],
         });
-        const result =
-          typeof response === "string"
-            ? { answers: undefined as Record<string, string[]> | undefined, decision: undefined as string | undefined }
-            : response;
-        if (result.decision === "cancel" || result.decision === "decline") {
+        const { answer, dismissed } = readSingleChoice(response, questionId);
+        if (dismissed) {
           return { ok: true as const, chosen: "full" as const, note: "user dismissed — staying on the full plan" };
         }
-        const answer = result.answers?.[questionId]?.[0];
         if (answer !== "light") {
           return { ok: true as const, chosen: "full" as const };
         }
@@ -2163,18 +2162,14 @@ function createChooseFinishingModeTool(
             },
           ],
         });
-        const result =
-          typeof response === "string"
-            ? { answers: undefined as Record<string, string[]> | undefined, decision: undefined as string | undefined }
-            : response;
-        if (result.decision === "cancel" || result.decision === "decline") {
+        const { answer, dismissed } = readSingleChoice(response, questionId);
+        if (dismissed) {
           return {
             ok: false as const,
             error: "finishing_unanswered",
             message: "User dismissed the finishing question without answering.",
           };
         }
-        const answer = result.answers?.[questionId]?.[0];
         const mode = answer === "pr" ? "pr" : "worktree";
         const res = await svc.recordFinishingChoice(ctx.runId, ctx.bundlePath, { mode });
         if (!res.ok) {

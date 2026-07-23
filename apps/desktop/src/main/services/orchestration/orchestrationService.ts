@@ -107,6 +107,12 @@ const HEARTBEAT_PERSIST_INTERVAL_MS = 30_000;
 // `stalled` and the lead is notified once. Not a timer — evaluated only when the
 // lead runs recoverStaleTasks.
 const HEARTBEAT_STALL_THRESHOLD_MS = 10 * 60 * 1000;
+// A `pending` idempotency receipt older than this is reaped during the existing
+// recover-stale sweep. A crash between reserveReceipt and completeReceipt would
+// otherwise leave a pending receipt that never expires, permanently deduping its
+// deterministic requestId (spawnAgent/messageAgent). Not a timer — evaluated
+// only when the lead runs recoverStaleTasks.
+const PENDING_RECEIPT_TTL_MS = 15 * 60 * 1000;
 const INDEX_FILE = "index.json";
 const HISTORY_RING_LIMIT = 50;
 const SELF_WRITE_WINDOW_MS = 1_000;
@@ -1385,6 +1391,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         // Close this child's open delegation edge when it goes terminal.
         if (agentStatus === "completed" || agentStatus === "failed") {
           const edgeStatus: DelegationStatus = agentStatus === "completed" ? "completed" : "failed";
+          // buildDelegationResultOps is idempotent — returns [] once the edge is
+          // closed — so re-pushing on a re-release is a safe no-op.
           ops.push(
             ...buildDelegationResultOps(
               manifest,
@@ -1397,10 +1405,23 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           // Durable completion event → lead. Emitted in the SAME transaction as
           // the terminal transition, so a lead can never miss a worker/validator
           // finishing (drives `awaitAgent`; delivered via the outbox drain). This
-          // piggybacks the existing lifecycle observation — no poller.
-          ops.push(
-            ...buildAgentCompletionOutboxOps(manifest, actor, task, edgeStatus),
-          );
+          // piggybacks the existing lifecycle observation — no poller. Gated on
+          // the agent NEWLY going terminal: a re-release of an already-terminal
+          // task (LLM retry, or done-then-failed with no intervening claim) finds
+          // the agent already completed/failed and emits nothing further, so the
+          // lead never gets a duplicate completion steer. A worker that claims a
+          // fresh task (claimTask resets its status to "running") and finishes
+          // again does emit a new completion, as intended — one per real
+          // terminal transition, edge-recorded or not.
+          // (`buildAgentCompletionOutboxOps` ids advance with the manifest etag,
+          // so id-based outbox dedup would not catch the duplicate.)
+          const agentAlreadyTerminal =
+            actor.status === "completed" || actor.status === "failed";
+          if (!agentAlreadyTerminal) {
+            ops.push(
+              ...buildAgentCompletionOutboxOps(manifest, actor, task, edgeStatus),
+            );
+          }
         }
       }
       const projectedManifest = applyPatches(manifest, ops);
@@ -3289,6 +3310,22 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       // accurate.
       const stall = buildStallDetectionOps(runtime, manifest, nowMs);
       ops.push(...stall.ops);
+      // Reap wedged pending receipts: a crash between reserveReceipt and
+      // completeReceipt leaves a `pending` receipt that never expires,
+      // permanently deduping its deterministic requestId so the logical
+      // spawn/message can never be reissued. Drop pending receipts older than
+      // the TTL here so the requestId becomes reservable again. Completed
+      // receipts are capped separately at normalization and left untouched.
+      const existingReceipts = manifest.receipts ?? [];
+      const survivingReceipts = existingReceipts.filter((receipt) => {
+        if (receipt.status !== "pending") return true;
+        const createdMs = Date.parse(receipt.createdAt);
+        return !Number.isFinite(createdMs) || nowMs - createdMs < PENDING_RECEIPT_TTL_MS;
+      });
+      const reapedReceipts = existingReceipts.length - survivingReceipts.length;
+      if (reapedReceipts) {
+        ops.push({ op: "replace", path: "/receipts", value: survivingReceipts });
+      }
       if (!ops.length) {
         return { ok: true, manifest, etag: manifest.etag, recovered: [] };
       }
@@ -3296,7 +3333,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         const res = await directPatch(
           runtime,
           ops,
-          `recover ${stale.length} stale task(s)${reconciledEdges ? `, reconcile ${reconciledEdges} edge(s)` : ""}${stall.flagged ? `, flag ${stall.flagged} stalled agent(s)` : ""}`,
+          `recover ${stale.length} stale task(s)${reconciledEdges ? `, reconcile ${reconciledEdges} edge(s)` : ""}${stall.flagged ? `, flag ${stall.flagged} stalled agent(s)` : ""}${reapedReceipts ? `, reap ${reapedReceipts} pending receipt(s)` : ""}`,
         );
         return { ok: true, manifest: res.manifest, etag: res.etag, recovered: stale.map((t) => t.id) };
       } catch (err) {

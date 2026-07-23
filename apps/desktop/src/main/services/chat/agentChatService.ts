@@ -13897,9 +13897,7 @@ export function createAgentChatService(args: {
   // process — a missing service leaves the method undefined, so the lead tool
   // degrades to a clean "unavailable" result rather than throwing (runtime-
   // backed-null-services safety). None of these mutate anything.
-  const buildOrchestrationLeadReadServices = (
-    laneId: string,
-  ): OrchestrationLeadReadServices => {
+  const buildOrchestrationLeadReadServices = (): OrchestrationLeadReadServices => {
     const services: OrchestrationLeadReadServices = {};
 
     const searchService = getSearchService?.() ?? null;
@@ -13961,7 +13959,6 @@ export function createAgentChatService(args: {
       return { ok: true, ade, https };
     };
 
-    void laneId;
     return services;
   };
 
@@ -13987,7 +13984,7 @@ export function createAgentChatService(args: {
       },
       universal: buildOrchestrationUniversalOptions(managed),
       ...(context.interactionMode === "orchestrator-lead"
-        ? { leadReadServices: buildOrchestrationLeadReadServices(context.sessionContext.laneId) }
+        ? { leadReadServices: buildOrchestrationLeadReadServices() }
         : {}),
     });
   };

@@ -1333,6 +1333,43 @@ describe("messageAgent tool", () => {
       decision.summary.includes(`Cancellation requested for ${spawnResult.sessionId}`),
     )).toBe(true);
   });
+
+  it("releases the receipt when completeReceipt fails after enqueue (no leaked pending receipt)", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-msg",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+
+    const releaseSpy = vi.spyOn(setup.svc, "releaseReceipt");
+    // completeReceipt fails after the outbox entry was enqueued.
+    vi.spyOn(setup.svc, "completeReceipt").mockResolvedValueOnce({
+      ok: false,
+      error: "etag_conflict",
+      message: "manifest advanced",
+    });
+
+    const messageAgent = leadTools.messageAgent!;
+    const result: any = await messageAgent.execute({
+      targetSessionId: spawnResult.sessionId,
+      kind: "queue",
+      intent: "status",
+      text: "status ping",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("delivery_failed");
+    // The reserved receipt must be released so its deterministic requestId stays
+    // reservable — no permanently-wedged pending receipt.
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect((manifest.receipts ?? []).every((r) => r.status !== "pending")).toBe(true);
+  });
 });
 
 describe("getAgentTranscript tool", () => {
