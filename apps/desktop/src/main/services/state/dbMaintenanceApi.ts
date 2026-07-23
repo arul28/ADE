@@ -12,6 +12,14 @@ const DAY_MS = 24 * 60 * 60 * 1_000;
 export const INGRESS_EVENT_RETENTION_MS = 7 * DAY_MS;
 /** Newest non-dispatched ingress rows kept per project after age pruning. */
 export const INGRESS_EVENT_MAX_ROWS_PER_PROJECT = 2_000;
+/**
+ * Hard ceiling on TOTAL ingress rows per project regardless of status. Well
+ * above the 2,000 active-row cap so normal dedup/audit history survives, but
+ * bounds dispatched/failed rows so an always-on brain dispatching high webhook
+ * volume can't bloat automation_ingress_events within the 7-day window and
+ * wedge the cr-sqlite table rebuild.
+ */
+export const INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT = 10_000;
 /** Review artifacts older than this (in days) are deleted. */
 export const REVIEW_ARTIFACT_RETENTION_DAYS = 30;
 /** PR snapshots not updated within this many days are deleted. */
@@ -24,7 +32,10 @@ export type DbMaintenanceResult = {
 };
 
 export interface DbMaintenanceApi {
-  /** Age-prune all ingress rows, then cap non-dispatched rows at 2,000 per project. */
+  /**
+   * Age-prune all ingress rows, cap non-dispatched rows at 2,000 per project,
+   * then hard-cap TOTAL rows (any status) at 10,000 per project.
+   */
   pruneIngressEvents(): DbMaintenanceResult;
   /** Delete review_run_artifacts rows older than 30 days. */
   pruneReviewArtifacts(): DbMaintenanceResult;

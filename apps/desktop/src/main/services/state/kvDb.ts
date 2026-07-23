@@ -10,6 +10,7 @@ import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
+  INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
@@ -325,6 +326,25 @@ function rewriteCreateTableName(sql: string, fromName: string, toName: string): 
   return sql.replace(pattern, `$1${quoteIdentifier(toName)}`);
 }
 
+/**
+ * Drop a leftover rebuild staging table (and its potential cr-sqlite sibling
+ * tables) so a fresh `CREATE TABLE __ade_crr_repair_<name>` cannot collide.
+ *
+ * A staging table is created as a plain (rewritten) table, so a plain DROP is
+ * correct; the `__crsql_clock` / `__crsql_pks` siblings are dropped defensively
+ * to cover any prior crsql-activated orphan. Every statement uses `if exists`,
+ * so this is a safe no-op when nothing stale is present.
+ */
+function dropRepairStagingTable(
+  db: DatabaseSyncType,
+  stagingName: string,
+  runStmt: typeof runStatement = runStatement,
+): void {
+  runStmt(db, `drop table if exists ${quoteIdentifier(stagingName)}`);
+  runStmt(db, `drop table if exists ${quoteIdentifier(`${stagingName}__crsql_clock`)}`);
+  runStmt(db, `drop table if exists ${quoteIdentifier(`${stagingName}__crsql_pks`)}`);
+}
+
 export type TableRebuildPlan = {
   tableName: string;
   stagingName: string;
@@ -360,6 +380,13 @@ export function rebuildTableInTransaction(
       throw codedError(`Unable to rebuild ${plan.tableName}: original row count is unavailable.`, "migration_incomplete");
     }
 
+    // An aborted/killed rebuild (or one whose row-copy failed on a bloated
+    // source table) can leave the staging table behind. The bare CREATE below
+    // has no drop-guard, so a surviving orphan makes this — and every future
+    // repair — throw "table already exists", wedging the sync host in an
+    // infinite repair loop. Drop any leftover staging table first, inside this
+    // same transaction, so the CREATE can never collide.
+    dropRepairStagingTable(db, plan.stagingName, runStmt);
     runStmt(db, plan.createStagingSql);
     runStmt(
       db,
@@ -1187,6 +1214,62 @@ export function recoverInterruptedTableRebuilds(
 
   logger?.info("db.rebuild_recovery_report", report);
   return report;
+}
+
+/**
+ * Startup safety net: drop every orphaned rebuild staging table that
+ * `recoverInterruptedTableRebuilds` did not reconcile before the retrofit
+ * passes run.
+ *
+ * `rebuildTableInTransaction` issues a bare `CREATE TABLE __ade_crr_repair_<name>`,
+ * so any surviving orphan (one left by a pre-fix build, or a rebuild whose
+ * process was killed) makes every retrofit throw "table already exists" and
+ * wedges the sync host in an infinite repair loop. Sweeping the orphans here —
+ * after recovery has salvaged interrupted renames and dropped safe-to-discard
+ * staging — guarantees the retrofit CREATE cannot collide. Original tables are
+ * untouched, so no user data is lost.
+ *
+ * Ambiguous bases are skipped: recovery deliberately preserves staging tables it
+ * could not classify so a later pass can inspect them, and retrofit already
+ * skips those base tables, so they never trigger the CREATE collision.
+ *
+ * Resilient by construction: every drop uses `if exists` and the whole sweep is
+ * wrapped so a failure (including a readonly database) never throws out of open.
+ */
+export function sweepOrphanedRepairStagingTables(
+  db: DatabaseSyncType,
+  ambiguousTables: ReadonlySet<string>,
+  logger?: Logger,
+): void {
+  try {
+    const orphans = allRows<{ name: string }>(
+      db,
+      "select name from sqlite_master where type = 'table' and (name like '__ade_crr_repair_%' or name like '__ade_fk_repair_%')",
+    );
+    let dropped = 0;
+    for (const { name } of orphans) {
+      const base = name.startsWith("__ade_crr_repair_")
+        ? name.slice("__ade_crr_repair_".length)
+        : name.slice("__ade_fk_repair_".length);
+      if (ambiguousTables.has(base)) continue;
+      try {
+        dropRepairStagingTable(db, name);
+        dropped += 1;
+      } catch (error) {
+        logger?.warn("db.repair_staging_sweep_drop_failed", {
+          table: name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (dropped > 0) {
+      logger?.info("db.repair_staging_sweep", { dropped });
+    }
+  } catch (error) {
+    logger?.warn("db.repair_staging_sweep_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function tableNeedsCrrTriggerRepair(db: DatabaseSyncType, tableName: string): boolean {
@@ -3604,6 +3687,13 @@ export async function openKvDb(
       if (!isReadonlyDatabaseError(error)) throw error;
     }
 
+    // Clear any orphaned rebuild staging table before the retrofit passes issue
+    // their bare `CREATE TABLE __ade_crr_repair_<name>`. A surviving orphan
+    // (pre-fix build or killed rebuild) otherwise throws "table already exists"
+    // and wedges the sync host in an infinite repair loop. Self-contained and
+    // never throws out.
+    sweepOrphanedRepairStagingTables(db, ambiguousRebuildTables, logger);
+
     let retrofittedLegacyPrimaryKeySchema = false;
     try {
       retrofittedLegacyPrimaryKeySchema = retrofitLegacyPrimaryKeyNotNullSchema(db, ambiguousRebuildTables);
@@ -3791,6 +3881,8 @@ export async function openKvDb(
         "select distinct project_id from automation_ingress_events",
       );
       for (const project of projects) {
+        // Active cap: newest 2,000 non-dispatched rows. Dispatched/failed rows
+        // are exempt so redelivered webhooks keep deduping.
         itemsAffected += runStatement(
           db,
           `delete from automation_ingress_events
@@ -3800,6 +3892,22 @@ export async function openKvDb(
               where project_id = ? and status not in ('dispatched', 'failed')
               order by received_at desc, rowid desc
               limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
+            )`,
+          [project.project_id],
+        ).changes;
+        // Hard cap: TOTAL rows (any status) trimmed to a generous ceiling,
+        // deleting oldest by received_at. Bounds dispatched/failed rows that the
+        // active cap exempts, so high-volume dispatch can't bloat the table and
+        // wedge the cr-sqlite rebuild within the 7-day window.
+        itemsAffected += runStatement(
+          db,
+          `delete from automation_ingress_events
+            where rowid in (
+              select rowid
+              from automation_ingress_events
+              where project_id = ?
+              order by received_at desc, rowid desc
+              limit -1 offset ${INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT}
             )`,
           [project.project_id],
         ).changes;

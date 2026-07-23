@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
 // vi.hoisted mock state
@@ -5504,5 +5504,125 @@ describe("prService auto-map by branch", () => {
       expect.stringContaining("insert or replace into pr_auto_link_ignores("),
       expect.arrayContaining([REPO.owner, REPO.name, 777, LANE_ID, AUTO_BRANCH]),
     );
+  });
+});
+
+describe("prService.reconcileOnFocus", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useRealTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Builds a service whose GitHub snapshot succeeds and records the `state`
+  // query value of every `/pulls` request, so tests can distinguish the open
+  // sweep (state:"open") from the slower closed sweep (state:"all").
+  function buildReconcileService() {
+    const pullStates: string[] = [];
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string; query?: { state?: string } }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          pullStates.push(String(args.query?.state ?? ""));
+          return { data: [] };
+        }
+        return { data: [] };
+      }),
+    });
+    // Empty db + no lanes → phases 1/3 fetch but phase 2 (merged-heal) is a
+    // no-op, keeping the test focused on throttle/single-flight/cadence.
+    const db = makeMockDb();
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+    return { service, githubService, pullStates };
+  }
+
+  it("runs the open sweep + closed sweep on a forced reconcile", async () => {
+    const { service, pullStates } = buildReconcileService();
+
+    const result = await service.reconcileOnFocus({ force: true });
+
+    expect(pullStates).toContain("open");
+    expect(pullStates).toContain("all");
+    expect(result.closedSwept).toBe(true);
+  });
+
+  it("skips (returns zeros) when called again within the min-interval without force", async () => {
+    const { service, pullStates } = buildReconcileService();
+
+    await service.reconcileOnFocus({ force: true });
+    pullStates.length = 0;
+
+    // Immediately (well within RECONCILE_MIN_INTERVAL_MS) — should short-circuit.
+    const result = await service.reconcileOnFocus();
+
+    expect(result).toEqual({ open: 0, healed: 0, closedSwept: false });
+    expect(pullStates).toEqual([]);
+  });
+
+  it("bypasses the min-interval throttle when force is set", async () => {
+    const { service, pullStates } = buildReconcileService();
+
+    await service.reconcileOnFocus({ force: true });
+    pullStates.length = 0;
+
+    const result = await service.reconcileOnFocus({ force: true });
+
+    // Forced reconcile fetches again despite the recent run.
+    expect(pullStates).toContain("open");
+    expect(result.closedSwept).toBe(true);
+  });
+
+  it("single-flights concurrent reconciles (second call returns zeros)", async () => {
+    const { service } = buildReconcileService();
+
+    const [first, second] = await Promise.all([
+      service.reconcileOnFocus({ force: true }),
+      service.reconcileOnFocus({ force: true }),
+    ]);
+
+    // Exactly one of the two ran; the other was single-flighted to zeros.
+    const ranClosedSweep = [first, second].filter((r) => r.closedSwept === true);
+    const returnedZeros = [first, second].filter(
+      (r) => r.open === 0 && r.healed === 0 && r.closedSwept === false,
+    );
+    expect(ranClosedSweep).toHaveLength(1);
+    expect(returnedZeros).toHaveLength(1);
+  });
+
+  it("honors the closed-sweep cadence: open sweep runs but closed sweep is skipped within the interval", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const { service, pullStates } = buildReconcileService();
+
+    // First (unforced) reconcile: lastClosedSweepAtMs starts at 0, so the closed
+    // sweep runs on the very first focus after open.
+    const first = await service.reconcileOnFocus();
+    expect(first.closedSwept).toBe(true);
+    pullStates.length = 0;
+
+    // Advance 2 minutes: past the 90s min-interval, but well inside the 30-min
+    // closed-sweep interval.
+    vi.setSystemTime(new Date("2026-01-01T00:02:00.000Z"));
+    const second = await service.reconcileOnFocus();
+
+    expect(pullStates).toContain("open"); // open sweep still runs
+    expect(pullStates).not.toContain("all"); // closed sweep is throttled
+    expect(second.closedSwept).toBe(false);
+  });
+
+  it("emits pr-reconcile running/idle events around a reconcile", async () => {
+    const { service } = buildReconcileService();
+    const events: Array<{ type: string; state?: string }> = [];
+    service.setEventEmitter((event) => {
+      events.push(event as { type: string; state?: string });
+    });
+
+    await service.reconcileOnFocus({ force: true });
+
+    const reconcileEvents = events.filter((e) => e.type === "pr-reconcile");
+    expect(reconcileEvents.map((e) => e.state)).toEqual(["running", "idle"]);
   });
 });

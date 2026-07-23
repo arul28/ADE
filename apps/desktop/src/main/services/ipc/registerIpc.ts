@@ -8990,6 +8990,18 @@ export function registerIpc({
     return ctx.prService.getForLane(arg.laneId);
   });
 
+  ipcMain.handle(IPC.prsSyncLanePr, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return null;
+    return await ctx.prService.syncLanePr(arg.laneId);
+  });
+
+  ipcMain.handle(IPC.prsReconcileNow, async (): Promise<void> => {
+    const ctx = ensurePrPolling();
+    if (!ctx) return;
+    await ctx.prService.reconcileOnFocus({ force: true });
+  });
+
   ipcMain.handle(IPC.prsListAll, async (): Promise<PrSummary[]> => {
     const ctx = ensurePrReadContext();
     return ctx.prService.listAll();

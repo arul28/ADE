@@ -2052,6 +2052,8 @@ declare global {
           args: CreateLaneFromPrBranchArgs,
         ) => Promise<CreateLaneFromPrBranchResult>;
         getForLane: (laneId: string) => Promise<PrSummary | null>;
+        syncLanePr: (laneId: string) => Promise<PrSummary | null>;
+        reconcileNow: () => Promise<void>;
         listAll: () => Promise<PrSummary[]>;
         listOpenForRepo: () => Promise<BranchPullRequest[]>;
         refresh: (args?: {

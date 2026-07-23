@@ -7845,6 +7845,14 @@ contextBridge.exposeInMainWorld("ade", {
       callPrReadRuntimeActionOr("getForLane", { arg: laneId }, () =>
         ipcRenderer.invoke(IPC.prsGetForLane, { laneId }),
       ),
+    syncLanePr: async (laneId: string): Promise<PrSummary | null> =>
+      callPrReadRuntimeActionOr("syncLanePr", { arg: laneId }, () =>
+        ipcRenderer.invoke(IPC.prsSyncLanePr, { laneId }),
+      ),
+    reconcileNow: async (): Promise<void> =>
+      callPrReadRuntimeActionOr("reconcileOnFocus", { args: { force: true } }, () =>
+        ipcRenderer.invoke(IPC.prsReconcileNow),
+      ),
     listAll: async (): Promise<PrSummary[]> =>
       callPrReadRuntimeActionOr("listAll", { args: {} }, () =>
         ipcRenderer.invoke(IPC.prsListAll),

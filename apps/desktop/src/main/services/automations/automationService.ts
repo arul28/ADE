@@ -36,6 +36,7 @@ import { triggerDeliveryKeyForType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import {
+  INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
@@ -1146,9 +1147,18 @@ export function createAutomationService({
   };
 
   const pruneIngressEventOverflowForProject = (targetProjectId: string): void => {
-    // Rows that reached dispatch are exempt from the count cap. A failed row
-    // was previously dispatched and must keep deduping webhook redelivery even
-    // when a later action failed; both statuses remain subject to the age prune.
+    // Two caps working together. The active cap keeps only the newest 2,000
+    // non-dispatched rows: dispatched/failed rows are exempt here so redelivered
+    // webhooks still dedupe against their prior (project_id, source, event_key)
+    // even after their action completed or failed. But that exemption means
+    // dispatched/failed rows would otherwise be bounded ONLY by the 7-day age
+    // prune, so an always-on brain dispatching high webhook/relay volume could
+    // accumulate effectively unbounded dispatched rows inside the window and
+    // bloat automation_ingress_events until it wedges the cr-sqlite table
+    // rebuild. The hard cap below therefore trims TOTAL rows (any status) down
+    // to a generous ceiling, deleting the oldest by received_at. This is safe:
+    // the relay cursor advances, so old dispatched rows carry no live dedup
+    // value — consistent with the age prune that already deletes them.
     db.run(
       `delete from automation_ingress_events
         where rowid in (
@@ -1157,6 +1167,17 @@ export function createAutomationService({
           where project_id = ? and status not in ('dispatched', 'failed')
           order by received_at desc, rowid desc
           limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
+        )`,
+      [targetProjectId],
+    );
+    db.run(
+      `delete from automation_ingress_events
+        where rowid in (
+          select rowid
+          from automation_ingress_events
+          where project_id = ?
+          order by received_at desc, rowid desc
+          limit -1 offset ${INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT}
         )`,
       [targetProjectId],
     );

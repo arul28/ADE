@@ -262,7 +262,7 @@ describe("AppShell AI provider status", () => {
     );
 
     await act(async () => {});
-    expect(screen.getByText(/No AI provider is configured yet/i)).toBeTruthy();
+    expect(screen.getByText(/No AI provider configured/i)).toBeTruthy();
 
     await act(async () => {
       invalidateAiDiscoveryCache(project.rootPath);
@@ -270,7 +270,7 @@ describe("AppShell AI provider status", () => {
       await Promise.resolve();
     });
 
-    expect(screen.queryByText(/No AI provider is configured yet/i)).toBeNull();
+    expect(screen.queryByText(/No AI provider configured/i)).toBeNull();
     expect(getStatusMock).toHaveBeenLastCalledWith({
       force: true,
       refreshOpenCodeInventory: false,
@@ -292,7 +292,7 @@ describe("AppShell AI provider status", () => {
     );
 
     await act(async () => {});
-    expect(screen.queryByText(/No AI provider is configured yet/i)).toBeNull();
+    expect(screen.queryByText(/No AI provider configured/i)).toBeNull();
 
     await act(async () => {
       chatEventListener?.({
@@ -307,7 +307,7 @@ describe("AppShell AI provider status", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByText(/No AI provider is configured yet/i)).toBeTruthy();
+    expect(screen.getByText(/No AI provider configured/i)).toBeTruthy();
     expect(getStatusMock).toHaveBeenLastCalledWith({
       force: true,
       refreshOpenCodeInventory: false,
