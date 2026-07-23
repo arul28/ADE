@@ -632,14 +632,31 @@ final class DatabaseService {
       }
   }
 
-  func replaceLaneSnapshots(_ lanes: [LaneSummary], snapshots: [LaneListSnapshot]? = nil) throws {
-    try withLock { try replaceLaneSnapshotsLocked(lanes, snapshots: snapshots) }
+  func replaceLaneSnapshots(
+    _ lanes: [LaneSummary],
+    snapshots: [LaneListSnapshot]? = nil,
+    expectedProjectId: String? = nil
+  ) throws {
+    try withLock {
+      try replaceLaneSnapshotsLocked(
+        lanes,
+        snapshots: snapshots,
+        expectedProjectId: expectedProjectId
+      )
+    }
   }
 
-  private func replaceLaneSnapshotsLocked(_ lanes: [LaneSummary], snapshots: [LaneListSnapshot]? = nil) throws {
+  private func replaceLaneSnapshotsLocked(
+    _ lanes: [LaneSummary],
+    snapshots: [LaneListSnapshot]? = nil,
+    expectedProjectId: String? = nil
+  ) throws {
     guard db != nil else { return }
     guard let projectId = currentProjectIdLocked() else {
       throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
+    }
+    if let expectedProjectId, projectId != expectedProjectId {
+      throw CancellationError()
     }
 
     shouldCaptureLocalChanges = false
@@ -882,12 +899,23 @@ final class DatabaseService {
     }
   }
 
-  func replaceLaneDetail(_ detail: LaneDetailPayload) throws {
-    try withLock { try replaceLaneDetailLocked(detail) }
+  func replaceLaneDetail(
+    _ detail: LaneDetailPayload,
+    expectedProjectId: String? = nil
+  ) throws {
+    try withLock {
+      try replaceLaneDetailLocked(detail, expectedProjectId: expectedProjectId)
+    }
   }
 
-  private func replaceLaneDetailLocked(_ detail: LaneDetailPayload) throws {
+  private func replaceLaneDetailLocked(
+    _ detail: LaneDetailPayload,
+    expectedProjectId: String? = nil
+  ) throws {
     guard db != nil else { return }
+    if let expectedProjectId, currentProjectIdLocked() != expectedProjectId {
+      throw CancellationError()
+    }
     guard fetchLaneDetailLocked(laneId: detail.lane.id) != detail else { return }
 
     let encodedDetail = try encodeJsonString(detail)
@@ -946,14 +974,25 @@ final class DatabaseService {
     return decodeJson(row.detailJson, as: LaneDetailPayload.self)
   }
 
-  func replaceTerminalSessions(_ sessions: [TerminalSessionSummary]) throws {
-    try withLock { try replaceTerminalSessionsLocked(sessions) }
+  func replaceTerminalSessions(
+    _ sessions: [TerminalSessionSummary],
+    expectedProjectId: String? = nil
+  ) throws {
+    try withLock {
+      try replaceTerminalSessionsLocked(sessions, expectedProjectId: expectedProjectId)
+    }
   }
 
-  private func replaceTerminalSessionsLocked(_ sessions: [TerminalSessionSummary]) throws {
+  private func replaceTerminalSessionsLocked(
+    _ sessions: [TerminalSessionSummary],
+    expectedProjectId: String? = nil
+  ) throws {
     guard db != nil else { return }
     guard let projectId = currentProjectIdLocked() else {
       throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
+    }
+    if let expectedProjectId, projectId != expectedProjectId {
+      throw CancellationError()
     }
 
     shouldCaptureLocalChanges = false
@@ -1222,14 +1261,31 @@ final class DatabaseService {
     }
   }
 
-  func replacePullRequestHydration(_ payload: PullRequestRefreshPayload, pruneStale: Bool = true) throws {
-    try withLock { try replacePullRequestHydrationLocked(payload, pruneStale: pruneStale) }
+  func replacePullRequestHydration(
+    _ payload: PullRequestRefreshPayload,
+    pruneStale: Bool = true,
+    expectedProjectId: String? = nil
+  ) throws {
+    try withLock {
+      try replacePullRequestHydrationLocked(
+        payload,
+        pruneStale: pruneStale,
+        expectedProjectId: expectedProjectId
+      )
+    }
   }
 
-  private func replacePullRequestHydrationLocked(_ payload: PullRequestRefreshPayload, pruneStale: Bool = true) throws {
+  private func replacePullRequestHydrationLocked(
+    _ payload: PullRequestRefreshPayload,
+    pruneStale: Bool = true,
+    expectedProjectId: String? = nil
+  ) throws {
     guard db != nil else { return }
     guard let projectId = currentProjectIdLocked() else {
       throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
+    }
+    if let expectedProjectId, projectId != expectedProjectId {
+      throw CancellationError()
     }
 
     shouldCaptureLocalChanges = false
@@ -1434,13 +1490,27 @@ final class DatabaseService {
     }
   }
 
-  func replaceFilesWorkspaces(_ workspaces: [FilesWorkspace]) throws {
-    try withLock { try replaceFilesWorkspacesLocked(workspaces) }
+  func replaceFilesWorkspaces(
+    _ workspaces: [FilesWorkspace],
+    expectedProjectId: String? = nil
+  ) throws {
+    try withLock {
+      try replaceFilesWorkspacesLocked(
+        workspaces,
+        expectedProjectId: expectedProjectId
+      )
+    }
   }
 
-  private func replaceFilesWorkspacesLocked(_ workspaces: [FilesWorkspace]) throws {
+  private func replaceFilesWorkspacesLocked(
+    _ workspaces: [FilesWorkspace],
+    expectedProjectId: String? = nil
+  ) throws {
     guard tableExists("files_workspaces") else { return }
     let projectId = currentProjectIdLocked()
+    if let expectedProjectId, projectId != expectedProjectId {
+      throw CancellationError()
+    }
     let hasProjects = projectCount() > 0
     let projectRoot = projectId.flatMap { id in
       queryString("select root_path from projects where id = ? limit 1", bind: { [self] statement in

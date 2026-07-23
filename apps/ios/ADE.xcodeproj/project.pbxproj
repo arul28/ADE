@@ -152,6 +152,8 @@
 		D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000008 /* PrMergeMergeStateTests.swift */; };
 		D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */; };
 		FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */; };
+		FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */; };
+		FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000002 /* LaneAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* LaneAttachSheet.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
@@ -541,6 +543,8 @@
 		C5A00000000000000000000C /* SSHPairingViewModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHPairingViewModel.swift; path = ADE/Views/Settings/SSHPairingViewModel.swift; sourceTree = "<group>"; };
 		C5A00000000000000000000D /* SSHPairingView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHPairingView.swift; path = ADE/Views/Settings/SSHPairingView.swift; sourceTree = "<group>"; };
 		C5A00000000000000000000E /* SSHBootstrapTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SSHBootstrapTests.swift; path = ADETests/SSHBootstrapTests.swift; sourceTree = "<group>"; };
+		FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkAssistantRenderingTests.swift; path = ADETests/WorkAssistantRenderingTests.swift; sourceTree = "<group>"; };
+		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -1046,6 +1050,8 @@
 				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
 				FA000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift */,
+				FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */,
+				FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */,
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
 				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
 			);
@@ -1540,6 +1546,8 @@
 				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
 				FB000000000000000000C2C2 /* WorkSessionCanonicalStateTests.swift in Sources */,
+				FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */,
+				FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */,
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
 				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,
 			);

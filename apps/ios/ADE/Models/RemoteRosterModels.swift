@@ -65,6 +65,187 @@ struct RemoteRosterProject: Codable, Equatable, Identifiable {
   var id: String { projectId }
 }
 
+struct RosterSessionNavigationTarget: Equatable {
+  let project: MobileProjectSummary
+  let lane: RemoteRosterLane?
+  let chat: RemoteRosterChat
+}
+
+/// SwiftUI task identity for repository-scoped session routing. Catalog rows
+/// often arrive first without origin coordinates and are then upgraded in
+/// place by the live host; include every field that can change resolution so
+/// Hub retries even when the project id/root are unchanged.
+func rosterNavigationCatalogRevisionKey(
+  _ projects: [MobileProjectSummary]
+) -> String {
+  projects.map { project in
+    [
+      project.id,
+      project.rootPath ?? "",
+      project.displayName,
+      project.repoOwner ?? "",
+      project.repoName ?? "",
+    ].map { "\($0.utf8.count):\($0)" }.joined()
+  }.joined(separator: "|")
+}
+
+/// Resolve a session deeplink against the machine roster. Session id is the
+/// primary identity unless the link names a repository, in which case that
+/// repository is a hard project boundary. Lane ids and branch names are only
+/// fallback hints inside that boundary. A synthetic non-chat row intentionally
+/// forces project activation + real row hydration when the roster has not
+/// announced the session yet.
+func resolveRosterSessionNavigationTarget(
+  projects: [MobileProjectSummary],
+  rosterProjects: [RemoteRosterProject],
+  sessionId: String,
+  laneId: String?,
+  repoOwner: String?,
+  repoName: String?,
+  branch: String?
+) -> RosterSessionNavigationTarget? {
+  let normalizedLaneId = laneId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedRepoOwner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedRepoName = repoName?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+  func catalogProjects(owner: String?, named name: String) -> [MobileProjectSummary] {
+    projects.filter { project in
+      if let owner, !owner.isEmpty {
+        guard let projectOwner = project.repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !projectOwner.isEmpty,
+              projectOwner.caseInsensitiveCompare(owner) == .orderedSame,
+              let projectRepoName = project.repoName?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !projectRepoName.isEmpty,
+              projectRepoName.caseInsensitiveCompare(name) == .orderedSame else {
+          return false
+        }
+        return true
+      }
+      let displayMatches = project.displayName.caseInsensitiveCompare(name) == .orderedSame
+      let rootName = project.rootPath.map {
+        let component = URL(fileURLWithPath: $0).lastPathComponent
+        return component.lowercased().hasSuffix(".git")
+          ? String(component.dropLast(4))
+          : component
+      }
+      return displayMatches || rootName?.caseInsensitiveCompare(name) == .orderedSame
+    }
+  }
+
+  let scopedCatalogProject: MobileProjectSummary? = {
+    guard let normalizedRepoName, !normalizedRepoName.isEmpty else { return nil }
+    let matches = catalogProjects(owner: normalizedRepoOwner, named: normalizedRepoName)
+    return matches.count == 1 ? matches[0] : nil
+  }()
+  // A named repository must resolve unambiguously. Never let a globally
+  // unique branch (often `main`) override an explicit repository envelope.
+  if normalizedRepoName?.isEmpty == false, scopedCatalogProject == nil {
+    return nil
+  }
+
+  let candidateRosterProjects: [RemoteRosterProject] = {
+    guard let scopedCatalogProject else { return rosterProjects }
+    let catalogRoot = syncNormalizedProjectRootScope(scopedCatalogProject.rootPath)
+    let exactMatches = rosterProjects.filter { project in
+      if project.projectId == scopedCatalogProject.id { return true }
+      guard let catalogRoot else { return false }
+      return syncNormalizedProjectRootScope(project.rootPath) == catalogRoot
+    }
+    if !exactMatches.isEmpty { return exactMatches }
+
+    // Cached/older catalog payloads can use different derived ids and omit the
+    // root. A unique display-name match is the final compatibility bridge only
+    // for legacy name-only links. Once an owner was supplied and verified by
+    // the catalog, a same-named roster from another owner is never safe.
+    if normalizedRepoOwner?.isEmpty == false { return [] }
+    guard let normalizedRepoName else { return [] }
+    let nameMatches = rosterProjects.filter {
+      $0.displayName.caseInsensitiveCompare(normalizedRepoName) == .orderedSame
+    }
+    return nameMatches.count == 1 ? nameMatches : []
+  }()
+
+  var rosterProject = candidateRosterProjects.first { project in
+    project.chats.contains { $0.id == sessionId }
+  }
+  if rosterProject == nil, let normalizedLaneId, !normalizedLaneId.isEmpty {
+    rosterProject = candidateRosterProjects.first { project in
+      project.lanes.contains { $0.id == normalizedLaneId }
+    }
+  }
+  if rosterProject == nil, let normalizedBranch, !normalizedBranch.isEmpty {
+    let matches = candidateRosterProjects.filter { project in
+      project.lanes.contains {
+        $0.branchRef?.caseInsensitiveCompare(normalizedBranch) == .orderedSame
+      }
+    }
+    if matches.count == 1 { rosterProject = matches[0] }
+  }
+  if rosterProject == nil, scopedCatalogProject != nil, candidateRosterProjects.count == 1 {
+    rosterProject = candidateRosterProjects[0]
+  }
+
+  let catalogProject: MobileProjectSummary? = {
+    if let scopedCatalogProject { return scopedCatalogProject }
+    if let rosterProject {
+      if let direct = projects.first(where: { $0.id == rosterProject.projectId }) {
+        return direct
+      }
+      let rosterRoot = syncNormalizedProjectRootScope(rosterProject.rootPath)
+      if let rosterRoot,
+         let rootMatch = projects.first(where: {
+           syncNormalizedProjectRootScope($0.rootPath) == rosterRoot
+         }) {
+        return rootMatch
+      }
+    }
+    return nil
+  }()
+  guard let catalogProject else { return nil }
+
+  let resolvedRoster = rosterProject ?? rosterProjects.first { project in
+    project.projectId == catalogProject.id
+      || (
+        syncNormalizedProjectRootScope(project.rootPath) != nil
+          && syncNormalizedProjectRootScope(project.rootPath)
+            == syncNormalizedProjectRootScope(catalogProject.rootPath)
+      )
+  }
+  let rosterChat = resolvedRoster?.chats.first { $0.id == sessionId }
+  let resolvedLane: RemoteRosterLane? = {
+    guard let resolvedRoster else { return nil }
+    // Once the authoritative chat exists, its lane owns the relationship.
+    // Envelope hints may be stale and must only guide a synthetic fallback.
+    if let rosterChat {
+      return resolvedRoster.lanes.first { $0.id == rosterChat.laneId }
+    }
+    return resolvedRoster.lanes.first { lane in
+      if let normalizedLaneId, !normalizedLaneId.isEmpty, lane.id == normalizedLaneId { return true }
+      if let normalizedBranch, !normalizedBranch.isEmpty {
+        return lane.branchRef?.caseInsensitiveCompare(normalizedBranch) == .orderedSame
+      }
+      return false
+    }
+  }()
+  let chat = rosterChat ?? RemoteRosterChat(
+    id: sessionId,
+    laneId: resolvedLane?.id ?? normalizedLaneId ?? "",
+    chatSessionId: nil,
+    title: nil,
+    provider: nil,
+    model: nil,
+    toolType: nil,
+    status: .idle,
+    awaitingInput: nil,
+    pinned: nil,
+    archived: nil,
+    lastActivityAt: nil,
+    preview: nil
+  )
+  return RosterSessionNavigationTarget(project: catalogProject, lane: resolvedLane, chat: chat)
+}
+
 /// Full roster snapshot — `roster_snapshot` envelope payload.
 struct RemoteRosterSnapshotPayload: Codable, Equatable {
   var seq: Int
@@ -88,6 +269,24 @@ enum RosterDeltaOutcome: Equatable {
   case dropped
   /// No baseline or a seq gap — must request a fresh snapshot before applying.
   case needsSnapshot
+}
+
+/// Project ids whose lightweight roster projection changed between two
+/// snapshots. Used to invalidate an active Work surface without making
+/// unrelated-project agent activity rebuild it.
+func rosterChangedProjectIds(
+  previous: [RemoteRosterProject],
+  next: [RemoteRosterProject]
+) -> Set<String> {
+  var previousById: [String: RemoteRosterProject] = [:]
+  var nextById: [String: RemoteRosterProject] = [:]
+  for project in previous { previousById[project.projectId] = project }
+  for project in next { nextById[project.projectId] = project }
+  return Set(
+    Set(previousById.keys).union(nextById.keys).filter {
+      previousById[$0] != nextById[$0]
+    }
+  )
 }
 
 /// Pure delta-merge with the same sinceSeq discipline as chat_event: never apply

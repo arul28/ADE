@@ -43,8 +43,17 @@ final class DeepLinkRouter {
     case "session":
       guard let sessionId = pathComponents.first,
             ADEDeepLinkURLParsing.isValidOpaqueId(sessionId),
-            let anchors = sessionAnchors(from: url) else { return }
-      post(kind: "session", identifier: sessionId, event: anchors.event, offset: anchors.offset)
+            let scope = sessionNavigationScope(from: url) else { return }
+      post(
+        kind: "session",
+        identifier: sessionId,
+        laneId: scope.laneId,
+        repoOwner: scope.repoOwner,
+        repoName: scope.repoName,
+        branch: scope.branch,
+        event: scope.event,
+        offset: scope.offset
+      )
     case "pr":
       // Two accepted shapes today:
       //   `ade://pr/<n>`                       (compact local link)
@@ -151,8 +160,17 @@ final class DeepLinkRouter {
     case "session":
       guard let sessionId = query["id"],
             ADEDeepLinkURLParsing.isValidOpaqueId(sessionId),
-            let anchors = sessionAnchors(from: query) else { return true }
-      post(kind: "session", identifier: sessionId, event: anchors.event, offset: anchors.offset)
+            let scope = sessionNavigationScope(from: query) else { return true }
+      post(
+        kind: "session",
+        identifier: sessionId,
+        laneId: scope.laneId,
+        repoOwner: scope.repoOwner,
+        repoName: scope.repoName,
+        branch: scope.branch,
+        event: scope.event,
+        offset: scope.offset
+      )
     case "file":
       guard isValidFileTarget(path: query["path"] ?? "", query: query) else { return true }
       postSendToMac(url: url)
@@ -200,7 +218,14 @@ final class DeepLinkRouter {
       return
     }
     if let sessionId = userInfo["sessionId"] as? String, !sessionId.isEmpty {
-      post(kind: "session", identifier: sessionId)
+      post(
+        kind: "session",
+        identifier: sessionId,
+        laneId: stringValue(from: userInfo["laneId"]),
+        repoOwner: stringValue(from: userInfo["repoOwner"]),
+        repoName: stringValue(from: userInfo["repoName"]),
+        branch: stringValue(from: userInfo["branch"])
+      )
       return
     }
     if let prId = userInfo["prId"] as? String, !prId.isEmpty {
@@ -228,8 +253,10 @@ final class DeepLinkRouter {
     kind: String,
     identifier: String,
     prNumber: Int? = nil,
+    laneId: String? = nil,
     repoOwner: String? = nil,
     repoName: String? = nil,
+    branch: String? = nil,
     event: Int? = nil,
     offset: Int? = nil
   ) {
@@ -250,10 +277,14 @@ final class DeepLinkRouter {
     var userInfo: [String: Any] = ["kind": kind, "identifier": identifier]
     if let event { userInfo["event"] = event }
     if let offset { userInfo["offset"] = offset }
+    let scopedLaneId = laneId?.trimmingCharacters(in: .whitespacesAndNewlines)
     let scopedRepoOwner = repoOwner?.trimmingCharacters(in: .whitespacesAndNewlines)
     let scopedRepoName = repoName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let scopedBranch = branch?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let scopedLaneId, !scopedLaneId.isEmpty { userInfo["laneId"] = scopedLaneId }
     if let scopedRepoOwner, !scopedRepoOwner.isEmpty { userInfo["repoOwner"] = scopedRepoOwner }
     if let scopedRepoName, !scopedRepoName.isEmpty { userInfo["repoName"] = scopedRepoName }
+    if let scopedBranch, !scopedBranch.isEmpty { userInfo["branch"] = scopedBranch }
     NotificationCenter.default.post(
       name: .adeDeepLinkRequested,
       object: nil,
@@ -262,6 +293,10 @@ final class DeepLinkRouter {
     if kind == "session" {
       SyncService.shared?.requestedWorkSessionNavigation = WorkSessionNavigationRequest(
         sessionId: identifier,
+        laneId: scopedLaneId,
+        repoOwner: scopedRepoOwner,
+        repoName: scopedRepoName,
+        branch: scopedBranch,
         event: event,
         offset: offset
       )
@@ -289,22 +324,38 @@ final class DeepLinkRouter {
     }
   }
 
-  private func sessionAnchors(from url: URL) -> (event: Int?, offset: Int?)? {
+  private func sessionNavigationScope(
+    from url: URL
+  ) -> (laneId: String?, repoOwner: String?, repoName: String?, branch: String?, event: Int?, offset: Int?)? {
     guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-      return (nil, nil)
+      return nil
     }
-    return sessionAnchors(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
+    return sessionNavigationScope(from: ADEDeepLinkURLParsing.adeQueryValues(from: components))
   }
 
-  private func sessionAnchors(from query: [String: String]) -> (event: Int?, offset: Int?)? {
+  private func sessionNavigationScope(
+    from query: [String: String]
+  ) -> (laneId: String?, repoOwner: String?, repoName: String?, branch: String?, event: Int?, offset: Int?)? {
     if let lane = query["lane"], !ADEDeepLinkURLParsing.isValidUUID(lane) {
+      return nil
+    }
+    let repo = ADEDeepLinkURLParsing.splitRepo(query["repo"])
+    if query["repo"] != nil && repo == nil { return nil }
+    if let branch = query["branch"], !ADEDeepLinkURLParsing.isValidBranch(branch) {
       return nil
     }
     let event = ADEDeepLinkURLParsing.nonNegativeInteger(query["event"])
     if query["event"] != nil && event == nil { return nil }
     let offset = ADEDeepLinkURLParsing.nonNegativeInteger(query["offset"])
     if query["offset"] != nil && offset == nil { return nil }
-    return (event, offset)
+    return (
+      laneId: query["lane"],
+      repoOwner: repo?.owner,
+      repoName: repo?.repo,
+      branch: query["branch"],
+      event: event,
+      offset: offset
+    )
   }
 
   private func isValidFileTarget(path: String, url: URL) -> Bool {

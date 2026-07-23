@@ -2,6 +2,57 @@ import SwiftUI
 import UIKit
 import AVKit
 
+/// Box-drawing and block glyphs that mark fixed-column layout art. Both raw
+/// question previews and Markdown-aware assistant previews share this set.
+let workWireframeGlyphs: Set<Character> = [
+  "│", "┌", "┐", "└", "┘", "├", "┤", "┼", "─",
+  "╭", "╮", "╰", "╯", "║", "═", "╔", "╗", "╚", "╝", "╠", "╣", "╬",
+  "▌", "▐", "█", "▓", "▒", "░", "▢", "▣", "□", "■",
+]
+
+/// True when a line has an interior run of 3+ spaces/tabs between two
+/// non-whitespace characters — the fixed-column layout signal.
+func workLineHasAlignedColumnGap<S: StringProtocol>(_ line: S) -> Bool {
+  var sawNonWhitespace = false
+  var whitespaceRun = 0
+  for character in line {
+    if character == " " || character == "\t" {
+      if sawNonWhitespace { whitespaceRun += 1 }
+    } else {
+      if whitespaceRun >= 3 { return true }
+      sawNonWhitespace = true
+      whitespaceRun = 0
+    }
+  }
+  return false
+}
+
+/// Whether an assistant answer should render as one fixed-column block rather
+/// than parsed Markdown. Fenced code and Markdown table rows are deliberately
+/// ignored: their dedicated block renderers already preserve alignment.
+func workAssistantMessageUsesMonospacedPreview(_ text: String) -> Bool {
+  var insideFence = false
+  var proseLineCount = 0
+  var alignedColumnLineCount = 0
+  for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    if trimmed.hasPrefix("```") {
+      insideFence.toggle()
+      continue
+    }
+    if insideFence || trimmed.isEmpty { continue }
+    if trimmed.contains(where: { workWireframeGlyphs.contains($0) }) {
+      return true
+    }
+    proseLineCount += 1
+    if trimmed.contains("|") { continue }
+    if workLineHasAlignedColumnGap(trimmed) {
+      alignedColumnLineCount += 1
+    }
+  }
+  return alignedColumnLineCount >= 2 && alignedColumnLineCount * 2 >= proseLineCount
+}
+
 enum WorkMarkdownBlockKind: Equatable {
   case paragraph(String)
   case heading(Int, String)

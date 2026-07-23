@@ -17,6 +17,7 @@ import type {
   GitHubStatus,
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
@@ -229,34 +230,8 @@ function detectGitHubTokenType(token: string): GitHubStatus["tokenType"] {
 }
 
 export function parseGitHubRepoFromRemoteUrl(remoteUrlRaw: string): GitHubRepoRef | null {
-  const remoteUrl = remoteUrlRaw.trim();
-  if (!remoteUrl) return null;
-
-  // git@github.com:owner/repo.git
-  const sshScp = remoteUrl.match(/^git@github\.com:(.+)$/i);
-  if (sshScp) {
-    const slug = sshScp[1].replace(/\.git$/i, "").trim();
-    const [owner, name] = slug.split("/");
-    if (owner && name) return { owner, name };
-    return null;
-  }
-
-  // ssh://git@github.com/owner/repo.git
-  if (remoteUrl.startsWith("ssh://") || remoteUrl.startsWith("https://") || remoteUrl.startsWith("http://")) {
-    try {
-      const url = new URL(remoteUrl);
-      if (!/github\.com$/i.test(url.hostname)) return null;
-      const parts = url.pathname.replace(/^\/+/, "").replace(/\.git$/i, "").split("/");
-      const owner = parts[0]?.trim() ?? "";
-      const name = parts[1]?.trim() ?? "";
-      if (owner && name) return { owner, name };
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
+  const repo = parseGithubRemoteUrl(remoteUrlRaw);
+  return repo ? { owner: repo.owner, name: repo.repo } : null;
 }
 
 function repoIdentityFromGitHubResponse(

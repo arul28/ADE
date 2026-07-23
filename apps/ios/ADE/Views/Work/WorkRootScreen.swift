@@ -21,6 +21,24 @@ func resolvedWorkArchivedSessionIds(
   return local.union(archivedChats).union(archivedSessions)
 }
 
+func workPendingChatCreationMatchesProject(
+  _ creation: PendingChatCreation,
+  projectId: String?,
+  projectRootPath: String?
+) -> Bool {
+  let creationId = creation.projectId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let activeId = projectId?.trimmingCharacters(in: .whitespacesAndNewlines)
+  if let creationId, !creationId.isEmpty, let activeId, !activeId.isEmpty, creationId == activeId {
+    return true
+  }
+  let creationRoot = syncNormalizedProjectRootScope(creation.projectRootPath)
+  let activeRoot = syncNormalizedProjectRootScope(projectRootPath)
+  if let creationRoot, let activeRoot, creationRoot == activeRoot { return true }
+  // Legacy pending rows predate project scoping; keep them visible in the
+  // active project rather than orphaning an offline draft after upgrade.
+  return (creationId == nil || creationId?.isEmpty == true) && creationRoot == nil
+}
+
 struct WorkSessionRoute: Hashable {
   let openId: UUID = UUID()
   let sessionId: String
@@ -49,6 +67,12 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let searchOutputRevision: Int?
   let archivedSessionIdsStorage: String
   let sessionOrganizationRaw: String
+  /// The machine-wide roster is a faster projection than CRDT replication.
+  /// Key the rebuild on its monotonic revision instead of comparing the full
+  /// all-project payload during every unrelated SyncService publication.
+  let activeRosterRevision: Int
+  let activeProjectId: String?
+  let loadedProjectionProjectId: String?
 }
 
 struct WorkRootScreen: View {
@@ -93,6 +117,10 @@ struct WorkRootScreen: View {
   @State var lastCoalescedChatSummaryRefresh = Date.distantPast
   @State var lastWorkLocalProjectionReload = Date.distantPast
   @State var lastWorkProjectionReloadRevision: Int?
+  /// Project scope currently represented by the local @State projections.
+  /// This prevents an in-place project remap from briefly mixing old rows with
+  /// the new project's live roster while the database reload catches up.
+  @State var loadedProjectionProjectId: String?
   @AppStorage("ade.work.archivedSessionIds") var archivedSessionIdsStorage = ""
   @AppStorage("ade.work.sessionOrganization") var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
   @AppStorage("ade.work.collapsedSectionIds") var collapsedSectionIdsStorage = ""
@@ -128,7 +156,11 @@ struct WorkRootScreen: View {
   /// keyed by their synthetic session id.
   var pendingChatCreationOptimisticSessions: [String: TerminalSessionSummary] {
     var result: [String: TerminalSessionSummary] = [:]
-    for creation in syncService.pendingChatCreations {
+    for creation in syncService.pendingChatCreations where workPendingChatCreationMatchesProject(
+      creation,
+      projectId: syncService.activeProjectId,
+      projectRootPath: syncService.activeProjectRootPath
+    ) {
       let lane = lanes.first(where: { $0.id == creation.laneId })
       let session = workPendingChatCreationOptimisticSession(creation, lane: lane)
       result[session.id] = session
@@ -255,7 +287,10 @@ struct WorkRootScreen: View {
       searchText: searchText,
       searchOutputRevision: searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : syncService.terminalBufferRevision,
       archivedSessionIdsStorage: archivedSessionIdsStorage,
-      sessionOrganizationRaw: sessionOrganizationRaw
+      sessionOrganizationRaw: sessionOrganizationRaw,
+      activeRosterRevision: syncService.rosterRevision(for: syncService.activeProject),
+      activeProjectId: syncService.activeProjectId,
+      loadedProjectionProjectId: loadedProjectionProjectId
     )
   }
 
@@ -579,6 +614,9 @@ struct WorkRootScreen: View {
         await refreshFromPullGesture()
       }
       .sensoryFeedback(.success, trigger: refreshFeedbackToken)
+      .onChange(of: syncService.activeProjectId) { _, projectId in
+        resetWorkProjectionForProjectChange(projectId)
+      }
       .task(id: workProjectionReloadKey) {
         guard let revision = workProjectionReloadKey else { return }
         guard lastWorkProjectionReloadRevision != revision || sessions.isEmpty else { return }
@@ -618,9 +656,6 @@ struct WorkRootScreen: View {
         if syncService.requestedWorkLaneNavigation != nil {
           Task { await handleRequestedWorkLaneNavigation(proxy: proxy) }
         }
-        if syncService.requestedWorkSessionNavigation != nil {
-          Task { await handleRequestedWorkSessionNavigation() }
-        }
       }
       .onChange(of: isTabActive) { _, active in
         guard active else { return }
@@ -630,10 +665,6 @@ struct WorkRootScreen: View {
         if syncService.requestedWorkSessionNavigation != nil {
           Task { await handleRequestedWorkSessionNavigation() }
         }
-      }
-      .onChange(of: syncService.requestedWorkSessionNavigation?.id) { _, requestId in
-        guard isTabActive, requestId != nil else { return }
-        Task { await handleRequestedWorkSessionNavigation() }
       }
       .onChange(of: syncService.requestedWorkLaneNavigation?.id) { _, requestId in
         guard isTabActive, requestId != nil else { return }

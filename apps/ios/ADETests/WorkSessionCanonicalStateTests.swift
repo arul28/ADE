@@ -415,6 +415,58 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
   }
 
+  private func makeLane(id: String, name: String) -> LaneSummary {
+    LaneSummary(
+      id: id,
+      name: name,
+      description: nil,
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "feature",
+      worktreePath: "",
+      attachedRootPath: nil,
+      parentLaneId: nil,
+      childCount: 0,
+      stackDepth: 0,
+      parentStatus: nil,
+      isEditProtected: false,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: nil,
+      icon: nil,
+      tags: [],
+      folder: nil,
+      linearIssue: nil,
+      linearIssueLinks: nil,
+      createdAt: "",
+      archivedAt: nil,
+      devicesOpen: nil
+    )
+  }
+
+  private func makeRosterChat(
+    id: String,
+    laneId: String,
+    title: String,
+    archived: Bool? = nil,
+    toolType: String? = "codex-chat"
+  ) -> RemoteRosterChat {
+    RemoteRosterChat(
+      id: id,
+      laneId: laneId,
+      chatSessionId: nil,
+      title: title,
+      provider: "codex",
+      model: nil,
+      toolType: toolType,
+      status: .idle,
+      awaitingInput: nil,
+      pinned: nil,
+      archived: archived,
+      lastActivityAt: nil,
+      preview: nil
+    )
+  }
+
   private func makeChatSummary(status: String, awaitingInput: Bool?) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
       sessionId: "chat-1",

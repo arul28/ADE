@@ -452,6 +452,70 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testDeepLinkRouterPreservesScopedSessionEnvelope() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    let laneId = "e906d7a2-3c16-47c5-a887-9a5989131e52"
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "ade://session/foreign-chat?lane=\(laneId)&repo=arul28%2FVersic&branch=ver%2Fsearch-hygiene&event=12&offset=34"
+    )))
+
+    let request = try XCTUnwrap(service.requestedWorkSessionNavigation)
+    XCTAssertEqual(request.sessionId, "foreign-chat")
+    XCTAssertEqual(request.laneId, laneId)
+    XCTAssertEqual(request.repoOwner, "arul28")
+    XCTAssertEqual(request.repoName, "Versic")
+    XCTAssertEqual(request.branch, "ver/search-hygiene")
+    XCTAssertEqual(request.event, 12)
+    XCTAssertEqual(request.offset, 34)
+    XCTAssertTrue(request.hasProjectScope)
+  }
+
+  @MainActor
+  func testDeepLinkRouterPreservesHttpsSessionProjectScope() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=session&id=foreign-chat&repo=arul28%2FVersic&branch=ver%2Fsearch-hygiene"
+    )))
+
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.sessionId, "foreign-chat")
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.repoOwner, "arul28")
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.repoName, "Versic")
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.branch, "ver/search-hygiene")
+  }
+
+  @MainActor
+  func testDeepLinkRouterRejectsMalformedSessionProjectScope() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+    service.requestedWorkSessionNavigation = nil
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string:
+      "https://ade-app.dev/open?type=session&id=foreign-chat&repo=arul28%2FVersic%2Fextra"
+    )))
+
+    XCTAssertNil(service.requestedWorkSessionNavigation)
+  }
+
+  @MainActor
   func testDeepLinkRouterRequestsPrNavigationByNumberWhenSnapshotMisses() throws {
     let previousShared = SyncService.shared
     let previousSnapshotData = ADESharedContainer.defaults.data(forKey: ADESharedContainer.workspaceSnapshotKey)
@@ -15233,6 +15297,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(firstPage.text.contains("row 25"))
     XCTAssertEqual(workAssistantMessageMaxLineBudget(for: firstPage.text), workAssistantMessageWideMaxLineBudget)
   }
+
 
   func testAssistantPreviewCacheHydratesBuiltChatMessages() {
     let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")

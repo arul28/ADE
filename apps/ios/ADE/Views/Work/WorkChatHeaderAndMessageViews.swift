@@ -355,8 +355,10 @@ struct WorkChatMessageBubble: View {
     // reads like a document. The truncation / "Show more" affordance stays but
     // unstyled so it doesn't reintroduce a boxed feel.
     let preview = assistantPreview
-    let usesMonospacedPreview = workAssistantMessageUsesMonospacedPreview(preview.text)
-    let maxLineBudget = workAssistantMessageMaxLineBudget(for: message.markdown)
+    let usesMonospacedPreview = preview.usesMonospacedRendering
+    let maxLineBudget = usesMonospacedPreview
+      ? workAssistantMessageWideMaxLineBudget
+      : workAssistantMessageMaxLineBudget
 
     return VStack(alignment: .leading, spacing: 10) {
       if preview.isTruncated {
@@ -518,7 +520,8 @@ struct WorkChatMessageBubble: View {
       message.markdown,
       lineBudget: assistantLineBudget,
       characterBudget: workAssistantMessageCharacterBudget(forLineBudget: assistantLineBudget),
-      anchor: .head
+      anchor: .head,
+      classification: message.assistantPreview?.usesMonospacedRendering
     )
   }
 
@@ -634,6 +637,10 @@ enum WorkAssistantMessagePreviewAnchor: Equatable {
 struct WorkAssistantMessagePreview: Equatable {
   let text: String
   let isTruncated: Bool
+  /// Classification of the complete authoritative message, never the sliced
+  /// preview text. Cached with the preview so streaming rows do not rescan a
+  /// growing answer several times per render.
+  let usesMonospacedRendering: Bool
   let visibleLineCount: Int
   let totalLineCount: Int
   let visibleCharacterCount: Int
@@ -698,13 +705,15 @@ func workAssistantMessagePreview(
   _ markdown: String,
   lineBudget: Int,
   characterBudget: Int,
-  anchor: WorkAssistantMessagePreviewAnchor = .head
+  anchor: WorkAssistantMessagePreviewAnchor = .head,
+  classification: Bool? = nil
 ) -> WorkAssistantMessagePreview {
   let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
   guard !normalized.isEmpty else {
     return WorkAssistantMessagePreview(
       text: markdown,
       isTruncated: false,
+      usesMonospacedRendering: false,
       visibleLineCount: 0,
       totalLineCount: 0,
       visibleCharacterCount: 0,
@@ -713,7 +722,7 @@ func workAssistantMessagePreview(
     )
   }
 
-  let usesMonospacedPreview = workAssistantMessageUsesMonospacedPreview(normalized)
+  let usesMonospacedPreview = classification ?? workAssistantMessageUsesMonospacedPreview(normalized)
   let clampedLineBudget = workAssistantMessageEffectiveLineBudget(
     requestedLineBudget: max(lineBudget, 1),
     usesMonospacedPreview: usesMonospacedPreview
@@ -731,6 +740,7 @@ func workAssistantMessagePreview(
     return WorkAssistantMessagePreview(
       text: markdown,
       isTruncated: false,
+      usesMonospacedRendering: usesMonospacedPreview,
       visibleLineCount: totalLineCount,
       totalLineCount: totalLineCount,
       visibleCharacterCount: totalCharacterCount,
@@ -745,7 +755,8 @@ func workAssistantMessagePreview(
       lineBudget: clampedLineBudget,
       characterBudget: clampedCharacterBudget,
       totalLineCount: totalLineCount,
-      totalCharacterCount: totalCharacterCount
+      totalCharacterCount: totalCharacterCount,
+      usesMonospacedRendering: usesMonospacedPreview
     )
   }
 
@@ -786,6 +797,7 @@ func workAssistantMessagePreview(
   return WorkAssistantMessagePreview(
     text: rendered,
     isTruncated: visibleLineCount < totalLineCount || rendered.count < normalized.count,
+    usesMonospacedRendering: usesMonospacedPreview,
     visibleLineCount: visibleLineCount,
     totalLineCount: totalLineCount,
     visibleCharacterCount: rendered.count,
@@ -799,7 +811,8 @@ private func workAssistantMessageTailPreview(
   lineBudget: Int,
   characterBudget: Int,
   totalLineCount: Int,
-  totalCharacterCount: Int
+  totalCharacterCount: Int,
+  usesMonospacedRendering: Bool
 ) -> WorkAssistantMessagePreview {
   var segments: [Substring] = []
   segments.reserveCapacity(min(lineBudget, 16))
@@ -833,20 +846,43 @@ private func workAssistantMessageTailPreview(
     lineEnd = normalized.index(before: lineStart)
   }
 
-  let rendered = segments.reversed().joined(separator: "\n")
+  let sourceRendered = segments.reversed().joined(separator: "\n")
+  let openingFence = workOpeningMarkdownFenceBeforeTail(
+    in: normalized,
+    tailStart: segments.last?.startIndex ?? normalized.endIndex
+  )
+  let rendered = openingFence.map { "\($0)\n\(sourceRendered)" } ?? sourceRendered
   return WorkAssistantMessagePreview(
     text: rendered,
-    isTruncated: visibleLineCount < totalLineCount || rendered.count < normalized.count,
+    isTruncated: visibleLineCount < totalLineCount || sourceRendered.count < normalized.count,
+    usesMonospacedRendering: usesMonospacedRendering,
     visibleLineCount: visibleLineCount,
     totalLineCount: totalLineCount,
-    visibleCharacterCount: rendered.count,
+    visibleCharacterCount: sourceRendered.count,
     totalCharacterCount: totalCharacterCount,
     anchor: .tail
   )
 }
 
-func workAssistantMessageUsesMonospacedPreview(_ text: String) -> Bool {
-  workPreviewIsWireframe(text)
+/// If a bounded tail begins inside a fenced block, restore the authoritative
+/// opening marker (including its language). Without it, the original closing
+/// fence is parsed as a new opener and trailing prose is swallowed into code.
+private func workOpeningMarkdownFenceBeforeTail(
+  in normalized: String,
+  tailStart: String.Index
+) -> String? {
+  guard tailStart > normalized.startIndex else { return nil }
+  var openingFence: String?
+  for line in normalized[..<tailStart].split(separator: "\n", omittingEmptySubsequences: false) {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    guard trimmed.hasPrefix("```") else { continue }
+    if openingFence == nil {
+      openingFence = trimmed
+    } else {
+      openingFence = nil
+    }
+  }
+  return openingFence
 }
 
 func workAssistantMessageMaxLineBudget(for text: String) -> Int {

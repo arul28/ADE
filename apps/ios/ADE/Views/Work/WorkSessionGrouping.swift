@@ -1,6 +1,66 @@
 import Foundation
 import SwiftUI
 
+/// The display-only projection used while the active project is represented by
+/// a lightweight remote roster. Local rows always take precedence because they
+/// carry the complete, hydrated Work state. Missing roster rows are appended in
+/// their source order so repeated projections remain stable.
+struct WorkActiveProjectRosterProjection: Equatable {
+  let sessions: [TerminalSessionSummary]
+  let lanes: [LaneSummary]
+}
+
+let workActiveProjectRosterSessionLimit = 200
+
+func overlayActiveProjectRoster(
+  localSessions: [TerminalSessionSummary],
+  localLanes: [LaneSummary],
+  roster: RemoteRosterProject?
+) -> WorkActiveProjectRosterProjection {
+  // Match `work.listSessions(limit: 200)` and include chat rows only. Roster
+  // terminal stubs deliberately lack PTY ids/offsets, so opening one as a
+  // terminal would produce an unusable screen until the real local row lands.
+  let rosterChats = Array(
+    (roster?.chats ?? [])
+      .lazy
+      .filter { $0.archived != true && $0.isChatTool }
+      .prefix(workActiveProjectRosterSessionLimit)
+  )
+
+  var sessionIds = Set<String>()
+  var sessions: [TerminalSessionSummary] = []
+  sessions.reserveCapacity(localSessions.count + rosterChats.count)
+  for session in localSessions where sessionIds.insert(session.id).inserted {
+    sessions.append(session)
+  }
+
+  let projectedRosterLaneIds = Set(rosterChats.map(\.laneId))
+
+  var laneIds = Set<String>()
+  var lanes: [LaneSummary] = []
+  lanes.reserveCapacity(localLanes.count + projectedRosterLaneIds.count)
+  for lane in localLanes where laneIds.insert(lane.id).inserted {
+    lanes.append(lane)
+  }
+  for rosterLane in roster?.lanes ?? []
+    where projectedRosterLaneIds.contains(rosterLane.id) && laneIds.insert(rosterLane.id).inserted
+  {
+    lanes.append(rosterLane.asLaneSummary())
+  }
+
+  let laneNamesById = Dictionary(
+    lanes.map { ($0.id, $0.name) },
+    uniquingKeysWith: { existing, _ in existing }
+  )
+  for rosterChat in rosterChats {
+    guard sessionIds.insert(rosterChat.id).inserted else { continue }
+    let laneName = laneNamesById[rosterChat.laneId] ?? rosterChat.laneId
+    sessions.append(rosterChat.asTerminalSessionSummary(laneName: laneName))
+  }
+
+  return WorkActiveProjectRosterProjection(sessions: sessions, lanes: lanes)
+}
+
 /// Mirrors the desktop `WorkSessionListOrganization` union (byLane / byStatus / byTime) so users
 /// can reshape the Work session list the same way on mobile. Persisted via `@AppStorage`.
 enum WorkSessionOrganization: String, CaseIterable, Identifiable {
