@@ -693,7 +693,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         refreshQueued = true;
         return;
       }
-      if (document.visibilityState !== "visible") return;
+      // No visibility gate: the dock badge must keep tracking the loud tier
+      // while the window is hidden/minimized — that is its whole purpose. The
+      // refresh stays event-driven + debounced, so hidden cost is bounded.
       refreshInFlight = true;
       try {
         const sessions: TerminalSessionSummary[] = (

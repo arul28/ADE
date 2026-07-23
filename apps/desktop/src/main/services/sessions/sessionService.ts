@@ -1324,8 +1324,12 @@ export function createSessionService({ db }: { db: AdeDb }) {
 
     markLastTurnFailed(sessionId: string, at?: string): boolean {
       return mutateSessionMeta(sessionId, (id) => {
+        // A turn failure also un-settles: the declared outcome is now in doubt
+        // and the row must surface red, not hide in the quiet tier. This keeps
+        // settled/failed mutually exclusive at write time, so every surface's
+        // precedence order agrees by construction.
         db.run(
-          "update terminal_sessions set last_turn_failed_at = ? where id = ?",
+          "update terminal_sessions set last_turn_failed_at = ?, settled_at = null where id = ?",
           [normalizeIsoTimestamp(at) ?? new Date().toISOString(), id],
         );
       });

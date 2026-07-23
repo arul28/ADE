@@ -1409,5 +1409,12 @@ describe("sessionService resume metadata", () => {
     service.settleSession("session-output", { settledAt: "2026-03-17T02:00:00.000Z" });
     service.touchSessionActivity("session-output", "2026-03-17T02:01:00.000Z");
     expect(service.get("session-output")?.settledAt).toBeNull();
+
+    // A turn failure un-settles: the declared outcome is in doubt, and keeping
+    // the markers mutually exclusive lets every surface agree on precedence.
+    service.settleSession("session-output", { settledAt: "2026-03-17T03:00:00.000Z" });
+    service.markLastTurnFailed("session-output", "2026-03-17T03:05:00.000Z");
+    expect(service.get("session-output")?.settledAt).toBeNull();
+    expect(service.get("session-output")?.lastTurnFailedAt).toBe("2026-03-17T03:05:00.000Z");
   });
 });

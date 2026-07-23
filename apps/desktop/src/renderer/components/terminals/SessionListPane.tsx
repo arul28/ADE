@@ -6,6 +6,7 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, PrSummary, TerminalSessionSummary } from "../../../shared/types";
 import { listPrsCoalesced } from "../../lib/prReadCache";
 import { selectPrimaryLanePr, lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
+import { canonicalInputFromSummary, sessionStatusBucket } from "../../lib/terminalAttention";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
@@ -567,7 +568,15 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
   const selectedRunningCount = selectedSessions.filter(canBulkStopSession).length;
   const selectedDeletableCount = selectedSessions.filter(canBulkDeleteSession).length;
-  const selectedSettleCount = selectedSessions.filter((session) => !session.settledAt).length;
+  // Bulk settle targets at-rest rows only — actively working sessions are not
+  // "done" merely because they lack a settled marker.
+  const selectedSettleableSessions = useMemo(
+    () => selectedSessions.filter((session) =>
+      !session.settledAt
+      && sessionStatusBucket(canonicalInputFromSummary(session)) !== "running"),
+    [selectedSessions],
+  );
+  const selectedSettleCount = selectedSettleableSessions.length;
   const settleSessions = useCallback(async (sessionIds: string[]) => {
     try {
       const newlySettled = await window.ade.sessions.settleMany(sessionIds);
@@ -1224,11 +1233,7 @@ export const SessionListPane = React.memo(function SessionListPane({
                   type="button"
                   className="inline-flex h-6 items-center gap-1 rounded-md border border-white/10 bg-white/[0.05] px-2 text-[10px] font-medium text-fg/80"
                   onClick={() => {
-                    void settleSessions(
-                      selectedSessions
-                        .filter((session) => !session.settledAt)
-                        .map((session) => session.id),
-                    );
+                    void settleSessions(selectedSettleableSessions.map((session) => session.id));
                   }}
                 >
                   Settle {selectedSettleCount}

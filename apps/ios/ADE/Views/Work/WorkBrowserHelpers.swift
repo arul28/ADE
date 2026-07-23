@@ -62,16 +62,23 @@ func workFilteredSessions(
     .filter { workSessionShouldAppearInWorkList($0, parentChatSessionIds: chatSessionIds) }
     .filter { session in
       let isArchived = archivedSessionIds.contains(session.id)
-      let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
+      // Filter with the same canonical lifecycle vocabulary the status
+      // grouping uses, so a filter can never admit sessions its sections
+      // don't claim (e.g. a settled chat leaking through "Live" via the old
+      // idle status). Settled rows appear only under the All filter.
+      let phase = workCanonicalSessionState(
+        session: session,
+        summary: chatSummaries[session.id]
+      ).phase
       switch selectedStatus {
       case .all:
         guard !isArchived else { return false }
       case .needsInput:
-        guard !isArchived && status == "awaiting-input" else { return false }
+        guard !isArchived, phase == .needsYou || phase == .ready || phase == .idle else { return false }
       case .running:
-        guard !isArchived && (status == "active" || status == "idle") else { return false }
+        guard !isArchived, phase == .starting || phase == .running || phase == .stale else { return false }
       case .ended:
-        guard !isArchived && status == "ended" else { return false }
+        guard !isArchived, phase == .failed || phase == .stopped || phase == .ended else { return false }
       case .archived:
         guard isArchived else { return false }
       }

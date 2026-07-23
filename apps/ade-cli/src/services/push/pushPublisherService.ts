@@ -1255,6 +1255,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       run.detail = request.message;
       run.lastActiveAt = now();
       run.metaResolved = true;
+      // An explicit ask supersedes any pending approval on the same session:
+      // clear the stale approval item + its queued alert/dedupe so the next
+      // flush can't pair obsolete approval state with the new question.
+      run.itemId = null;
+      pendingAlerts = pendingAlerts.filter(
+        (existing) => existing.dedupeKey !== `alert:${request.sessionId}:approval`,
+      );
+      clearAlertDedupe(`alert:${request.sessionId}:approval`);
       clearAlertDedupe(`alert:${request.sessionId}:question`);
       enqueueAlert({
         sessionId: request.sessionId,

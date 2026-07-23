@@ -17117,6 +17117,25 @@ extension SyncService {
   /// lanes + chat/CLI sessions are already synced and authoritative). This makes
   /// the active project's hub card show real chats instantly, without depending
   /// on the cross-project roster feed (which only the active brain build serves,
+  /// Latest parseable ISO timestamp among the candidates. Lifecycle markers
+  /// (settle/attention/failure) are independent columns, so a fixed priority
+  /// chain can let an older marker shadow a newer one and skew roster sorting.
+  private func latestTimestamp(_ candidates: String?...) -> String? {
+    var best: (value: String, date: Date)? = nil
+    for candidate in candidates {
+      guard let trimmed = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !trimmed.isEmpty else { continue }
+      let parsed = iso8601WithFractionalSecondsFormatter.date(from: trimmed)
+        ?? iso8601Formatter.date(from: trimmed)
+      guard let date = parsed else {
+        if best == nil { best = (trimmed, .distantPast) }
+        continue
+      }
+      if best == nil || date > best!.date { best = (trimmed, date) }
+    }
+    return best?.value
+  }
+
   /// and which only the brain can populate for NON-active projects).
   func buildActiveProjectLocalRoster() -> RemoteRosterProject? {
     guard let projectId = activeProjectId else { return nil }
@@ -17149,11 +17168,13 @@ extension SyncService {
         awaitingInput: status == .awaiting,
         pinned: session.pinned,
         archived: false,
-        lastActivityAt: session.attentionRequestedAt
-          ?? session.settledAt
-          ?? session.lastTurnFailedAt
-          ?? session.endedAt
-          ?? session.startedAt,
+        lastActivityAt: latestTimestamp(
+          session.attentionRequestedAt,
+          session.settledAt,
+          session.lastTurnFailedAt,
+          session.endedAt,
+          session.startedAt
+        ),
         preview: session.lastOutputPreview,
         settledAt: session.settledAt,
         statusNote: session.statusNote,

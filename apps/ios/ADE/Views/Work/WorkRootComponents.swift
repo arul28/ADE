@@ -1167,7 +1167,7 @@ struct WorkSessionRow: View, Equatable {
       return message
     }
     if let note = workSessionPreviewText(session.statusNote) {
-      return isSettled ? "done: \(note)" : note
+      return isSettled ? "Done: \(note)" : note
     }
     return chatSummary?.summary
       ?? chatSummary?.lastOutputPreview

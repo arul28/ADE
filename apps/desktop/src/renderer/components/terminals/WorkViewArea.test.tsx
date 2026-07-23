@@ -295,6 +295,12 @@ vi.mock("../../lib/terminalAttention", () => ({
   sessionStatusDot: vi.fn(() => ({ cls: "ade-status-dot", label: "Idle", spinning: false })),
   sessionStatusBucket: vi.fn(() => "running"),
   sessionNeedsChatTabHighlight: vi.fn(() => false),
+  canonicalInputFromSummary: vi.fn((session: unknown) => session),
+  sessionCanonicalUiState: vi.fn(() => ({ phase: "running", badge: null })),
+  sessionCapsuleBadge: vi.fn(() => null),
+  sessionInlineStatusLabel: vi.fn(() => null),
+  sanitizeTerminalInlineText: vi.fn((raw: unknown) => (typeof raw === "string" ? raw : "")),
+  sessionNeedsYou: vi.fn(() => false),
 }));
 
 function makeSession(): TerminalSessionSummary {
