@@ -4741,6 +4741,12 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.listOpenForRepo", { viewerAllowed: true }, async () => args.prService.listOpenPullRequests());
   register("prs.getForLane", { viewerAllowed: true }, async (payload) =>
     args.prService.getForLane(parseLaneIdArgs(payload, "prs.getForLane").laneId));
+  // Manual per-badge ⟳ sync + focus reconcile, so the web/mobile surfaces reach
+  // the same heal path as desktop (both are already in ADE_ACTION_ALLOWLIST.pr).
+  register("prs.syncLanePr", { viewerAllowed: true }, async (payload) =>
+    args.prService.syncLanePr(parseLaneIdArgs(payload, "prs.syncLanePr").laneId));
+  register("prs.reconcileOnFocus", { viewerAllowed: true }, async (payload) =>
+    args.prService.reconcileOnFocus({ force: payload?.force === true }));
   register("prs.refresh", { viewerAllowed: true }, async (payload) => {
     const prId = asTrimmedString(payload.prId);
     const prIds = asStringArray(payload.prIds);

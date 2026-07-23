@@ -2647,6 +2647,60 @@ describe("automation ingress storage bounds", () => {
     }
   }, 120_000);
 
+  it("preserves the OLDEST active rows under the hard cap, trimming only terminal rows", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const service = createIngressService(db);
+
+    // Regression: an active ('ignored'/'received') row that is the OLDEST must
+    // survive the hard cap even when far more NEWER dispatched rows exceed it.
+    // An oldest-first hard cap would delete it, losing its audit record and
+    // breaking redelivery dedup (double-run risk). Active rows are seeded oldest.
+    const activeCount = 50; // well under the 2,000 active cap
+    const dispatchedCount = INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT + 500;
+    const totalSeeded = activeCount + dispatchedCount;
+    const baseMs = Date.now() - (totalSeeded + 10) * 1_000;
+    const isoAt = (index: number) => new Date(baseMs + index * 1_000).toISOString();
+
+    try {
+      const insert = raw.prepare(
+        `insert into automation_ingress_events(
+          id, project_id, source, event_key, automation_ids_json, trigger_type,
+          status, raw_payload_json, received_at
+        ) values (?, 'proj', 'github-relay', ?, '[]', 'github.issue_opened', ?, null, ?)`,
+      );
+      raw.run("begin");
+      // Oldest block: active rows.
+      for (let i = 0; i < activeCount; i += 1) {
+        insert.run([`act-${i}`, `act-${i}`, "ignored", isoAt(i)]);
+      }
+      // Newer block: dispatched rows, all newer than every active row.
+      for (let j = 0; j < dispatchedCount; j += 1) {
+        insert.run([`disp-${j}`, `disp-${j}`, "dispatched", isoAt(activeCount + j)]);
+      }
+      raw.run("commit");
+      insert.free();
+
+      await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "hard-cap-active-trigger",
+        triggerType: "github.issue_opened",
+      });
+
+      const total = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count ?? 0);
+      const oldActiveRemaining = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj' and event_key like 'act-%'",
+      ))[0]?.count ?? 0);
+
+      expect(total).toBe(INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT);
+      // Every OLD active row survived — none were sacrificed to the hard cap.
+      expect(oldActiveRemaining).toBe(activeCount);
+    } finally {
+      service.dispose();
+    }
+  }, 120_000);
+
   it("runs startup retention even when no legacy ingress payloads remain", () => {
     const { db, raw } = createInMemoryAdeDb();
     raw.run("create table review_run_artifacts(id text primary key, created_at text not null)");

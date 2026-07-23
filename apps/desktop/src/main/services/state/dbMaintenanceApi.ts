@@ -70,7 +70,11 @@ export function pruneIngressEventRowsForProject(
           select rowid
           from automation_ingress_events
           where project_id = ?
-          order by received_at desc, rowid desc
+          -- Keep active (non-terminal) rows first so the hard cap only ever
+          -- trims the oldest terminal rows. An active 'received' row that is
+          -- still being matched/dispatched must survive — dropping it would lose
+          -- its audit record and break redelivery dedup (risking a double-run).
+          order by (status not in ('dispatched', 'failed')) desc, received_at desc, rowid desc
           limit -1 offset ${INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT}
         )`,
     [projectId],

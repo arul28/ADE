@@ -70,6 +70,22 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     createLaneFromPrBranch: (args: unknown) => call("prs.createLaneFromPrBranch", args, null, false),
     getForLane: async (laneId: string) =>
       (await mobileSnapshot()).prs.find((pr) => pr.laneId === laneId) ?? null,
+    // Manual ⟳ PR-sync (ChatGitToolbar) — force a fresh reconcile for one lane.
+    // Mirrors the preload runtime action `pr.syncLanePr` (single positional
+    // laneId); the sync command layer marshals a named record, exactly like the
+    // `prs.getForLane` host handler that reads `{ laneId }`. It mutates, so the
+    // read cache is dropped afterward like `refresh` does.
+    syncLanePr: async (laneId: string) => {
+      const result = await call<PrSummary | null>("prs.syncLanePr", { laneId }, null, false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
+    // Force a global PR reconcile. Routes to the same daemon action the preload
+    // uses (`pr.reconcileOnFocus` with `{ force: true }`).
+    reconcileNow: async () => {
+      await call("prs.reconcileOnFocus", { force: true }, undefined, false);
+      commands.invalidateCache(["prs."]);
+    },
     listAll: async () => (await mobileSnapshot()).prs,
     listOpenForRepo: () => read("prs.listOpenForRepo", {}, []),
     refresh: async (args?: unknown) => {

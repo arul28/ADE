@@ -1257,7 +1257,14 @@ export function sweepOrphanedRepairStagingTables(
     );
     let dropped = 0;
     for (const { name } of orphans) {
-      const base = name.startsWith("__ade_crr_repair_")
+      // SQLite treats `_` in LIKE as a single-char wildcard, so the query above
+      // can match a legitimately-named table that only coincidentally fits the
+      // pattern. Require a LITERAL prefix before dropping anything — never delete
+      // a table that doesn't actually start with our repair-staging prefixes.
+      const isCrr = name.startsWith("__ade_crr_repair_");
+      const isFk = name.startsWith("__ade_fk_repair_");
+      if (!isCrr && !isFk) continue;
+      const base = isCrr
         ? name.slice("__ade_crr_repair_".length)
         : name.slice("__ade_fk_repair_".length);
       if (ambiguousTables.has(base)) continue;
