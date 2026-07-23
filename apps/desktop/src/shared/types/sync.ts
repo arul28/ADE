@@ -1572,6 +1572,8 @@ export type SyncRemoteCommandAction =
   | "prs.listOpenForRepo"
   | "prs.refresh"
   | "prs.getForLane"
+  | "prs.syncLanePr"
+  | "prs.reconcileOnFocus"
   | "prs.getDetail"
   | "prs.postReviewComment"
   | "prs.getAiSummary"

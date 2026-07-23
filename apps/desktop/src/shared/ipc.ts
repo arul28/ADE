@@ -602,6 +602,8 @@ export const IPC = {
   prsPreflightCreateLaneFromPrBranch: "ade.prs.preflightCreateLaneFromPrBranch",
   prsCreateLaneFromPrBranch: "ade.prs.createLaneFromPrBranch",
   prsGetForLane: "ade.prs.getForLane",
+  prsSyncLanePr: "ade.prs.syncLanePr",
+  prsReconcileNow: "ade.prs.reconcileNow",
   prsListAll: "ade.prs.listAll",
   prsListOpenForRepo: "ade.prs.listOpenForRepo",
   prsRefresh: "ade.prs.refresh",

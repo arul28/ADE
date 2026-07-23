@@ -347,6 +347,14 @@ export type PrEventPayload =
       proposalId: string;
       reason: string;
       timestamp: string;
+    }
+  | {
+      // Emitted by prService.reconcileOnFocus around a catch-up reconcile so the
+      // renderer can surface a subtle "syncing…" affordance (e.g. a gently
+      // spinning ⟳ on the PR chip). Project-scoped via the PR event channel.
+      type: "pr-reconcile";
+      state: "running" | "idle";
+      polledAt: string;
     };
 
 export type LandResult = {

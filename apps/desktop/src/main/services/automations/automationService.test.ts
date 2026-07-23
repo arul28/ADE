@@ -14,6 +14,10 @@ import {
 } from "./automationService";
 import { buildLinearAutomationDispatches } from "./linearAutomationDispatch";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
+import {
+  INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
+  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
+} from "../state/dbMaintenanceApi";
 
 type SqlValue = string | number | null | Uint8Array;
 
@@ -2555,6 +2559,143 @@ describe("automation ingress storage bounds", () => {
       expect(mapExecRows(raw.exec(
         "select count(*) as count from automation_ingress_events where event_key = 'drop-ignored'",
       ))[0]?.count).toBe(0);
+    } finally {
+      service.dispose();
+    }
+  }, 120_000);
+
+  it("hard-caps total rows across all statuses so dispatched rows can't bloat within the window", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const service = createIngressService(db);
+
+    // Regression for the CRR-rebuild wedge: dispatched/failed rows are exempt
+    // from the 2,000 active cap, so before the hard cap they were bounded ONLY
+    // by the 7-day age prune. Seed far more than the hard cap in dispatched
+    // rows — all inside the window — plus more than the active cap in active
+    // rows, then confirm the overflow prune trims TOTAL rows to the hard cap
+    // (deleting oldest dispatched by received_at) while still enforcing the
+    // active-row cap and keeping the most-recent rows of each kind.
+    const dispatchedCount = INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT + 500;
+    const activeCount = INGRESS_EVENT_MAX_ROWS_PER_PROJECT + 100;
+    const totalSeeded = dispatchedCount + activeCount;
+    // Ascending received_at, all in the recent past (within the 7-day window);
+    // the live trigger dispatched below gets now() and is strictly newest.
+    const baseMs = Date.now() - (totalSeeded + 10) * 1_000;
+    const isoAt = (index: number) => new Date(baseMs + index * 1_000).toISOString();
+
+    try {
+      const insert = raw.prepare(
+        `insert into automation_ingress_events(
+          id, project_id, source, event_key, automation_ids_json, trigger_type,
+          status, raw_payload_json, received_at
+        ) values (?, 'proj', 'github-relay', ?, '[]', 'github.issue_opened', ?, null, ?)`,
+      );
+      raw.run("begin");
+      // Oldest block: dispatched rows (received_at indices 0..dispatchedCount-1).
+      for (let i = 0; i < dispatchedCount; i += 1) {
+        insert.run([`disp-${i}`, `disp-${i}`, "dispatched", isoAt(i)]);
+      }
+      // Newer block: active ('ignored') rows, all newer than every dispatched row.
+      for (let j = 0; j < activeCount; j += 1) {
+        insert.run([`act-${j}`, `act-${j}`, "ignored", isoAt(dispatchedCount + j)]);
+      }
+      raw.run("commit");
+      insert.free();
+
+      expect(Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count ?? 0)).toBe(totalSeeded);
+
+      // A fresh dispatch (no rules match → status 'ignored') runs prune-on-insert.
+      await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "hard-cap-trigger",
+        triggerType: "github.issue_opened",
+      });
+
+      const total = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count ?? 0);
+      const activeRemaining = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj' and status not in ('dispatched', 'failed')",
+      ))[0]?.count ?? 0);
+      const dispatchedRemaining = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj' and status = 'dispatched'",
+      ))[0]?.count ?? 0);
+
+      // Hard cap holds: total is trimmed to the ceiling (dispatched rows, once
+      // unbounded within the window, are now bounded).
+      expect(total).toBe(INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT);
+      // Active cap still holds after the hard cap runs.
+      expect(activeRemaining).toBe(INGRESS_EVENT_MAX_ROWS_PER_PROJECT);
+      // The remainder is dispatched, and the oldest dispatched rows were dropped.
+      expect(dispatchedRemaining).toBe(
+        INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT - INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
+      );
+
+      const keyPresent = (eventKey: string) => Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where event_key = ?",
+        [eventKey],
+      ))[0]?.count ?? 0);
+      // Most-recent rows of each kind survive; the oldest of each kind are gone.
+      expect(keyPresent(`disp-${dispatchedCount - 1}`)).toBe(1);
+      expect(keyPresent("disp-0")).toBe(0);
+      expect(keyPresent(`act-${activeCount - 1}`)).toBe(1);
+      expect(keyPresent("act-0")).toBe(0);
+    } finally {
+      service.dispose();
+    }
+  }, 120_000);
+
+  it("preserves the OLDEST active rows under the hard cap, trimming only terminal rows", async () => {
+    const { db, raw } = createInMemoryAdeDb();
+    const service = createIngressService(db);
+
+    // Regression: an active ('ignored'/'received') row that is the OLDEST must
+    // survive the hard cap even when far more NEWER dispatched rows exceed it.
+    // An oldest-first hard cap would delete it, losing its audit record and
+    // breaking redelivery dedup (double-run risk). Active rows are seeded oldest.
+    const activeCount = 50; // well under the 2,000 active cap
+    const dispatchedCount = INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT + 500;
+    const totalSeeded = activeCount + dispatchedCount;
+    const baseMs = Date.now() - (totalSeeded + 10) * 1_000;
+    const isoAt = (index: number) => new Date(baseMs + index * 1_000).toISOString();
+
+    try {
+      const insert = raw.prepare(
+        `insert into automation_ingress_events(
+          id, project_id, source, event_key, automation_ids_json, trigger_type,
+          status, raw_payload_json, received_at
+        ) values (?, 'proj', 'github-relay', ?, '[]', 'github.issue_opened', ?, null, ?)`,
+      );
+      raw.run("begin");
+      // Oldest block: active rows.
+      for (let i = 0; i < activeCount; i += 1) {
+        insert.run([`act-${i}`, `act-${i}`, "ignored", isoAt(i)]);
+      }
+      // Newer block: dispatched rows, all newer than every active row.
+      for (let j = 0; j < dispatchedCount; j += 1) {
+        insert.run([`disp-${j}`, `disp-${j}`, "dispatched", isoAt(activeCount + j)]);
+      }
+      raw.run("commit");
+      insert.free();
+
+      await service.dispatchIngressTrigger({
+        source: "github-relay",
+        eventKey: "hard-cap-active-trigger",
+        triggerType: "github.issue_opened",
+      });
+
+      const total = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj'",
+      ))[0]?.count ?? 0);
+      const oldActiveRemaining = Number(mapExecRows(raw.exec(
+        "select count(*) as count from automation_ingress_events where project_id = 'proj' and event_key like 'act-%'",
+      ))[0]?.count ?? 0);
+
+      expect(total).toBe(INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT);
+      // Every OLD active row survived — none were sacrificed to the hard cap.
+      expect(oldActiveRemaining).toBe(activeCount);
     } finally {
       service.dispose();
     }

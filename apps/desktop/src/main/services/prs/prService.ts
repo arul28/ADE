@@ -1045,6 +1045,14 @@ const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
 const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
 const MERGEABILITY_POLL_DELAYS_MS = [500, 1_000, 2_000] as const;
 
+// reconcile-on-focus throttle constants. The min-interval collapses a burst of
+// focus events into at most one catch-up per window; the merged-heal cap bounds
+// how many stale active rows are refreshed per pass; the closed-sweep interval
+// runs the slower state:"all" backfill on a relaxed cadence.
+const RECONCILE_MIN_INTERVAL_MS = 90_000;
+const RECONCILE_MERGED_HEAL_MAX = 25;
+const RECONCILE_CLOSED_SWEEP_INTERVAL_MS = 30 * 60_000;
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1415,6 +1423,13 @@ export function createPrService({
   // service (the polling service needs the service first), so it is injected via
   // `setEventEmitter`. Used to surface auto-map toasts to the renderer.
   let emitPrEvent: ((event: PrEventPayload) => void) | null = null;
+
+  // reconcile-on-focus throttle + single-flight state. IN-MEMORY on the service
+  // instance (NOT the db) so it dies with the context on eviction and never
+  // crosses into the CRR-replicated kv table (which would contaminate peers).
+  let reconcileRunning = false;
+  let lastReconcileAtMs = 0;
+  let lastClosedSweepAtMs = 0;
 
   const acquireLaneMutationLock = (args: {
     lane: LaneSummary;
@@ -2829,22 +2844,50 @@ export function createPrService({
 
     const backfilledIds: string[] = [];
     const ignoredAutoLinks = listAutoLinkIgnores(repo);
+
+    // Select ONE authoritative PR per lane before upserting. A reused branch can
+    // carry MULTIPLE historical PRs in a state:"all" snapshot; upserting all of
+    // them repeatedly adopts the same lane row (upsertRow identifies by lane +
+    // branch), so the last-processed — potentially oldest — PR would win and flip
+    // an active PR to a stale merged/closed one. Since this backfill now runs on
+    // focus reconcile, that could make merely opening a project mis-mark a PR.
+    // Prefer an open/draft PR; otherwise the newest (highest PR number).
+    type BackfillCandidate = {
+      rawPr: any;
+      prNumber: number;
+      headBranch: string;
+      lane: LaneSummary;
+      state: PrSummary["state"];
+      isOpen: boolean;
+    };
+    const bestByLane = new Map<string, BackfillCandidate>();
     for (const rawPr of rawPulls) {
       const headBranch = rawPullHeadBranch(rawPr);
       const lane = headBranch ? activeLaneByBranch.get(headBranch) ?? null : null;
       if (!lane) continue;
-
       if (!rawPullHasSameRepoHead(rawPr, repo)) continue;
-
       const prNumber = asNumber(rawPr?.number);
       if (!prNumber) continue;
       if (ignoredAutoLinks.has(autoLinkIgnoreKey({ owner: repo.owner, repo: repo.name, prNumber, laneId: lane.id }))) {
         continue;
       }
-
       const existingRepoRow = getRowForRepoPr(repo.owner, repo.name, prNumber);
       if (existingRepoRow && existingRepoRow.lane_id !== lane.id) continue;
+      const state = toPrState({
+        state: asString(rawPr?.state) || "open",
+        draft: Boolean(rawPr?.draft),
+        mergedAt: asString(rawPr?.merged_at) || null,
+      });
+      const isOpen = state === "open" || state === "draft";
+      const prev = bestByLane.get(lane.id);
+      const better =
+        !prev
+        || (isOpen && !prev.isOpen)
+        || (isOpen === prev.isOpen && prNumber > prev.prNumber);
+      if (better) bestByLane.set(lane.id, { rawPr, prNumber, headBranch, lane, state, isOpen });
+    }
 
+    for (const { rawPr, prNumber, headBranch, lane, state } of bestByLane.values()) {
       const summary: PrSummary = {
         id: randomUUID(),
         laneId: lane.id,
@@ -2855,11 +2898,7 @@ export function createPrService({
         githubUrl: asString(rawPr?.html_url) || "",
         githubNodeId: asString(rawPr?.node_id) || null,
         title: asString(rawPr?.title) || `PR #${prNumber}`,
-        state: toPrState({
-          state: asString(rawPr?.state) || "open",
-          draft: Boolean(rawPr?.draft),
-          mergedAt: asString(rawPr?.merged_at) || null,
-        }),
+        state,
         baseBranch: asString(rawPr?.base?.ref) || branchNameFromRef(lane.baseRef),
         headBranch,
         checksStatus: "none",
@@ -9734,6 +9773,129 @@ export function createPrService({
     return JSON.parse(String(row.resolution_state_json)) as IntegrationResolutionState;
   };
 
+  // -------------------------------------------------------------------------
+  // Reconcile-on-focus: catch-up safety net for the always-on brain, which has
+  // NO PR poller. Runs when a project comes into focus/opens so unfocused
+  // projects that missed a webhook still heal. Composed from existing, already
+  // TTL-cached + single-flighted primitives; every phase is wrapped so a
+  // failure never throws out of reconcile.
+  // -------------------------------------------------------------------------
+  const reconcileOnFocus = async (
+    opts: { force?: boolean } = {},
+  ): Promise<{ open: number; healed: number; closedSwept: boolean }> => {
+    const zero = { open: 0, healed: 0, closedSwept: false };
+    const force = opts?.force === true;
+    // Single-flight: a reconcile already in progress wins.
+    if (reconcileRunning) return zero;
+    const startedMs = Date.now();
+    // Throttle: collapse a burst of focus events into one catch-up per window.
+    if (!force && startedMs - lastReconcileAtMs < RECONCILE_MIN_INTERVAL_MS) {
+      return zero;
+    }
+    reconcileRunning = true;
+    const polledAt = nowIso();
+    try {
+      emitPrEvent?.({ type: "pr-reconcile", state: "running", polledAt });
+    } catch {
+      // best-effort — the event surface must never break the reconcile
+    }
+    let open = 0;
+    let healed = 0;
+    let closedSwept = false;
+    try {
+      // Phase 1: open sweep + auto-map. getGithubSnapshot({ force }) internally
+      // runs autoMapRawPullsByBranch + backfillLanePrRowsFromGithubPulls. It is
+      // TTL-cached (120s) and single-flighted, so concurrent focus events
+      // collapse onto one in-flight fetch — no stampede.
+      try {
+        await getGithubSnapshot({ force: true });
+      } catch (error) {
+        logger.warn("prs.reconcile_open_sweep_failed", { error: getErrorMessage(error) });
+      }
+
+      // Phase 2: bounded merged-heal. Refresh the stalest active rows so a PR
+      // that merged/closed while the project was unfocused flips state.
+      try {
+        const activeRows = listRows()
+          .map(rowToSummary)
+          .filter((pr) => pr.state === "open" || pr.state === "draft");
+        open = activeRows.length;
+        const staleFirst = activeRows
+          .filter((pr) => {
+            const syncedMs = parseIsoMs(pr.lastSyncedAt);
+            return syncedMs <= 0 || startedMs - syncedMs >= RECONCILE_MIN_INTERVAL_MS;
+          })
+          .sort((a, b) => parseIsoMs(a.lastSyncedAt) - parseIsoMs(b.lastSyncedAt))
+          .slice(0, RECONCILE_MERGED_HEAL_MAX);
+        if (staleFirst.length > 0) {
+          await refreshPrIds(staleFirst.map((pr) => pr.id));
+          healed = staleFirst.length;
+        }
+      } catch (error) {
+        logger.warn("prs.reconcile_merged_heal_failed", { error: getErrorMessage(error) });
+      }
+
+      // Phase 3: closed sweep (slower cadence). Pull state:"all" so a
+      // merged-but-never-mapped PR gets backfilled to its active lane by the
+      // snapshot's internal branch backfill. This is the #402 heal.
+      try {
+        if (force || startedMs - lastClosedSweepAtMs > RECONCILE_CLOSED_SWEEP_INTERVAL_MS) {
+          // force: true is REQUIRED — without it getGithubSnapshot returns the
+          // projected (local github_pr_projections) snapshot when projections
+          // exist and only dispatches the live fetch in the background, so the
+          // merged/closed backfill never runs synchronously. This is the #402 heal.
+          await getGithubSnapshot({ force: true, includeExternalClosed: true });
+          lastClosedSweepAtMs = Date.now();
+          closedSwept = true;
+        }
+      } catch (error) {
+        logger.warn("prs.reconcile_closed_sweep_failed", { error: getErrorMessage(error) });
+      }
+
+      lastReconcileAtMs = Date.now();
+      return { open, healed, closedSwept };
+    } finally {
+      reconcileRunning = false;
+      try {
+        emitPrEvent?.({ type: "pr-reconcile", state: "idle", polledAt });
+      } catch {
+        // best-effort
+      }
+    }
+  };
+
+  // Manual per-badge sync (the ⟳ affordance on the PR chip). Best-effort:
+  // resolves the lane's current PR and refreshes it, healing merged state.
+  const syncLanePr = async (laneId: string): Promise<PrSummary | null> => {
+    const normalizedLaneId = String(laneId ?? "").trim();
+    if (!normalizedLaneId) return null;
+    try {
+      const existing = getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null;
+      if (existing && !existing.unmapped) {
+        // Mapped row: refresh by id (heals merged/closed via fetchPr), then
+        // return the fresh row summary so the caller sees the new state.
+        const refreshed = await refreshPrIds([existing.id]);
+        return (
+          refreshed.find((pr) => pr.id === existing.id)
+          ?? getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary
+          ?? null
+        );
+      }
+      // Not mapped (or an unmapped GitHub projection): pull state:"all" so a
+      // merged PR on the lane branch gets backfilled/mapped, then re-read.
+      // force: true so this manual ⟳ does a live fetch (+ runs the backfill)
+      // instead of returning possibly-stale local projections.
+      await getGithubSnapshot({ force: true, includeExternalClosed: true });
+      return getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null;
+    } catch (error) {
+      logger.warn("prs.sync_lane_pr_failed", {
+        laneId: normalizedLaneId,
+        error: getErrorMessage(error),
+      });
+      return null;
+    }
+  };
+
   return {
     async createFromLane(args: CreatePrFromLaneArgs): Promise<PrSummary> {
       return await createFromLane(args);
@@ -10034,6 +10196,16 @@ export function createPrService({
     async discoverLanePullRequests(): Promise<PrSummary[]> {
       await getGithubSnapshot({ force: true });
       return listRows().map(rowToSummary);
+    },
+
+    async reconcileOnFocus(
+      opts?: { force?: boolean },
+    ): Promise<{ open: number; healed: number; closedSwept: boolean }> {
+      return await reconcileOnFocus(opts ?? {});
+    },
+
+    async syncLanePr(laneId: string): Promise<PrSummary | null> {
+      return await syncLanePr(laneId);
     },
 
     async listIntegrationProposals(): Promise<IntegrationProposal[]> {

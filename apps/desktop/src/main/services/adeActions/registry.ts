@@ -390,6 +390,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ],
   pr: [
     "addComment",
+    "reconcileOnFocus",
+    "syncLanePr",
     "aiResolutionGetSession",
     "aiResolutionInput",
     "aiResolutionStart",

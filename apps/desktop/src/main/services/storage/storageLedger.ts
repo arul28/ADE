@@ -11,7 +11,7 @@ import type {
   StorageLedgerEntry,
 } from "../../../shared/types/storage";
 import {
-  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
+  INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
   REVIEW_ARTIFACT_RETENTION_DAYS,
@@ -29,7 +29,9 @@ export const STORAGE_LEDGER: readonly StorageLedgerEntry[] = [
     kind: "table",
     description: "Webhook history — inbound automation events. 99.99% are written and never read.",
     policyClass: "operational",
-    policy: { maxAgeDays: INGRESS_EVENT_RETENTION_DAYS, maxRows: INGRESS_EVENT_MAX_ROWS_PER_PROJECT },
+    // maxRows is the TOTAL table ceiling (hard cap across all statuses); the
+    // 2,000 active-row cap is a sub-limit within it, not the table's max size.
+    policy: { maxAgeDays: INGRESS_EVENT_RETENTION_DAYS, maxRows: INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT },
     enforcement: "both",
   },
   {

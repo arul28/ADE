@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
@@ -8,11 +8,20 @@ import type {
 import { ArrowClockwise, ArrowSquareOut, Check, CheckCircle, Copy, WarningCircle, WebhooksLogo } from "@phosphor-icons/react";
 import { openExternalUrl } from "../../lib/openExternal";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import {
+  deriveGithubAccountAuthState,
+  deriveGithubRepoConnectionState,
+  githubAccountIssueCopy,
+  githubRepoIssueCopy,
+  isGithubRealtimeHealthy,
+  isGithubRepoAccessPending,
+} from "../../lib/githubIntegrationStatus";
 
 const ADE_GITHUB_APP_NAME = "ADE";
 const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
 const POST_AUTH_STATUS_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
+const SPIN_STYLE: CSSProperties = { animation: "ade-icon-spin 1s linear infinite" };
 
 type GitHubAppInstallPanelProps = {
   variant?: "settings" | "onboarding";
@@ -50,7 +59,7 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         });
         if (!mountedRef.current || statusRequestSeqRef.current !== requestSeq) return;
         setStatus(latestStatus);
-        if (!opts.retryAfterAuthorization || !isGitHubAppRepoAccessPending(latestStatus)) break;
+        if (!opts.retryAfterAuthorization || !isGithubRepoAccessPending(latestStatus)) break;
         const retryDelay = POST_AUTH_STATUS_RETRY_DELAYS_MS[attempt];
         if (retryDelay == null) break;
         setDeviceMessage("GitHub authorization is complete. Waiting for repository access to appear...");
@@ -89,8 +98,8 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
           setAppAuth(authStatus ?? null);
           if (opts.retryAfterAuthorization) {
             setDeviceMessage(
-              latestStatus && isGitHubAppRepoAccessPending(latestStatus)
-                ? "GitHub authorization is complete. Repository access is still warming up; use Refresh again in a moment."
+              latestStatus && isGithubRepoAccessPending(latestStatus)
+                ? "GitHub authorization is complete. Repository access is still warming up; use Recheck again in a moment."
                 : null,
             );
           }
@@ -181,6 +190,11 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         autoRenewCountRef.current = 0;
         setDeviceMessage("GitHub authorization is complete. Checking repository access...");
         await loadStatus(true, { retryAfterAuthorization: true });
+        // Post-fix auto-heal: now that the App is authorized, kick a one-shot
+        // reconcile so this project's PR badges light up without a manual refresh.
+        // Swallow rejections (e.g. a project transition tearing down the runtime)
+        // so this fire-and-forget can never surface as an unhandled rejection.
+        void window.ade?.prs?.reconcileNow?.().catch(() => {});
       }
     }, Math.max(1, deviceSession.intervalSec) * 1000);
     return () => {
@@ -208,99 +222,162 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     void loadStatus(false);
   }, [loadStatus]);
 
-  const appAuthorized = appAuth?.tokenStored === true;
-  const repoAccessPending = appAuthorized && isGitHubAppRepoAccessPending(status);
-  const view = statusView(status, loading, appAuthorized);
+  // Two independent axes, derived by the shared helper so Settings and the
+  // banner can never disagree.
+  const accountState = deriveGithubAccountAuthState(appAuth);
+  const repoState = deriveGithubRepoConnectionState(status);
+  const appAuthorized = accountState !== "missing";
   const repoLabel = status?.repo ? `${status.repo.owner}/${status.repo.name}` : null;
+  const healthy = isGithubRealtimeHealthy(accountState, repoState);
+  // `appAuth === null` = not fetched yet (distinct from a fetched "no token").
+  const accountChecking = appAuth === null && loading;
+
+  const secondaryBtnStyle = outlineButton(compact ? compactSecondaryButtonStyle : undefined);
+  const primaryBtnStyle = primaryButton(compact ? compactPrimaryButtonStyle : undefined);
+
+  const authBusy = authLoading || Boolean(deviceSession);
+  const accountCta = (
+    <button
+      type="button"
+      style={accountState === "missing" ? primaryBtnStyle : secondaryBtnStyle}
+      onClick={() => void startAppAuthorization()}
+      disabled={authBusy}
+    >
+      <ArrowSquareOut size={12} weight="bold" />
+      {authBusy ? "Authorizing" : accountState === "missing" ? "Authorize ADE" : "Re-authorize"}
+    </button>
+  );
+
+  const account = accountView(accountState, appAuth, accountChecking);
+
+  const recheckButton = (primaryStyle: boolean) => (
+    <button
+      type="button"
+      style={primaryStyle ? primaryBtnStyle : secondaryBtnStyle}
+      onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized })}
+      disabled={loading}
+    >
+      <ArrowClockwise size={12} weight="bold" style={loading ? SPIN_STYLE : undefined} />
+      {loading ? "Checking" : "Recheck"}
+    </button>
+  );
+  const installButton = (
+    <button type="button" style={primaryBtnStyle} onClick={() => openExternalUrl(status?.installUrl ?? ADE_GITHUB_APP_INSTALL_URL)}>
+      <ArrowSquareOut size={12} weight="bold" />
+      Install
+    </button>
+  );
+  const manageButton = (
+    <button type="button" style={secondaryBtnStyle} onClick={() => openExternalUrl(status?.manageUrl ?? GITHUB_APP_INSTALLATIONS_URL)}>
+      Manage
+    </button>
+  );
+
+  const repo = repoView(repoState, repoLabel, loading, status?.error ?? null);
+  const repoActions: ReactNode[] = (() => {
+    switch (repoState) {
+      case "connected":
+        return [manageButton, recheckButton(false)];
+      case "webhook_off":
+        return [manageButton, recheckButton(false)];
+      case "not_installed":
+        return [installButton, manageButton, recheckButton(false)];
+      case "access_pending":
+        return [recheckButton(true)];
+      case "no_repo":
+        return [recheckButton(false)];
+      default:
+        return [manageButton, recheckButton(false)];
+    }
+  })();
+
+  const showWebhookEvents = repoState === "connected" && (status?.webhookEvents.length ?? 0) > 0;
 
   return (
-    <div style={compact ? onboardingRootStyle : cardStyle({ borderColor: "color-mix(in srgb, #3FB950 26%, transparent)" })}>
+    <div
+      style={
+        compact
+          ? onboardingRootStyle
+          : cardStyle({
+              borderColor: healthy
+                ? "color-mix(in srgb, var(--color-success) 26%, transparent)"
+                : "color-mix(in srgb, var(--color-border) 88%, transparent)",
+            })
+      }
+    >
       <div style={compact ? compactHeaderStyle : headerStyle}>
         <div style={iconStyle(compact)}>
           <WebhooksLogo size={compact ? 15 : 18} weight="duotone" />
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={titleRowStyle}>
-            <span style={titleStyle}>{ADE_GITHUB_APP_NAME}</span>
-            {!compact ? <span style={inlineBadge(view.color, { fontSize: 10, padding: "2px 7px" })}>{view.label}</span> : null}
+          <span style={titleStyle}>ADE for GitHub</span>
+          <p style={descriptionStyle}>Webhook-backed, real-time pull request updates — independent of your account token.</p>
+        </div>
+      </div>
+
+      <div style={blocksWrapStyle(compact)}>
+        <section style={axisBlockStyle}>
+          <div style={axisTopRowStyle}>
+            <span style={axisHeadingStyle}>Account · ADE for GitHub</span>
+            {renderPill(account.pill)}
           </div>
-          <p style={descriptionStyle}>{view.description(repoLabel)}</p>
-        </div>
-      </div>
+          <div style={axisBodyRowStyle}>
+            <p style={axisSubtextStyle}>{account.subtext}</p>
+            {!accountChecking ? <div style={axisActionsStyle}>{accountCta}</div> : null}
+          </div>
 
-      <div style={chipRowStyle}>
-        {["Pull requests", "Checks", "Statuses"].map((label) => (
-          <span key={label} style={chipStyle}>
-            <CheckCircle size={11} weight="fill" />
-            {label}
-          </span>
-        ))}
-      </div>
+          {deviceSession ? (
+            <div style={deviceAuthBlockStyle}>
+              <p style={deviceInstructionStyle}>
+                Enter this code at{" "}
+                <button type="button" style={deviceLinkButtonStyle} onClick={() => openExternalUrl(deviceSession.verificationUri)}>
+                  github.com/login/device
+                </button>
+              </p>
+              <button type="button" style={deviceCodeStyle} onClick={() => void copyDeviceCode()}>
+                <span style={deviceLabelStyle}>GitHub code</span>
+                <span style={deviceValueStyle}>{deviceSession.userCode}</span>
+                <span style={deviceCopyIconStyle} aria-hidden="true">
+                  {deviceCodeCopied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
+                </span>
+              </button>
+              {deviceMessage ? null : <p style={authMessageStyle}>Waiting for GitHub authorization…</p>}
+            </div>
+          ) : null}
+          {deviceMessage ? <p style={authMessageStyle}>{deviceMessage}</p> : null}
+          {accountState === "missing" && !deviceSession && !accountChecking ? (
+            <p style={authMessageStyle}>One-time GitHub sign-off that lets ADE verify your repo access for instant PR updates.</p>
+          ) : null}
+        </section>
 
-      {deviceSession ? (
-        <div style={deviceAuthBlockStyle}>
-          <p style={deviceInstructionStyle}>
-            Enter this code at{" "}
-            <button type="button" style={deviceLinkButtonStyle} onClick={() => openExternalUrl(deviceSession.verificationUri)}>
-              github.com/login/device
-            </button>
-          </p>
-          <button type="button" style={deviceCodeStyle} onClick={() => void copyDeviceCode()}>
-            <span style={deviceLabelStyle}>GitHub code</span>
-            <span style={deviceValueStyle}>{deviceSession.userCode}</span>
-            <span style={deviceCopyIconStyle} aria-hidden="true">
-              {deviceCodeCopied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
-            </span>
-          </button>
-          {deviceMessage ? null : <p style={authMessageStyle}>Waiting for GitHub authorization…</p>}
-        </div>
-      ) : null}
-      {deviceMessage ? <p style={authMessageStyle}>{deviceMessage}</p> : null}
+        <div style={axisDividerStyle} />
 
-      {!appAuthorized && !deviceSession ? <p style={authMessageStyle}>One-time GitHub sign-off that lets ADE verify your repo access for instant PR updates.</p> : null}
+        <section style={axisBlockStyle}>
+          <div style={axisTopRowStyle}>
+            <span style={axisHeadingStyle}>{repoLabel ? `This repo · ${repoLabel}` : "This repo"}</span>
+            {renderPill(repo.pill)}
+          </div>
+          <div style={axisBodyRowStyle}>
+            <p style={axisSubtextStyle}>{repo.subtext}</p>
+            <div style={axisActionsStyle}>
+              {repoActions.map((action, index) => (
+                <span key={index} style={{ display: "inline-flex" }}>
+                  {action}
+                </span>
+              ))}
+            </div>
+          </div>
 
-      <div style={actionRowStyle}>
-        {!appAuthorized || (status?.state === "error" && !repoAccessPending) ? (
-          <button
-            type="button"
-            style={
-              appAuthorized
-                ? outlineButton(compact ? compactSecondaryButtonStyle : undefined)
-                : primaryButton(compact ? compactPrimaryButtonStyle : undefined)
-            }
-            onClick={() => void startAppAuthorization()}
-            disabled={authLoading || Boolean(deviceSession)}
-          >
-            <ArrowSquareOut size={12} weight="bold" />
-            {authLoading || deviceSession ? "Authorizing" : appAuthorized ? "Re-authorize" : "Authorize ADE"}
-          </button>
-        ) : null}
-        {status?.installed ? null : (
-          <button
-            type="button"
-            style={appAuthorized ? primaryButton(compact ? compactPrimaryButtonStyle : undefined) : outlineButton(compact ? compactSecondaryButtonStyle : undefined)}
-            onClick={() => openExternalUrl(status?.installUrl ?? ADE_GITHUB_APP_INSTALL_URL)}
-          >
-            <ArrowSquareOut size={12} weight="bold" />
-            Install app
-          </button>
-        )}
-        <button
-          type="button"
-          style={outlineButton(compact ? compactSecondaryButtonStyle : undefined)}
-          onClick={() => openExternalUrl(status?.manageUrl ?? GITHUB_APP_INSTALLATIONS_URL)}
-        >
-          Manage
-        </button>
-        <button
-          type="button"
-          style={outlineButton(compact ? compactSecondaryButtonStyle : undefined)}
-          onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized })}
-          disabled={loading}
-        >
-          {loading ? <WarningCircle size={12} weight="bold" /> : <ArrowClockwise size={12} weight="bold" />}
-          {loading ? "Checking" : "Refresh"}
-        </button>
+          {showWebhookEvents ? (
+            <div style={eventChipRowStyle}>
+              {status!.webhookEvents.map((event) => (
+                <span key={event} style={eventChipStyle}>
+                  {event}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </section>
       </div>
     </div>
   );
@@ -312,95 +389,114 @@ function sleepMs(ms: number): Promise<void> {
   });
 }
 
-export function isGitHubAppRepoAccessPending(status: GitHubAppInstallationStatus | null): boolean {
-  if (status?.state !== "error" || !status.relayConfigured || status.installed) return false;
-  const error = status.error?.trim().toLowerCase() ?? "";
-  return error === "not found"
-    || error.includes("repository not found")
-    || error.includes("could not resolve to a repository");
+// --- Presentational derivations for the two axis blocks ---
+
+type PillTone = "ok" | "warn" | "pending" | "neutral";
+type PillSpec = { tone: PillTone; color: string; label: string };
+
+function renderPill({ tone, color, label }: PillSpec): ReactNode {
+  const icon =
+    tone === "ok" ? (
+      <CheckCircle size={11} weight="fill" />
+    ) : tone === "warn" ? (
+      <WarningCircle size={11} weight="fill" />
+    ) : tone === "pending" ? (
+      <ArrowClockwise size={11} weight="bold" style={SPIN_STYLE} />
+    ) : (
+      <span style={neutralDotStyle} />
+    );
+  return (
+    <span style={inlineBadge(color, { fontSize: 10.5, padding: "3px 8px", gap: 5, flexShrink: 0, whiteSpace: "nowrap" })}>
+      {icon}
+      {label}
+    </span>
+  );
 }
 
-export function statusView(status: GitHubAppInstallationStatus | null, loading: boolean, appAuthorized: boolean): {
-  label: string;
-  color: string;
-  description: (repoLabel: string | null) => string;
-} {
-  if (loading && !status) {
+function accountView(
+  state: ReturnType<typeof deriveGithubAccountAuthState>,
+  appAuth: GitHubAppUserAuthStatus | null,
+  checking: boolean,
+): { pill: PillSpec; subtext: string } {
+  if (checking) {
     return {
-      label: "Checking",
-      color: COLORS.warning,
-      description: () => "Checking whether this project already has the ADE GitHub App installed.",
+      pill: { tone: "pending", color: COLORS.textMuted, label: "Checking…" },
+      subtext: "Checking your GitHub authorization…",
     };
   }
-  if (status?.relayConfigured && status.webhookState === "deleted") {
+  if (state === "valid") {
+    const who = appAuth?.userLogin ?? "GitHub account";
+    const expiry = formatExpiry(appAuth?.expiresAt ?? null);
     return {
-      label: "Webhook off",
-      color: COLORS.warning,
-      description: (repoLabel) =>
-        repoLabel
-          ? `GitHub reported that the ADE App webhook was removed for this App. Re-enable the webhook in GitHub App settings so ${repoLabel} can receive realtime PR updates. Existing GitHub auth remains the fallback.`
-          : "GitHub reported that the ADE App webhook was removed. Re-enable the webhook in GitHub App settings for realtime PR updates. Existing GitHub auth remains the fallback.",
+      pill: { tone: "ok", color: COLORS.success, label: "Authorized" },
+      subtext: expiry ? `${who} · token valid to ${expiry}` : `${who} · token valid`,
     };
   }
-  if (status?.installed && status.relayConfigured) {
+  if (state === "expired") {
     return {
-      label: "Configured",
-      color: COLORS.success,
-      description: (repoLabel) =>
-        repoLabel
-          ? `The ADE GitHub App is installed for ${repoLabel}. PR updates can arrive instantly, with GitHub polling as fallback.`
-          : "The ADE GitHub App is installed. PR updates can arrive instantly, with GitHub polling as fallback.",
-    };
-  }
-  if (status?.installed && !status.relayConfigured) {
-    return {
-      label: "Installed",
-      color: COLORS.warning,
-      description: (repoLabel) =>
-        repoLabel
-          ? `The ADE GitHub App is installed for ${repoLabel}. ADE will use GitHub polling until realtime delivery is available.`
-          : "The ADE GitHub App is installed. ADE will use GitHub polling until realtime delivery is available.",
-    };
-  }
-  if (status?.state === "unconfigured" || (status && !status.relayConfigured && status.state !== "error")) {
-    return {
-      label: "Checking",
-      color: COLORS.warning,
-      description: () => "ADE could not confirm realtime delivery yet. GitHub polling remains available as fallback.",
-    };
-  }
-  if (status?.state === "error") {
-    if (!appAuthorized) {
-      return {
-        label: "Authorize GitHub",
-        color: COLORS.warning,
-        description: () => "Authorize ADE with GitHub to enable instant PR updates for this repo.",
-      };
-    }
-    if (isGitHubAppRepoAccessPending(status)) {
-      return {
-        label: "Checking access",
-        color: COLORS.warning,
-        description: (repoLabel) =>
-          repoLabel
-            ? `GitHub accepted authorization. ADE is waiting for the GitHub App's repository access to become visible for ${repoLabel}. If this stays here, install the App or select this repo in GitHub.`
-            : "GitHub accepted authorization. ADE is waiting for the GitHub App's repository access to become visible. If this stays here, install the App or select this repo in GitHub.",
-      };
-    }
-    return {
-      label: "Check failed",
-      color: COLORS.danger,
-      description: () => status.error ?? "ADE could not check GitHub App status. Existing GitHub auth remains the fallback.",
+      pill: { tone: "warn", color: COLORS.warning, label: "Authorization expired" },
+      subtext: githubAccountIssueCopy("expired").detail,
     };
   }
   return {
-    label: "Not installed",
-    color: COLORS.warning,
-    description: (repoLabel) =>
-      repoLabel
-        ? `Install the ADE GitHub App for ${repoLabel} to enable instant PR updates. If the App is installed for selected repositories, make sure this repo is selected.`
-        : "Install the ADE GitHub App for instant PR updates. If the App is installed for selected repositories, make sure this repo is selected.",
+    pill: { tone: "neutral", color: COLORS.textMuted, label: "Not authorized" },
+    subtext: githubAccountIssueCopy("missing").detail,
   };
+}
+
+function repoView(
+  state: ReturnType<typeof deriveGithubRepoConnectionState>,
+  repoLabel: string | null,
+  loading: boolean,
+  error: string | null,
+): { pill: PillSpec; subtext: string } {
+  switch (state) {
+    case "connected":
+      return {
+        pill: { tone: "ok", color: COLORS.success, label: "Connected" },
+        subtext: "Real-time PR updates are on.",
+      };
+    case "webhook_off":
+      return {
+        pill: { tone: "warn", color: COLORS.warning, label: "Webhook off" },
+        subtext: githubRepoIssueCopy("webhook_off", repoLabel).detail,
+      };
+    case "not_installed":
+      return {
+        pill: { tone: "warn", color: COLORS.warning, label: "Not connected" },
+        subtext: githubRepoIssueCopy("not_installed", repoLabel).detail,
+      };
+    case "access_pending":
+      return {
+        pill: { tone: "pending", color: COLORS.warning, label: "Finishing setup" },
+        subtext: githubRepoIssueCopy("access_pending", repoLabel).detail,
+      };
+    case "no_repo":
+      return {
+        pill: { tone: "neutral", color: COLORS.textMuted, label: "No GitHub repo detected" },
+        subtext: "Add a GitHub remote to this project to turn on real-time PR updates.",
+      };
+    default:
+      if (loading) {
+        return {
+          pill: { tone: "pending", color: COLORS.textMuted, label: "Checking…" },
+          subtext: "Checking whether ADE for GitHub is installed on this repo…",
+        };
+      }
+      return {
+        pill: { tone: "neutral", color: COLORS.textMuted, label: "Couldn't verify" },
+        subtext: error?.trim()
+          ? error
+          : "ADE couldn't confirm the app status for this repo. Recheck in a moment.",
+      };
+  }
+}
+
+function formatExpiry(iso: string | null): string | null {
+  if (!iso) return null;
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
 const onboardingRootStyle: CSSProperties = {
@@ -435,13 +531,6 @@ function iconStyle(compact: boolean): CSSProperties {
   };
 }
 
-const titleRowStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  flexWrap: "wrap",
-};
-
 const titleStyle: CSSProperties = {
   fontSize: 13,
   fontWeight: 700,
@@ -450,31 +539,103 @@ const titleStyle: CSSProperties = {
 };
 
 const descriptionStyle: CSSProperties = {
-  margin: "5px 0 0",
+  margin: "4px 0 0",
   fontSize: 11.5,
   fontFamily: SANS_FONT,
   color: COLORS.textMuted,
   lineHeight: 1.45,
 };
 
-const chipRowStyle: CSSProperties = {
+function blocksWrapStyle(compact: boolean): CSSProperties {
+  return {
+    marginTop: compact ? 12 : 14,
+    border: `1px solid ${COLORS.borderMuted}`,
+    borderRadius: 10,
+    background: "color-mix(in srgb, var(--color-fg) 2.5%, transparent)",
+    overflow: "hidden",
+  };
+}
+
+const axisBlockStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  padding: 14,
+};
+
+const axisDividerStyle: CSSProperties = {
+  height: 1,
+  background: COLORS.borderMuted,
+};
+
+const axisTopRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 10,
+};
+
+const axisHeadingStyle: CSSProperties = {
+  fontSize: 12,
+  fontWeight: 600,
+  fontFamily: SANS_FONT,
+  color: COLORS.textPrimary,
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+const axisBodyRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: 12,
+  marginTop: 6,
+};
+
+const axisSubtextStyle: CSSProperties = {
+  margin: 0,
+  flex: 1,
+  minWidth: 0,
+  fontSize: 11.5,
+  fontFamily: SANS_FONT,
+  color: COLORS.textMuted,
+  lineHeight: 1.45,
+};
+
+const axisActionsStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 8,
+  flexShrink: 0,
+  justifyContent: "flex-end",
+};
+
+const neutralDotStyle: CSSProperties = {
+  width: 6,
+  height: 6,
+  borderRadius: "50%",
+  background: "currentColor",
+  display: "inline-block",
+};
+
+const eventChipRowStyle: CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   gap: 6,
-  marginTop: 12,
+  marginTop: 10,
 };
 
-const chipStyle: CSSProperties = {
+const eventChipStyle: CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
-  gap: 5,
-  padding: "3px 7px",
+  padding: "2px 7px",
   borderRadius: 6,
   fontSize: 10,
-  fontFamily: MONO_FONT,
-  color: COLORS.success,
-  background: "color-mix(in srgb, var(--color-success) 9%, transparent)",
-  border: "1px solid color-mix(in srgb, var(--color-success) 18%, transparent)",
+  fontFamily: SANS_FONT,
+  color: COLORS.textSecondary,
+  background: "color-mix(in srgb, var(--color-fg) 5%, transparent)",
+  border: `1px solid ${COLORS.borderMuted}`,
 };
 
 const deviceAuthBlockStyle: CSSProperties = {
@@ -541,13 +702,6 @@ const authMessageStyle: CSSProperties = {
   fontFamily: SANS_FONT,
   color: COLORS.textMuted,
   lineHeight: 1.35,
-};
-
-const actionRowStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: 8,
-  marginTop: 12,
 };
 
 const compactPrimaryButtonStyle: CSSProperties = {

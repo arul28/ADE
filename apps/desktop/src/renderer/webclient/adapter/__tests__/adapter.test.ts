@@ -944,6 +944,28 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("routes the manual lane PR sync and reconcile through their daemon actions", async () => {
+    fake.descriptors = descriptors(["prs.syncLanePr", "prs.reconcileOnFocus"]);
+    const pr = { id: "pr-1", laneId: "lane-1", title: "Ship web client" };
+    fake.commandResults.set("prs.syncLanePr", pr);
+    fake.commandResults.set("prs.reconcileOnFocus", { open: 1, healed: 0, closedSwept: false });
+
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.prs.syncLanePr("lane-1")).resolves.toEqual(pr);
+    await expect(adapter.ade.prs.reconcileNow()).resolves.toBeUndefined();
+
+    // Single positional laneId marshals to a named `{ laneId }` record (matching
+    // the `prs.getForLane` host handler); reconcile carries `{ force: true }`.
+    expect(fake.commandCalls.map((call) => [call.action, call.args])).toEqual([
+      ["prs.syncLanePr", { laneId: "lane-1" }],
+      ["prs.reconcileOnFocus", { force: true }],
+    ]);
+
+    adapter.dispose();
+  });
+
   it("returns the host's structured file results (not a blob-wrapped JSON string)", async () => {
     // Regression: the host answers file_request with a structured `result`
     // (workspaces array, tree array), and requestFile() resolves with it

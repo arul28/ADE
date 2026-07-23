@@ -12,8 +12,9 @@ import {
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
+import { IntegrationBannerHost } from "./IntegrationBannerHost";
 import { TabNav } from "./TabNav";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
@@ -59,6 +60,7 @@ import {
   isStaleCliNoticeSnoozed,
   snoozeStaleCliNotice,
 } from "../../lib/staleCliNoticeSnooze";
+import { hasRecentBannerDismissal } from "../../lib/bannerDismiss";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import {
   getStoredZoomLevel,
@@ -221,56 +223,6 @@ function shortId(id: string): string {
   return trimmed.length <= 8 ? trimmed : trimmed.slice(0, 8);
 }
 
-function describeGithubBanner(status: GitHubStatus): { message: string; linkLabel: string } {
-  if (!status.tokenStored) {
-    return {
-      message: "GitHub is not connected yet. Use gh auth or add a PAT. ",
-      linkLabel: "Connect GitHub",
-    };
-  }
-  if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
-    const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repo";
-    return {
-      message: `GitHub auth is active, but it cannot access ${repoLabel}. `,
-      linkLabel: "Fix GitHub auth",
-    };
-  }
-  return {
-    message: "GitHub auth is missing required permissions. ",
-    linkLabel: "Fix GitHub auth",
-  };
-}
-
-function GithubBanner({
-  status,
-  onDismiss,
-}: {
-  status: GitHubStatus;
-  onDismiss: () => void;
-}): JSX.Element {
-  const { message, linkLabel } = describeGithubBanner(status);
-  return (
-    <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-      <span>
-        {message}
-        <Link to="/settings?tab=general#github-connection" className="underline">
-          {linkLabel}
-        </Link>
-      </span>
-      <button
-        type="button"
-        data-testid="dismiss-github-banner"
-        className="ml-2 text-amber-900/70 hover:text-amber-900"
-        onClick={onDismiss}
-        title="Dismiss for this session"
-        aria-label="Dismiss GitHub not connected banner for this session"
-      >
-        ×
-      </button>
-    </div>
-  );
-}
-
 function getPrToastToneClasses(tone: PrToastTone): {
   panel: string;
   badge: string;
@@ -392,28 +344,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [onboardingStatus, setOnboardingStatus] =
     useState<OnboardingStatus | null>(null);
   const [onboardingStatusLoading, setOnboardingStatusLoading] = useState(false);
-  // Banner dismissals live in the store so they can be pruned when projects close/switch
-  // — AppShell used to own these as local state, which leaked entries across a long session.
-  const dismissedMissingAiBannerRoots = useAppStore((s) => s.dismissedMissingAiBannerRoots);
-  const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
-  const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
-  const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
+  // Connection/health banner dismissals now live in a durable localStorage store
+  // (see IntegrationBannerHost / bannerDismiss.ts) so they survive restart, rather
+  // than the session-only Zustand maps this used to read.
   const currentProjectRoot = useAppStore(selectActiveProjectRoot);
   const activeRemoteBinding =
     projectBinding?.kind === "remote" ? projectBinding : null;
   const isRemoteProject = projectBinding?.kind === "remote";
-  const missingAiBannerDismissed = Boolean(
-    currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
-  );
-  const githubBannerDismissed = Boolean(
-    currentProjectRoot && dismissedGithubBannerRoots[currentProjectRoot],
-  );
   const [projectMissing, setProjectMissing] = useState(false);
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const githubStatusProjectRootRef = useRef<string | null>(null);
-  const githubBannerDismissedRef = useRef(false);
-  githubBannerDismissedRef.current = githubBannerDismissed;
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isPersonalChatsRoute =
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
@@ -1041,9 +982,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       githubStatusProjectRootRef.current = currentProjectRoot;
       setGithubStatus(null);
     }
-    const delayMs = githubBannerDismissedRef.current
-      ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
-      : GITHUB_STATUS_STARTUP_DELAY_MS;
+    const delayMs =
+      currentProjectRoot && hasRecentBannerDismissal(`github-cli:${currentProjectRoot}`)
+        ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
+        : GITHUB_STATUS_STARTUP_DELAY_MS;
     const githubTimer = window.setTimeout(() => {
       void window.ade.github.getStatus().then((status) => {
         if (cancelled) return;
@@ -1366,59 +1308,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       ) : null}
 
-      {!hideSidebar &&
-      project?.rootPath &&
-      !showWelcome &&
-      aiStatusLoaded &&
-      aiStatus !== null &&
-      !hasAnyAiProvider &&
-      !missingAiBannerDismissed ? (
-        <div className="shrink-0 mx-2 mt-1 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          <span>
-            No AI provider is configured yet.{" "}
-            <Link to="/settings?tab=ai" className="underline">
-              Set up AI
-            </Link>
-          </span>
-          <button
-            type="button"
-            data-testid="dismiss-missing-ai-banner"
-            className="ml-2 text-amber-900/70 hover:text-amber-900"
-            onClick={() => {
-              if (!currentProjectRoot) return;
-              dismissMissingAiBanner(currentProjectRoot);
-            }}
-            title="Dismiss for this session"
-            aria-label="Dismiss missing AI provider banner for this session"
-          >
-            ×
-          </button>
-        </div>
-      ) : null}
-
-      {!hideSidebar &&
-      project?.rootPath &&
-      !showWelcome &&
-      !isOnboardingRoute &&
-      githubStatus !== null &&
-      !githubStatus.connected &&
-      !githubBannerDismissed ? (
-        <GithubBanner
-          status={githubStatus}
-          onDismiss={() => {
-            if (!currentProjectRoot) return;
-            dismissGithubBanner(currentProjectRoot);
-          }}
+      {!hideSidebar && !showWelcome && project?.rootPath ? (
+        <IntegrationBannerHost
+          currentProjectRoot={currentProjectRoot}
+          githubStatus={githubStatus}
+          hasAnyAiProvider={hasAnyAiProvider}
+          aiStatusLoaded={aiStatusLoaded && aiStatus !== null}
+          providerMode={providerMode}
+          aiMockProvider={Boolean(aiMockProvider)}
+          navigate={navigate}
         />
-      ) : null}
-
-      {!hideSidebar && providerMode === "subscription" && aiMockProvider ? (
-        <div className="shrink-0 mx-3 mt-1.5 rounded bg-amber-500/6 px-3 py-1.5 text-[11px] font-mono text-amber-800">
-          LLM provider is "mock" — AI will return placeholder content.{" "}
-          <Link to="/settings?tab=ai" className="underline">
-            Open AI settings
-          </Link>
-        </div>
       ) : null}
 
       {!hideSidebar && providerMode === "subscription" && aiFailure ? (

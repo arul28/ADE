@@ -368,9 +368,67 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_HEAD_WATCHER",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
   "ADE_ENABLE_PR_POLLING",
+  // reconcile-on-focus is the default catch-up safety net (the brain has no PR
+  // poller), so it stays enabled even in stability mode. Its own kill switch is
+  // ADE_DISABLE_PR_RECONCILE (enforced in scheduleReconcile), NOT this flag.
+  "ADE_ENABLE_PR_RECONCILE",
   "ADE_ENABLE_SYNC_INIT",
   "ADE_ENABLE_AUTOMATION_INGRESS",
 ]);
+
+// ---------------------------------------------------------------------------
+// PR reconcile-on-focus: global anti-stampede limiter.
+//
+// The always-on brain has NO PR poller, so unfocused projects go stale unless a
+// webhook fires. When a project comes into focus/opens we run a throttled
+// catch-up reconcile (prService.reconcileOnFocus). Per-project throttle +
+// single-flight lives on each prService instance; THIS module-level limiter
+// caps the whole app at RECONCILE_GLOBAL_MAX concurrent reconciles and staggers
+// extra opens with jitter so launching several projects at once cannot stampede
+// GitHub. The active-or-scheduled counter (not just in-flight) is what prevents
+// a burst of near-simultaneous opens from each passing the cap before any has
+// begun.
+// ---------------------------------------------------------------------------
+const RECONCILE_GLOBAL_MAX = 1;
+let reconcileActiveOrScheduled = 0;
+const pendingReconciles: Array<() => void> = [];
+
+function reconcileJitterMs(): number {
+  // 150–600ms stagger so multiple near-simultaneous opens don't fire together.
+  return 150 + Math.floor(Math.random() * 450);
+}
+
+function drainNextReconcile(): void {
+  const next = pendingReconciles.shift();
+  if (!next) return;
+  reconcileActiveOrScheduled += 1;
+  setTimeout(next, reconcileJitterMs());
+}
+
+// Queue a fire-and-forget reconcile behind the app-wide cap. `runner` is built
+// per-project by buildReconcileRunner (which re-resolves the live context at
+// fire time and routes in-process vs. daemon), so this function only owns
+// global staggering/queueing — not the null-context or routing decision.
+function scheduleReconcile(runner: () => Promise<unknown>): void {
+  // Default-ON with a kill switch; never gated behind PR polling.
+  if (process.env.ADE_DISABLE_PR_RECONCILE === "1") return;
+  const run = () => {
+    Promise.resolve(runner())
+      .catch(() => {
+        // reconcile is best-effort; guard the microtask too
+      })
+      .finally(() => {
+        reconcileActiveOrScheduled -= 1;
+        drainNextReconcile();
+      });
+  };
+  if (reconcileActiveOrScheduled < RECONCILE_GLOBAL_MAX) {
+    reconcileActiveOrScheduled += 1;
+    setTimeout(run, reconcileJitterMs());
+  } else {
+    pendingReconciles.push(run);
+  }
+}
 
 function readString(source: Record<string, unknown> | null | undefined, key: string): string | undefined {
   const value = source?.[key];
@@ -1620,6 +1678,30 @@ app.whenReady().then(async () => {
     }
   };
 
+  // Build the fire-time reconcile runner for a project. The queued entry
+  // re-resolves the LIVE context when it actually fires, so a project evicted
+  // between scheduling and firing simply drops out instead of reconciling a
+  // defunct service (avoids stale-closure GitHub calls). In-process runtimes
+  // reconcile directly; a dormant/runtime-backed (production) context has no
+  // local prService, so the catch-up sweep is routed to the daemon's `pr`
+  // domain where the always-on runtime actually owns prService.
+  const buildReconcileRunner = (projectRoot: string): (() => Promise<unknown>) => {
+    return async () => {
+      const liveCtx = projectContexts.get(projectRoot);
+      if (!liveCtx) return; // evicted before firing → drop
+      if (liveCtx.prService) {
+        await liveCtx.prService.reconcileOnFocus();
+        return;
+      }
+      // Dormant/runtime-backed context: prService lives in the daemon runtime.
+      await localRuntimePool
+        .callActionForRoot(projectRoot, { domain: "pr", action: "reconcileOnFocus" })
+        .catch(() => {
+          // best-effort; the daemon may be reconnecting after a restart
+        });
+    };
+  };
+
   const bindWindowToProject = (
     windowId: number | null,
     projectRoot: string | null,
@@ -1649,6 +1731,11 @@ app.whenReady().then(async () => {
       const ctx = projectContexts.get(normalizedRoot);
       if (ctx) {
         persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
+        // Fire-and-forget catch-up reconcile on warm-reuse / deep-link focus.
+        // Throttled per-project + globally capped, so this never blocks focus.
+        // The runner routes in-process vs. daemon and re-resolves the live
+        // context at fire time (production contexts are dormant here).
+        scheduleReconcile(buildReconcileRunner(normalizedRoot));
       }
       if (!shouldUseInProcessProjectRuntime()) {
         // Desktop foregrounding is independent from phone sync project selection:
@@ -3757,6 +3844,24 @@ app.whenReady().then(async () => {
       },
       0,
       "ADE_ENABLE_PR_POLLING",
+    );
+
+    // Cold-open catch-up reconcile. Routed through the global limiter (not a
+    // direct call) so a burst of project opens still staggers under the app-wide
+    // concurrency cap. The per-project throttle on the service makes it a no-op
+    // if a focus reconcile already ran within the min-interval.
+    scheduleBackgroundProjectTask(
+      "prs.reconcile_on_open",
+      () => {
+        scheduleReconcile(buildReconcileRunner(projectRoot));
+      },
+      (error) => {
+        logger.warn("prs.reconcile_on_open_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+      reconcileJitterMs(),
+      "ADE_ENABLE_PR_RECONCILE",
     );
 
     if (automationIngressService) {
@@ -6088,6 +6193,12 @@ app.whenReady().then(async () => {
       } else if (focusedRoot != null) {
         clearLastRemoteProjectBinding();
         setForegroundProject(focusedRoot);
+        // Genuine window refocus (alt-tab back to an already-open project) doesn't
+        // re-run bindWindowToProject, so schedule the catch-up reconcile here too —
+        // otherwise a PR merged while ADE was unfocused stays stale until the user
+        // switches projects. The per-project 90s throttle + single-flight guard
+        // collapses refocus storms into at most one reconcile per window.
+        scheduleReconcile(buildReconcileRunner(focusedRoot));
       } else if (!activeProjectRoot || !rootsBoundToWindows().has(activeProjectRoot)) {
         // Focusing an unscoped window (e.g. a brand-new File > New Window) must
         // not clobber the foreground project — that would tear down background

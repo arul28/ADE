@@ -36,10 +36,10 @@ import { triggerDeliveryKeyForType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import {
-  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
   REVIEW_ARTIFACT_RETENTION_DAYS,
+  pruneIngressEventRowsForProject,
 } from "../state/dbMaintenanceApi";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -1146,20 +1146,13 @@ export function createAutomationService({
   };
 
   const pruneIngressEventOverflowForProject = (targetProjectId: string): void => {
-    // Rows that reached dispatch are exempt from the count cap. A failed row
-    // was previously dispatched and must keep deduping webhook redelivery even
-    // when a later action failed; both statuses remain subject to the age prune.
-    db.run(
-      `delete from automation_ingress_events
-        where rowid in (
-          select rowid
-          from automation_ingress_events
-          where project_id = ? and status not in ('dispatched', 'failed')
-          order by received_at desc, rowid desc
-          limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
-        )`,
-      [targetProjectId],
-    );
+    // Active cap + hard cap DELETEs live in `state/dbMaintenanceApi` so this
+    // writer and the storage-doctor maintenance mirror can't drift. AdeDb.run
+    // reports no change count, so the executor returns 0 and we ignore the total.
+    pruneIngressEventRowsForProject((sql, params) => {
+      db.run(sql, params);
+      return 0;
+    }, targetProjectId);
   };
 
   const pruneIngressEventsForProject = (targetProjectId: string, referenceTime = new Date()): void => {

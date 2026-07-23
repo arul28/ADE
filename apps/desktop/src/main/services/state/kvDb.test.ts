@@ -1,9 +1,21 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { openKvDb } from "./kvDb";
+import {
+  openKvDb,
+  rebuildTableInTransaction,
+  sweepOrphanedRepairStagingTables,
+  type TableRebuildPlan,
+} from "./kvDb";
 import { isCrsqliteAvailable } from "./crsqliteExtension";
+
+const testRequire = createRequire(import.meta.url);
+const { DatabaseSync } = testRequire("node:sqlite") as {
+  DatabaseSync: new (dbPath: string) => DatabaseSyncType;
+};
 
 function createLogger() {
   return {
@@ -620,5 +632,123 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
       db.get<{ id: string }>("select id from automation_runs where id = ? limit 1", ["run-probe"])?.id,
     ).toBe("run-probe");
     expect(countAutomationRunChanges()).toBeGreaterThan(changesBeforeInsert);
+  });
+});
+
+describe("rebuildTableInTransaction leftover staging guard", () => {
+  it("rebuilds successfully when a leftover __ade_crr_repair_ staging table already exists", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-guard-"));
+    const dbPath = path.join(root, "ade.db");
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec("create table widgets (id integer primary key, payload text not null)");
+      const insert = db.prepare("insert into widgets(payload) values (?)");
+      for (let i = 0; i < 25; i += 1) insert.run(`payload-${i}`);
+
+      // Simulate the wedge: an aborted/killed rebuild left the staging table
+      // behind, populated. Without the inline drop-guard the bare CREATE inside
+      // rebuildTableInTransaction throws "table __ade_crr_repair_widgets already
+      // exists" and every future repair fails the same way.
+      db.exec(
+        "create table __ade_crr_repair_widgets (id integer primary key, payload text not null default '')",
+      );
+      db.exec("insert into __ade_crr_repair_widgets(id, payload) values (999, 'stale')");
+
+      const plan: TableRebuildPlan = {
+        tableName: "widgets",
+        stagingName: "__ade_crr_repair_widgets",
+        createStagingSql:
+          'create table "__ade_crr_repair_widgets" (id integer primary key, payload text not null default \'\')',
+        columnsSql: '"id", "payload"',
+        indexSqlsToRecreate: [],
+      };
+
+      expect(() => rebuildTableInTransaction(db, plan)).not.toThrow();
+
+      // Original rows preserved, staging gone, stale orphan row not leaked in.
+      expect(db.prepare("select count(*) as count from widgets").get()).toEqual({ count: 25 });
+      expect(db.prepare("select count(*) as count from widgets where id = 999").get()).toEqual({ count: 0 });
+      expect(
+        db.prepare("select 1 from sqlite_master where type = 'table' and name = '__ade_crr_repair_widgets'").get(),
+      ).toBeUndefined();
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("sweepOrphanedRepairStagingTables", () => {
+  it("drops non-ambiguous repair orphans and crsql siblings while preserving ambiguous staging", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-sweep-"));
+    const dbPath = path.join(root, "ade.db");
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec(`
+        create table alpha (id integer primary key);
+        create table __ade_crr_repair_alpha (id integer primary key);
+        create table __ade_crr_repair_alpha__crsql_clock (id integer primary key);
+        create table __ade_fk_repair_beta (id integer primary key);
+        create table gamma (id integer primary key);
+        create table __ade_crr_repair_gamma (id integer primary key);
+      `);
+
+      // `gamma` is ambiguous (recovery could not classify it) → its staging table
+      // must survive; every other repair orphan is swept.
+      sweepOrphanedRepairStagingTables(db, new Set(["gamma"]));
+
+      const remaining = db
+        .prepare(
+          "select name from sqlite_master where type = 'table' and (name like '__ade_crr_repair_%' or name like '__ade_fk_repair_%') order by name",
+        )
+        .all()
+        .map((row) => (row as { name: string }).name);
+      expect(remaining).toEqual(["__ade_crr_repair_gamma"]);
+
+      // Real tables are untouched.
+      expect(db.prepare("select 1 from sqlite_master where name = 'alpha'").get()).toBeTruthy();
+      expect(db.prepare("select 1 from sqlite_master where name = 'gamma'").get()).toBeTruthy();
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves crsql shadow siblings of an ambiguous staging table while still sweeping non-ambiguous ones", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-sweep-shadow-"));
+    const dbPath = path.join(root, "ade.db");
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec(`
+        create table gamma (id integer primary key);
+        create table __ade_crr_repair_gamma (id integer primary key);
+        create table __ade_crr_repair_gamma__crsql_clock (id integer primary key);
+        create table __ade_crr_repair_gamma__crsql_pks (id integer primary key);
+        create table __ade_crr_repair_delta (id integer primary key);
+        create table __ade_crr_repair_delta__crsql_clock (id integer primary key);
+      `);
+
+      // `gamma` is ambiguous. Its shadow siblings share the `__ade_crr_repair_%`
+      // prefix, so a naive sweep would strip the prefix to `gamma__crsql_clock`
+      // (not `gamma`), miss the ambiguous check, and drop them — silently
+      // breaking the deliberately-preserved base. Non-ambiguous `delta` + its
+      // shadow must still be swept.
+      sweepOrphanedRepairStagingTables(db, new Set(["gamma"]));
+
+      const remaining = db
+        .prepare(
+          "select name from sqlite_master where type = 'table' and name like '__ade_%_repair_%' order by name",
+        )
+        .all()
+        .map((row) => (row as { name: string }).name);
+      expect(remaining).toEqual([
+        "__ade_crr_repair_gamma",
+        "__ade_crr_repair_gamma__crsql_clock",
+        "__ade_crr_repair_gamma__crsql_pks",
+      ]);
+    } finally {
+      db.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -323,6 +323,16 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(actions).toContain("getMobileGithubDetail");
   });
 
+  it("exposes reconcileOnFocus + syncLanePr so the reconcile safety net works in the runtime-backed build", () => {
+    // Regression: in production a project is runtime-backed (local daemon RPC),
+    // so the desktop context's prService is null and these actions are dispatched
+    // to the daemon. If they are not allowlisted, the daemon rejects them —
+    // reconcile-on-focus becomes a no-op and the manual ⟳ sync silently fails.
+    const actions = ADE_ACTION_ALLOWLIST.pr ?? [];
+    expect(actions).toContain("reconcileOnFocus");
+    expect(actions).toContain("syncLanePr");
+  });
+
   it("exposes ade_project.clearLocalData for runtime-backed cleanup", () => {
     const actions = ADE_ACTION_ALLOWLIST.ade_project ?? [];
     expect(actions).toContain("clearLocalData");
