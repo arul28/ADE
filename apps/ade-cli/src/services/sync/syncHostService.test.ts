@@ -1803,6 +1803,7 @@ describe("sync host account authentication", () => {
     const issueChallenge = async (
       client: Awaited<ReturnType<typeof openAccountClient>>,
       requestId: string,
+      supportedAeads?: string[],
     ) => {
       const nonce = Buffer.alloc(32, requestId.length);
       const ephemeral = generateX25519EphemeralKeyPair();
@@ -1813,6 +1814,7 @@ describe("sync host account authentication", () => {
           v: 1,
           nonce: nonce.toString("base64"),
           clientEphemeralPublicKey: ephemeral.publicKeyRaw.toString("base64"),
+          ...(supportedAeads ? { supportedAeads } : {}),
         },
       }));
       const envelope = await waitForValue(
@@ -1827,6 +1829,7 @@ describe("sync host account authentication", () => {
         ts: number;
         hostEphemeralPublicKey: string;
         signature: string;
+        aead?: string;
       };
       const canonical = buildAdoptChallengeSignatureInput({
         hostDeviceId: payload.hostDeviceId,
@@ -1834,6 +1837,7 @@ describe("sync host account authentication", () => {
         clientEphemeralPublicKey: ephemeral.publicKeyRaw.toString("base64"),
         hostEphemeralPublicKey: payload.hostEphemeralPublicKey,
         ts: payload.ts,
+        ...(payload.aead ? { aead: payload.aead } : {}),
       });
       expect(verifyEd25519(
         Buffer.from(
@@ -1863,6 +1867,7 @@ describe("sync host account authentication", () => {
         hostDeviceId: "host-device-1",
         ts: adoptNow,
       });
+      expect(challenge.payload).not.toHaveProperty("aead");
       const duplicateEphemeral = generateX25519EphemeralKeyPair();
       client.ws.send(encodeSyncEnvelope({
         type: "account_challenge",
@@ -1957,6 +1962,81 @@ describe("sync host account authentication", () => {
         ([message]) => message === "sync_host.account_auth_requires_relay",
       )).toBe(false);
 
+      const aesClient = await openAccountClient(port);
+      clients.push(aesClient);
+      const aesChallenge = await issueChallenge(
+        aesClient,
+        "aes-challenge",
+        ["aes-256-gcm"],
+      );
+      expect(aesChallenge.payload.aead).toBe("aes-256-gcm");
+      const aesPeer = {
+        ...peer,
+        deviceId: "sealed-aes-device",
+        siteId: "sealed-aes-site",
+      };
+      const aesAccountAuth = {
+        deviceId: aesPeer.deviceId,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: aesPeer.deviceId,
+          accountToken,
+        }),
+      };
+      aesClient.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "sealed-aes-hello",
+        payload: {
+          peer: aesPeer,
+          auth: {
+            kind: "account_sealed",
+            v: 1,
+            deviceId: aesPeer.deviceId,
+            sealed: seal(
+              aesChallenge.sessionKey,
+              buildAdoptHelloAad(
+                aesChallenge.payload.hostDeviceId,
+                aesPeer.deviceId,
+              ),
+              Buffer.from(JSON.stringify(aesAccountAuth)),
+              undefined,
+              "aes-256-gcm",
+            ),
+          },
+        },
+      }));
+      const aesSealedHelloOk = await waitForValue(
+        () => aesClient.envelopes.find((entry) =>
+          entry.type === "hello_ok" && entry.requestId === "sealed-aes-hello"
+        ),
+        "AES sealed direct hello_ok",
+      );
+      const aesOpenedHelloOk = JSON.parse(unseal(
+        aesChallenge.sessionKey,
+        buildAdoptHelloOkAad(
+          aesChallenge.payload.hostDeviceId,
+          aesPeer.deviceId,
+        ),
+        (aesSealedHelloOk.payload as { sealed: string }).sealed,
+        "aes-256-gcm",
+      ).toString("utf8")) as {
+        brain: { deviceId: string };
+        accountPairing: { deviceId: string; secret: string };
+      };
+      expect(aesOpenedHelloOk).toMatchObject({
+        brain: { deviceId: "host-device-1" },
+        accountPairing: {
+          deviceId: aesPeer.deviceId,
+          secret: expect.any(String),
+        },
+      });
+      expect(pairingStore.authenticate(
+        aesPeer.deviceId,
+        aesOpenedHelloOk.accountPairing.secret,
+      )).toBe(true);
+
       const plainClient = await openAccountClient(port);
       clients.push(plainClient);
       const plainPeer = {
@@ -2036,6 +2116,35 @@ describe("sync host account authentication", () => {
         code: "invalid_hello",
         message: expect.stringMatching(/expired/i),
       });
+
+      const incompatibleClient = await openAccountClient(port);
+      clients.push(incompatibleClient);
+      const incompatibleEphemeral = generateX25519EphemeralKeyPair();
+      incompatibleClient.ws.send(encodeSyncEnvelope({
+        type: "account_challenge",
+        requestId: "incompatible-aead",
+        payload: {
+          v: 1,
+          nonce: Buffer.alloc(32, 11).toString("base64"),
+          clientEphemeralPublicKey:
+            incompatibleEphemeral.publicKeyRaw.toString("base64"),
+          supportedAeads: ["future-aead"],
+        },
+      }));
+      const incompatible = await waitForValue(
+        () => incompatibleClient.envelopes.find((entry) =>
+          entry.type === "account_challenge_error"
+          && entry.requestId === "incompatible-aead"
+        ),
+        "incompatible AEAD rejection",
+      );
+      expect(incompatible.payload).toEqual({
+        message:
+          "No compatible account adoption cipher is available. Update ADE on both Macs.",
+      });
+      expect(incompatibleClient.envelopes.some(
+        (entry) => entry.type === "account_challenge_ok",
+      )).toBe(false);
 
       // Well-formed challenges only trigger a public signature and are the
       // normal adoption operation, so they must NEVER trip the abuse throttle —

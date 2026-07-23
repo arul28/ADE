@@ -807,6 +807,7 @@ export type SyncAccountChallengePayload = {
   v: 1;
   nonce: string;
   clientEphemeralPublicKey: string;
+  supportedAeads?: string[];
 };
 
 export type SyncAccountChallengeOkPayload = {
@@ -815,6 +816,7 @@ export type SyncAccountChallengeOkPayload = {
   ts: number;
   hostEphemeralPublicKey: string;
   signature: string;
+  aead?: string;
 };
 
 export type SyncAccountChallengeErrorPayload = {

@@ -158,7 +158,9 @@ import {
   generateX25519EphemeralKeyPair,
   seal,
   signEd25519,
+  supportedAdoptChannelAeads,
   unseal,
+  type AdoptChannelAead,
 } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import {
   createMachineIdentitySigningStore,
@@ -528,6 +530,7 @@ type PeerState = {
     nonce: string;
     hostDeviceId: string;
     expiresAtMs: number;
+    aead: AdoptChannelAead;
   } | null;
   subscribedSessionIds: Set<string>;
   pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
@@ -1383,6 +1386,7 @@ type ParsedAccountChallenge = {
   nonceBytes: Buffer;
   clientEphemeralPublicKey: string;
   clientEphemeralPublicKeyBytes: Buffer;
+  supportedAeads: string[] | null;
 };
 
 function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge | null {
@@ -1394,11 +1398,21 @@ function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge 
     value.clientEphemeralPublicKey,
     32,
   );
+  const supportedAeads = value.supportedAeads === undefined
+    ? null
+    : value.supportedAeads;
   if (
     !nonceBytes
     || !clientEphemeralPublicKeyBytes
     || typeof value.nonce !== "string"
     || typeof value.clientEphemeralPublicKey !== "string"
+    || (
+      supportedAeads !== null
+      && (
+        !Array.isArray(supportedAeads)
+        || supportedAeads.some((entry) => typeof entry !== "string")
+      )
+    )
   ) {
     return null;
   }
@@ -1407,6 +1421,7 @@ function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge 
     nonceBytes,
     clientEphemeralPublicKey: value.clientEphemeralPublicKey,
     clientEphemeralPublicKeyBytes,
+    supportedAeads,
   };
 }
 
@@ -6245,6 +6260,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }, envelope.requestId);
           return;
         }
+        const hostSupportedAeads = supportedAdoptChannelAeads();
+        const negotiatedAead = challenge.supportedAeads?.find(
+          (aead): aead is AdoptChannelAead =>
+            hostSupportedAeads.includes(aead as AdoptChannelAead),
+        );
+        if (challenge.supportedAeads !== null && !negotiatedAead) {
+          send(peer.ws, "account_challenge_error", {
+            message:
+              "No compatible account adoption cipher is available. Update ADE on both Macs.",
+          }, envelope.requestId);
+          return;
+        }
+        const adoptAead = negotiatedAead ?? "chacha20-poly1305";
         // A well-formed challenge only triggers one public signature and is the
         // normal adoption operation, so it feeds no cooldown at all. Signing
         // load is already bounded by the per-connection single-active-challenge
@@ -6267,6 +6295,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             clientEphemeralPublicKey: challenge.clientEphemeralPublicKey,
             hostEphemeralPublicKey,
             ts,
+            ...(negotiatedAead ? { aead: negotiatedAead } : {}),
           });
           const sessionKey = deriveAdoptSessionKey({
             privateKey: hostEphemeral.privateKey,
@@ -6278,6 +6307,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             nonce: challenge.nonce,
             hostDeviceId,
             expiresAtMs: ts + ADOPT_CHANNEL_CHALLENGE_TTL_MS,
+            aead: adoptAead,
           };
           send(peer.ws, "account_challenge_ok", {
             v: 1,
@@ -6285,6 +6315,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ts,
             hostEphemeralPublicKey,
             signature: signEd25519(identity.privateKey, canonical).toString("base64"),
+            ...(negotiatedAead ? { aead: negotiatedAead } : {}),
           }, envelope.requestId);
         } catch (error) {
           peer.adoptChallenge = null;
@@ -6452,6 +6483,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         sessionKey: Buffer;
         hostDeviceId: string;
         clientDeviceId: string;
+        aead: AdoptChannelAead;
       } | null = null;
       if (hello.auth?.kind === "account_sealed") {
         const sealedAuth = hello.auth;
@@ -6492,6 +6524,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               sealedAuth.deviceId,
             ),
             sealedAuth.sealed,
+            challenge.aead,
           );
           const accountAuth = parseUnsealedAccountAuth(
             JSON.parse(plaintext.toString("utf8")),
@@ -6508,6 +6541,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             sessionKey: challenge.sessionKey,
             hostDeviceId: challenge.hostDeviceId,
             clientDeviceId: sealedAuth.deviceId,
+            aead: challenge.aead,
           };
         } catch {
           rejectSealedHello("The sealed account credentials could not be opened.");
@@ -6904,6 +6938,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               sealedAdoption.clientDeviceId,
             ),
             Buffer.from(JSON.stringify(helloOkPayload), "utf8"),
+            undefined,
+            sealedAdoption.aead,
           ),
         }, envelope.requestId);
       } else {

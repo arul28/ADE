@@ -21,10 +21,16 @@ export const ADOPT_CHANNEL_NONCE_BYTES = 32;
 export const ADOPT_CHANNEL_KEY_BYTES = 32;
 export const ADOPT_CHANNEL_AEAD_NONCE_BYTES = 12;
 export const ADOPT_CHANNEL_PUBLIC_KEY_BYTES = 32;
+export const ADOPT_CHANNEL_AEADS = [
+  "chacha20-poly1305",
+  "aes-256-gcm",
+] as const;
+export type AdoptChannelAead = (typeof ADOPT_CHANNEL_AEADS)[number];
 
 const X25519_SPKI_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const AEAD_TAG_BYTES = 16;
+let cachedSupportedAdoptChannelAeads: AdoptChannelAead[] | null = null;
 
 function assertLength(value: Buffer, expected: number, label: string): void {
   if (value.byteLength !== expected) {
@@ -81,6 +87,7 @@ export function buildAdoptChallengeSignatureInput(args: {
   clientEphemeralPublicKey: string;
   hostEphemeralPublicKey: string;
   ts: number;
+  aead?: string;
 }): string {
   return [
     ADOPT_CHANNEL_CONTEXT,
@@ -89,6 +96,7 @@ export function buildAdoptChallengeSignatureInput(args: {
     args.clientEphemeralPublicKey,
     args.hostEphemeralPublicKey,
     String(args.ts),
+    ...(args.aead === undefined ? [] : [args.aead]),
   ].join("|");
 }
 
@@ -136,17 +144,60 @@ export function deriveAdoptSessionKey(args: {
   ));
 }
 
+function createAdoptChannelCipher(
+  aead: AdoptChannelAead,
+  key: Buffer,
+  nonce: Buffer,
+) {
+  return aead === "chacha20-poly1305"
+    ? createCipheriv("chacha20-poly1305", key, nonce, {
+        authTagLength: AEAD_TAG_BYTES,
+      })
+    : createCipheriv("aes-256-gcm", key, nonce, {
+        authTagLength: AEAD_TAG_BYTES,
+      });
+}
+
+function createAdoptChannelDecipher(
+  aead: AdoptChannelAead,
+  key: Buffer,
+  nonce: Buffer,
+) {
+  return aead === "chacha20-poly1305"
+    ? createDecipheriv("chacha20-poly1305", key, nonce, {
+        authTagLength: AEAD_TAG_BYTES,
+      })
+    : createDecipheriv("aes-256-gcm", key, nonce, {
+        authTagLength: AEAD_TAG_BYTES,
+      });
+}
+
+export function supportedAdoptChannelAeads(): AdoptChannelAead[] {
+  if (!cachedSupportedAdoptChannelAeads) {
+    const key = Buffer.alloc(ADOPT_CHANNEL_KEY_BYTES);
+    const nonce = Buffer.alloc(ADOPT_CHANNEL_AEAD_NONCE_BYTES);
+    cachedSupportedAdoptChannelAeads = ADOPT_CHANNEL_AEADS.filter((aead) => {
+      try {
+        createAdoptChannelCipher(aead, key, nonce);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+  return [...cachedSupportedAdoptChannelAeads];
+}
+
 export function seal(
   key: Buffer,
   aad: Buffer,
   plaintext: Buffer,
   nonce: Buffer = randomBytes(ADOPT_CHANNEL_AEAD_NONCE_BYTES),
+  aead: AdoptChannelAead = "chacha20-poly1305",
 ): string {
   assertLength(key, ADOPT_CHANNEL_KEY_BYTES, "Adoption session key");
   assertLength(nonce, ADOPT_CHANNEL_AEAD_NONCE_BYTES, "AEAD nonce");
-  const cipher = createCipheriv("chacha20-poly1305", key, nonce, {
-    authTagLength: AEAD_TAG_BYTES,
-  });
+  const cipher = createAdoptChannelCipher(aead, key, nonce);
   cipher.setAAD(aad, { plaintextLength: plaintext.byteLength });
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return Buffer.concat([nonce, ciphertext, cipher.getAuthTag()]).toString("base64");
@@ -156,6 +207,7 @@ export function unseal(
   key: Buffer,
   aad: Buffer,
   blobBase64: string,
+  aead: AdoptChannelAead = "chacha20-poly1305",
 ): Buffer {
   assertLength(key, ADOPT_CHANNEL_KEY_BYTES, "Adoption session key");
   const blob = decodeCanonicalBase64(blobBase64);
@@ -171,9 +223,7 @@ export function unseal(
     ADOPT_CHANNEL_AEAD_NONCE_BYTES,
     blob.byteLength - AEAD_TAG_BYTES,
   );
-  const decipher = createDecipheriv("chacha20-poly1305", key, nonce, {
-    authTagLength: AEAD_TAG_BYTES,
-  });
+  const decipher = createAdoptChannelDecipher(aead, key, nonce);
   decipher.setAAD(aad, { plaintextLength: ciphertext.byteLength });
   decipher.setAuthTag(tag);
   return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
