@@ -366,7 +366,7 @@ async function readLatestDesktopVersionOnline(): Promise<string | null> {
   const timer = setTimeout(() => controller.abort(), DOCTOR_ONLINE_DEADLINE_MS);
   try {
     const { fetchAdeLatestRelease } = await import(
-      "../../../desktop/src/main/services/github/githubService"
+      "../../../desktop/src/main/services/github/adeReleaseFeed"
     );
     const release = await doctorTimeout(
       fetchAdeLatestRelease({

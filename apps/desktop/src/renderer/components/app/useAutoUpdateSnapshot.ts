@@ -31,21 +31,24 @@ export function useAutoUpdateSnapshot(): AutoUpdateSnapshot {
   useEffect(() => {
     let cancelled = false;
 
-    void window.ade.updateGetState()
-      .then((next) => {
-        if (!cancelled) setSnapshot(next);
-      })
-      .catch(() => {
-        // Best effort only; live events will fill in.
-      });
+    const initialSnapshot = window.ade.updateGetState?.();
+    if (initialSnapshot) {
+      void initialSnapshot
+        .then((next) => {
+          if (!cancelled) setSnapshot(next);
+        })
+        .catch(() => {
+          // Best effort only; live events will fill in.
+        });
+    }
 
-    const unsubscribe = window.ade.onUpdateEvent((next) => {
+    const unsubscribe = window.ade.onUpdateEvent?.((next) => {
       if (!cancelled) setSnapshot(next);
     });
 
     return () => {
       cancelled = true;
-      unsubscribe();
+      unsubscribe?.();
     };
   }, []);
 

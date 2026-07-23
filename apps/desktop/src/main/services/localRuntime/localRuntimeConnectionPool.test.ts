@@ -125,19 +125,19 @@ function withTsxNodeOptions(value: string | undefined, loaderPath: string): stri
 }
 
 async function waitForRuntimeSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
-  const startedAt = Date.now();
-  let lastError: Error | null = null;
-  while (Date.now() - startedAt < timeoutMs) {
+  await vi.waitFor(async () => {
+    let client: RawRuntimeSocketClient | null = null;
     try {
-      const client = await RawRuntimeSocketClient.connect(socketPath);
-      client.close();
-      return;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      client = await RawRuntimeSocketClient.connect(socketPath);
+      await client.request("ade/initialize", {
+        protocolVersion: "2025-06-18",
+        clientName: "local-runtime-test-readiness",
+        identity: { role: "external", callerId: "local-runtime-test-readiness" },
+      });
+    } finally {
+      client?.close();
     }
-  }
-  throw lastError ?? new Error(`ADE service socket did not become available: ${socketPath}`);
+  }, { timeout: timeoutMs, interval: 100 });
 }
 
 function startServeProcess(args: {
