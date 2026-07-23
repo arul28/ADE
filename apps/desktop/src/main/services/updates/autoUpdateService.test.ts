@@ -3,7 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildGithubReleaseUrl, buildReleaseNotesUrl, compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
+import { createAutoUpdateService } from "./autoUpdateService";
+import {
+  buildGithubReleaseUrl,
+  buildReleaseNotesUrl,
+  compareUpdateVersions,
+} from "./autoUpdateVersions";
 import { classifyUpdateError, estimateUpdateRequiredBytes } from "./autoUpdateErrors";
 import type { Logger } from "../logging/logger";
 

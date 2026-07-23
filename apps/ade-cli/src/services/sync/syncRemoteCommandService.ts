@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { runWithAbortSignal } from "./abortSignal";
 import type {
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
@@ -389,6 +390,7 @@ export type SyncRemoteCommandExecutionContext = {
 
 type RegisteredRemoteCommand = {
   descriptor: SyncRemoteCommandDescriptor;
+  observesAbort: boolean;
   handler: (
     args: Record<string, unknown>,
     context: SyncRemoteCommandExecutionContext,
@@ -396,59 +398,6 @@ type RegisteredRemoteCommand = {
 };
 
 export const AI_STATUS_REMOTE_COMMAND_TIMEOUT_MS = 30_000;
-
-function remoteCommandAbortError(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error) return signal.reason;
-  const error = new Error(
-    typeof signal.reason === "string" && signal.reason.trim()
-      ? signal.reason
-      : "Remote command aborted.",
-  );
-  error.name = "AbortError";
-  return error;
-}
-
-async function runWithRemoteCommandSignal<T>(
-  run: () => Promise<T> | T,
-  signal?: AbortSignal,
-): Promise<T> {
-  if (!signal) return await run();
-  if (signal.aborted) throw remoteCommandAbortError(signal);
-  return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const settle = (complete: () => void): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      complete();
-    };
-    const onAbort = (): void => settle(() => reject(remoteCommandAbortError(signal)));
-    signal.addEventListener("abort", onAbort, { once: true });
-    Promise.resolve()
-      .then(run)
-      .then(
-        (value) => settle(() => resolve(value)),
-        (error) => settle(() => reject(error)),
-      );
-  });
-}
-
-function commandHandlerObservesAbort(action: string): boolean {
-  return action === "ai.getStatus"
-    || action === "chat.resolveSmartLinkPreview"
-    || action === "chat.getTranscript"
-    || action === "chat.getChatEventHistory"
-    || action === "chat.getSubagentTranscript"
-    || action === "chat.getMainTranscript"
-    || action === "chat.getChatEventHistoryPage"
-    || action === "agentChat.getEventHistoryPage"
-    || action === "github.getStatus"
-    || action === "github.getRemoteStatus"
-    || action === "prs.refresh"
-    || action === "prs.preflightCreateLaneFromPrBranch"
-    || action.startsWith("prs.get")
-    || action.startsWith("prs.list");
-}
 
 async function runAiStatusWithTimeout<T>(
   run: () => Promise<T>,
@@ -467,7 +416,11 @@ async function runAiStatusWithTimeout<T>(
   }, AI_STATUS_REMOTE_COMMAND_TIMEOUT_MS);
   timer.unref?.();
   try {
-    return await runWithRemoteCommandSignal(run, controller.signal);
+    return await runWithAbortSignal(
+      run,
+      controller.signal,
+      "Remote command aborted.",
+    );
   } finally {
     clearTimeout(timer);
     parentSignal?.removeEventListener("abort", onParentAbort);
@@ -3562,9 +3515,13 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
   };
 }
 
+type RemoteCommandRegistrationPolicy = SyncRemoteCommandPolicy & {
+  observesAbort?: boolean;
+};
+
 type RemoteCommandRegistrar = (
   action: SyncRemoteCommandAction,
-  policy: SyncRemoteCommandPolicy,
+  policy: RemoteCommandRegistrationPolicy,
   handler: (
     payload: Record<string, unknown>,
     context: SyncRemoteCommandExecutionContext,
@@ -3960,7 +3917,7 @@ function registerProcessRemoteCommands({ args, register }: RemoteCommandRegistra
 }
 
 function registerChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
-  register("chat.resolveSmartLinkPreview", { viewerAllowed: true }, async (payload) => {
+  register("chat.resolveSmartLinkPreview", { viewerAllowed: true, observesAbort: true }, async (payload) => {
     const url = requireString(payload.url, "chat.resolveSmartLinkPreview requires url.");
     const linearIssueTracker = await getConnectedLinearIssueTracker(args);
     return resolveSmartLinkPreview({
@@ -4110,7 +4067,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       paused,
     });
   });
-  register("chat.getChatEventHistory", { viewerAllowed: true }, async (payload): Promise<AgentChatEventHistorySnapshot> => {
+  register("chat.getChatEventHistory", { viewerAllowed: true, observesAbort: true }, async (payload): Promise<AgentChatEventHistorySnapshot> => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
     const maxEvents = asOptionalNumber(payload.maxEvents);
@@ -4124,7 +4081,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       Object.keys(options).length > 0 ? options : undefined,
     );
   });
-  register("chat.getTranscript", { viewerAllowed: true }, async (payload) => {
+  register("chat.getTranscript", { viewerAllowed: true, observesAbort: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseGetTranscriptArgs(payload);
 
@@ -4157,11 +4114,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       nextCursor: hasMore ? String(oldestReturnedIndex) : null,
     };
   });
-  register("chat.getSubagentTranscript", { viewerAllowed: true, queueable: false }, async (payload) =>
+  register("chat.getSubagentTranscript", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSubagentTranscript(
       parseAgentChatSubagentTranscriptArgs(payload),
     ));
-  register("chat.getMainTranscript", { viewerAllowed: true, queueable: false }, async (payload) =>
+  register("chat.getMainTranscript", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getMainTranscript(
       parseAgentChatMainTranscriptArgs(payload),
     ));
@@ -4187,8 +4144,8 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // beyond the hydrated tail). The canonical action mirrors the desktop/TUI
   // ADE action surface; the legacy agentChat.* name remains for older mobile
   // clients that learned the first sync-only spelling.
-  register("chat.getChatEventHistoryPage", { viewerAllowed: true }, getChatEventHistoryPage);
-  register("agentChat.getEventHistoryPage", { viewerAllowed: true }, getChatEventHistoryPage);
+  register("chat.getChatEventHistoryPage", { viewerAllowed: true, observesAbort: true }, getChatEventHistoryPage);
+  register("agentChat.getEventHistoryPage", { viewerAllowed: true, observesAbort: true }, getChatEventHistoryPage);
   register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);
@@ -4780,11 +4737,11 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     ));
   register("history.listOperations", { viewerAllowed: true }, async (payload) =>
     requireService(args.operationService, "Operation service not available.").list(parseListOperationsArgs(payload)));
-  register("github.getStatus", { viewerAllowed: true }, async (payload): Promise<GitHubStatus> =>
+  register("github.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload): Promise<GitHubStatus> =>
     requireService(args.githubService, "GitHub service not available.").getStatus({
       forceRefresh: payload.forceRefresh === true,
     }));
-  register("github.getRemoteStatus", { viewerAllowed: true }, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> =>
+  register("github.getRemoteStatus", { viewerAllowed: true, observesAbort: true }, async (): Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }> =>
     requireService(args.githubService, "GitHub service not available.").getRemoteStatus());
   register("github.publishCurrentProject", { viewerAllowed: true }, async (payload): Promise<PublishProjectResult> => {
     const { owner, name, description, isPrivate } = parsePublishCurrentProjectArgs(payload);
@@ -4801,7 +4758,7 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.projectConfigService, "Project config service not available.").save(
       parseProjectConfigSaveArgs(payload).candidate,
     ));
-  register("ai.getStatus", { viewerAllowed: true }, async (payload, context) => {
+  register("ai.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload, context) => {
     try {
       return await runAiStatusWithTimeout(
         () => buildAiSettingsStatus(args.aiIntegrationService, {
@@ -4829,9 +4786,9 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
 }
 
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
-  register("prs.list", { viewerAllowed: true }, async () => args.prService.listAll());
-  register("prs.listOpenForRepo", { viewerAllowed: true }, async () => args.prService.listOpenPullRequests());
-  register("prs.getForLane", { viewerAllowed: true }, async (payload) =>
+  register("prs.list", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listAll());
+  register("prs.listOpenForRepo", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listOpenPullRequests());
+  register("prs.getForLane", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getForLane(parseLaneIdArgs(payload, "prs.getForLane").laneId));
   // Manual per-badge ⟳ sync + focus reconcile, so the web/mobile surfaces reach
   // the same heal path as desktop (both are already in ADE_ACTION_ALLOWLIST.pr).
@@ -4839,7 +4796,7 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.syncLanePr(parseLaneIdArgs(payload, "prs.syncLanePr").laneId));
   register("prs.reconcileOnFocus", { viewerAllowed: true }, async (payload) =>
     args.prService.reconcileOnFocus({ force: payload?.force === true }));
-  register("prs.refresh", { viewerAllowed: true }, async (payload) => {
+  register("prs.refresh", { viewerAllowed: true, observesAbort: true }, async (payload) => {
     const prId = asTrimmedString(payload.prId);
     const prIds = asStringArray(payload.prIds);
     let refreshArgs: { prId?: string; prIds?: string[] } = {};
@@ -4886,16 +4843,16 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     }
     return await args.dispatchDeeplinkUrl(url);
   });
-  register("prs.getDetail", { viewerAllowed: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
+  register("prs.getDetail", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getDetail(requirePrId(payload, "prs.getDetail")));
   register("prs.postReviewComment", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.postReviewComment(parsePostPrReviewCommentArgs(payload)));
-  register("prs.getAiSummary", { viewerAllowed: true }, async (payload) =>
+  register("prs.getAiSummary", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prSummaryService?.getSummary(requirePrId(payload, "prs.getAiSummary")) ?? null);
   register("prs.regenerateAiSummary", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.prSummaryService, "PR summary service not available.").regenerateSummary(
       requirePrId(payload, "prs.regenerateAiSummary"),
     ));
-  register("prs.getIntegrationResolutionState", { viewerAllowed: true }, async (payload) =>
+  register("prs.getIntegrationResolutionState", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getIntegrationResolutionState(
       requireString(payload.proposalId, "prs.getIntegrationResolutionState requires proposalId."),
     ));
@@ -4903,29 +4860,29 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.delete(parseDeletePrArgs(payload)));
   register("prs.cleanupBranch", { viewerAllowed: false, queueable: true }, async (payload) =>
     args.prService.cleanupBranch(parseCleanupPrBranchArgs(payload)));
-  register("prs.listProposals", { viewerAllowed: true }, async () => args.prService.listIntegrationProposals());
-  register("prs.getQueueState", { viewerAllowed: true }, async (payload) =>
+  register("prs.listProposals", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listIntegrationProposals());
+  register("prs.getQueueState", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.queueLandingService?.getQueueStateByGroup(
       requireString(payload.groupId, "prs.getQueueState requires groupId."),
     ) ?? null);
-  register("prs.listQueueStates", { viewerAllowed: true }, async (payload) =>
+  register("prs.listQueueStates", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.queueLandingService?.listQueueStates(payload) ?? []);
-  register("prs.getMergeContext", { viewerAllowed: true }, async (payload) =>
+  register("prs.getMergeContext", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getMergeContext(requirePrId(payload, "prs.getMergeContext")));
-  register("prs.getMergeContexts", { viewerAllowed: true }, async (payload) =>
+  register("prs.getMergeContexts", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getMergeContexts(asStringArray(payload.prIds)));
-  register("prs.listWithConflicts", { viewerAllowed: true }, async (payload) =>
+  register("prs.listWithConflicts", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listWithConflicts({ includeConflictAnalysis: payload.includeConflictAnalysis === true }));
-  register("prs.listSnapshots", { viewerAllowed: true }, async (payload) =>
+  register("prs.listSnapshots", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listSnapshots({
       ...(asTrimmedString(payload.prId) ? { prId: asTrimmedString(payload.prId)! } : {}),
     }));
-  register("prs.getStatus", { viewerAllowed: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));
-  register("prs.getChecks", { viewerAllowed: true }, async (payload) => args.prService.getChecks(requirePrId(payload, "prs.getChecks")));
-  register("prs.getReviews", { viewerAllowed: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
-  register("prs.getComments", { viewerAllowed: true }, async (payload) => args.prService.getComments(requirePrId(payload, "prs.getComments")));
-  register("prs.getFiles", { viewerAllowed: true }, async (payload) => args.prService.getFiles(requirePrId(payload, "prs.getFiles")));
-  register("prs.getGitHubSnapshot", { viewerAllowed: true }, async (payload) =>
+  register("prs.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));
+  register("prs.getChecks", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getChecks(requirePrId(payload, "prs.getChecks")));
+  register("prs.getReviews", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
+  register("prs.getComments", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getComments(requirePrId(payload, "prs.getComments")));
+  register("prs.getFiles", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getFiles(requirePrId(payload, "prs.getFiles")));
+  register("prs.getGitHubSnapshot", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getGithubSnapshot({
       force: payload.force === true,
       includeExternalClosed: payload.includeExternalClosed === true,
@@ -4935,30 +4892,30 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
         ? { historyPageLimit: Math.max(1, Math.floor(payload.historyPageLimit)) }
         : {}),
     }));
-  register("prs.getReviewThreads", { viewerAllowed: true }, async (payload) => args.prService.getReviewThreads(requirePrId(payload, "prs.getReviewThreads")));
-  register("prs.getActionRuns", { viewerAllowed: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
-  register("prs.getActivity", { viewerAllowed: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));
-  register("prs.getDeployments", { viewerAllowed: true }, async (payload) => args.prService.getDeployments(requirePrId(payload, "prs.getDeployments")));
+  register("prs.getReviewThreads", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getReviewThreads(requirePrId(payload, "prs.getReviewThreads")));
+  register("prs.getActionRuns", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
+  register("prs.getActivity", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));
+  register("prs.getDeployments", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getDeployments(requirePrId(payload, "prs.getDeployments")));
   // Coordinate-based PR reads for PRs that are not mapped to an ADE lane (no DB
   // row). The preload sends these `*ByGithub` runtime actions before falling
   // back to IPC, so the socket runtime must register them alongside the
   // row-based reads. Args are GitHub coordinates: { repoOwner, repoName, githubPrNumber }.
-  register("prs.getDetailByGithub", { viewerAllowed: true }, async (payload) => args.prService.getDetailByGithub(requirePrGithubCoords(payload, "prs.getDetailByGithub")));
-  register("prs.getFilesByGithub", { viewerAllowed: true }, async (payload) => args.prService.getFilesByGithub(requirePrGithubCoords(payload, "prs.getFilesByGithub")));
-  register("prs.getCommitsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getCommitsByGithub(requirePrGithubCoords(payload, "prs.getCommitsByGithub")));
-  register("prs.getActionRunsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getActionRunsByGithub(requirePrGithubCoords(payload, "prs.getActionRunsByGithub")));
-  register("prs.getActivityByGithub", { viewerAllowed: true }, async (payload) => args.prService.getActivityByGithub(requirePrGithubCoords(payload, "prs.getActivityByGithub")));
-  register("prs.getStatusByGithub", { viewerAllowed: true }, async (payload) => args.prService.getStatusByGithub(requirePrGithubCoords(payload, "prs.getStatusByGithub")));
-  register("prs.getChecksByGithub", { viewerAllowed: true }, async (payload) => args.prService.getChecksByGithub(requirePrGithubCoords(payload, "prs.getChecksByGithub")));
-  register("prs.getReviewsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getReviewsByGithub(requirePrGithubCoords(payload, "prs.getReviewsByGithub")));
-  register("prs.getCommentsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getCommentsByGithub(requirePrGithubCoords(payload, "prs.getCommentsByGithub")));
-  register("prs.getReviewThreadsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getReviewThreadsByGithub(requirePrGithubCoords(payload, "prs.getReviewThreadsByGithub")));
-  register("prs.getMobileGithubDetail", { viewerAllowed: true }, async (payload) =>
+  register("prs.getDetailByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getDetailByGithub(requirePrGithubCoords(payload, "prs.getDetailByGithub")));
+  register("prs.getFilesByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getFilesByGithub(requirePrGithubCoords(payload, "prs.getFilesByGithub")));
+  register("prs.getCommitsByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getCommitsByGithub(requirePrGithubCoords(payload, "prs.getCommitsByGithub")));
+  register("prs.getActionRunsByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getActionRunsByGithub(requirePrGithubCoords(payload, "prs.getActionRunsByGithub")));
+  register("prs.getActivityByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getActivityByGithub(requirePrGithubCoords(payload, "prs.getActivityByGithub")));
+  register("prs.getStatusByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getStatusByGithub(requirePrGithubCoords(payload, "prs.getStatusByGithub")));
+  register("prs.getChecksByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getChecksByGithub(requirePrGithubCoords(payload, "prs.getChecksByGithub")));
+  register("prs.getReviewsByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getReviewsByGithub(requirePrGithubCoords(payload, "prs.getReviewsByGithub")));
+  register("prs.getCommentsByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getCommentsByGithub(requirePrGithubCoords(payload, "prs.getCommentsByGithub")));
+  register("prs.getReviewThreadsByGithub", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getReviewThreadsByGithub(requirePrGithubCoords(payload, "prs.getReviewThreadsByGithub")));
+  register("prs.getMobileGithubDetail", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getMobileGithubDetail(requirePrGithubCoords(payload, "prs.getMobileGithubDetail")));
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
   register("prs.createQueue", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createQueuePrs(parseCreateQueuePrsArgs(payload)));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
-  register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
+  register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.createLaneFromPrBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.draftDescription", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
@@ -5012,7 +4969,7 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.simulateIntegration(parseSimulateIntegrationArgs(payload)));
   register("prs.commitIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.commitIntegration(parseCommitIntegrationArgs(payload)));
-  register("prs.listIntegrationWorkflows", { viewerAllowed: true }, async (payload) =>
+  register("prs.listIntegrationWorkflows", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listIntegrationWorkflows(parseListIntegrationWorkflowsArgs(payload)));
   register("prs.updateIntegrationProposal", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.prService.updateIntegrationProposal(parseUpdateIntegrationProposalArgs(payload));
@@ -5060,7 +5017,7 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.reorderQueuePrs(parseReorderQueuePrsArgs(payload));
     return { ok: true };
   });
-  register("prs.getMobileSnapshot", { viewerAllowed: true }, async () => args.prService.getMobileSnapshot());
+  register("prs.getMobileSnapshot", { viewerAllowed: true, observesAbort: true }, async () => args.prService.getMobileSnapshot());
 }
 
 export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
@@ -5068,15 +5025,17 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
   const register = (
     action: SyncRemoteCommandAction,
-    policy: SyncRemoteCommandPolicy,
+    policy: RemoteCommandRegistrationPolicy,
     handler: (
       payload: Record<string, unknown>,
       context: SyncRemoteCommandExecutionContext,
     ) => Promise<unknown>,
     scope: SyncRemoteCommandDescriptor["scope"] = "project",
   ) => {
+    const { observesAbort = false, ...descriptorPolicy } = policy;
     registry.set(action, {
-      descriptor: { action, scope, policy },
+      descriptor: { action, scope, policy: descriptorPolicy },
+      observesAbort,
       handler,
     });
   };
@@ -5183,6 +5142,12 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       return [...registry.values()].map((entry) => entry.descriptor);
     },
 
+    getAbortObservingActions(): SyncRemoteCommandAction[] {
+      return [...registry.values()]
+        .filter((entry) => entry.observesAbort)
+        .map((entry) => entry.descriptor.action as SyncRemoteCommandAction);
+    },
+
     getPolicy(action: string): SyncRemoteCommandPolicy | null {
       return registry.get(action as SyncRemoteCommandAction)?.descriptor.policy ?? null;
     },
@@ -5206,8 +5171,12 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         policy: handler.descriptor.policy,
       });
       const run = () => handler.handler(commandArgs, context);
-      return commandHandlerObservesAbort(payload.action)
-        ? await runWithRemoteCommandSignal(run, context.signal)
+      return handler.observesAbort
+        ? await runWithAbortSignal(
+            run,
+            context.signal,
+            "Remote command aborted.",
+          )
         : await run();
     },
   };

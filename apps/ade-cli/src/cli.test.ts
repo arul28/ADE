@@ -849,6 +849,7 @@ describe("ADE CLI", () => {
       packageChannel: null,
       projectRoot: null,
       pid: 123,
+      uptimeMs: null,
     };
 
     expect(

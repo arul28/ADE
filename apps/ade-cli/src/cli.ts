@@ -24,10 +24,11 @@ import {
   runSkillCommand,
 } from "./commands/skill";
 import {
-  evaluateDoctorRows,
-  type DoctorInput,
+  resolveDefaultDesktopAppName,
+  runDoctorCommand,
   type DoctorRow,
 } from "./commands/doctor";
+export { readInstalledDesktopVersion } from "./commands/doctor";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
@@ -14197,7 +14198,7 @@ type MachineRuntimeInfo = {
   packageChannel: string | null;
   projectRoot: string | null;
   pid: number | null;
-  uptimeMs?: number | null;
+  uptimeMs: number | null;
 };
 
 function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
@@ -14951,360 +14952,6 @@ async function runBrainCommand(
   );
 }
 
-type DoctorBrainProbe = {
-  brain: DoctorInput["brain"];
-  syncStatus: JsonObject | null;
-  account: DoctorInput["account"];
-  runtimeSyncPort: number | null;
-  runtimePublishHealth: DoctorInput["publishHealth"];
-  runtimeLastWedge: DoctorInput["wedge"];
-};
-
-const DOCTOR_BRAIN_DEADLINE_MS = 2_000;
-const DOCTOR_ONLINE_DEADLINE_MS = 1_200;
-
-function doctorTimeout<T>(
-  promise: Promise<T>,
-  deadlineMs: number,
-  label: string,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(`${label} timed out.`)), Math.max(1, deadlineMs));
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
-function doctorRuntimeStatusFromInitialize(value: unknown): {
-  syncPort: number | null;
-  publishHealth: DoctorInput["publishHealth"];
-  lastWedge: DoctorInput["wedge"];
-} {
-  const runtimeInfo = isRecord(value) && isRecord(value.runtimeInfo)
-    ? value.runtimeInfo
-    : {};
-  const syncPort = typeof runtimeInfo.syncPort === "number"
-    && Number.isInteger(runtimeInfo.syncPort)
-    && runtimeInfo.syncPort > 0
-    && runtimeInfo.syncPort <= 65_535
-    ? runtimeInfo.syncPort
-    : null;
-  const rawPublish = isRecord(runtimeInfo.publishHealth) ? runtimeInfo.publishHealth : null;
-  const rawDurations = rawPublish && isRecord(rawPublish.lastLegDurations)
-    ? rawPublish.lastLegDurations
-    : null;
-  const publishHealth = rawPublish && rawDurations && asString(rawPublish.state)
-    ? {
-        state: asString(rawPublish.state)! as NonNullable<DoctorInput["publishHealth"]>["state"],
-        failingSinceMs:
-          typeof rawPublish.failingSinceMs === "number" && Number.isFinite(rawPublish.failingSinceMs)
-            ? Math.max(0, rawPublish.failingSinceMs)
-            : null,
-        lastLegDurations: {
-          snapshot: finiteDoctorDuration(rawDurations.snapshot),
-          token: finiteDoctorDuration(rawDurations.token),
-          http: finiteDoctorDuration(rawDurations.http),
-        },
-        lastSuccessAt:
-          typeof rawPublish.lastSuccessAt === "number" && Number.isFinite(rawPublish.lastSuccessAt)
-            ? Math.max(0, rawPublish.lastSuccessAt)
-            : null,
-        skipReason: asString(rawPublish.skipReason),
-      }
-    : null;
-  const rawWedge = isRecord(runtimeInfo.lastWedge) ? runtimeInfo.lastWedge : null;
-  const lastWedge = rawWedge
-    && asString(rawWedge.lastCommand)
-    && typeof rawWedge.blockedMs === "number"
-    && Number.isFinite(rawWedge.blockedMs)
-    && asString(rawWedge.ts)
-    ? {
-        lastCommand: asString(rawWedge.lastCommand)!,
-        blockedMs: Math.max(0, Math.floor(rawWedge.blockedMs)),
-        ts: asString(rawWedge.ts)!,
-      }
-    : null;
-  return { syncPort, publishHealth, lastWedge };
-}
-
-function finiteDoctorDuration(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.round(value)
-    : null;
-}
-
-async function probeDoctorBrain(
-  options: GlobalOptions,
-): Promise<DoctorBrainProbe> {
-  const startedAt = Date.now();
-  const deadlineAt = startedAt + DOCTOR_BRAIN_DEADLINE_MS;
-  const socketPath = await resolveMachineRuntimeSocketPath(options.socketPath);
-  let client: SocketJsonRpcClient | null = null;
-  try {
-    const remaining = () => Math.max(1, deadlineAt - Date.now());
-    client = await doctorTimeout(
-      SocketJsonRpcClient.connect(socketPath, remaining(), "ADE brain"),
-      remaining(),
-      "ADE brain connection",
-    );
-    const initializeResult = await doctorTimeout(
-      client.request(
-        "ade/initialize",
-        buildInitializeParams(options, "ade-doctor"),
-      ),
-      remaining(),
-      "ADE brain initialize",
-    );
-    const runtimeInfo = readMachineRuntimeInfo(initializeResult);
-    const runtimeStatus = doctorRuntimeStatusFromInitialize(initializeResult);
-    const expectedBuildHash = await doctorTimeout(
-      resolveExpectedMachineRuntimeBuildHash(),
-      remaining(),
-      "ADE runtime build identity",
-    ).catch(() => null);
-    const mismatchReason = machineRuntimeMismatchReason(
-      runtimeInfo,
-      expectedBuildHash,
-      options.role,
-    );
-    const [syncResult, accountResult] = await doctorTimeout(
-      Promise.allSettled([
-        client.request("sync.getStatus", { includeTransferReadiness: false }),
-        client.request("account.call", { action: "status", args: {} }),
-      ]),
-      remaining(),
-      "ADE brain health reads",
-    );
-    const syncStatus = syncResult.status === "fulfilled" && isRecord(syncResult.value)
-      ? syncResult.value
-      : null;
-    const accountValue = accountResult.status === "fulfilled"
-      ? unwrapActionEnvelope(accountResult.value)
-      : null;
-    const accountStatus = isRecord(accountValue) ? accountValue : null;
-    return {
-      brain: {
-        running: true,
-        version: runtimeInfo.version,
-        buildHash: runtimeInfo.buildHash,
-        pid: runtimeInfo.pid,
-        uptimeMs: runtimeInfo.uptimeMs ?? null,
-        mismatchReason,
-        error: null,
-      },
-      syncStatus,
-      account: {
-        signedIn: typeof accountStatus?.signedIn === "boolean" ? accountStatus.signedIn : null,
-        source: asString(accountStatus?.source),
-        error: accountResult.status === "rejected"
-          ? accountResult.reason instanceof Error
-            ? accountResult.reason.message
-            : String(accountResult.reason)
-          : accountStatus
-            ? null
-            : "Account status unavailable.",
-      },
-      runtimeSyncPort: runtimeStatus.syncPort,
-      runtimePublishHealth: runtimeStatus.publishHealth,
-      runtimeLastWedge: runtimeStatus.lastWedge,
-    };
-  } catch (error) {
-    return {
-      brain: {
-        running: false,
-        version: null,
-        buildHash: null,
-        pid: null,
-        uptimeMs: null,
-        mismatchReason: null,
-        error: error instanceof Error ? error.message : String(error),
-      },
-      syncStatus: null,
-      account: {
-        signedIn: null,
-        source: null,
-        error: "Brain unavailable.",
-      },
-      runtimeSyncPort: null,
-      runtimePublishHealth: null,
-      runtimeLastWedge: null,
-    };
-  } finally {
-    try {
-      client?.destroy();
-    } catch {}
-  }
-}
-
-export function readInstalledDesktopVersion(
-  appPaths?: string[],
-): { version: string | null; path: string | null } {
-  if (process.platform !== "darwin" && !appPaths) {
-    return { version: null, path: null };
-  }
-  const explicitPath = process.env.ADE_DESKTOP_APP_PATH?.trim();
-  const preferredName = resolveDefaultDesktopAppName();
-  const candidates = appPaths ?? [
-    ...(explicitPath ? [explicitPath] : []),
-    `/Applications/${preferredName}.app`,
-    "/Applications/ADE.app",
-    "/Applications/ADE Beta.app",
-    "/Applications/ADE Alpha.app",
-  ];
-  for (const appPath of Array.from(new Set(candidates))) {
-    const infoPlist = path.join(appPath, "Contents", "Info.plist");
-    if (!fs.existsSync(infoPlist)) continue;
-    try {
-      const raw = fs.readFileSync(infoPlist, "utf8");
-      const xmlMatch = /<key>\s*CFBundleShortVersionString\s*<\/key>\s*<string>\s*([^<]+?)\s*<\/string>/i.exec(raw);
-      if (xmlMatch?.[1]?.trim()) {
-        return { version: xmlMatch[1].trim(), path: appPath };
-      }
-    } catch {
-      // Binary plists are handled by plutil below.
-    }
-    const result = spawnSync(
-      "/usr/bin/plutil",
-      ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", infoPlist],
-      { encoding: "utf8", timeout: 500 },
-    );
-    const version = typeof result.stdout === "string" ? result.stdout.trim() : "";
-    if (result.status === 0 && version) {
-      return { version, path: appPath };
-    }
-  }
-  return { version: null, path: null };
-}
-
-async function readLatestDesktopVersionOnline(): Promise<string | null> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DOCTOR_ONLINE_DEADLINE_MS);
-  try {
-    const { fetchAdeLatestRelease } = await import(
-      "../../desktop/src/main/services/github/githubService"
-    );
-    const release = await doctorTimeout(
-      fetchAdeLatestRelease({
-        fetchImpl: ((input: string, init?: RequestInit) =>
-          fetch(input, { ...init, signal: controller.signal })) as never,
-      }),
-      DOCTOR_ONLINE_DEADLINE_MS,
-      "Latest release check",
-    );
-    return release?.version ?? null;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function readLatestKnownDesktopVersionFromDisk(runtimeDir: string): string | null {
-  try {
-    const parsed = JSON.parse(
-      fs.readFileSync(path.join(runtimeDir, "update-status.json"), "utf8"),
-    ) as Record<string, unknown>;
-    return asString(parsed.version);
-  } catch {
-    return null;
-  }
-}
-
-async function runDoctorCommand(
-  online: boolean,
-  options: GlobalOptions,
-): Promise<{
-  ok: boolean;
-  checkedAt: string;
-  online: boolean;
-  rows: DoctorRow[];
-  app: DoctorInput["app"];
-  brain: DoctorInput["brain"];
-  wedge: DoctorInput["wedge"];
-  syncPort: number | null;
-  portDiagnoses: DoctorInput["portDiagnoses"];
-  publishHealth: DoctorInput["publishHealth"];
-  relayHealth: DoctorInput["relayHealth"];
-  account: DoctorInput["account"];
-}> {
-  const nowMs = Date.now();
-  const layout = resolveMachineAdeLayout();
-  const diskLatestKnownVersion = readLatestKnownDesktopVersionFromDisk(layout.runtimeDir);
-  const [installedApp, latestKnownVersion, brainProbe] = await Promise.all([
-    Promise.resolve(readInstalledDesktopVersion()),
-    online
-      ? readLatestDesktopVersionOnline().then((version) => version ?? diskLatestKnownVersion)
-      : Promise.resolve(diskLatestKnownVersion),
-    probeDoctorBrain(options),
-  ]);
-  const syncRouteHealth = brainProbe.syncStatus && isRecord(brainProbe.syncStatus.routeHealth)
-    ? brainProbe.syncStatus.routeHealth
-    : null;
-  const listener = syncRouteHealth && isRecord(syncRouteHealth.listener)
-    ? syncRouteHealth.listener
-    : null;
-  const syncPort = typeof listener?.port === "number" && Number.isInteger(listener.port)
-    ? listener.port
-    : brainProbe.runtimeSyncPort;
-  const rawPublishHealth = syncRouteHealth && isRecord(syncRouteHealth.accountDirectory)
-    ? syncRouteHealth.accountDirectory
-    : null;
-  const publishHealth = rawPublishHealth
-    ? doctorRuntimeStatusFromInitialize({
-        runtimeInfo: { publishHealth: rawPublishHealth },
-      }).publishHealth
-    : brainProbe.runtimePublishHealth;
-  const relayHealth = syncRouteHealth && isRecord(syncRouteHealth.relay)
-    ? syncRouteHealth.relay as DoctorInput["relayHealth"]
-    : null;
-  let portDiagnoses: DoctorInput["portDiagnoses"] = [];
-  if (brainProbe.brain.running && syncPort != null && syncPort !== DEFAULT_SYNC_HOST_PORT) {
-    const { inspectSyncListenerPort } = await import("./services/sync/sharedSyncListener");
-    portDiagnoses = [
-      inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT),
-      inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT + 1),
-      inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT + 2),
-    ];
-  }
-  const wedge = readBrainLoopWatchdogLastWedge(layout.runtimeDir)
-    ?? brainProbe.runtimeLastWedge;
-  const input: DoctorInput = {
-    nowMs,
-    app: {
-      installedVersion: installedApp.version,
-      latestKnownVersion,
-      path: installedApp.path,
-      online,
-    },
-    brain: brainProbe.brain,
-    wedge,
-    syncPort,
-    portDiagnoses,
-    publishHealth,
-    relayHealth,
-    account: brainProbe.account,
-  };
-  const rows = evaluateDoctorRows(input);
-  return {
-    ok: !rows.some((row) => row.status === "fail"),
-    checkedAt: new Date(nowMs).toISOString(),
-    online,
-    rows,
-    app: input.app,
-    brain: input.brain,
-    wedge,
-    syncPort,
-    portDiagnoses,
-    publishHealth,
-    relayHealth,
-    account: input.account,
-  };
-}
-
 async function runDesktopCommand(rest: string[]): Promise<unknown> {
   const args = [...rest];
   const sub = firstPositional(args) ?? "open";
@@ -15337,15 +14984,6 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
     message:
       "Launching ADE desktop from the CLI is currently supported on macOS.",
   };
-}
-
-function resolveDefaultDesktopAppName(): string {
-  const explicit = process.env.ADE_DESKTOP_APP_NAME?.trim();
-  if (explicit) return explicit;
-  const channel = process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
-  if (channel === "alpha") return "ADE Alpha";
-  if (channel === "beta") return "ADE Beta";
-  return "ADE";
 }
 
 async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
@@ -19878,7 +19516,16 @@ async function runCli(
       }
     }
     if (plan.kind === "doctor") {
-      const result = await runDoctorCommand(plan.online, parsed.options);
+      const result = await runDoctorCommand(plan.online, parsed.options, {
+        resolveMachineRuntimeSocketPath,
+        connectRuntime: (socketPath, timeoutMs, label) =>
+          SocketJsonRpcClient.connect(socketPath, timeoutMs, label),
+        buildInitializeParams,
+        readMachineRuntimeInfo,
+        resolveExpectedMachineRuntimeBuildHash,
+        machineRuntimeMismatchReason,
+        unwrapActionEnvelope,
+      });
       return {
         output: formatOutput(result, parsed.options, "doctor"),
         exitCode: result.ok ? 0 : 1,

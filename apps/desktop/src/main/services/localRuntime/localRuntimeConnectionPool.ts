@@ -6,7 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
-import { isRuntimeProtocolCompatible } from "../../../shared/adeRuntimeProtocol";
+import {
+  isRuntimeProtocolCompatible,
+  parseRuntimeLastWedge,
+  parseRuntimePublishHealth,
+} from "../../../shared/adeRuntimeProtocol";
 import type {
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
@@ -466,22 +470,7 @@ export function readLocalRuntimeInfo(value: unknown): {
   const defaultRole = info.defaultRole;
   const pid = info.pid;
   const syncPort = info.syncPort;
-  const rawPublishHealth = info.publishHealth;
-  const publishHealthRecord = rawPublishHealth && typeof rawPublishHealth === "object" && !Array.isArray(rawPublishHealth)
-    ? rawPublishHealth as Record<string, unknown>
-    : null;
-  const rawLegDurations = publishHealthRecord?.lastLegDurations;
-  const legDurationsRecord = rawLegDurations && typeof rawLegDurations === "object" && !Array.isArray(rawLegDurations)
-    ? rawLegDurations as Record<string, unknown>
-    : null;
-  const publishState = publishHealthRecord?.state;
-  const rawLastWedge = info.lastWedge;
-  const lastWedgeRecord = rawLastWedge && typeof rawLastWedge === "object" && !Array.isArray(rawLastWedge)
-    ? rawLastWedge as Record<string, unknown>
-    : null;
-  const lastWedgeCommand = lastWedgeRecord?.lastCommand;
-  const lastWedgeBlockedMs = lastWedgeRecord?.blockedMs;
-  const lastWedgeTs = lastWedgeRecord?.ts;
+  const parsedPublishHealth = parseRuntimePublishHealth(info.publishHealth);
   const minCompatibleProtocol = info.minCompatibleProtocol;
   const protocolVersion = info.protocolVersion;
   return {
@@ -497,34 +486,14 @@ export function readLocalRuntimeInfo(value: unknown): {
         ? syncPort
         : null,
     publishHealth:
-      typeof publishState === "string" && publishState.trim() && legDurationsRecord
+      parsedPublishHealth
         ? {
-            state: publishState as NonNullable<LocalRuntimeStatus["publishHealth"]>["state"],
-            failingSinceMs:
-              typeof publishHealthRecord?.failingSinceMs === "number"
-              && Number.isFinite(publishHealthRecord.failingSinceMs)
-                ? Math.max(0, publishHealthRecord.failingSinceMs)
-                : null,
-            lastLegDurations: {
-              snapshot: finiteDuration(legDurationsRecord.snapshot),
-              token: finiteDuration(legDurationsRecord.token),
-              http: finiteDuration(legDurationsRecord.http),
-            },
+            state: parsedPublishHealth.state,
+            failingSinceMs: parsedPublishHealth.failingSinceMs,
+            lastLegDurations: parsedPublishHealth.lastLegDurations,
           }
         : null,
-    lastWedge:
-      typeof lastWedgeCommand === "string"
-      && lastWedgeCommand.trim()
-      && typeof lastWedgeBlockedMs === "number"
-      && Number.isFinite(lastWedgeBlockedMs)
-      && typeof lastWedgeTs === "string"
-      && lastWedgeTs.trim()
-        ? {
-            lastCommand: lastWedgeCommand.trim(),
-            blockedMs: Math.max(0, Math.floor(lastWedgeBlockedMs)),
-            ts: lastWedgeTs.trim(),
-          }
-        : null,
+    lastWedge: parseRuntimeLastWedge(info.lastWedge),
     minCompatibleProtocol:
       typeof minCompatibleProtocol === "number"
       && Number.isInteger(minCompatibleProtocol)
@@ -538,12 +507,6 @@ export function readLocalRuntimeInfo(value: unknown): {
         ? protocolVersion
         : null,
   };
-}
-
-function finiteDuration(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? Math.round(value)
-    : null;
 }
 
 export function computeLocalRuntimeBuildHash(cliPath = resolveCliScriptPath()): string | null {
@@ -2199,9 +2162,6 @@ export class LocalRuntimeConnectionPool {
       this.activeConnection = null;
       this.activeClient = null;
       this.activeRuntimePid = null;
-      this.activeRuntimeSyncPort = null;
-      this.activeRuntimePublishHealth = null;
-      this.activeRuntimeLastWedge = null;
       this.activeRuntimeSyncPort = null;
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;

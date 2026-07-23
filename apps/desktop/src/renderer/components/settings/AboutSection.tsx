@@ -246,7 +246,7 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
             <span style={valueStyle}>{installedVersion}</span>
             <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
               · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
-              {releasedAgo && latestVersion === (latest?.version ?? latestVersion) ? ` · ${releasedAgo}` : ""}
+              {releasedAgo && latest != null && latestVersion === latest.version ? ` · ${releasedAgo}` : ""}
             </span>
           </span>
         </div>

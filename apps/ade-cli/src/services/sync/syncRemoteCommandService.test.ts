@@ -120,6 +120,61 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("preserves the exact remote-command set that observes execution aborts", () => {
+    const { service } = createService();
+
+    expect(new Set(service.getAbortObservingActions())).toEqual(new Set([
+      "chat.resolveSmartLinkPreview",
+      "chat.getChatEventHistory",
+      "chat.getTranscript",
+      "chat.getSubagentTranscript",
+      "chat.getMainTranscript",
+      "chat.getChatEventHistoryPage",
+      "agentChat.getEventHistoryPage",
+      "github.getStatus",
+      "github.getRemoteStatus",
+      "ai.getStatus",
+      "prs.list",
+      "prs.listOpenForRepo",
+      "prs.getForLane",
+      "prs.refresh",
+      "prs.getDetail",
+      "prs.getAiSummary",
+      "prs.getIntegrationResolutionState",
+      "prs.listProposals",
+      "prs.getQueueState",
+      "prs.listQueueStates",
+      "prs.getMergeContext",
+      "prs.getMergeContexts",
+      "prs.listWithConflicts",
+      "prs.listSnapshots",
+      "prs.getStatus",
+      "prs.getChecks",
+      "prs.getReviews",
+      "prs.getComments",
+      "prs.getFiles",
+      "prs.getGitHubSnapshot",
+      "prs.getReviewThreads",
+      "prs.getActionRuns",
+      "prs.getActivity",
+      "prs.getDeployments",
+      "prs.getDetailByGithub",
+      "prs.getFilesByGithub",
+      "prs.getCommitsByGithub",
+      "prs.getActionRunsByGithub",
+      "prs.getActivityByGithub",
+      "prs.getStatusByGithub",
+      "prs.getChecksByGithub",
+      "prs.getReviewsByGithub",
+      "prs.getCommentsByGithub",
+      "prs.getReviewThreadsByGithub",
+      "prs.getMobileGithubDetail",
+      "prs.preflightCreateLaneFromPrBranch",
+      "prs.listIntegrationWorkflows",
+      "prs.getMobileSnapshot",
+    ]));
+  });
+
   it("caps ai.getStatus probes at 30 seconds", async () => {
     vi.useFakeTimers();
     const getStatus = vi.fn(() => new Promise<never>(() => {}));

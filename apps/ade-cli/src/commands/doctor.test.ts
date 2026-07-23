@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareDoctorVersions,
+  doctorRuntimeStatusFromInitialize,
   evaluateDoctorRows,
   type DoctorInput,
 } from "./doctor";
@@ -54,6 +55,48 @@ function healthyInput(): DoctorInput {
 }
 
 describe("doctor row evaluation", () => {
+  it("parses the complete runtime publish and wedge health envelope", () => {
+    expect(doctorRuntimeStatusFromInitialize({
+      runtimeInfo: {
+        syncPort: 8789,
+        publishHealth: {
+          state: " published ",
+          failingSinceMs: -1,
+          lastLegDurations: {
+            snapshot: 12.4,
+            token: 34.6,
+            http: -1,
+          },
+          lastSuccessAt: 123_456.5,
+          skipReason: " signed out ",
+        },
+        lastWedge: {
+          lastCommand: " chat.send ",
+          blockedMs: 16_500.8,
+          ts: " 2026-07-23T12:00:00.000Z ",
+        },
+      },
+    })).toEqual({
+      syncPort: 8789,
+      publishHealth: {
+        state: "published",
+        failingSinceMs: 0,
+        lastLegDurations: {
+          snapshot: 12,
+          token: 35,
+          http: null,
+        },
+        lastSuccessAt: 123_456.5,
+        skipReason: "signed out",
+      },
+      lastWedge: {
+        lastCommand: "chat.send",
+        blockedMs: 16_500,
+        ts: "2026-07-23T12:00:00.000Z",
+      },
+    });
+  });
+
   it("marks a healthy machine with no red rows", () => {
     const rows = evaluateDoctorRows(healthyInput());
 
@@ -141,4 +184,3 @@ describe("doctor row evaluation", () => {
     expect(compareDoctorVersions("next", "1.2.35")).toBeNull();
   });
 });
-

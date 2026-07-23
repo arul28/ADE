@@ -3,6 +3,7 @@ import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { runWithAbortSignal } from "./abortSignal";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -856,41 +857,6 @@ function sanitizeRemoteAddress(remoteAddress: string | null | undefined): string
   const value = toOptionalString(remoteAddress);
   if (!value) return null;
   return value.startsWith("::ffff:") ? value.slice("::ffff:".length) : value;
-}
-
-function syncOperationAbortError(signal: AbortSignal): Error {
-  if (signal.reason instanceof Error) return signal.reason;
-  const error = new Error(
-    typeof signal.reason === "string" && signal.reason.trim()
-      ? signal.reason
-      : "Sync operation aborted.",
-  );
-  error.name = "AbortError";
-  return error;
-}
-
-async function runWithSyncOperationSignal<T>(
-  run: () => Promise<T> | T,
-  signal: AbortSignal,
-): Promise<T> {
-  if (signal.aborted) throw syncOperationAbortError(signal);
-  return await new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const settle = (complete: () => void): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      complete();
-    };
-    const onAbort = (): void => settle(() => reject(syncOperationAbortError(signal)));
-    signal.addEventListener("abort", onAbort, { once: true });
-    Promise.resolve()
-      .then(run)
-      .then(
-        (value) => settle(() => resolve(value)),
-        (error) => settle(() => reject(error)),
-      );
-  });
 }
 
 function ensureBootstrapToken(filePath: string): string {
@@ -7255,13 +7221,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             barrier.captureAttempt += 1;
             const session = args.sessionService.get(sessionId);
             const transcriptSnapshot = session
-              ? await runWithSyncOperationSignal(
+              ? await runWithAbortSignal(
                   () => args.ptyService.readTranscriptSnapshot({
                     sessionId,
                     maxBytes,
                     alignStartToSafeBoundary: true,
                   }),
                   signal,
+                  "Sync operation aborted.",
                 )
               : null;
             if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
@@ -7405,7 +7372,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           Math.min(beforeOffset, transcriptWindow.endOffset),
         );
         const requestedStartOffset = Math.max(transcriptWindow.startOffset, endOffset - pageBytes);
-        const range = await runWithSyncOperationSignal(
+        const range = await runWithAbortSignal(
           () => args.ptyService.readTranscriptRange({
             sessionId,
             startOffset: requestedStartOffset,
@@ -7413,6 +7380,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             alignStartToSafeBoundary: true,
           }),
           signal,
+          "Sync operation aborted.",
         );
         if (!range) {
           sendRequired(peer, "terminal_history", refused, envelope.requestId);
@@ -7468,9 +7436,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // subscription at all, or the periodic pump would stream the ACTIVE
         // project's transcript for the same session id after the empty ack.
         const personalTranscriptPath = personalChatRequested
-          ? await runWithSyncOperationSignal(
+          ? await runWithAbortSignal(
               () => args.personalChatScope?.transcriptPath?.(sessionId).catch(() => null) ?? null,
               signal,
+              "Sync operation aborted.",
             )
           : null;
         const foreignScope = personalChatRequested
@@ -7513,16 +7482,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // derive turn state from the streamed status events instead.
         const resolveLiveStatusFields = async (): Promise<{ turnActive?: boolean }> => {
           if (personalChatRequested) {
-            const turnActive = await runWithSyncOperationSignal(
+            const turnActive = await runWithAbortSignal(
               () => args.personalChatScope?.isTurnActive?.(sessionId).catch(() => false) ?? false,
               signal,
+              "Sync operation aborted.",
             );
             return typeof turnActive === "boolean" ? { turnActive } : {};
           }
           if (foreignScope.kind !== "local") return {};
-          const liveSummary = await runWithSyncOperationSignal(
+          const liveSummary = await runWithAbortSignal(
             () => args.agentChatService?.getSessionSummary(sessionId).catch(() => null) ?? null,
             signal,
+            "Sync operation aborted.",
           );
           return liveSummary ? { turnActive: liveSummary.status === "active" } : {};
         };
@@ -7572,9 +7543,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         let truncated: boolean;
         let transcriptSize: number;
         if (foreignTranscriptPath) {
-          const foreignSnapshot = await runWithSyncOperationSignal(
+          const foreignSnapshot = await runWithAbortSignal(
             () => readForeignChatSnapshot(foreignTranscriptPath, maxBytes),
             signal,
+            "Sync operation aborted.",
           );
           events = foreignSnapshot.events;
           truncated = foreignSnapshot.truncated;

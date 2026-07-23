@@ -21,8 +21,13 @@ import {
   updateDownloadBytes,
   type DiskSpaceInfo,
 } from "./autoUpdateErrors";
+import {
+  buildGithubReleaseUrl,
+  buildReleaseNotesUrl,
+  compareUpdateVersions,
+  DEFAULT_RELEASE_NOTES_BASE_URL,
+} from "./autoUpdateVersions";
 
-const DEFAULT_RELEASE_NOTES_BASE_URL = "https://www.ade-app.dev";
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
 const DEFAULT_QUIT_DEADLINE_MS = 10_000;
 const DEFAULT_AUTO_APPLY_IDLE_MS = 2 * 60_000;
@@ -111,57 +116,6 @@ export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSn
   };
 }
 
-function parseVersion(version: string): {
-  core: number[];
-  prerelease: string[];
-} {
-  const withoutBuild = version.trim().replace(/^v/i, "").split("+")[0] ?? "";
-  const [coreText = "", prereleaseText = ""] = withoutBuild.split("-", 2);
-  return {
-    core: coreText.split(".").map((part) => {
-      const parsed = Number.parseInt(part, 10);
-      return Number.isFinite(parsed) ? parsed : 0;
-    }),
-    prerelease: prereleaseText ? prereleaseText.split(".") : [],
-  };
-}
-
-function comparePrereleaseIdentifier(left: string, right: string): number {
-  const leftNumeric = /^\d+$/.test(left);
-  const rightNumeric = /^\d+$/.test(right);
-  if (leftNumeric && rightNumeric) {
-    return Number(left) - Number(right);
-  }
-  if (leftNumeric !== rightNumeric) {
-    return leftNumeric ? -1 : 1;
-  }
-  return left.localeCompare(right);
-}
-
-export function compareUpdateVersions(left: string, right: string): number {
-  const leftVersion = parseVersion(left);
-  const rightVersion = parseVersion(right);
-  const coreLength = Math.max(leftVersion.core.length, rightVersion.core.length, 3);
-  for (let index = 0; index < coreLength; index += 1) {
-    const delta = (leftVersion.core[index] ?? 0) - (rightVersion.core[index] ?? 0);
-    if (delta !== 0) return delta;
-  }
-
-  if (leftVersion.prerelease.length === 0 && rightVersion.prerelease.length > 0) return 1;
-  if (leftVersion.prerelease.length > 0 && rightVersion.prerelease.length === 0) return -1;
-  const prereleaseLength = Math.max(leftVersion.prerelease.length, rightVersion.prerelease.length);
-  for (let index = 0; index < prereleaseLength; index += 1) {
-    const leftPart = leftVersion.prerelease[index];
-    const rightPart = rightVersion.prerelease[index];
-    if (leftPart == null && rightPart == null) return 0;
-    if (leftPart == null) return -1;
-    if (rightPart == null) return 1;
-    const delta = comparePrereleaseIdentifier(leftPart, rightPart);
-    if (delta !== 0) return delta;
-  }
-  return 0;
-}
-
 function isUpdateCheckResultLike(result: unknown): result is UpdateCheckResultLike {
   return Boolean(
     result
@@ -176,25 +130,6 @@ function extractDownloadPromise(result: unknown): Promise<unknown> | null {
   return downloadPromise && typeof (downloadPromise as Promise<unknown>).then === "function"
     ? downloadPromise
     : null;
-}
-
-export function buildReleaseNotesUrl(
-  version: string,
-  baseUrl = DEFAULT_RELEASE_NOTES_BASE_URL,
-): string | null {
-  const normalizedVersion = version.trim().replace(/^v/i, "");
-  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
-  if (!normalizedVersion || !normalizedBaseUrl) return null;
-  return `${normalizedBaseUrl}/docs/changelog/${encodeURIComponent(`v${normalizedVersion}`)}`;
-}
-
-// Deterministic GitHub release page for a version tag, e.g.
-// https://github.com/arul28/ADE/releases/tag/v1.2.18 — the same repo the
-// updater feed points at above.
-export function buildGithubReleaseUrl(version: string): string | null {
-  const normalizedVersion = version.trim().replace(/^v/i, "");
-  if (!normalizedVersion) return null;
-  return `https://github.com/arul28/ADE/releases/tag/${encodeURIComponent(`v${normalizedVersion}`)}`;
 }
 
 function cloneRecentlyInstalledUpdate(

@@ -1,11 +1,13 @@
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import {
-  buildGithubReleaseUrl,
-  compareUpdateVersions,
   createEmptyAutoUpdateSnapshot,
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
+import {
+  buildGithubReleaseUrl,
+  compareUpdateVersions,
+} from "../updates/autoUpdateVersions";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
