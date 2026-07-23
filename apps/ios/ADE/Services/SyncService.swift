@@ -4823,10 +4823,14 @@ final class SyncService: ObservableObject {
       throw AccountAdoptionIdentityVerificationError(machineName: machineName)
     }
     let timestampValue = timestampNumber.doubleValue
+    // `Double(Int64.max)` rounds up to 2^63, so `<=` would admit a value that
+    // traps in `Int64(...)`. Strict `<` keeps a malformed challenge timestamp
+    // from crashing the app before skew validation; real ms timestamps are far
+    // below this bound.
     guard timestampValue.isFinite,
           timestampValue.rounded(.towardZero) == timestampValue,
           timestampValue >= 0,
-          timestampValue <= Double(Int64.max) else {
+          timestampValue < Double(Int64.max) else {
       throw AccountAdoptionIdentityVerificationError(machineName: machineName)
     }
     let timestampMilliseconds = Int64(timestampValue)
