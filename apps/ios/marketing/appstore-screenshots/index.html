@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ADE — App Store Screenshots</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Poppins:wght@500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/html-to-image@1.11.13/dist/html-to-image.js"></script>
+<style>
+  :root { --ui-bg:#0b0b0e; --ui-panel:#151519; --ui-line:#26262c; --ui-text:#e7e7ea; --ui-muted:#9a9aa4; --ui-accent:#7C3AED; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; background:var(--ui-bg); color:var(--ui-text); font-family:Inter,system-ui,sans-serif; overflow-x:hidden; }
+
+  /* ---------- Toolbar ---------- */
+  .toolbar { position:sticky; top:0; z-index:100; display:flex; align-items:center; gap:14px;
+    padding:12px 18px; background:rgba(11,11,14,.9); backdrop-filter:blur(12px); border-bottom:1px solid var(--ui-line); flex-wrap:wrap; }
+  .toolbar .brand { font-weight:800; font-size:15px; letter-spacing:-.01em; margin-right:4px; }
+  .toolbar .brand span { color:var(--ui-accent); }
+  .toolbar label { font-size:12px; color:var(--ui-muted); display:flex; align-items:center; gap:6px; }
+  .toolbar select { background:var(--ui-panel); color:var(--ui-text); border:1px solid var(--ui-line);
+    border-radius:8px; padding:6px 10px; font-size:12px; font-family:inherit; }
+  .toolbar .spacer { flex:1; }
+  .btn { border:none; border-radius:9px; padding:9px 18px; font-size:13px; font-weight:700; font-family:inherit;
+    cursor:pointer; background:var(--ui-accent); color:#fff; }
+  .btn:disabled { opacity:.55; cursor:default; }
+  .btn.ghost { background:var(--ui-panel); border:1px solid var(--ui-line); color:var(--ui-text); font-weight:600; }
+  .status { font-size:12px; color:var(--ui-muted); min-width:120px; }
+
+  /* ---------- Grid ---------- */
+  .hint { padding:14px 18px 0; color:var(--ui-muted); font-size:13px; line-height:1.5; }
+  .hint b { color:var(--ui-text); }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px,1fr)); gap:22px; padding:18px; align-items:start; }
+  .card { background:var(--ui-panel); border:1px solid var(--ui-line); border-radius:14px; overflow:hidden; }
+  .thumb { position:relative; overflow:hidden; background:#000; }
+  .card .meta { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 12px; }
+  .card .meta .name { font-size:12px; font-weight:600; }
+  .card .meta .sub { font-size:11px; color:var(--ui-muted); }
+  .card .replace, .card .dl { font-size:11px; color:var(--ui-accent); cursor:pointer; border:1px solid var(--ui-line);
+    background:transparent; border-radius:7px; padding:5px 9px; font-family:inherit; }
+  .card .dl { color:var(--ui-muted); }
+
+  /* ---------- Offscreen export ---------- */
+  #exportArea { position:absolute; left:-99999px; top:0; }
+
+  /* ---------- Slide canvas ---------- */
+  .canvas { position:relative; overflow:hidden; background:#000; transform-origin:top left; color:#fff;
+    font-family:Inter,system-ui,sans-serif; }
+  .canvas .bg { position:absolute; inset:0; z-index:0; }
+  .canvas .glow { position:absolute; border-radius:50%; filter:blur(48px); z-index:1; }
+  .canvas .caption { position:absolute; z-index:5; }
+  .canvas .headline { font-weight:800; letter-spacing:-.028em; }
+  .canvas .sub { font-weight:500; }
+  .canvas .phone { position:absolute; z-index:3; aspect-ratio:1022/2082; }
+  .canvas .phone.back { z-index:2; }
+  .canvas .phone .frame { display:block; width:100%; height:100%;
+    filter:drop-shadow(0 10px 14px rgba(0,0,0,.32)); }
+  .canvas .phone .screen { position:absolute; left:5.09%; top:2.21%; width:89.82%; height:95.58%;
+    border-radius:13.7% / 6.33%; overflow:hidden; background:#0e0e12; }
+  .canvas .phone .screen img { display:block; width:100%; height:100%; object-fit:cover; object-position:top; }
+  .canvas .phone .screen .placeholder { width:100%; height:100%; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:2%; text-align:center; color:rgba(255,255,255,.5);
+    background:repeating-linear-gradient(45deg,#151519,#151519 22px,#1b1b21 22px,#1b1b21 44px); }
+  .canvas .winf { position:absolute; z-index:3; overflow:hidden;
+    background:#141419; border:1px solid rgba(255,255,255,.10);
+    box-shadow:0 20px 34px rgba(0,0,0,.34); }
+  .canvas .winf .winbar { display:flex; align-items:center; }
+  .canvas .winf .winbar .wd { border-radius:50%; }
+  .canvas .winf .winscr { width:100%; background:#000; overflow:hidden; }
+  .canvas .winf .winscr img { display:block; width:100%; height:100%; object-fit:cover; object-position:50% 0%; }
+  .canvas .pills { position:absolute; z-index:5; display:flex; flex-wrap:wrap; }
+  .canvas .pill { border-radius:999px; font-weight:700; white-space:nowrap; }
+  .canvas .appicon { position:absolute; z-index:5; display:flex; align-items:center; justify-content:center;
+    font-weight:900; color:#fff; overflow:hidden; box-shadow:0 20px 50px rgba(0,0,0,.5); }
+  .canvas .appicon img { width:100%; height:100%; object-fit:cover; }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <div class="brand">ADE <span>·</span> App Store Screenshots</div>
+    <label>Theme <select id="theme"></select></label>
+    <label>Size <select id="size"></select></label>
+    <label>Font <select id="font">
+        <option value="Inter">Inter</option>
+        <option value="Poppins">Poppins</option>
+        <option value="Space Grotesk">Space Grotesk</option>
+      </select></label>
+    <div class="spacer"></div>
+    <span class="status" id="status"></span>
+    <button class="btn" id="export">Export all</button>
+  </div>
+
+  <div class="hint" id="hint"></div>
+  <div class="grid" id="grid"></div>
+  <div id="exportArea"></div>
+
+<script>
+/* ============================================================
+   ADE App Store screenshot generator (single file, no build)
+   - accent-keyword headlines  {word}
+   - layout variety (two-phone hero, phone-top / phone-bottom,
+     desktop+phone devices slide, pills closing)
+   - screenshots are REAL captures pulled from the landing page
+     (apps/web/public/images) — replace with fresh sim captures
+     any time via ./screenshots or the "Replace" button.
+   ============================================================ */
+
+// Apple iPhone portrait sizes (px). 6.9" is the required master.
+const SIZES = [
+  { label:'6.9" (required) — 1320×2868', w:1320, h:2868 },
+  { label:'6.5" — 1284×2778', w:1284, h:2778 },
+  { label:'6.3" — 1206×2622', w:1206, h:2622 },
+  { label:'6.1" — 1125×2436', w:1125, h:2436 },
+];
+
+// ADE violet family (product accent #a78bfa / #7C3AED). Tonal variation only:
+// bright brand violet, deep grape, near-black night — matching the app's dark
+// UI — plus one light lavender breather. White headline + lavender keyword.
+const THEMES = {
+  brand: { name:'Brand violet', bg:'#6D28D9', ink:'#ffffff', accent:'#DDD3FF', sub:'rgba(255,255,255,.84)', blob:'#7d3ee6', solid:true },
+  grape: { name:'Grape',        bg:'#4C1D95', ink:'#ffffff', accent:'#D6C7FF', sub:'rgba(255,255,255,.82)', blob:'#5b2ba8', solid:true },
+  deep:  { name:'Deep violet',  bg:'#1E1033', ink:'#ffffff', accent:'#C4B5FD', sub:'rgba(255,255,255,.74)', blob:'#2c1a49', solid:true },
+  lav:   { name:'Lavender',     bg:'#EDE9FE', ink:'#17102B', accent:'#6D28D9', sub:'#6a6289', blob:'#e2dcf9' },
+  night: { name:'Night',        bg:'#0E0817', ink:'#ffffff', accent:'#C4B5FD', sub:'rgba(255,255,255,.74)', blob:'#1e1233', solid:true },
+};
+
+/* Slides. headline uses {word} for accent color. layout:
+   hero-multi | devices | text-top | text-bottom | pills          */
+const SLIDES = [
+  { id:'hero', img:'01-chat.png', imgBack:'03-prs.png', layout:'hero-multi', theme:'brand',
+    headline:'Ship code {from your phone}.',
+    sub:'Your agents, worktrees and PRs — live from your machines.',
+    capture:'Front phone: agent chat. Back phone: PRs list.' },
+
+  { id:'agents', img:'01-chat.png', layout:'text-top', theme:'deep',
+    headline:'Steer {agents} live.',
+    sub:'Claude, Codex and more — every tool call streaming in real time.',
+    capture:'Agent chat mid-run: tool calls, thoughts, files changed.' },
+
+  { id:'git', img:'02-git.png', layout:'text-bottom', theme:'grape',
+    headline:'Full {git}, no laptop.',
+    sub:'Stage, commit, push and rebase any worktree.',
+    capture:'Worktree git view: commit box, unstaged files, history.' },
+
+  { id:'prs', img:'03-prs.png', layout:'text-top', theme:'brand',
+    headline:'Review & {merge} PRs.',
+    sub:'CI checks, comments and one-tap merges on the go.',
+    capture:'PRs tab: open PRs with branches and statuses.' },
+
+  { id:'cli', img:'04-cli.png', layout:'text-bottom', theme:'night',
+    headline:'Your {terminal}, mirrored.',
+    sub:'Live CLI sessions from your desktop, wherever you are.',
+    capture:'Native terminal mirroring a desktop CLI session.' },
+
+  { id:'devices', img:'01-chat.png', layout:'devices', theme:'deep',
+    headline:'One app.\n{Every machine}.',
+    sub:'Paired to your desktop — local-first and private.',
+    capture:'Window = desktop app (desktop.png). Phone = mobile app.' },
+
+  { id:'closing', layout:'pills', theme:'night',
+    headline:'Your dev environment,\n{anywhere}.',
+    sub:'Everything ADE, in your pocket.',
+    capture:'(closing slide — app icon + feature pills, no device)' },
+];
+
+const PILLS = ['Claude & Codex','Git worktrees','PR reviews','Live terminals','Push notifications','Linear issues','Voice dictation','Local-first'];
+
+// ---- State ----
+let sizeIdx = 0, themeOverride = null, fontFamily = 'Inter';
+const cache = {}; // key -> dataURI
+
+// ---- Image loading ----
+function keysToLoad(){
+  const keys = new Set(['mockup.png','app-icon.png','logo.png','screenshots/desktop.png']);
+  SLIDES.forEach(s => { if (s.img) keys.add('screenshots/'+s.img); if (s.imgBack) keys.add('screenshots/'+s.imgBack); });
+  return [...keys];
+}
+async function toDataURI(url){
+  const r = await fetch(url,{cache:'no-store'}); if(!r.ok) throw new Error(r.status);
+  const blob = await r.blob();
+  return await new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(blob); });
+}
+async function preload(){
+  await Promise.all(keysToLoad().map(async k=>{ try{ cache[k]=await toDataURI(k); }catch{} }));
+}
+
+// ---- Sizing (everything scales from canvas width) ----
+function cw(){ return SIZES[sizeIdx].w; }
+function ch(){ return SIZES[sizeIdx].h; }
+function px(f){ return (cw()*f).toFixed(1)+'px'; }
+
+// ---- Text helpers ----
+function fmtHeadline(str, accent){
+  return str
+    .replace(/\{([^}]+)\}/g, `<span style="color:${accent}">$1</span>`)
+    .replace(/\n/g,'<br>');
+}
+
+// ---- Device element ----
+function screenInner(file){
+  const key='screenshots/'+file;
+  if(cache[key]) return `<img src="${cache[key]}" alt="">`;
+  return `<div class="placeholder"><div style="font-size:${px(0.03)};font-weight:700">${file}</div>
+    <div style="font-size:${px(0.022)}">drop your screenshot</div></div>`;
+}
+function phone(file, cls, style){
+  return `<div class="phone ${cls||''}" style="${style}">
+    <img class="frame" src="${cache['mockup.png']||''}" alt="">
+    <div class="screen">${screenInner(file)}</div></div>`;
+}
+// Browser / desktop window frame (for the multi-device slide).
+function windowFrame(file, wPx, pos){
+  const bar=wPx*0.052, dot=wPx*0.016, rad=wPx*0.021;
+  return `<div class="winf" style="width:${wPx}px;${pos};border-radius:${rad.toFixed(1)}px">
+    <div class="winbar" style="height:${bar.toFixed(1)}px;gap:${(dot*0.85).toFixed(1)}px;padding:0 ${(wPx*0.03).toFixed(1)}px">
+      <span class="wd" style="width:${dot.toFixed(1)}px;height:${dot.toFixed(1)}px;background:#ff5f57"></span>
+      <span class="wd" style="width:${dot.toFixed(1)}px;height:${dot.toFixed(1)}px;background:#febc2e"></span>
+      <span class="wd" style="width:${dot.toFixed(1)}px;height:${dot.toFixed(1)}px;background:#28c840"></span>
+    </div>
+    <div class="winscr" style="aspect-ratio:16/9.3">${screenInner(file)}</div>
+  </div>`;
+}
+
+// ---- Caption block ----
+function caption(s, t, pos){
+  const align = pos.align || 'center';
+  const box = align==='left'
+    ? `left:9%; width:74%; text-align:left;`
+    : `left:50%; width:86%; transform:translateX(-50%); text-align:center;`;
+  const vert = pos.bottom!=null ? `bottom:${pos.bottom};` : `top:${pos.top};`;
+  return `<div class="caption" style="${vert} ${box}">
+      <div class="headline" style="color:${t.ink}; font-size:${px(0.099)}; line-height:1.02">${fmtHeadline(s.headline,t.accent)}</div>
+      ${s.sub?`<div class="sub" style="color:${t.sub}; font-size:${px(0.032)}; line-height:1.34; margin-top:${px(0.024)}; ${align==='center'?`max-width:${px(0.78)}; margin-left:auto; margin-right:auto;`:''}">${s.sub}</div>`:''}
+    </div>`;
+}
+
+// Flat background + one soft depth circle behind the device (no gradient mush).
+function backdrop(t){
+  return `<div class="bg" style="background:${t.bg}"></div>
+    <div style="position:absolute;z-index:1;border-radius:50%;width:${px(0.96)};height:${px(0.96)};
+      left:50%;bottom:-6%;transform:translateX(-50%);background:${t.blob}"></div>`;
+}
+
+// ---- Build one slide's inner HTML ----
+function slideHTML(s){
+  const t = THEMES[themeOverride||s.theme];
+
+  if(s.layout==='pills'){
+    const chip = t.solid
+      ? `background:rgba(255,255,255,.08);color:#fff;border:1px solid rgba(255,255,255,.16);`
+      : `background:${t.accent}14;color:${t.ink};border:1px solid ${t.accent}40;`;
+    const iconInner = cache['app-icon.png']
+      ? `<img src="${cache['app-icon.png']}">`
+      : `A`;
+    const iconBg = cache['app-icon.png'] ? '' : (t.solid?`background:#ffffff;color:${t.bg};`:`background:${t.accent};color:#fff;`);
+    const icon = `<div class="appicon" style="width:${px(0.22)};height:${px(0.22)};border-radius:${px(0.052)};top:14%;left:50%;transform:translateX(-50%);${iconBg}font-size:${px(0.12)}">${iconInner}</div>`;
+    const pills = PILLS.map(p=>`<span class="pill" style="${chip};font-size:${px(0.032)};padding:${px(0.02)} ${px(0.04)};margin:${px(0.013)}">${p}</span>`).join('');
+    return `<div class="bg" style="background:${t.bg}"></div>${icon}
+      <div class="caption" style="top:40%; left:50%; width:88%; transform:translateX(-50%); text-align:center;">
+        <div class="headline" style="color:${t.ink}; font-size:${px(0.095)}; line-height:1.04">${fmtHeadline(s.headline,t.accent)}</div>
+        ${s.sub?`<div class="sub" style="color:${t.sub}; font-size:${px(0.032)}; margin-top:${px(0.024)}">${s.sub}</div>`:''}
+      </div>
+      <div class="pills" style="left:50%; transform:translateX(-50%); top:59%; width:82%; justify-content:center;">${pills}</div>`;
+  }
+
+  const base = backdrop(t);
+
+  if(s.layout==='hero-multi'){ // logo lockup + two phones on the brand color
+    const logoBadge = `<div style="position:absolute;z-index:5;top:6%;left:50%;transform:translateX(-50%);
+      width:${px(0.16)};height:${px(0.16)};border-radius:${px(0.037)};background:#ffffff;
+      display:flex;align-items:center;justify-content:center;box-shadow:0 ${px(0.012)} ${px(0.03)} rgba(0,0,0,.22)">
+      <img src="${cache['logo.png']||''}" alt="ADE" style="width:74%;height:74%;object-fit:contain"></div>`;
+    const back = phone(s.imgBack||'03-prs.png','back',
+      `left:4%; bottom:0; width:56%; transform:translateY(18%) rotate(-7deg);`);
+    const front = phone(s.img,'',
+      `right:3%; bottom:0; width:64%; transform:translateY(11%) rotate(4deg);`);
+    return `${base}${logoBadge}${caption(s,t,{top:'19%',align:'center'})}${back}${front}`;
+  }
+
+  if(s.layout==='devices'){ // desktop window behind + big phone in front (one cluster)
+    const win = windowFrame('desktop.png', cw()*0.88, `left:50%; top:24%; transform:translateX(-50%)`);
+    const ph  = phone(s.img,'', `left:50%; bottom:0; width:60%; transform:translateX(-50%) translateY(6%)`);
+    return `${base}${caption(s,t,{top:'7.5%',align:'center'})}${win}${ph}`;
+  }
+
+  if(s.layout==='text-bottom'){ // phone bleeds off the top, caption at the bottom
+    const ph = phone(s.img,'', `left:50%; top:0; width:84%; transform:translateX(-50%) translateY(-12%);`);
+    return `${base}${ph}${caption(s,t,{bottom:'7%',align:'center'})}`;
+  }
+
+  // default: text-top, phone straight + prominent, bleeding off the bottom
+  const ph = phone(s.img,'', `left:50%; bottom:0; width:84%; transform:translateX(-50%) translateY(13%);`);
+  return `${base}${caption(s,t,{top:'8%',align:'center'})}${ph}`;
+}
+
+// ---- Render preview grid (export nodes are built on demand) ----
+function render(){
+  const grid=document.getElementById('grid');
+  grid.innerHTML='';
+  const previewW=260, scale=previewW/cw();
+
+  SLIDES.forEach((s,i)=>{
+    const html=slideHTML(s);
+
+    const card=document.createElement('div'); card.className='card';
+    const thumb=document.createElement('div'); thumb.className='thumb';
+    thumb.style.width=previewW+'px'; thumb.style.height=(ch()*scale)+'px';
+    const pv=document.createElement('div'); pv.className='canvas';
+    pv.style.width=cw()+'px'; pv.style.height=ch()+'px'; pv.style.fontFamily=fontFamily;
+    pv.style.transform=`scale(${scale})`; pv.innerHTML=html;
+    thumb.appendChild(pv); card.appendChild(thumb);
+
+    const meta=document.createElement('div'); meta.className='meta';
+    const loaded=s.img?cache['screenshots/'+s.img]:true;
+    meta.innerHTML=`<div><div class="name">${String(i+1).padStart(2,'0')} · ${s.id}</div>
+      <div class="sub">${loaded?'image loaded':'no image — placeholder'}</div></div>`;
+    const btns=document.createElement('div'); btns.style.display='flex'; btns.style.gap='6px';
+    const rep=document.createElement('button'); rep.className='replace'; rep.textContent='Replace'; rep.onclick=()=>pickImage(s);
+    const dl=document.createElement('button'); dl.className='dl'; dl.textContent='PNG'; dl.onclick=()=>exportOne(i);
+    btns.appendChild(rep); btns.appendChild(dl); meta.appendChild(btns); card.appendChild(meta);
+    grid.appendChild(card);
+  });
+}
+
+// ---- Replace a slide image ----
+function pickImage(s){
+  if(!s.img) return;
+  const inp=document.createElement('input'); inp.type='file'; inp.accept='image/png,image/jpeg,image/webp';
+  inp.onchange=()=>{ const f=inp.files[0]; if(!f) return; const fr=new FileReader();
+    fr.onload=()=>{ cache['screenshots/'+s.img]=fr.result; render(); }; fr.readAsDataURL(f); };
+  inp.click();
+}
+
+// ---- Export (build a full-res node on demand, capture, discard) ----
+function status(t){ document.getElementById('status').textContent=t||''; }
+async function captureSlide(i){
+  const area=document.getElementById('exportArea');
+  const node=document.createElement('div'); node.className='canvas';
+  node.style.width=cw()+'px'; node.style.height=ch()+'px'; node.style.fontFamily=fontFamily;
+  node.innerHTML=slideHTML(SLIDES[i]);
+  node.style.position='fixed'; node.style.left='0'; node.style.top='0'; node.style.zIndex='-1';
+  area.appendChild(node);
+  const opts={ width:cw(), height:ch(), pixelRatio:1, cacheBust:true, backgroundColor:'#000000' };
+  await window.htmlToImage.toPng(node,opts);          // warm-up
+  const url=await window.htmlToImage.toPng(node,opts); // clean capture
+  area.removeChild(node);
+  return url;
+}
+function download(url,name){ const a=document.createElement('a'); a.href=url; a.download=name; a.click(); }
+async function exportOne(i){
+  const s=SLIDES[i]; status(`Exporting ${i+1}/${SLIDES.length}…`);
+  download(await captureSlide(i), `${String(i+1).padStart(2,'0')}-${s.id}-${cw()}x${ch()}.png`);
+  status('Done ✓'); setTimeout(()=>status(''),1500);
+}
+async function exportAll(){
+  const btn=document.getElementById('export'); btn.disabled=true;
+  for(let i=0;i<SLIDES.length;i++){
+    status(`Exporting ${i+1}/${SLIDES.length}…`);
+    download(await captureSlide(i), `${String(i+1).padStart(2,'0')}-${SLIDES[i].id}-${cw()}x${ch()}.png`);
+    await new Promise(r=>setTimeout(r,350));
+  }
+  status('All exported ✓'); btn.disabled=false; setTimeout(()=>status(''),2500);
+}
+
+// ---- Wire toolbar ----
+function initUI(){
+  const sizeSel=document.getElementById('size');
+  SIZES.forEach((s,i)=>{ const o=document.createElement('option'); o.value=i; o.textContent=s.label; sizeSel.appendChild(o); });
+  sizeSel.onchange=e=>{ sizeIdx=+e.target.value; render(); };
+
+  const themeSel=document.getElementById('theme');
+  const per=document.createElement('option'); per.value=''; per.textContent='Per-slide (recommended)'; themeSel.appendChild(per);
+  Object.entries(THEMES).forEach(([k,v])=>{ const o=document.createElement('option'); o.value=k; o.textContent='Force: '+v.name; themeSel.appendChild(o); });
+  themeSel.onchange=e=>{ themeOverride=e.target.value||null; render(); };
+
+  document.getElementById('font').onchange=e=>{ fontFamily=e.target.value; render(); };
+  document.getElementById('export').onclick=exportAll;
+
+  document.getElementById('hint').innerHTML=
+    `Screenshots load from <b>./screenshots</b> (01-chat, 02-git, 03-prs, 04-cli, desktop) — currently the real landing-page captures. `+
+    `Click <b>Replace</b> on any card to swap in a fresh capture, then <b>Export all</b> → downloads as <b>NN-id-WxH.png</b>, ready for App Store Connect.`;
+}
+
+// ---- Boot ----
+(async function(){
+  const params = new URLSearchParams(location.search);
+  if (params.has('slide')) {  // headless single-slide export mode: renders ONE slide full-size
+    sizeIdx = Math.max(0, Math.min(SIZES.length-1, +(params.get('size')||0)));
+    const fp = params.get('font'); if (fp) fontFamily = fp;
+    await preload();
+    const i = Math.max(0, Math.min(SLIDES.length-1, +params.get('slide')));
+    document.body.style.margin='0'; document.body.style.background='#000'; document.body.innerHTML='';
+    const node=document.createElement('div'); node.className='canvas';
+    node.style.width=cw()+'px'; node.style.height=ch()+'px'; node.style.fontFamily=fontFamily;
+    node.innerHTML=slideHTML(SLIDES[i]);
+    document.body.appendChild(node);
+    return;
+  }
+  initUI(); status('Loading images…'); await preload(); status(''); render();
+})();
+</script>
+</body>
+</html>
