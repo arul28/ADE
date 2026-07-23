@@ -1,9 +1,15 @@
 import type { TerminalRuntimeState, TerminalSessionStatus, TerminalSessionSummary, TerminalToolType } from "../../shared/types";
-import { canonicalSessionState, type CanonicalSessionState, type SessionBadge } from "../../shared/sessionCanonicalState";
+import {
+  canonicalSessionState,
+  canonicalStatusBucket,
+  type CanonicalSessionPhase,
+  type CanonicalSessionState,
+  type SessionBadge,
+} from "../../shared/sessionCanonicalState";
 import { isChatToolType } from "./sessions";
 
 export type TerminalRunIndicatorState = "none" | "running-active" | "running-needs-attention";
-export type SessionStatusFilter = "all" | "running" | "awaiting-input" | "ended";
+export type SessionStatusFilter = "all" | "running" | "awaiting-input" | "ended" | "settled";
 export type SessionUiState = "running-active" | "running-needs-attention" | "ended";
 export type SessionStatusBucket = Exclude<SessionStatusFilter, "all">;
 
@@ -94,29 +100,6 @@ function indicatorFromCounts(runningCount: number, needsAttentionCount: number):
   return "running-active";
 }
 
-export function sessionIndicatorState(args: {
-  status: TerminalSessionStatus;
-  lastOutputPreview: string | null;
-  runtimeState?: TerminalRuntimeState;
-  toolType?: TerminalToolType | null;
-  pendingInputItemId?: string | null;
-}): SessionUiState {
-  if (args.status === "detached") return "ended";
-  if (args.status === "running") {
-    // Deterministic signals first (pendingInputItemId now counts — it used to
-    // be invisible here); the preview-text heuristic is consulted LAST and can
-    // only upgrade a plain running session, never outvote runtime state.
-    if (args.pendingInputItemId || args.runtimeState === "waiting-input") return "running-needs-attention";
-    if (args.runtimeState === "idle") {
-      return idleRuntimeNeedsAttention(args.toolType) ? "running-needs-attention" : "running-active";
-    }
-    return runningSessionNeedsAttention(args.lastOutputPreview) ? "running-needs-attention" : "running-active";
-  }
-  // Agent chats do not "end" like PTY sessions — they idle until deleted.
-  if (isChatToolType(args.toolType)) return "running-needs-attention";
-  return "ended";
-}
-
 type SessionCanonicalUiInput = {
   status: TerminalSessionStatus;
   lastOutputPreview: string | null;
@@ -125,8 +108,35 @@ type SessionCanonicalUiInput = {
   pendingInputItemId?: string | null;
   lastActivityAt?: string | null;
   exitCode?: number | null;
+  settledAt?: string | null;
+  attentionRequestedAt?: string | null;
+  lastTurnFailedAt?: string | null;
   nowMs?: number;
 };
+
+/**
+ * Legacy tri-state view of the canonical phase. Resting chats and idle agent
+ * CLIs stay "running-needs-attention" (they are your move, amber dot) — but
+ * note the LOUD tier (badges/notifications/tab+dock counts) keys off canonical
+ * needs_you only; this coarser view exists for callers that just need
+ * green/amber/red-ish grouping.
+ */
+export function sessionIndicatorState(args: SessionCanonicalUiInput): SessionUiState {
+  const phase = sessionCanonicalUiState(args).phase;
+  switch (phase) {
+    case "starting":
+    case "running":
+    case "stale":
+      return "running-active";
+    case "needs_you":
+    case "ready":
+      return "running-needs-attention";
+    case "idle":
+      return idleRuntimeNeedsAttention(args.toolType) ? "running-needs-attention" : "running-active";
+    default:
+      return "ended";
+  }
+}
 
 export function sessionCanonicalUiState(session: SessionCanonicalUiInput): CanonicalSessionState {
   return canonicalSessionState({
@@ -137,6 +147,9 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
     lastOutputPreview: session.lastOutputPreview,
     lastActivityAt: session.lastActivityAt ?? null,
     exitCode: session.exitCode ?? null,
+    settledAt: session.settledAt ?? null,
+    attentionRequestedAt: session.attentionRequestedAt ?? null,
+    lastTurnFailedAt: session.lastTurnFailedAt ?? null,
     nowMs: session.nowMs,
     previewSuggestsNeedsInput: runningSessionNeedsAttention,
     isChatTool: isChatToolType,
@@ -165,51 +178,45 @@ export function sessionNeedsUserInput(args: {
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
   pendingInputItemId?: string | null;
+  attentionRequestedAt?: string | null;
 }): boolean {
   if (args.runtimeState === "waiting-input") return true;
   if (args.pendingInputItemId) return true;
+  if (args.attentionRequestedAt) return true;
   if (isChatToolType(args.toolType)) return false;
   if (args.status !== "running") return false;
   return runningSessionNeedsAttention(args.lastOutputPreview);
 }
 
-/** Yellow Work tab border — agent chats blocked on approval/question only. */
+/** Yellow Work tab border — agent chats blocked on approval/question/`ade chat ask` only. */
 export function sessionNeedsChatTabHighlight(args: {
   runtimeState?: TerminalRuntimeState;
   toolType?: TerminalToolType | null;
   pendingInputItemId?: string | null;
+  attentionRequestedAt?: string | null;
 }): boolean {
   if (!isChatToolType(args.toolType)) return false;
   if (args.runtimeState === "waiting-input") return true;
   if (args.pendingInputItemId) return true;
+  if (args.attentionRequestedAt) return true;
   return false;
 }
 
-export function sessionStatusBucket(args: {
-  status: TerminalSessionStatus;
-  lastOutputPreview: string | null;
-  runtimeState?: TerminalRuntimeState;
-  toolType?: TerminalToolType | null;
-  pendingInputItemId?: string | null;
-}): SessionStatusBucket {
-  const state = sessionIndicatorState(args);
-  if (state === "running-active") return "running";
-  if (state === "running-needs-attention") return "awaiting-input";
-  return "ended";
+export function sessionStatusBucket(args: SessionCanonicalUiInput): SessionStatusBucket {
+  return canonicalStatusBucket(sessionCanonicalUiState(args).phase);
 }
 
 export function sessionMatchesStatusFilter(
-  args: {
-    status: TerminalSessionStatus;
-    lastOutputPreview: string | null;
-    runtimeState?: TerminalRuntimeState;
-    toolType?: TerminalToolType | null;
-    pendingInputItemId?: string | null;
-  },
+  args: SessionCanonicalUiInput,
   filter: SessionStatusFilter,
 ): boolean {
   if (filter === "all") return true;
   return sessionStatusBucket(args) === filter;
+}
+
+/** Loud tier only: rows that must interrupt (badge, notification, dock/tab count). */
+export function sessionNeedsYou(args: SessionCanonicalUiInput): boolean {
+  return sessionCanonicalUiState(args).phase === "needs_you";
 }
 
 export type SessionStatusDot = {
@@ -218,39 +225,53 @@ export type SessionStatusDot = {
   label: string;
 };
 
-/** Map a session's indicator state to CSS classes for rendering a status dot. */
-export function sessionStatusDot(session: {
-  status: TerminalSessionStatus;
-  lastOutputPreview: string | null;
-  runtimeState?: TerminalRuntimeState;
-  toolType?: TerminalToolType | null;
-}): SessionStatusDot {
-  const indicator = sessionIndicatorState(session);
-  if (indicator === "running-active") {
-    return { cls: "rounded-full bg-emerald-400", spinning: false, label: "Running" };
+/**
+ * Map a session's canonical phase to CSS classes for rendering a status dot.
+ * Green = work happening · amber = your move (loud or quiet) · red = died ·
+ * hollow ring = settled (visually "less than" every filled dot, matching the
+ * quietest tier).
+ */
+export function sessionStatusDot(session: SessionCanonicalUiInput): SessionStatusDot {
+  const phase = sessionCanonicalUiState(session).phase;
+  switch (phase) {
+    case "starting":
+    case "running":
+    case "stale":
+      return { cls: "rounded-full bg-emerald-400", spinning: false, label: "Running" };
+    case "needs_you":
+      return {
+        cls: "rounded-full bg-amber-300",
+        spinning: false,
+        label: session.runtimeState === "waiting-input" || session.pendingInputItemId || session.attentionRequestedAt
+          ? "Needs you"
+          : "Awaiting input",
+      };
+    case "ready":
+      return { cls: "rounded-full bg-amber-300", spinning: false, label: "Ready" };
+    case "idle":
+      return idleRuntimeNeedsAttention(session.toolType)
+        ? { cls: "rounded-full bg-amber-300", spinning: false, label: "Idle" }
+        : { cls: "rounded-full bg-emerald-400", spinning: false, label: "Running" };
+    case "settled":
+      return {
+        cls: "rounded-full border border-white/35 bg-transparent",
+        spinning: false,
+        label: "Settled",
+      };
+    case "stopped":
+      return { cls: "rounded-full bg-red-400", spinning: false, label: "Stopped" };
+    case "failed":
+      return { cls: "rounded-full bg-red-400", spinning: false, label: "Failed" };
+    default:
+      return { cls: "rounded-full bg-red-400", spinning: false, label: "Ended" };
   }
-  if (indicator === "running-needs-attention") {
-    let label: string;
-    if (session.runtimeState === "waiting-input") {
-      label = "Awaiting input";
-    } else if (isChatToolType(session.toolType)) {
-      label = "Ready";
-    } else if (session.runtimeState === "idle") {
-      label = "Idle";
-    } else {
-      label = "Awaiting input";
-    }
-    return { cls: "rounded-full bg-amber-300", spinning: false, label };
-  }
-  if (session.status === "disposed") {
-    return { cls: "rounded-full bg-red-400", spinning: false, label: "Stopped" };
-  }
-  if (session.status === "failed") {
-    return { cls: "rounded-full bg-red-400", spinning: false, label: "Failed" };
-  }
-  return { cls: "rounded-full bg-red-400", spinning: false, label: "Ended" };
 }
 
+/**
+ * Rollup that feeds the Work tab indicator and dock badge. needsAttention is
+ * the LOUD tier only (canonical needs_you) — a merely resting chat no longer
+ * lights the tab amber; only a deterministic ask does.
+ */
 export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): TerminalAttentionSummary {
   let runningCount = 0;
   let activeCount = 0;
@@ -258,17 +279,25 @@ export function summarizeTerminalAttention(sessions: TerminalSessionSummary[]): 
   const byLane: Record<string, { runningCount: number; activeCount: number; needsAttentionCount: number }> = {};
 
   for (const session of sessions) {
-    const indicator = sessionIndicatorState({
+    const phase = sessionCanonicalUiState({
       status: session.status,
       lastOutputPreview: session.lastOutputPreview,
       runtimeState: session.runtimeState,
       toolType: session.toolType,
-    });
-    if (indicator === "ended") continue;
+      pendingInputItemId: session.pendingInputItemId,
+      lastActivityAt: session.lastActivityAt,
+      exitCode: session.exitCode,
+      settledAt: session.settledAt,
+      attentionRequestedAt: session.attentionRequestedAt,
+      lastTurnFailedAt: session.lastTurnFailedAt,
+    }).phase;
+    const isLoud = phase === "needs_you";
+    const isWorking = phase === "starting" || phase === "running" || phase === "stale";
+    if (!isLoud && !isWorking) continue;
     const lane = byLane[session.laneId] ?? { runningCount: 0, activeCount: 0, needsAttentionCount: 0 };
     lane.runningCount += 1;
     runningCount += 1;
-    if (indicator === "running-needs-attention") {
+    if (isLoud) {
       lane.needsAttentionCount += 1;
       needsAttentionCount += 1;
     } else {

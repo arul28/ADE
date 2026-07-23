@@ -171,8 +171,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const selectableSessions = useMemo(
-    () => [...work.runningFiltered, ...work.awaitingInputFiltered, ...work.endedFiltered],
-    [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered],
+    () => [
+      ...work.runningFiltered,
+      ...work.awaitingInputFiltered,
+      ...work.endedFiltered,
+      ...(work.showSettled ? work.settledFiltered : []),
+    ],
+    [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered, work.settledFiltered, work.showSettled],
   );
 
   useEffect(() => {
@@ -1070,6 +1075,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             runningFiltered={work.runningFiltered}
             awaitingInputFiltered={work.awaitingInputFiltered}
             endedFiltered={work.endedFiltered}
+            settledFiltered={work.settledFiltered}
+            showSettled={work.showSettled}
+            setShowSettled={work.setShowSettled}
             allSessionsUnfiltered={work.sessions}
             loading={work.loading}
             filterLaneId={work.filterLaneId}

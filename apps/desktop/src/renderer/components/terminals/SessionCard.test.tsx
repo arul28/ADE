@@ -287,7 +287,7 @@ describe("SessionCard auto-naming status", () => {
   it("shows the normal preview line when the lane is not being named", () => {
     render(
       <SessionCard
-        session={makeSession({ lastOutputPreview: "running the build" })}
+        session={makeSession({ statusNote: "running the build" })}
         lane={lane}
         isSelected={false}
         onSelect={vi.fn()}

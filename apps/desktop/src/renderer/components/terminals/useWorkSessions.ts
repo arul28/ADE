@@ -18,7 +18,7 @@ import {
   type WorkStatusFilter,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
-import { sessionStatusBucket } from "../../lib/terminalAttention";
+import { sessionStatusBucket, sessionNeedsYou } from "../../lib/terminalAttention";
 import { buildOptimisticChatSessionSummary, isRunOwnedSession } from "../../lib/sessions";
 import {
   shouldRefreshSessionListForChatEvent,
@@ -48,10 +48,11 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   draftLaneId: null,
   laneFilter: "all",
   statusFilter: "all",
+  showSettled: true,
   search: "",
   sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
-  workCollapsedSectionIds: [],
+  workCollapsedSectionIds: ["status:settled"],
   workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
   workSidebarOpen: false,
@@ -137,7 +138,8 @@ function bucketByTime(session: TerminalSessionSummary): "today" | "yesterday" | 
 
 function getStatusBucketLabel(bucket: ReturnType<typeof sessionStatusBucket>): string {
   if (bucket === "running") return "Running";
-  if (bucket === "awaiting-input") return "Awaiting";
+  if (bucket === "awaiting-input") return "Your move";
+  if (bucket === "settled") return "Settled";
   return "Ended";
 }
 
@@ -258,7 +260,7 @@ export function buildWorkTabGroupModel(args: {
     return { groups, sessionIds: visibleSessions.map((session) => session.id), visibleSessions };
   }
 
-  const statusBuckets = new Map<"running" | "awaiting-input" | "ended", TerminalSessionSummary[]>();
+  const statusBuckets = new Map<"running" | "awaiting-input" | "ended" | "settled", TerminalSessionSummary[]>();
   for (const session of orderedSessions) {
     const bucket = sessionStatusBucket({
       status: session.status,
@@ -266,13 +268,18 @@ export function buildWorkTabGroupModel(args: {
       runtimeState: session.runtimeState,
       toolType: session.toolType,
       pendingInputItemId: session.pendingInputItemId,
+      lastActivityAt: session.lastActivityAt,
+      exitCode: session.exitCode,
+      settledAt: session.settledAt,
+      attentionRequestedAt: session.attentionRequestedAt,
+      lastTurnFailedAt: session.lastTurnFailedAt,
     });
     const list = statusBuckets.get(bucket) ?? [];
     list.push(session);
     statusBuckets.set(bucket, list);
   }
 
-  const statusOrder: Array<"running" | "awaiting-input" | "ended"> = ["running", "awaiting-input", "ended"];
+  const statusOrder: Array<"running" | "awaiting-input" | "ended" | "settled"> = ["running", "awaiting-input", "ended", "settled"];
   const visibleSessions: TerminalSessionSummary[] = [];
   const groups = statusOrder
     .filter((bucket) => (statusBuckets.get(bucket)?.length ?? 0) > 0)
@@ -337,6 +344,7 @@ function mapUrlStatusFilter(statusParamRaw: string): WorkStatusFilter | null {
   if (statusParam === "running") return "running";
   if (statusParam === "awaiting-input" || statusParam === "awaiting") return "awaiting-input";
   if (statusParam === "ended") return "ended";
+  if (statusParam === "settled") return "settled";
   if (statusParam === "all") return "all";
   if (statusParam === "completed" || statusParam === "failed" || statusParam === "disposed" || statusParam === "detached") return "ended";
   return null;
@@ -439,6 +447,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const draftLaneId = projectViewState.draftLaneId;
   const filterLaneId = projectViewState.laneFilter;
   const filterStatus = projectViewState.statusFilter;
+  const showSettled = projectViewState.showSettled ?? true;
   const q = projectViewState.search;
   const sessionListOrganization: WorkSessionListOrganization =
     projectViewState.sessionListOrganization ?? "by-lane";
@@ -564,6 +573,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const setFilterStatus = useCallback(
     (status: WorkStatusFilter) => {
       setProjectViewState({ statusFilter: status });
+    },
+    [setProjectViewState],
+  );
+
+  const setShowSettled = useCallback(
+    (show: boolean) => {
+      setProjectViewState({ showSettled: show });
     },
     [setProjectViewState],
   );
@@ -1288,23 +1304,41 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     });
   }, [sessions, filterLaneId, q]);
 
-  const { runningFiltered, awaitingInputFiltered, endedFiltered } = useMemo(() => {
+  const { runningFiltered, awaitingInputFiltered, endedFiltered, settledFiltered } = useMemo(() => {
     const running: TerminalSessionSummary[] = [];
-    const awaiting: TerminalSessionSummary[] = [];
+    const loud: TerminalSessionSummary[] = [];
+    const quiet: TerminalSessionSummary[] = [];
     const ended: TerminalSessionSummary[] = [];
+    const settled: TerminalSessionSummary[] = [];
     for (const session of filtered) {
-      const bucket = sessionStatusBucket({
+      const attentionInput = {
         status: session.status,
         lastOutputPreview: session.lastOutputPreview,
         runtimeState: session.runtimeState,
         toolType: session.toolType,
         pendingInputItemId: session.pendingInputItemId,
-      });
+        lastActivityAt: session.lastActivityAt,
+        exitCode: session.exitCode,
+        settledAt: session.settledAt,
+        attentionRequestedAt: session.attentionRequestedAt,
+        lastTurnFailedAt: session.lastTurnFailedAt,
+      };
+      const bucket = sessionStatusBucket(attentionInput);
       if (bucket === "running") running.push(session);
-      else if (bucket === "awaiting-input") awaiting.push(session);
+      else if (bucket === "awaiting-input") {
+        // Loud (Needs you) rows float to the top of the Your-move section; the
+        // two partitions each keep startedAt order, so rows never jitter.
+        if (sessionNeedsYou(attentionInput)) loud.push(session);
+        else quiet.push(session);
+      } else if (bucket === "settled") settled.push(session);
       else ended.push(session);
     }
-    return { runningFiltered: running, awaitingInputFiltered: awaiting, endedFiltered: ended };
+    return {
+      runningFiltered: running,
+      awaitingInputFiltered: [...loud, ...quiet],
+      endedFiltered: ended,
+      settledFiltered: settled,
+    };
   }, [filtered]);
 
   const sessionsGroupedByLane = useMemo(() => {
@@ -1674,6 +1708,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     runningFiltered,
     awaitingInputFiltered,
     endedFiltered,
+    settledFiltered,
+    showSettled,
+    setShowSettled,
     runningSessions,
     visibleSessions,
     gridLayoutId,

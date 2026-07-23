@@ -3304,7 +3304,13 @@ function sessionStatusBucket(argsIn: {
   status: string;
   lastOutputPreview: string | null | undefined;
   runtimeState?: string | null;
+  settledAt?: string | null;
+  attentionRequestedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
+  // Mirrors the settled-tier precedence in shared/sessionCanonicalState.ts:
+  // an escalated ask outranks everything; a declared settle is the quiet bucket.
+  if (argsIn.attentionRequestedAt) return "awaiting-input";
+  if (argsIn.settledAt) return "ended";
   if (argsIn.status === "running") {
     if (argsIn.runtimeState === "waiting-input") return "awaiting-input";
     const preview = argsIn.lastOutputPreview ?? "";

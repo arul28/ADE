@@ -7,6 +7,7 @@ import {
   sanitizeTerminalInlineText,
   sessionNeedsChatTabHighlight,
   sessionCapsuleBadge,
+  sessionCanonicalUiState,
   sessionInlineStatusLabel,
 } from "../../lib/terminalAttention";
 import type { SessionBadge } from "../../../shared/sessionCanonicalState";
@@ -189,16 +190,30 @@ function AttentionCapsule({ badge, compact }: { badge: SessionBadge; compact: bo
   );
 }
 
-function getPreviewLine(session: TerminalSessionSummary, primaryText: string): string | null {
+/**
+ * The card's second line, in priority order:
+ *   1. an escalated ask's question text (`ade chat ask`) — the row should read
+ *      as the question while it blocks,
+ *   2. the agent-authored statusNote (prefixed "done:" once settled — the
+ *      outcome line),
+ *   3. the AI session summary / goal.
+ * The raw terminal output tail (`lastOutputPreview`) is deliberately NOT
+ * rendered here anymore — it stays a detection/search sensor only.
+ */
+function getPreviewLine(
+  session: TerminalSessionSummary,
+  primaryText: string,
+  settled: boolean,
+): string | null {
+  if (session.attentionRequestedAt) {
+    const ask = sanitizeTerminalInlineText(session.attentionMessage, 120);
+    if (ask) return ask;
+  }
+  const note = sanitizeTerminalInlineText(session.statusNote, 120);
+  if (note) return settled ? `done: ${note}` : note;
   const summary = preferredSessionLabel(session.summary);
   if (summary && summary !== primaryText) return summary;
   const goal = preferredSessionLabel(session.goal);
-  if (session.status !== "running") {
-    if (goal && goal !== primaryText) return goal;
-    return null;
-  }
-  const preview = sanitizeTerminalInlineText(session.lastOutputPreview, 120);
-  if (preview && preview !== primaryText) return preview;
   if (goal && goal !== primaryText) return goal;
   return null;
 }
@@ -287,6 +302,7 @@ export const SessionCard = React.memo(function SessionCard({
     runtimeState: session.runtimeState,
     toolType: session.toolType,
     pendingInputItemId: session.pendingInputItemId,
+    attentionRequestedAt: session.attentionRequestedAt,
   });
   // Canonical one-word status capsule (Needs you / Failed / Stale). When the
   // chat-specific "Awaiting you" chip is already showing the same needs-input
@@ -299,7 +315,11 @@ export const SessionCard = React.memo(function SessionCard({
     pendingInputItemId: session.pendingInputItemId,
     lastActivityAt: session.lastActivityAt,
     exitCode: session.exitCode,
+    settledAt: session.settledAt,
+    attentionRequestedAt: session.attentionRequestedAt,
+    lastTurnFailedAt: session.lastTurnFailedAt,
   };
+  const canonicalPhase = sessionCanonicalUiState(sessionAttentionInput).phase;
   const capsuleBadge = sessionCapsuleBadge(sessionAttentionInput);
   const attentionBadge =
     capsuleBadge && !(awaitingUser && capsuleBadge.kind === "needs_you") ? capsuleBadge : null;
@@ -307,7 +327,7 @@ export const SessionCard = React.memo(function SessionCard({
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
   const primaryText = primarySessionLabel(session);
-  const previewLine = getPreviewLine(session, primaryText);
+  const previewLine = getPreviewLine(session, primaryText, canonicalPhase === "settled");
   // True while this lane's AI auto-name is being generated in the background.
   const isAutoNaming = useLaneNaming(lane?.id ?? null);
   // Brief warm highlight when the displayed title actually changes (e.g. the
@@ -354,7 +374,12 @@ export const SessionCard = React.memo(function SessionCard({
 
   return (
     <div
-      className={cn("group relative", disabledReason && "opacity-60")}
+      className={cn(
+        "group relative",
+        disabledReason && "opacity-60",
+        // Settled rows read as the quietest tier: dimmed but fully openable.
+        !disabledReason && canonicalPhase === "settled" && "opacity-70",
+      )}
       onContextMenu={disabledReason ? undefined : onContextMenu}
       draggable={!disabledReason}
       onDragStart={(event) => {

@@ -124,7 +124,7 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type WorkSidebarTab = "terminal" | "git" | "files" | "ios" | "app-control" | "browser";
-export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
+export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended" | "settled";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
@@ -161,6 +161,12 @@ export type WorkProjectViewState = {
   draftLaneId: string | null;
   laneFilter: string;
   statusFilter: WorkStatusFilter;
+  /**
+   * Whether the Settled tier renders at all ("Show settled" funnel chip).
+   * Defaults on — the section itself starts collapsed, so settled rows cost
+   * one header line until expanded.
+   */
+  showSettled: boolean;
   search: string;
   /** Session list grouping mode. */
   sessionListOrganization: WorkSessionListOrganization;
@@ -220,11 +226,13 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     draftLaneId: null,
     laneFilter: "all",
     statusFilter: "all",
+    showSettled: true,
     search: "",
     sessionListOrganization: "by-lane",
     workCollapsedLaneIds: [],
     workCollapsedTabGroupIds: [],
-    workCollapsedSectionIds: [],
+    // Settled starts collapsed: the tier is present but quiet by default.
+    workCollapsedSectionIds: ["status:settled"],
     workFocusSessionsHidden: false,
     workSidebarOpen: false,
     workSidebarTab: "git",
@@ -288,8 +296,10 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
       candidate.statusFilter === "running"
       || candidate.statusFilter === "awaiting-input"
       || candidate.statusFilter === "ended"
+      || candidate.statusFilter === "settled"
         ? candidate.statusFilter
         : "all",
+    showSettled: candidate.showSettled !== false,
     search: typeof candidate.search === "string" ? candidate.search : "",
     sessionListOrganization:
       candidate.sessionListOrganization === "all-lanes-by-status"
@@ -298,7 +308,12 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
         : "by-lane",
     workCollapsedLaneIds: normalizeStringArray(candidate.workCollapsedLaneIds),
     workCollapsedTabGroupIds: normalizeStringArray(candidate.workCollapsedTabGroupIds),
-    workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
+    // Pre-settled-tier persisted state (no showSettled key) gets the settled
+    // section collapsed once, matching the fresh-state default.
+    workCollapsedSectionIds: candidate.showSettled === undefined
+      && !normalizeStringArray(candidate.workCollapsedSectionIds).includes("status:settled")
+      ? [...normalizeStringArray(candidate.workCollapsedSectionIds), "status:settled"]
+      : normalizeStringArray(candidate.workCollapsedSectionIds),
     workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
     workSidebarOpen: candidate.workSidebarOpen === true,
     workSidebarTab: normalizeWorkSidebarTab(candidate.workSidebarTab),

@@ -31,10 +31,11 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   draftLaneId: null,
   laneFilter: "all",
   statusFilter: "all",
+  showSettled: true,
   search: "",
   sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
-  workCollapsedSectionIds: [],
+  workCollapsedSectionIds: ["status:settled"],
   workCollapsedTabGroupIds: [],
   workFocusSessionsHidden: false,
   workSidebarOpen: false,
@@ -120,12 +121,19 @@ function arraysEqual(a: string[], b: string[]): boolean {
 }
 
 function isActiveSession(session: TerminalSessionSummary): boolean {
-  return sessionStatusBucket({
+  const bucket = sessionStatusBucket({
     status: session.status,
     lastOutputPreview: session.lastOutputPreview,
     runtimeState: session.runtimeState,
     toolType: session.toolType,
-  }) !== "ended";
+    pendingInputItemId: session.pendingInputItemId,
+    lastActivityAt: session.lastActivityAt,
+    exitCode: session.exitCode,
+    settledAt: session.settledAt,
+    attentionRequestedAt: session.attentionRequestedAt,
+    lastTurnFailedAt: session.lastTurnFailedAt,
+  });
+  return bucket !== "ended" && bucket !== "settled";
 }
 
 export function useLaneWorkSessions(laneId: string | null) {

@@ -22,7 +22,8 @@ export type CanonicalSessionPhase =
   | "stopped"
   | "ready"
   | "idle"
-  | "ended";
+  | "ended"
+  | "settled";
 
 export type SessionBadgeKind = "needs_you" | "failed" | "stale";
 
@@ -61,6 +62,22 @@ export type CanonicalSessionInputs = {
   /** ISO timestamp of most recent output/activity (drives stale). */
   lastActivityAt?: string | null;
   exitCode?: number | null;
+  /**
+   * Declared settle (agent `ade chat settle` or user action). Presence alone
+   * settles — new activity clears the column at the write site (turn start /
+   * PTY output), so no timestamp comparison happens here.
+   */
+  settledAt?: string | null;
+  /**
+   * Escalated ask from `ade chat ask` (chat sessions; CLI sessions ride
+   * runtimeState "waiting-input" instead). Cleared by the next user message.
+   */
+  attentionRequestedAt?: string | null;
+  /**
+   * Chat turn that died on a runtime/API error (chats keep status "running",
+   * so exitCode can't carry this). Cleared when the next turn starts.
+   */
+  lastTurnFailedAt?: string | null;
   nowMs?: number;
   /**
    * The preview-text heuristic (regex over terminal output) supplied by the
@@ -81,13 +98,19 @@ function isSilentPast(lastActivityAt: string | null | undefined, nowMs: number, 
 
 /**
  * Canonical precedence (highest first):
- *   1. deterministic needs-input — pendingInputItemId or runtimeState
- *      "waiting-input" (never outvoted by anything below),
- *   2. stopped — user/system-disposed PTY,
- *   3. failed — non-zero exit / killed,
- *   4. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
- *   5. running (incl. the preview heuristic's needs_you upgrade, LAST),
- *   6. resting states — ready (idle chat), idle, ended.
+ *   1. deterministic needs-input — pendingInputItemId, runtimeState
+ *      "waiting-input", or an `ade chat ask` escalation (never outvoted by
+ *      anything below),
+ *   2. settled — explicitly declared (agent/user); presence wins over failure
+ *      because a declared quiet is a human/agent judgment call. Cleared at the
+ *      write site on any new activity,
+ *   3. stopped — user/system-disposed PTY,
+ *   4. failed — non-zero exit / killed / chat turn death,
+ *   5. clean exit — a PTY that exited 0 IS the process declaring it's done;
+ *      auto-settles without any declaration,
+ *   6. stale — status running but silent ≥ SESSION_STALE_AFTER_MS,
+ *   7. running (incl. the preview heuristic's needs_you upgrade, LAST),
+ *   8. resting states — ready (idle chat, quiet "your move"), idle, ended.
  */
 export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSessionState {
   const nowMs = args.nowMs ?? Date.now();
@@ -95,19 +118,26 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
 
   // 1. Deterministic attention beats everything — including the failure and
   // stale checks below (an agent explicitly asking is actionable regardless).
-  if (args.pendingInputItemId || args.runtimeState === "waiting-input") {
+  if (args.pendingInputItemId || args.runtimeState === "waiting-input" || args.attentionRequestedAt) {
     return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you };
+  }
+
+  // 2. Declared settle. No timestamp math: activity un-settles by clearing
+  // the column where the activity happens (turn start / PTY output), so a
+  // still-set settledAt is always current.
+  if (args.settledAt) {
+    return { phase: "settled", badge: null };
   }
 
   const ended = args.status !== "running";
   if (ended) {
-    // 2. Stopped: an explicitly disposed PTY is resumable/closed, not a task
+    // 3. Stopped: an explicitly disposed PTY is resumable/closed, not a task
     // failure. Keep it badge-free and let the session row's red dot carry the
     // ended state.
     if (args.status === "disposed") {
       return { phase: "stopped", badge: null };
     }
-    // 3. Failure: a non-clean exit, an explicit "failed" persisted status
+    // 4. Failure: a non-clean exit, an explicit "failed" persisted status
     // (spawn/setup failures that die before an exit code), or a killed
     // runtime — all deterministic "failed" signals a terminal-backed session
     // reports.
@@ -120,12 +150,35 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     if (args.runtimeState === "killed") {
       return { phase: "failed", badge: BADGE_BY_KIND.failed };
     }
-    // Chats never "end" like PTYs — they rest between turns, ready for input.
-    if (chat) return { phase: "ready", badge: null };
+    // Chats never "end" like PTYs — they rest between turns. A turn that died
+    // on a runtime/API error is a real failure the row must carry (chats have
+    // no exit code); otherwise the chat is ready — the quiet "your move" tier.
+    // Exception: a DETACHED chat (backing runtime gone, e.g. closed/imported)
+    // is genuinely over — ended, not perpetually "your move".
+    if (chat) {
+      if (args.lastTurnFailedAt) {
+        return { phase: "failed", badge: BADGE_BY_KIND.failed };
+      }
+      if (args.status === "detached") {
+        return { phase: "ended", badge: null };
+      }
+      return { phase: "ready", badge: null };
+    }
+    // 5. Clean exit auto-settle: exit 0 is the one deterministic "done"
+    // declaration a process can make. Unknown exits stay "ended" (red).
+    if (args.exitCode === 0) {
+      return { phase: "settled", badge: null };
+    }
     return { phase: "ended", badge: null };
   }
 
-  // 4. Stale: running but silent past the threshold.
+  // Chat rows keep status "running" even when a turn dies — surface the
+  // persisted failure marker ahead of the calm running/ready states.
+  if (chat && args.lastTurnFailedAt) {
+    return { phase: "failed", badge: BADGE_BY_KIND.failed };
+  }
+
+  // 6. Stale: running but silent past the threshold.
   if (isSilentPast(args.lastActivityAt, nowMs, SESSION_STALE_AFTER_MS)) {
     return { phase: "stale", badge: BADGE_BY_KIND.stale };
   }
@@ -137,10 +190,39 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     return chat ? { phase: "ready", badge: null } : { phase: "idle", badge: null };
   }
 
-  // 5. Preview heuristic LAST: it may only upgrade running → needs_you.
+  // 7. Preview heuristic LAST: it may only upgrade running → needs_you.
   if (args.previewSuggestsNeedsInput?.(args.lastOutputPreview)) {
     return { phase: "needs_you", badge: BADGE_BY_KIND.needs_you };
   }
 
   return { phase: "running", badge: null };
+}
+
+/**
+ * The at-rest bucket vocabulary for session lists (desktop sidebar sections,
+ * the mobile roster, lane snapshots). Derives from the canonical phase so all
+ * surfaces slice identically:
+ *   running   — work happening (incl. stale: the process IS still running),
+ *   awaiting-input — "your move": loud needs_you rows and quiet resting chats
+ *                    and idle CLIs share the section; the badge alone is loud,
+ *   ended     — died (failed / stopped / unknown exit),
+ *   settled   — declared or clean-exit done; quiet tier at the bottom.
+ */
+export type CanonicalStatusBucket = "running" | "awaiting-input" | "ended" | "settled";
+
+export function canonicalStatusBucket(phase: CanonicalSessionPhase): CanonicalStatusBucket {
+  switch (phase) {
+    case "starting":
+    case "running":
+    case "stale":
+      return "running";
+    case "needs_you":
+    case "ready":
+    case "idle":
+      return "awaiting-input";
+    case "settled":
+      return "settled";
+    default:
+      return "ended";
+  }
 }

@@ -126,7 +126,14 @@ function sessionStatusBucket(args: {
   lastOutputPreview: string | null | undefined;
   runtimeState?: string | null;
   toolType?: string | null;
+  settledAt?: string | null;
+  attentionRequestedAt?: string | null;
 }): "running" | "awaiting-input" | "ended" {
+  // `ade chat ask` escalation outranks everything; a declared settle maps to
+  // the quiet bucket for lane rollups (badges/counters), mirroring
+  // canonicalStatusBucket in shared/sessionCanonicalState.ts.
+  if (args.attentionRequestedAt) return "awaiting-input";
+  if (args.settledAt) return "ended";
   if (args.status === "running") {
     if (args.runtimeState === "waiting-input") return "awaiting-input";
     if (args.runtimeState === "idle" && idleRuntimeNeedsAttention(args.toolType)) return "awaiting-input";

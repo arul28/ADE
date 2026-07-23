@@ -76,6 +76,9 @@ function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {})
         runningFiltered={[session]}
         awaitingInputFiltered={[]}
         endedFiltered={[]}
+        settledFiltered={[]}
+        showSettled
+        setShowSettled={vi.fn()}
         allSessionsUnfiltered={[session]}
         loading={false}
         filterLaneId="all"
@@ -226,6 +229,9 @@ describe("SessionListPane", () => {
           runningFiltered={[session]}
           awaitingInputFiltered={[]}
           endedFiltered={[]}
+          settledFiltered={[]}
+          showSettled
+          setShowSettled={vi.fn()}
           allSessionsUnfiltered={[session]}
           loading={false}
           filterLaneId="lane-known"
@@ -259,7 +265,9 @@ describe("SessionListPane", () => {
       laneId: "lane-known",
       laneName: "Known Lane",
       title: "Style target session",
-      lastOutputPreview: "Ran the latest command",
+      // Second line comes from summary/statusNote now — the raw output tail is
+      // a sensor, not a rendered row.
+      summary: "Ran the latest command",
     });
     renderPane({
       runningFiltered: [session],
