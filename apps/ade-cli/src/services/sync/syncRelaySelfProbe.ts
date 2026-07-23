@@ -78,7 +78,12 @@ export function probeRelayEndToEnd(
       clearTimeout(timer);
       socket.off("message", onMessage);
       socket.off("close", onClose);
-      socket.off("error", onError);
+      // `ws.terminate()` on a CONNECTING socket returns synchronously and then
+      // emits "WebSocket was closed before the connection was established" on
+      // a later tick. Keep the one-shot error listener installed until that
+      // abort completes; removing it here turns a routine probe timeout into an
+      // uncaught exception that kills the entire ADE brain.
+      if (result.ok) socket.off("error", onError);
       resolve(result);
       if (!result.ok) {
         try {

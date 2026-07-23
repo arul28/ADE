@@ -910,6 +910,22 @@ function retryDelayMs(initialDelayMs: number, attempt: number): number {
   );
 }
 
+export function remoteSocketFailureDetail(
+  message: string,
+  socketPath: string,
+): string {
+  if (/\bEPIPE\b/i.test(message)) {
+    return "the local bridge lost its upstream runtime connection (write EPIPE)";
+  }
+  if (/\bENOENT\b/i.test(message)) {
+    return "the local bridge is not ready yet";
+  }
+  if (/\bECONNREFUSED\b/i.test(message)) {
+    return "the local bridge refused the connection";
+  }
+  return message.split(socketPath).join("the local bridge socket");
+}
+
 export async function connectToAde(args: {
   project: ProjectLaunchContext;
   forceEmbedded?: boolean;
@@ -954,6 +970,14 @@ export async function connectToAde(args: {
     } catch (error) {
       const message = errorMessage(error);
       if (args.requireSocket) {
+        if (args.remote) {
+          const remoteLabel = args.project.remoteLabel?.trim() || "the remote Mac";
+          throw new Error(
+            `Remote ADE connection to ${remoteLabel} was interrupted while ADE Code was starting: ` +
+              `${remoteSocketFailureDetail(message, explicitSocketPath)}. ` +
+              "The bridge will retry the saved connection paths automatically.",
+          );
+        }
         throw new Error(
           `ADE RPC socket is required but unavailable at ${explicitSocketPath}: ${message}`,
         );

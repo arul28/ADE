@@ -6,7 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { connectToAde, INTERACTIVE_PROJECT_REGISTRATION } from "../connection";
+import {
+  connectToAde,
+  INTERACTIVE_PROJECT_REGISTRATION,
+  remoteSocketFailureDetail,
+} from "../connection";
 import { JsonRpcClient } from "../jsonRpcClient";
 import { startTuiHeartbeat, type TuiHeartbeat } from "../heartbeat";
 import { ProcessJsonRpcClient } from "../remoteBridge";
@@ -256,6 +260,37 @@ describe("connectToAde embedded mode", () => {
     })).rejects.toThrow(/ade code --embedded/);
 
     expect(embedded.createAdeRuntime).not.toHaveBeenCalled();
+  });
+
+  it("explains remote bridge failures without exposing its temporary socket path", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-remote-bridge-"));
+    const socketPath = path.join(tmpDir, "bridge.sock");
+
+    try {
+      await expect(connectToAde({
+        project: { ...project, remote: true, remoteLabel: "Account Studio" },
+        socketPath,
+        requireSocket: true,
+        remote: true,
+      })).rejects.toThrow(
+        /Remote ADE connection to Account Studio.*local bridge is not ready yet.*retry the saved connection paths/i,
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("turns EPIPE into an actionable remote bridge explanation", () => {
+    const socketPath = "/private/tmp/ade-code-paired-abc/bridge.sock";
+    const detail = remoteSocketFailureDetail(
+      `write EPIPE at ${socketPath}`,
+      socketPath,
+    );
+
+    expect(detail).toBe(
+      "the local bridge lost its upstream runtime connection (write EPIPE)",
+    );
+    expect(detail).not.toContain(socketPath);
   });
 
   it("rejects a direct socket whose runtime role is stale", async () => {

@@ -33,7 +33,9 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 | `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`, and exposes `subscribeRuntimeEvents`. Computes the expected SHA-256 build hash from the resolved CLI entrypoint and compares it against the runtime's reported `runtimeInfo.buildHash` / `defaultRole` / `projectRoot`; a mismatch throws `StaleAdeSocketError`, optionally shuts the stale runtime process down, and lets `spawnDaemon` start a compatible one (with `ADE_DEFAULT_ROLE=cto` in the spawned env). Remote sockets skip local build-hash/project-root compatibility checks. Runtime-event subscription responses surface replay gaps (`gap`, `oldestCursor`, `nextCursor`) to callers so the TUI can reset stale cursors instead of silently missing events. `initializeEmbeddedCto` injects a trusted `cto` role only when `ADE_DEFAULT_ROLE` is not already set to a valid value. |
 | `apps/ade-cli/src/runtimeRoles.ts` | `ADE_RUNTIME_ROLES` (`cto`, `orchestrator`, `agent`, `external`, `evaluator`), `normalizeAdeRuntimeRole`, and `resolveAdeDefaultRole`. Shared by `cli.ts`, `adeRpcServer.ts`, `multiProjectRpcServer.ts`, and `tuiClient/connection.ts` so role parsing stays consistent across surfaces. |
 | `apps/ade-cli/src/tuiClient/jsonRpcClient.ts` | Socket client for Unix/named-pipe and `tcp://` endpoints. Supports JSON-line and Content-Length frames, per-request timeouts, unexpected-close callbacks, notifications (`chat/event`, `runtime/event`), and bounded read buffers (16 MB frame cap, 64 KB header cap) so a wedged runtime cannot grow memory unbounded. |
-| `apps/ade-cli/src/tuiClient/remoteLauncher.ts` | `ade code remote` CLI: parses target/project/session flags, lists saved desktop remote machines, selects either a DPoP-bound paired runtime or a validated SSH route, registers or selects a remote project, lists launchable remote chats/tracked CLI terminals, and invokes the normal TUI with remote project/session hints. Account-created targets are paired-only and never fall back to SSH. |
+| `apps/ade-cli/src/tuiClient/remoteLauncher.ts` | `ade code remote` CLI coordinator: parses target/project/session/route flags, prompts for the saved machine, registers or selects a remote project, lists launchable remote chats/tracked CLI terminals, and invokes the normal TUI with remote project/session hints. Account-created targets are paired-only and never fall back to SSH. |
+| `apps/ade-cli/src/tuiClient/pairedRemoteConnector.ts` | Canonical paired route policy for ADE Code remote: resolves credentials, orders or filters LAN/Tailscale/Relay candidates, obtains Relay account proof, opens the bounded runtime channel, verifies the account did not change mid-connect, records endpoint health, and returns structured path failures. |
+| `apps/ade-cli/src/tuiClient/remoteLaunchBudget.ts` | Shared total-deadline and per-attempt cancellation utilities used by paired and SSH remote connection setup. |
 | `apps/ade-cli/src/tuiClient/remoteBridge.ts` | Remote transport shim used by `remoteLauncher.ts`: connects to the existing paired sync-runtime bridge or starts `ade rpc --stdio` over SSH, performs JSON-RPC for selection/listing, then exposes a local one-connection bridge socket (Unix socket on POSIX, loopback TCP on Windows) to the regular TUI. Owns bounded frames, transport diagnostics, child-process cleanup, and bridge-socket teardown. |
 | `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. `commands.ts` ships the active-session lifecycle commands (`/chat ask`, `/chat note`, `/chat settle`, `/chat unsettle`), `/lane delete` (right-pane confirmation form that destroys the active lane), `/effort` (reasoning-effort-only picker, a narrower companion to `/model`), provider-agnostic `/skills` for Agent Skill discovery, and provider-agnostic `/secrets` for masked project-secret listing/copying. `linearCommands.ts` requires a sub-command — bare `/linear` returns the usage hint instead of silently picking `workflows`. It also routes the session/lane attachment verbs (`attach` / `detach` / `issues` → `lane` domain session-scoped or lane-scoped actions) and the issue write-bridge verbs (`comment` / `set-state` / `assign` / `label` → `linear_issue_tracker` domain), reusing `--issue-id` / `--linear-issue-json` / attachment flags (`source`, `includeInPr`, `closeOnMerge`, `role`) parsing shared with the typed `ade linear` CLI commands in `cli.ts`. |
 | `apps/ade-cli/src/tuiClient/providerMetadata.ts` | Provider labels, family labels, token normalization, and provider lookup helpers shared by setup rows and the model picker. Keeps Anthropic/OpenAI/Factory aliases mapped onto the TUI's provider ids and decides which providers support runtime catalog refresh. |
@@ -305,6 +307,8 @@ ade code --print-state                   # smoke-test: print mode + socket and e
 ade code --embedded                      # in-process runtime fallback
 ade code remote --target mac --project ADE
                                          # attach to a saved paired or SSH target/project
+ade code remote --target mac --route tailscale
+                                         # require the paired Tailscale path for this launch
 ade code remote session --target mac --project ADE --session chat-1
                                          # open a specific remote chat or provider CLI terminal session
 ade login                                # sign in to the optional shared machine account
@@ -331,19 +335,36 @@ to `remoteBridge.ts`. Both transports expose a local one-connection JSON-RPC
 endpoint (temporary Unix socket on POSIX, loopback `tcp://` on Windows), then
 invoke the normal `runAdeCodeCli` with `--remote`, `--remote-label`,
 `--require-socket`, remote project roots, and the selected `--lane` /
-`--session` hints. Account authentication is used only for a new pairing over
-an exact allowlisted WSS relay; the returned paired credentials are persisted
-and subsequent LAN, tailnet, and relay connections use the ordinary paired
-path. Account-created targets have no SSH routes and fail closed. Explicit
-address, pairing-code, local, and existing SSH behavior is unchanged. A legacy
-account machine that desktop saved as an uncredentialed SSH target is upgraded
-to the same paired record before launch; if it cannot be verified, is offline,
-or pairing fails, the CLI fails closed instead of retrying SSH. For a true SSH target, route overrides
-retain the saved host alias so OpenSSH still applies `Host`-scoped credentials
-and proxy configuration. All route/runtime attempts share one cancellable total
-deadline and return aggregated diagnostics. Remote launches skip local
-project-root and build-hash compatibility checks because the authoritative
-runtime and filesystem are on the target machine.
+`--session` hints. Interactive launches always show the saved-machine chooser,
+even when only one target exists, so the selected host is never implicit.
+Non-interactive launches may still auto-select a single saved target and require
+`--target` when several exist.
+
+Paired connections try LAN → Tailscale → ADE Relay by default and print the
+winning path before the TUI starts. `--route lan|tailscale|relay` pins a launch
+to one route class and fails explicitly when that class is unavailable; it
+never silently changes to SSH. The launcher closes its discovery connection,
+opens and verifies the long-lived paired transport, and only then starts the
+TUI bridge. The first TUI socket consumes that verified transport instead of
+redialing during handoff, which prevents a transient “connected” screen followed
+by a broken local bridge. If the connection later drops, the bridge stays
+available for the TUI retry and redials the saved paired paths, reporting when
+the winning path changes. Remote startup errors name the machine and path class
+without exposing the temporary local socket path.
+
+Account authentication is used only for a new pairing over an exact allowlisted
+WSS relay; the returned paired credentials are persisted and subsequent LAN,
+tailnet, and relay connections use the ordinary paired path. Account-created
+targets have no SSH routes and fail closed. Explicit address, pairing-code,
+local, and existing SSH behavior is unchanged. A legacy account machine that
+desktop saved as an uncredentialed SSH target is upgraded to the same paired
+record before launch; if it cannot be verified, is offline, or pairing fails,
+the CLI fails closed instead of retrying SSH. For a true SSH target, route
+overrides retain the saved host alias so OpenSSH still applies `Host`-scoped
+credentials and proxy configuration. All route/runtime attempts share one
+cancellable total deadline and return aggregated diagnostics. Remote launches
+skip local project-root and build-hash compatibility checks because the
+authoritative runtime and filesystem are on the target machine.
 
 After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. The CLI build verifier imports `dist/tuiClient/cli.mjs` from an isolated temp directory, checks that bundled `__dirname` / `__filename` references have ESM shims, and confirms `runAdeCodeCli(["--help"])` prints the ADE Code help banner without relying on repo-local `node_modules`. During repo development, `npm run dev:code` runs the source TUI in the terminal against the shared dev runtime at `/tmp/ade-runtime-dev.sock`; `npm run dev:code:web` mirrors that same process in the browser (see [Browser mirror](#browser-mirror-development)).
 

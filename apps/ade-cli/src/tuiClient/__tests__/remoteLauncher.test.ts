@@ -10,7 +10,10 @@ import {
   getCurrentAccountRelayProof,
   hasExplicitSshFallback,
   listRemoteSessions,
+  machineSelectionMode,
   openRemoteRpcSession,
+  pairedConnectionLabel,
+  pairedEndpointCandidatesForPreference,
   pairedRouteAccountProof,
   parseRemoteAdeCodeArgs,
   remoteRuntimeLayoutCandidates,
@@ -64,6 +67,44 @@ describe("ade code remote launcher", () => {
       projectQuery: "ADE",
       sessionQuery: "chat-1",
     });
+  });
+
+  it("parses explicit connection-path preferences and rejects unknown routes", () => {
+    expect(parseRemoteAdeCodeArgs(["--route", "auto"]).routePreference).toBe("auto");
+    expect(parseRemoteAdeCodeArgs(["--route", "local"]).routePreference).toBe("lan");
+    expect(parseRemoteAdeCodeArgs(["--route", "tailscale"]).routePreference).toBe("tailnet");
+    expect(parseRemoteAdeCodeArgs(["--route", "relay"]).routePreference).toBe("relay");
+    expect(() => parseRemoteAdeCodeArgs(["--route", "internet"]))
+      .toThrow(/Use auto, lan, tailscale, or relay/);
+  });
+
+  it("requires an interactive machine confirmation even when only one target is saved", () => {
+    expect(machineSelectionMode(1, true)).toBe("prompt");
+    expect(machineSelectionMode(3, true)).toBe("prompt");
+    expect(machineSelectionMode(1, false)).toBe("auto");
+    expect(machineSelectionMode(3, false)).toBe("flag-required");
+  });
+
+  it("filters explicit paths without changing automatic LAN-first ordering", () => {
+    const candidates = [
+      { endpoint: "ws://studio.local:8787/", kind: "lan" as const, lastSucceededAt: null },
+      { endpoint: "ws://studio.example.ts.net:8787/", kind: "tailnet" as const, lastSucceededAt: null },
+      { endpoint: "wss://relay.example/connect/machine", kind: "relay" as const, lastSucceededAt: null },
+    ];
+
+    expect(pairedEndpointCandidatesForPreference(candidates, "auto")).toEqual(candidates);
+    expect(pairedEndpointCandidatesForPreference(candidates, "tailnet")).toEqual([
+      candidates[1],
+    ]);
+    expect(pairedConnectionLabel(candidates[0]!)).toBe(
+      "local network (studio.local:8787)",
+    );
+    expect(pairedConnectionLabel(candidates[1]!)).toBe(
+      "Tailscale (studio.example.ts.net:8787)",
+    );
+    expect(pairedConnectionLabel(candidates[2]!)).toBe(
+      "ADE Relay (relay.example)",
+    );
   });
 
   it("builds the remote ADE stdio command for the selected runtime home", () => {
@@ -212,7 +253,9 @@ describe("ade code remote launcher", () => {
       routes: [{ hostname: "studio", port: 22, source: "manual", lastSucceededAt: null }],
     })).toBe(true);
     expect(hasExplicitSshFallback({ ...paired, sshUser: "arul" })).toBe(true);
-    expect(remoteTargetChoiceLabel(paired)).toBe("Arul's Mac Studio (saved connection)");
+    expect(remoteTargetChoiceLabel(paired)).toBe(
+      "Arul's Mac Studio (paired · local network → Tailscale → ADE Relay)",
+    );
     expect(remoteTargetChoiceLabel({ ...legacyAccountTarget(), sshUser: "arul" }))
       .toContain("advanced SSH: arul@100.75.20.63");
   });

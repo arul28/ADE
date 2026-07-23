@@ -823,7 +823,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `{ ok, roundTripMs }` on success. A close before `ready` is a failure, but a
   `4503` `CLOSE_TOO_MANY` close (the relay's at-capacity signal, sent only for a
   registered control) is flagged `atCapacity` so the caller treats it as
-  liveness proof rather than a zombie/failure.
+  liveness proof rather than a zombie/failure. Timeout and cancellation cleanup
+  keeps the probe's error handler installed while terminating a still-connecting
+  WebSocket because `ws` emits that termination error asynchronously. The
+  failure is therefore contained in the probe result and cannot escape as an
+  uncaught exception that terminates the machine runtime.
 - `relayAuthorization.ts` — lease renewal for already-authenticated Relay
   peers. A capable controller refreshes before expiry with a DPoP signature
   bound to the exact token bytes, device id, host challenge, timestamp, and

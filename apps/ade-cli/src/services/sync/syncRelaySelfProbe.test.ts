@@ -28,8 +28,15 @@ class ProbeWebSocket extends EventEmitter {
 
   terminate(): void {
     this.terminated = true;
-    this.readyState = WebSocket.CLOSED;
-    this.emit("close", 1006, Buffer.alloc(0));
+    this.readyState = WebSocket.CLOSING;
+    queueMicrotask(() => {
+      this.readyState = WebSocket.CLOSED;
+      this.emit(
+        "error",
+        new Error("WebSocket was closed before the connection was established"),
+      );
+      this.emit("close", 1006, Buffer.alloc(0));
+    });
   }
 }
 
@@ -123,7 +130,9 @@ describe("probeRelayEndToEnd", () => {
       ok: false,
       reason: `Relay self-probe timed out after ${RELAY_SELF_PROBE_TIMEOUT_MS}ms.`,
     });
+    await vi.runAllTicks();
     expect(socket.terminated).toBe(true);
+    expect(socket.listenerCount("error")).toBe(0);
     vi.useRealTimers();
   });
 });
