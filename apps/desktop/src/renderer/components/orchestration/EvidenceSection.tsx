@@ -32,7 +32,7 @@ import type {
   OrchestrationManifest,
 } from "../../../shared/types/orchestration";
 import { cn } from "../ui/cn";
-import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { openAdeDeeplink, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { SectionHeader } from "./PanelChrome";
 import {
   deriveRunEvidence,
@@ -40,7 +40,21 @@ import {
   evidenceChipLabel,
   evidenceExternalUrl,
   evidenceKindLabel,
+  isInternalEvidenceTarget,
 } from "./orchestrationEvidence";
+
+/**
+ * Open an evidence target: in-app `ade://` deeplinks (artifact/computer-use/video
+ * refs, or `deeplink` assets pointing at ADE surfaces) route through internal
+ * navigation; external http(s)/file URLs open in the built-in browser.
+ */
+function openEvidenceTarget(url: string): void {
+  if (isInternalEvidenceTarget(url)) {
+    openAdeDeeplink(url);
+    return;
+  }
+  openUrlInAdeBrowser(url);
+}
 
 export const ORCHESTRATION_EVIDENCE_SECTION_TEST_ID = "orchestration-evidence-section";
 
@@ -121,7 +135,7 @@ function EvidenceChip({ asset }: { asset: OrchestrationAsset }) {
         type="button"
         data-orchestration-evidence-chip={asset.kind}
         title={`${kindLabel} — ${label} (open)`}
-        onClick={() => openUrlInAdeBrowser(url)}
+        onClick={() => openEvidenceTarget(url)}
         className={cn(base, "transition-colors hover:bg-white/[0.06] hover:text-fg/90")}
       >
         {inner}
@@ -188,7 +202,7 @@ export function EvidenceSection({
                 <button
                   type="button"
                   data-orchestration-evidence-row={asset.kind}
-                  onClick={() => openUrlInAdeBrowser(url)}
+                  onClick={() => openEvidenceTarget(url)}
                   title={`Open ${evidenceKindLabel(asset.kind)} — ${label}`}
                   className="flex w-full items-center gap-2 rounded-md border border-white/[0.05] bg-white/[0.015] px-2 py-1.5 text-left transition-colors hover:bg-white/[0.04]"
                 >

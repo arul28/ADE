@@ -586,6 +586,114 @@ describe("spawnAgent tool", () => {
     ).toBe(true);
   });
 
+  it("delivers persisted outbox entries when a run is loaded on a fresh service (no mutation)", async () => {
+    setup = await setupWithRun("lead");
+    // Persist a pending brief to disk, then simulate a process restart: a fresh
+    // service instance (empty runs map, no surviving in-flight drain/timer) loads
+    // the same bundle. Delivery must happen on load — no mutating tool is run.
+    const enqueue = await setup.svc.enqueueOutbox(setup.runId, setup.bundlePath, [
+      {
+        kind: "brief",
+        targetSessionId: "S-worker",
+        delivery: { op: "sendMessage", text: "your brief" },
+      },
+    ]);
+    expect(enqueue.ok).toBe(true);
+
+    const svc2 = createOrchestrationService({ resolveLaneWorktree: () => setup.laneRoot });
+    const chat2 = makeChatStub();
+    svc2.registerRunActivationDrainer(({ runId, bundlePath }) => {
+      void drainOutbox(svc2, chat2, { runId, bundlePath });
+    });
+
+    // Loading the run (subscribe) is the sole trigger — no spawn/message tool call.
+    await svc2.subscribe(setup.runId, setup.bundlePath);
+    await vi.waitFor(() =>
+      expect(chat2.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "S-worker", text: "your brief" }),
+        expect.anything(),
+      ),
+    );
+    const entry = svc2
+      .getManifestForRun(setup.runId)!
+      .outbox?.find((e) => e.kind === "brief")!;
+    expect(entry.status).toBe("delivered");
+    await svc2.dispose();
+  });
+
+  it("reconciles a spawn receipt to an existing agent instead of duplicating (pruned receipt)", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const requestId = "spawn:reconcile-fixed";
+    // Materialize an agent linked to this requestId via a completed receipt.
+    const reserved = await setup.svc.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "spawnAgent",
+    });
+    expect(reserved).toMatchObject({ ok: true, status: "reserved" });
+    const completed = await setup.svc.completeReceipt(
+      setup.runId,
+      setup.bundlePath,
+      { requestId, result: { sessionId: "S-existing" } },
+      [
+        {
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: "S-existing",
+            role: "worker",
+            tag: "backend",
+            goalSummary: "Implement T-1",
+            status: "pending",
+            spawnedAt: new Date().toISOString(),
+            spawnRequestId: requestId,
+          },
+        },
+      ],
+    );
+    expect(completed.ok).toBe(true);
+
+    // Emulate RECEIPT_CAP pruning of the completed receipt: strip receipts on
+    // disk, then reload on a fresh service and re-reserve the same requestId.
+    const manifestPath = path.join(setup.bundlePath, "manifest.json");
+    const raw = JSON.parse(await fsp.readFile(manifestPath, "utf-8")) as {
+      receipts?: unknown[];
+    };
+    raw.receipts = [];
+    await fsp.writeFile(manifestPath, JSON.stringify(raw), "utf-8");
+
+    const svc2 = createOrchestrationService({ resolveLaneWorktree: () => setup.laneRoot });
+    const reReserve = await svc2.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "spawnAgent",
+    });
+    // Deduped to the existing agent — NOT re-reserved (which would spawn a twin).
+    expect(reReserve).toMatchObject({ ok: true, status: "duplicate" });
+    expect((reReserve as { receipt: { status: string; result?: { sessionId?: string } } }).receipt)
+      .toMatchObject({ status: "completed", result: { sessionId: "S-existing" } });
+    await svc2.dispose();
+  });
+
+  it("reconciles a messageAgent receipt to an existing outbox entry instead of re-enqueuing", async () => {
+    setup = await setupWithRun("lead");
+    const requestId = "msg:reconcile-fixed";
+    // A delivery already enqueued under this requestId (its completed receipt was
+    // later pruned). Re-reserving must dedupe, not append a duplicate ping.
+    const enq = await setup.svc.enqueueOutbox(setup.runId, setup.bundlePath, [
+      { kind: "ping", targetSessionId: "S-w", delivery: { op: "steer", text: "hi" }, requestId },
+    ]);
+    expect(enq.ok).toBe(true);
+
+    const svc2 = createOrchestrationService({ resolveLaneWorktree: () => setup.laneRoot });
+    const res = await svc2.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "messageAgent",
+    });
+    expect(res).toMatchObject({ ok: true, status: "duplicate" });
+    expect((res as { receipt: { status: string } }).receipt).toMatchObject({ status: "completed" });
+    await svc2.dispose();
+  });
+
   it("allows the lead to override the cosmetic spawn kind", async () => {
     setup = await setupWithRun("lead");
     await approveRun(setup);

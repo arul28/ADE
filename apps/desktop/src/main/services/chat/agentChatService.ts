@@ -382,12 +382,14 @@ import type {
 } from "../ai/tools/universalTools";
 import {
   createOrchestrationToolSet,
+  type OrchestrationAgentChatHandle,
   type OrchestrationInteractionMode,
   type OrchestrationLeadReadResult,
   type OrchestrationLeadReadServices,
   type OrchestrationSessionContext,
   type OrchestrationToolMap,
 } from "../ai/tools/orchestrationTools";
+import { drainOutbox } from "../ai/tools/orchestrationOutbox";
 import type { ExecutableTool } from "../ai/tools/executableTool";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
@@ -13966,6 +13968,37 @@ export function createAgentChatService(args: {
     return services;
   };
 
+  // Stable chat handle reused for every orchestration tool set and for the
+  // service-registered run-activation drainer. Its methods are stable closures,
+  // so binding it once keeps the drainer valid across runs/sessions.
+  const orchestrationChatHandle: OrchestrationAgentChatHandle = {
+    createSession: (args) => createSession(args as never),
+    deleteSession: (args) => deleteSession(args),
+    sendMessage: (args, options) => sendMessage(args as never, options),
+    steer: (args) => steer(args as never),
+    interrupt: (args) => interrupt(args as never),
+    // Wrapped (not a direct reference) so the handle can be bound before
+    // `readTranscript` is declared later in this factory body.
+    readTranscript: (sessionId, limit, since) => readTranscript(sessionId, limit, since),
+  };
+
+  // Register (once) the chat-backed drainer the orchestration service invokes
+  // when a run is (re)hydrated with undelivered outbox entries. This is what
+  // delivers a persisted brief/ping after a process restart without waiting for
+  // an unrelated mutating tool to fire a drain. Coalesced per run by the outbox
+  // module's in-process guard, so it is safe to call on every activation.
+  let orchestrationDrainerRegistered = false;
+  const ensureOrchestrationDrainerRegistered = (
+    orchestrationService: ReturnType<typeof createOrchestrationService>,
+  ): void => {
+    if (orchestrationDrainerRegistered) return;
+    if (typeof orchestrationService.registerRunActivationDrainer !== "function") return;
+    orchestrationDrainerRegistered = true;
+    orchestrationService.registerRunActivationDrainer(({ runId, bundlePath }) => {
+      void drainOutbox(orchestrationService, orchestrationChatHandle, { runId, bundlePath });
+    });
+  };
+
   const createOrchestrationRuntimeToolMap = (
     managed: ManagedChatSession,
   ): OrchestrationToolMap | null => {
@@ -13973,19 +14006,13 @@ export function createAgentChatService(args: {
     if (!context) return null;
     const orchestrationService = getOrchestrationService?.() ?? null;
     if (!orchestrationService) return null;
+    ensureOrchestrationDrainerRegistered(orchestrationService);
     return createOrchestrationToolSet({
       cwd: managed.laneWorktreePath,
       interactionMode: context.interactionMode,
       sessionContext: context.sessionContext,
       orchestrationService,
-      agentChatService: {
-        createSession: (args) => createSession(args as never),
-        deleteSession: (args) => deleteSession(args),
-        sendMessage: (args, options) => sendMessage(args as never, options),
-        steer: (args) => steer(args as never),
-        interrupt: (args) => interrupt(args as never),
-        readTranscript,
-      },
+      agentChatService: orchestrationChatHandle,
       universal: buildOrchestrationUniversalOptions(managed),
       ...(context.interactionMode === "orchestrator-lead"
         ? { leadReadServices: buildOrchestrationLeadReadServices() }

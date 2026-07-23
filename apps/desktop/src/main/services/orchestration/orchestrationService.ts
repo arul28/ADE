@@ -268,6 +268,54 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   const laneIndexMutexes = new Map<string, AsyncMutex>();
   const now = deps.now ?? (() => new Date());
 
+  // Fire-and-forget drain hook invoked when a run's runtime is first hydrated
+  // (cold load) while it still holds undelivered (`pending`/`delivering`) outbox
+  // entries. The service owns *when* a run becomes active but has no chat handle
+  // of its own; the chat-backed layer registers a drainer (see agentChatService)
+  // so a process restart delivers persisted entries without waiting for an
+  // unrelated mutating tool to happen to fire a drain. The drainer itself is
+  // coalesced/idempotent per run (the outbox module's in-process inFlight guard),
+  // so redundant activations collapse to at most one initial drain.
+  let runActivationDrainer:
+    | ((ctx: { runId: string; bundlePath: string }) => void)
+    | null = null;
+
+  function fireRunActivationDrain(runtime: RunRuntime): void {
+    if (!runActivationDrainer) return;
+    const outbox = runtime.manifest?.outbox ?? [];
+    const hasUndelivered = outbox.some(
+      (entry) => entry.status === "pending" || entry.status === "delivering",
+    );
+    if (!hasUndelivered) return;
+    try {
+      runActivationDrainer({
+        runId: runtime.runId,
+        bundlePath: runtime.bundlePath,
+      });
+    } catch {
+      // Best-effort: an activation drain must never fail the load/open path.
+    }
+  }
+
+  /**
+   * Register the chat-backed outbox drainer. Called once by the chat service with
+   * a stable chat handle. On registration we also sweep already-hydrated runs so
+   * a run that was loaded before the drainer wired up (e.g. the panel subscribed
+   * on boot ahead of the chat backing) still gets its pending entries delivered.
+   * Returns an unregister fn.
+   */
+  function registerRunActivationDrainer(
+    fn: (ctx: { runId: string; bundlePath: string }) => void,
+  ): () => void {
+    runActivationDrainer = fn;
+    for (const runtime of runs.values()) {
+      if (runtime.manifest) fireRunActivationDrain(runtime);
+    }
+    return () => {
+      if (runActivationDrainer === fn) runActivationDrainer = null;
+    };
+  }
+
   function nowIso(): string {
     return now().toISOString();
   }
@@ -680,6 +728,14 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         throw err;
       }
     }
+    // A cold hydration is the one place `runs` transitions unloaded → loaded for
+    // this runtime (subsequent callers early-return at the guard above), so this
+    // is the single chokepoint that fires exactly one initial activation drain
+    // per activation across every load/open path (subscribe, bundleRead,
+    // hydrateRunForList, and a cold mutation after idle-close). Fire-and-forget so
+    // it never blocks or fails the load; the drainer's mutex work queues behind
+    // the caller's current mutex frame.
+    fireRunActivationDrain(runtime);
   }
 
   async function hydrateRunForList(entry: RunIndexEntry): Promise<void> {
@@ -1914,6 +1970,34 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     };
   }
 
+  /**
+   * Has the side effect this requestId would produce already materialized in the
+   * manifest? Used by reserveReceipt to reconcile a stale-pending or pruned
+   * receipt to reality before permitting a fresh reservation — otherwise the same
+   * deterministic requestId could spawn a duplicate session / re-enqueue a
+   * duplicate message.
+   *   spawnAgent   → an agent row linked by `spawnRequestId` (the spawn completed
+   *                  and appended the agent, even if the receipt was later pruned).
+   *   messageAgent → an outbox entry carrying this `requestId` (the delivery was
+   *                  enqueued; it commits atomically with the receipt).
+   * Returns the replayable receipt result, or null when nothing materialized.
+   */
+  function reconcileMaterializedSideEffect(
+    manifest: OrchestrationManifest,
+    args: { requestId: string; kind: OrchestrationReceiptKind },
+  ): NonNullable<OrchestrationReceipt["result"]> | null {
+    if (args.kind === "spawnAgent") {
+      const agent = manifest.agents.find(
+        (candidate) => candidate.spawnRequestId === args.requestId,
+      );
+      return agent ? { sessionId: agent.sessionId } : null;
+    }
+    const entry = (manifest.outbox ?? []).find(
+      (candidate) => candidate.requestId === args.requestId,
+    );
+    return entry ? {} : null;
+  }
+
   async function reserveReceipt(
     runId: string,
     bundlePath: string,
@@ -1946,6 +2030,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       // fresh so the deterministic requestId is not suppressed forever (this
       // mirrors the recoverStaleTasks reap, but inline so a retry can proceed
       // without waiting for the next lead-triggered sweep).
+      // Before dropping/reserving, reconcile against reality: if the side effect
+      // this requestId would produce already exists (a crash after createSession /
+      // enqueue but before completeReceipt, or a completed receipt pruned by
+      // RECEIPT_CAP while the agent/outbox row lives on), replay a completed
+      // receipt instead of re-reserving so the same deterministic request cannot
+      // duplicate the session/message.
+      const reconciled = reconcileMaterializedSideEffect(manifest, args);
       let staleReceiptDropped = false;
       if (existing) {
         if (existing.status !== "pending") {
@@ -1958,7 +2049,49 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         if (!stalePending) {
           return { ok: true, status: "duplicate", receipt: existing };
         }
+        // Stale pending — reconcile before dropping. If the side effect already
+        // materialized, complete this receipt with it rather than re-reserving.
+        if (reconciled) {
+          const completed: OrchestrationReceipt = {
+            ...existing,
+            status: "completed",
+            result: reconciled,
+          };
+          try {
+            await directPatch(
+              runtime,
+              [
+                {
+                  op: "replace",
+                  path: "/receipts",
+                  value: (manifest.receipts ?? []).map((r) =>
+                    r.requestId === args.requestId ? completed : r,
+                  ),
+                },
+              ],
+              `reconcile stale ${args.kind} receipt`,
+            );
+          } catch (err) {
+            return internalMutationError(err);
+          }
+          return { ok: true, status: "duplicate", receipt: completed };
+        }
         staleReceiptDropped = true;
+      } else if (reconciled) {
+        // No receipt at all (its completed receipt was pruned by RECEIPT_CAP) but
+        // the side effect still exists — replay a completed duplicate so a retry
+        // with the same deterministic requestId is deduped, not re-materialized.
+        return {
+          ok: true,
+          status: "duplicate",
+          receipt: {
+            requestId: args.requestId,
+            kind: args.kind,
+            createdAt: nowIso(),
+            status: "completed",
+            result: reconciled,
+          },
+        };
       }
       const receipt: OrchestrationReceipt = {
         requestId: args.requestId,
@@ -3458,6 +3591,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     release,
     dispose,
     on,
+    registerRunActivationDrainer,
     /** Service clock in epoch ms — lets event-driven schedulers (outbox retry
      * timer) align their delays with the same (possibly injected) clock the
      * service uses to decide dueness, instead of drifting against wall time. */

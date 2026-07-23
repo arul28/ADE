@@ -4,6 +4,34 @@ export type OpenBuiltInBrowserDetail = {
   url: string;
 };
 
+// Renderer-local event that routes an in-app `ade://` deeplink through ADE's
+// internal navigation. App.tsx listens for this, parses the URL, and dispatches
+// the resulting target through the same handler that inbound OS/CLI deeplinks
+// use — so an `ade://artifact/<id>` (or lane/session/pr/…) opens the right ADE
+// surface instead of being handed to the external-URL IPC (which rejects every
+// non-http(s) scheme, swallowing the click).
+export const ADE_OPEN_DEEPLINK_EVENT = "ade:open-deeplink";
+
+export type OpenDeeplinkDetail = {
+  url: string;
+};
+
+export function openAdeDeeplink(url: string | undefined | null): void {
+  const trimmed = (url ?? "").trim();
+  if (!trimmed) return;
+  if (typeof window === "undefined") {
+    // No renderer to route through — fall back to the external opener, which is
+    // a no-op for ade:// but preserves prior behavior for any http(s) caller.
+    openExternalUrl(trimmed);
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent<OpenDeeplinkDetail>(ADE_OPEN_DEEPLINK_EVENT, {
+      detail: { url: trimmed },
+    }),
+  );
+}
+
 // Coordination flag used by ChatBuiltInBrowserPanel to suppress the empty-state
 // default-tab creation when a link-click navigation is racing the panel mount.
 // Set synchronously here BEFORE the navigate IPC fires, then consumed (cleared)

@@ -3,6 +3,7 @@ import { app, BrowserWindow } from "electron";
 import {
   ADE_DEEPLINK_SCHEME,
   ADE_DEEPLINK_HTTPS_PATH,
+  deeplinkToNavigationTarget,
   isAdeDeeplinkHttpsHost,
   parseDeeplink,
   type DeeplinkTarget,
@@ -206,62 +207,9 @@ export function handleDeeplinkUrl(
   });
 }
 
-export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigationTarget {
-  switch (target.kind) {
-    case "lane":
-      return { kind: "lane", laneId: target.laneId, envelope: target.envelope ?? null };
-    case "session":
-      return {
-        kind: "work",
-        sessionId: target.sessionId,
-        laneId: target.laneId ?? null,
-        envelope: target.envelope ?? null,
-        event: target.event ?? null,
-        offset: target.offset ?? null,
-      };
-    case "file":
-      return {
-        kind: "file",
-        path: target.path,
-        line: target.line ?? null,
-        laneId: target.laneId ?? null,
-      };
-    case "commit":
-      return {
-        kind: "commit",
-        sha: target.sha,
-        laneId: target.laneId ?? null,
-        envelope: target.envelope ?? null,
-      };
-    case "artifact":
-      return {
-        kind: "artifact",
-        artifactId: target.artifactId,
-        envelope: target.envelope ?? null,
-      };
-    case "pr":
-      return {
-        kind: "pr",
-        prNumber: target.prNumber,
-        repoOwner: target.repoOwner,
-        repoName: target.repoName,
-      };
-    case "branch":
-      return {
-        kind: "branch",
-        repoOwner: target.repoOwner,
-        repoName: target.repoName,
-        branch: target.branch,
-        prNumber: target.prNumber ?? null,
-      };
-    case "linear-issue":
-      return {
-        kind: "linear-issue",
-        issueIdentifier: target.issueIdentifier,
-        branch: target.branch ?? null,
-      };
-  }
-}
+// Re-exported from the shared deeplinks module so both this main-process handler
+// and in-app renderer callers dispatch through the same pure mapping.
+export { deeplinkToNavigationTarget };
 
 /** Reference helper: the IPC channel used to broadcast the navigation event. */
 export const DEEPLINK_NAVIGATE_IPC = IPC.appNavigate;

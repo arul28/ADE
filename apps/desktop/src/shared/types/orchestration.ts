@@ -94,6 +94,15 @@ export type OrchestrationAgent = {
   stalled?: boolean;
   spawnedAt: string;
   spawnFingerprint?: SpawnFingerprint;
+  /**
+   * Idempotency key of the `spawnAgent` request that materialized this agent
+   * (the receipt requestId). Persisted so a later reservation for the same
+   * deterministic requestId — after its completed receipt was pruned (RECEIPT_CAP)
+   * or a crash left a stale pending receipt — can reconcile to this existing agent
+   * instead of blindly spawning a duplicate session. Additive/optional: absent on
+   * agents written before this field existed.
+   */
+  spawnRequestId?: string;
   budget?: AgentBudget;
   usage?: AgentUsageSnapshot;
 };

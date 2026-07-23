@@ -18,7 +18,7 @@ import type {
   OrchestrationAssetKind,
   OrchestrationManifest,
 } from "../../../shared/types/orchestration";
-import { buildDeeplink } from "../../../shared/deeplinks";
+import { ADE_DEEPLINK_SCHEME, buildDeeplink } from "../../../shared/deeplinks";
 
 /**
  * Asset kinds that count as run evidence. Plan-authoring assets (`html_spec`,
@@ -116,6 +116,20 @@ export function evidenceExternalUrl(asset: OrchestrationAsset): string | null {
     return buildDeeplink({ kind: "artifact", artifactId }, { form: "ade" });
   }
   return null;
+}
+
+/**
+ * Whether an evidence target is an in-app `ade://` deeplink (e.g. the derived
+ * `ade://artifact/<id>` for proof/computer-use/video, or a `deeplink` asset whose
+ * `externalRef.url` is itself an `ade://` link). These must route through ADE's
+ * internal navigation — the external-browser opener rejects non-http(s) schemes
+ * and the click would silently no-op. HTTP(S)/file URLs return false and keep the
+ * browser path.
+ */
+export function isInternalEvidenceTarget(url: string | null | undefined): boolean {
+  const trimmed = url?.trim();
+  if (!trimmed) return false;
+  return trimmed.toLowerCase().startsWith(`${ADE_DEEPLINK_SCHEME}://`);
 }
 
 const KIND_ORDER: OrchestrationAssetKind[] = [

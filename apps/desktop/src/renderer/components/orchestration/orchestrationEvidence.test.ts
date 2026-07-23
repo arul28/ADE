@@ -12,6 +12,7 @@ import {
   evidenceChipLabel,
   evidenceExternalUrl,
   isEvidenceAsset,
+  isInternalEvidenceTarget,
 } from "./orchestrationEvidence";
 
 function asset(partial: Partial<OrchestrationAsset> & { id: string; kind: OrchestrationAsset["kind"] }): OrchestrationAsset {
@@ -103,5 +104,25 @@ describe("orchestrationEvidence", () => {
     expect(evidenceExternalUrl(asset({ id: "A5", kind: "proof_artifact", externalRef: { url: "https://host/a", artifactId: "art-1" } }))).toBe("https://host/a");
     // No externalRef target → non-interactive.
     expect(evidenceExternalUrl(asset({ id: "A6", kind: "screenshot" }))).toBeNull();
+  });
+
+  it("classifies ade:// targets as internal (in-app navigation) and http(s)/file as external", () => {
+    // artifactId-backed evidence derives an ade://artifact deeplink → must route
+    // through ADE's internal navigation, not the external-browser opener (which
+    // rejects non-http(s) schemes and would swallow the click).
+    const proofUrl = evidenceExternalUrl(
+      asset({ id: "A1", kind: "proof_artifact", externalRef: { artifactId: "art-1" } }),
+    );
+    expect(proofUrl).toBe("ade://artifact/art-1");
+    expect(isInternalEvidenceTarget(proofUrl)).toBe(true);
+    // A `deeplink` asset pointing at an ADE surface is also internal.
+    expect(isInternalEvidenceTarget("ade://lane/123")).toBe(true);
+    expect(isInternalEvidenceTarget("ADE://artifact/x")).toBe(true);
+    // External web / PR / Linear / local-file URLs keep the browser path.
+    expect(isInternalEvidenceTarget("https://github.com/x/y/pull/1")).toBe(false);
+    expect(isInternalEvidenceTarget("http://localhost:3000")).toBe(false);
+    expect(isInternalEvidenceTarget("file:///tmp/spec.html")).toBe(false);
+    expect(isInternalEvidenceTarget(null)).toBe(false);
+    expect(isInternalEvidenceTarget("")).toBe(false);
   });
 });

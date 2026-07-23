@@ -26,6 +26,8 @@
 // so a receiver that cannot resolve the primary id can fall back to the
 // branch, PR, or Linear issue — see DeeplinkEnvelope.
 
+import type { AppNavigationTarget } from "./types/core";
+
 export const ADE_DEEPLINK_SCHEME = "ade";
 export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
 export const ADE_DEEPLINK_LEGACY_HTTPS_HOSTS = ["ade.app"] as const;
@@ -663,5 +665,69 @@ export function describeTarget(target: DeeplinkTarget): string {
       return `${target.repoOwner}/${target.repoName}#${target.prNumber}`;
     case "linear-issue":
       return target.branch ? `${target.issueIdentifier} (${target.branch})` : target.issueIdentifier;
+  }
+}
+
+/**
+ * Map a parsed `DeeplinkTarget` to the renderer's `AppNavigationTarget`. Pure and
+ * shared so both the main-process protocol handler and in-app renderer callers
+ * (e.g. evidence artifact deeplinks) dispatch through the exact same navigation
+ * shape — notably `session` → `work` and the `?? null` normalizations the
+ * renderer's dispatcher expects.
+ */
+export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigationTarget {
+  switch (target.kind) {
+    case "lane":
+      return { kind: "lane", laneId: target.laneId, envelope: target.envelope ?? null };
+    case "session":
+      return {
+        kind: "work",
+        sessionId: target.sessionId,
+        laneId: target.laneId ?? null,
+        envelope: target.envelope ?? null,
+        event: target.event ?? null,
+        offset: target.offset ?? null,
+      };
+    case "file":
+      return {
+        kind: "file",
+        path: target.path,
+        line: target.line ?? null,
+        laneId: target.laneId ?? null,
+      };
+    case "commit":
+      return {
+        kind: "commit",
+        sha: target.sha,
+        laneId: target.laneId ?? null,
+        envelope: target.envelope ?? null,
+      };
+    case "artifact":
+      return {
+        kind: "artifact",
+        artifactId: target.artifactId,
+        envelope: target.envelope ?? null,
+      };
+    case "pr":
+      return {
+        kind: "pr",
+        prNumber: target.prNumber,
+        repoOwner: target.repoOwner,
+        repoName: target.repoName,
+      };
+    case "branch":
+      return {
+        kind: "branch",
+        repoOwner: target.repoOwner,
+        repoName: target.repoName,
+        branch: target.branch,
+        prNumber: target.prNumber ?? null,
+      };
+    case "linear-issue":
+      return {
+        kind: "linear-issue",
+        issueIdentifier: target.issueIdentifier,
+        branch: target.branch ?? null,
+      };
   }
 }

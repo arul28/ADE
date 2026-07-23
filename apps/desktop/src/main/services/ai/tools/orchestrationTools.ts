@@ -379,6 +379,9 @@ function createSpawnAgentTool(
             status: "pending",
             spawnedAt,
             currentStepId: input.stepId,
+            // Link the agent to its spawn receipt so reserveReceipt can reconcile
+            // a stale/pruned receipt to this row instead of duplicating the spawn.
+            spawnRequestId: requestId,
             spawnFingerprint: {
               provider: routedSelection.provider,
               modelId: routedSelection.modelId,
