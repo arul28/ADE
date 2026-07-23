@@ -25,7 +25,8 @@ import type {
 export type GithubAccountAuthState = "valid" | "expired" | "missing";
 
 export type GithubRepoConnectionState =
-  | "connected" // App installed on this repo (state === "configured")
+  | "connected" // App installed on this repo (state === "configured") AND webhook delivery is wired
+  | "webhook_off" // App installed but real-time delivery isn't wired — relay unconfigured or webhook deleted
   | "not_installed" // App not installed on this repo
   | "access_pending" // authorized, but GitHub is still propagating repo access
   | "no_repo" // no GitHub repo detected for this project
@@ -71,7 +72,12 @@ export function deriveGithubRepoConnectionState(
 ): GithubRepoConnectionState {
   if (!status) return "unknown";
   if (status.repo === null) return "no_repo";
-  if (status.installed) return "connected";
+  if (status.installed) {
+    // "Installed" alone is not enough for real-time PR updates: the App must have a
+    // configured relay AND a live webhook. Without either, webhooks won't deliver, so
+    // report the honest "webhook_off" rather than a false-healthy "connected".
+    return status.relayConfigured && status.webhookState !== "deleted" ? "connected" : "webhook_off";
+  }
   if (status.state === "not_installed") return "not_installed";
   if (isGithubRepoAccessPending(status)) return "access_pending";
   return "unknown";
@@ -84,7 +90,10 @@ export function deriveGithubRepoConnectionState(
  */
 export type GithubRealtimeBlock =
   | { kind: "account"; account: Extract<GithubAccountAuthState, "expired" | "missing"> }
-  | { kind: "repo"; repo: Extract<GithubRepoConnectionState, "not_installed" | "access_pending"> }
+  | {
+      kind: "repo";
+      repo: Extract<GithubRepoConnectionState, "not_installed" | "access_pending" | "webhook_off">;
+    }
   | null;
 
 export function deriveGithubRealtimeBlock(
@@ -92,7 +101,9 @@ export function deriveGithubRealtimeBlock(
   repo: GithubRepoConnectionState,
 ): GithubRealtimeBlock {
   if (account === "missing" || account === "expired") return { kind: "account", account };
-  if (repo === "not_installed" || repo === "access_pending") return { kind: "repo", repo };
+  if (repo === "not_installed" || repo === "access_pending" || repo === "webhook_off") {
+    return { kind: "repo", repo };
+  }
   return null;
 }
 
@@ -124,7 +135,7 @@ export function githubAccountIssueCopy(
 }
 
 export function githubRepoIssueCopy(
-  repo: Extract<GithubRepoConnectionState, "not_installed" | "access_pending">,
+  repo: Extract<GithubRepoConnectionState, "not_installed" | "access_pending" | "webhook_off">,
   repoLabel: string | null,
 ): { title: string; detail: string; action: string } {
   const label = repoLabel ?? "this repository";
@@ -133,6 +144,13 @@ export function githubRepoIssueCopy(
       title: `Finishing GitHub setup for ${label}`,
       detail: "GitHub is still granting the ADE app access to this repo — this usually clears in a moment.",
       action: "Recheck",
+    };
+  }
+  if (repo === "webhook_off") {
+    return {
+      title: `Real-time PR updates are off for ${label}`,
+      detail: "The ADE GitHub App is installed but its webhook isn't active — reconnect it to restore live PR status.",
+      action: "Manage",
     };
   }
   return {

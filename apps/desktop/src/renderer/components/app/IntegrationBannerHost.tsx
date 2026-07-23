@@ -5,6 +5,7 @@ import type {
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
   GitHubStatus,
+  PrEventPayload,
   ProviderMode,
 } from "../../../shared/types";
 import {
@@ -111,19 +112,70 @@ export function IntegrationBannerHost({
 
   // Coalesced refresh on PR/GitHub activity — cheap, and seq-guarded against stale
   // responses. Both subscriptions are optional (browser-mock / tests may omit them).
+  //
+  // PR events barely ever change App install/auth status, and each focus reconcile
+  // emits a running+idle `pr-reconcile` pair (plus prs-updated bursts), so a forced
+  // refetch per event hammered the relay. We now ignore `pr-reconcile` entirely and
+  // debounce the rest into a single NON-forced (cache-served) read. `onStatusChanged`
+  // stays an immediate forced refresh — that's the real GitHub-state trigger.
+  const prRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const disposers: Array<() => void> = [];
-    const refresh = () => {
-      void loadAppStatus(true);
+    const onPrEvent = (event: PrEventPayload) => {
+      // Reconcile progress pings never carry App install/auth changes — skip them
+      // so a focus reconcile doesn't trigger two forced status calls.
+      if (event?.type === "pr-reconcile") return;
+      if (prRefreshTimerRef.current != null) clearTimeout(prRefreshTimerRef.current);
+      prRefreshTimerRef.current = setTimeout(() => {
+        prRefreshTimerRef.current = null;
+        void loadAppStatus(false);
+      }, 1_500);
     };
-    const offPrs = window.ade?.prs?.onEvent?.(refresh);
+    const offPrs = window.ade?.prs?.onEvent?.(onPrEvent);
     if (offPrs) disposers.push(offPrs);
-    const offGithub = window.ade?.github?.onStatusChanged?.(() => refresh());
+    const offGithub = window.ade?.github?.onStatusChanged?.(() => void loadAppStatus(true));
     if (offGithub) disposers.push(offGithub);
     return () => {
+      if (prRefreshTimerRef.current != null) {
+        clearTimeout(prRefreshTimerRef.current);
+        prRefreshTimerRef.current = null;
+      }
       for (const dispose of disposers) dispose();
     };
   }, [loadAppStatus]);
+
+  // Clear-on-recovery: when a banner's underlying condition is HEALTHY, drop any
+  // dismissal recorded for it so a later regression to the SAME state resurfaces a
+  // fresh banner instead of staying suppressed under the stale fingerprint for the
+  // rest of the grace window. Only ever touches keys for the CURRENT context.
+  const { clear: clearDismissal } = dismissals;
+  useEffect(() => {
+    if (!currentProjectRoot) return;
+    if (appStatusLoaded) {
+      const account = deriveGithubAccountAuthState(appAuth);
+      const repo = deriveGithubRepoConnectionState(appInstall);
+      if (account === "valid") clearDismissal(`github-app-account:${currentProjectRoot}`);
+      if (repo === "connected") {
+        const repoKey = appInstall?.repo ? `${appInstall.repo.owner}/${appInstall.repo.name}` : currentProjectRoot;
+        clearDismissal(`github-app-repo:${repoKey}`);
+      }
+    }
+    if (githubStatus?.connected) clearDismissal(`github-cli:${currentProjectRoot}`);
+    if (hasAnyAiProvider) clearDismissal(`ai-provider:${currentProjectRoot}`);
+    if (!(providerMode === "subscription" && aiMockProvider)) {
+      clearDismissal(`mock-provider:${currentProjectRoot}`);
+    }
+  }, [
+    currentProjectRoot,
+    appStatusLoaded,
+    appAuth,
+    appInstall,
+    githubStatus,
+    hasAnyAiProvider,
+    providerMode,
+    aiMockProvider,
+    clearDismissal,
+  ]);
 
   const models = useMemo<BannerModel[]>(() => {
     const list: BannerModel[] = [];
@@ -158,6 +210,14 @@ export function IntegrationBannerHost({
           // Matches the Settings panel: access is still propagating from GitHub,
           // so the action is to re-check status, not Install/Manage.
           actions.push({ label: copy.action, variant: "primary", onClick: () => void loadAppStatus(true) });
+        } else if (block.repo === "webhook_off") {
+          // App is installed but webhook delivery isn't wired — send the user to
+          // Manage (to reconnect the webhook) and let them Recheck afterward.
+          const manageUrl = appInstall?.manageUrl;
+          if (manageUrl) {
+            actions.push({ label: "Manage", variant: "primary", onClick: () => openExternalUrl(manageUrl) });
+          }
+          actions.push({ label: "Recheck", variant: "secondary", onClick: () => void loadAppStatus(true) });
         } else {
           const installUrl = appInstall?.installUrl;
           const manageUrl = appInstall?.manageUrl;

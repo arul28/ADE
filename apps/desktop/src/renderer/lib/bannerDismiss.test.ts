@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   BANNER_DISMISS_GRACE_MS,
+  clearBannerDismissal,
   dismissBanner,
   hasRecentBannerDismissal,
   isBannerDismissed,
@@ -86,5 +87,28 @@ describe("bannerDismiss", () => {
   it("ignores blank keys", () => {
     dismissBanner("   ", "x", NOW);
     expect(isBannerDismissed("", "x", BANNER_DISMISS_GRACE_MS, NOW)).toBe(false);
+  });
+
+  it("clearBannerDismissal removes an entry so the banner resurfaces", () => {
+    dismissBanner(KEY, "no-token", NOW);
+    expect(isBannerDismissed(KEY, "no-token", BANNER_DISMISS_GRACE_MS, NOW)).toBe(true);
+    // Condition went healthy → clear the recorded dismissal.
+    clearBannerDismissal(KEY);
+    // A later regression to the SAME state is no longer suppressed.
+    expect(isBannerDismissed(KEY, "no-token", BANNER_DISMISS_GRACE_MS, NOW)).toBe(false);
+    expect(hasRecentBannerDismissal(KEY, BANNER_DISMISS_GRACE_MS, NOW)).toBe(false);
+  });
+
+  it("clearBannerDismissal only removes the target key", () => {
+    dismissBanner(KEY, "no-token", NOW);
+    dismissBanner("ai-provider:/project/a", "missing", NOW);
+    clearBannerDismissal(KEY);
+    expect(isBannerDismissed(KEY, "no-token", BANNER_DISMISS_GRACE_MS, NOW)).toBe(false);
+    expect(isBannerDismissed("ai-provider:/project/a", "missing", BANNER_DISMISS_GRACE_MS, NOW)).toBe(true);
+  });
+
+  it("clearBannerDismissal is a no-op for absent or blank keys", () => {
+    expect(() => clearBannerDismissal("never-dismissed")).not.toThrow();
+    expect(() => clearBannerDismissal("   ")).not.toThrow();
   });
 });

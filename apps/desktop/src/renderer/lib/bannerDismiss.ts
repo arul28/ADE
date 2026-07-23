@@ -75,6 +75,25 @@ export function dismissBanner(key: string, fingerprint: string, nowMs: number = 
 }
 
 /**
+ * Remove any dismissal recorded for `key`. Called when a banner's underlying
+ * condition becomes healthy so a later regression to the SAME state resurfaces a
+ * fresh banner (instead of staying suppressed under the old fingerprint for the
+ * rest of the grace window). No-op when the key is absent; storage-guarded.
+ */
+export function clearBannerDismissal(key: string): void {
+  const trimmed = key.trim();
+  if (!trimmed) return;
+  try {
+    const map = readMap();
+    if (!(trimmed in map)) return;
+    delete map[trimmed];
+    writeMap(map);
+  } catch {
+    // best effort — storage may be unavailable
+  }
+}
+
+/**
  * True only when the user dismissed this exact `fingerprint` within `graceMs`.
  * A differing fingerprint (state changed/regressed) or an elapsed grace window
  * both resurface the banner.
@@ -114,12 +133,13 @@ export function hasRecentBannerDismissal(
 export type BannerDismissals = {
   isDismissed: (key: string, fingerprint: string) => boolean;
   dismiss: (key: string, fingerprint: string) => void;
+  clear: (key: string) => void;
 };
 
 /**
  * Hook wrapper over the durable store. Holds a small version counter so a
- * dismissal re-renders the host (which re-reads the store during render and
- * filters the just-dismissed banner out).
+ * dismissal (or a clear) re-renders the host (which re-reads the store during
+ * render and filters the just-dismissed banner out).
  */
 export function useBannerDismissals(): BannerDismissals {
   const [, bump] = useState(0);
@@ -131,5 +151,12 @@ export function useBannerDismissals(): BannerDismissals {
     dismissBanner(key, fingerprint);
     bump((n) => n + 1);
   }, []);
-  return { isDismissed, dismiss };
+  const clear = useCallback((key: string) => {
+    // Only re-render when there was actually a live dismissal to clear — keeps
+    // the "clear-on-healthy" effect from bumping on every state change.
+    const hadDismissal = hasRecentBannerDismissal(key);
+    clearBannerDismissal(key);
+    if (hadDismissal) bump((n) => n + 1);
+  }, []);
+  return { isDismissed, dismiss, clear };
 }

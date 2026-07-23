@@ -278,6 +278,8 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
     switch (repoState) {
       case "connected":
         return [manageButton, recheckButton(false)];
+      case "webhook_off":
+        return [manageButton, recheckButton(false)];
       case "not_installed":
         return [installButton, manageButton, recheckButton(false)];
       case "access_pending":
@@ -453,6 +455,11 @@ function repoView(
       return {
         pill: { tone: "ok", color: COLORS.success, label: "Connected" },
         subtext: "Real-time PR updates are on.",
+      };
+    case "webhook_off":
+      return {
+        pill: { tone: "warn", color: COLORS.warning, label: "Webhook off" },
+        subtext: githubRepoIssueCopy("webhook_off", repoLabel).detail,
       };
     case "not_installed":
       return {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { GitHubAppInstallationStatus } from "../../shared/types";
-import { isGithubRepoAccessPending } from "./githubIntegrationStatus";
+import { deriveGithubRepoConnectionState, isGithubRepoAccessPending } from "./githubIntegrationStatus";
 
 function makeStatus(overrides: Partial<GitHubAppInstallationStatus> = {}): GitHubAppInstallationStatus {
   return {
@@ -43,5 +43,39 @@ describe("isGithubRepoAccessPending", () => {
     expect(isGithubRepoAccessPending(makeStatus({ relayConfigured: false }))).toBe(false);
     expect(isGithubRepoAccessPending(makeStatus({ installed: true }))).toBe(false);
     expect(isGithubRepoAccessPending(makeStatus({ state: "not_installed" }))).toBe(false);
+  });
+});
+
+describe("deriveGithubRepoConnectionState", () => {
+  const installed = (overrides: Partial<GitHubAppInstallationStatus> = {}) =>
+    makeStatus({
+      installed: true,
+      state: "configured",
+      relayConfigured: true,
+      webhookState: "active",
+      error: null,
+      ...overrides,
+    });
+
+  it("is connected only when installed, relay is configured, and the webhook isn't deleted", () => {
+    expect(deriveGithubRepoConnectionState(installed())).toBe("connected");
+    // webhookState "unknown" is not "deleted", so it still counts as connected.
+    expect(deriveGithubRepoConnectionState(installed({ webhookState: "unknown" }))).toBe("connected");
+  });
+
+  it("reports webhook_off when installed but the webhook was deleted", () => {
+    expect(deriveGithubRepoConnectionState(installed({ webhookState: "deleted" }))).toBe("webhook_off");
+  });
+
+  it("reports webhook_off when installed but the relay isn't configured", () => {
+    expect(deriveGithubRepoConnectionState(installed({ relayConfigured: false }))).toBe("webhook_off");
+  });
+
+  it("still surfaces the pre-install states", () => {
+    expect(deriveGithubRepoConnectionState(null)).toBe("unknown");
+    expect(deriveGithubRepoConnectionState(makeStatus({ repo: null }))).toBe("no_repo");
+    expect(
+      deriveGithubRepoConnectionState(makeStatus({ installed: false, state: "not_installed", error: null })),
+    ).toBe("not_installed");
   });
 });
