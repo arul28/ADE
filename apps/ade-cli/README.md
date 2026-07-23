@@ -512,9 +512,10 @@ secure stores.
 - Linear readiness from the active project's `.ade/secrets` credential store (`linear.token.v1`), a legacy project-scoped encrypted token file, or headless environment variables.
 - Provider/model readiness from local ADE config, API-key provider references, and provider CLI availability.
 - Computer-use readiness from local platform capabilities.
+- Sync and Relay readiness, including a relay end-to-end self-probe verdict (`relay self-probe`). When a local ADE brain is running the probe performs one round-trip through ADE Relay and reports `ready`, a `FAILED:` verdict, or a graceful skip; without a running brain (or without a validated relay bridge) it reports skipped/unavailable and never fails the run. `ade sync status` surfaces the same verdict on its `relay end-to-end` line.
 - Packaged/PATH status for the `ade` binary and concrete next actions.
 
-Default doctor / auth checks do not call provider, GitHub, or Linear networks. They report presence and local readiness only, without printing secret values.
+Default doctor / auth checks do not call provider, GitHub, or Linear networks. They report presence and local readiness only, without printing secret values. The one network touch is the optional relay end-to-end self-probe above, which runs only when a local brain and validated relay bridge are present.
 
 Agents starting an unfamiliar ADE session should begin with:
 

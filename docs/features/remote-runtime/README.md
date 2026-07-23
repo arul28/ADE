@@ -54,13 +54,19 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   current LAN/Tailscale set is now classified as `lan`/`tailscale` rather than
   the opaque `saved` kind, so LAN endpoints publish correctly instead of being
   dropped), a `tailnet` endpoint per reachable Tailscale address, and a `relay`
-  endpoint once the tunnel bridge is validated. Bridge validation is now
+  endpoint once the tunnel bridge is validated **and** an end-to-end self-probe
+  confirms the relay path round-trips (`relayEndToEndVerifiedAt` with no
+  failure). Bridge validation is now
   proactive (`syncTunnelClientService.validateCurrentBridge`, run on
   control-open and on listener-ready), so the relay endpoint appears in the
-  directory as soon as the machine is signed in and its listener is confirmed —
-  it no longer waits for an external client to open the first relay tunnel.
-  The published machine name is channel-suffixed (`<name> · Beta` / `<name> ·
-  Alpha`, stable left bare) so two channels on one Mac are distinguishable rows.
+  directory as soon as the machine is signed in, its listener is confirmed, and
+  the self-probe passes — it no longer waits for an external client to open the
+  first relay tunnel. The row also carries the host's Ed25519 identity as
+  `pubkey`, which same-account clients verify before a sealed `ade-adopt-v1`
+  adoption over a direct route (see the [Sync](../sync-and-multi-device/README.md)
+  security model). The published machine name is channel-suffixed (`<name> ·
+  Beta` / `<name> · Alpha`, stable left bare) so two channels on one Mac are
+  distinguishable rows.
 - `apps/ade-cli/src/tuiClient/remoteLauncher.ts` and `remoteBridge.ts` —
   `ade code remote` target resolution, legacy account-target migration,
   paired/SSH launch ordering, bounded cancellation, project/session selection,
