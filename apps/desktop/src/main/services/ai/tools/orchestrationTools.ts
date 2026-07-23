@@ -454,11 +454,21 @@ function createSpawnAgentTool(
 
 /**
  * Shared delivery epilogue for messageAgent's cancellation and ping branches:
- * enqueue the single outbox entry, complete the idempotency receipt, then drain.
- * On any failure the reserved receipt is released so its deterministic requestId
- * stays reservable — mirroring spawnAgent's cleanup and single-sourcing the
- * receipt-release-on-failure invariant across both branches (previously the
- * completeReceipt-failure path leaked a pending receipt).
+ * enqueue the single outbox entry and complete the idempotency receipt in ONE
+ * atomic transaction (the outbox `add` is folded into `completeReceipt` as an
+ * extra patch — exactly like spawnAgent), then drain.
+ *
+ * Atomicity is the correctness invariant here: a failed `completeReceipt`
+ * persists neither the receipt completion nor the outbox entry, so releasing the
+ * receipt on failure orphans nothing. If the enqueue were a separate prior
+ * transaction (as it once was), the outbox entry would already be durable when
+ * completeReceipt failed — freeing the deterministic requestId would then let an
+ * LLM retry enqueue a DUPLICATE ping/cancel/interrupt. `releaseReceipt` no-ops
+ * when the run is suspended, so the suspended case never frees a live receipt.
+ *
+ * `buildOutboxEnqueueOps` needs the current manifest to derive the deterministic
+ * etag+index outbox id, so read it fresh right before completing (mirrors
+ * spawnAgent's `currentManifest` read).
  */
 async function finalizeDelivery(
   svc: ReturnType<typeof createOrchestrationService>,
@@ -466,15 +476,14 @@ async function finalizeDelivery(
   ctx: OrchestrationSessionContext,
   args: { requestId: string; entry: NewOutboxEntry },
 ): Promise<{ ok: true } | { ok: false; error: "delivery_failed"; message: string }> {
-  const enqueued = await svc.enqueueOutbox(ctx.runId, ctx.bundlePath, [args.entry]);
-  if (!enqueued.ok) {
-    await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId: args.requestId });
-    return { ok: false, error: "delivery_failed", message: enqueued.message };
-  }
-  const completed = await svc.completeReceipt(ctx.runId, ctx.bundlePath, {
-    requestId: args.requestId,
-    result: {},
-  });
+  const manifest = manifestOrThrow(svc, ctx.runId);
+  const outboxOps = buildOutboxEnqueueOps(manifest, [args.entry]);
+  const completed = await svc.completeReceipt(
+    ctx.runId,
+    ctx.bundlePath,
+    { requestId: args.requestId, result: {} },
+    outboxOps,
+  );
   if (!completed.ok) {
     await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId: args.requestId });
     return { ok: false, error: "delivery_failed", message: completed.message };

@@ -1334,7 +1334,7 @@ describe("messageAgent tool", () => {
     )).toBe(true);
   });
 
-  it("releases the receipt when completeReceipt fails after enqueue (no leaked pending receipt)", async () => {
+  it("releases the receipt when completeReceipt fails (no leaked pending receipt, no orphaned outbox entry)", async () => {
     setup = await setupWithRun("lead");
     await approveRun(setup);
     const leadTools = makeToolSet(setup, "lead", "S-lead");
@@ -1348,7 +1348,9 @@ describe("messageAgent tool", () => {
     expect(spawnResult.ok).toBe(true);
 
     const releaseSpy = vi.spyOn(setup.svc, "releaseReceipt");
-    // completeReceipt fails after the outbox entry was enqueued.
+    // The atomic path folds the outbox `add` into completeReceipt, so a failing
+    // completeReceipt persists NEITHER the receipt completion nor the outbox
+    // entry.
     vi.spyOn(setup.svc, "completeReceipt").mockResolvedValueOnce({
       ok: false,
       error: "etag_conflict",
@@ -1369,6 +1371,69 @@ describe("messageAgent tool", () => {
     expect(releaseSpy).toHaveBeenCalledTimes(1);
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect((manifest.receipts ?? []).every((r) => r.status !== "pending")).toBe(true);
+    // No orphaned outbox entry: because enqueue is atomic with completeReceipt,
+    // the failed transaction leaves nothing for a later drain to deliver. (The
+    // spawn brief for this session is kind "brief"; the ping would be "ping".)
+    expect(
+      (manifest.outbox ?? []).some(
+        (entry) =>
+          entry.kind === "ping" &&
+          entry.targetSessionId === spawnResult.sessionId,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not double-deliver on retry after a completeReceipt failure", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-msg",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+
+    // First attempt: completeReceipt fails once. With the atomic enqueue this
+    // persists no outbox entry and releases the receipt (requestId reservable).
+    const completeSpy = vi
+      .spyOn(setup.svc, "completeReceipt")
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "etag_conflict",
+        message: "manifest advanced",
+      });
+
+    const messageAgent = leadTools.messageAgent!;
+    const pingArgs = {
+      targetSessionId: spawnResult.sessionId,
+      kind: "queue" as const,
+      intent: "status" as const,
+      text: "status ping",
+    };
+    const first: any = await messageAgent.execute(pingArgs);
+    expect(first.ok).toBe(false);
+    expect(first.error).toBe("delivery_failed");
+
+    // Retry the SAME logical message → same deterministic requestId. reserveReceipt
+    // succeeds (not a duplicate) because the failed attempt orphaned nothing, and
+    // this time the real completeReceipt commits exactly one outbox entry.
+    const second: any = await messageAgent.execute(pingArgs);
+    expect(second.ok).toBe(true);
+    expect(completeSpy).toHaveBeenCalledTimes(2);
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const pingEntries = (manifest.outbox ?? []).filter(
+      (entry) =>
+        entry.kind === "ping" &&
+        entry.targetSessionId === spawnResult.sessionId,
+    );
+    // Exactly one ping delivery — no duplicate from the retry.
+    expect(pingEntries).toHaveLength(1);
+    expect(pingEntries[0]!.status).toBe("delivered");
+    expect(setup.chat.steer).toHaveBeenCalledTimes(1);
   });
 });
 
