@@ -2350,8 +2350,13 @@ function createRecordScheduledFollowupTool(
   return tool({
     description:
       "Record a durable follow-up scheduled for after the run (e.g. 're-check CI in 30m'). " +
-      "Do the actual scheduling with `ade actions run chat.createScheduledWork` from a shell, then record it here with the returned scheduledWorkId so the bundle owns the durable intent (manifest.scheduledFollowups).",
+      "Do the actual scheduling with `ade actions run chat.createScheduledWork` from a shell, then record it here with the returned scheduledWorkId so the bundle owns the durable intent (manifest.scheduledFollowups). " +
+      "Records upsert by `id`: capture the returned `id`, then re-record with that same `id` (plus the scheduledWorkId) to arm the SAME follow-up instead of creating a duplicate row.",
     inputSchema: z.object({
+      id: z
+        .string()
+        .optional()
+        .describe("Reuse the id returned by a prior record call to update that same follow-up (arming, firing, cancelling) rather than appending a new row."),
       summary: z.string().min(1, "plain-language description of the follow-up"),
       scheduledFor: z.string().optional(),
       scheduledWorkId: z.string().optional(),
@@ -2360,6 +2365,7 @@ function createRecordScheduledFollowupTool(
     execute: async (input) =>
       withHeartbeat(ctx, svc, async () => {
         const res = await svc.recordScheduledFollowup(ctx.runId, ctx.bundlePath, {
+          ...(input.id ? { id: input.id } : {}),
           summary: input.summary,
           ...(input.scheduledFor ? { scheduledFor: input.scheduledFor } : {}),
           ...(input.scheduledWorkId ? { scheduledWorkId: input.scheduledWorkId } : {}),
@@ -2368,7 +2374,7 @@ function createRecordScheduledFollowupTool(
         if (!res.ok) {
           return { ok: false as const, error: res.error, message: res.message };
         }
-        return { ok: true as const, etag: res.etag };
+        return { ok: true as const, etag: res.etag, id: res.followupId };
       }),
   });
 }
@@ -2615,6 +2621,10 @@ export function createOrchestrationToolSet(
           sandboxConfig: buildOrchestrationSandboxConfig(
             sessionContext.bundlePath,
             universal.sandboxConfig,
+            // Finishing workers (mode "pr") push, open the PR, and drive `ade`.
+            // The finishing role isn't tagged separately here (it's a plain
+            // worker), so scope the allowance to all workers — never validators.
+            { allowFinishingCommands: interactionMode === "orchestrator-worker" },
           ),
           registerActiveBash: (controller) => {
             const unregisterUpstream = universal.registerActiveBash?.(controller);

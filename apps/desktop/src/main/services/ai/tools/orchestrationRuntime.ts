@@ -268,13 +268,44 @@ function escapeRegExp(value: string): string {
 }
 
 /**
+ * Commands a finishing worker (`manifest.finishing.mode === "pr"`) must run once
+ * validation passes: push the branch, open/inspect the PR, and drive the `ade`
+ * CLI (Linear sync, deeplink mint, asset registration, and
+ * `ade actions run chat.createScheduledWork`). Allow-listed narrowly — only
+ * `git push`, `gh pr <sub>`, and `ade <sub>` — so the finishing role can complete
+ * a run under `blockByDefault: true` without opening the sandbox to arbitrary
+ * commands. `gh` is scoped to its `pr` subcommands; everything dangerous stays
+ * in `blockedCommands` (checked first, always rejected).
+ *
+ * IMPORTANT — does this block actually bite? Real finishing workers are spawned
+ * as native-provider workers (Claude `Bash`, Codex shell, …) whose shell
+ * BYPASSES this TS sandbox entirely (see SKILL §4 step 5 / §4.5), so they can
+ * already push/gh/ade regardless. This allowance only governs the ADE-SDK
+ * `createBashTool` path (`checkWorkerSandbox`); we fix it for consistency so a
+ * finishing worker driven through that path can also finish the run.
+ */
+export const FINISHING_WORKER_SAFE_COMMANDS: readonly string[] = [
+  "^git(\\.exe)?\\s+push\\b",
+  "^gh(\\.exe)?\\s+pr\\b",
+  "^ade(\\.cmd)?\\s",
+];
+
+/**
  * Build a `WorkerSandboxConfig` for orchestration workers/validators by
  * extending the platform default with bundle `manifest.json` + `plan.md`
  * as protected paths and `blockByDefault: true`.
+ *
+ * When `allowFinishingCommands` is set, the finishing command set
+ * (`FINISHING_WORKER_SAFE_COMMANDS`) is added to the safe list. The finishing
+ * role is not tagged separately at sandbox-build time (it is a plain `worker`
+ * spawned via `spawnAgent`), so callers scope this as narrowly as the mechanism
+ * allows — to orchestration WORKERS (never validators, which must not push or
+ * open PRs) — rather than to finishing-workers only.
  */
 export function buildOrchestrationSandboxConfig(
   bundlePath: string,
   base: WorkerSandboxConfig = DEFAULT_WORKER_SANDBOX_CONFIG,
+  opts: { allowFinishingCommands?: boolean } = {},
 ): WorkerSandboxConfig {
   const extraProtected = [
     escapeRegExp(path.join(bundlePath, "manifest.json")),
@@ -283,9 +314,12 @@ export function buildOrchestrationSandboxConfig(
   const safeCommands = base.safeCommands.filter(
     (pattern) => !/^\^(?:node|tsx)(?:\(|\\|\[|\.|$)/.test(pattern),
   );
+  const withFinishing = opts.allowFinishingCommands
+    ? [...safeCommands, ...FINISHING_WORKER_SAFE_COMMANDS]
+    : safeCommands;
   return {
     ...base,
-    safeCommands,
+    safeCommands: withFinishing,
     protectedFiles: [...base.protectedFiles, ...extraProtected],
     blockByDefault: true,
   };

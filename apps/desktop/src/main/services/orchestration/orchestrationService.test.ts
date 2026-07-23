@@ -128,6 +128,70 @@ describe("orchestrationService", () => {
     await svc.dispose();
   });
 
+  it("recordScheduledFollowup upserts by id: arming updates the same row, terminal states are not regressed", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const created = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Followup upsert",
+    });
+    const bundlePath = created.manifest.bundlePath;
+
+    // 1. Record intent-only → pending, one row. Capture the returned id.
+    const intent = await svc.recordScheduledFollowup(created.runId, bundlePath, {
+      summary: "re-check CI in 30m",
+    });
+    expect(intent.ok).toBe(true);
+    if (!intent.ok) throw new Error(intent.message);
+    const followupId = intent.followupId!;
+    expect(typeof followupId).toBe("string");
+
+    const afterIntent = svc.getManifestForRun(created.runId)!.scheduledFollowups!;
+    expect(afterIntent).toHaveLength(1);
+    expect(afterIntent[0]!.status).toBe("pending");
+    expect(afterIntent[0]!.scheduledWorkId).toBeUndefined();
+    const originalCreatedAt = afterIntent[0]!.createdAt;
+
+    // 2. Arm the SAME follow-up: stamp scheduledWorkId + "scheduled" on the
+    //    existing row — must NOT append a second row.
+    const armed = await svc.recordScheduledFollowup(created.runId, bundlePath, {
+      id: followupId,
+      summary: "re-check CI in 30m",
+      scheduledWorkId: "SW-999",
+      status: "scheduled",
+    });
+    expect(armed.ok).toBe(true);
+    expect(armed.ok && armed.followupId).toBe(followupId);
+
+    const afterArm = svc.getManifestForRun(created.runId)!.scheduledFollowups!;
+    expect(afterArm).toHaveLength(1);
+    expect(afterArm[0]!.id).toBe(followupId);
+    expect(afterArm[0]!.status).toBe("scheduled");
+    expect(afterArm[0]!.scheduledWorkId).toBe("SW-999");
+    // Creation time preserved across the lifecycle update.
+    expect(afterArm[0]!.createdAt).toBe(originalCreatedAt);
+
+    // 3. Fire it (terminal), then a late duplicate update must NOT regress it.
+    await svc.recordScheduledFollowup(created.runId, bundlePath, {
+      id: followupId,
+      summary: "re-check CI in 30m",
+      status: "fired",
+    });
+    const lateUpdate = await svc.recordScheduledFollowup(created.runId, bundlePath, {
+      id: followupId,
+      summary: "re-check CI in 30m",
+      status: "pending",
+    });
+    expect(lateUpdate.ok).toBe(true);
+
+    const afterFire = svc.getManifestForRun(created.runId)!.scheduledFollowups!;
+    expect(afterFire).toHaveLength(1);
+    expect(afterFire[0]!.status).toBe("fired");
+    expect(afterFire[0]!.scheduledWorkId).toBe("SW-999");
+    await svc.dispose();
+  });
+
   it("reserves, completes, replays, and releases idempotency receipts", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
     const created = await svc.runCreate({

@@ -3212,8 +3212,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     runId: string,
     bundlePath: string,
     followup: Omit<OrchestrationScheduledFollowup, "id" | "createdAt"> & { id?: string },
-  ): Promise<PlanningMutationResult> {
-    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+  ): Promise<PlanningMutationResult & { followupId?: string }> {
+    let resolvedId: string | undefined;
+    const result = await runPlanningMutation(runId, bundlePath, async (runtime) => {
       if (!followup.summary?.trim()) {
         return {
           ok: false,
@@ -3221,7 +3222,25 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           message: "scheduled follow-up requires a plain-language summary",
         };
       }
-      const scheduledWorkId = followup.scheduledWorkId?.trim();
+      const manifest = runtime.manifest!;
+      const list = Array.isArray(manifest.scheduledFollowups)
+        ? manifest.scheduledFollowups
+        : [];
+      // Upsert by id: a follow-up has ONE lifecycle row. Re-recording the same
+      // id (e.g. arming the durable schedule later stamps scheduledWorkId +
+      // "scheduled" onto the same intent) merges onto the existing row instead
+      // of appending a duplicate. Unstamped/unmatched ids create a new row.
+      const id = followup.id?.trim() || `SF-${shortRand()}`;
+      resolvedId = id;
+      const existing = list.find((f) => f.id === id);
+
+      // Merge scheduling identity: a late update that omits scheduledWorkId /
+      // scheduledFor must not drop values captured on an earlier record.
+      const scheduledWorkId =
+        followup.scheduledWorkId?.trim() || existing?.scheduledWorkId?.trim() || undefined;
+      const scheduledFor =
+        followup.scheduledFor?.trim() || existing?.scheduledFor?.trim() || undefined;
+
       // "scheduled" asserts a durable job is actually armed. Only honour it when
       // a real scheduledWorkId proves `chat.createScheduledWork` ran; otherwise
       // the record is intent-only and MUST be "pending" so the manifest never
@@ -3232,28 +3251,38 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       // "scheduled" once the scheduler id exists.
       const requestedStatus =
         followup.status ?? (scheduledWorkId ? "scheduled" : "pending");
-      const status: OrchestrationScheduledFollowup["status"] =
+      const downgraded: OrchestrationScheduledFollowup["status"] =
         requestedStatus === "scheduled" && !scheduledWorkId
           ? "pending"
           : requestedStatus;
+      // Never regress an already-terminal lifecycle (fired/cancelled) back to an
+      // earlier state on a late/duplicate update.
+      const status: OrchestrationScheduledFollowup["status"] =
+        existing && (existing.status === "fired" || existing.status === "cancelled")
+          ? existing.status
+          : downgraded;
+
       const entry: OrchestrationScheduledFollowup = {
-        id: followup.id?.trim() || `SF-${shortRand()}`,
+        id,
         summary: followup.summary.trim(),
-        ...(followup.scheduledFor?.trim() ? { scheduledFor: followup.scheduledFor.trim() } : {}),
+        ...(scheduledFor ? { scheduledFor } : {}),
         ...(scheduledWorkId ? { scheduledWorkId } : {}),
-        createdAt: nowIso(),
+        // Preserve the original creation time across lifecycle updates.
+        createdAt: existing?.createdAt ?? nowIso(),
         status,
       };
-      const manifest = runtime.manifest!;
       const ops: ManifestPatchOp[] = [];
       if (!Array.isArray(manifest.scheduledFollowups)) {
         ops.push({ op: "add", path: "/scheduledFollowups", value: [entry] });
+      } else if (existing) {
+        ops.push({ op: "replace", path: `/scheduledFollowups/{id:${id}}`, value: entry });
       } else {
         ops.push({ op: "add", path: "/scheduledFollowups/-", value: entry });
       }
       const res = await directPatch(runtime, ops, "run: scheduled follow-up recorded");
       return { ok: true, manifest: res.manifest, etag: res.etag };
     });
+    return result.ok ? { ...result, followupId: resolvedId } : result;
   }
 
   async function recordPlanningRound(
