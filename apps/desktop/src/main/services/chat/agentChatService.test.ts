@@ -6616,6 +6616,68 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it("wires listProofArtifacts to the broker set via the setter after construction", async () => {
+      const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
+      try {
+        // The computer-use artifact broker is wired AFTER the service is
+        // constructed (via setComputerUseArtifactBrokerService) to break a
+        // circular dependency. The lead read tools must observe the late-bound
+        // ref, not the raw constructor param. Regression guard for that bug:
+        // when the ref is only ever set via the setter, listProofArtifacts must
+        // still reach the broker.
+        const listArtifacts = vi.fn(() => [{ artifactId: "proof-1", kind: "screenshot" }]);
+        const { service } = createService({
+          getOrchestrationService: () => orchestrationService,
+        });
+        service.setComputerUseArtifactBrokerService({
+          listArtifacts,
+          getBackendStatus: vi.fn(() => null),
+          ingest: vi.fn(),
+        } as any);
+
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.4",
+          interactionMode: "orchestrator-lead",
+          orchestrationRunId: created.runId,
+          orchestrationRole: "lead",
+          orchestrationBundlePath: created.manifest.bundlePath,
+        });
+
+        await service.sendMessage({
+          sessionId: session.id,
+          text: "Plan the work.",
+        });
+
+        await vi.waitFor(() => {
+          expect(mockState.codexRequestPayloads.some((payload) => payload.method === "thread/start")).toBe(true);
+        });
+
+        // Simulate the Codex server invoking the lead-only read tool.
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          id: "proof-tool-call-1",
+          method: "item/tool/call",
+          params: { name: "listProofArtifacts", namespace: "ade_orchestration", arguments: {} },
+        });
+
+        // Bug behavior: services.listProofArtifacts is undefined (closure over the
+        // raw null param) so the broker is never reached. Fixed behavior: called.
+        await vi.waitFor(() => {
+          expect(listArtifacts).toHaveBeenCalled();
+        });
+
+        const response = mockState.codexRequestPayloads.find(
+          (payload) => (payload as { id?: unknown }).id === "proof-tool-call-1",
+        ) as { result?: { success?: boolean; contentItems?: Array<{ text?: string }> } } | undefined;
+        expect(response?.result?.success).toBe(true);
+        expect(response?.result?.contentItems?.[0]?.text ?? "").toContain("proof-1");
+      } finally {
+        await orchestrationService.dispose();
+      }
+    });
+
     it("attaches ADE orchestration tools to OpenCode orchestrator sessions through MCP", async () => {
       vi.mocked(streamText).mockReturnValue({
         fullStream: (async function* () {

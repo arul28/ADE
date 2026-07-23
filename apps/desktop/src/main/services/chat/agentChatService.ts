@@ -13942,9 +13942,13 @@ export function createAgentChatService(args: {
       };
     }
 
-    if (computerUseArtifactBrokerService) {
+    // Read the late-bound ref (mutated by setComputerUseArtifactBrokerService to
+    // break a circular dep), not the raw constructor param. This function runs
+    // per-session at tool-map build time, so each session sees current wiring.
+    const artifactBroker = computerUseArtifactBrokerRef;
+    if (artifactBroker) {
       services.listProofArtifacts = async (args): Promise<OrchestrationLeadReadResult> => {
-        const artifacts = computerUseArtifactBrokerService.listArtifacts({
+        const artifacts = artifactBroker.listArtifacts({
           ...(args.limit ? { limit: args.limit } : {}),
         });
         return { ok: true, artifacts };
