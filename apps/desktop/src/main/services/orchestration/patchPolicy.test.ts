@@ -170,6 +170,34 @@ describe("patchPolicy", () => {
     }
   });
 
+  it("denies lead-authored gated lifecycle state (finishing / goalSource / scheduledFollowups)", () => {
+    const manifest = makeManifest();
+    const ops: ManifestPatchOp[] = [
+      // Finishing mode must go through chooseFinishingMode → recordFinishingChoice
+      // (the user-choice card), never a raw manifestPatch that could silently push
+      // a branch + open a PR.
+      { op: "replace", path: "/finishing", value: { mode: "pr", decidedAt: "now" } },
+      { op: "replace", path: "/finishing/mode", value: "pr" },
+      // Goal source is validated + written by recordGoalSource.
+      { op: "replace", path: "/goalSource", value: { kind: "linear", ref: "ENG-1" } },
+      { op: "replace", path: "/goalSource/kind", value: "linear" },
+      // Scheduled follow-ups are written by recordScheduledFollowup.
+      { op: "add", path: "/scheduledFollowups/-", value: { id: "F-1" } },
+      { op: "replace", path: "/scheduledFollowups", value: [] },
+    ];
+
+    for (const op of ops) {
+      expect(
+        checkPatchOp(op, {
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          manifest,
+        }).allowed,
+        op.path,
+      ).toBe(false);
+    }
+  });
+
   it("pattern matches wildcards", () => {
     const parsed = parsePatchPath("/tasks/{id:T-3}/status");
     expect(pathMatchesPattern(parsed, "/tasks/{id:*}/status")).toBe(true);

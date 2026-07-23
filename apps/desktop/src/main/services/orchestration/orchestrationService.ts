@@ -1910,8 +1910,29 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const existing = (manifest.receipts ?? []).find(
         (receipt) => receipt.requestId === args.requestId,
       );
+      // A COMPLETED receipt is a genuine duplicate — its recorded result is
+      // replayed by the caller. A PENDING receipt means a prior reservation for
+      // this requestId never completed: either a concurrent call is in flight,
+      // or a crash happened between reserveReceipt and completeReceipt. While it
+      // is still within the TTL we surface it as a live duplicate (the caller
+      // must wait / return a retryable in-progress result, never a fabricated
+      // success). Once it ages past the TTL we drop the wedged entry and reserve
+      // fresh so the deterministic requestId is not suppressed forever (this
+      // mirrors the recoverStaleTasks reap, but inline so a retry can proceed
+      // without waiting for the next lead-triggered sweep).
+      let staleReceiptDropped = false;
       if (existing) {
-        return { ok: true, status: "duplicate", receipt: existing };
+        if (existing.status !== "pending") {
+          return { ok: true, status: "duplicate", receipt: existing };
+        }
+        const createdMs = Date.parse(existing.createdAt);
+        const stalePending =
+          Number.isFinite(createdMs) &&
+          now().getTime() - createdMs >= PENDING_RECEIPT_TTL_MS;
+        if (!stalePending) {
+          return { ok: true, status: "duplicate", receipt: existing };
+        }
+        staleReceiptDropped = true;
       }
       const receipt: OrchestrationReceipt = {
         requestId: args.requestId,
@@ -1920,11 +1941,21 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         status: "pending",
       };
       try {
-        await directPatch(
-          runtime,
-          [{ op: "add", path: "/receipts/-", value: receipt }],
-          `reserve ${args.kind} receipt`,
-        );
+        const reserveOps: ManifestPatchOp[] = staleReceiptDropped
+          ? [
+              {
+                op: "replace",
+                path: "/receipts",
+                value: [
+                  ...(manifest.receipts ?? []).filter(
+                    (r) => r.requestId !== args.requestId,
+                  ),
+                  receipt,
+                ],
+              },
+            ]
+          : [{ op: "add", path: "/receipts/-", value: receipt }];
+        await directPatch(runtime, reserveOps, `reserve ${args.kind} receipt`);
         return { ok: true, status: "reserved" };
       } catch (err) {
         return internalMutationError(err);
@@ -3396,6 +3427,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     release,
     dispose,
     on,
+    /** Service clock in epoch ms — lets event-driven schedulers (outbox retry
+     * timer) align their delays with the same (possibly injected) clock the
+     * service uses to decide dueness, instead of drifting against wall time. */
+    nowMs: () => now().getTime(),
     getManifestForRun,
     getBundlePathForRun,
     /** Test helper — derives the bundle path for a (laneId, runId) pair. */

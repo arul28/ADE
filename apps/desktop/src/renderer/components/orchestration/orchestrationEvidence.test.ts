@@ -91,9 +91,17 @@ describe("orchestrationEvidence", () => {
     ).toBe("login.png");
   });
 
-  it("exposes an external URL only when externalRef carries one", () => {
+  it("exposes an external URL, or an artifact deeplink for artifactId-backed evidence", () => {
+    // Explicit URL (PR / Linear / deeplink) is used verbatim.
     expect(evidenceExternalUrl(asset({ id: "A1", kind: "pr_link", externalRef: { url: "https://gh/pr/1" } }))).toBe("https://gh/pr/1");
-    expect(evidenceExternalUrl(asset({ id: "A2", kind: "proof_artifact", externalRef: { artifactId: "art-1" } }))).toBeNull();
-    expect(evidenceExternalUrl(asset({ id: "A3", kind: "screenshot" }))).toBeNull();
+    // Proof / computer-use / video assets carry only an artifactId → derive the
+    // canonical ade://artifact/<id> deeplink so the row/chip is openable.
+    expect(evidenceExternalUrl(asset({ id: "A2", kind: "proof_artifact", externalRef: { artifactId: "art-1" } }))).toBe("ade://artifact/art-1");
+    expect(evidenceExternalUrl(asset({ id: "A3", kind: "computer_use", externalRef: { artifactId: "art 2/x" } }))).toBe("ade://artifact/art%202%2Fx");
+    expect(evidenceExternalUrl(asset({ id: "A4", kind: "video", externalRef: { artifactId: "vid-9" } }))).toBe("ade://artifact/vid-9");
+    // An explicit URL still wins over an artifactId when both are present.
+    expect(evidenceExternalUrl(asset({ id: "A5", kind: "proof_artifact", externalRef: { url: "https://host/a", artifactId: "art-1" } }))).toBe("https://host/a");
+    // No externalRef target → non-interactive.
+    expect(evidenceExternalUrl(asset({ id: "A6", kind: "screenshot" }))).toBeNull();
   });
 });

@@ -149,6 +149,53 @@ describe("orchestrationService", () => {
     await svc.dispose();
   });
 
+  it("re-reserves a deterministic requestId once its pending receipt ages past the TTL", async () => {
+    let clock = new Date("2026-01-01T00:00:00.000Z");
+    const svc = createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+      now: () => clock,
+    });
+    const created = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Stale receipt",
+    });
+
+    const reserved = await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "spawn-stale-1",
+      kind: "spawnAgent",
+    });
+    expect(reserved).toEqual({ ok: true, status: "reserved" });
+
+    // Still pending and within the TTL → surfaced as a live duplicate so the
+    // caller waits instead of fabricating success.
+    clock = new Date("2026-01-01T00:05:00.000Z");
+    const withinTtl = await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "spawn-stale-1",
+      kind: "spawnAgent",
+    });
+    expect(withinTtl).toMatchObject({
+      ok: true,
+      status: "duplicate",
+      receipt: { status: "pending" },
+    });
+
+    // Aged past the 15-minute pending-receipt TTL → drop the wedged receipt and
+    // reserve fresh so the requestId is not suppressed forever.
+    clock = new Date("2026-01-01T00:16:00.000Z");
+    const reReserved = await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "spawn-stale-1",
+      kind: "spawnAgent",
+    });
+    expect(reReserved).toEqual({ ok: true, status: "reserved" });
+    const receipts = svc.getManifestForRun(created.runId)!.receipts ?? [];
+    const matching = receipts.filter((r) => r.requestId === "spawn-stale-1");
+    expect(matching).toHaveLength(1);
+    expect(matching[0]!.createdAt).toBe("2026-01-01T00:16:00.000Z");
+    await svc.dispose();
+  });
+
   it("hydrates lane runs from the persistent discovery index after restart", async () => {
     const svc = createOrchestrationService({
       resolveLaneWorktree: () => lane,

@@ -7,7 +7,56 @@ import type {
 
 const inFlight = new Map<string, Promise<void>>();
 
+// One coalesced retry timer per run. A drain pass is event-driven (fired on a
+// mutation commit); an entry deferred by backoff (`nextAttemptAt` in the future)
+// would otherwise never be retried until some unrelated mutation happens to fire
+// another drain. When a pass leaves such an entry we arm ONE timer for the
+// soonest `nextAttemptAt` that performs exactly one more drain. It is cleared and
+// re-armed on every later pass (so it always tracks the current soonest wake) and
+// unref'd so it can never hold the process open. This is a single pending-work
+// timer, not a poll loop.
+const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 type DrainContext = Pick<OrchestrationSessionContext, "runId" | "bundlePath">;
+
+function clearRetryTimer(runId: string): void {
+  const existing = retryTimers.get(runId);
+  if (existing) {
+    clearTimeout(existing);
+    retryTimers.delete(runId);
+  }
+}
+
+/**
+ * After a drain pass, arm a single coalesced timer for the soonest future
+ * `nextAttemptAt` among still-pending entries. Delays are measured against the
+ * service clock (`svc.nowMs()`) so an injected/frozen test clock cannot make the
+ * timer spin against wall time. No-op when nothing is deferred.
+ */
+function scheduleDeferredRetry(
+  svc: ReturnType<typeof createOrchestrationService>,
+  chat: OrchestrationAgentChatHandle,
+  ctx: DrainContext,
+): void {
+  clearRetryTimer(ctx.runId);
+  const manifest = svc.getManifestForRun(ctx.runId);
+  if (!manifest) return;
+  const nowMs = svc.nowMs();
+  let soonest = Number.POSITIVE_INFINITY;
+  for (const entry of manifest.outbox ?? []) {
+    if (entry.status !== "pending" || !entry.nextAttemptAt) continue;
+    const at = Date.parse(entry.nextAttemptAt);
+    if (Number.isFinite(at) && at > nowMs && at < soonest) soonest = at;
+  }
+  if (!Number.isFinite(soonest)) return;
+  const delay = Math.max(0, soonest - nowMs);
+  const timer = setTimeout(() => {
+    retryTimers.delete(ctx.runId);
+    void drainOutbox(svc, chat, ctx);
+  }, delay);
+  if (typeof timer.unref === "function") timer.unref();
+  retryTimers.set(ctx.runId, timer);
+}
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -44,6 +93,22 @@ async function runDrain(
   ctx: DrainContext,
 ): Promise<void> {
   const attempted = new Set<string>();
+  try {
+    await drainLoop(svc, chat, ctx, attempted);
+  } finally {
+    // Always (re)arm the deferred-retry timer against the post-pass state so an
+    // entry parked on backoff is retried even if no further mutation fires a
+    // drain. Runs in `finally` so a mid-loop throw still schedules the wake.
+    scheduleDeferredRetry(svc, chat, ctx);
+  }
+}
+
+async function drainLoop(
+  svc: ReturnType<typeof createOrchestrationService>,
+  chat: OrchestrationAgentChatHandle,
+  ctx: DrainContext,
+  attempted: Set<string>,
+): Promise<void> {
   while (true) {
     const due = svc
       .listDueOutbox(ctx.runId)

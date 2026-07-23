@@ -313,6 +313,21 @@ function createSpawnAgentTool(
           };
         }
         if (reservation.status === "duplicate") {
+          // Only a COMPLETED receipt carries a real result to replay. A still
+          // PENDING receipt means an earlier spawn with this requestId is in
+          // flight (or crashed mid-flight and has not yet aged past the stale
+          // receipt sweep). Replaying it as success would report a session that
+          // may not exist (undefined sessionId) — surface a retryable in-progress
+          // result so the caller waits instead of treating delegation as done.
+          if (reservation.receipt.status !== "completed") {
+            return {
+              ok: false as const,
+              error: "spawn_in_progress",
+              retryable: true,
+              message:
+                "A spawn with this requestId is already in progress. Retry once it settles; a crashed reservation is reclaimed by recoverStaleTasks after the receipt TTL.",
+            };
+          }
           return {
             ok: true as const,
             sessionId: reservation.receipt.result?.sessionId,
@@ -593,6 +608,20 @@ function createMessageAgentTool(args: {
           };
         }
         if (reservation.status === "duplicate") {
+          // A COMPLETED receipt means the message was already enqueued+delivered
+          // under this requestId — replay the deduped success. A PENDING receipt
+          // means the enqueue never completed (concurrent/crashed retry); the
+          // outbox entry does not exist, so reporting success would silently drop
+          // the message. Return a retryable in-progress result instead.
+          if (reservation.receipt.status !== "completed") {
+            return {
+              ok: false as const,
+              error: "delivery_in_progress",
+              retryable: true,
+              message:
+                "A message with this requestId is already in progress. Retry once it settles; a crashed reservation is reclaimed by recoverStaleTasks after the receipt TTL.",
+            };
+          }
           return { ok: true as const, deduped: true };
         }
         const origin = {

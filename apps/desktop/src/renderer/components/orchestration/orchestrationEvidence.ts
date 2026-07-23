@@ -18,6 +18,7 @@ import type {
   OrchestrationAssetKind,
   OrchestrationManifest,
 } from "../../../shared/types/orchestration";
+import { buildDeeplink } from "../../../shared/deeplinks";
 
 /**
  * Asset kinds that count as run evidence. Plan-authoring assets (`html_spec`,
@@ -99,13 +100,22 @@ export function evidenceKindLabel(kind: OrchestrationAssetKind): string {
 }
 
 /**
- * The externally-openable URL for an asset, if any. PR / Linear / deeplink
- * assets carry a `url` in `externalRef`; proof assets generally do not (they
- * open via the proof drawer by `artifactId`, handled elsewhere).
+ * The openable target for an asset, if any.
+ *
+ * PR / Linear / deeplink assets carry an explicit `url` in `externalRef` — that
+ * takes precedence. Proof / computer-use / video assets instead carry only an
+ * `externalRef.artifactId`; for those we derive the canonical `ade://artifact/<id>`
+ * deeplink so the row/chip is openable (it resolves through ADE's existing
+ * artifact/proof deeplink handling). Everything else is non-interactive.
  */
 export function evidenceExternalUrl(asset: OrchestrationAsset): string | null {
   const url = asset.externalRef?.url?.trim();
-  return url ? url : null;
+  if (url) return url;
+  const artifactId = asset.externalRef?.artifactId?.trim();
+  if (artifactId) {
+    return buildDeeplink({ kind: "artifact", artifactId }, { form: "ade" });
+  }
+  return null;
 }
 
 const KIND_ORDER: OrchestrationAssetKind[] = [

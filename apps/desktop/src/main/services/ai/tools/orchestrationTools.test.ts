@@ -468,6 +468,79 @@ describe("spawnAgent tool", () => {
     });
   });
 
+  it("redelivers a backoff-deferred brief via a self-armed timer with no further mutation", async () => {
+    // Real service clock (no injected `now`) so the deferred-retry timer's
+    // wall-clock delay matches the service's dueness check.
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    // Fail the first delivery, then succeed on the timer-driven retry.
+    setup.chat.sendMessage
+      .mockRejectedValueOnce(new Error("provider temporarily unavailable"))
+      .mockResolvedValue(undefined);
+    const tools = makeToolSet(setup, "lead", "S-lead");
+
+    const spawned: any = await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawned).toMatchObject({ ok: true, sessionId: "S-spawned-1" });
+
+    const briefId = setup.svc
+      .getManifestForRun(setup.runId)!
+      .outbox!.find((entry) => entry.kind === "brief")!.id;
+    const briefStatus = () =>
+      setup.svc.getManifestForRun(setup.runId)!.outbox!.find((e) => e.id === briefId)!.status;
+    // Deferred by the first failure; only ONE delivery attempt so far.
+    expect(briefStatus()).toBe("pending");
+    expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
+
+    // Deliberately issue NO further tool call / mutation. The timer armed by the
+    // deferred drain must retry on its own once the (500ms) backoff elapses.
+    await vi.waitFor(() => expect(briefStatus()).toBe("delivered"), {
+      timeout: 5000,
+      interval: 25,
+    });
+    expect(setup.chat.sendMessage).toHaveBeenCalledTimes(2);
+    expect(setup.chat.sendMessage.mock.calls[1]![0]).toMatchObject({
+      sessionId: "S-spawned-1",
+      text: VALID_BRIEF,
+    });
+  });
+
+  it("does not replay a pending receipt as a successful spawn", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const requestId = "spawn-pending-1";
+    // Simulate a concurrent / crashed spawn: a receipt is reserved (pending) but
+    // never completed — no session and no agent row exist for it.
+    const reserved = await setup.svc.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "spawnAgent",
+    });
+    expect(reserved).toMatchObject({ ok: true, status: "reserved" });
+
+    const spawn = makeToolSet(setup, "lead", "S-lead").spawnAgent!;
+    const result: any = await spawn.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+      requestId,
+    });
+
+    // No fabricated success, no undefined session, no second session, no agent row.
+    expect(result).toMatchObject({ ok: false, error: "spawn_in_progress", retryable: true });
+    expect(result.sessionId).toBeUndefined();
+    expect(setup.chat.createSession).not.toHaveBeenCalled();
+    expect(
+      setup.svc.getManifestForRun(setup.runId)!.agents.some((a) => a.role === "worker"),
+    ).toBe(false);
+  });
+
   it("surfaces a permanently undeliverable brief in the decision log", async () => {
     let clock = new Date("2026-01-01T00:00:00.000Z");
     setup = await setupWithRun("lead", { now: () => clock });
@@ -1434,6 +1507,50 @@ describe("messageAgent tool", () => {
     expect(pingEntries).toHaveLength(1);
     expect(pingEntries[0]!.status).toBe("delivered");
     expect(setup.chat.steer).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replay a pending receipt as a delivered message", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-msg",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+
+    const requestId = "msg-pending-1";
+    // A prior message reservation that never completed (concurrent / crashed):
+    // pending receipt, but no outbox entry was ever enqueued.
+    const reserved = await setup.svc.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "messageAgent",
+    });
+    expect(reserved).toMatchObject({ ok: true, status: "reserved" });
+
+    setup.chat.steer.mockClear();
+    setup.chat.sendMessage.mockClear();
+    const result: any = await leadTools.messageAgent!.execute({
+      targetSessionId: spawnResult.sessionId,
+      kind: "queue",
+      intent: "status",
+      text: "status ping",
+      requestId,
+    });
+
+    // In-progress, not a fabricated success — and nothing was enqueued/delivered.
+    expect(result).toMatchObject({ ok: false, error: "delivery_in_progress", retryable: true });
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(
+      (manifest.outbox ?? []).some(
+        (entry) => entry.kind === "ping" && entry.targetSessionId === spawnResult.sessionId,
+      ),
+    ).toBe(false);
+    expect(setup.chat.steer).not.toHaveBeenCalled();
+    expect(setup.chat.sendMessage).not.toHaveBeenCalled();
   });
 });
 

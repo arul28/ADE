@@ -140,6 +140,17 @@ const LEAD_DENY_PATTERNS = [
   "/receipts/**",
   "/outbox",
   "/outbox/**",
+  // Gated lifecycle decisions are service-owned: finishing mode is captured only
+  // through chooseFinishingMode → recordFinishingChoice (so the branch/PR flow
+  // cannot be triggered without the user-choice card), the goal source through
+  // recordGoalSource (validated kind), and scheduled follow-ups through
+  // recordScheduledFollowup. None are ever written by raw lead manifestPatch.
+  "/finishing",
+  "/finishing/**",
+  "/goalSource",
+  "/goalSource/**",
+  "/scheduledFollowups",
+  "/scheduledFollowups/**",
   "/phases/{id:planning}/status",
   "/phases/{id:planning}/completedAt",
   "/currentPhase",
