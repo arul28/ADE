@@ -83,7 +83,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `ade serve` for non-primary sockets, tracks the per-user login service
   install/health state, and applies short per-call timeouts for project
   registration, file actions, and event polling so renderer IPC calls do not
-  wait for the desktop handler timeout.
+  wait for the desktop handler timeout. `LocalRuntimeStatus` now also carries
+  the brain's `pid`, its bound `syncPort`, the account-directory `publishHealth`
+  slice (state + `failingSinceMs` + last-leg durations), and the one-shot
+  `lastWedge` recovered by the event-loop watchdog. The Machines panel renders
+  publish health as a This-Mac indicator (`remoteMachineModel.describePublishHealth`,
+  which reads inactive states as "none" and only alarms a real failure after it
+  has persisted ~2 minutes), and the app shell reads `lastWedge` for the
+  `BrainRecoveryNotice` banner.
 - `apps/desktop/src/main/services/runtime/lastFailureStore.ts` — bounded typed
   project/machine failure reports used when the background service exits before
   desktop IPC can obtain a normal runtime error.
@@ -103,7 +110,14 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   connected / available / unavailable sections, Pair and SSH entry paths,
   share-this-machine and connection-doctor cards, saved/discovered machine
   rows, route and latency status, SSH host-key trust, structured connection
-  errors, project picker, and the dirty-local-work warning.
+  errors, project picker, the dirty-local-work warning, and the This-Mac
+  route-publish health indicator. `remoteMachineModel.ts`
+  (`describePublishHealth`) is the pure classifier for that indicator: the
+  publishing `published` state reads healthy, the non-publishing states
+  (`sync_disabled`, `not_host`, `account_signed_out`, `machine_key_unavailable`,
+  …) read as "none", and every other state is a failure that only alarms once it
+  has persisted at least `PUBLISH_FAILING_ALARM_MS` (2 min) so a transient blip
+  stays quiet.
 - `apps/desktop/src/renderer/components/projects/RemoteProjectOpenDialog.tsx` —
   confirmation dialog before opening a remote project, surfaces local matches
   with uncommitted changes.
@@ -227,7 +241,10 @@ run a local repair against data owned by the remote machine. See
    the host signs the client's challenge nonce over an ephemeral X25519
    exchange, the client verifies that signature against the directory key
    before releasing any account credential, and both the account attestation
-   and the returned paired credentials travel ChaCha20-Poly1305-sealed. A
+   and the returned paired credentials travel AEAD-sealed under a negotiated
+   cipher — ChaCha20-Poly1305, or AES-256-GCM when a packaged Electron's bundled
+   BoringSSL lacks ChaCha20-Poly1305, with the chosen cipher bound into the
+   signed challenge so it cannot be downgraded. A
    host-identity verification failure aborts adoption immediately (no route
    is retried); hosts without a published key remain relay-only-adoptable.
    Successful adoption saves the returned DPoP-bound credentials either way.

@@ -266,7 +266,10 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
   — installed ADE version, packaged/dev badge, latest GitHub release
   lookup, release notes link, manual update check button, and ADE runtime
-  install / health status when available.
+  install / health status when available. It consumes the shared
+  `useAutoUpdateSnapshot` hook so "Installed" reads truthfully: the running
+  build normally, but the staged version when a download is `ready` or
+  `parked`, with "Latest" showing `latestKnownVersion`.
 - `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
@@ -516,24 +519,36 @@ Auto-update (top-bar control, not a settings tab):
   electron-updater wrapper that owns the renderer-visible
   `AutoUpdateSnapshot` (`status: "idle" | "checking" | "downloading"
   | "ready" | "installing" | "error"`, version, progress, recently
-  installed notice). Tracks superseded downloads against the current
-  ready version via `compareUpdateVersions` (a SemVer-aware
-  comparator that handles `v` prefixes, missing patch, and
-  prerelease ordering) so a same-or-older `update-available` while a
+  installed notice, plus the `parked` / `autoApplyPending` /
+  `autoApplySuppressedUntil` fields and `currentVersion` /
+  `latestKnownVersion` for the truthful-version surfaces). Tracks superseded
+  downloads against the current ready version via `compareUpdateVersions`
+  (the SemVer-aware comparator in `autoUpdateVersions.ts` that handles
+  `v` prefixes, missing patch, and prerelease ordering) so a same-or-older
+  `update-available` while a
   newer build is already staged is logged and ignored instead of
   clobbering the staged installer; packaged builds schedule startup and
   periodic update checks, while dev/source launches leave those timers off
   to avoid surfacing missing-updater-config errors; if the new build is strictly
   newer, the cached installer dir is wiped and the snapshot
   transitions back through `downloading`. `quitAndInstall()` is
-  asynchronous: it gates on the current snapshot being `ready`,
+  transactional and asynchronous: it gates on the current snapshot being `ready`,
   re-runs `updater.checkForUpdates()` with `allowReady: true` to
   confirm the staged installer is still the latest, and only then
   flips the snapshot to `installing`, persists the
   `pendingInstallUpdate` global-state row, and calls
   `updater.quitAndInstall(false, true)`. If the refresh check fails,
   it surfaces the error, drops the cache, and clears the pending
-  install. On the next launch, `reconcilePersistedUpdateState`
+  install. A consent that aborts before the native updater takes over sets
+  `snapshot.parked` with a typed `AutoUpdateInstallAbortReason`
+  (`refresh_failed`, `install_preflight_failed`, `prepare_failed`,
+  `prepare_timeout`, `handoff_failed`) so the shell banner can offer a retry.
+  When the runtime reports `RuntimeActivitySummary.idle` (no active agent turns
+  or work sessions), a staged update is auto-applied after an idle grace period
+  plus a renderer-visible countdown (`autoApplyPending`); an explicit cancel
+  suppresses the next countdown (`autoApplySuppressedUntil`), and
+  `ADE_DISABLE_AUTO_UPDATE_APPLY=1` turns auto-apply off. On the next launch,
+  `reconcilePersistedUpdateState`
   matches the running version against `pendingInstallUpdate` using
   the same SemVer comparator (so `>=` target counts as installed,
   even if the running build is one ahead), populates
@@ -560,6 +575,34 @@ Auto-update (top-bar control, not a settings tab):
   on GitHub" button that opens `recentlyInstalled.githubReleaseUrl`
   (the GitHub release page). Each button is shown only when its URL is
   present; opening either link also dismisses the notice.
+- `apps/desktop/src/renderer/components/app/useAutoUpdateSnapshot.ts` — the
+  shared subscription hook (initial `updateGetState()` read + live
+  `onUpdateEvent`). Every truthful-version surface — the top-bar pill, the
+  app-shell banner, and the About panel — consumes it so they never disagree
+  about what is running versus what is staged.
+- `apps/desktop/src/renderer/components/app/AutoUpdateBanner.tsx` — the
+  app-shell staleness banner plus the idle-auto-apply countdown toast,
+  colocated so both read one snapshot subscription. Renders a `parked` state as
+  "Update to vX didn't finish — Restart to retry" (parked wins over a plain
+  `ready`) and a plain `ready` state as "Running vCurrent · vNext is ready",
+  each with a **Restart now** action; dismissal is keyed on a stable signature
+  so it reappears on a newer staged version or a fresh abort. The countdown
+  toast is driven off `autoApplyPending` with a **Cancel** action wired to
+  `updateCancelAutoApply()`.
+- `apps/desktop/src/renderer/components/app/BrainRecoveryNotice.tsx` — the
+  app-shell notice shown once per distinct machine-brain event-loop recovery.
+  It reads the one-shot `localRuntime.lastWedge` from `app.getInfo()`,
+  announces "ADE recovered from a background issue … a stuck task (…) was
+  restarted", and acknowledges by persisting the wedge `ts` to `localStorage`
+  so the same event never nags twice while a fresh recovery (new `ts`)
+  reappears. The wedge itself is produced by the brain event-loop watchdog
+  (see [ARCHITECTURE.md §2.1](../../ARCHITECTURE.md) and
+  [Storage and recovery](../storage-and-recovery/README.md)).
+- `apps/desktop/src/main/services/updates/autoUpdateVersions.ts` — the pure
+  SemVer helpers shared by the service and the `ade doctor` CLI:
+  `compareUpdateVersions` (core + prerelease ordering, `v`-prefix and
+  missing-patch tolerant), `buildReleaseNotesUrl` (the docs changelog link),
+  and `buildGithubReleaseUrl` (the tagged GitHub release page).
 
 ## Detail docs
 
@@ -775,6 +818,17 @@ Onboarding and settings follow a simple rule:
   the middle of quitAndInstall. New status checks should treat
   `ready` and `installing` symmetrically when deciding whether to
   cancel or override the staged update.
+- **A parked install is not a failure.** An aborted consent lands in
+  `snapshot.parked`, not `error` — the download is still staged and the shell
+  banner offers a **Restart now** retry. Keep parked distinct from the disk /
+  network / verification error classification, and let a parked state win over a
+  plain `ready` state when both describe the same version.
+- **Idle auto-apply needs the runtime activity summary.** Auto-apply only arms
+  when the service can read `RuntimeActivitySummary.idle` and the machine has
+  been continuously idle for the grace period; renewed activity clears the
+  countdown, and an explicit cancel sets `autoApplySuppressedUntil`. It is off
+  under `ADE_DISABLE_AUTO_UPDATE_APPLY=1` and on dev/source launches that have no
+  auto-check timers.
 
 ## Cross-links
 

@@ -340,6 +340,7 @@ ade machines list --text
 ade machines connect <machine-key> --project ADE
 ade machines hop <device-id> --session chat-1
 ade doctor --json
+ade doctor --online --text                        # also check the latest desktop release over the network
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init
@@ -516,19 +517,21 @@ Provider credentials, GitHub tokens, Linear tokens, and computer-use policy
 remain separate and are read from ADE project settings and their existing
 secure stores.
 
-`ade doctor` reports local-only readiness metadata by default:
+`ade doctor` inspects the installed app and machine-brain health and prints one
+status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
+`fail`. The rows are:
 
-- CLI version, Node/runtime version, project root, workspace root, `.ade` initialization, and config file presence.
-- Machine endpoint path, whether the endpoint exists, and whether this invocation is using an attached runtime, desktop bridge, or headless mode.
-- RPC tool count, ADE action count, and action counts by domain.
-- Git repository readiness and GitHub readiness signals from local remotes, `gh` availability, and token environment presence.
-- Linear readiness from the active project's `.ade/secrets` credential store (`linear.token.v1`), a legacy project-scoped encrypted token file, or headless environment variables.
-- Provider/model readiness from local ADE config, API-key provider references, and provider CLI availability.
-- Computer-use readiness from local platform capabilities.
-- Sync and Relay readiness, including a relay end-to-end self-probe verdict (`relay self-probe`). When a local ADE brain is running the probe performs one round-trip through ADE Relay and reports `ready`, a `FAILED:` verdict, or a graceful skip; without a running brain (or without a validated relay bridge) it reports skipped/unavailable and never fails the run. `ade sync status` surfaces the same verdict on its `relay end-to-end` line.
-- Packaged/PATH status for the `ade` binary and concrete next actions.
+- **App** — the installed ADE desktop version (read from the `.app` bundle on disk) against the latest known version. Latest-known comes from the on-disk `update-status.json` by default; pass `--online` to also fetch the latest release from GitHub (short timeout, best-effort). `warn` when the install is behind or missing.
+- **Brain** — whether the machine brain responds on its socket, plus its version, pid, and uptime. `fail` when it is not responding or when its build identity does not match the expected runtime for this CLI/role.
+- **Wedge history** — the last brain-loop watchdog wedge that was recovered (blocking command and how long it blocked), read from the runtime dir or the brain's reported `lastWedge`. `warn` when the most recent wedge is within the last 24h.
+- **Sync port** — the sync host port the brain bound. `ok` on the default port, `warn` when bound elsewhere (with the base-port holders it found), `fail` when the brain is up but reported no port.
+- **Publish health** — account-directory publish state from the brain's sync route health. `ok` when a publish succeeded recently, `fail` when it has been failing for ≥2 min, otherwise `warn`, with the slowest publish leg annotated.
+- **Relay** — relay route health as already computed by the brain. `ok` when the relay control is connected, the bridge is validated, and the end-to-end round-trip is verified; `fail` when the route is not fully validated; `warn` when relay is disabled or route health is unavailable.
+- **Account** — whether this machine's brain is signed in to an ADE account (and the credential source), read via the brain's `account.call status`. `warn` when signed out or unavailable.
 
-Default doctor / auth checks do not call provider, GitHub, or Linear networks. They report presence and local readiness only, without printing secret values. The one network touch is the optional relay end-to-end self-probe above, which runs only when a local brain and validated relay bridge are present.
+Default doctor does not call provider, GitHub, or Linear networks — it talks only
+to the local brain over its socket, and never prints secret values. The one
+optional network touch is the `--online` desktop-release lookup above.
 
 Agents starting an unfamiliar ADE session should begin with:
 

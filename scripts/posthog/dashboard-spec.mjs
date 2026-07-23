@@ -11,6 +11,12 @@ export const EVENTS = Object.freeze({
   ERROR: "ade_error",
   DAILY_USAGE_SUMMARY: "ade_daily_usage_summary",
   ANALYTICS_BUDGET: "ade_analytics_budget",
+  UPDATE_INSTALL_ABORTED: "ade_update_install_aborted",
+  UPDATE_QUIT_ESCALATED: "ade_update_quit_escalated",
+  UPDATE_AUTO_APPLIED: "ade_update_auto_applied",
+  UPDATE_AUTO_APPLY_CANCELLED: "ade_update_auto_apply_cancelled",
+  BRAIN_RECOVERED: "ade_brain_recovered",
+  PUBLISH_FAILING: "ade_publish_failing",
   MARKETING_APP_OPENED: "ade_marketing_app_opened",
   MARKETING_SCREEN_VIEWED: "ade_marketing_screen_viewed",
   MARKETING_FEATURE_USED: "ade_marketing_feature_used",
@@ -502,6 +508,22 @@ export const dashboardSpec = Object.freeze({
           }),
         ),
         insight(
+          "reliability-incidents",
+          "Reliability incidents",
+          "Brain wedge recoveries, sustained route-publish failures, and update-flow aborts/escalations. Coarse counts only; command names are closed action slugs and no payload content is ever attached.",
+          trends({
+            series: [
+              eventNode(EVENTS.BRAIN_RECOVERED, "Brain recovered from wedge"),
+              eventNode(EVENTS.PUBLISH_FAILING, "Route publish failing"),
+              eventNode(EVENTS.UPDATE_INSTALL_ABORTED, "Update install aborted"),
+              eventNode(EVENTS.UPDATE_QUIT_ESCALATED, "Update quit escalated"),
+              eventNode(EVENTS.UPDATE_AUTO_APPLIED, "Update auto-applied"),
+            ],
+            interval: "day",
+            dateFrom: "-30d",
+          }),
+        ),
+        insight(
           "analytics-sent-vs-dropped",
           "Delayed local budget rollups",
           "A local rollup appears only when an installation captures again on a later UTC day. Accepted means admitted to ADE's bounded queue, not confirmed delivered by PostHog; the current day and installations that do not return are intentionally absent.",
@@ -540,7 +562,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "monthly-analytics-volume",
           "30-day ingested analytics volume",
-          "PostHog's actual ingested count across ADE's closed 19-event catalog. The goal line marks the current 1,000,000-event monthly Product Analytics free allowance. This is an instrumentation health view, not the account billing meter: stray or abusive events sent with the public project token are outside this chart.",
+          "PostHog's actual ingested count across ADE's closed 25-event catalog. The goal line marks the current 1,000,000-event monthly Product Analytics free allowance. This is an instrumentation health view, not the account billing meter: stray or abusive events sent with the public project token are outside this chart.",
           trends({
             series: ALL_INGESTED_EVENTS.map((event) => eventNode(event, event)),
             formula: ALL_INGESTED_EVENTS_FORMULA,
