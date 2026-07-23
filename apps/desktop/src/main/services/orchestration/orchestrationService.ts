@@ -425,6 +425,14 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
             stall.ops,
             `stall sweep${stall.flagged ? `: flag ${stall.flagged} stalled agent(s)` : ""}`,
           );
+          // The sweep persisted the `lead_status` outbox entry but, unlike a
+          // tool-driven mutation, nothing here calls the drainer — so without
+          // this the stall notification would sit `pending` until an unrelated
+          // mutation or restart happened to flush it, defeating the alert in the
+          // idle scenario this timer exists for. Fire the run's registered
+          // activation drainer now (idempotent + coalesced; no-op when the
+          // committed ops enqueued nothing undelivered, e.g. a flag-clear).
+          fireRunActivationDrain(runtime);
         } catch (err) {
           if (!(err instanceof OrchestrationRunSuspendedError)) throw err;
         }
@@ -2139,7 +2147,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     args: { requestId: string; kind: OrchestrationReceiptKind },
   ): Promise<
     | { ok: true; status: "duplicate"; receipt: OrchestrationReceipt }
-    | { ok: true; status: "reserved" }
+    | { ok: true; status: "reserved"; adoptSessionId?: string }
     | { ok: false; error: string; message: string }
   > {
     const runtime = getOrCreateRuntime(runId, bundlePath);
@@ -2210,6 +2218,21 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
             return internalMutationError(err);
           }
           return { ok: true, status: "duplicate", receipt: completed };
+        }
+        // Crash-after-createSession: no agent row materialized (so `reconciled`
+        // is null), but this spawn receipt was stamped with the created sessionId
+        // before the completion patch could commit. The durable chat session
+        // exists yet the manifest doesn't know it — dropping the receipt and
+        // reserving fresh would spawn a SECOND session and orphan the first.
+        // Keep the pending receipt and tell the caller to ADOPT that session:
+        // it re-runs the normal completion (append agent row + brief + complete
+        // this receipt) against the existing session instead of respawning.
+        if (args.kind === "spawnAgent" && existing.result?.sessionId) {
+          return {
+            ok: true,
+            status: "reserved",
+            adoptSessionId: existing.result.sessionId,
+          };
         }
         staleReceiptDropped = true;
       } else if (reconciled) {
@@ -2311,6 +2334,64 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           `complete ${existing.kind} receipt`,
         );
         return { ok: true, manifest: res.manifest, etag: res.etag };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  /**
+   * Persist a recoverable identifier (the created sessionId) onto a still-PENDING
+   * receipt WITHOUT completing it. spawnAgent calls this immediately after
+   * `chat.createSession` succeeds and before the completion patch, so a crash in
+   * that window leaves the session discoverable: reserveReceipt's stale-pending
+   * path (and recoverStaleTasks) can adopt it on retry instead of spawning a twin
+   * and orphaning the first. A no-op if the receipt already completed.
+   */
+  async function stampReceiptResult(
+    runId: string,
+    bundlePath: string,
+    args: {
+      requestId: string;
+      result: NonNullable<OrchestrationReceipt["result"]>;
+    },
+  ): Promise<{ ok: true } | { ok: false; error: string; message: string }> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const receiptIndex = (manifest.receipts ?? []).findIndex(
+        (receipt) => receipt.requestId === args.requestId,
+      );
+      if (receiptIndex < 0) {
+        return {
+          ok: false,
+          error: "receipt_not_found",
+          message: `receipt ${args.requestId} is not reserved`,
+        };
+      }
+      const existing = manifest.receipts![receiptIndex]!;
+      if (existing.status === "completed") {
+        return { ok: true };
+      }
+      const receipts = [...(manifest.receipts ?? [])];
+      receipts[receiptIndex] = {
+        ...existing,
+        result: { ...existing.result, ...args.result },
+      };
+      try {
+        await directPatch(
+          runtime,
+          [{ op: "replace", path: "/receipts", value: receipts }],
+          `stamp ${existing.kind} receipt session`,
+        );
+        return { ok: true };
       } catch (err) {
         return internalMutationError(err);
       }
@@ -3662,6 +3743,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const existingReceipts = manifest.receipts ?? [];
       const survivingReceipts = existingReceipts.filter((receipt) => {
         if (receipt.status !== "pending") return true;
+        // A pending receipt stamped with a created sessionId is RECOVERABLE: the
+        // session exists but its agent row never committed (crash between
+        // createSession and completeReceipt). Reaping it would lose the only link
+        // back to the orphan, so a retry would spawn a twin. Keep it so the retry
+        // can adopt the session; it becomes a normal completed receipt on adoption.
+        if (receipt.result?.sessionId) return true;
         const createdMs = Date.parse(receipt.createdAt);
         return !Number.isFinite(createdMs) || nowMs - createdMs < PENDING_RECEIPT_TTL_MS;
       });
@@ -3715,6 +3802,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     recordDelegationSpawn,
     reserveReceipt,
     completeReceipt,
+    stampReceiptResult,
     releaseReceipt,
     enqueueOutbox,
     listDueOutbox,

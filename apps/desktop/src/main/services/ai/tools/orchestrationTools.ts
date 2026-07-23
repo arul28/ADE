@@ -409,33 +409,66 @@ function createSpawnAgentTool(
           input.role === "validator"
             ? "orchestrator-validator"
             : "orchestrator-worker";
+        // reserveReceipt hands back an `adoptSessionId` when a prior spawn for this
+        // requestId created its session but crashed before registering the agent
+        // row (see reserveReceipt's stale-pending path). Adopt that session and
+        // fall through to the normal register-and-complete path — creating a fresh
+        // one would spawn a twin and orphan the first.
+        const adoptSessionId = reservation.adoptSessionId;
         let created: { id: string };
-        try {
-          created = await chat.createSession({
-            laneId: ctx.laneId,
-            provider: routedSelection.provider,
-            model: routedSelection.modelId,
-            reasoningEffort: routedSelection.reasoningEffort ?? null,
-            fastMode: routedSelection.fastMode,
-            interactionMode,
-            surface: "work",
-            ...applyOrchestrationPermissionProfile(routedSelection.provider),
-            orchestrationRunId: ctx.runId,
-            orchestrationRole: input.role,
-            orchestrationParentSessionId: ctx.sessionId,
-            spawnKind: input.spawnKind ?? "subagent",
-            orchestrationTag: input.tag,
-            orchestrationStepId: input.stepId,
-            orchestrationBundlePath: ctx.bundlePath,
-            goal: input.goalSummary,
+        if (adoptSessionId) {
+          created = { id: adoptSessionId };
+        } else {
+          try {
+            created = await chat.createSession({
+              laneId: ctx.laneId,
+              provider: routedSelection.provider,
+              model: routedSelection.modelId,
+              reasoningEffort: routedSelection.reasoningEffort ?? null,
+              fastMode: routedSelection.fastMode,
+              interactionMode,
+              surface: "work",
+              ...applyOrchestrationPermissionProfile(routedSelection.provider),
+              orchestrationRunId: ctx.runId,
+              orchestrationRole: input.role,
+              orchestrationParentSessionId: ctx.sessionId,
+              spawnKind: input.spawnKind ?? "subagent",
+              orchestrationTag: input.tag,
+              orchestrationStepId: input.stepId,
+              orchestrationBundlePath: ctx.bundlePath,
+              goal: input.goalSummary,
+            });
+          } catch (err) {
+            await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId });
+            return {
+              ok: false as const,
+              error: "create_session_failed",
+              message: errorMessage(err),
+            };
+          }
+          // Stamp the created sessionId onto the still-pending receipt BEFORE the
+          // completion patch. If the process dies in this window the session is
+          // now recoverable — a retry adopts it (above) rather than orphaning it
+          // and spawning a duplicate. Roll back cleanly if the stamp itself fails.
+          const stamp = await svc.stampReceiptResult(ctx.runId, ctx.bundlePath, {
+            requestId,
+            result: { sessionId: created.id },
           });
-        } catch (err) {
-          await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId });
-          return {
-            ok: false as const,
-            error: "create_session_failed",
-            message: errorMessage(err),
-          };
+          if (!stamp.ok) {
+            try {
+              await chat.deleteSession({ sessionId: created.id });
+            } catch (_cleanupErr) {
+              // Best-effort cleanup — swallow to surface the stamp error.
+            }
+            await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId });
+            return {
+              ok: false as const,
+              error: "receipt_stamp_failed",
+              message:
+                "Created session but failed to persist its receipt (session cleaned up): " +
+                stamp.message,
+            };
+          }
         }
         const spawnedAt = new Date().toISOString();
         const patch: ManifestPatchOp = {
@@ -488,7 +521,21 @@ function createSpawnAgentTool(
           [patch, ...briefOps],
         );
         if (!completeRes.ok) {
-          // Clean up the orphaned session since manifest registration failed
+          if (adoptSessionId) {
+            // Adoption retry: the session pre-existed and the receipt is still
+            // pending+stamped. Do NOT delete the session or release the receipt —
+            // that would discard the recovery link. Leave both so a further retry
+            // can adopt again; just report the transient failure.
+            return {
+              ok: false as const,
+              error: "manifest_patch_failed",
+              message:
+                "Failed to register the adopted session's agent row (retryable): " +
+                completeRes.error,
+            };
+          }
+          // Fresh session created this attempt → clean rollback so a retry starts
+          // over (the stamp is dropped together with the receipt).
           try {
             await chat.deleteSession({ sessionId: created.id });
           } catch (_cleanupErr) {

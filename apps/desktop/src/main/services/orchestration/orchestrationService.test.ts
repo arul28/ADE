@@ -1364,6 +1364,34 @@ describe("orchestration heartbeat auto-recovery", () => {
     await svc.dispose();
   });
 
+  it("delivers the stall notification via the activation drainer with no other activity", async () => {
+    // Regression: the timer sweep persisted the lead_status outbox entry but never
+    // fired the registered drainer, so the promised notification sat `pending`
+    // until an unrelated mutation/restart — defeating the alert in the idle case.
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    const drains: { runId: string; bundlePath: string }[] = [];
+    svc.registerRunActivationDrainer((ctx) => drains.push(ctx));
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+
+    // The stall flag lands via the self-arming timer (no manual recovery call)...
+    await vi.waitFor(() => {
+      expect(
+        svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled,
+      ).toBe(true);
+    });
+    // ...and the drainer was invoked for this run to deliver the pending note.
+    await vi.waitFor(() => {
+      expect(drains.some((d) => d.runId === manifest.runId)).toBe(true);
+    });
+    expect(leadStatusEntries(svc.getManifestForRun(manifest.runId)!)).toHaveLength(1);
+    await svc.dispose();
+  });
+
   it("arms no stall timer when the run has no running non-lead agent", async () => {
     vi.useFakeTimers();
     try {

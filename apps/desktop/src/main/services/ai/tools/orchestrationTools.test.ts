@@ -675,6 +675,69 @@ describe("spawnAgent tool", () => {
     await svc2.dispose();
   });
 
+  it("adopts a session created before receipt completion instead of spawning a twin", async () => {
+    // Crash window: a prior spawn's chat.createSession succeeded and stamped the
+    // pending receipt with the sessionId, but the process died before
+    // completeReceipt appended the agent row + delivered the brief. The durable
+    // chat session exists with no manifest record. After the receipt TTL a retry
+    // with the same deterministic requestId must ADOPT that session (no second
+    // createSession) rather than orphaning it and creating a duplicate.
+    let clock = new Date("2026-01-01T00:00:00.000Z");
+    setup = await setupWithRun("lead", { now: () => clock });
+    await approveRun(setup);
+    const requestId = "spawn:adopt-fixed";
+
+    // Reconstruct the post-crash durable state: pending receipt stamped with the
+    // created sessionId, no agent row (session "S-spawned-1" is alive in chat).
+    const reserved = await setup.svc.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "spawnAgent",
+    });
+    expect(reserved).toMatchObject({ ok: true, status: "reserved" });
+    const stamp = await setup.svc.stampReceiptResult(setup.runId, setup.bundlePath, {
+      requestId,
+      result: { sessionId: "S-spawned-1" },
+    });
+    expect(stamp.ok).toBe(true);
+
+    // Age the pending receipt past its TTL so the retry takes the reconcile path.
+    clock = new Date(clock.getTime() + 16 * 60_000);
+
+    const spawn = makeToolSet(setup, "lead", "S-lead").spawnAgent!;
+    const result: any = await spawn.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+      requestId,
+    });
+
+    // Adopted the existing session — no duplicate created.
+    expect(result).toMatchObject({ ok: true, sessionId: "S-spawned-1" });
+    expect(setup.chat.createSession).not.toHaveBeenCalled();
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    // Agent row appended exactly once for the adopted session.
+    const workerRows = manifest.agents.filter((a) => a.role === "worker");
+    expect(workerRows).toHaveLength(1);
+    expect(workerRows[0]).toMatchObject({
+      sessionId: "S-spawned-1",
+      spawnRequestId: requestId,
+    });
+    // The receipt is completed against that session.
+    expect(manifest.receipts?.find((r) => r.requestId === requestId)).toMatchObject({
+      status: "completed",
+      result: { sessionId: "S-spawned-1" },
+    });
+    // The brief was delivered exactly once to the adopted session.
+    const briefCalls = setup.chat.sendMessage.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { sessionId?: string }).sessionId === "S-spawned-1",
+    );
+    expect(briefCalls).toHaveLength(1);
+    expect(briefCalls[0]![0]).toMatchObject({ text: VALID_BRIEF });
+  });
+
   it("reconciles a messageAgent receipt to an existing outbox entry instead of re-enqueuing", async () => {
     setup = await setupWithRun("lead");
     const requestId = "msg:reconcile-fixed";
