@@ -654,6 +654,13 @@ export type OrchestrationScheduledFollowup = {
   /** ADE scheduled-work id, once created via `chat.createScheduledWork`. */
   scheduledWorkId?: string;
   createdAt?: string;
+  /**
+   * Lifecycle status. Invariant: `"scheduled"` means a durable job is actually
+   * armed and therefore REQUIRES `scheduledWorkId` to be set — `recordScheduledFollowup`
+   * downgrades an unbacked `"scheduled"` to `"pending"` so the manifest never
+   * claims a follow-up that will never fire. `"pending"` = intent recorded, not
+   * yet armed; `"fired"`/`"cancelled"` are terminal.
+   */
   status?: "pending" | "scheduled" | "fired" | "cancelled";
 };
 

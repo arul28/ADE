@@ -77,6 +77,57 @@ describe("orchestrationService", () => {
     await svc.dispose();
   });
 
+  it("recordScheduledFollowup marks intent-only follow-ups pending; scheduled requires a scheduledWorkId", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const created = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Followups",
+    });
+    const bundlePath = created.manifest.bundlePath;
+
+    // No scheduledWorkId → intent only → pending (never a false "scheduled").
+    expect(
+      (await svc.recordScheduledFollowup(created.runId, bundlePath, {
+        summary: "re-check CI in 30m",
+      })).ok,
+    ).toBe(true);
+    // Optimistic status:"scheduled" without an id is downgraded to pending.
+    expect(
+      (await svc.recordScheduledFollowup(created.runId, bundlePath, {
+        summary: "forged scheduled without id",
+        status: "scheduled",
+      })).ok,
+    ).toBe(true);
+    // A real scheduledWorkId → genuinely scheduled.
+    expect(
+      (await svc.recordScheduledFollowup(created.runId, bundlePath, {
+        summary: "armed follow-up",
+        scheduledWorkId: "SW-123",
+        status: "scheduled",
+      })).ok,
+    ).toBe(true);
+    // Terminal caller states are preserved as given.
+    expect(
+      (await svc.recordScheduledFollowup(created.runId, bundlePath, {
+        summary: "cancelled follow-up",
+        status: "cancelled",
+      })).ok,
+    ).toBe(true);
+
+    const manifest = svc.getManifestForRun(created.runId)!;
+    const byName = (needle: string) =>
+      manifest.scheduledFollowups!.find((f) => f.summary === needle)!;
+    expect(byName("re-check CI in 30m").status).toBe("pending");
+    expect(byName("re-check CI in 30m").scheduledWorkId).toBeUndefined();
+    expect(byName("forged scheduled without id").status).toBe("pending");
+    expect(byName("armed follow-up").status).toBe("scheduled");
+    expect(byName("armed follow-up").scheduledWorkId).toBe("SW-123");
+    expect(byName("cancelled follow-up").status).toBe("cancelled");
+    await svc.dispose();
+  });
+
   it("reserves, completes, replays, and releases idempotency receipts", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
     const created = await svc.runCreate({

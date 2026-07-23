@@ -89,7 +89,10 @@ async function deliver(
 ): Promise<void> {
   const args = {
     sessionId: entry.targetSessionId,
-    text: entry.delivery.text,
+    // sendMessage/steer require a string; delivery.text is optional on the entry
+    // (interrupt carries none). Coalesce so the typed contract holds — an empty
+    // send is a no-op downstream, matching prior behaviour.
+    text: entry.delivery.text ?? "",
     ...(entry.delivery.metadata ? { metadata: entry.delivery.metadata } : {}),
   };
   if (entry.delivery.op === "sendMessage") {

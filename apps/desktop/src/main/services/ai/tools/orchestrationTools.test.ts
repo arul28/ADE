@@ -9,6 +9,7 @@ import { createOrchestrationService } from "../../orchestration/orchestrationSer
 import {
   buildOrchestrationSandboxConfig,
   createOrchestrationToolSet,
+  deriveMessageAgentRequestId,
   type OrchestrationAgentChatHandle,
   type OrchestrationSessionContext,
   type OrchestrationToolSetOptions,
@@ -1380,6 +1381,81 @@ describe("orchestration heartbeats", () => {
   });
 });
 
+describe("deriveMessageAgentRequestId (intentional-repeat semantics)", () => {
+  type Manifest = Parameters<typeof deriveMessageAgentRequestId>[0];
+  const parts = {
+    runId: "R-1",
+    fromSessionId: "S-lead",
+    targetSessionId: "S-worker",
+    kind: "queue",
+    intent: "status",
+    taskId: "T-1",
+    text: "keep going",
+  };
+  const manifestOf = (receipts: unknown[], outbox: unknown[]): Manifest =>
+    ({ receipts, outbox } as unknown as Manifest);
+
+  it("path 1 — fresh send: no prior committed send yields the bare base key", () => {
+    const id = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    expect(id.startsWith("msg:")).toBe(true);
+    expect(id.includes("#")).toBe(false);
+  });
+
+  it("path 2 — transient retry: a pending receipt (no outbox row) does NOT bump the epoch, so the retry reuses the same requestId and dedupes", () => {
+    const base = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    // A crashed/in-flight reservation left a PENDING receipt but never enqueued.
+    const retry = deriveMessageAgentRequestId(
+      manifestOf([{ requestId: base, kind: "messageAgent", status: "pending" }], []),
+      parts,
+    );
+    expect(retry).toBe(base);
+  });
+
+  it("path 3 — intentional repeat after success: a committed send (completed receipt + outbox row) salts a fresh requestId", () => {
+    const base = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    const repeat = deriveMessageAgentRequestId(
+      manifestOf(
+        [{ requestId: base, kind: "messageAgent", status: "completed" }],
+        [{ id: "O-1", requestId: base, status: "delivered" }],
+      ),
+      parts,
+    );
+    expect(repeat).toBe(`${base}#1`);
+    // The receipt+outbox for one send are unioned by requestId → counted once.
+    expect(repeat).not.toBe(`${base}#2`);
+  });
+
+  it("path 3 — survives receipt pruning: an outbox row alone (completed receipt pruned) still marks the send committed", () => {
+    const base = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    const repeat = deriveMessageAgentRequestId(
+      manifestOf([], [{ id: "O-1", requestId: base, status: "delivered" }]),
+      parts,
+    );
+    expect(repeat).toBe(`${base}#1`);
+  });
+
+  it("epoch increments across successive intentional repeats", () => {
+    const base = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    const third = deriveMessageAgentRequestId(
+      manifestOf(
+        [
+          { requestId: base, kind: "messageAgent", status: "completed" },
+          { requestId: `${base}#1`, kind: "messageAgent", status: "completed" },
+        ],
+        [],
+      ),
+      parts,
+    );
+    expect(third).toBe(`${base}#2`);
+  });
+
+  it("different logical content derives a different base key", () => {
+    const a = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    const b = deriveMessageAgentRequestId(manifestOf([], []), { ...parts, text: "stop" });
+    expect(a).not.toBe(b);
+  });
+});
+
 describe("messageAgent tool", () => {
   let setup: Setup;
   afterEach(async () => {
@@ -1692,6 +1768,51 @@ describe("messageAgent tool", () => {
     expect(pingEntries).toHaveLength(1);
     expect(pingEntries[0]!.status).toBe("delivered");
     expect(setup.chat.steer).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers an intentional repeat after a prior identical send succeeded (not deduped)", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-msg",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+
+    const messageAgent = leadTools.messageAgent!;
+    const pingArgs = {
+      targetSessionId: spawnResult.sessionId,
+      kind: "queue" as const,
+      intent: "status" as const,
+      text: "status ping",
+    };
+
+    setup.chat.steer.mockClear();
+    const first: any = await messageAgent.execute(pingArgs);
+    expect(first.ok).toBe(true);
+    expect(first.deduped).toBeUndefined();
+
+    // Same logical content, deliberately sent again after the first delivered.
+    // Content-fingerprint dedupe alone would swallow this as `deduped:true`; the
+    // epoch salt must reserve fresh so the intentional repeat is delivered.
+    const second: any = await messageAgent.execute(pingArgs);
+    expect(second.ok).toBe(true);
+    expect(second.deduped).toBeUndefined();
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const pingEntries = (manifest.outbox ?? []).filter(
+      (entry) =>
+        entry.kind === "ping" && entry.targetSessionId === spawnResult.sessionId,
+    );
+    // Two distinct deliveries — the repeat was NOT deduped.
+    expect(pingEntries).toHaveLength(2);
+    expect(new Set(pingEntries.map((e) => e.requestId)).size).toBe(2);
+    expect(pingEntries.every((e) => e.status === "delivered")).toBe(true);
+    expect(setup.chat.steer).toHaveBeenCalledTimes(2);
   });
 
   it("does not replay a pending receipt as a delivered message", async () => {

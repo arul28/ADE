@@ -55,6 +55,13 @@ import {
   isPlanningReadyForModelSelection,
   resolveOrchestrationModel,
 } from "../../orchestration/runtimeProfile";
+import type {
+  AgentChatCreateArgs,
+  AgentChatDeleteArgs,
+  AgentChatInterruptArgs,
+  AgentChatSendArgs,
+  AgentChatSteerArgs,
+} from "../../../../shared/types/chat";
 
 import { assessPlanReadiness } from "./orchestrationPlanQuality";
 import { deriveSuggestedValidationSteps } from "./orchestrationValidationDerivation";
@@ -107,14 +114,14 @@ export type OrchestrationSessionContext = {
  * Kept narrow on purpose so tests can stub without dragging the whole service.
  */
 export type OrchestrationAgentChatHandle = {
-  createSession: (args: Record<string, unknown>) => Promise<{ id: string }>;
-  deleteSession: (args: { sessionId: string }) => Promise<void>;
+  createSession: (args: AgentChatCreateArgs) => Promise<{ id: string }>;
+  deleteSession: (args: AgentChatDeleteArgs) => Promise<void>;
   sendMessage: (
-    args: Record<string, unknown>,
+    args: AgentChatSendArgs,
     options?: { awaitDispatch?: boolean },
   ) => Promise<void>;
-  steer: (args: Record<string, unknown>) => Promise<unknown>;
-  interrupt: (args: { sessionId: string }) => Promise<void>;
+  steer: (args: AgentChatSteerArgs) => Promise<unknown>;
+  interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
   readTranscript: (
     sessionId: string,
     limit?: number,
@@ -215,6 +222,68 @@ const MODEL_SELECTION_ROLE_VALUES = ["worker", "validator"] as const;
 
 function sha256(value: string): string {
   return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * Derive the idempotency `requestId` for a `messageAgent` send when the caller
+ * does NOT supply an explicit one. The base key is the message's logical content
+ * (run, sender, target, kind, intent, task, text). A pure content fingerprint is
+ * correct for guarding double-delivery of ONE logical send, but it would also
+ * suppress *intentional repeats* — deliberately sending the same message again
+ * after an identical prior send already committed (e.g. two "keep going" steers,
+ * or the same status ping after a second stall). To preserve those, salt the
+ * base key with an epoch: the number of prior COMMITTED sends of this exact
+ * logical content.
+ *
+ * Three paths this must satisfy:
+ *  1. Fresh send — no prior committed send → epoch 0 → bare base key.
+ *  2. Retry after a transient failure — the prior attempt never committed (its
+ *     receipt was released/left pending, and no outbox row was enqueued) → epoch
+ *     0 → SAME requestId → dedupes against the in-flight/pending reservation so a
+ *     crashed send is not double-delivered.
+ *  3. Intentional repeat after success — the prior identical send committed (a
+ *     completed receipt and/or an outbox row exists) → epoch ≥ 1 → salted
+ *     requestId → reserves fresh so the deliberate repeat is delivered, not
+ *     silently swallowed as `deduped`.
+ *
+ * A committed send materializes BOTH a completed receipt and an outbox row under
+ * the same requestId (written in one transaction). We union by requestId so each
+ * logical send counts once and the epoch survives independent pruning of either
+ * side (RECEIPT_CAP prunes receipts; the outbox row may outlive them, and vice
+ * versa). A PENDING receipt is the current/crashed reservation and must NOT bump
+ * the epoch, or path 2's retry would reserve fresh and double-deliver.
+ *
+ * Explicit caller-supplied requestIds keep strict content-independent dedupe.
+ */
+export function deriveMessageAgentRequestId(
+  manifest: OrchestrationManifest,
+  parts: {
+    runId: string;
+    fromSessionId: string;
+    targetSessionId: string;
+    kind: string;
+    intent: string;
+    taskId?: string;
+    text: string;
+  },
+): string {
+  const base = `msg:${sha256(
+    `${parts.runId}|${parts.fromSessionId}|${parts.targetSessionId}|${parts.kind}|${parts.intent}|${parts.taskId ?? ""}|${parts.text}`,
+  )}`;
+  const matches = (id: string | undefined): id is string =>
+    id === base || (typeof id === "string" && id.startsWith(`${base}#`));
+  const committed = new Set<string>();
+  for (const receipt of manifest.receipts ?? []) {
+    if (receipt.status === "completed" && matches(receipt.requestId)) {
+      committed.add(receipt.requestId);
+    }
+  }
+  for (const entry of manifest.outbox ?? []) {
+    // An outbox row only exists once its enqueue committed, so any status counts.
+    if (matches(entry.requestId)) committed.add(entry.requestId);
+  }
+  const epoch = committed.size;
+  return epoch === 0 ? base : `${base}#${epoch}`;
 }
 
 const LEAD_READ_ONLY_BASE = new Set([
@@ -607,9 +676,15 @@ function createMessageAgentTool(args: {
         }
         const requestId =
           input.requestId ??
-          `msg:${sha256(
-            `${args.ctx.runId}|${args.ctx.sessionId}|${input.targetSessionId}|${input.kind}|${intent}|${input.taskId ?? ""}|${input.text}`,
-          )}`;
+          deriveMessageAgentRequestId(manifest, {
+            runId: args.ctx.runId,
+            fromSessionId: args.ctx.sessionId,
+            targetSessionId: input.targetSessionId,
+            kind: input.kind,
+            intent,
+            taskId: input.taskId,
+            text: input.text,
+          });
         const reservation = await args.svc.reserveReceipt(
           args.ctx.runId,
           args.ctx.bundlePath,

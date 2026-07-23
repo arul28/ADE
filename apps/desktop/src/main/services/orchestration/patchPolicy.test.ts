@@ -170,6 +170,41 @@ describe("patchPolicy", () => {
     }
   });
 
+  it("denies lead-authored service-owned agent-row fields (spawnRequestId / stalled / lastHeartbeatAt)", () => {
+    const manifest = makeManifest();
+    const ops: ManifestPatchOp[] = [
+      // A forged spawn key would make reserveReceipt reconcile a future spawn
+      // onto the wrong existing session.
+      { op: "add", path: "/agents/{sessionId:S-worker}/spawnRequestId", value: "spawn:forged" },
+      // Clearing `stalled` defeats stall-notification dedup (it re-fires forever).
+      { op: "replace", path: "/agents/{sessionId:S-worker}/stalled", value: false },
+      { op: "add", path: "/agents/{sessionId:S-worker}/stalled", value: true },
+      // Forging a fresh heartbeat masks a real stall from the liveness sweep.
+      { op: "replace", path: "/agents/{sessionId:S-worker}/lastHeartbeatAt", value: "2099-01-01T00:00:00.000Z" },
+      // The lead may not touch its own service-owned fields either.
+      { op: "replace", path: "/agents/{sessionId:S-lead}/stalled", value: false },
+    ];
+    for (const op of ops) {
+      expect(
+        checkPatchOp(op, {
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          manifest,
+        }).allowed,
+        op.path,
+      ).toBe(false);
+    }
+  });
+
+  it("worker may still write its OWN heartbeat (lead-deny does not touch the role allow-list)", () => {
+    const manifest = makeManifest();
+    const ok = checkPatchOp(
+      { op: "replace", path: "/agents/{sessionId:S-worker}/lastHeartbeatAt", value: "now" },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(ok.allowed).toBe(true);
+  });
+
   it("denies lead-authored gated lifecycle state (finishing / goalSource / scheduledFollowups)", () => {
     const manifest = makeManifest();
     const ops: ManifestPatchOp[] = [

@@ -116,6 +116,20 @@ const LEAD_DENY_PATTERNS = [
   "/bundlePath",
   "/laneId",
   "/agents/*/sessionId",
+  // Service-owned agent-row fields. Written ONLY by service methods through the
+  // mutex-protected directPatch API (which bypasses this policy), never by raw
+  // lead manifestPatch:
+  //  - spawnRequestId: links an agent to its spawn receipt so reserveReceipt can
+  //    reconcile a stale/pruned receipt to the real session. A forged key would
+  //    make a future spawn reconcile onto the wrong existing session.
+  //  - stalled: set/cleared by the heartbeat-liveness sweep and drives stall
+  //    notification dedup; a lead-cleared flag re-fires notifications forever.
+  //  - lastHeartbeatAt (for OTHER agents / via lead): forging a fresh heartbeat
+  //    masks a real stall (the sweep skips setting `stalled`). Workers/validators
+  //    still write their OWN heartbeat via the role allow-list (SELF), unaffected.
+  "/agents/*/spawnRequestId",
+  "/agents/*/stalled",
+  "/agents/*/lastHeartbeatAt",
   "/leadState",
   "/leadState/planApprovedAt",
   "/leadState/planApprovedBySessionId",

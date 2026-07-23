@@ -13972,11 +13972,11 @@ export function createAgentChatService(args: {
   // service-registered run-activation drainer. Its methods are stable closures,
   // so binding it once keeps the drainer valid across runs/sessions.
   const orchestrationChatHandle: OrchestrationAgentChatHandle = {
-    createSession: (args) => createSession(args as never),
+    createSession: (args) => createSession(args),
     deleteSession: (args) => deleteSession(args),
-    sendMessage: (args, options) => sendMessage(args as never, options),
-    steer: (args) => steer(args as never),
-    interrupt: (args) => interrupt(args as never),
+    sendMessage: (args, options) => sendMessage(args, options),
+    steer: (args) => steer(args),
+    interrupt: (args) => interrupt(args),
     // Wrapped (not a direct reference) so the handle can be bound before
     // `readTranscript` is declared later in this factory body.
     readTranscript: (sessionId, limit, since) => readTranscript(sessionId, limit, since),

@@ -3005,15 +3005,28 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           message: "scheduled follow-up requires a plain-language summary",
         };
       }
+      const scheduledWorkId = followup.scheduledWorkId?.trim();
+      // "scheduled" asserts a durable job is actually armed. Only honour it when
+      // a real scheduledWorkId proves `chat.createScheduledWork` ran; otherwise
+      // the record is intent-only and MUST be "pending" so the manifest never
+      // reports a durable follow-up that will never fire (e.g. the model skipped
+      // or failed the scheduling CLI action). Terminal caller states
+      // (fired/cancelled) and an explicit "pending" are preserved; only an
+      // unbacked "scheduled" is downgraded. A later transition stamps
+      // "scheduled" once the scheduler id exists.
+      const requestedStatus =
+        followup.status ?? (scheduledWorkId ? "scheduled" : "pending");
+      const status: OrchestrationScheduledFollowup["status"] =
+        requestedStatus === "scheduled" && !scheduledWorkId
+          ? "pending"
+          : requestedStatus;
       const entry: OrchestrationScheduledFollowup = {
         id: followup.id?.trim() || `SF-${shortRand()}`,
         summary: followup.summary.trim(),
         ...(followup.scheduledFor?.trim() ? { scheduledFor: followup.scheduledFor.trim() } : {}),
-        ...(followup.scheduledWorkId?.trim()
-          ? { scheduledWorkId: followup.scheduledWorkId.trim() }
-          : {}),
+        ...(scheduledWorkId ? { scheduledWorkId } : {}),
         createdAt: nowIso(),
-        status: followup.status ?? "scheduled",
+        status,
       };
       const manifest = runtime.manifest!;
       const ops: ManifestPatchOp[] = [];
