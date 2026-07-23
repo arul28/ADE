@@ -31,6 +31,7 @@ vi.mock("../../lib/chatSessionEvents", () => ({
 
 vi.mock("../../lib/terminalAttention", () => ({
   sessionStatusBucket: vi.fn(() => "ended"),
+  canonicalInputFromSummary: vi.fn((session: unknown) => session),
 }));
 
 vi.mock("../../lib/sessions", () => ({
