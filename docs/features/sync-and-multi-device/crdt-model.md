@@ -84,6 +84,27 @@ working. The repair drops shadow tables whose base table no longer
 exists before any other CRR work, so existing DBs heal on the next
 brain start.
 
+Startup also self-heals **orphaned rebuild staging tables**. Copy-table
+migrations (`rebuildTableInTransaction`, used for the column drop/rename that
+CRR forbids in place — see Rule 2) issue a bare
+`CREATE TABLE __ade_crr_repair_<name>`. A rebuild whose process was killed, or
+whose row-copy failed on a bloated source table, can leave that staging table
+behind — and then every retrofit throws `table already exists`, wedging the sync
+host in an infinite repair loop that silently starves changeset export. Two
+guards prevent this: `rebuildTableInTransaction` now drops any leftover staging
+table (and its `__crsql_clock` / `__crsql_pks` siblings) inside the same
+transaction before the `CREATE`, and `sweepOrphanedRepairStagingTables()` runs at
+`openKvDb` — after `recoverInterruptedTableRebuilds()` has salvaged interrupted
+renames — to clear any orphan recovery could not reconcile (staging bases it
+deliberately marked ambiguous are skipped, since retrofit already skips them).
+Every drop uses `if exists` and the whole sweep is wrapped so it never throws out
+of open, and original tables are untouched, so no user data is lost. The
+root-cause bloat is bounded separately: `automation_ingress_events` now has a
+hard 10,000-rows-per-project cap (any status) on top of the 2,000 active-row cap,
+so an always-on brain dispatching high webhook volume can't grow the table inside
+the 7-day retention window to the point where its rebuild fails mid-copy (see
+[ARCHITECTURE §3.1](../../ARCHITECTURE.md)).
+
 Sync-managed tables support later `ALTER TABLE ... ADD COLUMN` through
 automatic `crsql_begin_alter` / `crsql_commit_alter` wrapping in the
 adapter.
@@ -437,6 +458,14 @@ After apply, ADE runs post-hooks:
   suites that create scratch tables in the main DB will see them
   replicated on the next connection. Use an in-memory DB or a
   dedicated test DB path for scratch tables.
+- **A leftover `__ade_crr_repair_<name>` staging table wedges the sync
+  host.** The copy-table rebuild's `CREATE TABLE __ade_crr_repair_<name>` is bare,
+  so a surviving orphan makes every retrofit throw `table already exists` and
+  loops forever, silently killing changeset export. `rebuildTableInTransaction`
+  drops the staging table before its `CREATE`, and
+  `sweepOrphanedRepairStagingTables()` clears orphans at open — do not remove
+  either guard, and keep both `__ade_crr_repair_%` and `__ade_fk_repair_%`
+  prefixes covered.
 - **`ade_next_db_version()` is synchronous and unlocked.** Under
   heavy concurrent write load on iOS (which is unlikely because the
   phone is a controller-only device with limited write surface), the

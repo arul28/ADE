@@ -288,18 +288,30 @@ ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with 
 - **Engineering rule under CRR retrofit**: app-level `ON CONFLICT(...)` upserts must target PK only; secondary UNIQUE constraints do not survive CRR marking.
 - **Restart-safe recovery**: table rebuilds are transactional, and
   `recoverInterruptedTableRebuilds()` classifies legacy staging tables before
-  schema migration. Durable JSON uses atomic replace plus one `.lkg`; typed
-  open failures flow through `lastFailureStore` and the brain-independent
-  `projectRecoveryService`. See
-  [Storage and recovery](./features/storage-and-recovery/README.md).
+  schema migration. `rebuildTableInTransaction` drops any leftover
+  `__ade_crr_repair_<name>` staging table (and its cr-sqlite siblings) before its
+  bare `CREATE`, and `sweepOrphanedRepairStagingTables()` runs at open to clear
+  orphans recovery could not reconcile — without these, a staging table left by a
+  killed/aborted rebuild makes every retrofit throw "table already exists" and
+  wedges the sync host in an infinite repair loop. Durable JSON uses atomic
+  replace plus one `.lkg`; typed open failures flow through `lastFailureStore`
+  and the brain-independent `projectRecoveryService`. See
+  [Storage and recovery](./features/storage-and-recovery/README.md) and
+  [CRDT model](./features/sync-and-multi-device/crdt-model.md).
 - **Maintenance hooks**: `openKvDb` attaches an optional `maintenance`
   (`DbMaintenanceApi`, from `state/dbMaintenanceApi.ts`) handle — retention
   prunes for `automation_ingress_events` / `review_run_artifacts` /
   `pull_request_snapshots`, a zero-peers-only cr-sqlite tombstone compaction, and
   a fragmentation-gated vacuum that activates `auto_vacuum = INCREMENTAL` so later
-  sweeps stay bounded. The storage doctor in `storageInsightsService` invokes
-  these on a schedule; the retention constants are the single source of truth
-  imported by the ingress writer and the storage ledger alike.
+  sweeps stay bounded. `automation_ingress_events` pruning is two-tier: an
+  active-row cap (newest 2,000 non-dispatched rows) plus a hard cap on TOTAL rows
+  (10,000 per project, any status) so an always-on brain dispatching high webhook
+  volume cannot bloat the table inside the 7-day window and abort the cr-sqlite
+  rebuild. The shared `pruneIngressEventRowsForProject` helper is the single
+  source of truth for that SQL, called by both the ingress writer and the
+  storage-doctor mirror so the caps can't drift. The storage doctor in
+  `storageInsightsService` invokes these on a schedule; the retention constants
+  are imported by the ingress writer and the storage ledger alike.
 
 ### 3.2 Schema highlights
 
@@ -812,6 +824,7 @@ Themes: six shipped themes (`e-paper`, `bloomberg`, `github`, `rainbow`, `sky`, 
 
 - `renderer/lib/dialogBus.ts` — tiny pub/sub that lets shared UI open/close dialogs by a stable id (`lanes.create`, `settings.ai`, etc.) without prop-drilling. Dialogs subscribe by id; a `subscribeAll` channel exists for devtools. Default singleton export `dialogBus`.
 - `renderer/components/app/toast/` - shared renderer-only toast primitive. `toastStore.ts` owns stack order, timers, hover pause/resume, sticky toasts, and in-place replacement; `ToastStack.tsx` renders inside AppShell's existing bottom-right notice container. Lane lifecycle and automated rebase terminal events subscribe through `useLaneEventToasts.ts`.
+- `renderer/components/shared/Banner.tsx` + `renderer/components/app/IntegrationBannerHost.tsx` — the shared connection/health banner system. `Banner` is the one severity-tinted row every integration banner renders through (error/warning/info accent, normal UI font, never monospace). `IntegrationBannerHost` (mounted once by `AppShell`) computes and renders the whole family — GitHub App account authorization, per-repo App install, gh-CLI/token, missing-AI-provider, and mock-provider — as one severity-ranked list capped at two visible (`MAX_VISIBLE_BANNERS`) with a collapse-the-rest control, in place of the hand-ordered `? :` conditionals that used to live inline in `AppShell` (feature-local one-off banners such as the provider-settings and rebase-tab notices are unaffected). Dismissal is durable and fingerprint-aware via `renderer/lib/bannerDismiss.ts` (localStorage-backed, so a dismissal survives restart and project reopen; a dismissed banner auto-resurfaces after ~2 weeks or the moment its underlying state changes/regresses to a different fingerprint). GitHub App health is derived in `renderer/lib/githubIntegrationStatus.ts` (see [Onboarding and settings](./features/onboarding-and-settings/README.md)), so the banner and Settings never disagree.
 - `renderer/onboarding/docsLinks.ts` — typed registry of internal/public doc URLs (`docs.lanes`, `docs.cto`, …) used by `DidYouKnow`, glossary/help surfaces, and the `HelpMenu`.
 - `renderer/components/onboarding/LaunchGate.tsx` — fresh-process account-choice gate. New installs see the welcome card first; returning signed-out launches go directly to sign-in or **Continue without an account**. Resolving it is process-local so extra windows and renderer reloads do not repeat it.
 - `renderer/components/onboarding/WelcomeVideoGate.tsx` — app-level one-time welcome card using the website's canonical desktop/mobile/terminal hero assets, a privacy-enhanced YouTube embed with its real thumbnail/player, and the ADE Mobile TestFlight QR/download/copy panel. Seen/dismissed state is stored in the global app state file, separate from per-project setup onboarding.

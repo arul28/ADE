@@ -208,20 +208,41 @@ Renderer — settings:
   `window.ade.github.getAppInstallationStatus` (which the desktop resolves
   against the hosted relay's `/github/repos/:owner/:repo/status` route using
   a locally stored GitHub App user token from device flow), and links out to the
-  App install / manage pages. Hosts the "Authorize ADE" device-flow UI:
-  `startAppUserDeviceAuth` surfaces the user code as a copyable chip plus a
-  waiting state and the verification URL, `pollAppUserDeviceAuth` drives the
-  poll loop and auto-renews an expired code up to 3 times, a pre-auth status
-  pill reflects `getAppUserAuthStatus` (stored token, signed-in login, expiry).
-  After device authorization succeeds, the panel force-refreshes the hosted
-  relay status with a short retry window and treats GitHub repo-access 404s as a
-  temporary "Checking access" state so GitHub App installation propagation does
-  not look like failed authorization. `clearAppUserAuth` revokes the local token.
-  Offers a Refresh. Rendered in Settings and, in a compact `onboarding` variant,
-  during setup. The
-  device-flow, token store, and single-flight refresh are backed by
-  `githubAppUserAuthService` in the main process (see the automations feature
-  doc's Source file map).
+  App install / manage pages. The card is split into **two honest blocks**, one
+  per independent prerequisite for real-time PR updates, both derived through the
+  shared `renderer/lib/githubIntegrationStatus.ts` helper so their status pills
+  reflect actual state instead of the old always-green permission chips:
+  - **Account · ADE for GitHub** — the account-scoped App user token. Hosts the
+    "Authorize ADE" device-flow UI: `startAppUserDeviceAuth` surfaces the user
+    code as a copyable chip plus a waiting state and the verification URL,
+    `pollAppUserDeviceAuth` drives the poll loop and auto-renews an expired code
+    up to 3 times, a pre-auth status pill reflects `getAppUserAuthStatus` (stored
+    token, signed-in login, expiry). `deriveGithubAccountAuthState` classifies the
+    token as `valid` / `expired` / `missing` (expiry is computed client-side with
+    a refresh-skew mirror because the service does not surface it).
+  - **This repo · `owner/name`** — whether the App is installed on the active
+    repo. `deriveGithubRepoConnectionState` maps the installation status to
+    `connected` / `not_installed` / `access_pending` / `no_repo` / `unknown`.
+    After device authorization succeeds, the panel force-refreshes the hosted
+    relay status with a short retry window and treats GitHub repo-access 404s as a
+    temporary "Checking access" (`access_pending`) state so App installation
+    propagation does not look like failed authorization.
+
+  `clearAppUserAuth` revokes the local token. Offers a Refresh. Rendered in
+  Settings and, in a compact `onboarding` variant, during setup. The device-flow,
+  token store, and single-flight refresh are backed by `githubAppUserAuthService`
+  in the main process (see the automations feature doc's Source file map). The
+  matching per-repo "GitHub App not connected" banner — distinct from the gh-CLI
+  banner — is rendered by the app-shell `IntegrationBannerHost` from the same
+  `githubIntegrationStatus.ts` derivation (see
+  [ARCHITECTURE §7.6](../../ARCHITECTURE.md)), so the panel and the banner never
+  disagree.
+- `apps/desktop/src/renderer/lib/githubIntegrationStatus.ts`
+  — pure, two-axis derivation of GitHub App integration health (account
+  user-token axis vs. per-repo install axis), the `deriveGithubRealtimeBlock`
+  top-blocker picker (account problems outrank repo problems), and the shared
+  banner/Settings copy for the account, repo, and gh-CLI/token sub-states.
+  Imported by both `GitHubAppInstallPanel` and `IntegrationBannerHost`.
 - `apps/desktop/src/renderer/components/settings/LinearIntegrationSection.tsx`
   and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
   and GitHub autolink setup. Embedded inside General.
