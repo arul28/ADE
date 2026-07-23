@@ -15574,6 +15574,37 @@ export function createAgentChatService(args: {
     streamedTextByContentIndex: Map<number, string>;
     recentTextDeltaBuffer: string;
     scheduledWakeAttached: boolean;
+    /** Dedupe for todo/task tracker application per tool_use (ADE-130): a
+     * tool_use may surface twice (streamed content_block path + the final
+     * assistant message); the tracker must apply exactly once, with the FULL
+     * input — content_block_stop, not content_block_start's empty args. */
+    emittedTodoToolIds: Set<string>;
+  };
+
+  /**
+   * Apply a TaskCreate/TaskUpdate/TodoWrite tool input to the runtime task
+   * tracker and emit todo_update — the idle-turn twin of the foreground
+   * `maybeEmitTodoUpdate` (ADE-130). Applies at most once per tool_use; safe
+   * to call from both the streamed content_block_stop path (full input after
+   * deltas) and the final assistant-message path (whichever sees the full
+   * input first wins; empty-input passes are no-ops the dedupe ignores).
+   */
+  const maybeEmitIdleTodoUpdate = (
+    state: ClaudeIdleTurnState,
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    toolName: string,
+    input: unknown,
+    itemId: string,
+    turnId: string,
+  ): void => {
+    if (state.emittedTodoToolIds.has(itemId)) return;
+    const todoItems = toolName === "TodoWrite"
+      ? normalizeClaudeTodoItems(input ?? {})
+      : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, input ?? {}, itemId);
+    if (!todoItems) return;
+    state.emittedTodoToolIds.add(itemId);
+    emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
   };
 
   const isClaudeForwardedSubagentMessage = (msg: SDKMessage): boolean => {
@@ -16336,13 +16367,14 @@ export function createAgentChatService(args: {
               turnId,
             });
             maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, toolName, block.input, itemId, turnId);
-            const todoItems = toolName === "TodoWrite"
-              ? normalizeClaudeTodoItems(block.input ?? {})
-              : updateClaudeTaskTodosFromToolInput(claudeTaskTodoMap(managed, runtime), toolName, block.input ?? {}, itemId);
-            if (todoItems) {
-              emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
-            }
           }
+          // Task/todo tracking runs OUTSIDE the emittedToolIds guard (ADE-130):
+          // the streamed content_block path registers the itemId first with
+          // EMPTY input, and the full input only exists here on the final
+          // assistant message — gating the tracker on first-emission silently
+          // dropped every background-turn TaskUpdate. maybeEmitIdleTodoUpdate
+          // has its own apply-once dedupe.
+          maybeEmitIdleTodoUpdate(state, managed, runtime, toolName, block.input, itemId, turnId);
         }
       }
       const usage = asRecord(betaMessage?.usage);
@@ -16485,6 +16517,11 @@ export function createAgentChatService(args: {
           });
         }
         maybeEmitClaudeScheduledWorkFromToolCall(managed, runtime, meta.toolName, parsed, meta.itemId, turnId);
+        // ADE-130: this is the first moment the streamed tool_use has its FULL
+        // input — apply TaskCreate/TaskUpdate/TodoWrite to the tracker here.
+        // Background-turn completions previously never reached the tracker,
+        // freezing the TASKS pane at a prefix of the stream.
+        maybeEmitIdleTodoUpdate(state, managed, runtime, meta.toolName, parsed, meta.itemId, turnId);
       }
       return;
     }
@@ -16600,6 +16637,7 @@ export function createAgentChatService(args: {
       streamedTextByContentIndex: new Map(),
       recentTextDeltaBuffer: "",
       scheduledWakeAttached: false,
+      emittedTodoToolIds: new Set(),
     };
 
     logger.debug("agent_chat.claude_idle_reader_start", {

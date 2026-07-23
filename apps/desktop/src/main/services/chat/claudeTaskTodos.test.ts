@@ -152,6 +152,8 @@ function createHarness(messages: Array<Record<string, unknown>>) {
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
+    clearTurnStartMarkers: vi.fn(),
+    markLastTurnFailed: vi.fn(),
     setSummary: vi.fn(),
     setResumeCommand: vi.fn(),
     upsertClaudeSessionPointer: vi.fn((pointer: Record<string, any>) => {
@@ -309,5 +311,66 @@ describe("Claude TaskCreate and TaskUpdate todo tracking", () => {
       { id: "9", description: "New follow-up", status: "pending" },
     ]);
     expect(todoEvents.at(-1)?.items.filter((item) => item.id === "9")).toHaveLength(1);
+  });
+
+  // ADE-130 regression: background/idle turns deliver tool_use via streamed
+  // content blocks — an empty-input content_block_start followed by
+  // input_json_delta chunks and content_block_stop. The tracker must apply the
+  // FULL input at block_stop; gating it on first tool emission silently
+  // dropped every background-turn completion (pane frozen at 0/N complete).
+  it("applies a background-turn TaskUpdate completion streamed via content_block deltas", async () => {
+    const { service, events } = createHarness([
+      taskToolUse("toolu_A", "TaskCreate", { subject: "Research t3code PRs" }),
+      taskToolUse("toolu_B", "TaskUpdate", { taskId: "1", status: "in_progress" }),
+    ]);
+    // Messages AFTER the result marker are consumed by the post-turn idle
+    // reader, not the foreground loop — exactly how real background turns
+    // arrive. The completion's tool_use starts with EMPTY input; the full
+    // input exists only after the deltas.
+    claudeSdk.messages.push(
+      {
+        type: "stream_event",
+        session_id: "sdk-task-todos",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "toolu_C", name: "TaskUpdate", input: {} },
+        },
+      },
+      {
+        type: "stream_event",
+        session_id: "sdk-task-todos",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: JSON.stringify({ taskId: "1", status: "completed" }) },
+        },
+      },
+      {
+        type: "stream_event",
+        session_id: "sdk-task-todos",
+        event: { type: "content_block_stop", index: 0 },
+      },
+    );
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-5",
+      modelId: "anthropic/claude-sonnet-5",
+    });
+    await service.runSessionTurn({ sessionId: session.id, text: "Track the research task." });
+
+    await vi.waitFor(() => {
+      const todoEvents = events
+        .filter((envelope) => envelope.sessionId === session.id)
+        .map((envelope) => envelope.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "todo_update" }> =>
+          event.type === "todo_update",
+        );
+      expect(todoEvents.at(-1)?.items).toEqual([
+        { id: "1", description: "Research t3code PRs", status: "completed" },
+      ]);
+    });
+    await service.disposeAll();
   });
 });

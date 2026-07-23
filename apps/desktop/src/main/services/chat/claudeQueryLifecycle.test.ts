@@ -166,6 +166,8 @@ function createHarness(messages: Array<Record<string, unknown>>) {
     setHeadShaStart: vi.fn(),
     setHeadShaEnd: vi.fn(),
     setLastOutputPreview: vi.fn(),
+    clearTurnStartMarkers: vi.fn(),
+    markLastTurnFailed: vi.fn(),
     setSummary: vi.fn(),
     setResumeCommand: vi.fn(),
     upsertClaudeSessionPointer: vi.fn((pointer: Record<string, any>) => {
