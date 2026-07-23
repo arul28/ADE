@@ -4073,9 +4073,9 @@ describe("initial hydration priority", () => {
           "changesetAck",
         ],
       });
-      const realDateNow = Date.now.bind(Date);
+      const baseNowMs = Date.now();
       let clockOffsetMs = 0;
-      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => baseNowMs + clockOffsetMs);
 
       slowPeer.ws.send(encodeSyncEnvelope({
         type: "chat_subscribe",
@@ -4598,6 +4598,7 @@ describe("outbound changeset ack retries", () => {
     projectRoot: string,
     state: { dbVersion: number; changes: CrsqlChangeRow[] },
     logger = createDiscoveryLogger(),
+    options: { pollIntervalMs?: number } = {},
   ) {
     const base = createHostArgs(projectRoot, []);
     const exportChangesSince = vi.fn(
@@ -4616,7 +4617,7 @@ describe("outbound changeset ack retries", () => {
     const host = createSyncHostService({
       ...base,
       logger,
-      pollIntervalMs: 25,
+      pollIntervalMs: options.pollIntervalMs ?? 25,
       projectId: "project-1",
       db: {
         sync: {
@@ -4697,6 +4698,211 @@ describe("outbound changeset ack retries", () => {
       expect((incrementalEnvelope.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
     } finally {
       peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("retries an abandoned far-behind replica reseed from its old cursor after recovery backoff", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const targetDbVersion = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+    const state = {
+      dbVersion: targetDbVersion,
+      changes: Array.from({ length: 10 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-reseed-recovery", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+
+      const firstEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "initial compact reseed",
+      );
+      const firstReseed = firstEnvelope.payload as SyncChangesetBatchPayload;
+      expect(firstReseed).toMatchObject({
+        reason: "catchup",
+        fromDbVersion: 0,
+        toDbVersion: targetDbVersion,
+      });
+
+      const realDateNow = Date.now.bind(Date);
+      let clockOffsetMs = 0;
+      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
+      for (let attemptCount = 2; attemptCount <= 6; attemptCount += 1) {
+        clockOffsetMs += 11_000;
+        await waitForValue(
+          () => peer?.envelopes.filter((envelope) =>
+            envelope.type === "changeset_batch"
+            && (envelope.payload as SyncChangesetBatchPayload).batchId === firstReseed.batchId
+          )[attemptCount - 1],
+          `compact reseed send attempt ${attemptCount}`,
+        );
+      }
+
+      clockOffsetMs += 11_000;
+      await waitForValue(
+        () => logger.warn.mock.calls.find(([event, fields]) =>
+          event === "sync_host.changeset_recovery_started"
+          && fields?.abandonedBatchId === firstReseed.batchId
+        ),
+        "compact reseed abandonment",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(peer.envelopes.filter((envelope) =>
+        envelope.type === "changeset_batch"
+        && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstReseed.batchId
+      )).toHaveLength(0);
+
+      clockOffsetMs += 500;
+      const retryEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstReseed.batchId),
+        "compact reseed after recovery backoff",
+      );
+      const retryReseed = retryEnvelope.payload as SyncChangesetBatchPayload;
+      expect(retryReseed.batchId).not.toBe(firstReseed.batchId);
+      expect(retryReseed).toMatchObject({
+        reason: "catchup",
+        fromDbVersion: 0,
+        toDbVersion: targetDbVersion,
+      });
+    } finally {
+      dateNowSpy?.mockRestore();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  }, 15_000);
+
+  it("admits only one new compact reseed per poll before sending the next far-behind phone", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      changes: Array.from({ length: 2_500 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host } = createControlledChangesetHost(projectRoot, state, createDiscoveryLogger(), {
+      pollIntervalMs: 250,
+    });
+    let firstPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let secondPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      firstPeer = await connectPeer(port, host.getBootstrapToken(), "ios-reseed-admission-first", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      secondPeer = await connectPeer(port, host.getBootstrapToken(), "ios-reseed-admission-second", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+
+      const firstEnvelope = await waitForValue(
+        () => firstPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "first admitted compact reseed",
+      );
+      expect((firstEnvelope.payload as SyncChangesetBatchPayload).reason).toBe("catchup");
+      // The shared cache becomes ready for both peers on this poll. The second
+      // send must wait for the following generation instead of gzip/framing two
+      // logical snapshots back-to-back on the host event loop.
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(secondPeer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+
+      const secondEnvelope = await waitForValue(
+        () => secondPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "second compact reseed on a later poll",
+      );
+      expect((secondEnvelope.payload as SyncChangesetBatchPayload).reason).toBe("catchup");
+    } finally {
+      firstPeer?.ws.close();
+      secondPeer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("crosses a sparse 16.8m-version reseed gap in bounded empty-window bursts", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 16_800_000,
+      changes: [] as CrsqlChangeRow[],
+    };
+    const { host, exportChangesSince } = createControlledChangesetHost(projectRoot, state, createDiscoveryLogger(), {
+      pollIntervalMs: 100,
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-sparse-16m-reseed", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      const reseedEnvelope = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "accelerated sparse compact reseed",
+        2_000,
+      );
+      expect(reseedEnvelope.payload).toMatchObject({
+        reason: "catchup",
+        fromDbVersion: 0,
+        toDbVersion: state.dbVersion,
+        changes: [],
+      });
+      expect(exportChangesSince).toHaveBeenCalledTimes(Math.ceil(state.dbVersion / 250_000));
+      expect(exportChangesSince.mock.calls.every(([fromDbVersion, options]) =>
+        (options?.throughDbVersion ?? fromDbVersion) - fromDbVersion <= 250_000,
+      )).toBe(true);
+      expect(exportChangesSince.mock.calls.every(([, options]) => options?.maxRows === 1_000)).toBe(true);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  }, 3_000);
+
+  it("rebuilds an oversized compact cache after later database changes make it eligible", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const initialTarget = (SYNC_HOST_MOBILE_REPLICA_RESEED_GAP * 2) + 1;
+    const state = {
+      dbVersion: initialTarget,
+      changes: Array.from({ length: 10_001 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host } = createControlledChangesetHost(projectRoot, state);
+    let firstPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let secondPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      firstPeer = await connectPeer(port, host.getBootstrapToken(), "ios-oversized-cache-first", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      const fallback = await waitForValue(
+        () => firstPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "initial oversized compact fallback",
+      );
+      expect((fallback.payload as SyncChangesetBatchPayload).reason).toBe("broadcast");
+      firstPeer.ws.close();
+      firstPeer = null;
+
+      state.dbVersion += SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+      state.changes = [makeChange(state.dbVersion, 0)];
+      secondPeer = await connectPeer(port, host.getBootstrapToken(), "ios-oversized-cache-second", {
+        capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
+      });
+      const rebuilt = await waitForValue(
+        () => secondPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "rebuilt compact cache",
+      );
+      expect(rebuilt.payload).toMatchObject({
+        reason: "catchup",
+        fromDbVersion: 0,
+        toDbVersion: state.dbVersion,
+      });
+      expect((rebuilt.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
+    } finally {
+      firstPeer?.ws.close();
+      secondPeer?.ws.close();
       await host.dispose();
       cleanup();
     }
