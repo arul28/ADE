@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
+import { ADE_SESSION_STATUS_PROTOCOL_GUIDANCE } from "../../../shared/adeCliGuidance";
 
 const TOTAL_BUDGET_BYTES = 3 * 1024;
 const CLI_HELP_BUDGET = 700;
@@ -135,6 +136,13 @@ export const buildCursorSdkSystemPrompt = (
     blocks.push(`## Cursor Cloud capability\n${cloudT.value}`);
     sections.push({ name: "cloud", bytes: cloudT.value.length, truncated: cloudT.truncated });
   }
+
+  blocks.push(ADE_SESSION_STATUS_PROTOCOL_GUIDANCE);
+  sections.push({
+    name: "session-status",
+    bytes: ADE_SESSION_STATUS_PROTOCOL_GUIDANCE.length,
+    truncated: false,
+  });
 
   const cli = (inputs.cliHelpDigest ?? "").trim();
   if (cli.length) {

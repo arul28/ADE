@@ -1,5 +1,6 @@
 import React from "react";
 import { CircleNotch, GridFour, WarningCircle, Question, Clock } from "@phosphor-icons/react";
+import { useNavigate } from "react-router-dom";
 import type { AgentChatSpawnKind, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import {
@@ -29,6 +30,7 @@ import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { ChatSubagentGlyph, chatSubagentColor } from "../chat/chatSubagentIdentity";
 import { navigateToSpawnedChat } from "../chat/spawnNavigation";
+import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 
 const DELTA_CHIP_STYLE: React.CSSProperties = {
   fontSize: 10,
@@ -200,22 +202,76 @@ function AttentionCapsule({ badge, compact }: { badge: SessionBadge; compact: bo
  * The raw terminal output tail (`lastOutputPreview`) is deliberately NOT
  * rendered here anymore — it stays a detection/search sensor only.
  */
+type SessionPreviewLine = {
+  text: string;
+  linkify: boolean;
+};
+
 function getPreviewLine(
   session: TerminalSessionSummary,
   primaryText: string,
   settled: boolean,
-): string | null {
+): SessionPreviewLine | null {
   if (session.attentionRequestedAt) {
     const ask = sanitizeTerminalInlineText(session.attentionMessage, 120);
-    if (ask) return ask;
+    if (ask) return { text: ask, linkify: true };
   }
   const note = sanitizeTerminalInlineText(session.statusNote, 120);
-  if (note) return settled ? `done: ${note}` : note;
+  if (note) return { text: settled ? `done: ${note}` : note, linkify: true };
   const summary = preferredSessionLabel(session.summary);
-  if (summary && summary !== primaryText) return summary;
+  if (summary && summary !== primaryText) return { text: summary, linkify: false };
   const goal = preferredSessionLabel(session.goal);
-  if (goal && goal !== primaryText) return goal;
+  if (goal && goal !== primaryText) return { text: goal, linkify: false };
   return null;
+}
+
+const PREVIEW_LINK_TOKEN = /(#\d+|\b[A-Z]{2,6}-\d+\b)/g;
+const PR_TOKEN = /^#(\d+)$/;
+const LINEAR_TOKEN = /^[A-Z]{2,6}-\d+$/;
+
+function LinkifiedPreviewLine({
+  text,
+  onOpenPr,
+}: {
+  text: string;
+  onOpenPr: (prNumber: number) => void;
+}) {
+  return text.split(PREVIEW_LINK_TOKEN).map((part, index) => {
+    const prMatch = PR_TOKEN.exec(part);
+    const linearIssue = LINEAR_TOKEN.test(part) ? part : null;
+    if (!prMatch && !linearIssue) return part;
+    const activate = () => {
+      if (prMatch) {
+        onOpenPr(Number.parseInt(prMatch[1]!, 10));
+      } else if (linearIssue) {
+        requestLinearIssueQuickView({
+          issueIdentifier: linearIssue,
+          source: "manual",
+        });
+      }
+    };
+    return (
+      <span
+        key={`${part}:${index}`}
+        role="link"
+        tabIndex={0}
+        className="cursor-pointer text-muted-fg/70 hover:underline"
+        title={prMatch ? `Open PR ${part}` : `Open Linear issue ${part}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          activate();
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          event.stopPropagation();
+          activate();
+        }}
+      >
+        {part}
+      </span>
+    );
+  });
 }
 
 function compactFutureDuration(timestampMs: number, nowMs: number): string | null {
@@ -295,6 +351,7 @@ export const SessionCard = React.memo(function SessionCard({
   /** When present, blocks interaction while the owning lane is being removed. */
   disabledReason?: string | null;
 }) {
+  const navigate = useNavigate();
   const dot = sessionStatusDot(session);
   // Blocked on a chat question/plan only the user can answer (distinct from a
   // merely idle/ready chat, which the amber status dot can't disambiguate).
@@ -597,7 +654,12 @@ export const SessionCard = React.memo(function SessionCard({
             ) : previewLine && !compact ? (
               <div className="mt-0.5 min-w-0">
                 <span className="block truncate text-[10px] text-muted-fg/50 leading-snug">
-                  {previewLine}
+                  {previewLine.linkify ? (
+                    <LinkifiedPreviewLine
+                      text={previewLine.text}
+                      onOpenPr={(prNumber) => navigate(`/prs?pr=${prNumber}`)}
+                    />
+                  ) : previewLine.text}
                 </span>
               </div>
             ) : null}

@@ -392,6 +392,7 @@ function createHarness(overrides: {
     setSummary: vi.fn(),
     setLastOutputPreview: vi.fn(),
     touchSessionActivity: vi.fn(),
+    clearAttentionRequest: vi.fn(() => true),
     setResumeCommand: vi.fn((sessionId: string, resumeCommand: string | null) => {
       const session = sessionStore.get(sessionId);
       if (!session) return;
@@ -1008,6 +1009,27 @@ describe("ptyService", () => {
         if (previousKind === undefined) delete process.env.ADE_SPAWN_KIND;
         else process.env.ADE_SPAWN_KIND = previousKind;
       }
+    });
+
+    it("publishes an explicit waiting-input runtime state for a live tracked CLI", async () => {
+      const { service, onSessionRuntimeSignal } = createHarness();
+      const result = await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+      });
+      onSessionRuntimeSignal.mockClear();
+
+      expect(service.setSessionRuntimeState(result.sessionId, "waiting-input")).toBe(true);
+      expect(service.getRuntimeState(result.sessionId, "running")).toBe("waiting-input");
+      expect(onSessionRuntimeSignal).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-1",
+        sessionId: result.sessionId,
+        runtimeState: "waiting-input",
+      }));
     });
 
     it("refuses only new tracked CLI launches when storage is exhausted", async () => {

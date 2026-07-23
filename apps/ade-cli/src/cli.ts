@@ -585,7 +585,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | interrupt     Work with ADE agent chats
+    $ ade chat list | create | send | ask | note
+               settle | unsettle | interrupt
+                                                    Work with ADE agent chats
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1640,6 +1642,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
+    $ ade chat note "running e2e shard 2/4"         Update this session's Work sidebar status line
+    $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
+    $ ade chat settle --outcome "PR #841, CI green" Mark this session complete
+    $ ade chat unsettle                             Return this session to the active lifecycle
+                                                    These four commands default to the caller and accept --session <id>
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
     $ ade chat models --personal --provider codex
     $ ade chat update <session> --personal --title "Trip planning"
@@ -6717,9 +6724,15 @@ function buildChatPlan(args: string[]): CliPlan {
     && (args[0] === "list" || args[0] === "create" || args[0] === "cancel")
     ? firstStandalonePositional(args)
     : null;
+  const selfLifecycleSub =
+    sub === "ask" ||
+    sub === "note" ||
+    sub === "settle" ||
+    sub === "unsettle";
+  const explicitSessionId = readValue(args, ["--session", "--session-id"]);
   const sessionId =
-    readValue(args, ["--session", "--session-id"]) ??
-    (sub !== "create" && sub !== "list" && !linearSessionSub
+    explicitSessionId ??
+    (sub !== "create" && sub !== "list" && !linearSessionSub && !selfLifecycleSub
       ? firstStandalonePositional(args)
       : null);
   const withSession = (base: JsonObject = {}) =>
@@ -6728,6 +6741,70 @@ function buildChatPlan(args: string[]): CliPlan {
       ...(sessionId ? { sessionId } : {}),
     });
   const requireSession = () => requireValue(sessionId, "sessionId");
+  if (sub === "ask") {
+    const message = requireValue(
+      readValue(args, ["--question", "--message", "--text"]) ?? args.join(" "),
+      "question",
+    );
+    return {
+      kind: "execute",
+      label: "chat ask",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "requestSessionAttention",
+          withSession({ message }),
+        ),
+      ],
+    };
+  }
+  if (sub === "note") {
+    const note = readValue(args, ["--note", "--text"]) ?? args.join(" ");
+    return {
+      kind: "execute",
+      label: "chat note",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "setSessionStatusNote",
+          withSession({ note }),
+        ),
+      ],
+    };
+  }
+  if (sub === "settle") {
+    const outcome = readValue(args, ["--outcome"]);
+    return {
+      kind: "execute",
+      label: "chat settle",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "settleSelfSession",
+          withSession({
+            ...(outcome !== null ? { outcome } : {}),
+          }),
+        ),
+      ],
+    };
+  }
+  if (sub === "unsettle") {
+    return {
+      kind: "execute",
+      label: "chat unsettle",
+      steps: [
+        actionStep(
+          "result",
+          "session",
+          "unsettleSelfSession",
+          withSession(),
+        ),
+      ],
+    };
+  }
   if (sub === "list" || sub === "ls") {
     const includeArchived = readFlag(args, ["--archived", "--include-archived"]);
     const excludeArchived = readFlag(args, [

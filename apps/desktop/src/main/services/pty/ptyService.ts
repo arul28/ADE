@@ -5124,6 +5124,20 @@ export function createPtyService({
       if (live) live[1].attentionRequested = true;
     },
 
+    setSessionRuntimeState(sessionId: string, runtimeState: TerminalRuntimeState): boolean {
+      const live = liveEntryBySessionId(sessionId);
+      if (!live) return false;
+      const [, entry] = live;
+      setRuntimeState(sessionId, runtimeState);
+      if (runtimeState === "running") {
+        scheduleIdleTransition(sessionId);
+      } else {
+        clearIdleTimer(sessionId);
+      }
+      emitRuntimeSignalThrottled(entry, runtimeState);
+      return true;
+    },
+
     listTerminals(args: ChatTerminalListArgs = {}): ChatTerminalSession[] {
       const chatSessionId = cleanOptionalId(args.chatSessionId);
       const laneId = cleanOptionalId(args.laneId);

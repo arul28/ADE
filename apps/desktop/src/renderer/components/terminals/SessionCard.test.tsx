@@ -1,11 +1,19 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { setLaneNaming } from "../../state/laneNamingStore";
+
+const { navigateMock } = vi.hoisted(() => ({
+  navigateMock: vi.fn(),
+}));
+
+vi.mock("react-router-dom", () => ({
+  useNavigate: () => navigateMock,
+}));
 
 vi.mock("./useSessionDelta", () => ({
   useSessionDelta: () => null,
@@ -15,6 +23,7 @@ afterEach(() => {
   cleanup();
   setLaneNaming("lane-1", false);
   vi.useRealTimers();
+  navigateMock.mockReset();
 });
 
 function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
@@ -297,6 +306,40 @@ describe("SessionCard auto-naming status", () => {
 
     expect(screen.queryByText(/Auto-naming lane underway/i)).toBeNull();
     expect(screen.getByText(/running the build/i)).toBeTruthy();
+  });
+});
+
+describe("SessionCard preview links", () => {
+  it("links a PR token in a status note through the by-number PR route", () => {
+    const onSelect = vi.fn();
+    render(
+      <SessionCard
+        session={makeSession({ statusNote: "merged #841" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={onSelect}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("link", { name: "#841" }));
+    expect(navigateMock).toHaveBeenCalledWith("/prs?pr=841");
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("leaves PR-shaped text in a plain summary unlinked", () => {
+    render(
+      <SessionCard
+        session={makeSession({ summary: "merged #841" })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("merged #841")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "#841" })).toBeNull();
   });
 });
 

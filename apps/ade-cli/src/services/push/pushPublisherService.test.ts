@@ -823,6 +823,36 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("publishes explicit CLI attention requests through the gated question path", async () => {
+    const { publisher, publish } = makeHarness();
+    await publisher.start();
+
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "cli-ask-1",
+      kind: "cli",
+      title: "Fix auth race",
+      message: "Which account should the e2e test use?",
+      laneId: "auth-lane",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    const payload = publish.mock.calls[0][0];
+    expect(payload.notifications[0]).toMatchObject({
+      title: "Fix auth race",
+      body: "Which account should the e2e test use?",
+      deepLink: "ade://session/cli-ask-1",
+      sessionId: "cli-ask-1",
+      dedupeKey: "alert:cli-ask-1:question",
+    });
+    expect(payload.liveActivity[0].contentState.runs[0]).toMatchObject({
+      id: "cli-ask-1",
+      phase: "waiting_for_input",
+      detail: "Which account should the e2e test use?",
+    });
+
+    publisher.dispose();
+  });
+
   it("drops chat-owned shells and unknown sessions from CLI run tracking", async () => {
     const { publisher, publish, emit, cliSessions } = makeHarness();
     cliSessions.set("shell-1", { title: "attached shell", toolType: "shell", chatSessionId: "s-1" });

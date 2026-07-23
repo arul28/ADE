@@ -70,6 +70,13 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
   });
 
+  it("exposes caller lifecycle writes through the runtime session surface", () => {
+    expect(isAllowedAdeAction("session", "requestSessionAttention")).toBe(true);
+    expect(isAllowedAdeAction("session", "setSessionStatusNote")).toBe(true);
+    expect(isAllowedAdeAction("session", "settleSelfSession")).toBe(true);
+    expect(isAllowedAdeAction("session", "unsettleSelfSession")).toBe(true);
+  });
+
   it("exposes iOS Preview Lab matching and workspace readiness to generic actions", () => {
     expect(isAllowedAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(true);
     expect(isAllowedAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(true);
@@ -986,6 +993,82 @@ describe("runtime session actions", () => {
     expect(listAllowedAdeActionNames("session", sessionService)).toContain("getDelta");
     expect(sessionService.getDelta({ sessionId: "session-1" })).toEqual(delta);
     expect(runtime.sessionDeltaService?.getSessionDelta).toHaveBeenCalledWith("session-1");
+  });
+
+  it("serves caller lifecycle writes without requiring agentChatService", () => {
+    const requestAttention = vi.fn(() => true);
+    const setStatusNote = vi.fn(() => true);
+    const settleSession = vi.fn(() => true);
+    const unsettleSession = vi.fn(() => true);
+    const markSessionAttentionRequested = vi.fn();
+    const setSessionRuntimeState = vi.fn(() => true);
+    const handleSessionAttentionRequested = vi.fn();
+    const runtime = {
+      projectId: "project-1",
+      sessionService: {
+        get: vi.fn(() => ({
+          id: "session-1",
+          laneId: "lane-1",
+          title: "Fix auth race",
+          toolType: "codex",
+        })),
+        list: vi.fn(),
+        requestAttention,
+        setStatusNote,
+        settleSession,
+        unsettleSession,
+      },
+      ptyService: {
+        hasLivePty: vi.fn(() => true),
+        markSessionAttentionRequested,
+        setSessionRuntimeState,
+      },
+      pushPublisherService: {
+        handleSessionAttentionRequested,
+      },
+      agentChatService: null,
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as {
+      requestSessionAttention: (args: { sessionId: string; message: string }) => unknown;
+      setSessionStatusNote: (args: { sessionId: string; note: string }) => unknown;
+      settleSelfSession: (args: { sessionId: string; outcome?: string }) => unknown;
+      unsettleSelfSession: (args: { sessionId: string }) => unknown;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("session", sessionActions)).toEqual(
+      expect.arrayContaining([
+        "requestSessionAttention",
+        "setSessionStatusNote",
+        "settleSelfSession",
+        "unsettleSelfSession",
+      ]),
+    );
+    expect(sessionActions.requestSessionAttention({
+      sessionId: "session-1",
+      message: "Which account should I use?",
+    })).toEqual({ ok: true, sessionId: "session-1" });
+    expect(requestAttention).toHaveBeenCalledWith("session-1", "Which account should I use?");
+    expect(markSessionAttentionRequested).toHaveBeenCalledWith("session-1");
+    expect(setSessionRuntimeState).toHaveBeenCalledWith("session-1", "waiting-input");
+    expect(handleSessionAttentionRequested).toHaveBeenCalledWith("project-1", {
+      sessionId: "session-1",
+      kind: "cli",
+      title: "Fix auth race",
+      message: "Which account should I use?",
+      laneId: "lane-1",
+    });
+
+    expect(sessionActions.setSessionStatusNote({ sessionId: "session-1", note: "" }))
+      .toEqual({ ok: true, sessionId: "session-1" });
+    expect(setStatusNote).toHaveBeenCalledWith("session-1", null);
+
+    expect(sessionActions.settleSelfSession({ sessionId: "session-1", outcome: "PR #841 merged" }))
+      .toEqual({ ok: true, sessionId: "session-1" });
+    expect(settleSession).toHaveBeenCalledWith("session-1", { outcome: "PR #841 merged" });
+
+    expect(sessionActions.unsettleSelfSession({ sessionId: "session-1" }))
+      .toEqual({ ok: true, sessionId: "session-1" });
+    expect(unsettleSession).toHaveBeenCalledWith("session-1");
   });
 
   it("routes readTranscriptTail through ptyService so live PTY output is included", async () => {

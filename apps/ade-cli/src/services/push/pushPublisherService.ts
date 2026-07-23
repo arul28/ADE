@@ -81,6 +81,14 @@ export type PushCliRuntimeSignal = {
   runtimeState: string;
 };
 
+export type PushSessionAttentionRequest = {
+  sessionId: string;
+  kind: "chat" | "cli";
+  title: string;
+  message: string;
+  laneId?: string | null;
+};
+
 export type PushPrNotification = {
   kind: PrNotificationKind;
   prNumber: number;
@@ -1231,6 +1239,33 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
      */
     handleCliRuntimeSignal(scopeKey: string, signal: PushCliRuntimeSignal): void {
       onCliRuntimeSignal(scopeKey, signal);
+    },
+
+    handleSessionAttentionRequested(
+      scopeKey: string,
+      request: PushSessionAttentionRequest,
+    ): void {
+      if (disposed || !request.sessionId) return;
+      const run = ensureRun(request.sessionId, scopeKey, request.kind);
+      run.title = request.title.trim() || "ADE session";
+      run.lane = request.laneId
+        ? scopes.get(scopeKey)?.resolveLaneName?.(request.laneId) ?? request.laneId
+        : run.lane;
+      run.phase = "waiting_for_input";
+      run.detail = request.message;
+      run.lastActiveAt = now();
+      run.metaResolved = true;
+      clearAlertDedupe(`alert:${request.sessionId}:question`);
+      enqueueAlert({
+        sessionId: request.sessionId,
+        dedupeKey: `alert:${request.sessionId}:question`,
+        render: () => ({ title: run.title || "ADE session", body: request.message }),
+        deepLink: `ade://session/${request.sessionId}`,
+        threadId: request.sessionId,
+        phase: "waiting",
+        interruptionLevel: "time-sensitive",
+      });
+      scheduleFlush(true);
     },
 
     /** Force a flush soon (e.g. right after a device registers). */

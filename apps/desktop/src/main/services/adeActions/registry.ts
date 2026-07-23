@@ -39,7 +39,10 @@ import type {
 import type { AutomationRule } from "../../../shared/types/config";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
-import { buildPrAiResolutionContextKey } from "../../../shared/types";
+import {
+  buildPrAiResolutionContextKey,
+  isTrackedAgentCliToolType,
+} from "../../../shared/types";
 import type {
   AiConfig,
   ApplyLaneTemplateArgs,
@@ -605,7 +608,19 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "updateIdentity",
   ],
   cto_memory: ["getSnapshot", "searchMemory", "updateMemory"],
-  session: ["backfillDeltas", "deleteSession", "get", "getDelta", "list", "readTranscriptTail", "updateMeta"],
+  session: [
+    "backfillDeltas",
+    "deleteSession",
+    "get",
+    "getDelta",
+    "list",
+    "readTranscriptTail",
+    "requestSessionAttention",
+    "setSessionStatusNote",
+    "settleSelfSession",
+    "unsettleSelfSession",
+    "updateMeta",
+  ],
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
@@ -1638,6 +1653,65 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (!sessionService) return null;
   return {
     ...(sessionService as unknown as OpaqueService),
+    requestSessionAttention: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.requestSessionAttention");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const message = requireNonEmptyString(record.message, "message");
+      if (!sessionService.requestAttention(sessionId, message)) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      const session = sessionService.get(sessionId);
+      const isTrackedCli = isTrackedAgentCliToolType(session?.toolType);
+      if (isTrackedCli && runtime.ptyService?.hasLivePty(sessionId)) {
+        runtime.ptyService.markSessionAttentionRequested(sessionId);
+        runtime.ptyService.setSessionRuntimeState(sessionId, "waiting-input");
+      }
+      try {
+        runtime.pushPublisherService?.handleSessionAttentionRequested(runtime.projectId, {
+          sessionId,
+          kind: isTrackedCli ? "cli" : "chat",
+          title: session?.title ?? "ADE session",
+          message,
+          laneId: session?.laneId ?? null,
+        });
+      } catch (error) {
+        runtime.logger.warn("session.attention_notification_failed", {
+          sessionId,
+          error: getErrorMessage(error),
+        });
+      }
+      return { ok: true, sessionId };
+    },
+    setSessionStatusNote: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.setSessionStatusNote");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      if (typeof record.note !== "string") {
+        throw new Error("setSessionStatusNote requires a string `note` field.");
+      }
+      if (!sessionService.setStatusNote(sessionId, record.note || null)) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId };
+    },
+    settleSelfSession: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.settleSelfSession");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const outcome = typeof record.outcome === "string" && record.outcome.trim()
+        ? record.outcome
+        : undefined;
+      if (!sessionService.settleSession(sessionId, outcome ? { outcome } : {})) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId };
+    },
+    unsettleSelfSession: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.unsettleSelfSession");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      if (!sessionService.unsettleSession(sessionId)) {
+        throw new Error(`Session '${sessionId}' was not found.`);
+      }
+      return { ok: true, sessionId };
+    },
     deleteSession: (arg?: { sessionId?: string } | string) => {
       const sessionId = typeof arg === "string"
         ? requireNonEmptyString(arg, "sessionId")
