@@ -1,4 +1,5 @@
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
+import { AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
@@ -14,6 +15,9 @@ export const MAX_LOCAL_IDENTIFIER_LENGTH = 512;
 
 export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_work_session_started", "ade_work_session_completed", "ade_daily_usage_summary", "ade_analytics_budget",
+  "ade_update_install_aborted", "ade_update_quit_escalated", "ade_update_auto_applied",
+  "ade_update_auto_apply_cancelled",
+  "ade_brain_recovered", "ade_publish_failing",
 ]);
 
 export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -26,6 +30,12 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_error: 20,
   ade_daily_usage_summary: 60,
   ade_analytics_budget: 2,
+  ade_update_install_aborted: 20,
+  ade_update_quit_escalated: 10,
+  ade_update_auto_applied: 10,
+  ade_update_auto_apply_cancelled: 10,
+  ade_brain_recovered: 10,
+  ade_publish_failing: 10,
 };
 
 export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -38,19 +48,26 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_error: 6,
   ade_daily_usage_summary: 60,
   ade_analytics_budget: 2,
+  ade_update_install_aborted: 6,
+  ade_update_quit_escalated: 3,
+  ade_update_auto_applied: 3,
+  ade_update_auto_apply_cancelled: 3,
+  ade_brain_recovered: 3,
+  ade_publish_failing: 3,
 };
 
 const STRING_PROPERTIES = new Set([
   "screen", "feature", "action", "outcome", "app_version", "runtime_mode", "provider", "model_family",
   "duration_bucket", "error_kind", "route_kind", "connection_state", "drop_reason", "source", "mode",
-  "entry_point", "release_channel", "summary_kind",
+  "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
   "terminal_session_count", "active_lane_count", "lanes_created", "lanes_archived", "commits_created",
   "push_operations", "pr_landings", "files_changed", "artifacts_captured", "automation_runs", "worker_runs",
   "active_days", "current_streak_days", "token_count", "input_token_count", "output_token_count", "call_count",
-  "duration_ms", "provider_count", "model_count", "error_count", "bytes_freed", "files_compressed",
+  "duration_ms", "provider_count", "model_count", "error_count", "bytes_freed", "files_compressed", "blocked_ms",
+  "failing_minutes",
 ]);
 const BOOLEAN_PROPERTIES = new Set(["recoverable", "paired", "cached_data", "is_packaged"]);
 
@@ -82,6 +99,12 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
     "duration_ms", "provider_count", "model_count", "error_count",
   ]),
   ade_analytics_budget: new Set(["sent_count", "dropped_count", "drop_reason"]),
+  ade_update_install_aborted: new Set(["reason"]),
+  ade_update_quit_escalated: new Set(["blocked_ms"]),
+  ade_update_auto_applied: new Set(),
+  ade_update_auto_apply_cancelled: new Set(),
+  ade_brain_recovered: new Set(["blocked_ms", "last_command"]),
+  ade_publish_failing: new Set(["failing_minutes", "leg", "code"]),
 };
 
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;
@@ -122,6 +145,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   ]),
   release_channel: new Set(["stable", "beta", "development", "unknown"]),
   summary_kind: new Set(["overall", "client", "provider", "model"]),
+  reason: new Set(AUTO_UPDATE_INSTALL_ABORT_REASONS),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {

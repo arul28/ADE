@@ -1,6 +1,11 @@
 import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
-import { compareUpdateVersions, createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
+import {
+  buildGithubReleaseUrl,
+  compareUpdateVersions,
+  createEmptyAutoUpdateSnapshot,
+  type createAutoUpdateService,
+} from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -3762,6 +3767,17 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.appGetLatestRelease, async (): Promise<LatestReleaseInfo | null> => {
+    if (app.isPackaged) {
+      const snapshot = getCtx().autoUpdateService?.getSnapshot();
+      const version = snapshot?.latestKnownVersion?.trim() ?? "";
+      if (!version) return null;
+      return {
+        version,
+        htmlUrl: buildGithubReleaseUrl(version),
+        publishedAt: null,
+        updateAvailable: compareUpdateVersions(version, app.getVersion()) > 0,
+      };
+    }
     let token: string | null = null;
     try {
       // ADE's release repository is public. Use only an immediately available
@@ -10208,6 +10224,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.updateQuitAndInstall, () => {
     return getCtx().autoUpdateService?.quitAndInstall() ?? false;
+  });
+
+  ipcMain.handle(IPC.updateCancelAutoApply, () => {
+    return getCtx().autoUpdateService?.cancelAutoApply() ?? false;
   });
 
   ipcMain.handle(IPC.updateDismissInstalledNotice, () => {

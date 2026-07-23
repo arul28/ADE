@@ -34,11 +34,13 @@ import {
 import { PairMachineForm } from "./PairMachineForm";
 import {
   assignMachineSections,
+  describePublishHealth,
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
+  type LocalPublishHealth,
   type MachineSection,
 } from "./remoteMachineModel";
 import { SavedMachineRow } from "./SavedMachineRow";
@@ -176,6 +178,8 @@ export function RemoteTargetList({
   const [localMachineName, setLocalMachineName] = useState("");
   const [localMachineIdentity, setLocalMachineIdentity] =
     useState<{ machineKey: string; deviceId: string } | null>(null);
+  const [localPublishHealth, setLocalPublishHealth] =
+    useState<LocalPublishHealth | null>(null);
   const [pairingPrefill, setPairingPrefill] = useState<string | null>(null);
   const [accountConnectingMachineKey, setAccountConnectingMachineKey] =
     useState<string | null>(null);
@@ -418,6 +422,40 @@ export function RemoteTargetList({
       cancelled = true;
     };
   }, []);
+
+  // This Mac's route-publish health, refreshed periodically so a persisting
+  // failure's "for N min" stays truthful while the panel is open. getInfo is a
+  // cheap one-shot; there is no push event for the publisher's health.
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      const infoPromise = window.ade.app?.getInfo?.();
+      if (!infoPromise) return;
+      void infoPromise
+        .then((info) => {
+          if (cancelled) return;
+          const health = info.localRuntime?.publishHealth ?? null;
+          setLocalPublishHealth(
+            health
+              ? { state: health.state, failingSinceMs: health.failingSinceMs }
+              : null,
+          );
+        })
+        .catch(() => {});
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const publishHealthDisplay = useMemo(
+    () => describePublishHealth(localPublishHealth),
+    // Re-derive on each fetch; the 30s refresh advances the "for N min" count.
+    [localPublishHealth],
+  );
 
   const openAddMachine = useCallback(() => {
     setSelectedId(null);
@@ -1047,6 +1085,29 @@ export function RemoteTargetList({
               Machines
             </div>
             <div style={helperTextStyle}>{connectedCount} connected</div>
+            {publishHealthDisplay.kind === "healthy" ? (
+              <div style={helperTextStyle}>Routes fresh</div>
+            ) : null}
+            {publishHealthDisplay.kind === "failing" ? (
+              <div
+                style={{
+                  marginTop: 3,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 5,
+                  color: COLORS.warning,
+                  fontFamily: SANS_FONT,
+                  fontSize: 11,
+                  lineHeight: 1.4,
+                }}
+              >
+                <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
+                <span>
+                  Other devices may not reach this Mac — route publish failing for{" "}
+                  {publishHealthDisplay.minutes} min
+                </span>
+              </div>
+            ) : null}
           </div>
           <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
             <button

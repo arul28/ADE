@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { createServer } from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -4992,130 +4993,41 @@ describe("ADE CLI", () => {
     expect(output).toContain("Git repository detected");
   });
 
-  it("adds sync route health to doctor and names a loopback listener mismatch", () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-doctor-sync-"));
-    fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
-    try {
-      const plan = expectExecutePlan(buildCliPlan(["doctor"]));
-      expect(plan.steps).toContainEqual({
-        key: "syncStatus",
-        method: "sync.getStatus",
-        params: { includeTransferReadiness: false },
-        optional: true,
-      });
-      expect(plan.steps).toContainEqual({
-        key: "relaySelfProbe",
-        method: "sync.runSelfProbe",
-        optional: true,
-      });
-      const summary = summarizeExecution({
-        plan,
-        connection: {
-          mode: "runtime-socket",
-          projectRoot,
-          workspaceRoot: projectRoot,
-          socketPath: path.join(projectRoot, ".ade", "ade.sock"),
-        },
-        values: {
-          rpcActions: { actions: [{}] },
-          actions: { actions: [{}] },
-          syncStatus: {
-            pairingConnectInfo: { port: 8787 },
-            routeHealth: {
-              listener: {
-                listenerBound: true,
-                loopbackAdeValidated: false,
-                reason: "Expected ADE 426 Upgrade Required; received 404 Not Found.",
-              },
-              tailscale: {
-                enabled: true,
-                tailscaleReachable: false,
-                reason: "Tailscale route points at the listener mismatch.",
-              },
-              relay: {
-                enabled: true,
-                relayControlConnected: false,
-                relayBridgeValidated: false,
-                skipReason: "Relay control upgrade failed with HTTP 401: token expired",
-                lastControlError: "Relay control closed (1006).",
-              },
-            },
-          },
-          relaySelfProbe: {
-            ok: false,
-            detail: "Relay self-probe closed before ready (4501): host offline.",
-          },
-        },
-      } as any) as Record<string, any>;
-
-      expect(summary.sync).toMatchObject({
-        enabled: true,
-        usable: false,
-        status: "warning",
-      });
-      expect(summary.sync.failingRoutes).toEqual([
-        expect.stringContaining("listener"),
-        expect.stringContaining("tailscale"),
-        "relay: Relay control upgrade failed with HTTP 401: token expired",
-      ]);
-      expect(summary.sync.message).toContain("404 Not Found");
-      expect(summary.sync.message).toContain("HTTP 401: token expired");
-      expect(summary.relaySelfProbe).toMatchObject({
-        ready: false,
-        status: "warning",
-        message: expect.stringContaining("FAILED"),
-      });
-      const output = formatOutput(summary, {
-        projectRoot,
-        workspaceRoot: projectRoot,
-        role: "agent",
-        headless: false,
-        requireSocket: false,
-        socketPath: null,
-        pretty: true,
-        text: true,
-        timeoutMs: 1000,
-      }, "doctor");
-      expect(output).toContain("Sync route failure");
-      expect(output).toContain("listener");
-      expect(output).toContain("relay self-probe");
-      expect(output).toContain("host offline");
-    } finally {
-      fs.rmSync(projectRoot, { recursive: true, force: true });
-    }
+  it("builds doctor as a read-only local command and keeps online checks explicit", () => {
+    expect(buildCliPlan(["doctor"])).toEqual({ kind: "doctor", online: false });
+    expect(buildCliPlan(["doctor", "--online"])).toEqual({ kind: "doctor", online: true });
   });
 
-  it("marks the doctor Relay self-probe skipped when no brain is running", () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-doctor-no-brain-"));
-    fs.mkdirSync(path.join(projectRoot, ".ade"), { recursive: true });
+  it("bounds doctor when a dead socket accepts a connection but never responds", async () => {
+    if (process.platform === "win32") return;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-doctor-dead-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const acceptedSockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      acceptedSockets.add(socket);
+      socket.once("close", () => acceptedSockets.delete(socket));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(socketPath, resolve);
+    });
+    const startedAt = Date.now();
     try {
-      const summary = summarizeExecution({
-        plan: expectExecutePlan(buildCliPlan(["doctor"])),
-        connection: {
-          mode: "headless",
-          projectRoot,
-          workspaceRoot: projectRoot,
-          socketPath: path.join(projectRoot, ".ade", "ade.sock"),
-        },
-        values: {
-          rpcActions: { actions: [{}] },
-          actions: { actions: [{}] },
-          relaySelfProbe: {
-            ok: false,
-            detail: "Relay self-probe skipped because the control socket is not connected.",
-          },
-        },
-      } as any) as Record<string, any>;
-
-      expect(summary.relaySelfProbe).toEqual(expect.objectContaining({
-        ready: true,
-        status: "unavailable",
-        message: "Skipped — no running ADE brain.",
-      }));
+      const result = await runCli(["--socket", socketPath, "doctor", "--json"]);
+      expect(result.exitCode).toBe(1);
+      expect(JSON.parse(result.output)).toMatchObject({
+        ok: false,
+        rows: expect.arrayContaining([
+          expect.objectContaining({ key: "brain", status: "fail" }),
+        ]),
+      });
+      expect(Date.now() - startedAt).toBeLessThan(2_750);
     } finally {
-      fs.rmSync(projectRoot, { recursive: true, force: true });
+      for (const socket of acceptedSockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      fs.rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 5_000);
 
   it("detects project-local Linear credentials in doctor readiness", () => {
     const previousAdeLinearApi = process.env.ADE_LINEAR_API;

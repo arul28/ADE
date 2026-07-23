@@ -50,7 +50,11 @@ vi.mock("../git/git", () => ({
 // Replace global fetch
 vi.stubGlobal("fetch", mockFetch);
 
-import { createGithubService, fetchAdeLatestRelease } from "./githubService";
+import {
+  GITHUB_API_BODY_TIMEOUT_MS,
+  createGithubService,
+  fetchAdeLatestRelease,
+} from "./githubService";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -175,6 +179,40 @@ describe("githubService.apiRequest", () => {
     expect(result.data).toEqual(payload);
     expect(result.response).toBeDefined();
     expect(result.response!.status).toBe(200);
+  });
+
+  it("aborts and rejects when the response body never finishes", async () => {
+    vi.useFakeTimers();
+    let markBodyStarted!: () => void;
+    const bodyStarted = new Promise<void>((resolve) => { markBodyStarted = resolve; });
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      text: vi.fn(() => {
+        markBodyStarted();
+        return new Promise<string>(() => {});
+      }),
+      json: vi.fn(),
+    } as unknown as Response);
+    const service = makeService();
+    try {
+      const pending = service.apiRequest({
+        method: "GET",
+        path: "/repos/owner/repo",
+        token: "ghp_test123",
+      });
+      await bodyStarted;
+      const result = expect(pending).rejects.toThrow(
+        "GitHub API response body timed out",
+      );
+      await vi.advanceTimersByTimeAsync(GITHUB_API_BODY_TIMEOUT_MS);
+      await result;
+      const fetchSignal = mockFetch.mock.calls[0]?.[1]?.signal as AbortSignal;
+      expect(fetchSignal.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("throws with message from response when errors array is absent", async () => {

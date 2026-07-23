@@ -12,6 +12,7 @@ import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { SyncRoleSnapshot } from "../../desktop/src/shared/types";
+import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 
 function createRegistry() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-rpc-"));
@@ -590,6 +591,8 @@ describe("multi-project RPC server", () => {
       expect(init).toMatchObject({
         runtimeInfo: {
           buildHash: expectedHash,
+          minCompatibleProtocol: RUNTIME_COMPAT_LEVEL,
+          protocolVersion: RUNTIME_COMPAT_LEVEL,
           multiProject: true,
         },
       });
@@ -602,6 +605,55 @@ describe("multi-project RPC server", () => {
         process.env.ADE_RUNTIME_BUILD_HASH = originalBuildHash;
       }
     }
+  });
+
+  it("advertises machine recovery health in runtimeInfo", async () => {
+    const { registry } = createRegistry();
+    const getRuntimeStatus = vi.fn(() => ({
+      syncPort: 8789,
+      publishHealth: {
+        state: "http_timeout" as const,
+        failingSinceMs: 120_000,
+        lastLegDurations: { snapshot: 10, token: 20, http: 9_200 },
+      },
+      lastWedge: {
+        lastCommand: "chat.send",
+        blockedMs: 16_500,
+        ts: "2026-07-23T12:00:00.000Z",
+      },
+    }));
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      getRuntimeStatus,
+    });
+
+    const initialized = await handler({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "ade/initialize",
+      params: {},
+    });
+
+    expect(initialized).toMatchObject({
+      runtimeInfo: {
+        pid: process.pid,
+        uptimeMs: expect.any(Number),
+        syncPort: 8789,
+        publishHealth: {
+          state: "http_timeout",
+          failingSinceMs: 120_000,
+          lastLegDurations: { snapshot: 10, token: 20, http: 9_200 },
+        },
+        lastWedge: {
+          lastCommand: "chat.send",
+          blockedMs: 16_500,
+          ts: "2026-07-23T12:00:00.000Z",
+        },
+      },
+    });
+    expect(getRuntimeStatus).toHaveBeenCalledTimes(1);
+    handler.dispose();
   });
 
   it("exposes machine personal chats without a project id", async () => {
@@ -1174,6 +1226,12 @@ describe("multi-project RPC server", () => {
       lastHttpStatus: 401,
       lastHttpReason: "invalid audience",
       reachableEndpointCount: 2,
+      lastLegDurations: {
+        snapshot: 3,
+        token: 12,
+        http: 250,
+      },
+      failingSinceMs: 123,
     };
     const handler = createMultiProjectRpcRequestHandler({
       serverVersion: "test",

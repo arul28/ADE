@@ -164,6 +164,7 @@ export function createAdeWebAdapter(
     updateGetState: webUpdateMethods.updateGetState,
     updateGetInstallImpact: webUpdateMethods.updateGetInstallImpact,
     updateQuitAndInstall: webUpdateMethods.updateQuitAndInstall,
+    updateCancelAutoApply: webUpdateMethods.updateCancelAutoApply,
     updateDismissInstalledNotice: async () => undefined,
     onUpdateEvent: () => () => {},
     perf: {

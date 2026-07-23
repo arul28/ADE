@@ -6,6 +6,7 @@ import type {
   PersonalChatAction,
   PersonalChatCallResponse,
   PersonalChatCapabilities,
+  RuntimeActivityCounts,
 } from "../../../../desktop/src/shared/types";
 import { PERSONAL_CHAT_ACTIONS } from "../../../../desktop/src/shared/types";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
@@ -18,6 +19,18 @@ type PersonalChatScopeOptions = {
 };
 
 type ObjectArgs = Record<string, unknown>;
+
+export function summarizeRuntimeActivity(runtime: AdeRuntime): RuntimeActivityCounts {
+  return {
+    activeAgentTurns: runtime.agentChatService?.hasActiveWorkloads() ? 1 : 0,
+    activeWorkSessions: runtime.ptyService.list({ status: "running", limit: 500 })
+      .filter(
+        (session) =>
+          session.runtimeState === "running"
+          || session.runtimeState === "waiting-input",
+      ).length,
+  };
+}
 
 function asObject(value: unknown): ObjectArgs {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -70,6 +83,19 @@ export class PersonalChatScope {
 
   capabilities(): PersonalChatCapabilities {
     return { version: 1, actions: [...PERSONAL_CHAT_ACTIONS] };
+  }
+
+  /**
+   * Read activity only when the machine chat runtime is already booted. Update
+   * idleness probes must never create the personal-chat runtime as a side
+   * effect.
+   */
+  async activitySummary(): Promise<RuntimeActivityCounts> {
+    const pending = this.runtimePromise;
+    if (!pending) return { activeAgentTurns: 0, activeWorkSessions: 0 };
+    const runtime = await pending.catch(() => null);
+    if (!runtime) return { activeAgentTurns: 0, activeWorkSessions: 0 };
+    return summarizeRuntimeActivity(runtime);
   }
 
   async call(actionValue: unknown, argsValue: unknown): Promise<PersonalChatCallResponse> {

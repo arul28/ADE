@@ -10,6 +10,7 @@ import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 const idleSnapshot: AutoUpdateSnapshot = {
   status: "idle",
   currentVersion: "1.2.0",
+  latestKnownVersion: "1.2.0",
   version: null,
   progressPercent: null,
   bytesPerSecond: null,
@@ -19,6 +20,9 @@ const idleSnapshot: AutoUpdateSnapshot = {
   error: null,
   errorDetails: null,
   recentlyInstalled: null,
+  parked: null,
+  autoApplyPending: null,
+  autoApplySuppressedUntil: null,
 };
 
 function appInfoWithRuntimeSkew(

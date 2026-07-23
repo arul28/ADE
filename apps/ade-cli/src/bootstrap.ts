@@ -1600,6 +1600,7 @@ export async function createAdeRuntime(args: {
       productAnalyticsService,
       logger,
       getAccountDirectoryHealth: resolvedArgs.syncRuntime.getAccountDirectoryHealth,
+      requestAccountMachinePublish: resolvedArgs.syncRuntime.requestAccountMachinePublish,
       accountAuthService,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
       runtimeProjectId: projectId,

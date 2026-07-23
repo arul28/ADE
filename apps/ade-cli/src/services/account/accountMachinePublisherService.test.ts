@@ -163,6 +163,53 @@ describe("account machine publisher health", () => {
       lastHttpStatus: 204,
       lastHttpReason: null,
       reachableEndpointCount: 1,
+      lastLegDurations: {
+        snapshot: 0,
+        token: 0,
+        http: 25,
+      },
+      failingSinceMs: null,
+    });
+  });
+
+  it("samples successful leg durations and escalates slow legs to warn", async () => {
+    let clock = 0;
+    let tokenDelayMs = 2;
+    const debug = vi.fn();
+    const info = vi.fn();
+    const warn = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => {
+        clock += tokenDelayMs;
+        return "account-token";
+      },
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => {
+        clock += 1;
+        return snapshot();
+      },
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async () => {
+        clock += 3;
+        return new Response(null, { status: 204 });
+      }),
+      now: () => clock,
+      logger: { debug, info, warn },
+    });
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await service.publishNow();
+    }
+
+    expect(debug).toHaveBeenCalledTimes(9);
+    expect(info).toHaveBeenCalledWith("account.machine_publish_ok", {
+      legDurationsMs: { snapshot: 1, token: 2, http: 3 },
+    });
+    tokenDelayMs = 2_001;
+    await service.publishNow();
+    expect(warn).toHaveBeenCalledWith("account.machine_publish_ok", {
+      legDurationsMs: { snapshot: 1, token: 2_001, http: 3 },
     });
   });
 
@@ -264,7 +311,7 @@ describe("account machine publisher health", () => {
     });
   });
 
-  it("distinguishes HTTP, timeout, and transport failures", async () => {
+  it("distinguishes HTTP timeouts from transport failures", async () => {
     const baseOptions = {
       getAccessToken: async () => "account-token",
       getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
@@ -299,20 +346,124 @@ describe("account machine publisher health", () => {
     });
 
     vi.useFakeTimers();
+    const warn = vi.fn();
     const timeout = createAccountMachinePublisherService({
       ...baseOptions,
       requestTimeoutMs: 250,
       fetchImpl: vi.fn((_input, init) => new Promise<Response>((_resolve, reject) => {
-        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
       })),
+      logger: { warn },
     });
     const publishing = timeout.publishNow();
     await vi.advanceTimersByTimeAsync(250);
     await publishing;
     expect(timeout.getPublisherHealth()).toMatchObject({
-      state: "timeout",
+      state: "http_timeout",
       lastHttpStatus: null,
+      failingSinceMs: expect.any(Number),
+      lastLegDurations: {
+        snapshot: expect.any(Number),
+        token: expect.any(Number),
+        http: 250,
+      },
     });
+    expect(warn).toHaveBeenCalledWith("account.machine_publish_failed", expect.objectContaining({
+      leg: "http",
+      code: "http_timeout",
+      legDurationsMs: expect.objectContaining({ http: 250 }),
+    }));
+  });
+
+  it("captures one publish-failing event per failure episode after two minutes", async () => {
+    let clock = 0;
+    let succeeds = false;
+    const captureAnalytics = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async () => succeeds
+        ? new Response(null, { status: 204 })
+        : new Response(null, { status: 503 })),
+      now: () => clock,
+      captureAnalytics,
+    });
+
+    await service.publishNow();
+    clock = 121_000;
+    await service.publishNow();
+    clock = 180_000;
+    await service.publishNow();
+
+    expect(captureAnalytics).toHaveBeenCalledTimes(1);
+    expect(captureAnalytics).toHaveBeenCalledWith({
+      event: "ade_publish_failing",
+      surface: "api",
+      properties: {
+        failing_minutes: 2,
+        leg: "http",
+        code: "http_error",
+      },
+      dedupeKey: "publish-failing:0",
+      minimumIntervalMs: 24 * 60 * 60 * 1_000,
+    });
+
+    succeeds = true;
+    clock = 200_000;
+    await service.publishNow();
+    succeeds = false;
+    clock = 300_000;
+    await service.publishNow();
+    clock = 421_000;
+    await service.publishNow();
+
+    expect(captureAnalytics).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds a stalled token leg and reports token_timeout without starting HTTP", async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    const fetchImpl = vi.fn();
+    const getAccessToken = vi.fn((options?: { signal?: AbortSignal }) =>
+      new Promise<string>((_resolve, reject) => {
+        options?.signal?.addEventListener("abort", () => {
+          reject(options.signal?.reason);
+        });
+      }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken,
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+      tokenTimeoutMs: 250,
+      logger: { warn },
+    });
+
+    const publishing = service.publishNow();
+    await vi.advanceTimersByTimeAsync(250);
+    await publishing;
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "token_timeout",
+      lastHttpStatus: null,
+      failingSinceMs: expect.any(Number),
+      lastLegDurations: {
+        snapshot: expect.any(Number),
+        token: 250,
+        http: null,
+      },
+    });
+    expect(warn).toHaveBeenCalledWith("account.machine_publish_failed", expect.objectContaining({
+      leg: "token",
+      code: "token_timeout",
+      legDurationsMs: expect.objectContaining({ token: 250, http: null }),
+    }));
   });
 
   it("force-refreshes once after the directory rejects the first bearer", async () => {
@@ -338,13 +489,74 @@ describe("account machine publisher health", () => {
 
     await service.publishNow();
 
-    expect(getAccessToken).toHaveBeenNthCalledWith(1);
-    expect(getAccessToken).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(getAccessToken).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      signal: expect.any(AbortSignal),
+      timeoutMs: 10_000,
+    }));
+    expect(getAccessToken).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      forceRefresh: true,
+      signal: expect.any(AbortSignal),
+      timeoutMs: 10_000,
+    }));
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(service.getPublisherHealth()).toMatchObject({
       state: "published",
       lastHttpStatus: 204,
     });
+  });
+
+  it("classifies a stalled 401 refresh as token_timeout, outside the HTTP budget", async () => {
+    vi.useFakeTimers();
+    const warn = vi.fn();
+    const getAccessToken = vi.fn((options?: {
+      forceRefresh?: boolean;
+      signal?: AbortSignal;
+    }): Promise<string> => {
+      if (!options?.forceRefresh) return Promise.resolve("stale-token");
+      return new Promise((_resolve, reject) => {
+        options.signal?.addEventListener("abort", () => {
+          reject(options.signal?.reason);
+        });
+      });
+    });
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ error: "expired bearer" }),
+      {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      },
+    ));
+    const service = createAccountMachinePublisherService({
+      getAccessToken,
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+      tokenTimeoutMs: 250,
+      requestTimeoutMs: 250,
+      logger: { warn },
+    });
+
+    const publishing = service.publishNow();
+    await vi.advanceTimersByTimeAsync(250);
+    await publishing;
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "token_timeout",
+      lastHttpStatus: 401,
+      lastHttpReason: "expired bearer",
+      lastLegDurations: {
+        snapshot: expect.any(Number),
+        token: 250,
+        http: expect.any(Number),
+      },
+    });
+    expect(warn).toHaveBeenCalledWith("account.machine_publish_failed", expect.objectContaining({
+      leg: "token_refresh_401",
+      code: "token_timeout",
+    }));
   });
 
   it("accelerates transient retries with bounded backoff and resets after success", async () => {

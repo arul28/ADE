@@ -805,6 +805,7 @@ export const IPC = {
   updateGetState: "ade.update.getState",
   updateGetInstallImpact: "ade.update.getInstallImpact",
   updateQuitAndInstall: "ade.update.quitAndInstall",
+  updateCancelAutoApply: "ade.update.cancelAutoApply",
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateEvent: "ade.update.event",
   transcriptionTranscribe: "ade.transcription.transcribe",

@@ -1,5 +1,6 @@
 import type { AdeRuntime, AdeRuntimeSyncOptions } from "../../bootstrap";
 import type { SyncCommandPayload } from "../../../../desktop/src/shared/types";
+import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 
 type SwitchSyncHostOptions = {
@@ -63,8 +64,11 @@ export class ProjectScopeRegistry {
   private latestSyncHostTransitionId = 0;
   private latestSyncHostTransitionProjectId: ProjectId | null = null;
   private readonly remoteCommandExecutor = {
-    execute: async (payload: SyncCommandPayload): Promise<unknown> => {
-      return await this.executeRemoteCommand(payload);
+    execute: async (
+      payload: SyncCommandPayload,
+      context?: SyncRemoteCommandExecutionContext,
+    ): Promise<unknown> => {
+      return await this.executeRemoteCommand(payload, context);
     },
   };
 
@@ -432,7 +436,10 @@ export class ProjectScopeRegistry {
     };
   }
 
-  private async executeRemoteCommand(payload: SyncCommandPayload): Promise<unknown> {
+  private async executeRemoteCommand(
+    payload: SyncCommandPayload,
+    context?: SyncRemoteCommandExecutionContext,
+  ): Promise<unknown> {
     const projectId = typeof payload.projectId === "string" && payload.projectId.trim()
       ? payload.projectId.trim()
       : null;
@@ -444,6 +451,6 @@ export class ProjectScopeRegistry {
     if (!syncService) {
       throw new Error(`Phone sync is not available for project ${projectId}.`);
     }
-    return await syncService.executeRemoteCommand(payload);
+    return await syncService.executeRemoteCommand(payload, context);
   }
 }

@@ -29,6 +29,7 @@ import { nowIso, asString } from "../shared/utils";
 const AUTH_STORE_FILE_NAME = "github-token.v1.bin";
 const MACHINE_TOKEN_KEY = "github.token.v1";
 const GITHUB_API_TIMEOUT_MS = 20_000;
+export const GITHUB_API_BODY_TIMEOUT_MS = 30_000;
 const GH_AUTH_TOKEN_CACHE_TTL_MS = 30_000;
 const GH_HOSTS_TOKEN_CACHE_MAX_ENTRIES = 32;
 const GITHUB_STATUS_FAILURE_COOLDOWN_MS = 30_000;
@@ -207,14 +208,121 @@ async function readGitHubCliAuthToken(): Promise<GitHubCliAuthResult> {
   }
 }
 
+const githubResponseCleanup = new WeakMap<Response, () => void>();
+
+function githubRequestTimeoutError(phase: "request" | "response body"): Error {
+  return new Error(
+    `GitHub API ${phase} timed out. Check network access on this machine.`,
+  );
+}
+
+function wrapGitHubResponseBody(args: {
+  response: Response;
+  controller: AbortController;
+  cleanupUpstreamAbort: () => void;
+}): Response {
+  let settled = false;
+  let timeoutError: Error | null = null;
+  const pendingRejects = new Set<(error: Error) => void>();
+  const finish = (): void => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    args.controller.signal.removeEventListener("abort", onAbort);
+    args.cleanupUpstreamAbort();
+    githubResponseCleanup.delete(args.response);
+  };
+  const onAbort = (): void => {
+    const error = timeoutError
+      ?? (args.controller.signal.reason instanceof Error
+        ? args.controller.signal.reason
+        : new Error("GitHub API request aborted."));
+    for (const reject of pendingRejects) reject(error);
+    pendingRejects.clear();
+    finish();
+  };
+  const timer = setTimeout(() => {
+    timeoutError = githubRequestTimeoutError("response body");
+    args.controller.abort(timeoutError);
+  }, GITHUB_API_BODY_TIMEOUT_MS);
+  timer.unref?.();
+  args.controller.signal.addEventListener("abort", onAbort, { once: true });
+
+  const wrapBodyReader = <T>(read: () => Promise<T>): (() => Promise<T>) =>
+    async (): Promise<T> => {
+      if (timeoutError) throw timeoutError;
+      if (args.controller.signal.aborted) {
+        throw args.controller.signal.reason instanceof Error
+          ? args.controller.signal.reason
+          : new Error("GitHub API request aborted.");
+      }
+      return await new Promise<T>((resolve, reject) => {
+        const rejectPending = (error: Error): void => reject(error);
+        pendingRejects.add(rejectPending);
+        Promise.resolve()
+          .then(read)
+          .then(
+            (value) => {
+              pendingRejects.delete(rejectPending);
+              finish();
+              resolve(value);
+            },
+            (error) => {
+              pendingRejects.delete(rejectPending);
+              finish();
+              reject(error);
+            },
+          );
+      });
+    };
+
+  for (const method of ["arrayBuffer", "blob", "formData", "json", "text"] as const) {
+    const original = args.response[method];
+    if (typeof original !== "function") continue;
+    Object.defineProperty(args.response, method, {
+      configurable: true,
+      value: wrapBodyReader(original.bind(args.response) as () => Promise<unknown>),
+    });
+  }
+  githubResponseCleanup.set(args.response, finish);
+  return args.response;
+}
+
+function releaseGitHubResponse(response: Response): void {
+  githubResponseCleanup.get(response)?.();
+  void response.body?.cancel().catch(() => {});
+}
+
 async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
+  const upstreamSignal = init.signal;
+  const onUpstreamAbort = (): void => controller.abort(upstreamSignal?.reason);
+  if (upstreamSignal?.aborted) onUpstreamAbort();
+  else upstreamSignal?.addEventListener("abort", onUpstreamAbort, { once: true });
+  const cleanupUpstreamAbort = (): void => {
+    upstreamSignal?.removeEventListener("abort", onUpstreamAbort);
+  };
+  let headerTimedOut = false;
+  const timer = setTimeout(() => {
+    headerTimedOut = true;
+    controller.abort(githubRequestTimeoutError("request"));
+  }, GITHUB_API_TIMEOUT_MS);
+  timer.unref?.();
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    const response = await fetch(input, { ...init, signal: controller.signal });
+    clearTimeout(timer);
+    return wrapGitHubResponseBody({
+      response,
+      controller,
+      cleanupUpstreamAbort,
+    });
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error("GitHub API request timed out. Check network access on this machine.");
+    cleanupUpstreamAbort();
+    if (headerTimedOut) {
+      throw githubRequestTimeoutError("request");
+    }
+    if (controller.signal.aborted && controller.signal.reason instanceof Error) {
+      throw controller.signal.reason;
     }
     throw error;
   } finally {
@@ -373,7 +481,10 @@ export async function fetchAdeLatestRelease(options?: {
   } catch {
     return null;
   }
-  if (!response.ok) return null;
+  if (!response.ok) {
+    releaseGitHubResponse(response);
+    return null;
+  }
 
   const payload = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   if (!payload) return null;
@@ -758,7 +869,10 @@ export function createGithubService({
           },
         },
       );
-      if (response.ok) return { ok: true, error: null };
+      if (response.ok) {
+        releaseGitHubResponse(response);
+        return { ok: true, error: null };
+      }
       const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
       const message = asString(payload.message) || `HTTP ${response.status}`;
       return { ok: false, error: `${response.status}: ${message}` };
@@ -916,6 +1030,7 @@ export function createGithubService({
     if (response.status === 304) {
       const cached = etagCache.get(urlKey);
       if (cached) {
+        releaseGitHubResponse(response);
         return { data: cached.data as T, response, linkHeader: cached.linkHeader };
       }
     }

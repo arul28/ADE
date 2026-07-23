@@ -383,10 +383,96 @@ type SyncRemoteCommandServiceArgs = {
   logger: Logger;
 };
 
+export type SyncRemoteCommandExecutionContext = {
+  signal?: AbortSignal;
+};
+
 type RegisteredRemoteCommand = {
   descriptor: SyncRemoteCommandDescriptor;
-  handler: (args: Record<string, unknown>) => Promise<unknown>;
+  handler: (
+    args: Record<string, unknown>,
+    context: SyncRemoteCommandExecutionContext,
+  ) => Promise<unknown>;
 };
+
+export const AI_STATUS_REMOTE_COMMAND_TIMEOUT_MS = 30_000;
+
+function remoteCommandAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error(
+    typeof signal.reason === "string" && signal.reason.trim()
+      ? signal.reason
+      : "Remote command aborted.",
+  );
+  error.name = "AbortError";
+  return error;
+}
+
+async function runWithRemoteCommandSignal<T>(
+  run: () => Promise<T> | T,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return await run();
+  if (signal.aborted) throw remoteCommandAbortError(signal);
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (complete: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      complete();
+    };
+    const onAbort = (): void => settle(() => reject(remoteCommandAbortError(signal)));
+    signal.addEventListener("abort", onAbort, { once: true });
+    Promise.resolve()
+      .then(run)
+      .then(
+        (value) => settle(() => resolve(value)),
+        (error) => settle(() => reject(error)),
+      );
+  });
+}
+
+function commandHandlerObservesAbort(action: string): boolean {
+  return action === "ai.getStatus"
+    || action === "chat.resolveSmartLinkPreview"
+    || action === "chat.getTranscript"
+    || action === "chat.getChatEventHistory"
+    || action === "chat.getSubagentTranscript"
+    || action === "chat.getMainTranscript"
+    || action === "chat.getChatEventHistoryPage"
+    || action === "agentChat.getEventHistoryPage"
+    || action === "github.getStatus"
+    || action === "github.getRemoteStatus"
+    || action === "prs.refresh"
+    || action === "prs.preflightCreateLaneFromPrBranch"
+    || action.startsWith("prs.get")
+    || action.startsWith("prs.list");
+}
+
+async function runAiStatusWithTimeout<T>(
+  run: () => Promise<T>,
+  parentSignal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  const onParentAbort = (): void => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) onParentAbort();
+  else parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  const timer = setTimeout(() => {
+    const error = new Error(
+      `ai.getStatus timed out after ${AI_STATUS_REMOTE_COMMAND_TIMEOUT_MS}ms.`,
+    );
+    error.name = "TimeoutError";
+    controller.abort(error);
+  }, AI_STATUS_REMOTE_COMMAND_TIMEOUT_MS);
+  timer.unref?.();
+  try {
+    return await runWithRemoteCommandSignal(run, controller.signal);
+  } finally {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -3479,7 +3565,10 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
 type RemoteCommandRegistrar = (
   action: SyncRemoteCommandAction,
   policy: SyncRemoteCommandPolicy,
-  handler: (payload: Record<string, unknown>) => Promise<unknown>,
+  handler: (
+    payload: Record<string, unknown>,
+    context: SyncRemoteCommandExecutionContext,
+  ) => Promise<unknown>,
   scope?: SyncRemoteCommandDescriptor["scope"],
 ) => void;
 
@@ -4712,12 +4801,15 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.projectConfigService, "Project config service not available.").save(
       parseProjectConfigSaveArgs(payload).candidate,
     ));
-  register("ai.getStatus", { viewerAllowed: true }, async (payload) => {
+  register("ai.getStatus", { viewerAllowed: true }, async (payload, context) => {
     try {
-      return await buildAiSettingsStatus(args.aiIntegrationService, {
-        force: payload.force === true,
-        refreshOpenCodeInventory: payload.refreshOpenCodeInventory === true,
-      });
+      return await runAiStatusWithTimeout(
+        () => buildAiSettingsStatus(args.aiIntegrationService, {
+          force: payload.force === true,
+          refreshOpenCodeInventory: payload.refreshOpenCodeInventory === true,
+        }),
+        context.signal,
+      );
     } catch (error) {
       if (isDatabaseClosedError(error)) return getUnavailableAiStatus();
       throw error;
@@ -4977,7 +5069,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   const register = (
     action: SyncRemoteCommandAction,
     policy: SyncRemoteCommandPolicy,
-    handler: (payload: Record<string, unknown>) => Promise<unknown>,
+    handler: (
+      payload: Record<string, unknown>,
+      context: SyncRemoteCommandExecutionContext,
+    ) => Promise<unknown>,
     scope: SyncRemoteCommandDescriptor["scope"] = "project",
   ) => {
     registry.set(action, {
@@ -5096,7 +5191,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       return registry.get(action as SyncRemoteCommandAction)?.descriptor ?? null;
     },
 
-    async execute(payload: SyncCommandPayload): Promise<unknown> {
+    async execute(
+      payload: SyncCommandPayload,
+      context: SyncRemoteCommandExecutionContext = {},
+    ): Promise<unknown> {
       const handler = registry.get(payload.action as SyncRemoteCommandAction);
       if (!handler) {
         throw new Error(`Unsupported remote command: ${payload.action}`);
@@ -5107,7 +5205,10 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         scope: handler.descriptor.scope,
         policy: handler.descriptor.policy,
       });
-      return await handler.handler(commandArgs);
+      const run = () => handler.handler(commandArgs, context);
+      return commandHandlerObservesAbort(payload.action)
+        ? await runWithRemoteCommandSignal(run, context.signal)
+        : await run();
     },
   };
 }

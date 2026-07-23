@@ -16,6 +16,14 @@ const ROTATION_CHECK_INTERVAL_MS = 60_000;
 const FLUSH_INTERVAL_MS = 500;
 const FLUSH_BATCH_SIZE = 500;
 
+export type FileLoggerOptions = {
+  maxFileBytes?: number;
+  rotationCheckWriteInterval?: number;
+  rotationCheckIntervalMs?: number;
+  flushIntervalMs?: number;
+  flushBatchSize?: number;
+};
+
 export type Logger = {
   debug: (event: string, meta?: Record<string, unknown>) => void;
   info: (event: string, meta?: Record<string, unknown>) => void;
@@ -50,10 +58,20 @@ function createConsoleMirror(level: LogLevel, event: string, meta?: Record<strin
   CONSOLE_FN_BY_LEVEL[level](`[${level}] ${event}`, meta ?? "");
 }
 
-export function createFileLogger(logFilePath: string): Logger {
+export function createFileLogger(
+  logFilePath: string,
+  options: FileLoggerOptions = {},
+): Logger {
   const minLevel = resolveMinLevel();
   const logDir = path.dirname(logFilePath);
   const rotatedLogFilePath = getRotatedLogFilePath(logFilePath);
+  const maxFileBytes = options.maxFileBytes ?? MAX_LOG_FILE_BYTES;
+  const rotationCheckWriteInterval = options.rotationCheckWriteInterval
+    ?? ROTATION_CHECK_WRITE_INTERVAL;
+  const rotationCheckIntervalMs = options.rotationCheckIntervalMs
+    ?? ROTATION_CHECK_INTERVAL_MS;
+  const flushIntervalMs = options.flushIntervalMs ?? FLUSH_INTERVAL_MS;
+  const flushBatchSize = options.flushBatchSize ?? FLUSH_BATCH_SIZE;
 
   let writesSinceRotateCheck = 0;
   let lastRotateCheckAt = Date.now();
@@ -66,8 +84,8 @@ export function createFileLogger(logFilePath: string): Logger {
   let logStream: fs.WriteStream | null = null;
 
   const shouldCheckRotation = (): boolean => {
-    if (writesSinceRotateCheck >= ROTATION_CHECK_WRITE_INTERVAL) return true;
-    return Date.now() - lastRotateCheckAt >= ROTATION_CHECK_INTERVAL_MS;
+    if (writesSinceRotateCheck >= rotationCheckWriteInterval) return true;
+    return Date.now() - lastRotateCheckAt >= rotationCheckIntervalMs;
   };
 
   const ensureLogDir = (): boolean => {
@@ -111,7 +129,7 @@ export function createFileLogger(logFilePath: string): Logger {
   const rotateIfNeeded = async (upcomingWriteBytes: number): Promise<void> => {
     refreshEstimatedFileSizeIfNeeded();
     const currentFileSize = estimatedFileSize ?? 0;
-    if (currentFileSize < MAX_LOG_FILE_BYTES && currentFileSize + upcomingWriteBytes <= MAX_LOG_FILE_BYTES) return;
+    if (currentFileSize < maxFileBytes && currentFileSize + upcomingWriteBytes <= maxFileBytes) return;
 
     await closeLogStream();
 
@@ -172,7 +190,7 @@ export function createFileLogger(logFilePath: string): Logger {
       flushTimer = null;
     }
 
-    const lines = queuedLines.splice(0, FLUSH_BATCH_SIZE);
+    const lines = queuedLines.splice(0, flushBatchSize);
     const payload = lines.join("");
     const bytes = Buffer.byteLength(payload, "utf8");
     flushInProgress = true;
@@ -194,7 +212,7 @@ export function createFileLogger(logFilePath: string): Logger {
   };
 
   const scheduleFlush = () => {
-    if (queuedLines.length >= FLUSH_BATCH_SIZE) {
+    if (queuedLines.length >= flushBatchSize) {
       void flush();
       return;
     }
@@ -202,7 +220,7 @@ export function createFileLogger(logFilePath: string): Logger {
     flushTimer = setTimeout(() => {
       flushTimer = null;
       void flush();
-    }, FLUSH_INTERVAL_MS);
+    }, flushIntervalMs);
     flushTimer.unref?.();
   };
 

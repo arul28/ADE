@@ -19,6 +19,7 @@ import {
   encodePairingQrUrl,
 } from "../../../shared/pairingQr";
 import type {
+  SyncAccountDirectoryState,
   SyncAddressCandidate,
   SyncPeerPlatform,
 } from "../../../shared/types/sync";
@@ -206,6 +207,58 @@ export function machineMatchesSavedTarget(
     if (saved.has(identity)) return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Local "This Mac" route-publish health
+// ---------------------------------------------------------------------------
+
+/** Publish-health slice the runtime status IPC exposes for this machine. */
+export type LocalPublishHealth = {
+  state: SyncAccountDirectoryState;
+  failingSinceMs: number | null;
+};
+
+export type PublishHealthDisplay =
+  | { kind: "none" }
+  | { kind: "healthy" }
+  | { kind: "failing"; minutes: number };
+
+/** A publish failure must persist at least this long before we alarm the user. */
+export const PUBLISH_FAILING_ALARM_MS = 2 * 60_000;
+
+/**
+ * Non-publishing states: this Mac isn't advertising routes to the account
+ * directory (sync off, not the host, signed out, …). There is nothing wrong to
+ * surface, so these read as "none" rather than a failure.
+ */
+const PUBLISH_INACTIVE_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
+  "sync_disabled",
+  "no_active_sync_scope",
+  "not_host",
+  "account_signed_out",
+  "machine_key_unavailable",
+  "missing_pairing_connect_info",
+]);
+
+/**
+ * Classifies the local machine's route-publish health for the Machines panel.
+ * "published" is healthy; the inactive states surface nothing; every other
+ * state is a genuine failure but only alarms once it has persisted at least two
+ * minutes (and only when we know since when), so a transient blip stays quiet.
+ */
+export function describePublishHealth(
+  publishHealth: LocalPublishHealth | null | undefined,
+  nowMs: number = Date.now(),
+): PublishHealthDisplay {
+  if (!publishHealth) return { kind: "none" };
+  const { state, failingSinceMs } = publishHealth;
+  if (state === "published") return { kind: "healthy" };
+  if (PUBLISH_INACTIVE_STATES.has(state)) return { kind: "none" };
+  if (failingSinceMs == null) return { kind: "none" };
+  const elapsedMs = Math.max(0, nowMs - failingSinceMs);
+  if (elapsedMs < PUBLISH_FAILING_ALARM_MS) return { kind: "none" };
+  return { kind: "failing", minutes: Math.floor(elapsedMs / 60_000) };
 }
 
 // ---------------------------------------------------------------------------

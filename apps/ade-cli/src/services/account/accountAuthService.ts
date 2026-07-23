@@ -183,13 +183,19 @@ export type AccountAuthService = {
   getStatus(): AccountAuthStatus;
   /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
   getSessionReadState(): AccountSessionReadState;
-  getAccessToken(options?: { forceRefresh?: boolean }): Promise<string>;
+  getAccessToken(options?: AccountAccessTokenOptions): Promise<string>;
   createToken(): Promise<AccountTokenCreateResult>;
   cancelLogin(sessionId: string): void;
   signOut(): AccountAuthStatus;
   /** Notification emitted after a local or externally persisted sign-in. */
   onSignedIn(listener: () => void): () => void;
   dispose(): void;
+};
+
+export type AccountAccessTokenOptions = {
+  forceRefresh?: boolean;
+  signal?: AbortSignal;
+  timeoutMs?: number;
 };
 
 export type AccountActionDomainService = {
@@ -206,7 +212,7 @@ export type AccountActionDomainService = {
 
 export async function getSignedInAccountAccessToken(
   service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
-  options?: { forceRefresh?: boolean },
+  options?: AccountAccessTokenOptions,
 ): Promise<string | null> {
   const status = service.getStatus();
   if (!status.signedIn && status.source !== "env-token") return null;
@@ -585,6 +591,7 @@ async function postTokenForm(args: {
   fetchImpl: (input: string, init?: RequestInit) => Promise<Response>;
   tokenUrl: string;
   body: Record<string, string>;
+  signal?: AbortSignal;
 }): Promise<TokenResponse> {
   const response = await args.fetchImpl(args.tokenUrl, {
     method: "POST",
@@ -593,6 +600,7 @@ async function postTokenForm(args: {
       "content-type": "application/x-www-form-urlencoded",
     },
     body: new URLSearchParams(args.body).toString(),
+    signal: args.signal,
   });
   const payload = asRecord(await response.json().catch(() => ({})));
   if (!response.ok) {
@@ -945,6 +953,7 @@ export function createAccountAuthService(args: {
 
   const waitForRefreshRotation = async (
     rejected: { raw: string; session: AccountSessionRecord },
+    signal?: AbortSignal,
   ): Promise<
     | { kind: "rotated"; snapshot: { raw: string; session: AccountSessionRecord } }
     | { kind: "superseded" }
@@ -952,6 +961,7 @@ export function createAccountAuthService(args: {
   > => {
     let waitedMs = 0;
     while (true) {
+      signal?.throwIfAborted();
       const latest = readSessionSnapshot();
       if (latest.raw !== rejected.raw) {
         if (
@@ -969,7 +979,21 @@ export function createAccountAuthService(args: {
       }
       if (waitedMs >= refreshRotationWaitMs) return { kind: "unchanged" };
       const delayMs = Math.min(refreshRotationPollMs, refreshRotationWaitMs - waitedMs);
-      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          signal?.removeEventListener("abort", onAbort);
+          resolve();
+        }, delayMs);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(
+            signal?.reason instanceof Error
+              ? signal.reason
+              : new DOMException("The account token request was aborted.", "AbortError"),
+          );
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+      });
       waitedMs += delayMs;
     }
   };
@@ -1037,6 +1061,7 @@ export function createAccountAuthService(args: {
   const fetchUserinfoProfile = async (
     token: TokenResponse,
     oauthConfig: AccountOAuthConfig | null,
+    signal?: AbortSignal,
   ): Promise<ReturnType<typeof decodeAccountClaims> | null> => {
     if (!oauthConfig) return null;
     if (shouldRejectDevelopmentAccountMaterial({
@@ -1048,7 +1073,12 @@ export function createAccountAuthService(args: {
       return null;
     }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), userinfoRequestTimeoutMs);
+    const abortFromCaller = () => controller.abort(signal?.reason);
+    signal?.throwIfAborted();
+    signal?.addEventListener("abort", abortFromCaller, { once: true });
+    const timer = setTimeout(() => {
+      controller.abort(new DOMException("The account userinfo request timed out.", "TimeoutError"));
+    }, userinfoRequestTimeoutMs);
     timer.unref?.();
     try {
       const response = await fetchImpl(`${oauthConfig.issuer}/oauth/userinfo`, {
@@ -1081,10 +1111,12 @@ export function createAccountAuthService(args: {
           profile.picture ?? profile.image_url ?? profile.avatar_url,
         ),
       };
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw error;
       return null;
     } finally {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abortFromCaller);
     }
   };
 
@@ -1093,7 +1125,11 @@ export function createAccountAuthService(args: {
     previous?: AccountSessionRecord | null,
     authSource: AccountSessionRecord["authSource"] = previous?.authSource ?? "loopback",
     oauthConfig: AccountOAuthConfig | null = previous?.oauthConfig ?? null,
-    options: { fetchUserinfo?: boolean; obtainedAtMs?: number } = {},
+    options: {
+      fetchUserinfo?: boolean;
+      obtainedAtMs?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<AccountSessionRecord> => {
     if (shouldRejectDevelopmentAccountMaterial({
       env,
@@ -1117,7 +1153,7 @@ export function createAccountAuthService(args: {
     }
     const userinfo = options.fetchUserinfo === false
       ? null
-      : await fetchUserinfoProfile(token, oauthConfig);
+      : await fetchUserinfoProfile(token, oauthConfig, options.signal);
     if (
       userinfo?.userId
       && (
@@ -1665,9 +1701,11 @@ export function createAccountAuthService(args: {
     return envCredential ? envCredentialStatus(envCredential.inspected) : toStatus(record);
   };
 
-  const getAccessToken = async (
-    options: { forceRefresh?: boolean } = {},
+  const getAccessTokenWithSignal = async (
+    options: Pick<AccountAccessTokenOptions, "forceRefresh">,
+    signal?: AbortSignal,
   ): Promise<string> => {
+    signal?.throwIfAborted();
     const sessionSnapshot = readSessionSnapshot();
     const record = sessionSnapshot.session;
     const acceptedEnvCredential = readAcceptedEnvCredential();
@@ -1729,6 +1767,7 @@ export function createAccountAuthService(args: {
             token = await postTokenForm({
               fetchImpl,
               tokenUrl: `${config.issuer}/oauth/token`,
+              signal,
               body: {
                 grant_type: "refresh_token",
                 refresh_token: refreshTokenAtRefresh,
@@ -1736,6 +1775,7 @@ export function createAccountAuthService(args: {
               },
             });
           } catch {
+            signal?.throwIfAborted();
             throw new Error(
               "ADE_ACCOUNT_TOKEN refresh failed. Replace it with a newly provisioned token from `ade account token create`.",
             );
@@ -1749,10 +1789,16 @@ export function createAccountAuthService(args: {
             // The credential changed while this process was refreshing. The
             // replacement is already newer than the request we started, so
             // consume it normally instead of force-rotating it again.
-            return getAccessToken();
+            return getAccessTokenWithSignal({}, signal);
           }
           envRefreshToken = token.refreshToken ?? refreshTokenAtRefresh;
-          const refreshed = await buildSessionRecord(token, envSession, "loopback", config);
+          const refreshed = await buildSessionRecord(
+            token,
+            envSession,
+            "loopback",
+            config,
+            { signal },
+          );
           envSession = refreshed;
           return refreshed.accessToken;
         })();
@@ -1801,6 +1847,7 @@ export function createAccountAuthService(args: {
             token = await postTokenForm({
               fetchImpl,
               tokenUrl: `${config.issuer}/oauth/token`,
+              signal,
               body: {
                 grant_type: "refresh_token",
                 refresh_token: refreshRecord.refreshToken!,
@@ -1819,7 +1866,7 @@ export function createAccountAuthService(args: {
             // rotating refresh exchange may not have persisted its replacement
             // by the time Clerk rejects our old token, so briefly poll before
             // declaring the grant dead.
-            const rotation = await waitForRefreshRotation(refreshSnapshot);
+            const rotation = await waitForRefreshRotation(refreshSnapshot, signal);
             if (rotation.kind === "rotated" && attempt === 0) {
               refreshSnapshot = rotation.snapshot;
               continue;
@@ -1842,7 +1889,7 @@ export function createAccountAuthService(args: {
           refreshSnapshot.session,
           undefined,
           config,
-          { fetchUserinfo: false, obtainedAtMs },
+          { fetchUserinfo: false, obtainedAtMs, signal },
         );
         if (authEpoch !== epochAtJoin) return null;
         if (!persistRefreshedSessionIfCurrent(refreshed, refreshSnapshot.raw)) {
@@ -1860,9 +1907,10 @@ export function createAccountAuthService(args: {
             refreshSnapshot.session,
             undefined,
             config,
-            { obtainedAtMs },
+            { obtainedAtMs, signal },
           );
-        } catch {
+        } catch (error) {
+          if (signal?.aborted) throw error;
           // The rotated credential and verified prior subject are already
           // durable. Optional profile enrichment must not make that successful
           // refresh unusable.
@@ -1884,9 +1932,54 @@ export function createAccountAuthService(args: {
       // satisfies this forced refresh; forcing another exchange here would
       // immediately consume the newly rotated refresh token and recreate the
       // cross-process race this path is designed to avoid.
-      return getAccessToken();
+      return getAccessTokenWithSignal({}, signal);
     }
     return refreshed.accessToken;
+  };
+
+  const getAccessToken = async (
+    options: AccountAccessTokenOptions = {},
+  ): Promise<string> => {
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(options.signal?.reason);
+    options.signal?.throwIfAborted();
+    options.signal?.addEventListener("abort", abortFromCaller, { once: true });
+    const requestedTimeoutMs = options.timeoutMs;
+    const timeoutMs = typeof requestedTimeoutMs === "number"
+      && Number.isFinite(requestedTimeoutMs)
+      && requestedTimeoutMs > 0
+      ? Math.trunc(requestedTimeoutMs)
+      : null;
+    const timeout = timeoutMs == null
+      ? null
+      : setTimeout(() => {
+          controller.abort(new DOMException("The account token request timed out.", "TimeoutError"));
+        }, timeoutMs);
+    timeout?.unref?.();
+    let rejectOnAbort: (() => void) | null = null;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      rejectOnAbort = () => reject(
+        controller.signal.reason instanceof Error
+          ? controller.signal.reason
+          : new DOMException("The account token request was aborted.", "AbortError"),
+      );
+      controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+    });
+    try {
+      return await Promise.race([
+        getAccessTokenWithSignal(
+          { ...(options.forceRefresh ? { forceRefresh: true } : {}) },
+          controller.signal,
+        ),
+        aborted,
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      if (rejectOnAbort) {
+        controller.signal.removeEventListener("abort", rejectOnAbort);
+      }
+      options.signal?.removeEventListener("abort", abortFromCaller);
+    }
   };
 
   const createToken = async (): Promise<AccountTokenCreateResult> => {

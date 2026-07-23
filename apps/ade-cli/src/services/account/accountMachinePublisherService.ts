@@ -3,9 +3,11 @@ import {
   createSyncAccountDirectoryHealth,
   type AdeAccountMachineEndpoint,
   type SyncAccountDirectoryHealth,
+  type SyncAccountDirectoryLegDurations,
   type SyncRoleSnapshot,
   type SyncRouteHealth,
 } from "../../../../desktop/src/shared/types";
+import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import {
   readAccountDirectoryHttpReason,
   resolveTrustedAccountDirectoryBaseUrl,
@@ -32,6 +34,10 @@ export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
 // window while bounding sustained failures at a 20-second request cadence.
 export const ACCOUNT_MACHINE_RETRY_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 20_000] as const;
 const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
+const DEFAULT_TOKEN_TIMEOUT_MS = 10_000;
+const SLOW_PUBLISH_LEG_MS = 2_000;
+const PUBLISH_INFO_INTERVAL = 10;
+export const PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS = 120_000;
 
 export type AccountMachineRegistration = {
   machineKey: string;
@@ -52,12 +58,50 @@ export type AccountMachineRegistration = {
 };
 
 type AccountMachinePublisherLogger = {
+  debug?(message: string, meta?: Record<string, unknown>): void;
+  info?(message: string, meta?: Record<string, unknown>): void;
   warn(message: string, meta?: Record<string, unknown>): void;
 };
 
 type BrainAccountMachinePublisherLogger = AccountMachinePublisherLogger & {
   info(message: string, meta?: Record<string, unknown>): void;
 };
+
+type AccountMachinePublishLeg =
+  | "setup"
+  | "snapshot"
+  | "token"
+  | "token_refresh_401"
+  | "http";
+
+function failureLegForState(
+  state: SyncAccountDirectoryHealth["state"],
+): AccountMachinePublishLeg {
+  if (state === "snapshot_failed" || state === "missing_pairing_connect_info") return "snapshot";
+  if (state === "token_unreadable" || state === "token_timeout") return "token";
+  if (
+    state === "http_error"
+    || state === "http_timeout"
+    || state === "timeout"
+    || state === "transport_error"
+  ) return "http";
+  return "setup";
+}
+
+class AccountMachinePublishLegTimeoutError extends Error {
+  constructor(readonly leg: Extract<AccountMachinePublishLeg, "token" | "token_refresh_401" | "http">) {
+    super(`Account machine publish ${leg} timed out.`);
+    this.name = "AccountMachinePublishLegTimeoutError";
+  }
+}
+
+function emptyLegDurations(): SyncAccountDirectoryLegDurations {
+  return {
+    snapshot: null,
+    token: null,
+    http: null,
+  };
+}
 
 export type AccountMachineRegistrationSnapshot = Pick<
   SyncRoleSnapshot,
@@ -239,7 +283,11 @@ function relayPublishStateSignature(
 }
 
 export function createAccountMachinePublisherService(options: {
-  getAccessToken: (options?: { forceRefresh?: boolean }) => Promise<string | null>;
+  getAccessToken: (options?: {
+    forceRefresh?: boolean;
+    signal?: AbortSignal;
+    timeoutMs?: number;
+  }) => Promise<string | null>;
   getAccountStatus?: () => PublisherAccountStatus;
   getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
@@ -251,8 +299,10 @@ export function createAccountMachinePublisherService(options: {
   heartbeatMs?: number;
   relayStatePollMs?: number;
   requestTimeoutMs?: number;
+  tokenTimeoutMs?: number;
   now?: () => number;
   logger?: AccountMachinePublisherLogger;
+  captureAnalytics?: (input: ProductAnalyticsCapture) => void;
 }) {
   const heartbeatMs = Math.max(1_000, Math.floor(options.heartbeatMs ?? ACCOUNT_MACHINE_HEARTBEAT_MS));
   const relayStatePollMs = Math.max(
@@ -260,12 +310,13 @@ export function createAccountMachinePublisherService(options: {
     Math.floor(options.relayStatePollMs ?? ACCOUNT_MACHINE_RELAY_STATE_POLL_MS),
   );
   const requestTimeoutMs = Math.max(250, Math.floor(options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS));
+  const tokenTimeoutMs = Math.max(250, Math.floor(options.tokenTimeoutMs ?? DEFAULT_TOKEN_TIMEOUT_MS));
   const now = options.now ?? Date.now;
   let started = false;
   let disposed = false;
   let heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
   let relayStatePollTimer: ReturnType<typeof setTimeout> | null = null;
-  let activeController: AbortController | null = null;
+  const activeControllers = new Set<AbortController>();
   let inFlight: Promise<void> | null = null;
   let triggeredPublishPending = false;
   let lastRelayPublishStateSignature: string | null = null;
@@ -276,6 +327,8 @@ export function createAccountMachinePublisherService(options: {
   } | null = null;
   let lastWarning: string | null = null;
   let transientFailureCount = 0;
+  let successfulPublishCount = 0;
+  let publishFailureAnalyticsEmitted = false;
   let unsubscribeSignIn: (() => void) | null = null;
   let health = createSyncAccountDirectoryHealth(
     "sync_disabled",
@@ -296,10 +349,20 @@ export function createAccountMachinePublisherService(options: {
     return changed;
   };
 
-  const warnOnce = (code: string, meta: Record<string, unknown> = {}): void => {
+  const warnOnce = (
+    code: string,
+    leg: AccountMachinePublishLeg,
+    legDurationsMs: SyncAccountDirectoryLegDurations,
+    meta: Record<string, unknown> = {},
+  ): void => {
     if (lastWarning === code) return;
     lastWarning = code;
-    options.logger?.warn("account.machine_publish_failed", { code, ...meta });
+    options.logger?.warn("account.machine_publish_failed", {
+      leg,
+      legDurationsMs,
+      code,
+      ...meta,
+    });
   };
 
   const recordTransientFailure = (): void => {
@@ -350,8 +413,21 @@ export function createAccountMachinePublisherService(options: {
       lastHttpReason?: string | null;
       reachableEndpointCount?: number;
       succeededAt?: number;
+      legDurations?: SyncAccountDirectoryLegDurations;
     },
   ): void => {
+    const failureStates = new Set<SyncAccountDirectoryHealth["state"]>([
+      "snapshot_failed",
+      "machine_key_unavailable",
+      "missing_pairing_connect_info",
+      "token_unreadable",
+      "invalid_directory_url",
+      "http_error",
+      "token_timeout",
+      "http_timeout",
+      "timeout",
+      "transport_error",
+    ]);
     health = {
       state,
       skipReason: args.skipReason,
@@ -361,14 +437,153 @@ export function createAccountMachinePublisherService(options: {
       lastHttpStatus: args.lastHttpStatus ?? null,
       lastHttpReason: args.lastHttpReason ?? null,
       reachableEndpointCount: args.reachableEndpointCount ?? 0,
+      lastLegDurations: args.legDurations
+        ? { ...args.legDurations }
+        : health.lastLegDurations,
+      failingSinceMs: state === "published"
+        ? null
+        : failureStates.has(state)
+          ? health.failingSinceMs ?? args.attemptAt
+          : null,
     };
+    if (state === "published") {
+      publishFailureAnalyticsEmitted = false;
+    } else if (
+      health.failingSinceMs != null
+      && !publishFailureAnalyticsEmitted
+      && args.attemptAt - health.failingSinceMs >= PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS
+    ) {
+      publishFailureAnalyticsEmitted = true;
+      const leg = failureLegForState(state);
+      options.captureAnalytics?.({
+        event: "ade_publish_failing",
+        surface: "api",
+        properties: {
+          failing_minutes: Math.max(2, Math.floor((args.attemptAt - health.failingSinceMs) / 60_000)),
+          leg,
+          code: state,
+        },
+        dedupeKey: `publish-failing:${health.failingSinceMs}`,
+        minimumIntervalMs: 24 * 60 * 60 * 1_000,
+      });
+    }
   };
 
   const publish = async (): Promise<void> => {
     if (disposed) return;
     const attemptAt = now();
+    const legDurations = emptyLegDurations();
+    const addLegDuration = (
+      leg: keyof SyncAccountDirectoryLegDurations,
+      startedAt: number,
+    ): void => {
+      const elapsed = Math.max(0, Math.round(now() - startedAt));
+      legDurations[leg] = (legDurations[leg] ?? 0) + elapsed;
+    };
+    const outcome = (
+      state: SyncAccountDirectoryHealth["state"],
+      args: Omit<Parameters<typeof recordOutcome>[1], "legDurations">,
+    ): void => {
+      recordOutcome(state, {
+        ...args,
+        legDurations,
+      });
+    };
+    const runTokenLeg = async (
+      leg: Extract<AccountMachinePublishLeg, "token" | "token_refresh_401">,
+      forceRefresh: boolean,
+    ): Promise<string | null> => {
+      const controller = new AbortController();
+      activeControllers.add(controller);
+      const startedAt = now();
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      let rejectOnAbort: (() => void) | null = null;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        rejectOnAbort = () => reject(
+          controller.signal.reason instanceof Error
+            ? controller.signal.reason
+            : new DOMException("The account token request was aborted.", "AbortError"),
+        );
+        controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+        timeout = setTimeout(() => {
+          controller.abort(new AccountMachinePublishLegTimeoutError(leg));
+        }, tokenTimeoutMs);
+        timeout.unref?.();
+      });
+      try {
+        return await Promise.race([
+          options.getAccessToken({
+            ...(forceRefresh ? { forceRefresh: true } : {}),
+            signal: controller.signal,
+            timeoutMs: tokenTimeoutMs,
+          }),
+          aborted,
+        ]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        if (rejectOnAbort) {
+          controller.signal.removeEventListener("abort", rejectOnAbort);
+        }
+        activeControllers.delete(controller);
+        addLegDuration("token", startedAt);
+      }
+    };
+    const sendRegistration = async (
+      token: string,
+      registration: AccountMachineRegistration,
+      baseUrl: string,
+    ): Promise<Response> => {
+      const remainingHttpBudgetMs = requestTimeoutMs - (legDurations.http ?? 0);
+      if (remainingHttpBudgetMs <= 0) {
+        throw new AccountMachinePublishLegTimeoutError("http");
+      }
+      const controller = new AbortController();
+      activeControllers.add(controller);
+      const startedAt = now();
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      let rejectOnAbort: (() => void) | null = null;
+      const aborted = new Promise<never>((_resolve, reject) => {
+        rejectOnAbort = () => reject(
+          controller.signal.reason instanceof Error
+            ? controller.signal.reason
+            : new DOMException("The account-directory request was aborted.", "AbortError"),
+        );
+        controller.signal.addEventListener("abort", rejectOnAbort, { once: true });
+        timeout = setTimeout(() => {
+          controller.abort(new AccountMachinePublishLegTimeoutError("http"));
+        }, remainingHttpBudgetMs);
+        timeout.unref?.();
+      });
+      try {
+        return await Promise.race([
+          (options.fetchImpl ?? fetch)(`${baseUrl}/account/machines/register`, {
+            method: "POST",
+            headers: {
+              accept: "application/json",
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify(registration),
+            credentials: "omit",
+            referrerPolicy: "no-referrer",
+            cache: "no-store",
+            redirect: "error",
+            signal: controller.signal,
+          }),
+          aborted,
+        ]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        if (rejectOnAbort) {
+          controller.signal.removeEventListener("abort", rejectOnAbort);
+        }
+        activeControllers.delete(controller);
+        addLegDuration("http", startedAt);
+      }
+    };
+
     if (options.isSyncEnabled?.() === false) {
-      recordOutcome("sync_disabled", {
+      outcome("sync_disabled", {
         attemptAt,
         skipReason: "Account-directory publishing is disabled because sync is disabled.",
         directoryOrigin: null,
@@ -394,31 +609,34 @@ export function createAccountMachinePublisherService(options: {
       baseUrl = null;
     }
     if (!baseUrl) {
-      recordOutcome("invalid_directory_url", {
+      outcome("invalid_directory_url", {
         attemptAt,
         skipReason: "The configured account-directory URL is invalid or untrusted.",
         directoryOrigin: null,
       });
-      warnOnce("invalid_directory_url");
+      warnOnce("invalid_directory_url", "setup", legDurations);
       return;
     }
     const directoryOrigin = new URL(baseUrl).origin;
 
     let snapshot: AccountMachineRegistrationSnapshot | null;
+    const snapshotStartedAt = now();
     try {
       snapshot = await options.getSnapshot();
     } catch {
       if (disposed) return;
-      recordOutcome("snapshot_failed", {
+      outcome("snapshot_failed", {
         attemptAt,
         skipReason: "The active sync snapshot could not be read.",
         directoryOrigin,
       });
       return;
+    } finally {
+      addLegDuration("snapshot", snapshotStartedAt);
     }
     if (disposed) return;
     if (!snapshot) {
-      recordOutcome("no_active_sync_scope", {
+      outcome("no_active_sync_scope", {
         attemptAt,
         skipReason: "No active sync scope is available.",
         directoryOrigin,
@@ -433,7 +651,7 @@ export function createAccountMachinePublisherService(options: {
       // The typed outcome below is the public diagnostic; no identity detail is logged.
     }
     if (!machineKey) {
-      recordOutcome("machine_key_unavailable", {
+      outcome("machine_key_unavailable", {
         attemptAt,
         skipReason: "The machine directory key is unavailable.",
         directoryOrigin,
@@ -441,7 +659,7 @@ export function createAccountMachinePublisherService(options: {
       return;
     }
     if (!snapshot.pairingConnectInfo) {
-      recordOutcome("missing_pairing_connect_info", {
+      outcome("missing_pairing_connect_info", {
         attemptAt,
         skipReason: "Pairing connection information is unavailable.",
         directoryOrigin,
@@ -452,7 +670,7 @@ export function createAccountMachinePublisherService(options: {
       ? snapshot.runtimeRole === "host"
       : snapshot.role === "brain";
     if (!isHost) {
-      recordOutcome("not_host", {
+      outcome("not_host", {
         attemptAt,
         skipReason: "This runtime is not the active sync host.",
         directoryOrigin,
@@ -462,7 +680,7 @@ export function createAccountMachinePublisherService(options: {
 
     const publicKeyRawBase64 = readSigningPublicKey();
     if (options.getMachineIdentitySigningPublicKey && !publicKeyRawBase64) {
-      recordOutcome("machine_key_unavailable", {
+      outcome("machine_key_unavailable", {
         attemptAt,
         skipReason: "The machine identity signing key is unavailable.",
         directoryOrigin,
@@ -476,7 +694,7 @@ export function createAccountMachinePublisherService(options: {
       publicKeyRawBase64,
     });
     if (!observedRegistration) {
-      recordOutcome("machine_key_unavailable", {
+      outcome("machine_key_unavailable", {
         attemptAt,
         skipReason: "The machine registration could not be built.",
         directoryOrigin,
@@ -490,7 +708,7 @@ export function createAccountMachinePublisherService(options: {
     try {
       accountStatus = options.getAccountStatus?.() ?? null;
     } catch {
-      recordOutcome("token_unreadable", {
+      outcome("token_unreadable", {
         attemptAt,
         skipReason: "The ADE brain could not read account status.",
         directoryOrigin,
@@ -501,7 +719,7 @@ export function createAccountMachinePublisherService(options: {
     if (isPublisherSignedOut(accountStatus)) {
       clearRetainedRelayState();
       const unreadable = accountStatus?.sessionReadState === "unreadable";
-      recordOutcome(unreadable ? "token_unreadable" : "account_signed_out", {
+      outcome(unreadable ? "token_unreadable" : "account_signed_out", {
         attemptAt,
         skipReason: unreadable
           ? "The ADE brain could not read the stored account session."
@@ -549,13 +767,25 @@ export function createAccountMachinePublisherService(options: {
 
     let accessToken: string | null = null;
     try {
-      accessToken = (await options.getAccessToken())?.trim() || null;
-    } catch {
+      accessToken = (await runTokenLeg("token", false))?.trim() || null;
+    } catch (error) {
+      if (disposed) return;
+      if (error instanceof AccountMachinePublishLegTimeoutError) {
+        recordTransientFailure();
+        outcome("token_timeout", {
+          attemptAt,
+          skipReason: "The ADE account token refresh timed out.",
+          directoryOrigin,
+          reachableEndpointCount,
+        });
+        warnOnce("token_timeout", "token", legDurations);
+        return;
+      }
       accessToken = null;
     }
     if (disposed) return;
     if (!accessToken) {
-      recordOutcome("token_unreadable", {
+      outcome("token_unreadable", {
         attemptAt,
         skipReason: "The ADE brain could not read or refresh the account token.",
         directoryOrigin,
@@ -564,39 +794,40 @@ export function createAccountMachinePublisherService(options: {
       return;
     }
 
-    const controller = new AbortController();
-    activeController = controller;
-    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
-    timeout.unref?.();
     try {
-      const sendRegistration = (token: string): Promise<Response> =>
-        (options.fetchImpl ?? fetch)(`${baseUrl}/account/machines/register`, {
-          method: "POST",
-          headers: {
-            accept: "application/json",
-            authorization: `Bearer ${token}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify(registration),
-          credentials: "omit",
-          referrerPolicy: "no-referrer",
-          cache: "no-store",
-          redirect: "error",
-          signal: controller.signal,
-        });
-
-      let response = await sendRegistration(accessToken);
+      let response = await sendRegistration(accessToken, registration, baseUrl);
       let firstUnauthorizedReason: string | null = null;
       if (response.status === 401) {
         firstUnauthorizedReason = await readAccountDirectoryHttpReason(response).catch(() => null);
         let refreshedToken: string | null = null;
         try {
-          refreshedToken = (await options.getAccessToken({ forceRefresh: true }))?.trim() || null;
-        } catch {
+          refreshedToken = (await runTokenLeg("token_refresh_401", true))?.trim() || null;
+        } catch (error) {
+          if (disposed) return;
+          if (error instanceof AccountMachinePublishLegTimeoutError) {
+            recordTransientFailure();
+            outcome("token_timeout", {
+              attemptAt,
+              skipReason: "The ADE account token refresh after HTTP 401 timed out.",
+              directoryOrigin,
+              lastHttpStatus: 401,
+              lastHttpReason: firstUnauthorizedReason,
+              reachableEndpointCount,
+            });
+            warnOnce(
+              "token_timeout",
+              "token_refresh_401",
+              legDurations,
+              { status: 401 },
+            );
+            return;
+          }
           // Preserve the first unauthorized response and its parsed reason.
         }
         if (disposed) return;
-        if (refreshedToken) response = await sendRegistration(refreshedToken);
+        if (refreshedToken) {
+          response = await sendRegistration(refreshedToken, registration, baseUrl);
+        }
       }
       if (!response.ok) {
         // Always drain the final response, even when the first 401 already
@@ -611,7 +842,7 @@ export function createAccountMachinePublisherService(options: {
         if (response.status === 401 || response.status === 403) {
           clearRetainedRelayState();
         }
-        recordOutcome("http_error", {
+        outcome("http_error", {
           attemptAt,
           skipReason: httpReason
             ? `The account directory returned HTTP ${response.status}: ${httpReason}`
@@ -621,7 +852,7 @@ export function createAccountMachinePublisherService(options: {
           lastHttpReason: httpReason,
           reachableEndpointCount,
         });
-        warnOnce("http_error", { status: response.status });
+        warnOnce("http_error", "http", legDurations, { status: response.status });
         return;
       }
       await response.body?.cancel().catch(() => {});
@@ -635,7 +866,7 @@ export function createAccountMachinePublisherService(options: {
             endpoints: publishedRelayEndpoints,
           }
         : null;
-      recordOutcome("published", {
+      outcome("published", {
         attemptAt,
         skipReason: null,
         directoryOrigin,
@@ -643,24 +874,35 @@ export function createAccountMachinePublisherService(options: {
         reachableEndpointCount,
         succeededAt: now(),
       });
+      successfulPublishCount += 1;
+      const logMeta = { legDurationsMs: { ...legDurations } };
+      const slow = Object.values(legDurations).some(
+        (duration) => duration != null && duration > SLOW_PUBLISH_LEG_MS,
+      );
+      if (slow) {
+        options.logger?.warn("account.machine_publish_ok", logMeta);
+      } else if (successfulPublishCount % PUBLISH_INFO_INTERVAL === 0) {
+        options.logger?.info?.("account.machine_publish_ok", logMeta);
+      } else {
+        options.logger?.debug?.("account.machine_publish_ok", logMeta);
+      }
     } catch (error) {
-      if (disposed && controller.signal.aborted) return;
-      const state = controller.signal.aborted ? "timeout" : "transport_error";
+      if (disposed) return;
+      const isHttpTimeout = error instanceof AccountMachinePublishLegTimeoutError
+        && error.leg === "http";
+      const state = isHttpTimeout ? "http_timeout" : "transport_error";
       recordTransientFailure();
-      recordOutcome(state, {
+      outcome(state, {
         attemptAt,
-        skipReason: state === "timeout"
+        skipReason: state === "http_timeout"
           ? "The account-directory publish request timed out."
           : "The account-directory publish request could not reach the service.",
         directoryOrigin,
         reachableEndpointCount,
       });
-      warnOnce(state, {
+      warnOnce(state, "http", legDurations, {
         errorKind: error instanceof Error ? error.name : "unknown",
       });
-    } finally {
-      clearTimeout(timeout);
-      if (activeController === controller) activeController = null;
     }
   };
 
@@ -676,7 +918,7 @@ export function createAccountMachinePublisherService(options: {
           directoryOrigin: health.directoryOrigin,
           reachableEndpointCount: health.reachableEndpointCount,
         });
-        warnOnce("transport_error", {
+        warnOnce("transport_error", "setup", health.lastLegDurations, {
           errorKind: error instanceof Error ? error.name : "unknown",
         });
       })
@@ -804,7 +1046,10 @@ export function createAccountMachinePublisherService(options: {
     },
 
     getPublisherHealth(): SyncAccountDirectoryHealth {
-      return { ...health };
+      return {
+        ...health,
+        lastLegDurations: { ...health.lastLegDurations },
+      };
     },
 
     dispose(): void {
@@ -814,8 +1059,10 @@ export function createAccountMachinePublisherService(options: {
       clearHeartbeatTimer();
       if (relayStatePollTimer) clearTimeout(relayStatePollTimer);
       relayStatePollTimer = null;
-      activeController?.abort();
-      activeController = null;
+      for (const controller of activeControllers) {
+        controller.abort(new DOMException("The account publisher was disposed.", "AbortError"));
+      }
+      activeControllers.clear();
       unsubscribeSignIn?.();
       unsubscribeSignIn = null;
     },
@@ -838,6 +1085,7 @@ export function createBrainAccountMachinePublisherService(options: {
   getMachineKey: () => string;
   directoryBaseUrl?: () => string | null | undefined;
   logger: BrainAccountMachinePublisherLogger;
+  captureAnalytics?: (input: ProductAnalyticsCapture) => void;
 }): AccountMachinePublisherService {
   const accountAuthService = getSharedAccountAuthService({
     secretsDir: options.secretsDir,
@@ -882,5 +1130,6 @@ export function createBrainAccountMachinePublisherService(options: {
     },
     subscribeToSignIn: (listener) => accountAuthService.onSignedIn(listener),
     logger: options.logger,
+    captureAnalytics: options.captureAnalytics,
   });
 }

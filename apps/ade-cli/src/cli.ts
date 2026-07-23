@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
 import {
   CURSOR_CLOUD_HELP,
@@ -23,6 +23,11 @@ import {
   CliSkillUsageError,
   runSkillCommand,
 } from "./commands/skill";
+import {
+  evaluateDoctorRows,
+  type DoctorInput,
+  type DoctorRow,
+} from "./commands/doctor";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
@@ -42,6 +47,7 @@ import { browseProjectDirectories } from "../../desktop/src/main/services/projec
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
+import { createBrainLogger } from "./services/runtime/brainLogger";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -99,6 +105,7 @@ import {
 } from "../../desktop/src/shared/types/sync";
 import {
   isCurrentProcessDescendantOfPid,
+  resolveAdeServeCommand,
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
@@ -124,6 +131,10 @@ import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/s
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
+import {
+  readBrainLoopWatchdogLastWedge,
+  startBrainLoopWatchdog,
+} from "./services/runtime/brainLoopWatchdog";
 
 type JsonObject = Record<string, unknown>;
 
@@ -288,6 +299,7 @@ type CliPlan =
   | { kind: "desktop"; rest: string[] }
   | { kind: "runtime"; rest: string[] }
   | { kind: "brain"; rest: string[] }
+  | { kind: "doctor"; online: boolean }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -572,7 +584,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
-    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
+    $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -11886,29 +11898,8 @@ function buildCliPlan(
   }
   if (primary === "doctor") {
     return {
-      kind: "execute",
-      label: "doctor",
-      summary: "doctor",
-      steps: [
-        { key: "ping", method: "ping" },
-        { key: "rpcActions", method: "ade/actions/list" },
-        listActionsStep("actions"),
-        {
-          ...actionStep("projectConfig", "project_config", "get"),
-          optional: true,
-        },
-        {
-          key: "syncStatus",
-          method: "sync.getStatus",
-          params: { includeTransferReadiness: false },
-          optional: true,
-        },
-        {
-          key: "relaySelfProbe",
-          method: "sync.runSelfProbe",
-          optional: true,
-        },
-      ],
+      kind: "doctor",
+      online: readFlag(args, ["--online"]),
     };
   }
   if (primary === "auth") {
@@ -13085,6 +13076,10 @@ class SocketJsonRpcClient {
     this.socket.end();
   }
 
+  destroy(): void {
+    this.socket.destroy();
+  }
+
   private onData(chunk: Buffer): void {
     this.buffer = this.buffer.length
       ? Buffer.concat([this.buffer, chunk])
@@ -14202,6 +14197,7 @@ type MachineRuntimeInfo = {
   packageChannel: string | null;
   projectRoot: string | null;
   pid: number | null;
+  uptimeMs?: number | null;
 };
 
 function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
@@ -14213,9 +14209,11 @@ function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
       packageChannel: null,
       projectRoot: null,
       pid: null,
+      uptimeMs: null,
     };
   }
   const pid = value.runtimeInfo.pid;
+  const uptimeMs = value.runtimeInfo.uptimeMs;
   return {
     version: asString(value.runtimeInfo.version),
     buildHash: asString(value.runtimeInfo.buildHash),
@@ -14225,6 +14223,10 @@ function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
     pid:
       typeof pid === "number" && Number.isFinite(pid) && pid > 0
         ? Math.floor(pid)
+        : null,
+    uptimeMs:
+      typeof uptimeMs === "number" && Number.isFinite(uptimeMs) && uptimeMs >= 0
+        ? Math.floor(uptimeMs)
         : null,
   };
 }
@@ -14287,20 +14289,14 @@ export function shouldEnforceMachineRuntimeBuildCompatibility(
   return !socketPathOverride?.trim();
 }
 
-function computeRuntimeBuildHash(filePath: string): string | null {
-  try {
-    return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-  } catch {
-    return null;
-  }
-}
-
 function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): {
   args: string[];
   buildHash: string | null;
+  filePath: string | null;
 } {
   const args = [...serviceCommand.args];
   let buildHash: string | null = null;
+  let filePath: string | null = null;
   if (
     serviceCommand.command === process.execPath &&
     args.length === 1 &&
@@ -14308,13 +14304,16 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
     fs.existsSync(CLI_DIST_PATH)
   ) {
     args.splice(0, 1, CLI_DIST_PATH, "serve");
-    buildHash = computeRuntimeBuildHash(CLI_DIST_PATH);
+    filePath = CLI_DIST_PATH;
+    buildHash = computeRuntimeBuildHash(filePath);
   } else if (serviceCommand.command === process.execPath && args[0]) {
-    buildHash = computeRuntimeBuildHash(path.resolve(args[0]));
+    filePath = path.resolve(args[0]);
+    buildHash = computeRuntimeBuildHash(filePath);
   } else if (fs.existsSync(serviceCommand.command)) {
-    buildHash = computeRuntimeBuildHash(path.resolve(serviceCommand.command));
+    filePath = path.resolve(serviceCommand.command);
+    buildHash = computeRuntimeBuildHash(filePath);
   }
-  return { args, buildHash };
+  return { args, buildHash, filePath };
 }
 
 async function resolveExpectedMachineRuntimeBuildHash(): Promise<string | null> {
@@ -14952,6 +14951,360 @@ async function runBrainCommand(
   );
 }
 
+type DoctorBrainProbe = {
+  brain: DoctorInput["brain"];
+  syncStatus: JsonObject | null;
+  account: DoctorInput["account"];
+  runtimeSyncPort: number | null;
+  runtimePublishHealth: DoctorInput["publishHealth"];
+  runtimeLastWedge: DoctorInput["wedge"];
+};
+
+const DOCTOR_BRAIN_DEADLINE_MS = 2_000;
+const DOCTOR_ONLINE_DEADLINE_MS = 1_200;
+
+function doctorTimeout<T>(
+  promise: Promise<T>,
+  deadlineMs: number,
+  label: string,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return Promise.race([
+    promise,
+    new Promise<T>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} timed out.`)), Math.max(1, deadlineMs));
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+function doctorRuntimeStatusFromInitialize(value: unknown): {
+  syncPort: number | null;
+  publishHealth: DoctorInput["publishHealth"];
+  lastWedge: DoctorInput["wedge"];
+} {
+  const runtimeInfo = isRecord(value) && isRecord(value.runtimeInfo)
+    ? value.runtimeInfo
+    : {};
+  const syncPort = typeof runtimeInfo.syncPort === "number"
+    && Number.isInteger(runtimeInfo.syncPort)
+    && runtimeInfo.syncPort > 0
+    && runtimeInfo.syncPort <= 65_535
+    ? runtimeInfo.syncPort
+    : null;
+  const rawPublish = isRecord(runtimeInfo.publishHealth) ? runtimeInfo.publishHealth : null;
+  const rawDurations = rawPublish && isRecord(rawPublish.lastLegDurations)
+    ? rawPublish.lastLegDurations
+    : null;
+  const publishHealth = rawPublish && rawDurations && asString(rawPublish.state)
+    ? {
+        state: asString(rawPublish.state)! as NonNullable<DoctorInput["publishHealth"]>["state"],
+        failingSinceMs:
+          typeof rawPublish.failingSinceMs === "number" && Number.isFinite(rawPublish.failingSinceMs)
+            ? Math.max(0, rawPublish.failingSinceMs)
+            : null,
+        lastLegDurations: {
+          snapshot: finiteDoctorDuration(rawDurations.snapshot),
+          token: finiteDoctorDuration(rawDurations.token),
+          http: finiteDoctorDuration(rawDurations.http),
+        },
+        lastSuccessAt:
+          typeof rawPublish.lastSuccessAt === "number" && Number.isFinite(rawPublish.lastSuccessAt)
+            ? Math.max(0, rawPublish.lastSuccessAt)
+            : null,
+        skipReason: asString(rawPublish.skipReason),
+      }
+    : null;
+  const rawWedge = isRecord(runtimeInfo.lastWedge) ? runtimeInfo.lastWedge : null;
+  const lastWedge = rawWedge
+    && asString(rawWedge.lastCommand)
+    && typeof rawWedge.blockedMs === "number"
+    && Number.isFinite(rawWedge.blockedMs)
+    && asString(rawWedge.ts)
+    ? {
+        lastCommand: asString(rawWedge.lastCommand)!,
+        blockedMs: Math.max(0, Math.floor(rawWedge.blockedMs)),
+        ts: asString(rawWedge.ts)!,
+      }
+    : null;
+  return { syncPort, publishHealth, lastWedge };
+}
+
+function finiteDoctorDuration(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : null;
+}
+
+async function probeDoctorBrain(
+  options: GlobalOptions,
+): Promise<DoctorBrainProbe> {
+  const startedAt = Date.now();
+  const deadlineAt = startedAt + DOCTOR_BRAIN_DEADLINE_MS;
+  const socketPath = await resolveMachineRuntimeSocketPath(options.socketPath);
+  let client: SocketJsonRpcClient | null = null;
+  try {
+    const remaining = () => Math.max(1, deadlineAt - Date.now());
+    client = await doctorTimeout(
+      SocketJsonRpcClient.connect(socketPath, remaining(), "ADE brain"),
+      remaining(),
+      "ADE brain connection",
+    );
+    const initializeResult = await doctorTimeout(
+      client.request(
+        "ade/initialize",
+        buildInitializeParams(options, "ade-doctor"),
+      ),
+      remaining(),
+      "ADE brain initialize",
+    );
+    const runtimeInfo = readMachineRuntimeInfo(initializeResult);
+    const runtimeStatus = doctorRuntimeStatusFromInitialize(initializeResult);
+    const expectedBuildHash = await doctorTimeout(
+      resolveExpectedMachineRuntimeBuildHash(),
+      remaining(),
+      "ADE runtime build identity",
+    ).catch(() => null);
+    const mismatchReason = machineRuntimeMismatchReason(
+      runtimeInfo,
+      expectedBuildHash,
+      options.role,
+    );
+    const [syncResult, accountResult] = await doctorTimeout(
+      Promise.allSettled([
+        client.request("sync.getStatus", { includeTransferReadiness: false }),
+        client.request("account.call", { action: "status", args: {} }),
+      ]),
+      remaining(),
+      "ADE brain health reads",
+    );
+    const syncStatus = syncResult.status === "fulfilled" && isRecord(syncResult.value)
+      ? syncResult.value
+      : null;
+    const accountValue = accountResult.status === "fulfilled"
+      ? unwrapActionEnvelope(accountResult.value)
+      : null;
+    const accountStatus = isRecord(accountValue) ? accountValue : null;
+    return {
+      brain: {
+        running: true,
+        version: runtimeInfo.version,
+        buildHash: runtimeInfo.buildHash,
+        pid: runtimeInfo.pid,
+        uptimeMs: runtimeInfo.uptimeMs ?? null,
+        mismatchReason,
+        error: null,
+      },
+      syncStatus,
+      account: {
+        signedIn: typeof accountStatus?.signedIn === "boolean" ? accountStatus.signedIn : null,
+        source: asString(accountStatus?.source),
+        error: accountResult.status === "rejected"
+          ? accountResult.reason instanceof Error
+            ? accountResult.reason.message
+            : String(accountResult.reason)
+          : accountStatus
+            ? null
+            : "Account status unavailable.",
+      },
+      runtimeSyncPort: runtimeStatus.syncPort,
+      runtimePublishHealth: runtimeStatus.publishHealth,
+      runtimeLastWedge: runtimeStatus.lastWedge,
+    };
+  } catch (error) {
+    return {
+      brain: {
+        running: false,
+        version: null,
+        buildHash: null,
+        pid: null,
+        uptimeMs: null,
+        mismatchReason: null,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      syncStatus: null,
+      account: {
+        signedIn: null,
+        source: null,
+        error: "Brain unavailable.",
+      },
+      runtimeSyncPort: null,
+      runtimePublishHealth: null,
+      runtimeLastWedge: null,
+    };
+  } finally {
+    try {
+      client?.destroy();
+    } catch {}
+  }
+}
+
+export function readInstalledDesktopVersion(
+  appPaths?: string[],
+): { version: string | null; path: string | null } {
+  if (process.platform !== "darwin" && !appPaths) {
+    return { version: null, path: null };
+  }
+  const explicitPath = process.env.ADE_DESKTOP_APP_PATH?.trim();
+  const preferredName = resolveDefaultDesktopAppName();
+  const candidates = appPaths ?? [
+    ...(explicitPath ? [explicitPath] : []),
+    `/Applications/${preferredName}.app`,
+    "/Applications/ADE.app",
+    "/Applications/ADE Beta.app",
+    "/Applications/ADE Alpha.app",
+  ];
+  for (const appPath of Array.from(new Set(candidates))) {
+    const infoPlist = path.join(appPath, "Contents", "Info.plist");
+    if (!fs.existsSync(infoPlist)) continue;
+    try {
+      const raw = fs.readFileSync(infoPlist, "utf8");
+      const xmlMatch = /<key>\s*CFBundleShortVersionString\s*<\/key>\s*<string>\s*([^<]+?)\s*<\/string>/i.exec(raw);
+      if (xmlMatch?.[1]?.trim()) {
+        return { version: xmlMatch[1].trim(), path: appPath };
+      }
+    } catch {
+      // Binary plists are handled by plutil below.
+    }
+    const result = spawnSync(
+      "/usr/bin/plutil",
+      ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", infoPlist],
+      { encoding: "utf8", timeout: 500 },
+    );
+    const version = typeof result.stdout === "string" ? result.stdout.trim() : "";
+    if (result.status === 0 && version) {
+      return { version, path: appPath };
+    }
+  }
+  return { version: null, path: null };
+}
+
+async function readLatestDesktopVersionOnline(): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DOCTOR_ONLINE_DEADLINE_MS);
+  try {
+    const { fetchAdeLatestRelease } = await import(
+      "../../desktop/src/main/services/github/githubService"
+    );
+    const release = await doctorTimeout(
+      fetchAdeLatestRelease({
+        fetchImpl: ((input: string, init?: RequestInit) =>
+          fetch(input, { ...init, signal: controller.signal })) as never,
+      }),
+      DOCTOR_ONLINE_DEADLINE_MS,
+      "Latest release check",
+    );
+    return release?.version ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function readLatestKnownDesktopVersionFromDisk(runtimeDir: string): string | null {
+  try {
+    const parsed = JSON.parse(
+      fs.readFileSync(path.join(runtimeDir, "update-status.json"), "utf8"),
+    ) as Record<string, unknown>;
+    return asString(parsed.version);
+  } catch {
+    return null;
+  }
+}
+
+async function runDoctorCommand(
+  online: boolean,
+  options: GlobalOptions,
+): Promise<{
+  ok: boolean;
+  checkedAt: string;
+  online: boolean;
+  rows: DoctorRow[];
+  app: DoctorInput["app"];
+  brain: DoctorInput["brain"];
+  wedge: DoctorInput["wedge"];
+  syncPort: number | null;
+  portDiagnoses: DoctorInput["portDiagnoses"];
+  publishHealth: DoctorInput["publishHealth"];
+  relayHealth: DoctorInput["relayHealth"];
+  account: DoctorInput["account"];
+}> {
+  const nowMs = Date.now();
+  const layout = resolveMachineAdeLayout();
+  const diskLatestKnownVersion = readLatestKnownDesktopVersionFromDisk(layout.runtimeDir);
+  const [installedApp, latestKnownVersion, brainProbe] = await Promise.all([
+    Promise.resolve(readInstalledDesktopVersion()),
+    online
+      ? readLatestDesktopVersionOnline().then((version) => version ?? diskLatestKnownVersion)
+      : Promise.resolve(diskLatestKnownVersion),
+    probeDoctorBrain(options),
+  ]);
+  const syncRouteHealth = brainProbe.syncStatus && isRecord(brainProbe.syncStatus.routeHealth)
+    ? brainProbe.syncStatus.routeHealth
+    : null;
+  const listener = syncRouteHealth && isRecord(syncRouteHealth.listener)
+    ? syncRouteHealth.listener
+    : null;
+  const syncPort = typeof listener?.port === "number" && Number.isInteger(listener.port)
+    ? listener.port
+    : brainProbe.runtimeSyncPort;
+  const rawPublishHealth = syncRouteHealth && isRecord(syncRouteHealth.accountDirectory)
+    ? syncRouteHealth.accountDirectory
+    : null;
+  const publishHealth = rawPublishHealth
+    ? doctorRuntimeStatusFromInitialize({
+        runtimeInfo: { publishHealth: rawPublishHealth },
+      }).publishHealth
+    : brainProbe.runtimePublishHealth;
+  const relayHealth = syncRouteHealth && isRecord(syncRouteHealth.relay)
+    ? syncRouteHealth.relay as DoctorInput["relayHealth"]
+    : null;
+  let portDiagnoses: DoctorInput["portDiagnoses"] = [];
+  if (brainProbe.brain.running && syncPort != null && syncPort !== DEFAULT_SYNC_HOST_PORT) {
+    const { inspectSyncListenerPort } = await import("./services/sync/sharedSyncListener");
+    portDiagnoses = [
+      inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT),
+      inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT + 1),
+      inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT + 2),
+    ];
+  }
+  const wedge = readBrainLoopWatchdogLastWedge(layout.runtimeDir)
+    ?? brainProbe.runtimeLastWedge;
+  const input: DoctorInput = {
+    nowMs,
+    app: {
+      installedVersion: installedApp.version,
+      latestKnownVersion,
+      path: installedApp.path,
+      online,
+    },
+    brain: brainProbe.brain,
+    wedge,
+    syncPort,
+    portDiagnoses,
+    publishHealth,
+    relayHealth,
+    account: brainProbe.account,
+  };
+  const rows = evaluateDoctorRows(input);
+  return {
+    ok: !rows.some((row) => row.status === "fail"),
+    checkedAt: new Date(nowMs).toISOString(),
+    online,
+    rows,
+    app: input.app,
+    brain: input.brain,
+    wedge,
+    syncPort,
+    portDiagnoses,
+    publishHealth,
+    relayHealth,
+    account: input.account,
+  };
+}
+
 async function runDesktopCommand(rest: string[]): Promise<unknown> {
   const args = [...rest];
   const sub = firstPositional(args) ?? "open";
@@ -15102,6 +15455,8 @@ async function runServe(
     await new Promise<void>((resolve) => setTimeout(resolve, startupBackoffMs));
   }
   let serveStarted = false;
+  let stopBrainLoopWatchdog: (() => void) | null = null;
+  let stopBrainFreshnessMonitor: (() => void) | null = null;
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
@@ -15131,6 +15486,40 @@ async function runServe(
   ]);
 
   const layout = resolveMachineAdeLayout();
+  const headlessProjectLogger: Logger = createBrainLogger(
+    path.join(layout.runtimeDir, "brain.jsonl"),
+  );
+  const {
+    createProductAnalyticsService,
+    defaultProductAnalyticsStateFile,
+    getSharedProductAnalyticsService,
+  } = await import("../../desktop/src/main/services/analytics/productAnalyticsService");
+  const brainAnalyticsStateFile = defaultProductAnalyticsStateFile(layout.adeDir);
+  const brainProductAnalytics = getSharedProductAnalyticsService(
+    brainAnalyticsStateFile,
+    () => createProductAnalyticsService({
+      stateFilePath: brainAnalyticsStateFile,
+      logger: headlessProjectLogger,
+      appVersion: VERSION,
+      runtimeMode: "brain",
+    }),
+  );
+  stopBrainLoopWatchdog = startBrainLoopWatchdog({
+    runtimeDir: layout.runtimeDir,
+    warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+    onRecovered: (breadcrumb) => {
+      brainProductAnalytics.captureInternal({
+        event: "ade_brain_recovered",
+        surface: "api",
+        properties: {
+          blocked_ms: breadcrumb.blockedMs,
+          last_command: breadcrumb.lastCommand,
+        },
+        dedupeKey: `brain-recovered:${breadcrumb.ts}`,
+        minimumIntervalMs: 24 * 60 * 60 * 1_000,
+      });
+    },
+  });
   const rawSocketPath =
     readValue(args, ["--socket"]) ??
     process.env.ADE_RPC_SOCKET_PATH?.trim() ??
@@ -15171,14 +15560,6 @@ async function runServe(
       overrides,
     );
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
-  const headlessProjectLogger: Logger = {
-    debug: () => {},
-    info: () => {},
-    warn: (event, meta) =>
-      process.stderr.write(`${event} ${JSON.stringify(meta ?? {})}\n`),
-    error: (event, meta) =>
-      process.stderr.write(`${event} ${JSON.stringify(meta ?? {})}\n`),
-  };
   const createHeadlessProjectScaffoldService = () => {
     const githubService = createHeadlessGitHubService(
       process.cwd(),
@@ -15458,7 +15839,7 @@ async function runServe(
     ? createSharedSyncListener({
         logger: {
           warn: (message, fields) =>
-            process.stderr.write(`${message} ${JSON.stringify(fields ?? {})}\n`),
+            headlessProjectLogger.warn(message, fields),
         },
       })
     : null;
@@ -15548,6 +15929,18 @@ async function runServe(
       scopeRegistry,
       personalChatScope,
       getAccountDirectoryHealth,
+      getRuntimeStatus: () => {
+        const publishHealth = getAccountDirectoryHealth();
+        return {
+          syncPort: sharedSyncListener?.getPort() ?? null,
+          publishHealth: {
+            state: publishHealth.state,
+            failingSinceMs: publishHealth.failingSinceMs,
+            lastLegDurations: { ...publishHealth.lastLegDurations },
+          },
+          lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
+        };
+      },
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
@@ -15729,6 +16122,9 @@ async function runServe(
       },
       getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
       directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
+      captureAnalytics: (input) => {
+        brainProductAnalytics.captureInternal(input);
+      },
     });
     accountMachinePublisher.start();
   }
@@ -15738,6 +16134,49 @@ async function runServe(
   );
   clearLastFailure({ kind: "machine" });
   serveStarted = true;
+
+  const serviceCommand = resolveAdeServeCommand();
+  const preparedServiceCommand = prepareMachineRuntimeDaemonCommand(serviceCommand);
+  const isPrimaryBrain =
+    syncEnabled
+    && socketPath === layout.socketPath
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  if (isPrimaryBrain && preparedServiceCommand.filePath) {
+    const [{ createBrainFreshnessMonitor }, { requestBrainServiceRestart }] = await Promise.all([
+      import("./services/runtime/brainFreshnessMonitor"),
+      import("./commands/brainUpdate"),
+    ]);
+    const freshnessMonitor = createBrainFreshnessMonitor({
+      filePath: preparedServiceCommand.filePath,
+      runningHash:
+        process.env.ADE_RUNTIME_BUILD_HASH?.trim()
+        || preparedServiceCommand.buildHash,
+      isIdle: () => !hasActiveHeadlessConnections(states),
+      logger: {
+        warn: (event, fields) =>
+          headlessProjectLogger.warn(event, fields),
+      },
+      restart: () => {
+        const result = requestBrainServiceRestart({
+          command: serviceCommand.command,
+          commandArgs: preparedServiceCommand.args,
+          env: {
+            ...process.env,
+            ...(serviceCommand.env ?? {}),
+          },
+        });
+        if (result.status !== 0) {
+          headlessProjectLogger.error("brain.freshness_restart_failed", {
+            status: result.status,
+            error: result.stderr || result.stdout || "service restart failed",
+          });
+          throw new Error(result.stderr || result.stdout || "service restart failed");
+        }
+      },
+    });
+    freshnessMonitor.start();
+    stopBrainFreshnessMonitor = () => freshnessMonitor.stop();
+  }
 
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
@@ -15815,6 +16254,9 @@ async function runServe(
       });
     }
     throw error;
+  } finally {
+    stopBrainFreshnessMonitor?.();
+    stopBrainLoopWatchdog?.();
   }
 }
 
@@ -17987,6 +18429,24 @@ function formatTextOutput(
         ["socket", isRecord(value) ? value.socketPath : null],
       ]);
     case "doctor": {
+      const doctorRows = isRecord(value) && Array.isArray(value.rows)
+        ? value.rows.filter(isRecord)
+        : [];
+      if (doctorRows.length > 0) {
+        return renderTable(
+          ["check", "status", "detail"],
+          doctorRows.map((row) => [
+            asString(row.label) ?? asString(row.key) ?? "Unknown",
+            row.status === "ok"
+              ? "green(ok)"
+              : row.status === "warn"
+                ? "yellow(warn)"
+                : "red(fail)",
+            asString(row.detail) ?? "",
+          ]),
+          "No health checks were returned.",
+        );
+      }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
       const desktop =
@@ -19416,6 +19876,13 @@ async function runCli(
         }
         throw error;
       }
+    }
+    if (plan.kind === "doctor") {
+      const result = await runDoctorCommand(plan.online, parsed.options);
+      return {
+        output: formatOutput(result, parsed.options, "doctor"),
+        exitCode: result.ok ? 0 : 1,
+      };
     }
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);

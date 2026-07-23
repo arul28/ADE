@@ -22,6 +22,8 @@ Only closed event names, closed property keys, and coarse allowlisted values may
 
 Operational logs use ADE's local logging services and may include bounded diagnostic context appropriate for the local machine. They are for debugging a specific installation and must not be forwarded to PostHog.
 
+The machine brain writes the same `{ts, level, event, meta}` JSONL format as the desktop logger to `~/.ade/runtime/brain.jsonl`, honoring `ADE_LOG_LEVEL` (default `info`). The file rotates at 10 MiB to `brain.1.jsonl`; warnings and errors are also mirrored to stderr with an ISO-8601 timestamp and uppercase level for launchd diagnostics. Account-directory publish outcomes record only bounded per-leg durations, the failing leg, and coarse failure codes such as `token_timeout` or `http_timeout`; they never include bearer tokens or response bodies. These high-frequency health events remain local operational logs and are not product analytics.
+
 Claude compaction observations use the local structured line
 `agent_chat.claude_context_compaction_observed` with `sessionId`, `trigger`
 (`natural`, `ade_fallback`, or `recovery`), and `occupancyPctAtTrigger`. Record

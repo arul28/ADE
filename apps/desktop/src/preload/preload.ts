@@ -9001,6 +9001,8 @@ contextBridge.exposeInMainWorld("ade", {
     ipcRenderer.invoke(IPC.updateGetInstallImpact),
   updateQuitAndInstall: (): Promise<boolean> =>
     ipcRenderer.invoke(IPC.updateQuitAndInstall),
+  updateCancelAutoApply: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.updateCancelAutoApply),
   updateDismissInstalledNotice: () =>
     ipcRenderer.invoke(IPC.updateDismissInstalledNotice),
   onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => {

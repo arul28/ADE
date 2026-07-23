@@ -1822,6 +1822,40 @@ describe("AccountAuthService refresh and sign-out", () => {
     });
   });
 
+  it("aborts a refresh while waiting for cross-process token rotation", async () => {
+    vi.useFakeTimers();
+    const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+    const store = new MemoryCredentialStore();
+    store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+      accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+    })));
+    const fetchImpl = vi.fn(async () => jsonResponse({
+      error: "invalid_grant",
+      error_description: "refresh token was already consumed",
+    }, 400));
+    const service = createAccountAuthService({
+      credentialStore: store,
+      getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+      fetchImpl,
+      refreshRotationWaitMs: 6_000,
+      refreshRotationPollMs: 1_000,
+      now: () => nowMs,
+    });
+    activeServices.push(service);
+    const controller = new AbortController();
+
+    const token = service.getAccessToken({ signal: controller.signal });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    controller.abort(new DOMException("publisher stopped", "AbortError"));
+
+    await expect(token).rejects.toMatchObject({
+      name: "AbortError",
+      message: "publisher stopped",
+    });
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).not.toBeNull();
+  });
+
   it("keeps the shared grant while a default-window peer refresh is still being persisted", async () => {
     vi.useFakeTimers();
     const nowMs = Date.parse("2026-07-14T12:00:00.000Z");

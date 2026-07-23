@@ -74,10 +74,12 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   and the one-connection local socket handed to the normal ADE Code client.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
   the local runtime connection used by desktop IPC, event streaming, sync
-  Settings, and local-work checks. It preserves a newer already-running machine
-  brain instead of replacing it with an older desktop-bundled runtime, falls
-  back to an isolated no-sync runtime for the old desktop window, and reports
-  `versionSkew` so the renderer can require a desktop update. It also spawns
+  Settings, and local-work checks. Runtime initialization advertises an integer
+  compatibility window (`minCompatibleProtocol` through `protocolVersion`).
+  A desktop connects normally to a newer machine brain when its own
+  `RUNTIME_COMPAT_LEVEL` falls inside that window; a newer incompatible brain
+  remains preserved and the old desktop window falls back to an isolated
+  no-sync runtime. It also spawns
   `ade serve` for non-primary sockets, tracks the per-user login service
   install/health state, and applies short per-call timeouts for project
   registration, file actions, and event polling so renderer IPC calls do not

@@ -10,6 +10,12 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_error",
   "ade_daily_usage_summary",
   "ade_analytics_budget",
+  "ade_update_install_aborted",
+  "ade_update_quit_escalated",
+  "ade_update_auto_applied",
+  "ade_update_auto_apply_cancelled",
+  "ade_brain_recovered",
+  "ade_publish_failing",
 ] as const;
 
 export type ProductAnalyticsEventName = (typeof PRODUCT_ANALYTICS_EVENTS)[number];

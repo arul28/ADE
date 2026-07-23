@@ -2340,6 +2340,7 @@ declare global {
       updateGetState: () => Promise<AutoUpdateSnapshot>;
       updateGetInstallImpact: () => Promise<UpdateInstallImpact>;
       updateQuitAndInstall: () => Promise<boolean>;
+      updateCancelAutoApply: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
       perf: {

@@ -1,5 +1,5 @@
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -18,8 +18,10 @@ import type {
   CreateProjectInput,
   ListMyGitHubReposInput,
   ProjectBrowseInput,
+  RuntimeActivityCounts,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
+import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
 import {
   JsonRpcError,
   JsonRpcErrorCode,
@@ -39,7 +41,10 @@ import {
   type ProjectRegistrationSource,
 } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
-import { PersonalChatScope } from "./services/personalChats/personalChatScope";
+import {
+  PersonalChatScope,
+  summarizeRuntimeActivity,
+} from "./services/personalChats/personalChatScope";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import {
   callerHasRoleAtLeast,
@@ -68,6 +73,7 @@ import {
   reconcileAccountOwnedMachineTrust,
 } from "./services/account/accountMachineDirectoryService";
 import { mapPlatform } from "./services/sync/syncProtocol";
+import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -87,9 +93,24 @@ export type MultiProjectRpcHandlerOptions = {
   scopeRegistry?: ProjectScopeRegistry;
   disposeScopesOnDispose?: boolean;
   onShutdown?: (() => void) | null;
-  personalChatScope?: Pick<PersonalChatScope, "capabilities" | "call" | "streamEvents" | "dispose">;
+  personalChatScope?: Pick<
+    PersonalChatScope,
+    "capabilities" | "call" | "streamEvents" | "dispose"
+  > & Partial<Pick<PersonalChatScope, "activitySummary">>;
   accountAuthService?: AccountAuthService;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
+  getRuntimeStatus?: () => {
+    syncPort: number | null;
+    publishHealth: Pick<
+      SyncAccountDirectoryHealth,
+      "state" | "failingSinceMs" | "lastLegDurations"
+    > | null;
+    lastWedge: {
+      lastCommand: string;
+      blockedMs: number;
+      ts: string;
+    } | null;
+  };
   registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
 };
@@ -101,6 +122,7 @@ const RUNTIME_METHODS = new Set([
   "shutdown",
   "exit",
   "runtime/info",
+  "runtime.activitySummary",
   "account.call",
   "personalChats.call",
   "personalChats.streamEvents",
@@ -946,9 +968,7 @@ export function createMultiProjectRpcRequestHandler(
         cachedRuntimeBuildHash = null;
         return null;
       }
-      cachedRuntimeBuildHash = createHash("sha256")
-        .update(fs.readFileSync(resolved))
-        .digest("hex");
+      cachedRuntimeBuildHash = hashRuntimeBuild(resolved);
       return cachedRuntimeBuildHash;
     } catch {
       cachedRuntimeBuildHash = null;
@@ -967,6 +987,28 @@ export function createMultiProjectRpcRequestHandler(
     };
   };
 
+  const resolveRuntimeStatus = () => {
+    try {
+      const status = options.getRuntimeStatus?.();
+      return {
+        syncPort: status?.syncPort ?? null,
+        publishHealth: status?.publishHealth
+          ? {
+              ...status.publishHealth,
+              lastLegDurations: { ...status.publishHealth.lastLegDurations },
+            }
+          : null,
+        lastWedge: status?.lastWedge ? { ...status.lastWedge } : null,
+      };
+    } catch {
+      return {
+        syncPort: null,
+        publishHealth: null,
+        lastWedge: null,
+      };
+    }
+  };
+
   const handler = (async (request: JsonRpcRequest): Promise<unknown | null> => {
     const method = typeof request.method === "string" ? request.method : "";
     const params = safeParams(request.params);
@@ -982,8 +1024,12 @@ export function createMultiProjectRpcRequestHandler(
           name: "ade-rpc",
           version: options.serverVersion,
           ...resolveRuntimeEnvInfo(),
+          ...resolveRuntimeStatus(),
+          minCompatibleProtocol: RUNTIME_COMPAT_LEVEL,
+          protocolVersion: RUNTIME_COMPAT_LEVEL,
           multiProject: true,
           pid: process.pid,
+          uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
         },
         capabilities: {
           actions: {
@@ -1034,8 +1080,12 @@ export function createMultiProjectRpcRequestHandler(
           name: "ade-rpc",
           version: options.serverVersion,
           ...envInfo,
+          ...resolveRuntimeStatus(),
+          minCompatibleProtocol: RUNTIME_COMPAT_LEVEL,
+          protocolVersion: RUNTIME_COMPAT_LEVEL,
           multiProject: true,
           pid: process.pid,
+          uptimeMs: Math.max(0, Math.round(process.uptime() * 1_000)),
         },
         adeDir: layout.adeDir,
         socketPath: layout.socketPath,
@@ -1140,6 +1190,34 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "personalChats.streamEvents") {
       return await personalChatScope.streamEvents(params);
+    }
+
+    if (method === "runtime.activitySummary") {
+      const projectActivity = await Promise.all(
+        projectRegistry.list().map(async (record) => {
+          const pendingScope = scopeRegistry.getIfBooted(record.projectId);
+          if (!pendingScope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
+          const scope = await pendingScope.catch(() => null);
+          if (!scope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
+          return summarizeRuntimeActivity(scope.runtime);
+        }),
+      );
+      const personalActivity = typeof personalChatScope.activitySummary === "function"
+        ? await personalChatScope.activitySummary()
+        : { activeAgentTurns: 0, activeWorkSessions: 0 };
+      const activeAgentTurns = projectActivity.reduce<number>(
+        (total, activity) => total + activity.activeAgentTurns,
+        personalActivity.activeAgentTurns,
+      );
+      const activeWorkSessions = projectActivity.reduce<number>(
+        (total, activity) => total + activity.activeWorkSessions,
+        personalActivity.activeWorkSessions,
+      );
+      return {
+        idle: activeAgentTurns === 0 && activeWorkSessions === 0,
+        activeAgentTurns,
+        activeWorkSessions,
+      };
     }
 
     if (method === "projects.list") {

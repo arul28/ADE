@@ -372,6 +372,28 @@ function runCommand(
   };
 }
 
+export type BrainServiceRestartResult = ReturnType<typeof runCommand>;
+
+export function requestBrainServiceRestart(
+  args: {
+    command: string;
+    commandArgs: string[];
+    env?: NodeJS.ProcessEnv;
+  },
+  run: typeof runCommand = runCommand,
+): BrainServiceRestartResult {
+  return run(
+    args.command,
+    [...args.commandArgs, "--install-service"],
+    {
+      env: {
+        ...(args.env ?? process.env),
+        ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1",
+      },
+    },
+  );
+}
+
 function runtimeNodeModulesPath(runtimeRoot: string): string {
   return path.join(runtimeRoot, "node_modules");
 }
@@ -599,12 +621,14 @@ async function applyStagedBrainUpdate(
     const env = {
       ...runtimeSidecarEnv(process.env, manifest.runtimeTargetDir),
       ADE_HOME: manifest.adeHome,
-      ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1",
     };
-    const result = (deps.runCommand ?? runCommand)(
-      manifest.binaryPath,
-      ["serve", "--install-service"],
-      { env },
+    const result = requestBrainServiceRestart(
+      {
+        command: manifest.binaryPath,
+        commandArgs: ["serve"],
+        env,
+      },
+      deps.runCommand ?? runCommand,
     );
     if (result.status !== 0) {
       const message = result.stderr || result.stdout || "ADE brain service restart failed.";

@@ -5,6 +5,7 @@
   "compatibility_date": "2026-06-30",
   "workers_dev": true,
   "preview_urls": false,
+  "observability": { "enabled": true, "head_sampling_rate": 1 },
   "triggers": { "crons": ["* * * * *"] },
   "vars": {
     "ONLINE_WINDOW_MS": "90000",

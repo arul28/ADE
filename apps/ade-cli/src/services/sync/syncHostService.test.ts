@@ -14,6 +14,7 @@ import type {
   PersonalChatScopeContract,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
+  SyncCommandPayload,
   SyncInvalidationBatchPayload,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
@@ -6023,16 +6024,19 @@ describe("paired-client product analytics consent", () => {
         ok: true,
         result: { accepted: true, reason: "accepted" },
       });
-      expect(execute).toHaveBeenCalledWith(expect.objectContaining({
-        action: "analytics.capture",
-        projectId: "project-1",
-        args: expect.objectContaining({
-          event: "ade_project_opened",
-          surface: "web",
+      expect(execute).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "analytics.capture",
           projectId: "project-1",
-          dedupeKey: "web_project_opened:project-1",
+          args: expect.objectContaining({
+            event: "ade_project_opened",
+            surface: "web",
+            projectId: "project-1",
+            dedupeKey: "web_project_opened:project-1",
+          }),
         }),
-      }));
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
 
       execute.mockClear();
       const foreignProjectCapture = await sendCommand("analytics.capture", {
@@ -6069,7 +6073,10 @@ describe("paired-client product analytics consent", () => {
 
       await expect(sendCommand("lanes.create", { name: "private-lane" }, "mutation-while-disabled"))
         .resolves.toMatchObject({ payload: { ok: true, result: { ok: true } } });
-      expect(execute).toHaveBeenCalledWith(expect.objectContaining({ action: "lanes.create" }));
+      expect(execute).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "lanes.create" }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
       const suppressedUsageInsert = dbRun.mock.calls.find(([sql]) => String(sql).includes("insert into usage_events"));
       expect(suppressedUsageInsert?.[1]).toEqual([
         expect.any(String),
@@ -7499,6 +7506,159 @@ describe("sync host reliability guards", () => {
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("aborts an opt-in remote command executor when the message timeout fires", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const logger = createDiscoveryLogger();
+    let markAborted!: () => void;
+    const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
+    const execute = vi.fn((
+      _payload: SyncCommandPayload,
+      context?: { signal?: AbortSignal },
+    ): Promise<unknown> => new Promise((_resolve, reject) => {
+      const onAbort = () => {
+        markAborted();
+        reject(context?.signal?.reason ?? new Error("aborted"));
+      };
+      if (context?.signal?.aborted) onAbort();
+      else context?.signal?.addEventListener("abort", onAbort, { once: true });
+    }));
+    const host = createReliabilityHost(projectRoot, {
+      logger,
+      messageTimeoutMs: 100,
+      remoteCommandExecutor: { execute },
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      peer = await connectPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-command-timeout-abort",
+      );
+      peer.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "timeout-abort",
+        projectId: "project-2",
+        payload: {
+          commandId: "timeout-abort",
+          action: "lanes.list",
+          projectId: "project-2",
+          args: {},
+        },
+      }));
+      await waitForEnvelope(peer.envelopes, "command_ack", "timeout-abort");
+      await aborted;
+      expect(execute.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+      expect(logger.warn).toHaveBeenCalledWith("sync_host.command_timed_out", {
+        action: "lanes.list",
+        durationMs: expect.any(Number),
+        peerKind: "mobile",
+        timedOut: true,
+      });
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("aborts an opt-in remote command executor when its peer closes", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    let markAborted!: () => void;
+    const aborted = new Promise<void>((resolve) => { markAborted = resolve; });
+    const execute = vi.fn((
+      _payload: SyncCommandPayload,
+      context?: { signal?: AbortSignal },
+    ): Promise<unknown> => new Promise((_resolve, reject) => {
+      const onAbort = () => {
+        markAborted();
+        reject(context?.signal?.reason ?? new Error("aborted"));
+      };
+      if (context?.signal?.aborted) onAbort();
+      else context?.signal?.addEventListener("abort", onAbort, { once: true });
+    }));
+    const host = createReliabilityHost(projectRoot, {
+      messageTimeoutMs: 5_000,
+      remoteCommandExecutor: { execute },
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      peer = await connectPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "ios-command-close-abort",
+      );
+      peer.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "close-abort",
+        projectId: "project-2",
+        payload: {
+          commandId: "close-abort",
+          action: "lanes.list",
+          projectId: "project-2",
+          args: {},
+        },
+      }));
+      await waitForEnvelope(peer.envelopes, "command_ack", "close-abort");
+      peer.ws.close();
+      await aborted;
+      expect(execute).toHaveBeenCalledTimes(1);
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("warns when a completed command exceeds the slow-command threshold", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const logger = createDiscoveryLogger();
+    const execute = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { ok: true };
+    });
+    const host = createReliabilityHost(projectRoot, {
+      logger,
+      slowCommandThresholdMs: 10,
+      remoteCommandExecutor: { execute },
+    });
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      peer = await connectPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "desktop-slow-command",
+        { platform: "macOS", deviceType: "desktop" },
+      );
+      peer.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "slow-command",
+        projectId: "project-2",
+        payload: {
+          commandId: "slow-command",
+          action: "lanes.list",
+          projectId: "project-2",
+          args: {},
+        },
+      }));
+      await waitForEnvelope(peer.envelopes, "command_result", "slow-command");
+      expect(logger.warn).toHaveBeenCalledWith("sync_host.command_slow", {
+        action: "lanes.list",
+        durationMs: expect.any(Number),
+        peerKind: "desktop",
+      });
+      const slowFields = logger.warn.mock.calls.find(
+        ([event]) => event === "sync_host.command_slow",
+      )?.[1];
+      expect(slowFields?.durationMs).toBeGreaterThanOrEqual(10);
+      expect(slowFields).not.toHaveProperty("args");
+      expect(slowFields).not.toHaveProperty("payload");
+    } finally {
+      peer?.ws.close();
       await host.dispose();
       cleanup();
     }

@@ -5,20 +5,7 @@ import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
 import { AutoUpdateErrorDialog, isAutoUpdateDiskSpaceError } from "./AutoUpdateErrorDialog";
-
-const EMPTY_UPDATE_SNAPSHOT: AutoUpdateSnapshot = {
-  status: "idle",
-  currentVersion: "",
-  version: null,
-  progressPercent: null,
-  bytesPerSecond: null,
-  transferredBytes: null,
-  totalBytes: null,
-  releaseNotesUrl: null,
-  error: null,
-  errorDetails: null,
-  recentlyInstalled: null,
-};
+import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
 type RuntimeVersionSkew = NonNullable<AppInfo["localRuntime"]>["versionSkew"];
@@ -48,7 +35,7 @@ function runtimeSkewTitle(skew: RuntimeVersionSkew): string {
 }
 
 export function AutoUpdateControl() {
-  const [snapshot, setSnapshot] = useState<AutoUpdateSnapshot>(EMPTY_UPDATE_SNAPSHOT);
+  const [snapshot, setSnapshot] = useState<AutoUpdateSnapshot>(EMPTY_AUTO_UPDATE_SNAPSHOT);
   const [runtimeSkew, setRuntimeSkew] = useState<RuntimeVersionSkew | null>(null);
   const [releaseNotesOpen, setReleaseNotesOpen] = useState(false);
   const [updateErrorOpen, setUpdateErrorOpen] = useState(false);

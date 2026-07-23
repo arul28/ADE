@@ -72,6 +72,8 @@ import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
 import { ToastStack } from "./toast/ToastStack";
+import { AutoUpdateBanner } from "./AutoUpdateBanner";
+import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { useToasts } from "./toast/toastStore";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
@@ -1141,6 +1143,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <ProjectTransitionErrorAlert />
+
+      <AutoUpdateBanner />
+
+      <BrainRecoveryNotice />
 
       {productAnalytics.consentRequired ? (
         <WebAnalyticsConsentBanner

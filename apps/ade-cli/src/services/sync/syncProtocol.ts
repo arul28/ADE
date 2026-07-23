@@ -5,6 +5,7 @@ import { safeJsonParse } from "../../../../desktop/src/main/services/shared/util
 
 export const SYNC_PROTOCOL_VERSION: SyncProtocolVersion = 1;
 export const DEFAULT_SYNC_HOST_PORT = 8787;
+export const SYNC_HOST_MAX_PORT = 8999;
 export const DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024;
 export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
 export const RPC_DATA_CHUNK_BYTES = 256 * 1024;

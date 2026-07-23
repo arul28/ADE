@@ -16,6 +16,7 @@ function makePayload(
 
 function createService(options?: {
   agentChatService?: Record<string, unknown>;
+  aiIntegrationService?: Record<string, unknown>;
   conflictService?: Record<string, unknown>;
   diffService?: Record<string, unknown>;
   externalSessionsService?: Record<string, unknown>;
@@ -83,6 +84,7 @@ function createService(options?: {
     ...(options?.operationService ? { operationService: options.operationService } : {}),
     ...(options?.projectConfigService ? { projectConfigService: options.projectConfigService } : {}),
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
+    ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
@@ -118,6 +120,46 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("caps ai.getStatus probes at 30 seconds", async () => {
+    vi.useFakeTimers();
+    const getStatus = vi.fn(() => new Promise<never>(() => {}));
+    const { service } = createService({
+      aiIntegrationService: {
+        getStatus,
+        getDailyUsageBatch: vi.fn(() => new Map()),
+        getFeatureFlag: vi.fn(() => false),
+        getDailyBudgetLimit: vi.fn(() => null),
+      },
+    });
+    try {
+      const result = expect(
+        service.execute(makePayload("ai.getStatus", { force: true })),
+      ).rejects.toThrow("ai.getStatus timed out after 30000ms");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await result;
+      expect(getStatus).toHaveBeenCalledWith({
+        force: true,
+        refreshOpenCodeInventory: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops waiting for transcript pulls when the execution signal aborts", async () => {
+    const getChatTranscript = vi.fn(() => new Promise<never>(() => {}));
+    const { service } = createService({
+      agentChatService: { getChatTranscript },
+    });
+    const controller = new AbortController();
+    const pending = service.execute(
+      makePayload("chat.getTranscript", { sessionId: "chat-1" }),
+      { signal: controller.signal },
+    );
+    controller.abort(new Error("peer closed"));
+    await expect(pending).rejects.toThrow("peer closed");
+  });
+
   it("forwards bounded GitHub history pagination for mobile PR lists", async () => {
     const getGithubSnapshot = vi.fn().mockResolvedValue({ repoPullRequests: [] });
     const { service } = createService({ prService: { getGithubSnapshot } });

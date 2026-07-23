@@ -13,6 +13,8 @@ export type ServiceManagerResult = {
   // very brain it tried to mutate. Consumers must branch on this typed flag,
   // never on the human-readable `message` text.
   selfMutationBlocked?: boolean;
+  /** Typed install verification stage for callers that need repair diagnostics. */
+  failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive";
 };
 
 export type ServiceManagerStatusResult = {
@@ -236,6 +238,33 @@ export function terminatePidGracefully(pid: number | null, deps: TerminatePidDep
   while (Date.now() < deadline) {
     if (!pidAlive(pid)) return;
     sleepSync(50);
+  }
+  try {
+    kill(pid, "SIGKILL");
+  } catch {
+    // best effort
+  }
+}
+
+export async function terminatePidGracefullyAsync(
+  pid: number | null,
+  deps: TerminatePidDeps = {},
+): Promise<void> {
+  if (!pid || pid <= 0 || pid === process.pid) return;
+  const kill = deps.kill ?? defaultKill;
+  const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  try {
+    kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + (deps.graceTimeoutMs ?? 1_500);
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 50);
+      timer.unref?.();
+    });
   }
   try {
     kill(pid, "SIGKILL");

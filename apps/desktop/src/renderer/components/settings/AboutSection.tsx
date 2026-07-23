@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowCircleUp, ArrowsClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 
 const labelStyle: React.CSSProperties = {
   fontSize: 11,
@@ -116,6 +117,7 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [latest, setLatest] = useState<LatestReleaseInfo | null>(null);
   const [checking, setChecking] = useState(false);
+  const updateSnapshot = useAutoUpdateSnapshot();
 
   const refreshLatest = useCallback(async () => {
     try {
@@ -179,9 +181,29 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
     ? null
     : info.localRuntime.versionSkew;
 
+  // Truthful version split: "Running" is the version of the process the user is
+  // actually using (getInfo); "Installed" is what is staged on disk and will run
+  // after a restart; "Latest" is what the update feed advertises. When a
+  // consented install parked or a download is ready, the running process lags
+  // what is staged — that is the state the incident hid behind an "up to date".
+  const hasStagedUpdate = updateSnapshot.status === "ready" || Boolean(updateSnapshot.parked);
+  const runningVersion = info.appVersion;
+  const installedVersion = hasStagedUpdate && updateSnapshot.version
+    ? updateSnapshot.version
+    : info.appVersion;
+  const latestVersion = updateSnapshot.latestKnownVersion ?? latest?.version ?? info.appVersion;
+  const restartPending = hasStagedUpdate && installedVersion !== runningVersion;
+
   let pill: React.ReactNode = null;
   if (isDev) {
     pill = <span style={inlineBadge(COLORS.textMuted)}>DEV BUILD</span>;
+  } else if (restartPending) {
+    pill = (
+      <span style={{ ...inlineBadge(COLORS.warning), gap: 5 }}>
+        <WarningCircle size={13} weight="fill" />
+        Restart to update
+      </span>
+    );
   } else if (latest && updateAvailable) {
     pill = (
       <span style={{ ...inlineBadge(COLORS.warning), gap: 5 }}>
@@ -208,22 +230,25 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
       </div>
 
       <div style={{ display: "grid", gap: 10, marginTop: embedded ? 14 : 18 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <span style={labelStyle}>Installed</span>
-          <span style={valueStyle}>{info.appVersion}</span>
-        </div>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <span style={labelStyle}>Latest</span>
-          {latest ? (
-            <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-              <span style={valueStyle}>{latest.version}</span>
-              {releasedAgo ? (
-                <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>· {releasedAgo}</span>
-              ) : null}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <span style={labelStyle}>Running</span>
+          <span style={valueStyle}>{runningVersion}</span>
+          {restartPending ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.warning }}>
+              <WarningCircle size={12} weight="fill" />
+              restart pending
             </span>
-          ) : (
-            <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted }}>Unavailable</span>
-          )}
+          ) : null}
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <span style={labelStyle}>Installed</span>
+          <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+            <span style={valueStyle}>{installedVersion}</span>
+            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+              · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
+              {releasedAgo && latestVersion === (latest?.version ?? latestVersion) ? ` · ${releasedAgo}` : ""}
+            </span>
+          </span>
         </div>
       </div>
 
@@ -252,6 +277,32 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
               <div style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
                 {embedded ? "Background service" : "ADE runtime service"}
               </div>
+              <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <span style={labelStyle}>Running</span>
+                <span style={valueStyle}>
+                  {info.localRuntime.versionSkew.runtimeVersion ?? info.appVersion}
+                </span>
+                {info.localRuntime.pid != null || info.localRuntime.syncPort != null ? (
+                  <span style={{ ...valueStyle, color: COLORS.textMuted }}>
+                    {[
+                      info.localRuntime.pid != null ? `· pid ${info.localRuntime.pid}` : null,
+                      info.localRuntime.syncPort != null ? `· port ${info.localRuntime.syncPort}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  </span>
+                ) : null}
+                <span
+                  aria-hidden
+                  style={{
+                    width: 7,
+                    height: 7,
+                    borderRadius: "50%",
+                    flexShrink: 0,
+                    background: runtimeServiceHealthColor(info.localRuntime.serviceHealth.state),
+                  }}
+                />
+              </div>
               <div style={{ marginTop: 5, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
                 {info.localRuntime.connectionState === "connected"
                   ? "Connected and ready."
@@ -273,7 +324,27 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
               ) : null}
             </div>
           </div>
-          {runtimeSkew ? (
+          {restartPending ? (
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                alignItems: "center",
+                padding: "9px 10px",
+                borderRadius: 8,
+                border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
+                background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+                color: COLORS.warning,
+                fontFamily: SANS_FONT,
+                fontSize: 11,
+                lineHeight: 1.45,
+              }}
+            >
+              <WarningCircle size={15} weight="fill" style={{ flexShrink: 0 }} />
+              <span>Will update when the app restarts</span>
+            </div>
+          ) : null}
+          {runtimeSkew && !restartPending ? (
             <div
               style={{
                 display: "flex",

@@ -134,6 +134,16 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 | `agentRegistry.ts` | Per-machine agent registry. |
 
 **Service managers.** `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), `installWindows.ts` (Windows) register the brain as a login-time service. `index.ts` is the platform router; `common.ts` carries shared types (`ServiceManagerResult`, `ServiceManagerStatusResult`).
+On macOS, an unchanged loaded launch agent is retained only after a bounded
+runtime initialize probe succeeds. A failed probe takes the full unload,
+predecessor termination, stale-process reap, and load path; the install result
+is successful only after the old pid is gone, launchd reports a distinct new
+pid, and the replacement initializes over the machine socket. The running brain
+also stats its own CLI entrypoint every five minutes (configurable with
+`ADE_BRAIN_FRESHNESS_INTERVAL_MS`, disabled by
+`ADE_DISABLE_BRAIN_FRESHNESS=1`), hashes only after the stat changes, and uses
+the brain-update service restart path after an idle grace period when the disk
+hash no longer matches its baked runtime hash.
 
 **Session identity.** The runtime resolves caller role from ADE context env vars and command flags. Role vocabulary: `cto`, `orchestrator`, `agent`, `external`, `evaluator`. `ADE_DEFAULT_ROLE` is an authority ceiling, not an identity grant: `resolveSessionBoundRole` clamps a chat-bound caller that would otherwise inherit a daemon-wide `cto` role to `agent`, preserves an explicitly declared `orchestrator`, and never accepts a requested role above the runtime ceiling. SDK-backed chats receive `ADE_CHAT_SESSION_ID` plus `ADE_DEFAULT_ROLE=agent` (or `orchestrator` for a lead), and tracked provider CLI launch/resume does the same. Persistent SDK guidance names the concrete `--session <id>` for lifecycle commands so shared provider servers do not depend on process-global env inheritance. Browser automation adds a separate bearer capability: ADE-launched chat and owned-terminal environments receive an opaque `ADE_BROWSER_ACTOR_TOKEN` bound in Electron memory to that chat's trusted lane/project or personal tab collection. The runtime requires the token, strips caller-supplied routing, and carries it only over the authenticated desktop bridge. Electron validates it in the same process that issued it before restoring the bound scope; role alone never grants access to a human-authenticated browser profile.
 
@@ -1276,6 +1286,7 @@ Post-packaging hardening (`apps/desktop/scripts/`):
 ### 15.1 Logging
 
 - **Main-process logger** — `apps/desktop/src/main/services/logging/logger.ts` (`createFileLogger`). Writes structured JSONL to `~/.ade/logs/<project>/ade-main.log`. Categories: `ipc.*`, `project.startup_task_*`, `renderer.*`, per-service telemetry.
+- **Machine-brain logger** — the headless runtime reuses `createFileLogger` through `apps/ade-cli/src/services/runtime/brainLogger.ts`, writes `~/.ade/runtime/brain.jsonl` with 10 MiB `.1` rotation, and mirrors timestamped warnings/errors to stderr.
 - **Redaction** — all log writes pass through `redactSecrets()` / `sanitizeStructuredData()`.
 - **Retention** — local, indefinite until user clears.
 
