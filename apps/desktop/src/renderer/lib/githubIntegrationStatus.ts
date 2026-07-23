@@ -1,6 +1,7 @@
 import type {
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
+  GitHubStatus,
 } from "../../shared/types";
 
 /**
@@ -138,5 +139,43 @@ export function githubRepoIssueCopy(
     title: `${label} isn't connected to the ADE GitHub App`,
     detail: "Install the app on this repo so PR status updates in real time, even when the project isn't focused.",
     action: "Install",
+  };
+}
+
+/**
+ * Copy for the gh CLI/token banner — three sub-states, each with a stable
+ * fingerprint so a change between them resurfaces a previously-dismissed banner.
+ * Deliberately worded around "GitHub CLI/token" to distinguish it from the "ADE
+ * GitHub App" block. Lives here alongside the account/repo copy so Settings and
+ * the banner draw from one source and can't disagree.
+ */
+export function describeGithubCliBanner(status: GitHubStatus): {
+  subState: string;
+  title: string;
+  detail: string;
+  action: string;
+} {
+  if (!status.tokenStored) {
+    return {
+      subState: "no-token",
+      title: "GitHub CLI or token not connected",
+      detail: "Connect the GitHub CLI (gh auth login) or add a personal access token so ADE can run git and PR operations.",
+      action: "Connect GitHub",
+    };
+  }
+  if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
+    const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repository";
+    return {
+      subState: "repo-access",
+      title: `GitHub token can't access ${repoLabel}`,
+      detail: "Your fine-grained token is valid but hasn't been granted this repository. Update its repository access.",
+      action: "Fix GitHub auth",
+    };
+  }
+  return {
+    subState: "missing-perms",
+    title: "GitHub token is missing permissions",
+    detail: "Your GitHub token lacks the scopes ADE needs. Reconnect it with repo and workflow access.",
+    action: "Fix GitHub auth",
   };
 }

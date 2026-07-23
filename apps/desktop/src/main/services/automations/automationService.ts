@@ -36,11 +36,10 @@ import { triggerDeliveryKeyForType } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb, SqlValue } from "../state/kvDb";
 import {
-  INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
-  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
   REVIEW_ARTIFACT_RETENTION_DAYS,
+  pruneIngressEventRowsForProject,
 } from "../state/dbMaintenanceApi";
 import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
@@ -1147,40 +1146,13 @@ export function createAutomationService({
   };
 
   const pruneIngressEventOverflowForProject = (targetProjectId: string): void => {
-    // Two caps working together. The active cap keeps only the newest 2,000
-    // non-dispatched rows: dispatched/failed rows are exempt here so redelivered
-    // webhooks still dedupe against their prior (project_id, source, event_key)
-    // even after their action completed or failed. But that exemption means
-    // dispatched/failed rows would otherwise be bounded ONLY by the 7-day age
-    // prune, so an always-on brain dispatching high webhook/relay volume could
-    // accumulate effectively unbounded dispatched rows inside the window and
-    // bloat automation_ingress_events until it wedges the cr-sqlite table
-    // rebuild. The hard cap below therefore trims TOTAL rows (any status) down
-    // to a generous ceiling, deleting the oldest by received_at. This is safe:
-    // the relay cursor advances, so old dispatched rows carry no live dedup
-    // value — consistent with the age prune that already deletes them.
-    db.run(
-      `delete from automation_ingress_events
-        where rowid in (
-          select rowid
-          from automation_ingress_events
-          where project_id = ? and status not in ('dispatched', 'failed')
-          order by received_at desc, rowid desc
-          limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
-        )`,
-      [targetProjectId],
-    );
-    db.run(
-      `delete from automation_ingress_events
-        where rowid in (
-          select rowid
-          from automation_ingress_events
-          where project_id = ?
-          order by received_at desc, rowid desc
-          limit -1 offset ${INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT}
-        )`,
-      [targetProjectId],
-    );
+    // Active cap + hard cap DELETEs live in `state/dbMaintenanceApi` so this
+    // writer and the storage-doctor maintenance mirror can't drift. AdeDb.run
+    // reports no change count, so the executor returns 0 and we ignore the total.
+    pruneIngressEventRowsForProject((sql, params) => {
+      db.run(sql, params);
+      return 0;
+    }, targetProjectId);
   };
 
   const pruneIngressEventsForProject = (targetProjectId: string, referenceTime = new Date()): void => {

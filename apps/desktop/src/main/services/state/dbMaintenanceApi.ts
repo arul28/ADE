@@ -25,6 +25,59 @@ export const REVIEW_ARTIFACT_RETENTION_DAYS = 30;
 /** PR snapshots not updated within this many days are deleted. */
 export const PR_SNAPSHOT_RETENTION_DAYS = 60;
 
+/**
+ * Run the two ingress-event overflow DELETEs for a single project and return
+ * the total rows removed. The caps work together:
+ *
+ *  1. Active cap — keep only the newest {@link INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
+ *     NON-dispatched rows. Dispatched/failed rows are exempt so redelivered
+ *     webhooks still dedupe against their prior (project_id, source, event_key)
+ *     even after their action completed or failed.
+ *  2. Hard cap — because that exemption would otherwise leave dispatched/failed
+ *     rows bounded only by the 7-day age prune, an always-on brain dispatching
+ *     high webhook volume could accumulate effectively unbounded rows inside the
+ *     window and wedge the cr-sqlite table rebuild. So trim TOTAL rows (any
+ *     status) down to {@link INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT}, deleting
+ *     the oldest by received_at. Safe: the relay cursor advances, so old
+ *     dispatched rows carry no live dedup value.
+ *
+ * The single source of truth for this SQL: both the automation ingress writer
+ * (inside its begin-immediate insert path) and the storage-doctor maintenance
+ * mirror call this so the caps can never drift. `deleteRows` executes one
+ * parameterized DELETE and reports its change count — kvDb passes
+ * `runStatement(...).changes`; the automation writer's `AdeDb.run` reports no
+ * count, so it returns 0 and the caller ignores the total.
+ */
+export function pruneIngressEventRowsForProject(
+  deleteRows: (sql: string, params: string[]) => number,
+  projectId: string,
+): number {
+  let removed = 0;
+  removed += deleteRows(
+    `delete from automation_ingress_events
+        where rowid in (
+          select rowid
+          from automation_ingress_events
+          where project_id = ? and status not in ('dispatched', 'failed')
+          order by received_at desc, rowid desc
+          limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
+        )`,
+    [projectId],
+  );
+  removed += deleteRows(
+    `delete from automation_ingress_events
+        where rowid in (
+          select rowid
+          from automation_ingress_events
+          where project_id = ?
+          order by received_at desc, rowid desc
+          limit -1 offset ${INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT}
+        )`,
+    [projectId],
+  );
+  return removed;
+}
+
 export type DbMaintenanceResult = {
   itemsAffected: number;
   bytesReclaimed: number;

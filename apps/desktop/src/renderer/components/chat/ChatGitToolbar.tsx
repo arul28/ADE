@@ -200,32 +200,56 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     prevBusy.current = runtime.busyAction;
   }, [isRemoteProject, runtime.busyAction, refreshStatus, refreshPr]);
 
+  // Backend reconcile-on-focus spinner (project-scoped), in its OWN subscription
+  // keyed only on stable deps (laneId/projectRoot via refreshPr) — NOT linkedPr.
+  // Previously this lived in the linkedPr-dependent subscription below, so the
+  // idle branch's own refreshPr() (which mutates linkedPr) re-ran that effect
+  // within the 300ms window and its cleanup clearTimeout'd the pending hide,
+  // stranding `reconciling` at true and spinning the ⟳ forever. Here the hide
+  // timer lives in a ref cleared only on unmount, so a linkedPr change can no
+  // longer strand it.
+  useEffect(() => {
+    const unsubscribe = window.ade.prs.onEvent((event) => {
+      if (event.type !== "pr-reconcile") return;
+      // Debounce the hide so a fast reconcile doesn't flicker.
+      if (event.state === "running") {
+        if (reconcileHideTimerRef.current != null) {
+          window.clearTimeout(reconcileHideTimerRef.current);
+          reconcileHideTimerRef.current = null;
+        }
+        setReconciling(true);
+      } else {
+        if (reconcileHideTimerRef.current != null) {
+          window.clearTimeout(reconcileHideTimerRef.current);
+        }
+        reconcileHideTimerRef.current = window.setTimeout(() => {
+          setReconciling(false);
+          reconcileHideTimerRef.current = null;
+        }, 300);
+        // A reconcile just healed backend state — re-read the linked PR.
+        void refreshPr();
+      }
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [refreshPr]);
+
+  // Clear the reconcile hide timer ONLY on unmount — never on a re-subscribe —
+  // so the debounce can't be stranded mid-flight.
+  useEffect(() => {
+    return () => {
+      if (reconcileHideTimerRef.current != null) {
+        window.clearTimeout(reconcileHideTimerRef.current);
+        reconcileHideTimerRef.current = null;
+      }
+    };
+  }, []);
+
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.
   useEffect(() => {
     const unsubscribe = window.ade.prs.onEvent((event) => {
-      if (event.type === "pr-reconcile") {
-        // Project-scoped catch-up reconcile: surface a subtle syncing spin on
-        // the chip. Debounce the hide so a fast reconcile doesn't flicker.
-        if (event.state === "running") {
-          if (reconcileHideTimerRef.current != null) {
-            window.clearTimeout(reconcileHideTimerRef.current);
-            reconcileHideTimerRef.current = null;
-          }
-          setReconciling(true);
-        } else {
-          if (reconcileHideTimerRef.current != null) {
-            window.clearTimeout(reconcileHideTimerRef.current);
-          }
-          reconcileHideTimerRef.current = window.setTimeout(() => {
-            setReconciling(false);
-            reconcileHideTimerRef.current = null;
-          }, 300);
-          // A reconcile just healed backend state — re-read the linked PR.
-          void refreshPr();
-        }
-        return;
-      }
       if (event.type === "pr-notification") {
         if (event.laneId === laneId || event.prId === linkedPr?.id) void refreshPr();
         return;
@@ -242,10 +266,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     });
     return () => {
       unsubscribe();
-      if (reconcileHideTimerRef.current != null) {
-        window.clearTimeout(reconcileHideTimerRef.current);
-        reconcileHideTimerRef.current = null;
-      }
     };
   }, [laneId, linkedPr, refreshPr]);
 

@@ -192,7 +192,9 @@ export function GitHubAppInstallPanel({ variant = "settings" }: GitHubAppInstall
         await loadStatus(true, { retryAfterAuthorization: true });
         // Post-fix auto-heal: now that the App is authorized, kick a one-shot
         // reconcile so this project's PR badges light up without a manual refresh.
-        void window.ade?.prs?.reconcileNow?.();
+        // Swallow rejections (e.g. a project transition tearing down the runtime)
+        // so this fire-and-forget can never surface as an unhandled rejection.
+        void window.ade?.prs?.reconcileNow?.().catch(() => {});
       }
     }, Math.max(1, deviceSession.intervalSec) * 1000);
     return () => {
@@ -385,13 +387,6 @@ function sleepMs(ms: number): Promise<void> {
   });
 }
 
-/**
- * Retained as a thin re-export of the shared helper so the panel's unit test
- * (which imports this name) keeps passing. New code should import
- * `isGithubRepoAccessPending` from `lib/githubIntegrationStatus` directly.
- */
-export const isGitHubAppRepoAccessPending = isGithubRepoAccessPending;
-
 // --- Presentational derivations for the two axis blocks ---
 
 type PillTone = "ok" | "warn" | "pending" | "neutral";
@@ -495,94 +490,6 @@ function formatExpiry(iso: string | null): string | null {
   const ms = Date.parse(iso);
   if (!Number.isFinite(ms)) return null;
   return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
-
-/**
- * Retained for the panel's unit test. The rendered panel now shows the two
- * axis blocks above instead of a single conflated badge, but this pure helper
- * is still covered by GitHubAppInstallPanel.test.ts.
- */
-export function statusView(status: GitHubAppInstallationStatus | null, loading: boolean, appAuthorized: boolean): {
-  label: string;
-  color: string;
-  description: (repoLabel: string | null) => string;
-} {
-  if (loading && !status) {
-    return {
-      label: "Checking",
-      color: COLORS.warning,
-      description: () => "Checking whether this project already has the ADE GitHub App installed.",
-    };
-  }
-  if (status?.relayConfigured && status.webhookState === "deleted") {
-    return {
-      label: "Webhook off",
-      color: COLORS.warning,
-      description: (repoLabel) =>
-        repoLabel
-          ? `GitHub reported that the ADE App webhook was removed for this App. Re-enable the webhook in GitHub App settings so ${repoLabel} can receive realtime PR updates. Existing GitHub auth remains the fallback.`
-          : "GitHub reported that the ADE App webhook was removed. Re-enable the webhook in GitHub App settings for realtime PR updates. Existing GitHub auth remains the fallback.",
-    };
-  }
-  if (status?.installed && status.relayConfigured) {
-    return {
-      label: "Configured",
-      color: COLORS.success,
-      description: (repoLabel) =>
-        repoLabel
-          ? `The ADE GitHub App is installed for ${repoLabel}. PR updates can arrive instantly, with GitHub polling as fallback.`
-          : "The ADE GitHub App is installed. PR updates can arrive instantly, with GitHub polling as fallback.",
-    };
-  }
-  if (status?.installed && !status.relayConfigured) {
-    return {
-      label: "Installed",
-      color: COLORS.warning,
-      description: (repoLabel) =>
-        repoLabel
-          ? `The ADE GitHub App is installed for ${repoLabel}. ADE will use GitHub polling until realtime delivery is available.`
-          : "The ADE GitHub App is installed. ADE will use GitHub polling until realtime delivery is available.",
-    };
-  }
-  if (status?.state === "unconfigured" || (status && !status.relayConfigured && status.state !== "error")) {
-    return {
-      label: "Checking",
-      color: COLORS.warning,
-      description: () => "ADE could not confirm realtime delivery yet. GitHub polling remains available as fallback.",
-    };
-  }
-  if (status?.state === "error") {
-    if (!appAuthorized) {
-      return {
-        label: "Authorize GitHub",
-        color: COLORS.warning,
-        description: () => "Authorize ADE with GitHub to enable instant PR updates for this repo.",
-      };
-    }
-    if (isGithubRepoAccessPending(status)) {
-      return {
-        label: "Checking access",
-        color: COLORS.warning,
-        description: (repoLabel) =>
-          repoLabel
-            ? `GitHub accepted authorization. ADE is waiting for the GitHub App's repository access to become visible for ${repoLabel}. If this stays here, install the App or select this repo in GitHub.`
-            : "GitHub accepted authorization. ADE is waiting for the GitHub App's repository access to become visible. If this stays here, install the App or select this repo in GitHub.",
-      };
-    }
-    return {
-      label: "Check failed",
-      color: COLORS.danger,
-      description: () => status.error ?? "ADE could not check GitHub App status. Existing GitHub auth remains the fallback.",
-    };
-  }
-  return {
-    label: "Not installed",
-    color: COLORS.warning,
-    description: (repoLabel) =>
-      repoLabel
-        ? `Install the ADE GitHub App for ${repoLabel} to enable instant PR updates. If the App is installed for selected repositories, make sure this repo is selected.`
-        : "Install the ADE GitHub App for instant PR updates. If the App is installed for selected repositories, make sure this repo is selected.",
-  };
 }
 
 const onboardingRootStyle: CSSProperties = {

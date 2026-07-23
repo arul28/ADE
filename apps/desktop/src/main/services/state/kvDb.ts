@@ -10,11 +10,10 @@ import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
-  INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT,
-  INGRESS_EVENT_MAX_ROWS_PER_PROJECT,
   INGRESS_EVENT_RETENTION_MS,
   PR_SNAPSHOT_RETENTION_DAYS,
   REVIEW_ARTIFACT_RETENTION_DAYS,
+  pruneIngressEventRowsForProject,
   type DbMaintenanceApi,
   type DbMaintenanceResult,
 } from "./dbMaintenanceApi";
@@ -3881,36 +3880,13 @@ export async function openKvDb(
         "select distinct project_id from automation_ingress_events",
       );
       for (const project of projects) {
-        // Active cap: newest 2,000 non-dispatched rows. Dispatched/failed rows
-        // are exempt so redelivered webhooks keep deduping.
-        itemsAffected += runStatement(
-          db,
-          `delete from automation_ingress_events
-            where rowid in (
-              select rowid
-              from automation_ingress_events
-              where project_id = ? and status not in ('dispatched', 'failed')
-              order by received_at desc, rowid desc
-              limit -1 offset ${INGRESS_EVENT_MAX_ROWS_PER_PROJECT}
-            )`,
-          [project.project_id],
-        ).changes;
-        // Hard cap: TOTAL rows (any status) trimmed to a generous ceiling,
-        // deleting oldest by received_at. Bounds dispatched/failed rows that the
-        // active cap exempts, so high-volume dispatch can't bloat the table and
-        // wedge the cr-sqlite rebuild within the 7-day window.
-        itemsAffected += runStatement(
-          db,
-          `delete from automation_ingress_events
-            where rowid in (
-              select rowid
-              from automation_ingress_events
-              where project_id = ?
-              order by received_at desc, rowid desc
-              limit -1 offset ${INGRESS_EVENT_HARD_MAX_ROWS_PER_PROJECT}
-            )`,
-          [project.project_id],
-        ).changes;
+        // Active cap (newest non-dispatched rows) + hard cap (TOTAL rows), in the
+        // shared helper so this maintenance mirror and the automation ingress
+        // writer can't drift.
+        itemsAffected += pruneIngressEventRowsForProject(
+          (sql, params) => runStatement(db, sql, params).changes,
+          project.project_id,
+        );
       }
       return { itemsAffected, bytesReclaimed: 0, skippedReason: null };
     }),

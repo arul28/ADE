@@ -390,10 +390,6 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
 // begun.
 // ---------------------------------------------------------------------------
 const RECONCILE_GLOBAL_MAX = 1;
-type ReconcileCapableService = {
-  reconcileOnFocus: (opts?: { force?: boolean }) => Promise<unknown>;
-};
-type ReconcileCtxLike = { prService?: ReconcileCapableService | null } | null | undefined;
 let reconcileActiveOrScheduled = 0;
 const pendingReconciles: Array<() => void> = [];
 
@@ -409,15 +405,17 @@ function drainNextReconcile(): void {
   setTimeout(next, reconcileJitterMs());
 }
 
-function scheduleReconcile(ctx: ReconcileCtxLike): void {
+// Queue a fire-and-forget reconcile behind the app-wide cap. `runner` is built
+// per-project by buildReconcileRunner (which re-resolves the live context at
+// fire time and routes in-process vs. daemon), so this function only owns
+// global staggering/queueing — not the null-context or routing decision.
+function scheduleReconcile(runner: () => Promise<unknown>): void {
   // Default-ON with a kill switch; never gated behind PR polling.
   if (process.env.ADE_DISABLE_PR_RECONCILE === "1") return;
-  const prService = ctx?.prService;
-  if (!prService) return;
   const run = () => {
-    Promise.resolve(prService.reconcileOnFocus())
+    Promise.resolve(runner())
       .catch(() => {
-        // reconcile is best-effort; it never throws, but guard the microtask too
+        // reconcile is best-effort; guard the microtask too
       })
       .finally(() => {
         reconcileActiveOrScheduled -= 1;
@@ -1680,6 +1678,30 @@ app.whenReady().then(async () => {
     }
   };
 
+  // Build the fire-time reconcile runner for a project. The queued entry
+  // re-resolves the LIVE context when it actually fires, so a project evicted
+  // between scheduling and firing simply drops out instead of reconciling a
+  // defunct service (avoids stale-closure GitHub calls). In-process runtimes
+  // reconcile directly; a dormant/runtime-backed (production) context has no
+  // local prService, so the catch-up sweep is routed to the daemon's `pr`
+  // domain where the always-on runtime actually owns prService.
+  const buildReconcileRunner = (projectRoot: string): (() => Promise<unknown>) => {
+    return async () => {
+      const liveCtx = projectContexts.get(projectRoot);
+      if (!liveCtx) return; // evicted before firing → drop
+      if (liveCtx.prService) {
+        await liveCtx.prService.reconcileOnFocus();
+        return;
+      }
+      // Dormant/runtime-backed context: prService lives in the daemon runtime.
+      await localRuntimePool
+        .callActionForRoot(projectRoot, { domain: "pr", action: "reconcileOnFocus" })
+        .catch(() => {
+          // best-effort; the daemon may be reconnecting after a restart
+        });
+    };
+  };
+
   const bindWindowToProject = (
     windowId: number | null,
     projectRoot: string | null,
@@ -1711,7 +1733,9 @@ app.whenReady().then(async () => {
         persistRecentProject(ctx.project, { recordLastProject: false, preserveRecentOrder: true });
         // Fire-and-forget catch-up reconcile on warm-reuse / deep-link focus.
         // Throttled per-project + globally capped, so this never blocks focus.
-        scheduleReconcile(ctx);
+        // The runner routes in-process vs. daemon and re-resolves the live
+        // context at fire time (production contexts are dormant here).
+        scheduleReconcile(buildReconcileRunner(normalizedRoot));
       }
       if (!shouldUseInProcessProjectRuntime()) {
         // Desktop foregrounding is independent from phone sync project selection:
@@ -3829,7 +3853,7 @@ app.whenReady().then(async () => {
     scheduleBackgroundProjectTask(
       "prs.reconcile_on_open",
       () => {
-        scheduleReconcile({ prService });
+        scheduleReconcile(buildReconcileRunner(projectRoot));
       },
       (error) => {
         logger.warn("prs.reconcile_on_open_failed", {

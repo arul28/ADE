@@ -11,6 +11,7 @@ import {
   deriveGithubAccountAuthState,
   deriveGithubRealtimeBlock,
   deriveGithubRepoConnectionState,
+  describeGithubCliBanner,
   githubAccountIssueCopy,
   githubRepoIssueCopy,
 } from "../../lib/githubIntegrationStatus";
@@ -205,15 +206,17 @@ export function IntegrationBannerHost({
       });
     }
 
-    // 4) Mock LLM provider (MIGRATED).
-    if (providerMode === "subscription" && aiMockProvider) {
+    // 4) Mock LLM provider (MIGRATED). Guarded on currentProjectRoot like the
+    // sibling banners — the host only mounts under a project, so this is always
+    // truthy here and the dismiss key is unconditionally project-scoped.
+    if (currentProjectRoot && providerMode === "subscription" && aiMockProvider) {
       list.push({
         id: "mock-provider",
         severity: "warning",
         title: "Using a mock LLM provider",
         detail: "AI responses are placeholder content. Switch to a real provider in AI settings.",
         actions: [{ label: "Open AI settings", variant: "primary", onClick: () => navigate(AI_SETTINGS_ROUTE) }],
-        dismiss: { key: `mock-provider:${currentProjectRoot ?? "global"}`, fingerprint: "mock" },
+        dismiss: { key: `mock-provider:${currentProjectRoot}`, fingerprint: "mock" },
       });
     }
 
@@ -280,43 +283,6 @@ export function IntegrationBannerHost({
       ) : null}
     </div>
   );
-}
-
-/**
- * Copy for the gh CLI/token banner — three sub-states, each with a stable
- * fingerprint so a change between them resurfaces a previously-dismissed banner.
- * Deliberately worded around "GitHub CLI/token" to distinguish it from the "ADE
- * GitHub App" block above.
- */
-export function describeGithubCliBanner(status: GitHubStatus): {
-  subState: string;
-  title: string;
-  detail: string;
-  action: string;
-} {
-  if (!status.tokenStored) {
-    return {
-      subState: "no-token",
-      title: "GitHub CLI or token not connected",
-      detail: "Connect the GitHub CLI (gh auth login) or add a personal access token so ADE can run git and PR operations.",
-      action: "Connect GitHub",
-    };
-  }
-  if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
-    const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repository";
-    return {
-      subState: "repo-access",
-      title: `GitHub token can't access ${repoLabel}`,
-      detail: "Your fine-grained token is valid but hasn't been granted this repository. Update its repository access.",
-      action: "Fix GitHub auth",
-    };
-  }
-  return {
-    subState: "missing-perms",
-    title: "GitHub token is missing permissions",
-    detail: "Your GitHub token lacks the scopes ADE needs. Reconnect it with repo and workflow access.",
-    action: "Fix GitHub auth",
-  };
 }
 
 const moreToggleStyle: CSSProperties = {
