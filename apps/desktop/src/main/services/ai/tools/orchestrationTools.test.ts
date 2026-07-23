@@ -9,10 +9,12 @@ import { createOrchestrationService } from "../../orchestration/orchestrationSer
 import {
   buildOrchestrationSandboxConfig,
   createOrchestrationToolSet,
+  deriveMessageAgentRequestId,
   type OrchestrationAgentChatHandle,
   type OrchestrationSessionContext,
   type OrchestrationToolSetOptions,
 } from "./orchestrationTools";
+import { drainOutbox } from "./orchestrationOutbox";
 import { DEFAULT_WORKER_SANDBOX_CONFIG } from "./workerSandboxDefaults";
 
 const VALID_BRIEF = `
@@ -100,10 +102,14 @@ type Setup = {
   runId: string;
 };
 
-async function setupWithRun(role: "lead" | "worker" | "validator"): Promise<Setup> {
+async function setupWithRun(
+  role: "lead" | "worker" | "validator",
+  options: { now?: () => Date } = {},
+): Promise<Setup> {
   const laneRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "ade-orch-tools-"));
   const svc = createOrchestrationService({
     resolveLaneWorktree: () => laneRoot,
+    ...(options.now ? { now: options.now } : {}),
   });
   const created = await svc.runCreate({
     laneId: "L-test",
@@ -364,6 +370,392 @@ describe("spawnAgent tool", () => {
       routingKey: "fallback",
     });
     expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays the original worker for an identical derived spawn request", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const spawn = makeToolSet(setup, "lead", "S-lead").spawnAgent!;
+    const input = {
+      role: "worker" as const,
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    };
+
+    const first: any = await spawn.execute(input);
+    const duplicate: any = await spawn.execute(input);
+
+    expect(first).toMatchObject({ ok: true, sessionId: "S-spawned-1" });
+    expect(duplicate).toMatchObject({
+      ok: true,
+      sessionId: "S-spawned-1",
+      deduped: true,
+    });
+    expect(setup.chat.createSession).toHaveBeenCalledTimes(1);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(
+      manifest.agents.filter((agent) => agent.sessionId === "S-spawned-1"),
+    ).toHaveLength(1);
+  });
+
+  it("deduplicates spawn requests by an explicit requestId", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const spawn = makeToolSet(setup, "lead", "S-lead").spawnAgent!;
+    const input = {
+      role: "worker" as const,
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+      requestId: "spawn-explicit-1",
+    };
+
+    const first: any = await spawn.execute(input);
+    const duplicate: any = await spawn.execute({
+      ...input,
+      goalSummary: "A re-emitted call with changed non-key prose",
+    });
+
+    expect(first.sessionId).toBe("S-spawned-1");
+    expect(duplicate).toMatchObject({
+      ok: true,
+      sessionId: "S-spawned-1",
+      deduped: true,
+    });
+    expect(setup.chat.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a failed brief durable and redelivers it during recovery", async () => {
+    let clock = new Date("2026-01-01T00:00:00.000Z");
+    setup = await setupWithRun("lead", { now: () => clock });
+    await approveRun(setup);
+    setup.chat.sendMessage
+      .mockRejectedValueOnce(new Error("provider temporarily unavailable"))
+      .mockResolvedValue(undefined);
+    const tools = makeToolSet(setup, "lead", "S-lead");
+
+    const spawned: any = await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    });
+
+    expect(spawned).toMatchObject({ ok: true, sessionId: "S-spawned-1" });
+    let manifest = setup.svc.getManifestForRun(setup.runId)!;
+    let brief = manifest.outbox?.find((entry) => entry.kind === "brief");
+    expect(brief).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      lastError: "provider temporarily unavailable",
+    });
+    expect(manifest.agents.some((agent) => agent.sessionId === "S-spawned-1")).toBe(true);
+
+    clock = new Date(brief!.nextAttemptAt!);
+    const recovered: any = await tools.recoverStaleTasks!.execute({});
+
+    expect(recovered.ok).toBe(true);
+    manifest = setup.svc.getManifestForRun(setup.runId)!;
+    brief = manifest.outbox?.find((entry) => entry.id === brief!.id);
+    expect(brief?.status).toBe("delivered");
+    expect(setup.chat.sendMessage).toHaveBeenCalledTimes(2);
+    expect(setup.chat.sendMessage.mock.calls[1]![0]).toMatchObject({
+      sessionId: "S-spawned-1",
+      text: VALID_BRIEF,
+    });
+  });
+
+  it("redelivers a backoff-deferred brief via a self-armed timer with no further mutation", async () => {
+    // Real service clock (no injected `now`) so the deferred-retry timer's
+    // wall-clock delay matches the service's dueness check.
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    // Fail the first delivery, then succeed on the timer-driven retry.
+    setup.chat.sendMessage
+      .mockRejectedValueOnce(new Error("provider temporarily unavailable"))
+      .mockResolvedValue(undefined);
+    const tools = makeToolSet(setup, "lead", "S-lead");
+
+    const spawned: any = await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawned).toMatchObject({ ok: true, sessionId: "S-spawned-1" });
+
+    const briefId = setup.svc
+      .getManifestForRun(setup.runId)!
+      .outbox!.find((entry) => entry.kind === "brief")!.id;
+    const briefStatus = () =>
+      setup.svc.getManifestForRun(setup.runId)!.outbox!.find((e) => e.id === briefId)!.status;
+    // Deferred by the first failure; only ONE delivery attempt so far.
+    expect(briefStatus()).toBe("pending");
+    expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
+
+    // Deliberately issue NO further tool call / mutation. The timer armed by the
+    // deferred drain must retry on its own once the (500ms) backoff elapses.
+    await vi.waitFor(() => expect(briefStatus()).toBe("delivered"), {
+      timeout: 5000,
+      interval: 25,
+    });
+    expect(setup.chat.sendMessage).toHaveBeenCalledTimes(2);
+    expect(setup.chat.sendMessage.mock.calls[1]![0]).toMatchObject({
+      sessionId: "S-spawned-1",
+      text: VALID_BRIEF,
+    });
+  });
+
+  it("does not replay a pending receipt as a successful spawn", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const requestId = "spawn-pending-1";
+    // Simulate a concurrent / crashed spawn: a receipt is reserved (pending) but
+    // never completed — no session and no agent row exist for it.
+    const reserved = await setup.svc.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "spawnAgent",
+    });
+    expect(reserved).toMatchObject({ ok: true, status: "reserved" });
+
+    const spawn = makeToolSet(setup, "lead", "S-lead").spawnAgent!;
+    const result: any = await spawn.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+      requestId,
+    });
+
+    // No fabricated success, no undefined session, no second session, no agent row.
+    expect(result).toMatchObject({ ok: false, error: "spawn_in_progress", retryable: true });
+    expect(result.sessionId).toBeUndefined();
+    expect(setup.chat.createSession).not.toHaveBeenCalled();
+    expect(
+      setup.svc.getManifestForRun(setup.runId)!.agents.some((a) => a.role === "worker"),
+    ).toBe(false);
+  });
+
+  it("surfaces a permanently undeliverable brief in the decision log", async () => {
+    let clock = new Date("2026-01-01T00:00:00.000Z");
+    setup = await setupWithRun("lead", { now: () => clock });
+    await approveRun(setup);
+    setup.chat.sendMessage.mockRejectedValue(new Error("provider stays down"));
+    const tools = makeToolSet(setup, "lead", "S-lead");
+
+    await tools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+    });
+
+    let brief = setup.svc
+      .getManifestForRun(setup.runId)!
+      .outbox?.find((entry) => entry.kind === "brief")!;
+    for (let pass = 0; brief.status === "pending" && pass < 10; pass += 1) {
+      clock = new Date(brief.nextAttemptAt!);
+      await drainOutbox(setup.svc, setup.chat, {
+        runId: setup.runId,
+        bundlePath: setup.bundlePath,
+      });
+      brief = setup.svc
+        .getManifestForRun(setup.runId)!
+        .outbox?.find((entry) => entry.id === brief.id)!;
+    }
+
+    expect(brief).toMatchObject({
+      status: "failed",
+      lastError: "provider stays down",
+    });
+    expect(brief.attempts).toBe(brief.maxAttempts);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(
+      manifest.decisions.some(
+        (decision) =>
+          decision.summary.includes("outbox delivery failed permanently") &&
+          decision.summary.includes("brief") &&
+          decision.summary.includes("S-spawned-1"),
+      ),
+    ).toBe(true);
+  });
+
+  it("delivers persisted outbox entries when a run is loaded on a fresh service (no mutation)", async () => {
+    setup = await setupWithRun("lead");
+    // Persist a pending brief to disk, then simulate a process restart: a fresh
+    // service instance (empty runs map, no surviving in-flight drain/timer) loads
+    // the same bundle. Delivery must happen on load — no mutating tool is run.
+    const enqueue = await setup.svc.enqueueOutbox(setup.runId, setup.bundlePath, [
+      {
+        kind: "brief",
+        targetSessionId: "S-worker",
+        delivery: { op: "sendMessage", text: "your brief" },
+      },
+    ]);
+    expect(enqueue.ok).toBe(true);
+
+    const svc2 = createOrchestrationService({ resolveLaneWorktree: () => setup.laneRoot });
+    const chat2 = makeChatStub();
+    svc2.registerRunActivationDrainer(({ runId, bundlePath }) => {
+      void drainOutbox(svc2, chat2, { runId, bundlePath });
+    });
+
+    // Loading the run (subscribe) is the sole trigger — no spawn/message tool call.
+    await svc2.subscribe(setup.runId, setup.bundlePath);
+    await vi.waitFor(() =>
+      expect(chat2.sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: "S-worker", text: "your brief" }),
+        expect.anything(),
+      ),
+    );
+    const entry = svc2
+      .getManifestForRun(setup.runId)!
+      .outbox?.find((e) => e.kind === "brief")!;
+    expect(entry.status).toBe("delivered");
+    await svc2.dispose();
+  });
+
+  it("reconciles a spawn receipt to an existing agent instead of duplicating (pruned receipt)", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const requestId = "spawn:reconcile-fixed";
+    // Materialize an agent linked to this requestId via a completed receipt.
+    const reserved = await setup.svc.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "spawnAgent",
+    });
+    expect(reserved).toMatchObject({ ok: true, status: "reserved" });
+    const completed = await setup.svc.completeReceipt(
+      setup.runId,
+      setup.bundlePath,
+      { requestId, result: { sessionId: "S-existing" } },
+      [
+        {
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: "S-existing",
+            role: "worker",
+            tag: "backend",
+            goalSummary: "Implement T-1",
+            status: "pending",
+            spawnedAt: new Date().toISOString(),
+            spawnRequestId: requestId,
+          },
+        },
+      ],
+    );
+    expect(completed.ok).toBe(true);
+
+    // Emulate RECEIPT_CAP pruning of the completed receipt: strip receipts on
+    // disk, then reload on a fresh service and re-reserve the same requestId.
+    const manifestPath = path.join(setup.bundlePath, "manifest.json");
+    const raw = JSON.parse(await fsp.readFile(manifestPath, "utf-8")) as {
+      receipts?: unknown[];
+    };
+    raw.receipts = [];
+    await fsp.writeFile(manifestPath, JSON.stringify(raw), "utf-8");
+
+    const svc2 = createOrchestrationService({ resolveLaneWorktree: () => setup.laneRoot });
+    const reReserve = await svc2.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "spawnAgent",
+    });
+    // Deduped to the existing agent — NOT re-reserved (which would spawn a twin).
+    expect(reReserve).toMatchObject({ ok: true, status: "duplicate" });
+    expect((reReserve as { receipt: { status: string; result?: { sessionId?: string } } }).receipt)
+      .toMatchObject({ status: "completed", result: { sessionId: "S-existing" } });
+    await svc2.dispose();
+  });
+
+  it("adopts a session created before receipt completion instead of spawning a twin", async () => {
+    // Crash window: a prior spawn's chat.createSession succeeded and stamped the
+    // pending receipt with the sessionId, but the process died before
+    // completeReceipt appended the agent row + delivered the brief. The durable
+    // chat session exists with no manifest record. After the receipt TTL a retry
+    // with the same deterministic requestId must ADOPT that session (no second
+    // createSession) rather than orphaning it and creating a duplicate.
+    let clock = new Date("2026-01-01T00:00:00.000Z");
+    setup = await setupWithRun("lead", { now: () => clock });
+    await approveRun(setup);
+    const requestId = "spawn:adopt-fixed";
+
+    // Reconstruct the post-crash durable state: pending receipt stamped with the
+    // created sessionId, no agent row (session "S-spawned-1" is alive in chat).
+    const reserved = await setup.svc.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "spawnAgent",
+    });
+    expect(reserved).toMatchObject({ ok: true, status: "reserved" });
+    const stamp = await setup.svc.stampReceiptResult(setup.runId, setup.bundlePath, {
+      requestId,
+      result: { sessionId: "S-spawned-1" },
+    });
+    expect(stamp.ok).toBe(true);
+
+    // Age the pending receipt past its TTL so the retry takes the reconcile path.
+    clock = new Date(clock.getTime() + 16 * 60_000);
+
+    const spawn = makeToolSet(setup, "lead", "S-lead").spawnAgent!;
+    const result: any = await spawn.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "Implement T-1",
+      stepId: "T-1",
+      initialMessage: VALID_BRIEF,
+      requestId,
+    });
+
+    // Adopted the existing session — no duplicate created.
+    expect(result).toMatchObject({ ok: true, sessionId: "S-spawned-1" });
+    expect(setup.chat.createSession).not.toHaveBeenCalled();
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    // Agent row appended exactly once for the adopted session.
+    const workerRows = manifest.agents.filter((a) => a.role === "worker");
+    expect(workerRows).toHaveLength(1);
+    expect(workerRows[0]).toMatchObject({
+      sessionId: "S-spawned-1",
+      spawnRequestId: requestId,
+    });
+    // The receipt is completed against that session.
+    expect(manifest.receipts?.find((r) => r.requestId === requestId)).toMatchObject({
+      status: "completed",
+      result: { sessionId: "S-spawned-1" },
+    });
+    // The brief was delivered exactly once to the adopted session.
+    const briefCalls = setup.chat.sendMessage.mock.calls.filter(
+      (c: unknown[]) => (c[0] as { sessionId?: string }).sessionId === "S-spawned-1",
+    );
+    expect(briefCalls).toHaveLength(1);
+    expect(briefCalls[0]![0]).toMatchObject({ text: VALID_BRIEF });
+  });
+
+  it("reconciles a messageAgent receipt to an existing outbox entry instead of re-enqueuing", async () => {
+    setup = await setupWithRun("lead");
+    const requestId = "msg:reconcile-fixed";
+    // A delivery already enqueued under this requestId (its completed receipt was
+    // later pruned). Re-reserving must dedupe, not append a duplicate ping.
+    const enq = await setup.svc.enqueueOutbox(setup.runId, setup.bundlePath, [
+      { kind: "ping", targetSessionId: "S-w", delivery: { op: "steer", text: "hi" }, requestId },
+    ]);
+    expect(enq.ok).toBe(true);
+
+    const svc2 = createOrchestrationService({ resolveLaneWorktree: () => setup.laneRoot });
+    const res = await svc2.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "messageAgent",
+    });
+    expect(res).toMatchObject({ ok: true, status: "duplicate" });
+    expect((res as { receipt: { status: string } }).receipt).toMatchObject({ status: "completed" });
+    await svc2.dispose();
   });
 
   it("allows the lead to override the cosmetic spawn kind", async () => {
@@ -1052,6 +1444,81 @@ describe("orchestration heartbeats", () => {
   });
 });
 
+describe("deriveMessageAgentRequestId (intentional-repeat semantics)", () => {
+  type Manifest = Parameters<typeof deriveMessageAgentRequestId>[0];
+  const parts = {
+    runId: "R-1",
+    fromSessionId: "S-lead",
+    targetSessionId: "S-worker",
+    kind: "queue",
+    intent: "status",
+    taskId: "T-1",
+    text: "keep going",
+  };
+  const manifestOf = (receipts: unknown[], outbox: unknown[]): Manifest =>
+    ({ receipts, outbox } as unknown as Manifest);
+
+  it("path 1 — fresh send: no prior committed send yields the bare base key", () => {
+    const id = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    expect(id.startsWith("msg:")).toBe(true);
+    expect(id.includes("#")).toBe(false);
+  });
+
+  it("path 2 — transient retry: a pending receipt (no outbox row) does NOT bump the epoch, so the retry reuses the same requestId and dedupes", () => {
+    const base = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    // A crashed/in-flight reservation left a PENDING receipt but never enqueued.
+    const retry = deriveMessageAgentRequestId(
+      manifestOf([{ requestId: base, kind: "messageAgent", status: "pending" }], []),
+      parts,
+    );
+    expect(retry).toBe(base);
+  });
+
+  it("path 3 — intentional repeat after success: a committed send (completed receipt + outbox row) salts a fresh requestId", () => {
+    const base = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    const repeat = deriveMessageAgentRequestId(
+      manifestOf(
+        [{ requestId: base, kind: "messageAgent", status: "completed" }],
+        [{ id: "O-1", requestId: base, status: "delivered" }],
+      ),
+      parts,
+    );
+    expect(repeat).toBe(`${base}#1`);
+    // The receipt+outbox for one send are unioned by requestId → counted once.
+    expect(repeat).not.toBe(`${base}#2`);
+  });
+
+  it("path 3 — survives receipt pruning: an outbox row alone (completed receipt pruned) still marks the send committed", () => {
+    const base = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    const repeat = deriveMessageAgentRequestId(
+      manifestOf([], [{ id: "O-1", requestId: base, status: "delivered" }]),
+      parts,
+    );
+    expect(repeat).toBe(`${base}#1`);
+  });
+
+  it("epoch increments across successive intentional repeats", () => {
+    const base = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    const third = deriveMessageAgentRequestId(
+      manifestOf(
+        [
+          { requestId: base, kind: "messageAgent", status: "completed" },
+          { requestId: `${base}#1`, kind: "messageAgent", status: "completed" },
+        ],
+        [],
+      ),
+      parts,
+    );
+    expect(third).toBe(`${base}#2`);
+  });
+
+  it("different logical content derives a different base key", () => {
+    const a = deriveMessageAgentRequestId(manifestOf([], []), parts);
+    const b = deriveMessageAgentRequestId(manifestOf([], []), { ...parts, text: "stop" });
+    expect(a).not.toBe(b);
+  });
+});
+
 describe("messageAgent tool", () => {
   let setup: Setup;
   afterEach(async () => {
@@ -1113,7 +1580,7 @@ describe("messageAgent tool", () => {
     }
   });
 
-  it("lead messageAgent with kind=interrupt-replace invokes interrupt + sendMessage", async () => {
+  it("records cancellation and interrupts a native worker with an active task", async () => {
     setup = await setupWithRun("lead");
     await approveRun(setup);
     // Spawn a target so the manifest membership check passes.
@@ -1126,6 +1593,34 @@ describe("messageAgent tool", () => {
       initialMessage: VALID_BRIEF,
     });
     expect(spawnResult.ok).toBe(true);
+    const beforeTask = setup.svc.getManifestForRun(setup.runId)!;
+    const taskPatch = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: beforeTask.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        summary: "assign cancellation test task",
+        patches: [{
+          op: "add",
+          path: "/tasks/-",
+          value: {
+            id: "T-cancel",
+            phaseId: "developing",
+            title: "Native worker task",
+            description: "Run provider-native Bash work.",
+            status: "in_progress",
+            assigneeSessionId: spawnResult.sessionId,
+            claimedAt: "2026-01-01T00:00:00.000Z",
+            claimLeaseUntil: "2099-01-01T00:00:00.000Z",
+            attempts: [],
+            validationGate: { required: false, stepIds: [] },
+          },
+        }],
+      },
+      setup.bundlePath,
+    );
+    expect(taskPatch.ok).toBe(true);
     const messageAgent = leadTools.messageAgent!;
     setup.chat.sendMessage.mockClear();
     const result: any = await messageAgent.execute({
@@ -1137,18 +1632,294 @@ describe("messageAgent tool", () => {
     });
     expect(result.ok).toBe(true);
     expect(setup.chat.interrupt).toHaveBeenCalledWith({ sessionId: spawnResult.sessionId });
-    expect(setup.chat.sendMessage).toHaveBeenCalledTimes(1);
-    const sendArgs = setup.chat.sendMessage.mock.calls[0]![0] as Record<string, any>;
-    expect(sendArgs.metadata.orchestrationOrigin.intent).toBe("cancellation");
-    expect(sendArgs.metadata.orchestrationCancellation).toEqual({
-      revert: true,
-      reason: "test",
-    });
+    expect(setup.chat.sendMessage).not.toHaveBeenCalled();
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect(manifest.agents.find((agent) => agent.sessionId === spawnResult.sessionId)?.cancellationRequested).toBe(true);
+    const task = manifest.tasks.find((entry) => entry.id === "T-cancel")!;
+    expect(task.attempts?.find((attempt) => attempt.id === task.currentAttemptId)).toMatchObject({
+      sessionId: spawnResult.sessionId,
+      outcome: "cancelled",
+      failureReason: "test",
+    });
+    expect(
+      manifest.outbox?.some(
+        (entry) =>
+          entry.kind === "cancel_interrupt" &&
+          entry.targetSessionId === spawnResult.sessionId &&
+          entry.status === "delivered",
+      ),
+    ).toBe(true);
     expect(manifest.decisions.some((decision) =>
       decision.summary.includes(`Cancellation requested for ${spawnResult.sessionId}`),
     )).toBe(true);
+  });
+
+  it("does not persist cancellation state when completeReceipt fails (atomic with the receipt)", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-cancel",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+    // Give the target an active task so a cancellation would record an attempt.
+    const beforeTask = setup.svc.getManifestForRun(setup.runId)!;
+    const taskPatch = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: beforeTask.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        summary: "assign cancellation test task",
+        patches: [{
+          op: "add",
+          path: "/tasks/-",
+          value: {
+            id: "T-cancel",
+            phaseId: "developing",
+            title: "Native worker task",
+            description: "Run provider-native Bash work.",
+            status: "in_progress",
+            assigneeSessionId: spawnResult.sessionId,
+            claimedAt: "2026-01-01T00:00:00.000Z",
+            claimLeaseUntil: "2099-01-01T00:00:00.000Z",
+            attempts: [],
+            validationGate: { required: false, stepIds: [] },
+          },
+        }],
+      },
+      setup.bundlePath,
+    );
+    expect(taskPatch.ok).toBe(true);
+
+    const releaseSpy = vi.spyOn(setup.svc, "releaseReceipt");
+    // The cancellation's flag/decision/attempt patches are folded into
+    // completeReceipt, so a failing completeReceipt persists NONE of them.
+    vi.spyOn(setup.svc, "completeReceipt").mockResolvedValueOnce({
+      ok: false,
+      error: "etag_conflict",
+      message: "manifest advanced",
+    });
+
+    const result: any = await leadTools.messageAgent!.execute({
+      targetSessionId: spawnResult.sessionId,
+      kind: "interrupt-replace",
+      intent: "cancellation",
+      text: "stop and revert",
+      cancellation: { revert: true, reason: "test" },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("delivery_failed");
+    // Receipt released so the deterministic requestId stays reservable.
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+
+    const after = setup.svc.getManifestForRun(setup.runId)!;
+    // Cancellation state must NOT be durable: no flag, no decision, no attempt,
+    // no orphaned outbox entry — a retry re-derives everything from scratch.
+    expect(
+      after.agents.find((a) => a.sessionId === spawnResult.sessionId)?.cancellationRequested,
+    ).toBeFalsy();
+    expect(
+      after.decisions.some((d) => d.summary.includes("Cancellation requested")),
+    ).toBe(false);
+    const task = after.tasks.find((t) => t.id === "T-cancel");
+    expect(task?.attempts?.some((a) => a.outcome === "cancelled")).toBeFalsy();
+    expect((after.outbox ?? []).some((e) => e.kind === "cancel_interrupt")).toBe(false);
+  });
+
+  it("releases the receipt when completeReceipt fails (no leaked pending receipt, no orphaned outbox entry)", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-msg",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+
+    const releaseSpy = vi.spyOn(setup.svc, "releaseReceipt");
+    // The atomic path folds the outbox `add` into completeReceipt, so a failing
+    // completeReceipt persists NEITHER the receipt completion nor the outbox
+    // entry.
+    vi.spyOn(setup.svc, "completeReceipt").mockResolvedValueOnce({
+      ok: false,
+      error: "etag_conflict",
+      message: "manifest advanced",
+    });
+
+    const messageAgent = leadTools.messageAgent!;
+    const result: any = await messageAgent.execute({
+      targetSessionId: spawnResult.sessionId,
+      kind: "queue",
+      intent: "status",
+      text: "status ping",
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("delivery_failed");
+    // The reserved receipt must be released so its deterministic requestId stays
+    // reservable — no permanently-wedged pending receipt.
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect((manifest.receipts ?? []).every((r) => r.status !== "pending")).toBe(true);
+    // No orphaned outbox entry: because enqueue is atomic with completeReceipt,
+    // the failed transaction leaves nothing for a later drain to deliver. (The
+    // spawn brief for this session is kind "brief"; the ping would be "ping".)
+    expect(
+      (manifest.outbox ?? []).some(
+        (entry) =>
+          entry.kind === "ping" &&
+          entry.targetSessionId === spawnResult.sessionId,
+      ),
+    ).toBe(false);
+  });
+
+  it("does not double-deliver on retry after a completeReceipt failure", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-msg",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+
+    // First attempt: completeReceipt fails once. With the atomic enqueue this
+    // persists no outbox entry and releases the receipt (requestId reservable).
+    const completeSpy = vi
+      .spyOn(setup.svc, "completeReceipt")
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "etag_conflict",
+        message: "manifest advanced",
+      });
+
+    const messageAgent = leadTools.messageAgent!;
+    const pingArgs = {
+      targetSessionId: spawnResult.sessionId,
+      kind: "queue" as const,
+      intent: "status" as const,
+      text: "status ping",
+    };
+    const first: any = await messageAgent.execute(pingArgs);
+    expect(first.ok).toBe(false);
+    expect(first.error).toBe("delivery_failed");
+
+    // Retry the SAME logical message → same deterministic requestId. reserveReceipt
+    // succeeds (not a duplicate) because the failed attempt orphaned nothing, and
+    // this time the real completeReceipt commits exactly one outbox entry.
+    const second: any = await messageAgent.execute(pingArgs);
+    expect(second.ok).toBe(true);
+    expect(completeSpy).toHaveBeenCalledTimes(2);
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const pingEntries = (manifest.outbox ?? []).filter(
+      (entry) =>
+        entry.kind === "ping" &&
+        entry.targetSessionId === spawnResult.sessionId,
+    );
+    // Exactly one ping delivery — no duplicate from the retry.
+    expect(pingEntries).toHaveLength(1);
+    expect(pingEntries[0]!.status).toBe("delivered");
+    expect(setup.chat.steer).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers an intentional repeat after a prior identical send succeeded (not deduped)", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-msg",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+
+    const messageAgent = leadTools.messageAgent!;
+    const pingArgs = {
+      targetSessionId: spawnResult.sessionId,
+      kind: "queue" as const,
+      intent: "status" as const,
+      text: "status ping",
+    };
+
+    setup.chat.steer.mockClear();
+    const first: any = await messageAgent.execute(pingArgs);
+    expect(first.ok).toBe(true);
+    expect(first.deduped).toBeUndefined();
+
+    // Same logical content, deliberately sent again after the first delivered.
+    // Content-fingerprint dedupe alone would swallow this as `deduped:true`; the
+    // epoch salt must reserve fresh so the intentional repeat is delivered.
+    const second: any = await messageAgent.execute(pingArgs);
+    expect(second.ok).toBe(true);
+    expect(second.deduped).toBeUndefined();
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const pingEntries = (manifest.outbox ?? []).filter(
+      (entry) =>
+        entry.kind === "ping" && entry.targetSessionId === spawnResult.sessionId,
+    );
+    // Two distinct deliveries — the repeat was NOT deduped.
+    expect(pingEntries).toHaveLength(2);
+    expect(new Set(pingEntries.map((e) => e.requestId)).size).toBe(2);
+    expect(pingEntries.every((e) => e.status === "delivered")).toBe(true);
+    expect(setup.chat.steer).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not replay a pending receipt as a delivered message", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-msg",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+
+    const requestId = "msg-pending-1";
+    // A prior message reservation that never completed (concurrent / crashed):
+    // pending receipt, but no outbox entry was ever enqueued.
+    const reserved = await setup.svc.reserveReceipt(setup.runId, setup.bundlePath, {
+      requestId,
+      kind: "messageAgent",
+    });
+    expect(reserved).toMatchObject({ ok: true, status: "reserved" });
+
+    setup.chat.steer.mockClear();
+    setup.chat.sendMessage.mockClear();
+    const result: any = await leadTools.messageAgent!.execute({
+      targetSessionId: spawnResult.sessionId,
+      kind: "queue",
+      intent: "status",
+      text: "status ping",
+      requestId,
+    });
+
+    // In-progress, not a fabricated success — and nothing was enqueued/delivered.
+    expect(result).toMatchObject({ ok: false, error: "delivery_in_progress", retryable: true });
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(
+      (manifest.outbox ?? []).some(
+        (entry) => entry.kind === "ping" && entry.targetSessionId === spawnResult.sessionId,
+      ),
+    ).toBe(false);
+    expect(setup.chat.steer).not.toHaveBeenCalled();
+    expect(setup.chat.sendMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -1490,5 +2261,458 @@ describe("validateSpawnBrief re-export", () => {
     expect(typeof mod.validateSpawnBrief).toBe("function");
     expect(mod.validateSpawnBrief("## TASK\n\n## FILES\n\n## DEPENDENCIES\n\n## GATES\n\n## PEERS\n\n## SUCCESS\n").ok).toBe(true);
     expect(mod.validateSpawnBrief("## TASK\nfoo").ok).toBe(false);
+  });
+});
+
+// Seed a developing task assigned to a worker/validator, ready to release.
+async function seedAssignedTask(
+  setup: Setup,
+  args: {
+    sessionId: string;
+    role: "worker" | "validator";
+    tag?: string;
+    taskId?: string;
+    phaseId?: "developing" | "validating";
+    status?: "running";
+  },
+): Promise<void> {
+  const m = setup.svc.getManifestForRun(setup.runId)!;
+  const taskId = args.taskId ?? "T-1";
+  const seeded = await setup.svc.manifestPatch(
+    {
+      runId: setup.runId,
+      ifMatchEtag: m.etag,
+      actorRole: "lead",
+      actorSessionId: "S-lead",
+      patches: [
+        {
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: args.sessionId,
+            role: args.role,
+            ...(args.tag ? { tag: args.tag } : {}),
+            goalSummary: "do work",
+            status: args.status ?? "running",
+            spawnedAt: "now",
+          },
+        },
+        {
+          op: "add",
+          path: "/tasks/-",
+          value: {
+            id: taskId,
+            phaseId: args.phaseId ?? "developing",
+            title: "build it",
+            description: "x",
+            status: "claimed",
+            validationGate: { required: false, stepIds: [] },
+            assigneeSessionId: args.sessionId,
+          },
+        },
+      ],
+    },
+    setup.bundlePath,
+  );
+  expect(seeded.ok).toBe(true);
+}
+
+describe("completion outbox on worker/validator terminal transition", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("enqueues a completion entry to the lead when a worker releases its task done", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "done" });
+    expect(res.ok).toBe(true);
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const completion = (manifest.outbox ?? []).find(
+      (e) => e.kind === "completion" && e.targetSessionId === "S-lead",
+    );
+    expect(completion).toBeDefined();
+    const detail = (completion!.delivery.metadata as any)?.orchestrationCompletion;
+    expect(detail?.sessionId).toBe("S-worker");
+    expect(detail?.outcome).toBe("completed");
+    expect(detail?.tag).toBe("impl");
+    // Plain-language, human-readable text (SKILL §14).
+    expect(completion!.delivery.text).toContain("impl finished");
+    expect(completion!.delivery.text).toContain("done");
+  });
+
+  it("records outcome=failed when a worker releases its task failed", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "failed" });
+    expect(res.ok).toBe(true);
+
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const completion = (manifest.outbox ?? []).find((e) => e.kind === "completion");
+    expect((completion!.delivery.metadata as any)?.orchestrationCompletion?.outcome).toBe("failed");
+    expect(completion!.delivery.text).toContain("failed");
+  });
+
+  it("does not also enqueue a generic lead_status ping on a terminal release (single notification)", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "done" });
+    expect(res.ok).toBe(true);
+
+    const outbox = setup.svc.getManifestForRun(setup.runId)!.outbox ?? [];
+    // Exactly one structured completion entry to the lead...
+    expect(
+      outbox.filter((e) => e.kind === "completion" && e.targetSessionId === "S-lead"),
+    ).toHaveLength(1);
+    // ...and NO generic lead_status ping for that same transition — the lead is
+    // notified once, not twice.
+    expect(outbox.some((e) => e.kind === "lead_status")).toBe(false);
+  });
+
+  it("still sends a generic lead_status ping for a non-terminal release (review)", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    // `review` is not a terminal completion, so no completion entry is enqueued
+    // and the generic status ping is the only notification — it must survive.
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "review" });
+    expect(res.ok).toBe(true);
+
+    const outbox = setup.svc.getManifestForRun(setup.runId)!.outbox ?? [];
+    expect(outbox.some((e) => e.kind === "completion")).toBe(false);
+    expect(outbox.some((e) => e.kind === "lead_status" && e.targetSessionId === "S-lead")).toBe(true);
+  });
+
+  it("does not enqueue a completion when the lead itself releases a task", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    // Lead claims + releases a planning-seed task on its own session.
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-lead",
+              phaseId: "developing",
+              title: "lead seed",
+              description: "x",
+              status: "claimed",
+              validationGate: { required: false, stepIds: [] },
+              assigneeSessionId: "S-lead",
+            },
+          },
+        ],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-lead", status: "done" });
+    expect(res.ok).toBe(true);
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect((manifest.outbox ?? []).some((e) => e.kind === "completion")).toBe(false);
+  });
+});
+
+describe("awaitAgent tool", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("is registered for the lead and not for workers", async () => {
+    setup = await setupWithRun("lead");
+    expect(makeToolSet(setup, "lead", "S-lead").awaitAgent).toBeDefined();
+    expect(makeToolSet(setup, "worker", "S-worker").awaitAgent).toBeUndefined();
+  });
+
+  it("short-circuits immediately when the target is already settled", async () => {
+    setup = await setupWithRun("lead");
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/agents/-",
+          value: {
+            sessionId: "S-worker",
+            role: "worker",
+            tag: "impl",
+            goalSummary: "done already",
+            status: "completed",
+            spawnedAt: "now",
+          },
+        }],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const res: any = await tools.awaitAgent!.execute({ sessionIds: ["S-worker"] });
+    expect(res.ok).toBe(true);
+    expect(res.done).toBe(true);
+    expect(res.timedOut).toBe(false);
+    expect(res.agents[0].status).toBe("completed");
+  });
+
+  it("rejects unknown target sessions", async () => {
+    setup = await setupWithRun("lead");
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const res: any = await tools.awaitAgent!.execute({ sessionIds: ["S-nope"] });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("agent_not_in_run");
+    expect(res.unknownSessionIds).toEqual(["S-nope"]);
+  });
+
+  it("resolves when the target reaches a terminal state via a completion event", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const workerTools = makeToolSet(setup, "worker", "S-worker");
+
+    // Start awaiting BEFORE the worker finishes; the Promise executor installs
+    // the subscription synchronously, so no event can be missed.
+    const pending = leadTools.awaitAgent!.execute({ sessionIds: ["S-worker"], timeoutMs: 5000 });
+    await workerTools.releaseTask!.execute({ taskId: "T-1", status: "done" });
+    const res: any = await pending;
+    expect(res.ok).toBe(true);
+    expect(res.done).toBe(true);
+    expect(res.timedOut).toBe(false);
+    expect(res.agents[0].status).toBe("completed");
+  });
+
+  it("returns a structured still-running result on timeout", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const res: any = await tools.awaitAgent!.execute({ sessionIds: ["S-worker"], timeoutMs: 30 });
+    expect(res.ok).toBe(true);
+    expect(res.done).toBe(false);
+    expect(res.timedOut).toBe(true);
+    expect(res.stillRunning.map((s: any) => s.sessionId)).toContain("S-worker");
+  });
+
+  it("waitFor 'any' resolves when at least one target settles", async () => {
+    setup = await setupWithRun("lead");
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          { op: "add", path: "/agents/-", value: { sessionId: "S-a", role: "worker", tag: "a", goalSummary: "x", status: "completed", spawnedAt: "now" } },
+          { op: "add", path: "/agents/-", value: { sessionId: "S-b", role: "worker", tag: "b", goalSummary: "x", status: "running", spawnedAt: "now" } },
+        ],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    const anyRes: any = await tools.awaitAgent!.execute({ sessionIds: ["S-a", "S-b"], waitFor: "any" });
+    expect(anyRes.done).toBe(true);
+    // "all" would time out because S-b is still running.
+    const allRes: any = await tools.awaitAgent!.execute({ sessionIds: ["S-a", "S-b"], waitFor: "all", timeoutMs: 30 });
+    expect(allRes.timedOut).toBe(true);
+  });
+
+  it("does not leak event subscriptions across duplicate calls", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    let subscribes = 0;
+    let unsubscribes = 0;
+    const realOn = setup.svc.on.bind(setup.svc);
+    (setup.svc as any).on = (name: "event", cb: (payload: any) => void) => {
+      subscribes += 1;
+      const off = realOn(name, cb);
+      return () => {
+        unsubscribes += 1;
+        off();
+      };
+    };
+
+    const tools = makeToolSet(setup, "lead", "S-lead");
+    await Promise.all([
+      tools.awaitAgent!.execute({ sessionIds: ["S-worker"], timeoutMs: 30 }),
+      tools.awaitAgent!.execute({ sessionIds: ["S-worker"], timeoutMs: 30 }),
+    ]);
+    expect(subscribes).toBe(2);
+    expect(unsubscribes).toBe(2);
+  });
+});
+
+describe("lead read-only ADE capability tools", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("registers the curated read-only tools for the lead only", async () => {
+    setup = await setupWithRun("lead");
+    const lead = makeToolSet(setup, "lead", "S-lead");
+    for (const name of ["searchWorkspace", "readLinearIssue", "readPr", "listProofArtifacts", "mintDeeplink"]) {
+      expect(lead[name]).toBeDefined();
+    }
+    const worker = makeToolSet(setup, "worker", "S-worker");
+    for (const name of ["searchWorkspace", "readLinearIssue", "readPr", "listProofArtifacts", "mintDeeplink"]) {
+      expect(worker[name]).toBeUndefined();
+    }
+  });
+
+  it("returns a clean 'unavailable' result when the backing service is null", async () => {
+    setup = await setupWithRun("lead");
+    const tools = makeToolSet(setup, "lead", "S-lead"); // no leadReadServices wired
+    for (const name of ["searchWorkspace", "readLinearIssue", "readPr", "listProofArtifacts", "mintDeeplink"]) {
+      const res: any = await tools[name]!.execute(
+        name === "searchWorkspace"
+          ? { query: "x" }
+          : name === "readLinearIssue"
+            ? { issueId: "ADE-1" }
+            : name === "mintDeeplink"
+              ? { target: { kind: "lane", laneId: "x" } }
+              : {},
+      );
+      expect(res.ok).toBe(false);
+      expect(res.error).toBe("unavailable");
+    }
+  });
+
+  it("passes through a wired backing and flattens thrown errors to a result", async () => {
+    setup = await setupWithRun("lead");
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      leadReadServices: {
+        searchWorkspace: async ({ query }) => ({ ok: true, results: [{ id: `hit:${query}` }] }),
+        readLinearIssue: async () => {
+          throw new Error("linear exploded");
+        },
+      },
+    });
+    const ok: any = await tools.searchWorkspace!.execute({ query: "login" });
+    expect(ok.ok).toBe(true);
+    expect(ok.results[0].id).toBe("hit:login");
+
+    const thrown: any = await tools.readLinearIssue!.execute({ issueId: "ADE-9" });
+    expect(thrown.ok).toBe(false);
+    expect(thrown.error).toBe("read_failed");
+    expect(thrown.message).toContain("linear exploded");
+  });
+
+  it("validates mintDeeplink targets with a discriminated schema", async () => {
+    setup = await setupWithRun("lead");
+    const lead = makeToolSet(setup, "lead", "S-lead");
+    const schema = lead.mintDeeplink!.inputSchema;
+    // Valid targets across kinds parse.
+    expect(schema.safeParse({ target: { kind: "lane", laneId: "L-1" } }).success).toBe(true);
+    expect(
+      schema.safeParse({ target: { kind: "pr", repoOwner: "o", repoName: "r", prNumber: 12 } }).success,
+    ).toBe(true);
+    expect(schema.safeParse({ target: { kind: "file", path: "src/a.ts", line: 3 } }).success).toBe(true);
+    expect(
+      schema.safeParse({ target: { kind: "linear-issue", issueIdentifier: "ADE-1" } }).success,
+    ).toBe(true);
+    // Unknown kind rejected (previously passed as a loose record and produced a
+    // malformed/undefined URL while still reporting success).
+    expect(schema.safeParse({ target: { kind: "bogus", laneId: "x" } }).success).toBe(false);
+    // Missing a kind-specific required field rejected (pr without prNumber).
+    expect(schema.safeParse({ target: { kind: "pr", repoOwner: "o", repoName: "r" } }).success).toBe(false);
+    // Wrong field type rejected (prNumber must be a positive integer, not a string).
+    expect(
+      schema.safeParse({ target: { kind: "pr", repoOwner: "o", repoName: "r", prNumber: "12" } }).success,
+    ).toBe(false);
+    // Missing discriminant entirely rejected.
+    expect(schema.safeParse({ target: { laneId: "x" } }).success).toBe(false);
+  });
+});
+
+describe("registerAsset accepts Unit S evidence kinds + externalRef", () => {
+  let setup: Setup;
+  afterEach(async () => {
+    if (setup) await cleanup(setup);
+  });
+
+  it("registers a proof_artifact with an externalRef.artifactId", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/agents/-",
+          value: { sessionId: "S-worker", role: "worker", tag: "impl", goalSummary: "x", status: "running", spawnedAt: "now" },
+        }],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const res: any = await tools.registerAsset!.execute({
+      relPath: "artifacts/evidence/shot.png",
+      kind: "proof_artifact",
+      externalRef: { artifactId: "CU-123", url: "https://example.test/CU-123" },
+    });
+    expect(res.ok).toBe(true);
+    expect(res.asset.kind).toBe("proof_artifact");
+    expect(res.asset.externalRef.artifactId).toBe("CU-123");
+  });
+
+  it("accepts every new asset kind at the tool boundary", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: m.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{
+          op: "add",
+          path: "/agents/-",
+          value: { sessionId: "S-worker", role: "worker", tag: "impl", goalSummary: "x", status: "running", spawnedAt: "now" },
+        }],
+      },
+      setup.bundlePath,
+    );
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    for (const kind of ["computer_use", "video", "pr_link", "linear_issue", "deeplink"]) {
+      const res: any = await tools.registerAsset!.execute({
+        relPath: `artifacts/evidence/${kind}.bin`,
+        kind,
+      });
+      expect(res.ok).toBe(true);
+      expect(res.asset.kind).toBe(kind);
+    }
   });
 });

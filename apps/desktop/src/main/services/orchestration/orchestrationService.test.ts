@@ -77,6 +77,176 @@ describe("orchestrationService", () => {
     await svc.dispose();
   });
 
+  it("recordScheduledFollowup marks intent-only follow-ups pending; scheduled requires a scheduledWorkId", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const created = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Followups",
+    });
+    const bundlePath = created.manifest.bundlePath;
+
+    // No scheduledWorkId → intent only → pending (never a false "scheduled").
+    expect(
+      (await svc.recordScheduledFollowup(created.runId, bundlePath, {
+        summary: "re-check CI in 30m",
+      })).ok,
+    ).toBe(true);
+    // Optimistic status:"scheduled" without an id is downgraded to pending.
+    expect(
+      (await svc.recordScheduledFollowup(created.runId, bundlePath, {
+        summary: "forged scheduled without id",
+        status: "scheduled",
+      })).ok,
+    ).toBe(true);
+    // A real scheduledWorkId → genuinely scheduled.
+    expect(
+      (await svc.recordScheduledFollowup(created.runId, bundlePath, {
+        summary: "armed follow-up",
+        scheduledWorkId: "SW-123",
+        status: "scheduled",
+      })).ok,
+    ).toBe(true);
+    // Terminal caller states are preserved as given.
+    expect(
+      (await svc.recordScheduledFollowup(created.runId, bundlePath, {
+        summary: "cancelled follow-up",
+        status: "cancelled",
+      })).ok,
+    ).toBe(true);
+
+    const manifest = svc.getManifestForRun(created.runId)!;
+    const byName = (needle: string) =>
+      manifest.scheduledFollowups!.find((f) => f.summary === needle)!;
+    expect(byName("re-check CI in 30m").status).toBe("pending");
+    expect(byName("re-check CI in 30m").scheduledWorkId).toBeUndefined();
+    expect(byName("forged scheduled without id").status).toBe("pending");
+    expect(byName("armed follow-up").status).toBe("scheduled");
+    expect(byName("armed follow-up").scheduledWorkId).toBe("SW-123");
+    expect(byName("cancelled follow-up").status).toBe("cancelled");
+    await svc.dispose();
+  });
+
+  it("reserves, completes, replays, and releases idempotency receipts", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const created = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Receipt behavior",
+    });
+
+    const reserved = await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "spawn-request-1",
+      kind: "spawnAgent",
+    });
+    expect(reserved).toEqual({ ok: true, status: "reserved" });
+
+    const pendingDuplicate = await svc.reserveReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "spawn-request-1", kind: "spawnAgent" },
+    );
+    expect(pendingDuplicate).toMatchObject({
+      ok: true,
+      status: "duplicate",
+      receipt: { requestId: "spawn-request-1", status: "pending" },
+    });
+
+    const completed = await svc.completeReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "spawn-request-1", result: { sessionId: "S-worker" } },
+    );
+    expect(completed.ok).toBe(true);
+    if (!completed.ok) throw new Error(completed.message);
+
+    const completedDuplicate = await svc.reserveReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "spawn-request-1", kind: "spawnAgent" },
+    );
+    expect(completedDuplicate).toMatchObject({
+      ok: true,
+      status: "duplicate",
+      receipt: {
+        status: "completed",
+        result: { sessionId: "S-worker", etag: completed.etag },
+      },
+    });
+
+    await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "retryable-request",
+      kind: "messageAgent",
+    });
+    const released = await svc.releaseReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "retryable-request" },
+    );
+    expect(released.ok).toBe(true);
+    expect(
+      svc
+        .getManifestForRun(created.runId)!
+        .receipts?.some((receipt) => receipt.requestId === "retryable-request"),
+    ).toBe(false);
+    const reservedAgain = await svc.reserveReceipt(
+      created.runId,
+      created.manifest.bundlePath,
+      { requestId: "retryable-request", kind: "messageAgent" },
+    );
+    expect(reservedAgain).toEqual({ ok: true, status: "reserved" });
+    await svc.dispose();
+  });
+
+  it("re-reserves a deterministic requestId once its pending receipt ages past the TTL", async () => {
+    let clock = new Date("2026-01-01T00:00:00.000Z");
+    const svc = createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+      now: () => clock,
+    });
+    const created = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+      title: "Stale receipt",
+    });
+
+    const reserved = await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "spawn-stale-1",
+      kind: "spawnAgent",
+    });
+    expect(reserved).toEqual({ ok: true, status: "reserved" });
+
+    // Still pending and within the TTL → surfaced as a live duplicate so the
+    // caller waits instead of fabricating success.
+    clock = new Date("2026-01-01T00:05:00.000Z");
+    const withinTtl = await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "spawn-stale-1",
+      kind: "spawnAgent",
+    });
+    expect(withinTtl).toMatchObject({
+      ok: true,
+      status: "duplicate",
+      receipt: { status: "pending" },
+    });
+
+    // Aged past the 15-minute pending-receipt TTL → drop the wedged receipt and
+    // reserve fresh so the requestId is not suppressed forever.
+    clock = new Date("2026-01-01T00:16:00.000Z");
+    const reReserved = await svc.reserveReceipt(created.runId, created.manifest.bundlePath, {
+      requestId: "spawn-stale-1",
+      kind: "spawnAgent",
+    });
+    expect(reReserved).toEqual({ ok: true, status: "reserved" });
+    const receipts = svc.getManifestForRun(created.runId)!.receipts ?? [];
+    const matching = receipts.filter((r) => r.requestId === "spawn-stale-1");
+    expect(matching).toHaveLength(1);
+    expect(matching[0]!.createdAt).toBe("2026-01-01T00:16:00.000Z");
+    await svc.dispose();
+  });
+
   it("hydrates lane runs from the persistent discovery index after restart", async () => {
     const svc = createOrchestrationService({
       resolveLaneWorktree: () => lane,
@@ -912,6 +1082,430 @@ const MODEL_FALLBACK: ModelSelection = {
   modelId: "claude-sonnet-5",
   reasoningEffort: null,
 };
+
+describe("orchestration heartbeat auto-recovery", () => {
+  let lane: string;
+  let clock: number;
+  const BASE = Date.parse("2026-07-22T00:00:00.000Z");
+  beforeEach(async () => {
+    lane = await makeTempLane();
+    clock = BASE;
+  });
+  afterEach(async () => {
+    await rmTree(lane);
+  });
+
+  function makeSvc() {
+    return createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+      now: () => new Date(clock),
+    });
+  }
+
+  async function seedWorker(
+    svc: ReturnType<typeof createOrchestrationService>,
+    manifest: { runId: string; etag: string; bundlePath: string },
+    opts: {
+      sessionId: string;
+      status?: string;
+      spawnedAtMs?: number;
+      lastHeartbeatAtMs?: number;
+      stalled?: boolean;
+    },
+  ): Promise<string> {
+    const value: Record<string, unknown> = {
+      sessionId: opts.sessionId,
+      role: "worker",
+      tag: opts.sessionId,
+      goalSummary: "implement",
+      status: opts.status ?? "running",
+      spawnedAt: new Date(opts.spawnedAtMs ?? clock).toISOString(),
+    };
+    if (opts.lastHeartbeatAtMs !== undefined) {
+      value.lastHeartbeatAt = new Date(opts.lastHeartbeatAtMs).toISOString();
+    }
+    if (opts.stalled !== undefined) value.stalled = opts.stalled;
+    const res = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "add", path: "/agents/-", value }],
+      },
+      manifest.bundlePath,
+    );
+    if (!res.ok) throw new Error(`seed failed: ${res.error}`);
+    return res.etag;
+  }
+
+  function leadStatusEntries(manifest: { outbox?: { kind: string }[] }) {
+    return (manifest.outbox ?? []).filter((entry) => entry.kind === "lead_status");
+  }
+
+  const MIN = 60_000;
+
+  it("coalesces heartbeat persistence: no disk/manifest rewrite when < 30s fresh", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, { sessionId: "S-worker" });
+    const hbPath = path.join(manifest.bundlePath, "heartbeats.json");
+
+    // First call always persists (no prior persist).
+    clock = BASE + 1_000;
+    await svc.agentHeartbeat({ runId: manifest.runId, sessionId: "S-worker" }, manifest.bundlePath);
+    const firstIso = new Date(clock).toISOString();
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "S-worker")?.lastHeartbeatAt).toBe(firstIso);
+    const hbAfterFirst = await fsp.readFile(hbPath, "utf-8");
+
+    // Second call 10s later coalesces: freshness updates in memory, disk unchanged.
+    clock = BASE + 11_000;
+    await svc.agentHeartbeat({ runId: manifest.runId, sessionId: "S-worker" }, manifest.bundlePath);
+    expect(await fsp.readFile(hbPath, "utf-8")).toBe(hbAfterFirst);
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "S-worker")?.lastHeartbeatAt).toBe(firstIso);
+
+    // 40s after the last persist: crosses the interval, persists again.
+    clock = BASE + 41_000;
+    await svc.agentHeartbeat({ runId: manifest.runId, sessionId: "S-worker" }, manifest.bundlePath);
+    expect(await fsp.readFile(hbPath, "utf-8")).not.toBe(hbAfterFirst);
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "S-worker")?.lastHeartbeatAt).toBe(new Date(clock).toISOString());
+    await svc.dispose();
+  });
+
+  it("flags a silent running agent and enqueues exactly one plain-language lead note", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+    const res = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(res.ok).toBe(true);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(true);
+    const notes = leadStatusEntries(after);
+    expect(notes).toHaveLength(1);
+    const note = notes[0] as unknown as { targetSessionId: string; delivery: { text?: string } };
+    expect(note.targetSessionId).toBe("S-lead");
+    expect(note.delivery.text).toContain("hasn't shown signs of life for 12m");
+    expect(note.delivery.text).toContain("messageAgent / awaitAgent / spawnAgent");
+    await svc.dispose();
+  });
+
+  it("does not re-notify while an agent stays stalled", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(leadStatusEntries(svc.getManifestForRun(manifest.runId)!)).toHaveLength(1);
+
+    // Still silent 5 minutes later — sweep again, no new note.
+    clock = BASE + 5 * MIN;
+    const second = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(second.ok).toBe(true);
+    expect(leadStatusEntries(svc.getManifestForRun(manifest.runId)!)).toHaveLength(1);
+    await svc.dispose();
+  });
+
+  it("clears the stalled flag on a fresh heartbeat and re-notifies if it stalls again", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(true);
+
+    // Worker checks back in → stalled clears immediately (recovery patch).
+    clock = BASE + 1 * MIN;
+    const hb = await svc.agentHeartbeat({ runId: manifest.runId, sessionId: "impl-1" }, manifest.bundlePath);
+    expect(hb.ok).toBe(true);
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(false);
+
+    // Goes silent again long past the threshold → a fresh (second) notification.
+    clock = BASE + 1 * MIN + 15 * MIN;
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(true);
+    expect(leadStatusEntries(after)).toHaveLength(2);
+    await svc.dispose();
+  });
+
+  it("respects the stall threshold boundary (strictly greater than 10m)", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    // Exactly 10m silent → not stalled.
+    await seedWorker(svc, manifest, {
+      sessionId: "edge-1",
+      spawnedAtMs: BASE - 30 * MIN,
+      lastHeartbeatAtMs: BASE - 10 * MIN,
+    });
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    let after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "edge-1")?.stalled).toBeFalsy();
+    expect(leadStatusEntries(after)).toHaveLength(0);
+
+    // 10m + 1s later, still no heartbeat → now over the line.
+    clock = BASE + 1_000;
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "edge-1")?.stalled).toBe(true);
+    expect(leadStatusEntries(after)).toHaveLength(1);
+    await svc.dispose();
+  });
+
+  it("only flags running agents and never the lead", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    // A blocked (intentionally waiting) worker silent past threshold is not stalled.
+    await seedWorker(svc, manifest, {
+      sessionId: "blocked-1",
+      status: "blocked",
+      spawnedAtMs: BASE - 30 * MIN,
+      lastHeartbeatAtMs: BASE - 20 * MIN,
+    });
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "blocked-1")?.stalled).toBeFalsy();
+    // The lead itself is never flagged even though it has no heartbeat.
+    expect(after.agents.find((a) => a.role === "lead")?.stalled).toBeFalsy();
+    expect(leadStatusEntries(after)).toHaveLength(0);
+    await svc.dispose();
+  });
+
+  it("reaps a wedged pending receipt past its TTL and frees the requestId; leaves a fresh one", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    // Simulate a crash between reserveReceipt and completeReceipt: a `pending`
+    // receipt reserved "now" that never completes.
+    const wedged = await svc.reserveReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:wedged",
+      kind: "spawnAgent",
+    });
+    expect(wedged).toEqual({ ok: true, status: "reserved" });
+
+    // Advance past the 15-minute pending TTL, then reserve a fresh receipt.
+    clock = BASE + 16 * MIN;
+    const fresh = await svc.reserveReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:fresh",
+      kind: "spawnAgent",
+    });
+    expect(fresh).toEqual({ ok: true, status: "reserved" });
+
+    const swept = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(swept.ok).toBe(true);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    const ids = (after.receipts ?? []).map((r) => r.requestId);
+    expect(ids).not.toContain("spawn:wedged"); // reaped: older than TTL
+    expect(ids).toContain("spawn:fresh"); // untouched: within TTL
+
+    // The reaped requestId is reservable again (no longer permanently deduped).
+    const reReserved = await svc.reserveReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:wedged",
+      kind: "spawnAgent",
+    });
+    expect(reReserved).toEqual({ ok: true, status: "reserved" });
+    await svc.dispose();
+  });
+
+  it("does not reap a completed receipt regardless of age", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await svc.reserveReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:done",
+      kind: "spawnAgent",
+    });
+    await svc.completeReceipt(manifest.runId, manifest.bundlePath, {
+      requestId: "spawn:done",
+      result: { sessionId: "S-worker" },
+    });
+    // Far past the pending TTL — completed receipts are capped at normalization,
+    // never reaped by the stale sweep.
+    clock = BASE + 60 * MIN;
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect((after.receipts ?? []).map((r) => r.requestId)).toContain("spawn:done");
+    await svc.dispose();
+  });
+
+  // --- Self-arming stall detection (no manual sweep required) --------------
+
+  it("auto-flags a silent worker via the self-arming timer with no manual recovery call", async () => {
+    // Real timers: the worker is already silent past the 10m threshold at seed
+    // time, so its stall horizon is in the past and the timer (armed by the
+    // seeding mutation) fires on the next macrotask. Crucially, no lead ever
+    // calls releaseStaleClaims/recoverStaleTasks — the flag lands on its own.
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+    expect(
+      svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled,
+    ).toBeFalsy();
+
+    await vi.waitFor(() => {
+      expect(
+        svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled,
+      ).toBe(true);
+    });
+
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect(leadStatusEntries(after)).toHaveLength(1);
+    await svc.dispose();
+  });
+
+  it("delivers the stall notification via the activation drainer with no other activity", async () => {
+    // Regression: the timer sweep persisted the lead_status outbox entry but never
+    // fired the registered drainer, so the promised notification sat `pending`
+    // until an unrelated mutation/restart — defeating the alert in the idle case.
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    const drains: { runId: string; bundlePath: string }[] = [];
+    svc.registerRunActivationDrainer((ctx) => drains.push(ctx));
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+
+    // The stall flag lands via the self-arming timer (no manual recovery call)...
+    await vi.waitFor(() => {
+      expect(
+        svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled,
+      ).toBe(true);
+    });
+    // ...and the drainer was invoked for this run to deliver the pending note.
+    await vi.waitFor(() => {
+      expect(drains.some((d) => d.runId === manifest.runId)).toBe(true);
+    });
+    expect(leadStatusEntries(svc.getManifestForRun(manifest.runId)!)).toHaveLength(1);
+    await svc.dispose();
+  });
+
+  it("arms no stall timer when the run has no running non-lead agent", async () => {
+    vi.useFakeTimers();
+    try {
+      const svc = makeSvc();
+      const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+      const beforeSeed = vi.getTimerCount();
+      // A completed (non-running) worker, even long silent, is not armable.
+      await seedWorker(svc, manifest, {
+        sessionId: "done-1",
+        status: "completed",
+        spawnedAtMs: BASE - 30 * MIN,
+        lastHeartbeatAtMs: BASE - 25 * MIN,
+      });
+      expect(vi.getTimerCount()).toBe(beforeSeed);
+      // Advancing well past any threshold flags nothing (no timer was armed).
+      await vi.advanceTimersByTimeAsync(30 * MIN);
+      expect(
+        svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "done-1")?.stalled,
+      ).toBeFalsy();
+      await svc.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the armed stall timer on run teardown", async () => {
+    vi.useFakeTimers();
+    try {
+      const svc = makeSvc();
+      const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+      const beforeSeed = vi.getTimerCount();
+      // Running worker fresh at seed → a timer is armed for a future horizon.
+      await seedWorker(svc, manifest, {
+        sessionId: "impl-1",
+        spawnedAtMs: BASE,
+        lastHeartbeatAtMs: BASE,
+      });
+      expect(vi.getTimerCount()).toBe(beforeSeed + 1);
+      // Tear the run down (never subscribed → immediate eviction) → timer cleared.
+      await svc.release(manifest.runId);
+      expect(vi.getTimerCount()).toBe(beforeSeed);
+      expect(svc.getManifestForRun(manifest.runId)).toBeNull();
+      await svc.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("orchestration run-activation drainer registration ordering", () => {
+  let lane: string;
+  let clock: number;
+  const BASE = Date.parse("2026-07-22T00:00:00.000Z");
+  beforeEach(async () => {
+    lane = await makeTempLane();
+    clock = BASE;
+  });
+  afterEach(async () => {
+    await rmTree(lane);
+  });
+
+  function makeSvc() {
+    return createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+      now: () => new Date(clock),
+    });
+  }
+
+  async function enqueuePending(
+    svc: ReturnType<typeof createOrchestrationService>,
+    manifest: { runId: string; bundlePath: string },
+  ): Promise<void> {
+    const enq = await svc.enqueueOutbox(manifest.runId, manifest.bundlePath, [
+      { kind: "lead_status", targetSessionId: "S-lead", delivery: { op: "steer", text: "persisted brief" } },
+    ]);
+    expect(enq.ok).toBe(true);
+  }
+
+  it("delivers a resident run's pending outbox when a drainer registers afterwards (exactly once)", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await enqueuePending(svc, manifest);
+    const calls: { runId: string; bundlePath: string }[] = [];
+    svc.registerRunActivationDrainer((ctx) => calls.push(ctx));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.runId).toBe(manifest.runId);
+    await svc.dispose();
+  });
+
+  it("delivers a run that hydrated then was evicted before the drainer registered (queue path)", async () => {
+    // Persist a run holding an undelivered outbox entry, then simulate a fresh
+    // process: a new service cold-hydrates the run (queuing the drain because no
+    // drainer is wired yet) and evicts it before any orchestration turn registers
+    // a drainer. Registration must still deliver via the pending queue — this
+    // fails if registration only sweeps currently-resident runs.
+    const seed = makeSvc();
+    const { manifest } = await seed.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await enqueuePending(seed, manifest);
+    await seed.dispose();
+
+    const svc = makeSvc();
+    // Cold hydrate with no drainer registered → the drain request is queued.
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    // Evict from residency (no watcher was started) before registration.
+    await svc.release(manifest.runId);
+    expect(svc.getManifestForRun(manifest.runId)).toBeNull();
+
+    const calls: { runId: string; bundlePath: string }[] = [];
+    svc.registerRunActivationDrainer((ctx) => calls.push(ctx));
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.runId).toBe(manifest.runId);
+    await svc.dispose();
+  });
+});
 
 describe("model routing precedence", () => {
   it("byRoleTag wins over byTag/byRole/default", () => {
@@ -2072,6 +2666,43 @@ describe("orchestration watcher resilience", () => {
       await svc.dispose();
     });
 
+    it("does not enqueue a second completion outbox entry when an already-terminal task is re-released", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      await seedChild(svc, manifest, { sessionId: "S-worker", taskId: "T-1" });
+      await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      const completionEntries = () =>
+        (svc.getManifestForRun(manifest.runId)!.outbox ?? []).filter(
+          (entry) => entry.kind === "completion",
+        );
+
+      // First release closes the edge and emits exactly one completion → lead.
+      await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "done" },
+        manifest.bundlePath,
+      );
+      expect(completionEntries()).toHaveLength(1);
+
+      // A duplicate release (e.g. an LLM retry): the edge is already closed, so
+      // no second completion is enqueued.
+      await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "done" },
+        manifest.bundlePath,
+      );
+      expect(completionEntries()).toHaveLength(1);
+
+      // A failed-after-done re-release also emits nothing further.
+      await svc.releaseTask(
+        { runId: manifest.runId, taskId: "T-1", sessionId: "S-worker", status: "failed" },
+        manifest.bundlePath,
+      );
+      expect(completionEntries()).toHaveLength(1);
+      await svc.dispose();
+    });
+
     it("closes the edge to failed when the worker releases its task failed", async () => {
       const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
       const { manifest } = await makeRun(svc);
@@ -2245,5 +2876,78 @@ describe("orchestration watcher resilience", () => {
       expect(bundle.manifest.lineage ?? []).toHaveLength(0);
       await restarted.dispose();
     });
+  });
+});
+
+describe("outbox retry hygiene: expired backoff entries retire", () => {
+  let lane: string;
+  let clock: number;
+  const BASE = Date.parse("2026-07-22T00:00:00.000Z");
+  beforeEach(async () => {
+    lane = await makeTempLane();
+    clock = BASE;
+  });
+  afterEach(async () => {
+    await rmTree(lane);
+  });
+
+  function makeSvc() {
+    return createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+      now: () => new Date(clock),
+    });
+  }
+
+  async function enqueueAndClaim(
+    svc: ReturnType<typeof createOrchestrationService>,
+    manifest: { runId: string; bundlePath: string },
+  ): Promise<string> {
+    const enq = await svc.enqueueOutbox(manifest.runId, manifest.bundlePath, [{
+      kind: "lead_status",
+      targetSessionId: "S-lead",
+      delivery: { op: "steer", text: "hi" },
+    }]);
+    expect(enq.ok).toBe(true);
+    const entryId = (enq as { ok: true; ids: string[] }).ids[0]!;
+    const claimed = await svc.claimOutboxEntry(manifest.runId, manifest.bundlePath, entryId);
+    expect(claimed).not.toBeNull();
+    return entryId;
+  }
+
+  it("settles an aged-out pending entry failed instead of re-arming it for retry", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    const entryId = await enqueueAndClaim(svc, manifest);
+
+    // Age the entry past the 10-minute cap, then settle a *retryable* failure.
+    // Even though attempts (1) is well below maxAttempts (5), the age cap forces
+    // a permanent `failed` settlement so the entry is not re-armed forever.
+    clock = BASE + 11 * 60_000;
+    await svc.settleOutboxEntry(manifest.runId, manifest.bundlePath, entryId, {
+      status: "pending",
+      error: "boom",
+      backoffMs: 500,
+    });
+    const entry = (svc.getManifestForRun(manifest.runId)!.outbox ?? []).find((e) => e.id === entryId)!;
+    expect(entry.status).toBe("failed");
+    expect(entry.nextAttemptAt).toBeUndefined();
+    await svc.dispose();
+  });
+
+  it("re-arms a fresh pending entry for retry (control, within the age cap)", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    const entryId = await enqueueAndClaim(svc, manifest);
+
+    // No aging: a retryable failure re-arms the entry with a future nextAttemptAt.
+    await svc.settleOutboxEntry(manifest.runId, manifest.bundlePath, entryId, {
+      status: "pending",
+      error: "boom",
+      backoffMs: 500,
+    });
+    const entry = (svc.getManifestForRun(manifest.runId)!.outbox ?? []).find((e) => e.id === entryId)!;
+    expect(entry.status).toBe("pending");
+    expect(entry.nextAttemptAt).toBeTruthy();
+    await svc.dispose();
   });
 });

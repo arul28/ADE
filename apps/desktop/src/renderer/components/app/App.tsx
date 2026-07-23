@@ -112,13 +112,21 @@ import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { filesProjectCacheKey, releaseFilesProjectCaches } from "../files/v2/filesTreeCache";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
-import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
+import {
+  ADE_OPEN_BUILT_IN_BROWSER_EVENT,
+  ADE_OPEN_DEEPLINK_EVENT,
+  type OpenDeeplinkDetail,
+} from "../../lib/openExternal";
 import {
   githubRepoSlugsEqual,
   parseGithubRemoteUrl,
   type GithubRepoSlug,
 } from "../../../shared/githubRemote";
-import { isValidRepoRelativePath } from "../../../shared/deeplinks";
+import {
+  deeplinkToNavigationTarget,
+  isValidRepoRelativePath,
+  parseDeeplink,
+} from "../../../shared/deeplinks";
 import type {
   AppNavigationRequest,
   AppNavigationTarget,
@@ -1194,6 +1202,23 @@ function AppNavigationBridge() {
     return onNavigate((request: AppNavigationRequest) => {
       void dispatchLatest(request.target);
     });
+  }, [dispatchLatest]);
+
+  // In-app `ade://` deeplinks (e.g. evidence artifact refs) dispatched from any
+  // renderer surface route through the same internal navigation as inbound
+  // OS/CLI deeplinks, instead of the external-URL IPC (which rejects non-http(s)
+  // schemes and silently drops the click). External http(s)/file URLs never
+  // reach here — their callers keep the built-in browser path.
+  React.useEffect(() => {
+    const onOpenDeeplink = (event: Event) => {
+      const url = (event as CustomEvent<OpenDeeplinkDetail>).detail?.url;
+      if (!url) return;
+      const parsed = parseDeeplink(url);
+      if (!parsed.ok) return;
+      void dispatchLatest(deeplinkToNavigationTarget(parsed.target));
+    };
+    window.addEventListener(ADE_OPEN_DEEPLINK_EVENT, onOpenDeeplink);
+    return () => window.removeEventListener(ADE_OPEN_DEEPLINK_EVENT, onOpenDeeplink);
   }, [dispatchLatest]);
 
   if (!inboundTarget) return null;

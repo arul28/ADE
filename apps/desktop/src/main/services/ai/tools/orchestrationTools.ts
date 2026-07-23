@@ -15,10 +15,16 @@
 import crypto from "node:crypto";
 import { z } from "zod";
 import { executableTool as tool, type ExecutableTool } from "./executableTool";
-import { createUniversalToolSet, type UniversalToolSetOptions } from "./universalTools";
+import {
+  createUniversalToolSet,
+  type AskUserToolResult,
+  type UniversalToolSetOptions,
+} from "./universalTools";
 import type {
   EvidenceRef,
   ManifestPatchOp,
+  OrchestrationAgentStatus,
+  OrchestrationAssetExternalRef,
   OrchestrationAssetKind,
   OrchestrationManifest,
   OrchestrationPingIntent,
@@ -35,17 +41,32 @@ import {
   ORCHESTRATION_SPAWN_BRIEF_REQUIRED_SECTIONS,
   type OrchestrationSpawnAgentRequest,
 } from "../../../../shared/types/orchestration";
-import type { createOrchestrationService } from "../../orchestration/orchestrationService";
-import { validateSpawnBrief } from "../../orchestration/orchestrationService";
+import type { DeeplinkTarget } from "../../../../shared/deeplinks";
+import type {
+  createOrchestrationService,
+  NewOutboxEntry,
+} from "../../orchestration/orchestrationService";
+import {
+  buildOutboxEnqueueOps,
+  validateSpawnBrief,
+} from "../../orchestration/orchestrationService";
 import {
   applyOrchestrationPermissionProfile,
   isOrchestrationPlanApproved,
   isPlanningReadyForModelSelection,
   resolveOrchestrationModel,
 } from "../../orchestration/runtimeProfile";
+import type {
+  AgentChatCreateArgs,
+  AgentChatDeleteArgs,
+  AgentChatInterruptArgs,
+  AgentChatSendArgs,
+  AgentChatSteerArgs,
+} from "../../../../shared/types/chat";
 
 import { assessPlanReadiness } from "./orchestrationPlanQuality";
 import { deriveSuggestedValidationSteps } from "./orchestrationValidationDerivation";
+import { drainOutbox } from "./orchestrationOutbox";
 import {
   buildOrchestrationSandboxConfig,
   errorMessage,
@@ -94,19 +115,55 @@ export type OrchestrationSessionContext = {
  * Kept narrow on purpose so tests can stub without dragging the whole service.
  */
 export type OrchestrationAgentChatHandle = {
-  createSession: (args: Record<string, unknown>) => Promise<{ id: string }>;
-  deleteSession: (args: { sessionId: string }) => Promise<void>;
+  createSession: (args: AgentChatCreateArgs) => Promise<{ id: string }>;
+  deleteSession: (args: AgentChatDeleteArgs) => Promise<void>;
   sendMessage: (
-    args: Record<string, unknown>,
+    args: AgentChatSendArgs,
     options?: { awaitDispatch?: boolean },
   ) => Promise<void>;
-  steer: (args: Record<string, unknown>) => Promise<unknown>;
-  interrupt: (args: { sessionId: string }) => Promise<void>;
+  steer: (args: AgentChatSteerArgs) => Promise<unknown>;
+  interrupt: (args: AgentChatInterruptArgs) => Promise<void>;
   readTranscript: (
     sessionId: string,
     limit?: number,
     since?: string,
   ) => Promise<unknown>;
+};
+
+/**
+ * Result shape every lead read-only capability tool returns. Always resolves —
+ * a missing backing service yields `{ ok: false, error: "unavailable" }` rather
+ * than throwing (runtime-backed-null-services safety: never assume a service
+ * exists in prod).
+ */
+export type OrchestrationLeadReadResult =
+  | ({ ok: true } & Record<string, unknown>)
+  | { ok: false; error: string; message: string };
+
+/**
+ * Curated, READ-ONLY ADE capability backings for the orchestrator lead. Each is
+ * optional and injected by the chat runtime from whatever services are actually
+ * wired in this process; a missing entry means the matching tool reports
+ * "unavailable". All calls run with orchestrator-role read scope and MUST NOT
+ * mutate anything (deeplink minting is side-effect-free).
+ */
+export type OrchestrationLeadReadServices = {
+  /** Universal search across ADE (transcripts, PRs, commits, Linear, proof, lanes). */
+  searchWorkspace?: (args: {
+    query: string;
+    limit?: number;
+    laneId?: string;
+  }) => Promise<OrchestrationLeadReadResult>;
+  /** Read a Linear issue (description + comments) by id/identifier. */
+  readLinearIssue?: (args: { issueId: string }) => Promise<OrchestrationLeadReadResult>;
+  /** Read PR summary/status/checks for the lane (or a specific PR id). */
+  readPr?: (args: { prId?: string }) => Promise<OrchestrationLeadReadResult>;
+  /** List proof-drawer / computer-use artifacts (evidence). */
+  listProofArtifacts?: (args: { limit?: number }) => Promise<OrchestrationLeadReadResult>;
+  /** Mint an ADE deeplink (pure; side-effect-free) for a target. */
+  mintDeeplink?: (args: {
+    target: DeeplinkTarget;
+  }) => Promise<OrchestrationLeadReadResult>;
 };
 
 export type OrchestrationToolSetOptions = {
@@ -120,6 +177,11 @@ export type OrchestrationToolSetOptions = {
    * a base set of read or edit tools depending on role.
    */
   universal: UniversalToolSetOptions;
+  /**
+   * Optional read-only ADE capability backings for the lead slice. Absent
+   * entries degrade to an "unavailable" tool result; never required.
+   */
+  leadReadServices?: OrchestrationLeadReadServices;
 };
 
 // ---------------------------------------------------------------------------
@@ -149,8 +211,81 @@ const ASSET_KIND_VALUES = [
   "screenshot",
   "test_log",
   "doc",
+  // Unit S evidence kinds for externally-visible ADE actions (see SKILL §13).
+  "proof_artifact",
+  "computer_use",
+  "video",
+  "pr_link",
+  "linear_issue",
+  "deeplink",
 ] as const;
 const MODEL_SELECTION_ROLE_VALUES = ["worker", "validator"] as const;
+
+function sha256(value: string): string {
+  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * Derive the idempotency `requestId` for a `messageAgent` send when the caller
+ * does NOT supply an explicit one. The base key is the message's logical content
+ * (run, sender, target, kind, intent, task, text). A pure content fingerprint is
+ * correct for guarding double-delivery of ONE logical send, but it would also
+ * suppress *intentional repeats* — deliberately sending the same message again
+ * after an identical prior send already committed (e.g. two "keep going" steers,
+ * or the same status ping after a second stall). To preserve those, salt the
+ * base key with an epoch: the number of prior COMMITTED sends of this exact
+ * logical content.
+ *
+ * Three paths this must satisfy:
+ *  1. Fresh send — no prior committed send → epoch 0 → bare base key.
+ *  2. Retry after a transient failure — the prior attempt never committed (its
+ *     receipt was released/left pending, and no outbox row was enqueued) → epoch
+ *     0 → SAME requestId → dedupes against the in-flight/pending reservation so a
+ *     crashed send is not double-delivered.
+ *  3. Intentional repeat after success — the prior identical send committed (a
+ *     completed receipt and/or an outbox row exists) → epoch ≥ 1 → salted
+ *     requestId → reserves fresh so the deliberate repeat is delivered, not
+ *     silently swallowed as `deduped`.
+ *
+ * A committed send materializes BOTH a completed receipt and an outbox row under
+ * the same requestId (written in one transaction). We union by requestId so each
+ * logical send counts once and the epoch survives independent pruning of either
+ * side (RECEIPT_CAP prunes receipts; the outbox row may outlive them, and vice
+ * versa). A PENDING receipt is the current/crashed reservation and must NOT bump
+ * the epoch, or path 2's retry would reserve fresh and double-deliver.
+ *
+ * Explicit caller-supplied requestIds keep strict content-independent dedupe.
+ */
+export function deriveMessageAgentRequestId(
+  manifest: OrchestrationManifest,
+  parts: {
+    runId: string;
+    fromSessionId: string;
+    targetSessionId: string;
+    kind: string;
+    intent: string;
+    taskId?: string;
+    text: string;
+  },
+): string {
+  const base = `msg:${sha256(
+    `${parts.runId}|${parts.fromSessionId}|${parts.targetSessionId}|${parts.kind}|${parts.intent}|${parts.taskId ?? ""}|${parts.text}`,
+  )}`;
+  const matches = (id: string | undefined): id is string =>
+    id === base || (typeof id === "string" && id.startsWith(`${base}#`));
+  const committed = new Set<string>();
+  for (const receipt of manifest.receipts ?? []) {
+    if (receipt.status === "completed" && matches(receipt.requestId)) {
+      committed.add(receipt.requestId);
+    }
+  }
+  for (const entry of manifest.outbox ?? []) {
+    // An outbox row only exists once its enqueue committed, so any status counts.
+    if (matches(entry.requestId)) committed.add(entry.requestId);
+  }
+  const epoch = committed.size;
+  return epoch === 0 ? base : `${base}#${epoch}`;
+}
 
 const LEAD_READ_ONLY_BASE = new Set([
   "readFile",
@@ -190,6 +325,7 @@ function createSpawnAgentTool(
       goalSummary: z.string().min(1, "goalSummary is required"),
       stepId: z.string().min(1, "stepId is required"),
       initialMessage: z.string().min(1, "initialMessage is required"),
+      requestId: z.string().min(1).optional(),
       spawnKind: z.enum(["subagent", "peer", "none"]).optional(),
       modelOverride: z
         .object({
@@ -228,36 +364,111 @@ function createSpawnAgentTool(
           input.tag,
           input.modelOverride as ModelSelection | undefined,
         );
+        const briefDigest = sha256(input.initialMessage);
+        const requestId =
+          input.requestId ??
+          `spawn:${sha256(
+            `${ctx.runId}|${input.role}|${input.tag}|${input.stepId}|${briefDigest}`,
+          )}`;
+        const reservation = await svc.reserveReceipt(
+          ctx.runId,
+          ctx.bundlePath,
+          { requestId, kind: "spawnAgent" },
+        );
+        if (!reservation.ok) {
+          return {
+            ok: false as const,
+            error: "receipt_reservation_failed",
+            message: reservation.message,
+          };
+        }
+        if (reservation.status === "duplicate") {
+          // Only a COMPLETED receipt carries a real result to replay. A still
+          // PENDING receipt means an earlier spawn with this requestId is in
+          // flight (or crashed mid-flight and has not yet aged past the stale
+          // receipt sweep). Replaying it as success would report a session that
+          // may not exist (undefined sessionId) — surface a retryable in-progress
+          // result so the caller waits instead of treating delegation as done.
+          if (reservation.receipt.status !== "completed") {
+            return {
+              ok: false as const,
+              error: "spawn_in_progress",
+              retryable: true,
+              message:
+                "A spawn with this requestId is already in progress. Retry once it settles; a crashed reservation is reclaimed by recoverStaleTasks after the receipt TTL.",
+            };
+          }
+          return {
+            ok: true as const,
+            sessionId: reservation.receipt.result?.sessionId,
+            etag: reservation.receipt.result?.etag,
+            deduped: true,
+          };
+        }
         const interactionMode =
           input.role === "validator"
             ? "orchestrator-validator"
             : "orchestrator-worker";
+        // reserveReceipt hands back an `adoptSessionId` when a prior spawn for this
+        // requestId created its session but crashed before registering the agent
+        // row (see reserveReceipt's stale-pending path). Adopt that session and
+        // fall through to the normal register-and-complete path — creating a fresh
+        // one would spawn a twin and orphan the first.
+        const adoptSessionId = reservation.adoptSessionId;
         let created: { id: string };
-        try {
-          created = await chat.createSession({
-            laneId: ctx.laneId,
-            provider: routedSelection.provider,
-            model: routedSelection.modelId,
-            reasoningEffort: routedSelection.reasoningEffort ?? null,
-            fastMode: routedSelection.fastMode,
-            interactionMode,
-            surface: "work",
-            ...applyOrchestrationPermissionProfile(routedSelection.provider),
-            orchestrationRunId: ctx.runId,
-            orchestrationRole: input.role,
-            orchestrationParentSessionId: ctx.sessionId,
-            spawnKind: input.spawnKind ?? "subagent",
-            orchestrationTag: input.tag,
-            orchestrationStepId: input.stepId,
-            orchestrationBundlePath: ctx.bundlePath,
-            goal: input.goalSummary,
+        if (adoptSessionId) {
+          created = { id: adoptSessionId };
+        } else {
+          try {
+            created = await chat.createSession({
+              laneId: ctx.laneId,
+              provider: routedSelection.provider,
+              model: routedSelection.modelId,
+              reasoningEffort: routedSelection.reasoningEffort ?? null,
+              fastMode: routedSelection.fastMode,
+              interactionMode,
+              surface: "work",
+              ...applyOrchestrationPermissionProfile(routedSelection.provider),
+              orchestrationRunId: ctx.runId,
+              orchestrationRole: input.role,
+              orchestrationParentSessionId: ctx.sessionId,
+              spawnKind: input.spawnKind ?? "subagent",
+              orchestrationTag: input.tag,
+              orchestrationStepId: input.stepId,
+              orchestrationBundlePath: ctx.bundlePath,
+              goal: input.goalSummary,
+            });
+          } catch (err) {
+            await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId });
+            return {
+              ok: false as const,
+              error: "create_session_failed",
+              message: errorMessage(err),
+            };
+          }
+          // Stamp the created sessionId onto the still-pending receipt BEFORE the
+          // completion patch. If the process dies in this window the session is
+          // now recoverable — a retry adopts it (above) rather than orphaning it
+          // and spawning a duplicate. Roll back cleanly if the stamp itself fails.
+          const stamp = await svc.stampReceiptResult(ctx.runId, ctx.bundlePath, {
+            requestId,
+            result: { sessionId: created.id },
           });
-        } catch (err) {
-          return {
-            ok: false as const,
-            error: "create_session_failed",
-            message: errorMessage(err),
-          };
+          if (!stamp.ok) {
+            try {
+              await chat.deleteSession({ sessionId: created.id });
+            } catch (_cleanupErr) {
+              // Best-effort cleanup — swallow to surface the stamp error.
+            }
+            await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId });
+            return {
+              ok: false as const,
+              error: "receipt_stamp_failed",
+              message:
+                "Created session but failed to persist its receipt (session cleaned up): " +
+                stamp.message,
+            };
+          }
         }
         const spawnedAt = new Date().toISOString();
         const patch: ManifestPatchOp = {
@@ -271,6 +482,9 @@ function createSpawnAgentTool(
             status: "pending",
             spawnedAt,
             currentStepId: input.stepId,
+            // Link the agent to its spawn receipt so reserveReceipt can reconcile
+            // a stale/pruned receipt to this row instead of duplicating the spawn.
+            spawnRequestId: requestId,
             spawnFingerprint: {
               provider: routedSelection.provider,
               modelId: routedSelection.modelId,
@@ -281,48 +495,65 @@ function createSpawnAgentTool(
             },
           },
         };
-        const buildPatchRequest = (ifMatchEtag: string, summary: string) => ({
-          runId: ctx.runId,
-          ifMatchEtag,
-          actorRole: "lead" as const,
-          actorSessionId: ctx.sessionId,
-          summary,
-          patches: [patch],
-        });
-        let patchRes = await svc.manifestPatch(
-          buildPatchRequest(manifest.etag, "spawn agent"),
+        const currentManifest = manifestOrThrow(svc, ctx.runId);
+        const briefOps = buildOutboxEnqueueOps(currentManifest, [{
+          kind: "brief",
+          targetSessionId: created.id,
+          delivery: {
+            op: "sendMessage",
+            text: input.initialMessage,
+            metadata: {
+              orchestrationOrigin: {
+                runId: ctx.runId,
+                fromSessionId: ctx.sessionId,
+                kind: "wake" as OrchestrationPingKind,
+                intent: "directive" as OrchestrationPingIntent,
+                taskId: input.stepId,
+              },
+            },
+          },
+          requestId,
+        }]);
+        const completeRes = await svc.completeReceipt(
+          ctx.runId,
           ctx.bundlePath,
+          { requestId, result: { sessionId: created.id } },
+          [patch, ...briefOps],
         );
-        if (!patchRes.ok && patchRes.error === "etag_conflict") {
-          patchRes = await svc.manifestPatch(
-            buildPatchRequest(patchRes.manifest.etag, "spawn agent (retry)"),
-            ctx.bundlePath,
-          );
-        }
-        if (!patchRes.ok) {
-          // Clean up the orphaned session since manifest registration failed
+        if (!completeRes.ok) {
+          if (adoptSessionId) {
+            // Adoption retry: the session pre-existed and the receipt is still
+            // pending+stamped. Do NOT delete the session or release the receipt —
+            // that would discard the recovery link. Leave both so a further retry
+            // can adopt again; just report the transient failure.
+            return {
+              ok: false as const,
+              error: "manifest_patch_failed",
+              message:
+                "Failed to register the adopted session's agent row (retryable): " +
+                completeRes.error,
+            };
+          }
+          // Fresh session created this attempt → clean rollback so a retry starts
+          // over (the stamp is dropped together with the receipt).
           try {
             await chat.deleteSession({ sessionId: created.id });
           } catch (_cleanupErr) {
             // Best-effort cleanup — log suppressed to avoid masking the root error
           }
+          await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId });
           return {
             ok: false as const,
             error: "manifest_patch_failed",
             message:
               "Created session but failed to append agent row (session cleaned up): " +
-              ("error" in patchRes
-                ? String(patchRes.error)
-                : "unknown"),
+              completeRes.error,
           };
         }
         // Record the lead→child delegation edge (best-effort; never fails the
         // spawn — the agent row is the source of truth, the edge is provenance).
-        // The ledger write advances the manifest etag, so surface its etag to
-        // the caller (fall back to the agent-append etag only if it failed).
-        let latestEtag = patchRes.etag;
         try {
-          const ledger = await svc.recordDelegationSpawn(
+          await svc.recordDelegationSpawn(
             {
               runId: ctx.runId,
               parentSessionId: ctx.sessionId,
@@ -342,43 +573,89 @@ function createSpawnAgentTool(
             },
             ctx.bundlePath,
           );
-          if (ledger.ok) latestEtag = ledger.etag;
         } catch {
           // Supplementary provenance only — swallow.
         }
-        try {
-          await chat.sendMessage(
-            {
-              sessionId: created.id,
-              text: input.initialMessage,
-              metadata: {
-                orchestrationOrigin: {
-                  runId: ctx.runId,
-                  fromSessionId: ctx.sessionId,
-                  kind: "wake" as OrchestrationPingKind,
-                  intent: "directive" as OrchestrationPingIntent,
-                  taskId: input.stepId,
-                },
-              },
-            },
-            { awaitDispatch: false },
-          );
-        } catch (err) {
-          return {
-            ok: true as const,
-            sessionId: created.id,
-            etag: latestEtag,
-            warning: `agent spawned but initial message delivery failed: ${errorMessage(err)}`,
-          };
-        }
+        await drainOutbox(svc, chat, ctx);
         return {
           ok: true as const,
           sessionId: created.id,
-          etag: latestEtag,
+          etag: completeRes.etag,
         };
       });
     },
   });
+}
+
+/**
+ * Shared delivery epilogue for messageAgent's cancellation and ping branches:
+ * enqueue the single outbox entry and complete the idempotency receipt in ONE
+ * atomic transaction (the outbox `add` is folded into `completeReceipt` as an
+ * extra patch — exactly like spawnAgent), then drain.
+ *
+ * Atomicity is the correctness invariant here: a failed `completeReceipt`
+ * persists neither the receipt completion nor the outbox entry, so releasing the
+ * receipt on failure orphans nothing. If the enqueue were a separate prior
+ * transaction (as it once was), the outbox entry would already be durable when
+ * completeReceipt failed — freeing the deterministic requestId would then let an
+ * LLM retry enqueue a DUPLICATE ping/cancel/interrupt. `releaseReceipt` no-ops
+ * when the run is suspended, so the suspended case never frees a live receipt.
+ *
+ * `buildOutboxEnqueueOps` needs the current manifest to derive the deterministic
+ * etag+index outbox id, so read it fresh right before completing (mirrors
+ * spawnAgent's `currentManifest` read).
+ */
+async function finalizeDelivery(
+  svc: ReturnType<typeof createOrchestrationService>,
+  chat: OrchestrationAgentChatHandle,
+  ctx: OrchestrationSessionContext,
+  args: {
+    requestId: string;
+    entry: NewOutboxEntry;
+    /**
+     * State that must commit atomically WITH the receipt+outbox entry, built
+     * from the fresh manifest. Used by cancellation so its decision/attempt/flag
+     * patches land in the same transaction as the receipt — a crash between them
+     * can no longer leave cancellation durable while the receipt is released
+     * (which would let a retry re-append a second cancellation decision/attempt).
+     */
+    buildExtraPatches?: (manifest: OrchestrationManifest) => ManifestPatchOp[];
+  },
+): Promise<{ ok: true } | { ok: false; error: "delivery_failed"; message: string }> {
+  const manifest = manifestOrThrow(svc, ctx.runId);
+  const extraPatches = args.buildExtraPatches?.(manifest) ?? [];
+  const outboxOps = buildOutboxEnqueueOps(manifest, [args.entry]);
+  const completed = await svc.completeReceipt(
+    ctx.runId,
+    ctx.bundlePath,
+    { requestId: args.requestId, result: {} },
+    [...extraPatches, ...outboxOps],
+  );
+  if (!completed.ok) {
+    await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId: args.requestId });
+    return { ok: false, error: "delivery_failed", message: completed.message };
+  }
+  await drainOutbox(svc, chat, ctx);
+  return { ok: true };
+}
+
+/**
+ * Normalize a single-choice askUser response. Returns the selected option value
+ * (if any) and whether the user dismissed the card (cancel/decline). A raw
+ * string response (no structured answer) is treated as not-dismissed with no
+ * answer — matching the prior inline handling at both call sites.
+ */
+function readSingleChoice(
+  response: string | AskUserToolResult,
+  questionId: string,
+): { answer?: string; dismissed: boolean } {
+  if (typeof response === "string") {
+    return { dismissed: false };
+  }
+  return {
+    answer: response.answers?.[questionId]?.[0],
+    dismissed: response.decision === "cancel" || response.decision === "decline",
+  };
 }
 
 function createMessageAgentTool(args: {
@@ -404,6 +681,7 @@ function createMessageAgentTool(args: {
       intent: intentSchema,
       text: z.string().min(1),
       taskId: z.string().optional(),
+      requestId: z.string().min(1).optional(),
       cancellation: z
         .object({
           revert: z.union([z.boolean(), z.literal("review")]),
@@ -444,54 +722,45 @@ function createMessageAgentTool(args: {
               "Workers and validators cannot send cancellation directives.",
           };
         }
-        if (intent === "cancellation") {
-          const cancelledAt = new Date().toISOString();
-          const buildCancellationPatch = (
-            current: OrchestrationManifest,
-            summary: string,
-          ) => ({
+        const requestId =
+          input.requestId ??
+          deriveMessageAgentRequestId(manifest, {
             runId: args.ctx.runId,
-            ifMatchEtag: current.etag,
-            actorRole: args.ctx.role,
-            actorSessionId: args.ctx.sessionId,
-            summary,
-            patches: [
-              {
-                op: "add" as const,
-                path: `/agents/{sessionId:${input.targetSessionId}}/cancellationRequested`,
-                value: true,
-              },
-              {
-                op: "add" as const,
-                path: "/decisions/-",
-                value: {
-                  id: `D-cancel-${cancelledAt.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
-                  at: cancelledAt,
-                  source: args.ctx.role,
-                  summary: `Cancellation requested for ${input.targetSessionId}: ${input.cancellation?.reason ?? input.text}`,
-                  ...(input.taskId ? { refs: { taskId: input.taskId } } : {}),
-                },
-              },
-            ] satisfies ManifestPatchOp[],
+            fromSessionId: args.ctx.sessionId,
+            targetSessionId: input.targetSessionId,
+            kind: input.kind,
+            intent,
+            taskId: input.taskId,
+            text: input.text,
           });
-          let patchRes = await args.svc.manifestPatch(
-            buildCancellationPatch(manifest, "cancellation requested"),
-            args.ctx.bundlePath,
-          );
-          if (!patchRes.ok && patchRes.error === "etag_conflict") {
-            patchRes = await args.svc.manifestPatch(
-              buildCancellationPatch(patchRes.manifest, "cancellation requested (retry)"),
-              args.ctx.bundlePath,
-            );
-          }
-          if (!patchRes.ok) {
+        const reservation = await args.svc.reserveReceipt(
+          args.ctx.runId,
+          args.ctx.bundlePath,
+          { requestId, kind: "messageAgent" },
+        );
+        if (!reservation.ok) {
+          return {
+            ok: false as const,
+            error: "delivery_failed",
+            message: reservation.message,
+          };
+        }
+        if (reservation.status === "duplicate") {
+          // A COMPLETED receipt means the message was already enqueued+delivered
+          // under this requestId — replay the deduped success. A PENDING receipt
+          // means the enqueue never completed (concurrent/crashed retry); the
+          // outbox entry does not exist, so reporting success would silently drop
+          // the message. Return a retryable in-progress result instead.
+          if (reservation.receipt.status !== "completed") {
             return {
               ok: false as const,
-              error: "cancellation_patch_failed",
-              message: "Cancellation could not be recorded in the manifest.",
-              detail: "message" in patchRes ? patchRes.message : patchRes.error,
+              error: "delivery_in_progress",
+              retryable: true,
+              message:
+                "A message with this requestId is already in progress. Retry once it settles; a crashed reservation is reclaimed by recoverStaleTasks after the receipt TTL.",
             };
           }
+          return { ok: true as const, deduped: true };
         }
         const origin = {
           runId: args.ctx.runId,
@@ -504,41 +773,99 @@ function createMessageAgentTool(args: {
           orchestrationOrigin: origin,
           ...(input.cancellation ? { orchestrationCancellation: input.cancellation } : {}),
         };
-        try {
-          if (input.kind === "queue") {
-            await args.chat.steer({
-              sessionId: input.targetSessionId,
+        if (intent === "cancellation") {
+          const cancelledAt = new Date().toISOString();
+          // The cancellation's own state (flag + decision + task-attempt rows) is
+          // committed in the SAME transaction as the receipt completion and the
+          // outbox entry — folded into completeReceipt as extra patches. Built
+          // from the fresh manifest completeReceipt reads under its mutex, so the
+          // `{id:…}` / `{sessionId:…}` paths resolve at apply time and no external
+          // etag/retry is needed (completeReceipt uses the internal direct patch).
+          const buildCancellationPatches = (
+            current: OrchestrationManifest,
+          ): ManifestPatchOp[] => {
+            const patches: ManifestPatchOp[] = [
+              {
+                op: "add",
+                path: `/agents/{sessionId:${input.targetSessionId}}/cancellationRequested`,
+                value: true,
+              },
+              {
+                op: "add",
+                path: "/decisions/-",
+                value: {
+                  id: `D-cancel-${cancelledAt.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+                  at: cancelledAt,
+                  source: args.ctx.role,
+                  summary: `Cancellation requested for ${input.targetSessionId}: ${input.cancellation?.reason ?? input.text}`,
+                  ...(input.taskId ? { refs: { taskId: input.taskId } } : {}),
+                },
+              },
+            ];
+            for (const task of current.tasks) {
+              if (task.assigneeSessionId !== input.targetSessionId) continue;
+              if (task.status !== "claimed" && task.status !== "in_progress") continue;
+              const attemptId = `A-cancel-${task.id.replace(/[^a-zA-Z0-9_-]/g, "_")}-${cancelledAt.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+              const attempt = {
+                id: attemptId,
+                sessionId: input.targetSessionId,
+                startedAt: task.claimedAt ?? cancelledAt,
+                endedAt: cancelledAt,
+                outcome: "cancelled" as const,
+                failureReason: input.cancellation?.reason ?? input.text,
+              };
+              patches.push(
+                task.attempts
+                  ? {
+                      op: "add",
+                      path: `/tasks/{id:${task.id}}/attempts/-`,
+                      value: attempt,
+                    }
+                  : {
+                      op: "add",
+                      path: `/tasks/{id:${task.id}}/attempts`,
+                      value: [attempt],
+                    },
+                {
+                  op: "add",
+                  path: `/tasks/{id:${task.id}}/currentAttemptId`,
+                  value: attemptId,
+                },
+              );
+            }
+            return patches;
+          };
+          return finalizeDelivery(args.svc, args.chat, args.ctx, {
+            requestId,
+            entry: {
+              kind: "cancel_interrupt",
+              targetSessionId: input.targetSessionId,
+              delivery: { op: "interrupt" },
+              requestId,
+            },
+            buildExtraPatches: buildCancellationPatches,
+          });
+        }
+
+        const deliveryOp =
+          input.kind === "queue"
+            ? "steer"
+            : input.kind === "interrupt-replace"
+              ? "interrupt-replace"
+              : "sendMessage";
+        return finalizeDelivery(args.svc, args.chat, args.ctx, {
+          requestId,
+          entry: {
+            kind: "ping",
+            targetSessionId: input.targetSessionId,
+            delivery: {
+              op: deliveryOp,
               text: input.text,
               metadata,
-            });
-          } else if (input.kind === "interrupt-replace") {
-            await args.chat.interrupt({ sessionId: input.targetSessionId });
-            await args.chat.sendMessage(
-              {
-                sessionId: input.targetSessionId,
-                text: input.text,
-                metadata,
-              },
-              { awaitDispatch: false },
-            );
-          } else {
-            await args.chat.sendMessage(
-              {
-                sessionId: input.targetSessionId,
-                text: input.text,
-                metadata,
-              },
-              { awaitDispatch: false },
-            );
-          }
-          return { ok: true as const };
-        } catch (err) {
-          return {
-            ok: false as const,
-            error: "delivery_failed",
-            message: errorMessage(err),
-          };
-        }
+            },
+            requestId,
+          },
+        });
       });
     },
   });
@@ -581,6 +908,170 @@ function createGetAgentTranscriptTool(
         }
       });
     },
+  });
+}
+
+/** Agent statuses that count as "settled" for awaitAgent (turn done / failed). */
+const SETTLED_AGENT_STATUSES: ReadonlySet<OrchestrationAgentStatus> = new Set([
+  "completed",
+  "failed",
+]);
+
+const AWAIT_AGENT_DEFAULT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const AWAIT_AGENT_MAX_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+
+type AwaitAgentSnapshot = {
+  sessionId: string;
+  tag?: string;
+  role: OrchestrationRole;
+  status: OrchestrationAgentStatus;
+  settled: boolean;
+};
+
+function snapshotAwaitTargets(
+  manifest: OrchestrationManifest,
+  sessionIds: readonly string[],
+): { known: AwaitAgentSnapshot[]; unknown: string[] } {
+  const known: AwaitAgentSnapshot[] = [];
+  const unknown: string[] = [];
+  for (const sessionId of sessionIds) {
+    const agent = manifest.agents.find((a) => a.sessionId === sessionId);
+    if (!agent) {
+      unknown.push(sessionId);
+      continue;
+    }
+    known.push({
+      sessionId,
+      ...(agent.tag ? { tag: agent.tag } : {}),
+      role: agent.role,
+      status: agent.status,
+      settled: SETTLED_AGENT_STATUSES.has(agent.status),
+    });
+  }
+  return { known, unknown };
+}
+
+function awaitConditionMet(
+  snapshots: readonly AwaitAgentSnapshot[],
+  waitFor: "all" | "any",
+): boolean {
+  if (!snapshots.length) return true;
+  return waitFor === "any"
+    ? snapshots.some((s) => s.settled)
+    : snapshots.every((s) => s.settled);
+}
+
+/**
+ * Lead-only. Block until target agent(s) reach a settled state (turn completed /
+ * idle / failed), driven purely by the orchestration event bus — no transcript
+ * polling. Short-circuits when already settled and always cleans up its
+ * subscription + timer, so duplicate calls cannot leak listeners.
+ */
+function createAwaitAgentTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Lead-only. Wait until the given orchestration agent(s) finish their turn (settle as completed or failed), " +
+      "then return. Event-driven — it subscribes to run lifecycle events, it does NOT poll transcripts. " +
+      "Pass `sessionIds` (one or more) and optionally `waitFor` ('all' | 'any', default 'all') and `timeoutMs` " +
+      "(default 10 min, max 30 min). On timeout it returns a structured still-running result instead of blocking forever. " +
+      "Completion events are also delivered to you durably via the run outbox, so awaitAgent is a convenience, not the only signal.",
+    inputSchema: z.object({
+      sessionIds: z.array(z.string().min(1)).min(1, "at least one target sessionId"),
+      waitFor: z.enum(["all", "any"]).optional(),
+      timeoutMs: z.number().int().positive().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const waitFor = input.waitFor ?? "all";
+        const timeoutMs = Math.min(
+          input.timeoutMs ?? AWAIT_AGENT_DEFAULT_TIMEOUT_MS,
+          AWAIT_AGENT_MAX_TIMEOUT_MS,
+        );
+        const manifest = manifestOrThrow(svc, ctx.runId);
+        const initial = snapshotAwaitTargets(manifest, input.sessionIds);
+        if (initial.unknown.length) {
+          return {
+            ok: false as const,
+            error: "agent_not_in_run",
+            unknownSessionIds: initial.unknown,
+            message:
+              `awaitAgent: session(s) not registered in run ${ctx.runId}: ${initial.unknown.join(", ")}.`,
+          };
+        }
+        // Short-circuit: already settled — no subscription needed.
+        if (awaitConditionMet(initial.known, waitFor)) {
+          return {
+            ok: true as const,
+            done: true,
+            timedOut: false,
+            waitFor,
+            agents: initial.known,
+          };
+        }
+        return await new Promise<{
+          ok: true;
+          done: boolean;
+          timedOut: boolean;
+          waitFor: "all" | "any";
+          agents: AwaitAgentSnapshot[];
+          stillRunning?: AwaitAgentSnapshot[];
+          message?: string;
+        }>((resolve) => {
+          let finished = false;
+          let unsubscribe: () => void = () => {};
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          const currentSnapshots = (): AwaitAgentSnapshot[] => {
+            const m = svc.getManifestForRun(ctx.runId);
+            return m
+              ? snapshotAwaitTargets(m, input.sessionIds).known
+              : initial.known;
+          };
+          const finish = (
+            result: Parameters<typeof resolve>[0],
+          ): void => {
+            if (finished) return;
+            finished = true;
+            if (timer) clearTimeout(timer);
+            unsubscribe();
+            resolve(result);
+          };
+          const check = (): void => {
+            const snapshots = currentSnapshots();
+            if (awaitConditionMet(snapshots, waitFor)) {
+              finish({
+                ok: true,
+                done: true,
+                timedOut: false,
+                waitFor,
+                agents: snapshots,
+              });
+            }
+          };
+          unsubscribe = svc.on("event", (payload) => {
+            if (payload.runId !== ctx.runId) return;
+            check();
+          });
+          timer = setTimeout(() => {
+            const snapshots = currentSnapshots();
+            finish({
+              ok: true,
+              done: false,
+              timedOut: true,
+              waitFor,
+              agents: snapshots,
+              stillRunning: snapshots.filter((s) => !s.settled),
+              message:
+                `Timed out after ${timeoutMs}ms waiting for ${waitFor === "any" ? "any of" : "all"} the target agent(s) to finish.`,
+            });
+          }, timeoutMs);
+          // Close the subscribe race: state may have advanced between the initial
+          // read and the subscription being installed.
+          check();
+        });
+      }),
   });
 }
 
@@ -1010,6 +1501,16 @@ function createReleaseTaskTool(
         chat,
         notifyText: `${ctx.role} ${ctx.sessionId} released task ${input.taskId} as ${input.status}.`,
         taskId: input.taskId,
+        // A terminal release (done/failed by a worker/validator) already enqueues
+        // a structured `completion` entry to the lead. Suppress the generic
+        // `lead_status` ping for that transition so the lead is notified once.
+        suppressLeadNotify: (result) =>
+          Boolean(
+            result &&
+              typeof result === "object" &&
+              "completionEnqueued" in result &&
+              (result as { completionEnqueued?: boolean }).completionEnqueued,
+          ),
         fn: async () => {
           try {
             const res = await svc.releaseTask(
@@ -1021,7 +1522,7 @@ function createReleaseTaskTool(
               },
               ctx.bundlePath,
             );
-            return { ok: true as const, etag: res.etag };
+            return { ok: true as const, etag: res.etag, completionEnqueued: res.completionEnqueued };
           } catch (err) {
             return {
               ok: false as const,
@@ -1115,13 +1616,24 @@ function createRegisterAssetTool(
 ) {
   return tool({
     description:
-      "Register an asset (html spec, screenshot, test log, doc) under the bundle's artifacts/ tree. " +
+      "Register an asset under the bundle's artifacts/ tree. Kinds: html_spec, screenshot, " +
+      "test_log, doc, plus evidence kinds for externally-visible ADE actions — proof_artifact, " +
+      "computer_use, video, pr_link, linear_issue, deeplink (SKILL §13). Pass `externalRef` to " +
+      "point the asset at the real artifact (proof-drawer artifactId, PR number/url, Linear id, or deeplink url). " +
       "Path is relative to the bundle root; the file should already be on disk before calling.",
     inputSchema: z.object({
       relPath: z.string().min(1),
       kind: z.enum(ASSET_KIND_VALUES),
       version: z.number().int().positive().optional(),
       approval: z.enum(["pending", "approved", "rejected"]).optional(),
+      externalRef: z
+        .object({
+          url: z.string().optional(),
+          prNumber: z.number().int().optional(),
+          linearId: z.string().optional(),
+          artifactId: z.string().optional(),
+        })
+        .optional(),
     }),
     execute: async (input) => {
       return withMutationSideEffects({
@@ -1138,6 +1650,10 @@ function createRegisterAssetTool(
                 kind: input.kind as OrchestrationAssetKind,
                 version: input.version,
                 approval: input.approval,
+                ...(input.externalRef
+                  ? { externalRef: input.externalRef as OrchestrationAssetExternalRef }
+                  : {}),
+                registeredBySessionId: ctx.sessionId,
               },
               ctx.bundlePath,
             );
@@ -1205,8 +1721,9 @@ function createAskUserForModelSelectionTool(
             ok: false as const,
             error: "planning_not_ready",
             message:
-              "Model selection is locked until codebase intake and all three deliberation rounds are recorded. " +
-              "Call recordCodebaseIntake, then askPlanningRound for functional → UI → extras, then pick models.",
+              "Model selection is locked until codebase intake plus either all three deliberation rounds " +
+              "or the condensed light-plan path are recorded. Call recordCodebaseIntake, then either " +
+              "askPlanningRound for functional → UI → extras or enterLightPlan, then pick models.",
           };
         }
         if (!universalOpts.onAskUser) {
@@ -1322,6 +1839,8 @@ function createRecordCodebaseIntakeTool(
     description:
       "Lead-only. Record the /context-style codebase intake — the FIRST gated planning step. " +
       "Read the repo first (CLAUDE.md/README, package manifests, CI config, git log/diff, top-level layout), planAppend a human-readable 'Codebase intake' section, then log the structured summary here. " +
+      "Set `touchesUiSurface: false` when the change has no user-facing UI — the UI design round is then auto-skipped (recorded as N/A) instead of forcing an empty round. " +
+      "Pass `goalSource` when you derived the goal from an attached Linear issue / PR / goal.md, so the run records where the goal came from. " +
       "askPlanningRound, model selection, and approval are all locked until this is recorded.",
     inputSchema: z.object({
       projectShape: z.string().min(1, "describe the project shape + primary languages"),
@@ -1330,18 +1849,40 @@ function createRecordCodebaseIntakeTool(
       ancillarySurfaces: z.array(z.string().min(1)).optional(),
       docMap: z.string().optional(),
       ciGates: z.array(z.string().min(1)).optional(),
+      touchesUiSurface: z.boolean().optional(),
+      goalSource: z
+        .object({
+          kind: z.enum(["linear", "pr", "goalMd", "user"]),
+          ref: z.string().optional(),
+        })
+        .optional(),
     }),
     execute: async (input) =>
       withHeartbeat(ctx, svc, async () => {
-        const res = await svc.recordPlanningIntake(ctx.runId, ctx.bundlePath, {
-          recordedAt: new Date().toISOString(),
-          projectShape: input.projectShape,
-          testStack: input.testStack,
-          inFlightWork: input.inFlightWork,
-          ancillarySurfaces: input.ancillarySurfaces ?? [],
-          ...(input.docMap ? { docMap: input.docMap } : {}),
-          ciGates: input.ciGates ?? [],
-        });
+        const res = await svc.recordPlanningIntake(
+          ctx.runId,
+          ctx.bundlePath,
+          {
+            recordedAt: new Date().toISOString(),
+            projectShape: input.projectShape,
+            testStack: input.testStack,
+            inFlightWork: input.inFlightWork,
+            ancillarySurfaces: input.ancillarySurfaces ?? [],
+            ...(input.docMap ? { docMap: input.docMap } : {}),
+            ciGates: input.ciGates ?? [],
+            ...(typeof input.touchesUiSurface === "boolean"
+              ? { touchesUiSurface: input.touchesUiSurface }
+              : {}),
+          },
+          input.goalSource
+            ? {
+                goalSource: {
+                  kind: input.goalSource.kind,
+                  ...(input.goalSource.ref ? { ref: input.goalSource.ref } : {}),
+                },
+              }
+            : undefined,
+        );
         if (!res.ok) {
           return { ok: false as const, error: res.error, missing: res.missing, message: res.message };
         }
@@ -1349,6 +1890,7 @@ function createRecordCodebaseIntakeTool(
           ok: true as const,
           etag: res.etag,
           nextStage: res.manifest.leadState.planning?.stage ?? "round_functional",
+          uiRoundSkipped: (res.manifest.leadState.planning?.autoSkippedRounds ?? []).includes("ui"),
         };
       }),
   });
@@ -1580,6 +2122,7 @@ function createProposeValidationStepsTool(
 function createRecoverStaleTasksTool(
   ctx: OrchestrationSessionContext,
   svc: ReturnType<typeof createOrchestrationService>,
+  chat: OrchestrationAgentChatHandle,
 ) {
   return tool({
     description:
@@ -1592,6 +2135,7 @@ function createRecoverStaleTasksTool(
         if (!res.ok) {
           return { ok: false as const, error: res.error, message: res.message };
         }
+        await drainOutbox(svc, chat, ctx);
         return { ok: true as const, recovered: res.recovered, etag: res.etag };
       }),
   });
@@ -1626,6 +2170,419 @@ function createRecordPlanningOverrideTool(
   });
 }
 
+function createOfferLightPlanTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+  universalOpts: UniversalToolSetOptions,
+) {
+  return tool({
+    description:
+      "Lead-only. Offer the lighter planning path for a small / low-risk / single-worker goal. " +
+      "Asks the user, in plain words, whether to skip the heavy planning rounds and do a simpler plan, or continue with the full one. " +
+      "On acceptance the run takes the condensed path (one plan → single approval → ready) with the same approval-gate rigor. " +
+      "Only offer this after codebase intake and before any deliberation round is recorded. You can expand back to the full plan any time before approval.",
+    inputSchema: z.object({
+      /** Optional plain-language framing shown above the choice. */
+      note: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const manifest = manifestOrThrow(svc, ctx.runId);
+        if (manifest.currentPhase !== "planning") {
+          return {
+            ok: false as const,
+            error: "not_planning",
+            message: "the lighter path can only be offered during planning",
+          };
+        }
+        if (!universalOpts.onAskUser) {
+          return {
+            ok: false as const,
+            error: "no_ask_user_handler",
+            message: "offerLightPlan requires an onAskUser handler — none configured.",
+          };
+        }
+        const questionId = "light-plan-choice";
+        const response = await universalOpts.onAskUser({
+          title: "How much planning?",
+          ...(input.note?.trim() ? { body: input.note.trim() } : {}),
+          question:
+            "This looks like a lighter task — want me to skip the heavy planning rounds and do a simpler plan, or continue with the full one?",
+          pendingInputKind: "structured_question",
+          providerMetadata: { orchestrationLightPlanOffer: true },
+          questions: [
+            {
+              id: questionId,
+              question:
+                "This looks like a lighter task — want me to skip the heavy planning rounds and do a simpler plan, or continue with the full one?",
+              multiSelect: false,
+              allowsFreeform: false,
+              options: [
+                {
+                  label: "Do a simpler plan",
+                  value: "light",
+                  description: "Skip the heavy rounds — one condensed plan, then approval.",
+                },
+                {
+                  label: "Continue with the full plan",
+                  value: "full",
+                  description: "Keep the full functional / UI / extras rounds.",
+                },
+              ],
+            },
+          ],
+        });
+        const { answer, dismissed } = readSingleChoice(response, questionId);
+        if (dismissed) {
+          return { ok: true as const, chosen: "full" as const, note: "user dismissed — staying on the full plan" };
+        }
+        if (answer !== "light") {
+          return { ok: true as const, chosen: "full" as const };
+        }
+        const res = await svc.enterLightPlan(ctx.runId, ctx.bundlePath);
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return { ok: true as const, chosen: "light" as const, etag: res.etag };
+      }),
+  });
+}
+
+function createExpandToFullPlanTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Lead-only. Expand a condensed light plan back to the full deliberation sequence (functional → UI → extras). " +
+      "Only allowed before the plan is approved. Use this if the 'simpler plan' turns out to need the full rounds after all.",
+    inputSchema: z.object({}),
+    execute: async () =>
+      withHeartbeat(ctx, svc, async () => {
+        const res = await svc.expandToFullPlan(ctx.runId, ctx.bundlePath);
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return {
+          ok: true as const,
+          etag: res.etag,
+          nextStage: res.manifest.leadState.planning?.stage,
+        };
+      }),
+  });
+}
+
+function createChooseFinishingModeTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+  universalOpts: UniversalToolSetOptions,
+) {
+  return tool({
+    description:
+      "Lead-only. Ask the dedicated finishing question during planning (both the full and lighter paths): " +
+      "when this run finishes, stop at validated code in the worktree, or push the branch + open a PR + update Linear? " +
+      "Records the choice in manifest.finishing. When the choice is 'pr', after validation passes you spawn a finishing worker to push, open the PR, update Linear, and register the pr_link / linear_issue / deeplink assets.",
+    inputSchema: z.object({
+      /** Optional plain-language framing shown above the choice. */
+      note: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        if (!universalOpts.onAskUser) {
+          return {
+            ok: false as const,
+            error: "no_ask_user_handler",
+            message: "chooseFinishingMode requires an onAskUser handler — none configured.",
+          };
+        }
+        const questionId = "finishing-mode";
+        const response = await universalOpts.onAskUser({
+          title: "When this run finishes",
+          ...(input.note?.trim() ? { body: input.note.trim() } : {}),
+          question:
+            "When this run finishes: stop at validated code in the worktree, or push the branch + open a PR + update Linear?",
+          pendingInputKind: "structured_question",
+          providerMetadata: { orchestrationFinishingQuestion: true },
+          questions: [
+            {
+              id: questionId,
+              question:
+                "When this run finishes: stop at validated code in the worktree, or push the branch + open a PR + update Linear?",
+              multiSelect: false,
+              allowsFreeform: false,
+              options: [
+                {
+                  label: "Stop at the worktree",
+                  value: "worktree",
+                  description: "Leave validated code in the lane worktree — no push, no PR.",
+                },
+                {
+                  label: "Push + open a PR",
+                  value: "pr",
+                  description: "Push the branch, open/update a PR, and update the attached Linear issue.",
+                },
+              ],
+            },
+          ],
+        });
+        const { answer, dismissed } = readSingleChoice(response, questionId);
+        if (dismissed) {
+          return {
+            ok: false as const,
+            error: "finishing_unanswered",
+            message: "User dismissed the finishing question without answering.",
+          };
+        }
+        const mode = answer === "pr" ? "pr" : "worktree";
+        const res = await svc.recordFinishingChoice(ctx.runId, ctx.bundlePath, { mode });
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return { ok: true as const, mode, etag: res.etag };
+      }),
+  });
+}
+
+function createRecordScheduledFollowupTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Record a durable follow-up scheduled for after the run (e.g. 're-check CI in 30m'). " +
+      "Do the actual scheduling with `ade actions run chat.createScheduledWork` from a shell, then record it here with the returned scheduledWorkId so the bundle owns the durable intent (manifest.scheduledFollowups).",
+    inputSchema: z.object({
+      summary: z.string().min(1, "plain-language description of the follow-up"),
+      scheduledFor: z.string().optional(),
+      scheduledWorkId: z.string().optional(),
+      status: z.enum(["pending", "scheduled", "fired", "cancelled"]).optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const res = await svc.recordScheduledFollowup(ctx.runId, ctx.bundlePath, {
+          summary: input.summary,
+          ...(input.scheduledFor ? { scheduledFor: input.scheduledFor } : {}),
+          ...(input.scheduledWorkId ? { scheduledWorkId: input.scheduledWorkId } : {}),
+          ...(input.status ? { status: input.status } : {}),
+        });
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return { ok: true as const, etag: res.etag };
+      }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Lead read-only ADE capability tools
+// ---------------------------------------------------------------------------
+
+const LEAD_READ_TOOL_NAMES = [
+  "searchWorkspace",
+  "readLinearIssue",
+  "readPr",
+  "listProofArtifacts",
+  "mintDeeplink",
+] as const;
+
+function unavailableResult(capability: string): OrchestrationLeadReadResult {
+  return {
+    ok: false,
+    error: "unavailable",
+    message: `${capability} is not available in this ADE runtime.`,
+  };
+}
+
+/**
+ * Wrap a lead read backing so it (a) short-circuits to a clean "unavailable"
+ * result when the service is not wired, and (b) never throws — any error is
+ * flattened into a structured result. Read-only by construction.
+ */
+async function runLeadRead(
+  capability: string,
+  backing: (() => Promise<OrchestrationLeadReadResult>) | undefined,
+): Promise<OrchestrationLeadReadResult> {
+  if (!backing) return unavailableResult(capability);
+  try {
+    return await backing();
+  } catch (err) {
+    return {
+      ok: false,
+      error: "read_failed",
+      message: `${capability} failed: ${errorMessage(err)}`,
+    };
+  }
+}
+
+// Discriminated schema for `mintDeeplink` targets — one variant per
+// `DeeplinkTarget` kind with its required fields. A loose record let an
+// unsupported `kind` or a target missing kind-specific fields pass validation
+// and reach `buildDeeplink`, which then returns `undefined` (unknown kind) or a
+// URL containing literal "undefined" (missing field) while the tool still
+// reported success. Rejecting malformed targets at the tool boundary keeps such
+// links from being minted or recorded as evidence.
+const deeplinkEnvelopeSchema = z
+  .object({
+    repoOwner: z.string().min(1).optional(),
+    repoName: z.string().min(1).optional(),
+    branch: z.string().min(1).optional(),
+    prNumber: z.number().int().positive().optional(),
+    linearIssue: z.string().min(1).optional(),
+  })
+  .optional();
+
+const deeplinkTargetSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("lane"),
+    laneId: z.string().min(1),
+    envelope: deeplinkEnvelopeSchema,
+  }),
+  z.object({
+    kind: z.literal("session"),
+    sessionId: z.string().min(1),
+    laneId: z.string().min(1).optional(),
+    event: z.number().int().nonnegative().optional(),
+    offset: z.number().int().nonnegative().optional(),
+    envelope: deeplinkEnvelopeSchema,
+  }),
+  z.object({
+    kind: z.literal("file"),
+    path: z.string().min(1),
+    line: z.number().int().positive().optional(),
+    laneId: z.string().min(1).optional(),
+  }),
+  z.object({
+    kind: z.literal("commit"),
+    sha: z.string().min(1),
+    laneId: z.string().min(1).optional(),
+    envelope: deeplinkEnvelopeSchema,
+  }),
+  z.object({
+    kind: z.literal("artifact"),
+    artifactId: z.string().min(1),
+    envelope: deeplinkEnvelopeSchema,
+  }),
+  z.object({
+    kind: z.literal("branch"),
+    repoOwner: z.string().min(1),
+    repoName: z.string().min(1),
+    branch: z.string().min(1),
+    prNumber: z.number().int().positive().optional(),
+  }),
+  z.object({
+    kind: z.literal("pr"),
+    repoOwner: z.string().min(1),
+    repoName: z.string().min(1),
+    prNumber: z.number().int().positive(),
+  }),
+  z.object({
+    kind: z.literal("linear-issue"),
+    issueIdentifier: z.string().min(1),
+    branch: z.string().min(1).optional(),
+  }),
+]);
+// Compile-time guard: the inferred target type must stay assignable to the
+// canonical `DeeplinkTarget` union (drift in either fails the build).
+const _deeplinkTargetAssignable: DeeplinkTarget = null as unknown as z.infer<
+  typeof deeplinkTargetSchema
+>;
+void _deeplinkTargetAssignable;
+
+function createLeadReadTools(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+  services: OrchestrationLeadReadServices | undefined,
+): OrchestrationToolMap {
+  const tools: OrchestrationToolMap = {};
+
+  tools.searchWorkspace = tool({
+    description:
+      "Lead-only, read-only. Universal search across everything in ADE (chat transcripts, terminal " +
+      "scrollback, PRs, commits, branches, Linear issues, proof artifacts, files, lanes) to inform planning. " +
+      "Returns matches with deeplinks. Never mutates.",
+    inputSchema: z.object({
+      query: z.string().min(1),
+      limit: z.number().int().positive().max(50).optional(),
+      /** Restrict to a lane; omit to search this run's lane / whole project. */
+      laneId: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("searchWorkspace", services?.searchWorkspace
+          ? () => services.searchWorkspace!({
+              query: input.query,
+              ...(input.limit ? { limit: input.limit } : {}),
+              ...(input.laneId ? { laneId: input.laneId } : {}),
+            })
+          : undefined),
+      ),
+  });
+
+  tools.readLinearIssue = tool({
+    description:
+      "Lead-only, read-only. Read an attached/linked Linear issue (title, description, state, comments) " +
+      "to derive the goal and acceptance criteria. Never mutates the issue.",
+    inputSchema: z.object({
+      issueId: z.string().min(1, "Linear issue id or identifier (e.g. ADE-123)"),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("readLinearIssue", services?.readLinearIssue
+          ? () => services.readLinearIssue!({ issueId: input.issueId })
+          : undefined),
+      ),
+  });
+
+  tools.readPr = tool({
+    description:
+      "Lead-only, read-only. Read PR summary/status/checks/review state for the lane (or a specific PR id) " +
+      "when planning a fix-forward run. Never pushes, opens, merges, or comments.",
+    inputSchema: z.object({
+      prId: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("readPr", services?.readPr
+          ? () => services.readPr!({ ...(input.prId ? { prId: input.prId } : {}) })
+          : undefined),
+      ),
+  });
+
+  tools.listProofArtifacts = tool({
+    description:
+      "Lead-only, read-only. List proof-drawer / computer-use artifacts (screenshots, recordings, captures) " +
+      "so the lead can reason about the evidence workers/validators produced. Never mutates.",
+    inputSchema: z.object({
+      limit: z.number().int().positive().max(200).optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("listProofArtifacts", services?.listProofArtifacts
+          ? () => services.listProofArtifacts!({ ...(input.limit ? { limit: input.limit } : {}) })
+          : undefined),
+      ),
+  });
+
+  tools.mintDeeplink = tool({
+    description:
+      "Lead-only, read-only. Mint a shareable ADE deeplink (side-effect-free) for a target — e.g. " +
+      "`{ kind: 'lane', laneId }`, `{ kind: 'file', path, laneId? }`, `{ kind: 'commit', sha }`, " +
+      "`{ kind: 'pr', repoOwner, repoName, prNumber }`, `{ kind: 'linear-issue', issueIdentifier }`. " +
+      "Returns the ade:// and https:// forms. Nothing is created or changed.",
+    inputSchema: z.object({
+      target: deeplinkTargetSchema,
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () =>
+        runLeadRead("mintDeeplink", services?.mintDeeplink
+          ? () => services.mintDeeplink!({ target: input.target })
+          : undefined),
+      ),
+  });
+
+  return tools;
+}
+
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
@@ -1642,6 +2599,7 @@ export function createOrchestrationToolSet(
     orchestrationService: svc,
     agentChatService: chat,
     universal,
+    leadReadServices,
   } = opts;
 
   // Base from the universal toolset. For lead, we strip all write/bash tools
@@ -1698,6 +2656,8 @@ export function createOrchestrationToolSet(
       restrictedIntents: false,
     });
     tools.getAgentTranscript = createGetAgentTranscriptTool(sessionContext, chat, svc);
+    // Event-driven wait on worker/validator completion (no transcript polling).
+    tools.awaitAgent = createAwaitAgentTool(sessionContext, svc);
     tools.manifestPatch = createManifestPatchTool(sessionContext, svc, chat);
     tools.planAppend = createPlanAppendTool(sessionContext, svc, chat);
     tools.planWrite = createPlanWriteTool(sessionContext, svc, chat);
@@ -1715,8 +2675,13 @@ export function createOrchestrationToolSet(
     tools.recordCodebaseIntake = createRecordCodebaseIntakeTool(sessionContext, svc);
     tools.askPlanningRound = createAskPlanningRoundTool(sessionContext, svc, universal);
     tools.recordPlanningOverride = createRecordPlanningOverrideTool(sessionContext, svc);
+    // Lifecycle: lighter plan path, finishing decision, durable follow-ups.
+    tools.offerLightPlan = createOfferLightPlanTool(sessionContext, svc, universal);
+    tools.expandToFullPlan = createExpandToFullPlanTool(sessionContext, svc);
+    tools.chooseFinishingMode = createChooseFinishingModeTool(sessionContext, svc, universal);
+    tools.recordScheduledFollowup = createRecordScheduledFollowupTool(sessionContext, svc);
     tools.proposeValidationSteps = createProposeValidationStepsTool(sessionContext, svc);
-    tools.recoverStaleTasks = createRecoverStaleTasksTool(sessionContext, svc);
+    tools.recoverStaleTasks = createRecoverStaleTasksTool(sessionContext, svc, chat);
     tools.registerAsset = createRegisterAssetTool(sessionContext, svc, chat);
     // Lead may claim tasks during the planning seed (and to pin "lead is
     // working on planning" semantics). Worker-only edits still gate on lead
@@ -1724,6 +2689,10 @@ export function createOrchestrationToolSet(
     tools.claimTask = createClaimTaskTool(sessionContext, svc, chat);
     tools.releaseTask = createReleaseTaskTool(sessionContext, svc, chat);
     tools.recordValidationRun = createRecordValidationRunTool(sessionContext, svc, chat);
+    // Curated READ-ONLY ADE capability tools (search / Linear / PR / proof /
+    // deeplinks). Each degrades to a clean "unavailable" result when its backing
+    // service is not wired — they never throw and never mutate.
+    Object.assign(tools, createLeadReadTools(sessionContext, svc, leadReadServices));
     return tools;
   }
 
@@ -1742,6 +2711,8 @@ export function createOrchestrationToolSet(
   });
   tools.getAgentTranscript = createGetAgentTranscriptTool(sessionContext, chat, svc);
   tools.registerAsset = createRegisterAssetTool(sessionContext, svc, chat);
+  // The finishing worker may record a durable follow-up it scheduled.
+  tools.recordScheduledFollowup = createRecordScheduledFollowupTool(sessionContext, svc);
 
   return tools;
 }

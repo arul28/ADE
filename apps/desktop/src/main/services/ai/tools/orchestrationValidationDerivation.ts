@@ -83,7 +83,7 @@ export function deriveSuggestedValidationSteps(
       scope: "mission_exit",
       required: true,
       prompt:
-        `Keep cross-cutting surfaces in lockstep with the change: ${surfaces.join(", ")}. Update each (docs, mobile/SDK/CLI/TUI, specs) or explain why it is unaffected.`,
+        `Keep cross-cutting surfaces in lockstep with the change: ${surfaces.join(", ")}. Update each (docs, mobile/SDK/CLI/TUI, specs) or explain why it is unaffected. If this run is tied to a Linear issue, keep it in lockstep too (move its state, comment progress) via the ade-linear CLI, and register that update as a linear_issue asset.`,
       evidenceRequired: ["plan_md_section"],
     });
   }
@@ -95,7 +95,7 @@ export function deriveSuggestedValidationSteps(
       scope: "mission_exit",
       required: true,
       prompt:
-        `Run the standard pre-completion checks before declaring the run complete: ${ciGates.join("; ")}. The orchestrator does NOT push, open PRs, or handle remote review — that is a separate user-driven step.`,
+        `Run the standard pre-completion checks before declaring the run complete: ${ciGates.join("; ")}. Push / open-a-PR / remote review are allowed ONLY when this run's approved plan called for them; otherwise leave the branch for a separate user-driven step. When a PR is in scope, register it as a pr_link asset with its number + url.`,
       evidenceRequired: ["test_log"],
     });
   }

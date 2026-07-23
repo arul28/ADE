@@ -125,6 +125,19 @@ const DEFAULT_REQUIRED_SECTION_IDS: PlanSpecSectionId[] = [
   "coordination",
 ];
 
+/**
+ * Condensed required sections for the light-plan path — goal, the ordered
+ * steps, the agent plan (backed by real model routing), and the validation
+ * plan (backed by real steps). The heavy deliberation sections are collapsed
+ * because the run chose the simpler plan.
+ */
+const LIGHT_PLAN_REQUIRED_SECTION_IDS: PlanSpecSectionId[] = [
+  "goal",
+  "implementation_order",
+  "agent_plan",
+  "validation_plan",
+];
+
 const PENDING_GOAL_PLACEHOLDER_RE = /^_?pending\s+[—-]\s+the lead will fill this in_?$/i;
 
 /**
@@ -138,12 +151,22 @@ export function assessPlanReadiness(
   planMd: string,
 ): { ok: boolean; missing: OrchestrationPlanQualityMissing[] } {
   const sections = parsePlanSections(planMd);
+  const planning = manifest.leadState?.planning;
+  const isLightPlan = Boolean(planning?.lightPlan);
   const specSections = manifest.planSpec?.sections ?? [];
-  const requiredIds = specSections.length
-    ? specSections
-        .filter((s) => s.required && !s.notApplicable)
-        .map((s) => s.id)
-    : DEFAULT_REQUIRED_SECTION_IDS;
+  let requiredIds = isLightPlan
+    ? LIGHT_PLAN_REQUIRED_SECTION_IDS
+    : specSections.length
+      ? specSections
+          .filter((s) => s.required && !s.notApplicable)
+          .map((s) => s.id)
+      : DEFAULT_REQUIRED_SECTION_IDS;
+  // When intake auto-skipped the UI round (no UI surface), the plan need not
+  // carry a UI-decisions section — the skip is deterministic, not prose.
+  const uiAutoSkipped = (planning?.autoSkippedRounds ?? []).includes("ui");
+  if (uiAutoSkipped) {
+    requiredIds = requiredIds.filter((id) => id !== "ui_decisions");
+  }
 
   const missing: OrchestrationPlanQualityMissing[] = [];
   const add = (id: PlanSpecSectionId, message: string) =>

@@ -14,6 +14,10 @@ import {
   type ManifestPatchOp,
   type OrchestrationEventPayload,
   type OrchestrationManifest,
+  type OrchestrationOutboxEntry,
+  type OrchestrationOutboxKind,
+  type OrchestrationReceipt,
+  type OrchestrationReceiptKind,
   type OrchestrationManifestPatchRequest,
   type OrchestrationManifestPatchResponse,
   type OrchestrationRole,
@@ -37,6 +41,10 @@ import {
   type PlanningStage,
   type PlanSpecApprovalState,
   type ValidationFinding,
+  type OrchestrationGoalSource,
+  type OrchestrationFinishing,
+  type OrchestrationFinishingMode,
+  type OrchestrationScheduledFollowup,
 } from "../../../shared/types/orchestration";
 import {
   checkPatchOp,
@@ -63,6 +71,10 @@ import {
   hasOrchestrationModelRouting,
   isExplicitValidationWaiverEntry,
 } from "./runtimeProfile";
+import {
+  disposeAllOutbox,
+  disposeRunOutbox,
+} from "../ai/tools/orchestrationOutbox";
 
 // Lightweight async mutex — small, dependency-free, FIFO. Replicates the
 // pattern used elsewhere in agentChatService.ts so behaviour is consistent.
@@ -89,6 +101,28 @@ const MANIFEST_FILE = "manifest.json";
 const PLAN_FILE = "plan.md";
 const GEN_FILE = ".gen";
 const HEARTBEATS_FILE = "heartbeats.json";
+// Heartbeat liveness is recorded opportunistically off the mutating-tool wrapper
+// (withHeartbeat → agentHeartbeat). To keep that off the hot path we coalesce:
+// the freshest observation is always kept in memory, but the disk/manifest
+// liveness marker is only rewritten once per this interval per session.
+const HEARTBEAT_PERSIST_INTERVAL_MS = 30_000;
+// During the existing recover-stale sweep, a `running` agent whose effective
+// heartbeat (max of persisted + in-memory) is older than this is flagged
+// `stalled` and the lead is notified once. Not a timer — evaluated only when the
+// lead runs recoverStaleTasks.
+const HEARTBEAT_STALL_THRESHOLD_MS = 10 * 60 * 1000;
+// A `pending` idempotency receipt older than this is reaped during the existing
+// recover-stale sweep. A crash between reserveReceipt and completeReceipt would
+// otherwise leave a pending receipt that never expires, permanently deduping its
+// deterministic requestId (spawnAgent/messageAgent). Not a timer — evaluated
+// only when the lead runs recoverStaleTasks.
+const PENDING_RECEIPT_TTL_MS = 15 * 60 * 1000;
+// Hard upper bound on how long an outbox entry may keep re-arming for retry. The
+// common case is already bounded by `maxAttempts` (with capped backoff, ~1 min),
+// but a persistently claim-conflicting entry never increments `attempts`; this
+// age cap guarantees such an entry is eventually settled `failed` instead of
+// re-armed forever, retiring its stale backoff metadata.
+const OUTBOX_ENTRY_MAX_AGE_MS = 10 * 60 * 1000;
 const INDEX_FILE = "index.json";
 const HISTORY_RING_LIMIT = 50;
 const SELF_WRITE_WINDOW_MS = 1_000;
@@ -125,6 +159,15 @@ type RunRuntime = {
   watcherDebounceTimers: WatcherDebounceTimers;
   watcherIdleTimer: NodeJS.Timeout | null;
   suspended: boolean;
+  /**
+   * Freshest heartbeat observation per session (ms epoch), updated on every
+   * agentHeartbeat call. The disk/manifest liveness marker lags this by up to
+   * HEARTBEAT_PERSIST_INTERVAL_MS (coalesced); the stall sweep reads the max of
+   * this and the persisted marker so a recently-active agent is never mis-flagged.
+   */
+  heartbeatFreshnessMs: Map<string, number>;
+  /** Last time the liveness marker was persisted to disk/manifest per session (ms epoch). */
+  heartbeatPersistedAtMs: Map<string, number>;
 };
 
 type RunIndexEntry = {
@@ -154,11 +197,253 @@ export type OrchestrationServiceDeps = {
   now?: () => Date;
 };
 
+export type NewOutboxEntry = {
+  kind: OrchestrationOutboxKind;
+  targetSessionId: string;
+  delivery: OrchestrationOutboxEntry["delivery"];
+  requestId?: string;
+  maxAttempts?: number;
+  /** Internal clock injection used by enqueueOutbox; callers normally omit it. */
+  createdAt?: string;
+};
+
+export type OutboxSettlement =
+  | { status: "delivered" }
+  | {
+      status: "failed" | "pending";
+      error: string;
+      backoffMs: number;
+    };
+
+/**
+ * Build service-owned outbox append operations without mutating the manifest.
+ * IDs are deterministic for the manifest generation + entry position, which
+ * keeps a caller free to fold these ops into a larger directPatch transaction.
+ */
+export function buildOutboxEnqueueOps(
+  manifest: OrchestrationManifest,
+  entries: readonly NewOutboxEntry[],
+): ManifestPatchOp[] {
+  return entries.map((entry, index) => {
+    const createdAt = entry.createdAt ?? manifest.updatedAt;
+    const digest = crypto
+      .createHash("sha256")
+      .update(
+        JSON.stringify({
+          runId: manifest.runId,
+          etag: manifest.etag,
+          index,
+          kind: entry.kind,
+          targetSessionId: entry.targetSessionId,
+          delivery: entry.delivery,
+          requestId: entry.requestId,
+        }),
+      )
+      .digest("hex")
+      .slice(0, 16);
+    const value: OrchestrationOutboxEntry = {
+      id: `OB-${digest}`,
+      kind: entry.kind,
+      targetSessionId: entry.targetSessionId,
+      delivery: entry.delivery,
+      status: "pending",
+      attempts: 0,
+      maxAttempts: entry.maxAttempts ?? 5,
+      createdAt,
+      updatedAt: createdAt,
+      ...(entry.requestId ? { requestId: entry.requestId } : {}),
+    };
+    return { op: "add", path: "/outbox/-", value };
+  });
+}
+
 export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   const emitter = new EventEmitter();
+  // Completion waiters (`awaitAgent`) subscribe transiently to the event bus;
+  // several concurrent awaits plus the cancellation registry can exceed the
+  // default 10-listener cap. Waiters always unsubscribe on resolve/timeout, so
+  // this is a headroom bump, not a leak escape hatch.
+  emitter.setMaxListeners(0);
   const runs = new Map<string, RunRuntime>();
   const laneIndexMutexes = new Map<string, AsyncMutex>();
   const now = deps.now ?? (() => new Date());
+
+  // Fire-and-forget drain hook invoked when a run's runtime is first hydrated
+  // (cold load) while it still holds undelivered (`pending`/`delivering`) outbox
+  // entries. The service owns *when* a run becomes active but has no chat handle
+  // of its own; the chat-backed layer registers a drainer (see agentChatService)
+  // so a process restart delivers persisted entries without waiting for an
+  // unrelated mutating tool to happen to fire a drain. The drainer itself is
+  // coalesced/idempotent per run (the outbox module's in-process inFlight guard),
+  // so redundant activations collapse to at most one initial drain.
+  let runActivationDrainer:
+    | ((ctx: { runId: string; bundlePath: string }) => void)
+    | null = null;
+
+  // Runs that hydrated with undelivered outbox entries while no drainer was
+  // registered. Delivery must not depend on hydration happening after the
+  // chat-backed drainer wires up (a run opened/listed on boot can hydrate before
+  // any orchestration turn constructs its tool map). We record the request here
+  // and flush it on registration, so the hydration-vs-registration order is
+  // irrelevant — no boot-order coupling. Keyed by runId → bundlePath; bounded
+  // because registration happens eagerly at service availability (see main.ts).
+  const pendingActivationDrains = new Map<string, string>();
+
+  function fireRunActivationDrain(runtime: RunRuntime): void {
+    const outbox = runtime.manifest?.outbox ?? [];
+    const hasUndelivered = outbox.some(
+      (entry) => entry.status === "pending" || entry.status === "delivering",
+    );
+    if (!hasUndelivered) return;
+    if (!runActivationDrainer) {
+      // Defer until a drainer registers, then flush (see below).
+      pendingActivationDrains.set(runtime.runId, runtime.bundlePath);
+      return;
+    }
+    pendingActivationDrains.delete(runtime.runId);
+    try {
+      runActivationDrainer({
+        runId: runtime.runId,
+        bundlePath: runtime.bundlePath,
+      });
+    } catch {
+      // Best-effort: an activation drain must never fail the load/open path.
+    }
+  }
+
+  /**
+   * Register the chat-backed outbox drainer. Called once by the chat service with
+   * a stable chat handle. On registration we also sweep already-hydrated runs so
+   * a run that was loaded before the drainer wired up (e.g. the panel subscribed
+   * on boot ahead of the chat backing) still gets its pending entries delivered.
+   * Returns an unregister fn.
+   */
+  function registerRunActivationDrainer(
+    fn: (ctx: { runId: string; bundlePath: string }) => void,
+  ): () => void {
+    runActivationDrainer = fn;
+    // Flush runs that hydrated before this drainer wired up. Resident runtimes
+    // are re-evaluated against their live manifest (most accurate); this also
+    // clears their pending-queue entry via fireRunActivationDrain.
+    for (const runtime of runs.values()) {
+      if (runtime.manifest) fireRunActivationDrain(runtime);
+    }
+    // Then flush any queued runs no longer resident (hydrated then evicted before
+    // registration). drainOutbox re-reads the durable manifest, so a stale entry
+    // is harmless/idempotent.
+    for (const [runId, bundlePath] of pendingActivationDrains) {
+      if (runs.has(runId)) continue; // already handled by the sweep above
+      try {
+        fn({ runId, bundlePath });
+      } catch {
+        // Best-effort: registration must never throw.
+      }
+    }
+    pendingActivationDrains.clear();
+    return () => {
+      if (runActivationDrainer === fn) runActivationDrainer = null;
+    };
+  }
+
+  // --- Self-arming heartbeat-stall detection ------------------------------
+  // The stall flag + one-time lead notification are produced by
+  // buildStallDetectionOps, but that sweep only ran inside the lead-invoked
+  // releaseStaleClaims/recoverStaleTasks path — so a worker that simply goes
+  // silent (no heartbeat, no event) would never be flagged unless the lead
+  // already suspected a stall and manually invoked recovery, defeating the
+  // feature. Mirror the outbox deferred-retry timer: while a run has running
+  // non-lead agents that are not yet flagged, arm ONE coalesced unref'd timer
+  // for the soonest stall horizon (effective liveness + threshold). It is
+  // re-armed on hydration, mutations, heartbeats, and after each sweep, and
+  // cleared on run teardown. Armed only while workers are running — a single
+  // pending-work timer, not a poll loop.
+  const stallTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  function clearStallTimer(runId: string): void {
+    const existing = stallTimers.get(runId);
+    if (existing) {
+      clearTimeout(existing);
+      stallTimers.delete(runId);
+    }
+  }
+
+  /** Tear down all armed stall timers (service dispose). */
+  function disposeAllStallTimers(): void {
+    for (const timer of stallTimers.values()) clearTimeout(timer);
+    stallTimers.clear();
+  }
+
+  /**
+   * (Re)arm the single coalesced stall timer for a run against its current
+   * in-memory state. Clears any prior timer first (idempotent — last arm wins),
+   * so it is safe to call from every liveness-affecting path. No-op when the run
+   * has no running, not-yet-flagged non-lead agent (nothing can newly stall).
+   */
+  function scheduleStallDetection(runtime: RunRuntime): void {
+    clearStallTimer(runtime.runId);
+    const manifest = runtime.manifest;
+    if (!manifest || runtime.suspended) return;
+    const nowMs = now().getTime();
+    let soonest = Number.POSITIVE_INFINITY;
+    for (const agent of manifest.agents) {
+      if (agent.role === "lead") continue;
+      if (agent.status !== "running") continue;
+      if (agent.stalled === true) continue; // already flagged + notified — no repeat.
+      const lastMs = effectiveLivenessMs(runtime, agent);
+      if (!Number.isFinite(lastMs)) continue;
+      const horizon = lastMs + HEARTBEAT_STALL_THRESHOLD_MS;
+      if (horizon < soonest) soonest = horizon;
+    }
+    if (!Number.isFinite(soonest)) return; // no armable worker → no timer.
+    const delay = Math.max(0, soonest - nowMs);
+    const timer = setTimeout(() => {
+      stallTimers.delete(runtime.runId);
+      void runStallDetectionSweep(runtime.runId);
+    }, delay);
+    if (typeof timer.unref === "function") timer.unref();
+    stallTimers.set(runtime.runId, timer);
+  }
+
+  /**
+   * Timer-fired stall sweep for a single run: runs buildStallDetectionOps under
+   * the run mutex, persists any flag/notify/clear ops, then re-arms for the next
+   * horizon. Best-effort — a failure just defers to the next re-arm.
+   */
+  async function runStallDetectionSweep(runId: string): Promise<void> {
+    const runtime = runs.get(runId);
+    if (!runtime) return; // torn down between arm and fire.
+    try {
+      await runtime.mutex.run(async () => {
+        await loadIntoRuntime(runtime);
+        if (runtime.suspended || !runtime.manifest) return;
+        const nowMs = now().getTime();
+        const stall = buildStallDetectionOps(runtime, runtime.manifest, nowMs);
+        if (!stall.ops.length) return;
+        try {
+          await directPatch(
+            runtime,
+            stall.ops,
+            `stall sweep${stall.flagged ? `: flag ${stall.flagged} stalled agent(s)` : ""}`,
+          );
+          // The sweep persisted the `lead_status` outbox entry but, unlike a
+          // tool-driven mutation, nothing here calls the drainer — so without
+          // this the stall notification would sit `pending` until an unrelated
+          // mutation or restart happened to flush it, defeating the alert in the
+          // idle scenario this timer exists for. Fire the run's registered
+          // activation drainer now (idempotent + coalesced; no-op when the
+          // committed ops enqueued nothing undelivered, e.g. a flag-clear).
+          fireRunActivationDrain(runtime);
+        } catch (err) {
+          if (!(err instanceof OrchestrationRunSuspendedError)) throw err;
+        }
+      });
+    } catch {
+      // Best-effort liveness sweep; the next mutation/heartbeat re-arms.
+    } finally {
+      const live = runs.get(runId);
+      if (live) scheduleStallDetection(live);
+    }
+  }
 
   function nowIso(): string {
     return now().toISOString();
@@ -523,6 +808,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         watcherDebounceTimers: {},
         watcherIdleTimer: null,
         suspended: false,
+        heartbeatFreshnessMs: new Map(),
+        heartbeatPersistedAtMs: new Map(),
       };
       runs.set(runId, runtime);
       return runtime;
@@ -570,6 +857,17 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         throw err;
       }
     }
+    // A cold hydration is the one place `runs` transitions unloaded → loaded for
+    // this runtime (subsequent callers early-return at the guard above), so this
+    // is the single chokepoint that fires exactly one initial activation drain
+    // per activation across every load/open path (subscribe, bundleRead,
+    // hydrateRunForList, and a cold mutation after idle-close). Fire-and-forget so
+    // it never blocks or fails the load; the drainer's mutex work queues behind
+    // the caller's current mutex frame.
+    fireRunActivationDrain(runtime);
+    // Arm stall detection on hydration so a run restored on boot (with running
+    // workers) starts watching for silence even if no orchestration turn runs.
+    scheduleStallDetection(runtime);
   }
 
   async function hydrateRunForList(entry: RunIndexEntry): Promise<void> {
@@ -770,6 +1068,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     }
     await writeServerGeneration(bundlePath, manifest.serverGeneration);
     runtime.manifest = manifest;
+    // Re-arm stall detection against the committed agent set — the single write
+    // chokepoint for every mutation path (directPatch AND manifestPatch), so a
+    // spawn that adds a running worker or a status change is always reflected.
+    scheduleStallDetection(runtime);
     await appendRunIndexEntry(
       manifest.laneId,
       runIndexEntryFromManifest(manifest, runtime.suspended ? "suspended" : "active"),
@@ -848,6 +1150,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           { etag, at: createdAt, summary: "run created", patchKindSummary: "init" },
         ],
         lineage: [],
+        receipts: [],
+        outbox: [],
       };
       await persistManifest(runtime, manifest);
       await persistPlan(runtime, initialPlanMd(manifest));
@@ -1107,6 +1411,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         kind: req.kind,
         version: req.version ?? 1,
         approval: req.approval ?? "pending",
+        ...(req.externalRef ? { externalRef: req.externalRef } : {}),
+        ...(req.registeredBySessionId?.trim()
+          ? { registeredBySessionId: req.registeredBySessionId.trim() }
+          : {}),
       };
       const op: ManifestPatchOp = {
         op: "add",
@@ -1221,7 +1529,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   async function releaseTask(
     req: OrchestrationReleaseTaskRequest,
     bundlePath: string,
-  ): Promise<{ manifest: OrchestrationManifest; etag: string }> {
+  ): Promise<{ manifest: OrchestrationManifest; etag: string; completionEnqueued: boolean }> {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
@@ -1232,6 +1540,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       if (!task) throw new Error(`task ${req.taskId} not found`);
       const actor = manifest.agents.find((agent) => agent.sessionId === req.sessionId);
       if (!actor) throw new Error(`agent ${req.sessionId} not registered in run ${req.runId}`);
+      // Set when this transition enqueues a structured `completion` outbox entry
+      // to the lead. The release tool suppresses the generic `lead_status` ping
+      // for that same transition so the lead gets exactly one notification.
+      let completionEnqueued = false;
       if (
         actor.role !== "lead"
         && task.assigneeSessionId
@@ -1285,6 +1597,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         // Close this child's open delegation edge when it goes terminal.
         if (agentStatus === "completed" || agentStatus === "failed") {
           const edgeStatus: DelegationStatus = agentStatus === "completed" ? "completed" : "failed";
+          // buildDelegationResultOps is idempotent — returns [] once the edge is
+          // closed — so re-pushing on a re-release is a safe no-op.
           ops.push(
             ...buildDelegationResultOps(
               manifest,
@@ -1294,6 +1608,33 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
               nowIso(),
             ),
           );
+          // Durable completion event → lead. Emitted in the SAME transaction as
+          // the terminal transition, so a lead can never miss a worker/validator
+          // finishing (drives `awaitAgent`; delivered via the outbox drain). This
+          // piggybacks the existing lifecycle observation — no poller. Gated on
+          // the agent NEWLY going terminal: a re-release of an already-terminal
+          // task (LLM retry, or done-then-failed with no intervening claim) finds
+          // the agent already completed/failed and emits nothing further, so the
+          // lead never gets a duplicate completion steer. A worker that claims a
+          // fresh task (claimTask resets its status to "running") and finishes
+          // again does emit a new completion, as intended — one per real
+          // terminal transition, edge-recorded or not.
+          // (`buildAgentCompletionOutboxOps` ids advance with the manifest etag,
+          // so id-based outbox dedup would not catch the duplicate.)
+          const agentAlreadyTerminal =
+            actor.status === "completed" || actor.status === "failed";
+          if (!agentAlreadyTerminal) {
+            const completionOps = buildAgentCompletionOutboxOps(
+              manifest,
+              actor,
+              task,
+              edgeStatus,
+            );
+            if (completionOps.length) {
+              ops.push(...completionOps);
+              completionEnqueued = true;
+            }
+          }
         }
       }
       const projectedManifest = applyPatches(manifest, ops);
@@ -1306,7 +1647,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         ),
       );
       const patchRes = await directPatch(runtime, ops, "release");
-      return { manifest: patchRes.manifest, etag: patchRes.etag };
+      return { manifest: patchRes.manifest, etag: patchRes.etag, completionEnqueued };
     });
   }
 
@@ -1540,9 +1881,25 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       }
       const manifest = runtime.manifest;
       if (!manifest) return { ok: false, reason: `run ${req.runId} not found` };
-      if (!manifest.agents.some((agent) => agent.sessionId === req.sessionId)) {
+      const current = manifest.agents.find((entry) => entry.sessionId === req.sessionId);
+      if (!current) {
         return { ok: false, reason: `agent ${req.sessionId} not found`, etag: manifest.etag };
       }
+      const nowMs = now().getTime();
+      // Always record the freshest observation in memory — this is the cheap side
+      // of the coalesce and the signal the stall sweep reads. No disk, no clone.
+      runtime.heartbeatFreshnessMs.set(req.sessionId, nowMs);
+      // Push the stall horizon out to reflect this liveness signal. Runs on every
+      // heartbeat, including the coalesced fast path that skips the disk write.
+      scheduleStallDetection(runtime);
+      const lastPersistedMs = runtime.heartbeatPersistedAtMs.get(req.sessionId) ?? 0;
+      const wasStalled = current.stalled === true;
+      // Coalesce: skip the disk write + manifest clone unless the persisted marker
+      // is stale, or we owe a `stalled`-clearing patch (recovery must land now).
+      if (!wasStalled && nowMs - lastPersistedMs < HEARTBEAT_PERSIST_INTERVAL_MS) {
+        return { ok: true, etag: manifest.etag };
+      }
+      runtime.heartbeatPersistedAtMs.set(req.sessionId, nowMs);
       const next = structuredClone(manifest) as OrchestrationManifest;
       const agent = next.agents.find((entry) => entry.sessionId === req.sessionId);
       const lastHeartbeatAt = nowIso();
@@ -1558,14 +1915,30 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       } catch (err) {
         throw err;
       }
+      let etag = next.etag;
+      // Recovery: a fresh heartbeat from a previously-stalled agent clears the flag
+      // (service-owned manifest patch) so the lead can be notified again if it
+      // stalls a second time. Rare transition, so the directPatch cost is bounded.
+      if (wasStalled) {
+        try {
+          const res = await directPatch(
+            runtime,
+            [{ op: "replace", path: `/agents/{sessionId:${req.sessionId}}/stalled`, value: false }],
+            `clear stalled flag for ${req.sessionId} (heartbeat resumed)`,
+          );
+          etag = res.etag;
+        } catch (err) {
+          if (!(err instanceof OrchestrationRunSuspendedError)) throw err;
+        }
+      }
       emit({
         runId: req.runId,
         kind: "heartbeat",
-        etag: next.etag,
+        etag,
         sessionId: req.sessionId,
         lastHeartbeatAt,
       });
-      return { ok: true, etag: next.etag };
+      return { ok: true, etag };
     });
   }
 
@@ -1618,11 +1991,15 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           runtime.watcher = null;
           if (runtime.refCount === 0) {
             runs.delete(runId);
+            disposeRunOutbox(runId);
+            clearStallTimer(runId);
           }
         }, WATCHER_IDLE_CLOSE_MS);
         runtime.watcherIdleTimer.unref?.();
       } else {
         runs.delete(runId);
+        disposeRunOutbox(runId);
+        clearStallTimer(runId);
       }
     }
   }
@@ -1634,6 +2011,11 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
     }
     runs.clear();
+    pendingActivationDrains.clear();
+    disposeAllStallTimers();
+    // Clear any armed deferred-retry drain timers so a disposed service can't
+    // fire a stray outbox drain after teardown.
+    disposeAllOutbox();
   }
 
   async function subscribe(runId: string, bundlePath: string): Promise<void> {
@@ -1671,25 +2053,36 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   // with role=lead.
   async function directPatch(
     runtime: RunRuntime,
-    patches: readonly ManifestPatchOp[],
+    patches:
+      | readonly ManifestPatchOp[]
+      | ((nextEtag: string) => readonly ManifestPatchOp[]),
     summary: string,
   ): Promise<{ manifest: OrchestrationManifest; etag: string }> {
     assertRunWritable(runtime);
     if (!runtime.manifest) throw new Error("manifest not loaded");
-    const next = normalizeManifestShape(applyPatches(runtime.manifest, patches));
+    const updatedAt = nowIso();
+    const serverGeneration = runtime.manifest.serverGeneration + 1;
+    const etag = makeEtag(runtime, serverGeneration);
+    const resolvedPatches =
+      typeof patches === "function" ? patches(etag) : patches;
+    const next = normalizeManifestShape(
+      applyPatches(runtime.manifest, resolvedPatches),
+    );
     const shapeError = validateManifestShape(next);
     if (shapeError) {
       throw new Error(shapeError);
     }
-    const updatedAt = nowIso();
-    const serverGeneration = runtime.manifest.serverGeneration + 1;
-    const etag = makeEtag(runtime, serverGeneration);
     next.updatedAt = updatedAt;
     next.serverGeneration = serverGeneration;
     next.etag = etag;
     next.history = [
       ...runtime.manifest.history.slice(-HISTORY_RING_LIMIT + 1),
-      { etag, at: updatedAt, summary, patchKindSummary: summarizePatch([...patches]) },
+      {
+        etag,
+        at: updatedAt,
+        summary,
+        patchKindSummary: summarizePatch([...resolvedPatches]),
+      },
     ];
     await persistManifest(runtime, next);
     emit({
@@ -1697,9 +2090,506 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       kind: "manifest",
       etag,
       manifest: next,
-      patch: [...patches],
+      patch: [...resolvedPatches],
     });
     return { manifest: next, etag };
+  }
+
+  function internalMutationError(err: unknown): { ok: false; error: string; message: string } {
+    if (err instanceof OrchestrationRunSuspendedError) {
+      return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+    }
+    if (err instanceof OrchestrationPersistConflictError) {
+      return {
+        ok: false,
+        error: "etag_conflict",
+        message: `manifest on disk advanced to generation ${err.onDisk.serverGeneration}`,
+      };
+    }
+    return {
+      ok: false,
+      error: "mutation_failed",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  /**
+   * Has the side effect this requestId would produce already materialized in the
+   * manifest? Used by reserveReceipt to reconcile a stale-pending or pruned
+   * receipt to reality before permitting a fresh reservation — otherwise the same
+   * deterministic requestId could spawn a duplicate session / re-enqueue a
+   * duplicate message.
+   *   spawnAgent   → an agent row linked by `spawnRequestId` (the spawn completed
+   *                  and appended the agent, even if the receipt was later pruned).
+   *   messageAgent → an outbox entry carrying this `requestId` (the delivery was
+   *                  enqueued; it commits atomically with the receipt).
+   * Returns the replayable receipt result, or null when nothing materialized.
+   */
+  function reconcileMaterializedSideEffect(
+    manifest: OrchestrationManifest,
+    args: { requestId: string; kind: OrchestrationReceiptKind },
+  ): NonNullable<OrchestrationReceipt["result"]> | null {
+    if (args.kind === "spawnAgent") {
+      const agent = manifest.agents.find(
+        (candidate) => candidate.spawnRequestId === args.requestId,
+      );
+      return agent ? { sessionId: agent.sessionId } : null;
+    }
+    const entry = (manifest.outbox ?? []).find(
+      (candidate) => candidate.requestId === args.requestId,
+    );
+    return entry ? {} : null;
+  }
+
+  async function reserveReceipt(
+    runId: string,
+    bundlePath: string,
+    args: { requestId: string; kind: OrchestrationReceiptKind },
+  ): Promise<
+    | { ok: true; status: "duplicate"; receipt: OrchestrationReceipt }
+    | { ok: true; status: "reserved"; adoptSessionId?: string }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const existing = (manifest.receipts ?? []).find(
+        (receipt) => receipt.requestId === args.requestId,
+      );
+      // A COMPLETED receipt is a genuine duplicate — its recorded result is
+      // replayed by the caller. A PENDING receipt means a prior reservation for
+      // this requestId never completed: either a concurrent call is in flight,
+      // or a crash happened between reserveReceipt and completeReceipt. While it
+      // is still within the TTL we surface it as a live duplicate (the caller
+      // must wait / return a retryable in-progress result, never a fabricated
+      // success). Once it ages past the TTL we drop the wedged entry and reserve
+      // fresh so the deterministic requestId is not suppressed forever (this
+      // mirrors the recoverStaleTasks reap, but inline so a retry can proceed
+      // without waiting for the next lead-triggered sweep).
+      // Before dropping/reserving, reconcile against reality: if the side effect
+      // this requestId would produce already exists (a crash after createSession /
+      // enqueue but before completeReceipt, or a completed receipt pruned by
+      // RECEIPT_CAP while the agent/outbox row lives on), replay a completed
+      // receipt instead of re-reserving so the same deterministic request cannot
+      // duplicate the session/message.
+      const reconciled = reconcileMaterializedSideEffect(manifest, args);
+      let staleReceiptDropped = false;
+      if (existing) {
+        if (existing.status !== "pending") {
+          return { ok: true, status: "duplicate", receipt: existing };
+        }
+        const createdMs = Date.parse(existing.createdAt);
+        const stalePending =
+          Number.isFinite(createdMs) &&
+          now().getTime() - createdMs >= PENDING_RECEIPT_TTL_MS;
+        if (!stalePending) {
+          return { ok: true, status: "duplicate", receipt: existing };
+        }
+        // Stale pending — reconcile before dropping. If the side effect already
+        // materialized, complete this receipt with it rather than re-reserving.
+        if (reconciled) {
+          const completed: OrchestrationReceipt = {
+            ...existing,
+            status: "completed",
+            result: reconciled,
+          };
+          try {
+            await directPatch(
+              runtime,
+              [
+                {
+                  op: "replace",
+                  path: "/receipts",
+                  value: (manifest.receipts ?? []).map((r) =>
+                    r.requestId === args.requestId ? completed : r,
+                  ),
+                },
+              ],
+              `reconcile stale ${args.kind} receipt`,
+            );
+          } catch (err) {
+            return internalMutationError(err);
+          }
+          return { ok: true, status: "duplicate", receipt: completed };
+        }
+        // Crash-after-createSession: no agent row materialized (so `reconciled`
+        // is null), but this spawn receipt was stamped with the created sessionId
+        // before the completion patch could commit. The durable chat session
+        // exists yet the manifest doesn't know it — dropping the receipt and
+        // reserving fresh would spawn a SECOND session and orphan the first.
+        // Keep the pending receipt and tell the caller to ADOPT that session:
+        // it re-runs the normal completion (append agent row + brief + complete
+        // this receipt) against the existing session instead of respawning.
+        if (args.kind === "spawnAgent" && existing.result?.sessionId) {
+          return {
+            ok: true,
+            status: "reserved",
+            adoptSessionId: existing.result.sessionId,
+          };
+        }
+        staleReceiptDropped = true;
+      } else if (reconciled) {
+        // No receipt at all (its completed receipt was pruned by RECEIPT_CAP) but
+        // the side effect still exists — replay a completed duplicate so a retry
+        // with the same deterministic requestId is deduped, not re-materialized.
+        return {
+          ok: true,
+          status: "duplicate",
+          receipt: {
+            requestId: args.requestId,
+            kind: args.kind,
+            createdAt: nowIso(),
+            status: "completed",
+            result: reconciled,
+          },
+        };
+      }
+      const receipt: OrchestrationReceipt = {
+        requestId: args.requestId,
+        kind: args.kind,
+        createdAt: nowIso(),
+        status: "pending",
+      };
+      try {
+        const reserveOps: ManifestPatchOp[] = staleReceiptDropped
+          ? [
+              {
+                op: "replace",
+                path: "/receipts",
+                value: [
+                  ...(manifest.receipts ?? []).filter(
+                    (r) => r.requestId !== args.requestId,
+                  ),
+                  receipt,
+                ],
+              },
+            ]
+          : [{ op: "add", path: "/receipts/-", value: receipt }];
+        await directPatch(runtime, reserveOps, `reserve ${args.kind} receipt`);
+        return { ok: true, status: "reserved" };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  async function completeReceipt(
+    runId: string,
+    bundlePath: string,
+    args: {
+      requestId: string;
+      result: NonNullable<OrchestrationReceipt["result"]>;
+    },
+    extraPatches: readonly ManifestPatchOp[] = [],
+  ): Promise<
+    | { ok: true; manifest: OrchestrationManifest; etag: string }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const receiptIndex = (manifest.receipts ?? []).findIndex(
+        (receipt) => receipt.requestId === args.requestId,
+      );
+      if (receiptIndex < 0) {
+        return {
+          ok: false,
+          error: "receipt_not_found",
+          message: `receipt ${args.requestId} is not reserved`,
+        };
+      }
+      const existing = manifest.receipts![receiptIndex]!;
+      if (existing.status === "completed") {
+        return { ok: true, manifest, etag: manifest.etag };
+      }
+      try {
+        const res = await directPatch(
+          runtime,
+          (nextEtag) => {
+            const receipts = [...(manifest.receipts ?? [])];
+            receipts[receiptIndex] = {
+              ...existing,
+              status: "completed",
+              result: { ...args.result, etag: nextEtag },
+            };
+            return [
+              { op: "replace", path: "/receipts", value: receipts },
+              ...extraPatches,
+            ];
+          },
+          `complete ${existing.kind} receipt`,
+        );
+        return { ok: true, manifest: res.manifest, etag: res.etag };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  /**
+   * Persist a recoverable identifier (the created sessionId) onto a still-PENDING
+   * receipt WITHOUT completing it. spawnAgent calls this immediately after
+   * `chat.createSession` succeeds and before the completion patch, so a crash in
+   * that window leaves the session discoverable: reserveReceipt's stale-pending
+   * path (and recoverStaleTasks) can adopt it on retry instead of spawning a twin
+   * and orphaning the first. A no-op if the receipt already completed.
+   */
+  async function stampReceiptResult(
+    runId: string,
+    bundlePath: string,
+    args: {
+      requestId: string;
+      result: NonNullable<OrchestrationReceipt["result"]>;
+    },
+  ): Promise<{ ok: true } | { ok: false; error: string; message: string }> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const receiptIndex = (manifest.receipts ?? []).findIndex(
+        (receipt) => receipt.requestId === args.requestId,
+      );
+      if (receiptIndex < 0) {
+        return {
+          ok: false,
+          error: "receipt_not_found",
+          message: `receipt ${args.requestId} is not reserved`,
+        };
+      }
+      const existing = manifest.receipts![receiptIndex]!;
+      if (existing.status === "completed") {
+        return { ok: true };
+      }
+      const receipts = [...(manifest.receipts ?? [])];
+      receipts[receiptIndex] = {
+        ...existing,
+        result: { ...existing.result, ...args.result },
+      };
+      try {
+        await directPatch(
+          runtime,
+          [{ op: "replace", path: "/receipts", value: receipts }],
+          `stamp ${existing.kind} receipt session`,
+        );
+        return { ok: true };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  async function releaseReceipt(
+    runId: string,
+    bundlePath: string,
+    args: { requestId: string },
+  ): Promise<
+    | { ok: true; manifest: OrchestrationManifest; etag: string }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      const existing = (manifest.receipts ?? []).find(
+        (receipt) => receipt.requestId === args.requestId,
+      );
+      if (!existing || existing.status !== "pending") {
+        return { ok: true, manifest, etag: manifest.etag };
+      }
+      const receipts = (manifest.receipts ?? []).filter(
+        (receipt) => receipt.requestId !== args.requestId,
+      );
+      try {
+        const res = await directPatch(
+          runtime,
+          [{ op: "replace", path: "/receipts", value: receipts }],
+          `release ${existing.kind} receipt`,
+        );
+        return { ok: true, manifest: res.manifest, etag: res.etag };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  async function enqueueOutbox(
+    runId: string,
+    bundlePath: string,
+    entries: readonly NewOutboxEntry[],
+  ): Promise<
+    | { ok: true; ids: string[]; etag: string }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      if (!entries.length) return { ok: true, ids: [], etag: manifest.etag };
+      const createdAt = nowIso();
+      const ops = buildOutboxEnqueueOps(
+        manifest,
+        entries.map((entry) => ({ ...entry, createdAt: entry.createdAt ?? createdAt })),
+      );
+      const ids = ops.map(
+        (op) => (op as { value: OrchestrationOutboxEntry }).value.id,
+      );
+      try {
+        const res = await directPatch(runtime, ops, `enqueue ${entries.length} outbox entr${entries.length === 1 ? "y" : "ies"}`);
+        return { ok: true, ids, etag: res.etag };
+      } catch (err) {
+        return internalMutationError(err);
+      }
+    });
+  }
+
+  function listDueOutbox(runId: string): OrchestrationOutboxEntry[] {
+    const manifest = runs.get(runId)?.manifest;
+    if (!manifest) return [];
+    const nowMs = now().getTime();
+    return (manifest.outbox ?? [])
+      .filter((entry) => {
+        if (entry.status === "delivering") return true;
+        if (entry.status !== "pending") return false;
+        if (!entry.nextAttemptAt) return true;
+        const nextAttemptMs = Date.parse(entry.nextAttemptAt);
+        return !Number.isFinite(nextAttemptMs) || nextAttemptMs <= nowMs;
+      })
+      .map((entry) => structuredClone(entry));
+  }
+
+  async function claimOutboxEntry(
+    runId: string,
+    bundlePath: string,
+    entryId: string,
+  ): Promise<OrchestrationOutboxEntry | null> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended || !runtime.manifest) return null;
+      const manifest = runtime.manifest;
+      const index = (manifest.outbox ?? []).findIndex((entry) => entry.id === entryId);
+      if (index < 0) return null;
+      const existing = manifest.outbox![index]!;
+      if (existing.status !== "pending" && existing.status !== "delivering") return null;
+      const claimed: OrchestrationOutboxEntry = {
+        ...existing,
+        status: "delivering",
+        updatedAt: nowIso(),
+      };
+      const outbox = [...(manifest.outbox ?? [])];
+      outbox[index] = claimed;
+      try {
+        const res = await directPatch(
+          runtime,
+          [{ op: "replace", path: "/outbox", value: outbox }],
+          `claim outbox ${entryId}`,
+        );
+        return res.manifest.outbox?.find((entry) => entry.id === entryId) ?? null;
+      } catch {
+        return null;
+      }
+    });
+  }
+
+  async function settleOutboxEntry(
+    runId: string,
+    bundlePath: string,
+    entryId: string,
+    outcome: OutboxSettlement,
+  ): Promise<void> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    await runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended || !runtime.manifest) return;
+      const manifest = runtime.manifest;
+      const index = (manifest.outbox ?? []).findIndex((entry) => entry.id === entryId);
+      if (index < 0) return;
+      const existing = manifest.outbox![index]!;
+      if (existing.status !== "delivering") return;
+      const updatedAt = nowIso();
+      const outbox = [...(manifest.outbox ?? [])];
+      const patches: ManifestPatchOp[] = [];
+      if (outcome.status === "delivered") {
+        const delivered: OrchestrationOutboxEntry = {
+          ...existing,
+          status: "delivered",
+          updatedAt,
+          deliveredAt: updatedAt,
+        };
+        delete delivered.nextAttemptAt;
+        delete delivered.lastError;
+        outbox[index] = delivered;
+      } else {
+        const attempts = existing.attempts + 1;
+        const createdMs = Date.parse(existing.createdAt);
+        const agedOut =
+          Number.isFinite(createdMs) &&
+          now().getTime() - createdMs >= OUTBOX_ENTRY_MAX_AGE_MS;
+        const permanent =
+          outcome.status === "failed" || attempts >= existing.maxAttempts || agedOut;
+        const failed: OrchestrationOutboxEntry = {
+          ...existing,
+          status: permanent ? "failed" : "pending",
+          attempts,
+          updatedAt,
+          lastError: outcome.error,
+          ...(permanent
+            ? {}
+            : { nextAttemptAt: new Date(now().getTime() + outcome.backoffMs).toISOString() }),
+        };
+        if (permanent) delete failed.nextAttemptAt;
+        outbox[index] = failed;
+        if (permanent) {
+          patches.push({
+            op: "add",
+            path: "/decisions/-",
+            value: {
+              id: `D-outbox-${shortRand()}`,
+              at: updatedAt,
+              source: "lead",
+              summary: `outbox delivery failed permanently: ${existing.kind} → ${existing.targetSessionId}: ${outcome.error}`,
+            },
+          });
+        }
+      }
+      await directPatch(
+        runtime,
+        [{ op: "replace", path: "/outbox", value: outbox }, ...patches],
+        `settle outbox ${entryId} → ${outbox[index]!.status}`,
+      );
+    });
   }
 
   // --------------------------------------------------------------------------
@@ -1738,6 +2628,53 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       return doneIds.length ? `completed: ${doneIds.join(", ")}` : "completed";
     }
     return "failed";
+  }
+
+  /**
+   * Build the outbox-append op(s) for a worker/validator completion event
+   * targeted at the run's lead. Returns [] when there is no distinct lead to
+   * notify (no lead registered, or the lead itself is the actor). The text is
+   * plain-language per SKILL §14; structured detail rides in the metadata so
+   * `awaitAgent` and lead tooling can read the outcome without parsing prose.
+   */
+  function buildAgentCompletionOutboxOps(
+    manifest: OrchestrationManifest,
+    actor: OrchestrationManifest["agents"][number],
+    task: OrchestrationManifest["tasks"][number] | undefined,
+    edgeStatus: Extract<DelegationStatus, "completed" | "failed">,
+  ): ManifestPatchOp[] {
+    const lead = manifest.agents.find((agent) => agent.role === "lead");
+    if (!lead || lead.sessionId === actor.sessionId) return [];
+    const actorLabel = actor.tag?.trim() || actor.role;
+    const taskLabel = task?.title?.trim() || task?.id || "its task";
+    const outcomeWord = edgeStatus === "completed" ? "done" : "failed";
+    const text = `${actorLabel} finished ${taskLabel} — ${outcomeWord}.`;
+    return buildOutboxEnqueueOps(manifest, [
+      {
+        kind: "completion",
+        targetSessionId: lead.sessionId,
+        delivery: {
+          op: "steer",
+          text,
+          metadata: {
+            orchestrationOrigin: {
+              runId: manifest.runId,
+              fromSessionId: actor.sessionId,
+              kind: "queue",
+              intent: "status",
+              ...(task ? { taskId: task.id } : {}),
+            },
+            orchestrationCompletion: {
+              sessionId: actor.sessionId,
+              role: actor.role,
+              ...(actor.tag ? { tag: actor.tag } : {}),
+              outcome: edgeStatus,
+              ...(task ? { taskId: task.id } : {}),
+            },
+          },
+        },
+      },
+    ]);
   }
 
   /**
@@ -1980,6 +2917,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     runId: string,
     bundlePath: string,
     intake: PlanningIntakeArtifact,
+    opts?: { goalSource?: OrchestrationGoalSource },
   ): Promise<PlanningMutationResult> {
     return runPlanningMutation(runId, bundlePath, async (runtime) => {
       const planning = planningOf(runtime.manifest!);
@@ -2010,24 +2948,310 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         ...(intake.docMap?.trim() ? { docMap: intake.docMap.trim() } : {}),
         inFlightWork: intake.inFlightWork.trim(),
         ciGates: dedupeStrings(intake.ciGates),
+        ...(typeof intake.touchesUiSurface === "boolean"
+          ? { touchesUiSurface: intake.touchesUiSurface }
+          : {}),
+      };
+      // Deterministic UI auto-skip: when intake reports no UI surface, mark the
+      // UI round skipped by the state machine so we don't force an empty round.
+      const autoSkipUi = intake.touchesUiSurface === false;
+      const nextAutoSkipped: PlanningRoundKind[] = autoSkipUi
+        ? Array.from(new Set([...(planning.autoSkippedRounds ?? []), "ui"]))
+        : (planning.autoSkippedRounds ?? []);
+      const userSkipped = (planning.overrides?.skippedRounds ?? []).filter((kind) =>
+        hasSkippedRoundUserOverride(runtime.manifest!, kind),
+      );
+      const effectiveSkip = Array.from(new Set([...userSkipped, ...nextAutoSkipped]));
+      const ops: ManifestPatchOp[] = [
+        { op: "replace", path: "/leadState/planning/intake", value: recorded },
+        {
+          op: "replace",
+          path: "/leadState/planning/stage",
+          value: advancePlanningStagePastSkipped("round_functional", effectiveSkip),
+        },
+      ];
+      if (autoSkipUi) {
+        ops.push({
+          op: "replace",
+          path: "/leadState/planning/autoSkippedRounds",
+          value: nextAutoSkipped,
+        });
+        ops.push({
+          op: "add",
+          path: "/decisions/-",
+          value: {
+            id: `DL-uiskip-${shortRand()}`,
+            at: nowIso(),
+            source: "lead",
+            summary:
+              "No UI surface in this change — skipping the UI design round.",
+          },
+        });
+      }
+      if (opts?.goalSource) {
+        ops.push({ op: "replace", path: "/goalSource", value: opts.goalSource });
+      }
+      const res = await directPatch(runtime, ops, "planning: codebase intake recorded");
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Merged "treat as skipped" set for the readiness gate: user-waived rounds
+   * (that carry a matching UserOverrideEntry) PLUS deterministic auto-skips.
+   */
+  function effectiveSkippedRounds(
+    manifest: OrchestrationManifest,
+    planning: NonNullable<OrchestrationManifest["leadState"]["planning"]>,
+  ): Set<PlanningRoundKind> {
+    const userSkipped = (planning.overrides?.skippedRounds ?? []).filter((kind) =>
+      hasSkippedRoundUserOverride(manifest, kind),
+    );
+    return new Set<PlanningRoundKind>([
+      ...userSkipped,
+      ...(planning.autoSkippedRounds ?? []),
+    ]);
+  }
+
+  /**
+   * Enter the condensed light-plan path: `intake → light_plan`. The lead offers
+   * this when a goal looks small enough that the full three rounds are overkill;
+   * on the user's acceptance we collapse to one condensed plan + single approval.
+   * Same approval-gate rigor applies (planContentHash re-approval, model routing,
+   * validation) — the readiness gate just requires the condensed essentials.
+   */
+  async function enterLightPlan(
+    runId: string,
+    bundlePath: string,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const manifest = runtime.manifest!;
+      const planning = planningOf(manifest);
+      if (manifest.planSpec?.approval.state === "approved") {
+        return {
+          ok: false,
+          error: "already_approved",
+          message: "the plan is already approved — cannot switch to the lighter path",
+        };
+      }
+      if (!planning.intake) {
+        return {
+          ok: false,
+          error: "no_intake",
+          message: "record codebase intake before choosing the lighter path",
+        };
+      }
+      if (planning.lightPlan) {
+        return { ok: true, manifest, etag: manifest.etag };
+      }
+      // Only offer the condensed path before any real deliberation round has been
+      // recorded — once rounds exist, the run is committed to the full sequence.
+      if (planning.rounds.some((r) => !r.cascadedFrom)) {
+        return {
+          ok: false,
+          error: "rounds_started",
+          message: "deliberation rounds have already started — cannot switch to the lighter path",
+        };
+      }
+      const enteredAt = nowIso();
+      const res = await directPatch(
+        runtime,
+        [
+          { op: "replace", path: "/leadState/planning/stage", value: "light_plan" },
+          { op: "replace", path: "/leadState/planning/lightPlan", value: { enteredAt } },
+          {
+            op: "add",
+            path: "/decisions/-",
+            value: {
+              id: `DL-light-${shortRand()}`,
+              at: enteredAt,
+              source: "user",
+              summary: "Chose the simpler plan (skip the heavy planning rounds).",
+            },
+          },
+        ],
+        "planning: entered light-plan path",
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Expand a condensed light plan back to the full deliberation sequence. Only
+   * allowed before approval. Resets the stage to the first non-skipped round and
+   * clears the lightPlan marker so the full readiness gate applies again.
+   */
+  async function expandToFullPlan(
+    runId: string,
+    bundlePath: string,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const manifest = runtime.manifest!;
+      const planning = planningOf(manifest);
+      if (manifest.planSpec?.approval.state === "approved") {
+        return {
+          ok: false,
+          error: "already_approved",
+          message: "the plan is already approved — cannot expand it back to the full plan",
+        };
+      }
+      if (!planning.lightPlan) {
+        return {
+          ok: false,
+          error: "not_light",
+          message: "this run is not on the lighter path",
+        };
+      }
+      const resumeStage = advancePlanningStagePastSkipped(
+        "round_functional",
+        [...effectiveSkippedRounds(manifest, planning)],
+      );
+      const res = await directPatch(
+        runtime,
+        [
+          { op: "replace", path: "/leadState/planning/stage", value: resumeStage },
+          { op: "remove", path: "/leadState/planning/lightPlan" },
+          {
+            op: "add",
+            path: "/decisions/-",
+            value: {
+              id: `DL-expand-${shortRand()}`,
+              at: nowIso(),
+              source: "lead",
+              summary: "Expanded back to the full planning rounds.",
+            },
+          },
+        ],
+        "planning: expanded to full plan",
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Record the per-run finishing decision (stop at the worktree, or push + open
+   * a PR + update Linear). Idempotent replace; logs a decision entry.
+   */
+  async function recordFinishingChoice(
+    runId: string,
+    bundlePath: string,
+    choice: { mode: OrchestrationFinishingMode; note?: string },
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      if (choice.mode !== "worktree" && choice.mode !== "pr") {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `finishing mode must be "worktree" or "pr" (got ${String(choice.mode)})`,
+        };
+      }
+      const finishing: OrchestrationFinishing = {
+        mode: choice.mode,
+        decidedAt: nowIso(),
+        ...(choice.note?.trim() ? { note: choice.note.trim() } : {}),
       };
       const res = await directPatch(
         runtime,
         [
-          { op: "replace", path: "/leadState/planning/intake", value: recorded },
+          { op: "replace", path: "/finishing", value: finishing },
           {
-            op: "replace",
-            path: "/leadState/planning/stage",
-            value: advancePlanningStagePastSkipped(
-              "round_functional",
-              (planning.overrides?.skippedRounds ?? []).filter((kind) =>
-                hasSkippedRoundUserOverride(runtime.manifest!, kind),
-              ),
-            ),
+            op: "add",
+            path: "/decisions/-",
+            value: {
+              id: `DL-finish-${shortRand()}`,
+              at: finishing.decidedAt!,
+              source: "user",
+              summary:
+                choice.mode === "pr"
+                  ? "When done: push the branch, open a PR, and update Linear."
+                  : "When done: stop at validated code in the worktree.",
+            },
           },
         ],
-        "planning: codebase intake recorded",
+        `planning: finishing choice → ${choice.mode}`,
       );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /** Record where the run's goal came from (Linear issue / PR / goal.md / user). */
+  async function recordGoalSource(
+    runId: string,
+    bundlePath: string,
+    goalSource: OrchestrationGoalSource,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const validKinds = new Set(["linear", "pr", "goalMd", "user"]);
+      if (!goalSource || !validKinds.has(goalSource.kind)) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `goalSource.kind must be one of linear, pr, goalMd, user (got ${String(goalSource?.kind)})`,
+        };
+      }
+      const value: OrchestrationGoalSource = {
+        kind: goalSource.kind,
+        ...(goalSource.ref?.trim() ? { ref: goalSource.ref.trim() } : {}),
+      };
+      const res = await directPatch(
+        runtime,
+        [{ op: "replace", path: "/goalSource", value }],
+        `planning: goal source → ${value.kind}`,
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Record a durable follow-up scheduled for after the run (e.g. "re-check CI in
+   * 30m"). The actual scheduling happens through `chat.createScheduledWork`
+   * (§13); this records it in `manifest.scheduledFollowups` so the bundle owns
+   * the durable intent. Available to the lead and to the finishing worker.
+   */
+  async function recordScheduledFollowup(
+    runId: string,
+    bundlePath: string,
+    followup: Omit<OrchestrationScheduledFollowup, "id" | "createdAt"> & { id?: string },
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      if (!followup.summary?.trim()) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: "scheduled follow-up requires a plain-language summary",
+        };
+      }
+      const scheduledWorkId = followup.scheduledWorkId?.trim();
+      // "scheduled" asserts a durable job is actually armed. Only honour it when
+      // a real scheduledWorkId proves `chat.createScheduledWork` ran; otherwise
+      // the record is intent-only and MUST be "pending" so the manifest never
+      // reports a durable follow-up that will never fire (e.g. the model skipped
+      // or failed the scheduling CLI action). Terminal caller states
+      // (fired/cancelled) and an explicit "pending" are preserved; only an
+      // unbacked "scheduled" is downgraded. A later transition stamps
+      // "scheduled" once the scheduler id exists.
+      const requestedStatus =
+        followup.status ?? (scheduledWorkId ? "scheduled" : "pending");
+      const status: OrchestrationScheduledFollowup["status"] =
+        requestedStatus === "scheduled" && !scheduledWorkId
+          ? "pending"
+          : requestedStatus;
+      const entry: OrchestrationScheduledFollowup = {
+        id: followup.id?.trim() || `SF-${shortRand()}`,
+        summary: followup.summary.trim(),
+        ...(followup.scheduledFor?.trim() ? { scheduledFor: followup.scheduledFor.trim() } : {}),
+        ...(scheduledWorkId ? { scheduledWorkId } : {}),
+        createdAt: nowIso(),
+        status,
+      };
+      const manifest = runtime.manifest!;
+      const ops: ManifestPatchOp[] = [];
+      if (!Array.isArray(manifest.scheduledFollowups)) {
+        ops.push({ op: "add", path: "/scheduledFollowups", value: [entry] });
+      } else {
+        ops.push({ op: "add", path: "/scheduledFollowups/-", value: entry });
+      }
+      const res = await directPatch(runtime, ops, "run: scheduled follow-up recorded");
       return { ok: true, manifest: res.manifest, etag: res.etag };
     });
   }
@@ -2103,7 +3327,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
               : "rounds_complete";
         const nextStage = advancePlanningStagePastSkipped(
           rawNextStage,
-          planning.overrides?.skippedRounds ?? [],
+          Array.from(
+            new Set([
+              ...(planning.overrides?.skippedRounds ?? []),
+              ...(planning.autoSkippedRounds ?? []),
+            ]),
+          ),
         );
         ops.push({ op: "replace", path: "/leadState/planning/stage", value: nextStage });
       }
@@ -2151,6 +3380,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const nextSkipped = Array.from(
         new Set([...(planning.overrides?.skippedRounds ?? []), ...skipped]),
       );
+      const skipForAdvance = Array.from(
+        new Set([...nextSkipped, ...(planning.autoSkippedRounds ?? [])]),
+      );
       const value = {
         ...(nextSkipped.length ? { skippedRounds: nextSkipped } : {}),
         ...(skipReason ? { skipReason } : {}),
@@ -2187,7 +3419,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           },
         });
       }
-      const stage = advancePlanningStagePastSkipped(planning.stage, nextSkipped);
+      const stage = advancePlanningStagePastSkipped(planning.stage, skipForAdvance);
       if (stage !== planning.stage) {
         ops.push({ op: "replace", path: "/leadState/planning/stage", value: stage });
       }
@@ -2200,15 +3432,16 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const planning = planningOf(manifest);
       const missing: string[] = [];
       if (!planning.intake) missing.push("codebase intake");
-      const skipped = new Set(
-        (planning.overrides?.skippedRounds ?? []).filter((kind) =>
-          hasSkippedRoundUserOverride(manifest, kind),
-        ),
-      );
-      for (const kind of ["functional", "ui", "extras"] as PlanningRoundKind[]) {
-        if (skipped.has(kind)) continue;
-        if (!planning.rounds.some((r) => r.kind === kind && !r.cascadedFrom)) {
-          missing.push(`${kind} deliberation round`);
+      // On the condensed light path the three deliberation rounds are collapsed
+      // into one plan, so they are not required — only the condensed essentials
+      // (intake + validation + model routing) gate approval.
+      if (!planning.lightPlan) {
+        const skipped = effectiveSkippedRounds(manifest, planning);
+        for (const kind of ["functional", "ui", "extras"] as PlanningRoundKind[]) {
+          if (skipped.has(kind)) continue;
+          if (!planning.rounds.some((r) => r.kind === kind && !r.cascadedFrom)) {
+            missing.push(`${kind} deliberation round`);
+          }
         }
       }
       const validationWaived = hasExplicitValidationWaiver(manifest);
@@ -2333,10 +3566,101 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   }
 
   /**
+   * Effective liveness of an agent in ms epoch: the max of its persisted
+   * heartbeat marker, the freshest in-memory observation, and — as a floor for an
+   * agent that has never checked in — its spawn time. Returns NaN when none parse.
+   */
+  function effectiveLivenessMs(
+    runtime: RunRuntime,
+    agent: OrchestrationManifest["agents"][number],
+  ): number {
+    const candidates = [
+      typeof agent.lastHeartbeatAt === "string" ? Date.parse(agent.lastHeartbeatAt) : NaN,
+      runtime.heartbeatFreshnessMs.get(agent.sessionId) ?? NaN,
+      typeof agent.spawnedAt === "string" ? Date.parse(agent.spawnedAt) : NaN,
+    ].filter((value) => Number.isFinite(value));
+    return candidates.length ? Math.max(...candidates) : NaN;
+  }
+
+  /**
+   * Heartbeat-liveness sweep body (piggybacked on releaseStaleClaims). Returns
+   * service-owned patch ops that flag `running` agents silent past the stall
+   * threshold, clear the flag on recovered/no-longer-running agents, and enqueue
+   * a single plain-language lead notification per new stall. Dedupe keys on the
+   * `stalled` flag: a still-stalled agent yields no ops and no repeat message.
+   */
+  function buildStallDetectionOps(
+    runtime: RunRuntime,
+    manifest: OrchestrationManifest,
+    nowMs: number,
+  ): { ops: ManifestPatchOp[]; flagged: number } {
+    const lead = manifest.agents.find((agent) => agent.role === "lead");
+    const ops: ManifestPatchOp[] = [];
+    const notifications: NewOutboxEntry[] = [];
+    let flagged = 0;
+    for (const agent of manifest.agents) {
+      if (agent.role === "lead") continue;
+      const stalledNow = agent.stalled === true;
+      if (agent.status !== "running") {
+        // Only a working agent can be stalled; clear a leftover flag lazily.
+        if (stalledNow) {
+          ops.push({ op: "replace", path: `/agents/{sessionId:${agent.sessionId}}/stalled`, value: false });
+        }
+        continue;
+      }
+      const lastMs = effectiveLivenessMs(runtime, agent);
+      if (!Number.isFinite(lastMs)) continue;
+      const silentMs = nowMs - lastMs;
+      if (silentMs > HEARTBEAT_STALL_THRESHOLD_MS) {
+        if (stalledNow) continue; // already flagged + notified — no repeat.
+        ops.push({ op: "replace", path: `/agents/{sessionId:${agent.sessionId}}/stalled`, value: true });
+        flagged += 1;
+        if (lead && lead.sessionId !== agent.sessionId) {
+          const label = agent.tag?.trim() || agent.displayName?.trim() || agent.role;
+          const minutes = Math.max(1, Math.round(silentMs / 60_000));
+          notifications.push({
+            kind: "lead_status",
+            targetSessionId: lead.sessionId,
+            delivery: {
+              op: "steer",
+              text:
+                `${label} hasn't shown signs of life for ${minutes}m — ` +
+                `consider steering, waiting, or reassigning (messageAgent / awaitAgent / spawnAgent).`,
+              metadata: {
+                orchestrationOrigin: {
+                  runId: manifest.runId,
+                  fromSessionId: agent.sessionId,
+                  kind: "queue",
+                  intent: "status",
+                },
+                orchestrationStall: {
+                  sessionId: agent.sessionId,
+                  role: agent.role,
+                  ...(agent.tag ? { tag: agent.tag } : {}),
+                  silentMs,
+                },
+              },
+            },
+          });
+        }
+      } else if (stalledNow) {
+        // Recovery inside the sweep: a heartbeat landed since the last flag.
+        ops.push({ op: "replace", path: `/agents/{sessionId:${agent.sessionId}}/stalled`, value: false });
+      }
+    }
+    if (notifications.length) {
+      ops.push(...buildOutboxEnqueueOps(manifest, notifications));
+    }
+    return { ops, flagged };
+  }
+
+  /**
    * Crash-resume primitive: reset any claimed/in-progress task whose claim lease
    * has expired back to `pending` and clear its assignee, so the lead can
    * re-dispatch work a dead worker abandoned. The manifest already survives
    * restarts on disk; this recovers the in-flight claims that outlived a worker.
+   * Also runs the heartbeat-liveness sweep (buildStallDetectionOps) so a silent
+   * worker is flagged + the lead notified before its 30-min lease even expires.
    */
   async function releaseStaleClaims(
     runId: string,
@@ -2403,6 +3727,35 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           reconciledEdges += 1;
         }
       }
+      // Heartbeat auto-recovery: flag agents that have gone silent past the stall
+      // threshold and notify the lead once. Piggybacks this existing sweep — no
+      // new interval/timer. Stall flags are orthogonal to the lease/edge ops above
+      // (they touch /stalled + /outbox only), so evaluating against `manifest` is
+      // accurate.
+      const stall = buildStallDetectionOps(runtime, manifest, nowMs);
+      ops.push(...stall.ops);
+      // Reap wedged pending receipts: a crash between reserveReceipt and
+      // completeReceipt leaves a `pending` receipt that never expires,
+      // permanently deduping its deterministic requestId so the logical
+      // spawn/message can never be reissued. Drop pending receipts older than
+      // the TTL here so the requestId becomes reservable again. Completed
+      // receipts are capped separately at normalization and left untouched.
+      const existingReceipts = manifest.receipts ?? [];
+      const survivingReceipts = existingReceipts.filter((receipt) => {
+        if (receipt.status !== "pending") return true;
+        // A pending receipt stamped with a created sessionId is RECOVERABLE: the
+        // session exists but its agent row never committed (crash between
+        // createSession and completeReceipt). Reaping it would lose the only link
+        // back to the orphan, so a retry would spawn a twin. Keep it so the retry
+        // can adopt the session; it becomes a normal completed receipt on adoption.
+        if (receipt.result?.sessionId) return true;
+        const createdMs = Date.parse(receipt.createdAt);
+        return !Number.isFinite(createdMs) || nowMs - createdMs < PENDING_RECEIPT_TTL_MS;
+      });
+      const reapedReceipts = existingReceipts.length - survivingReceipts.length;
+      if (reapedReceipts) {
+        ops.push({ op: "replace", path: "/receipts", value: survivingReceipts });
+      }
       if (!ops.length) {
         return { ok: true, manifest, etag: manifest.etag, recovered: [] };
       }
@@ -2410,7 +3763,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         const res = await directPatch(
           runtime,
           ops,
-          `recover ${stale.length} stale task(s)${reconciledEdges ? `, reconcile ${reconciledEdges} edge(s)` : ""}`,
+          `recover ${stale.length} stale task(s)${reconciledEdges ? `, reconcile ${reconciledEdges} edge(s)` : ""}${stall.flagged ? `, flag ${stall.flagged} stalled agent(s)` : ""}${reapedReceipts ? `, reap ${reapedReceipts} pending receipt(s)` : ""}`,
         );
         return { ok: true, manifest: res.manifest, etag: res.etag, recovered: stale.map((t) => t.id) };
       } catch (err) {
@@ -2447,11 +3800,24 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     releaseTask,
     recordValidationRun,
     recordDelegationSpawn,
+    reserveReceipt,
+    completeReceipt,
+    stampReceiptResult,
+    releaseReceipt,
+    enqueueOutbox,
+    listDueOutbox,
+    claimOutboxEntry,
+    settleOutboxEntry,
     agentHeartbeat,
     approvePlan,
     recordPlanningIntake,
     recordPlanningRound,
     recordPlanningOverride,
+    enterLightPlan,
+    expandToFullPlan,
+    recordFinishingChoice,
+    recordGoalSource,
+    recordScheduledFollowup,
     checkPlanningReady,
     markPlanningReady,
     setPlanApprovalState,
@@ -2461,6 +3827,11 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     release,
     dispose,
     on,
+    registerRunActivationDrainer,
+    /** Service clock in epoch ms — lets event-driven schedulers (outbox retry
+     * timer) align their delays with the same (possibly injected) clock the
+     * service uses to decide dueness, instead of drifting against wall time. */
+    nowMs: () => now().getTime(),
     getManifestForRun,
     getBundlePathForRun,
     /** Test helper — derives the bundle path for a (laneId, runId) pair. */

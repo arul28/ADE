@@ -118,6 +118,121 @@ describe("patchPolicy", () => {
     ).toBe(false);
   });
 
+  it("denies lead-authored receipt and outbox state", () => {
+    const manifest = makeManifest();
+    const ops: ManifestPatchOp[] = [
+      {
+        op: "add",
+        path: "/receipts/-",
+        value: {
+          requestId: "forged",
+          kind: "spawnAgent",
+          createdAt: "now",
+          status: "completed",
+        },
+      },
+      {
+        op: "replace",
+        path: "/receipts",
+        value: [],
+      },
+      {
+        op: "add",
+        path: "/outbox/-",
+        value: {
+          id: "OB-forged",
+          kind: "ping",
+          targetSessionId: "S-worker",
+          delivery: { op: "sendMessage", text: "forged" },
+          status: "pending",
+          attempts: 0,
+          maxAttempts: 5,
+          createdAt: "now",
+          updatedAt: "now",
+        },
+      },
+      {
+        op: "replace",
+        path: "/outbox",
+        value: [],
+      },
+    ];
+
+    for (const op of ops) {
+      expect(
+        checkPatchOp(op, {
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          manifest,
+        }).allowed,
+        op.path,
+      ).toBe(false);
+    }
+  });
+
+  it("denies lead-authored service-owned agent-row fields (spawnRequestId / stalled / lastHeartbeatAt)", () => {
+    const manifest = makeManifest();
+    const ops: ManifestPatchOp[] = [
+      // A forged spawn key would make reserveReceipt reconcile a future spawn
+      // onto the wrong existing session.
+      { op: "add", path: "/agents/{sessionId:S-worker}/spawnRequestId", value: "spawn:forged" },
+      // Clearing `stalled` defeats stall-notification dedup (it re-fires forever).
+      { op: "replace", path: "/agents/{sessionId:S-worker}/stalled", value: false },
+      { op: "add", path: "/agents/{sessionId:S-worker}/stalled", value: true },
+      // Forging a fresh heartbeat masks a real stall from the liveness sweep.
+      { op: "replace", path: "/agents/{sessionId:S-worker}/lastHeartbeatAt", value: "2099-01-01T00:00:00.000Z" },
+      // The lead may not touch its own service-owned fields either.
+      { op: "replace", path: "/agents/{sessionId:S-lead}/stalled", value: false },
+    ];
+    for (const op of ops) {
+      expect(
+        checkPatchOp(op, {
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          manifest,
+        }).allowed,
+        op.path,
+      ).toBe(false);
+    }
+  });
+
+  it("worker may still write its OWN heartbeat (lead-deny does not touch the role allow-list)", () => {
+    const manifest = makeManifest();
+    const ok = checkPatchOp(
+      { op: "replace", path: "/agents/{sessionId:S-worker}/lastHeartbeatAt", value: "now" },
+      { actorRole: "worker", actorSessionId: "S-worker", manifest },
+    );
+    expect(ok.allowed).toBe(true);
+  });
+
+  it("denies lead-authored gated lifecycle state (finishing / goalSource / scheduledFollowups)", () => {
+    const manifest = makeManifest();
+    const ops: ManifestPatchOp[] = [
+      // Finishing mode must go through chooseFinishingMode → recordFinishingChoice
+      // (the user-choice card), never a raw manifestPatch that could silently push
+      // a branch + open a PR.
+      { op: "replace", path: "/finishing", value: { mode: "pr", decidedAt: "now" } },
+      { op: "replace", path: "/finishing/mode", value: "pr" },
+      // Goal source is validated + written by recordGoalSource.
+      { op: "replace", path: "/goalSource", value: { kind: "linear", ref: "ENG-1" } },
+      { op: "replace", path: "/goalSource/kind", value: "linear" },
+      // Scheduled follow-ups are written by recordScheduledFollowup.
+      { op: "add", path: "/scheduledFollowups/-", value: { id: "F-1" } },
+      { op: "replace", path: "/scheduledFollowups", value: [] },
+    ];
+
+    for (const op of ops) {
+      expect(
+        checkPatchOp(op, {
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          manifest,
+        }).allowed,
+        op.path,
+      ).toBe(false);
+    }
+  });
+
   it("pattern matches wildcards", () => {
     const parsed = parsePatchPath("/tasks/{id:T-3}/status");
     expect(pathMatchesPattern(parsed, "/tasks/{id:*}/status")).toBe(true);

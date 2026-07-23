@@ -84,8 +84,25 @@ export type OrchestrationAgent = {
   currentStepId?: string;
   cancellationRequested?: boolean;
   lastHeartbeatAt?: string;
+  /**
+   * Set true by the service when a heartbeat-liveness sweep finds this agent has
+   * been silent past the stall threshold while still `running` (see
+   * `releaseStaleClaims` in orchestrationService.ts). Service-owned: the lead is
+   * notified once per stall (dedupe keys on this flag) and it clears on the next
+   * fresh heartbeat. Additive/lazy — absent on old manifests means "not stalled".
+   */
+  stalled?: boolean;
   spawnedAt: string;
   spawnFingerprint?: SpawnFingerprint;
+  /**
+   * Idempotency key of the `spawnAgent` request that materialized this agent
+   * (the receipt requestId). Persisted so a later reservation for the same
+   * deterministic requestId — after its completed receipt was pruned (RECEIPT_CAP)
+   * or a crash left a stale pending receipt — can reconcile to this existing agent
+   * instead of blindly spawning a duplicate session. Additive/optional: absent on
+   * agents written before this field existed.
+   */
+  spawnRequestId?: string;
   budget?: AgentBudget;
   usage?: AgentUsageSnapshot;
 };
@@ -102,6 +119,10 @@ export type ValidationConcern =
   | "dual_review_maintainability"
   | "test_stewardship"
   | "regression_pinning"
+  // Evidence capture: an externally-visible action (proof/computer-use/browser/
+  // iOS-sim capture, PR/Linear update, deeplink) must be recorded in the bundle
+  // as an asset with the matching kind + externalRef. See SKILL §6 + §13.
+  | "proof_capture"
   | "custom";
 
 /** Severity rank for a structured validation finding (mirrors /quality). */
@@ -132,7 +153,10 @@ export type ValidationEvidenceKind =
   | "manifest_checklist"
   | "diff_summary"
   | "screenshot"
-  | "test_log";
+  | "test_log"
+  // A proof-drawer / computer-use artifact (screenshot, video, capture) that a
+  // `proof_capture` step may require as evidence.
+  | "proof_artifact";
 
 export type ValidationStep = {
   id: string;
@@ -246,7 +270,32 @@ export type OrchestrationAssetKind =
   | "html_spec"
   | "screenshot"
   | "test_log"
-  | "doc";
+  | "doc"
+  // Evidence kinds for externally-visible ADE actions taken during a task.
+  // Registered as first-class bundle assets so validators/leads can see them.
+  | "proof_artifact" // ade-proof-artifacts capture (test evidence, generic proof)
+  | "computer_use" // computer-use / app-control capture
+  | "video" // screen recording (sim/browser/computer-use)
+  | "pr_link" // a GitHub PR opened/updated by the run
+  | "linear_issue" // a Linear issue read/updated by the run
+  | "deeplink"; // a minted ADE deeplink (run/file/commit/PR/issue)
+
+/**
+ * Pointer from a bundle asset to the externally-visible artifact it records.
+ * All fields optional — populate whichever identify the target (a proof asset
+ * carries `artifactId`, a `pr_link` carries `prNumber`+`url`, a `linear_issue`
+ * carries `linearId`, a `deeplink` carries `url`).
+ */
+export type OrchestrationAssetExternalRef = {
+  /** Canonical URL (PR, Linear issue, minted deeplink, hosted artifact). */
+  url?: string;
+  /** GitHub PR number, when the asset is a `pr_link`. */
+  prNumber?: number;
+  /** Linear issue id / identifier, when the asset is a `linear_issue`. */
+  linearId?: string;
+  /** ADE proof-drawer artifact id (proof_artifact / computer_use / video). */
+  artifactId?: string;
+};
 
 export type OrchestrationAsset = {
   id: string;
@@ -255,6 +304,19 @@ export type OrchestrationAsset = {
   version: number;
   approval?: "pending" | "approved" | "rejected";
   notes?: string;
+  /**
+   * The orchestration session that registered this asset (the producing agent).
+   * Populated by `registerAsset` from the caller's session. Optional + additive:
+   * absent on legacy assets and on lead-registered planning specs. The evidence
+   * UI keys per-agent chips off this.
+   */
+  registeredBySessionId?: string;
+  /**
+   * Optional pointer to the externally-visible artifact this asset records
+   * (proof-drawer id, PR number/url, Linear id, deeplink url). Optional +
+   * additive; absent on legacy html_spec/screenshot/test_log/doc assets.
+   */
+  externalRef?: OrchestrationAssetExternalRef;
 };
 
 export type DecisionLogEntry = {
@@ -293,6 +355,11 @@ export type OrchestrationHistoryEntry = {
 
 export type PlanningStage =
   | "intake"
+  // The condensed, lighter path: the lead classified the goal as low-risk /
+  // single-worker and the user accepted a simpler plan. From `intake` the state
+  // machine goes `intake → light_plan → ready`, collapsing the three deliberation
+  // rounds into one condensed plan while keeping the same approval-gate rigor.
+  | "light_plan"
   | "round_functional"
   | "round_ui"
   | "round_extras"
@@ -316,6 +383,13 @@ export type PlanningIntakeArtifact = {
   inFlightWork: string;
   /** Detected typecheck/lint/test/build commands. */
   ciGates: string[];
+  /**
+   * Whether intake determined the change touches a user-facing UI surface.
+   * When explicitly `false`, the state machine auto-skips the UI deliberation
+   * round (records it as N/A) instead of forcing an empty ceremony round.
+   * Absent = undetermined (the UI round runs normally).
+   */
+  touchesUiSurface?: boolean;
 };
 
 /** One option offered in a planning round-question (mirrors a pending-input option). */
@@ -358,6 +432,21 @@ export type PlanningState = {
     skippedRounds?: PlanningRoundKind[];
     skipReason?: string;
   };
+  /**
+   * Set once the lead offers the lighter path and the user accepts it. Presence
+   * = the run is on the condensed `light_plan` path; the readiness gate then
+   * requires the condensed essentials (goal, worker+model, steps, validation)
+   * instead of the full three rounds. Cleared if the lead expands back to the
+   * full plan before approval.
+   */
+  lightPlan?: { enteredAt: string };
+  /**
+   * Rounds the state machine skipped deterministically (NOT user-waived) — e.g.
+   * the UI round when intake reports no UI surface. Treated as satisfied by the
+   * readiness gate the same way a user-waived round is, but recorded separately
+   * so the manifest shows the skip was system-derived, not a user override.
+   */
+  autoSkippedRounds?: PlanningRoundKind[];
 };
 
 // ---------------------------------------------------------------------------
@@ -469,6 +558,140 @@ export type DelegationEdge = {
   parentRunId?: string;
 };
 
+export type OrchestrationReceiptKind = "spawnAgent" | "messageAgent";
+
+export type OrchestrationReceipt = {
+  /** Stable idempotency key supplied by the caller or derived from tool input. */
+  requestId: string;
+  kind: OrchestrationReceiptKind;
+  createdAt: string;
+  status: "pending" | "completed";
+  /** Original tool result replayed when a request is emitted more than once. */
+  result?: { sessionId?: string; etag?: string; [key: string]: unknown };
+};
+
+export type OrchestrationOutboxKind =
+  | "brief"
+  | "ping"
+  | "lead_status"
+  | "cancel_interrupt"
+  // A worker/validator reached a terminal state (task done/failed → agent
+  // completed/failed). Emitted service-side in the same transaction as the
+  // terminal transition and delivered to the lead so it can never miss a
+  // completion. Drives `awaitAgent` (see orchestrationTools.ts). See SKILL §8.
+  | "completion";
+
+export type OrchestrationOutboxStatus =
+  | "pending"
+  | "delivering"
+  | "delivered"
+  | "failed";
+
+export type OrchestrationOutboxEntry = {
+  id: string;
+  kind: OrchestrationOutboxKind;
+  targetSessionId: string;
+  delivery: {
+    op: "sendMessage" | "steer" | "interrupt-replace" | "interrupt";
+    text?: string;
+    metadata?: Record<string, unknown>;
+  };
+  status: OrchestrationOutboxStatus;
+  attempts: number;
+  maxAttempts: number;
+  nextAttemptAt?: string;
+  lastError?: string;
+  createdAt: string;
+  updatedAt: string;
+  deliveredAt?: string;
+  /** Idempotency key of the tool request that created this side effect. */
+  requestId?: string;
+};
+
+/**
+ * Where the run's goal originated. The lead records this so it (and later
+ * readers) can cite/re-read the source of truth for the goal rather than only
+ * `goal.md` / the intake `askUser`. `ref` identifies the source (Linear issue
+ * id, PR number, `goal.md` path, or a short description for `user`).
+ */
+export type OrchestrationGoalSource = {
+  kind: "linear" | "pr" | "goalMd" | "user";
+  ref?: string;
+};
+
+/** How a finished run leaves the work behind. */
+export type OrchestrationFinishingMode =
+  // Stop at validated code in the lane worktree (today's default behaviour).
+  | "worktree"
+  // Push the branch, open/update a PR, and update the attached Linear issue.
+  | "pr";
+
+/**
+ * The per-run finishing decision, locked during planning via its own question
+ * card. When `mode === "pr"`, after validation passes the lead spawns a
+ * finishing worker to push the branch, open the PR, update Linear, and register
+ * the resulting pr_link / linear_issue / deeplink assets.
+ */
+export type OrchestrationFinishing = {
+  mode: OrchestrationFinishingMode;
+  decidedAt?: string;
+  /** Plain-language note captured alongside the choice. */
+  note?: string;
+};
+
+/**
+ * A durable follow-up scheduled for after the run (e.g. "re-check CI in 30m").
+ * Placeholder shape in v1 — Unit F wires the durable scheduler
+ * (`chat.createScheduledWork`) and owns `scheduledWorkId`/`status` transitions.
+ * Additive + optional.
+ */
+export type OrchestrationScheduledFollowup = {
+  id: string;
+  /** Human, plain-language description of the follow-up. */
+  summary: string;
+  /** ISO-8601 fire time, or a cron/interval expression the scheduler parses. */
+  scheduledFor?: string;
+  /** ADE scheduled-work id, once created via `chat.createScheduledWork`. */
+  scheduledWorkId?: string;
+  createdAt?: string;
+  /**
+   * Lifecycle status. Invariant: `"scheduled"` means a durable job is actually
+   * armed and therefore REQUIRES `scheduledWorkId` to be set — `recordScheduledFollowup`
+   * downgrades an unbacked `"scheduled"` to `"pending"` so the manifest never
+   * claims a follow-up that will never fire. `"pending"` = intent recorded, not
+   * yet armed; `"fired"`/`"cancelled"` are terminal.
+   */
+  status?: "pending" | "scheduled" | "fired" | "cancelled";
+};
+
+/** ADE capabilities a run may reach through the `ade` CLI (see SKILL §13). */
+export type OrchestrationCapabilityId =
+  | "proof_capture"
+  | "linear"
+  | "pr"
+  | "search"
+  | "deeplinks"
+  | "browser"
+  | "ios_simulator"
+  | "app_control"
+  | "computer_use";
+
+/**
+ * Declares which ADE capabilities workers on this run may (and should) use, so
+ * the lead can scope capability usage and feed the spawn brief. Placeholder
+ * shape in v1 — Unit F consumes/enforces it; validators may require
+ * `proof_capture` evidence for `required` capabilities. Additive + optional;
+ * absent = no declared policy (workers use judgement per SKILL §13).
+ */
+export type OrchestrationCapabilities = {
+  /** Capabilities workers are allowed to use on this run. */
+  allowed?: OrchestrationCapabilityId[];
+  /** Capabilities the plan expects workers to exercise (and produce evidence for). */
+  required?: OrchestrationCapabilityId[];
+  /** Free-form, plain-language per-run notes on capability usage. */
+  notes?: string;
+};
+
 export type OrchestrationManifest = {
   version: 1;
   schemaCompatibility?: { minReader: 1; maxKnown: 1 };
@@ -505,6 +728,26 @@ export type OrchestrationManifest = {
   history: OrchestrationHistoryEntry[];
   defaultBudget?: AgentBudget;
   /**
+   * Where the run's goal came from (Linear issue / PR / goal.md / user). Optional
+   * + additive; `normalizeManifestShape` does not inject a default, so absence
+   * means "not recorded" (legacy runs, or a goal taken straight from askUser).
+   */
+  goalSource?: OrchestrationGoalSource;
+  /**
+   * The per-run finishing decision (stop at the worktree, or push + open a PR +
+   * update Linear). Recorded during planning via its own question card. Optional
+   * + additive; absent = the default `worktree` behaviour.
+   */
+  finishing?: OrchestrationFinishing;
+  /** Durable follow-ups scheduled for after the run (Unit F wires the scheduler). */
+  scheduledFollowups?: OrchestrationScheduledFollowup[];
+  /** Declared ADE capability policy for this run (Unit F consumes/enforces). */
+  capabilities?: OrchestrationCapabilities;
+  /** Service-owned idempotency records. Normalization defaults legacy runs to `[]`. */
+  receipts?: OrchestrationReceipt[];
+  /** Service-owned durable chat-delivery queue. Normalization defaults legacy runs to `[]`. */
+  outbox?: OrchestrationOutboxEntry[];
+  /**
    * Lead→worker/validator delegation edges (spawn + result). Optional for
    * back-compat; `normalizeManifestShape` defaults it to `[]` on load, so it is
    * always an array on an in-memory runtime manifest.
@@ -536,6 +779,8 @@ export type ManifestPatchKind =
   | "leadState"
   | "history"
   | "lineage"
+  | "receipts"
+  | "outbox"
   | "core"
   | "unknown";
 
@@ -715,6 +960,10 @@ export type OrchestrationAssetRegisterRequest = {
   kind: OrchestrationAssetKind;
   version?: number;
   approval?: "pending" | "approved" | "rejected";
+  /** Optional pointer to the externally-visible artifact this asset records. */
+  externalRef?: OrchestrationAssetExternalRef;
+  /** The registering session (producing agent). Populated from the tool caller. */
+  registeredBySessionId?: string;
 };
 
 export type OrchestrationBundleReadResponse = {

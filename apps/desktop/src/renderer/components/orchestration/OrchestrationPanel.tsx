@@ -68,6 +68,8 @@ import {
 } from "./PanelChrome";
 import { PhaseAccordion } from "./PhaseAccordion";
 import { ValidationFindings } from "./ValidationFindings";
+import { EvidenceChips, EvidenceSection } from "./EvidenceSection";
+import { deriveAgentEvidence } from "./orchestrationEvidence";
 
 /* ──────────────────────────────────────────────────────────────────────────
    Test IDs (stable cross-file references)
@@ -266,6 +268,9 @@ export function OrchestrationPanel({
     for (const agent of manifest?.agents ?? []) map.set(agent.sessionId, agent);
     return map;
   }, [manifest]);
+  // Evidence assets grouped by producing agent (chips on the roster rows). Pure
+  // derivation from the already-subscribed manifest — no new IPC / timers.
+  const agentEvidence = useMemo(() => deriveAgentEvidence(manifest), [manifest]);
 
   // Route the task context-menu "open worker chat" action to the jump handler
   // (it previously bubbled to an unhandled onTaskAction and did nothing).
@@ -338,7 +343,11 @@ export function OrchestrationPanel({
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {/* Agents roster — every agent in the run with a one-click jump to its chat */}
-        <AgentsRoster agents={manifest?.agents ?? []} onOpenSession={onOpenSession} />
+        <AgentsRoster
+          agents={manifest?.agents ?? []}
+          evidenceByAgent={agentEvidence}
+          onOpenSession={onOpenSession}
+        />
 
         {/* Phases */}
         <div className="flex flex-col gap-2 px-3 pt-3">
@@ -366,6 +375,9 @@ export function OrchestrationPanel({
 
         {/* Validation findings — severity-ranked roll-up of the validator panel */}
         <ValidationFindings manifest={manifest} />
+
+        {/* Evidence — aggregated roll-up of registered evidence assets */}
+        <EvidenceSection manifest={manifest} />
 
         {/* plan.md narrative — the single source of truth, and where approval docks */}
         {hasPlanNarrative ? (
@@ -427,9 +439,11 @@ function AgentStatusDot({ status }: { status: OrchestrationAgent["status"] }) {
 
 function AgentsRoster({
   agents,
+  evidenceByAgent,
   onOpenSession,
 }: {
   agents: OrchestrationAgent[];
+  evidenceByAgent: Map<string, import("../../../shared/types/orchestration").OrchestrationAsset[]>;
   onOpenSession?: (sessionId: string) => void;
 }) {
   if (!agents.length) return null;
@@ -440,29 +454,39 @@ function AgentsRoster({
     >
       <SectionHeader icon={<UsersThree size={11} weight="duotone" />}>Agents</SectionHeader>
       <div className="mt-2 flex flex-col gap-0.5">
-        {agents.map((agent) => (
-          <div
-            key={agent.sessionId}
-            className="flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-white/[0.02]"
-          >
-            <AgentStatusDot status={agent.status} />
-            <span className="min-w-0 flex-1 truncate font-sans text-[12px] text-fg/75">
-              {agent.role}
-              {agent.tag ? <span className="text-fg/55"> · {agent.tag}</span> : null}
-            </span>
-            <button
-              type="button"
-              data-testid="orchestration-roster-open-chat"
-              aria-label={`Open ${agent.role}${agent.tag ? ` · ${agent.tag}` : ""} chat`}
-              onClick={() => onOpenSession?.(agent.sessionId)}
-              className="inline-flex items-center gap-1 rounded-md border border-sky-300/30 bg-sky-300/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-100 transition-colors hover:bg-sky-300/[0.18]"
-              title={`Open ${agent.role}${agent.tag ? ` · ${agent.tag}` : ""} chat`}
+        {agents.map((agent) => {
+          const evidence = evidenceByAgent.get(agent.sessionId) ?? [];
+          return (
+            <div
+              key={agent.sessionId}
+              className="rounded-md px-1.5 py-1 transition-colors hover:bg-white/[0.02]"
             >
-              <ChatTeardropDots size={10} weight="duotone" />
-              Open chat
-            </button>
-          </div>
-        ))}
+              <div className="flex items-center gap-2">
+                <AgentStatusDot status={agent.status} />
+                <span className="min-w-0 flex-1 truncate font-sans text-[12px] text-fg/75">
+                  {agent.role}
+                  {agent.tag ? <span className="text-fg/55"> · {agent.tag}</span> : null}
+                </span>
+                <button
+                  type="button"
+                  data-testid="orchestration-roster-open-chat"
+                  aria-label={`Open ${agent.role}${agent.tag ? ` · ${agent.tag}` : ""} chat`}
+                  onClick={() => onOpenSession?.(agent.sessionId)}
+                  className="inline-flex items-center gap-1 rounded-md border border-sky-300/30 bg-sky-300/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-100 transition-colors hover:bg-sky-300/[0.18]"
+                  title={`Open ${agent.role}${agent.tag ? ` · ${agent.tag}` : ""} chat`}
+                >
+                  <ChatTeardropDots size={10} weight="duotone" />
+                  Open chat
+                </button>
+              </div>
+              {evidence.length ? (
+                <div className="mt-1 pl-4">
+                  <EvidenceChips assets={evidence} />
+                </div>
+              ) : null}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

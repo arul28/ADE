@@ -3073,6 +3073,7 @@ app.whenReady().then(async () => {
       linearIssueTracker,
       githubService,
       getOrchestrationService: () => orchestrationServiceRef,
+      getSearchService: () => searchServiceHolder.current,
       linearClient,
       linearCredentials: linearCredentialService,
       prService,
@@ -3385,6 +3386,10 @@ app.whenReady().then(async () => {
       },
     });
     orchestrationServiceRef = orchestrationService;
+    // Register the chat-backed outbox drainer now that the orchestration service
+    // exists — before any run can hydrate on boot — so a persisted brief/ping
+    // survives a restart even if no orchestration turn ever runs to lazily wire it.
+    agentChatService.registerOrchestrationOutboxDrainer();
     const computerUseArtifactBrokerService =
       createComputerUseArtifactBrokerService({
         db,

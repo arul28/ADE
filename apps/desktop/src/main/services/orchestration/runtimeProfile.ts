@@ -43,16 +43,23 @@ export function isOrchestrationPlanApproved(
 }
 
 /**
- * The deterministic dev-loop gates. Model selection unlocks only after the
- * three deliberation rounds are recorded; approval only after the lead marks
- * planning ready. Both are no-ops once the run has left the planning phase.
+ * The deterministic dev-loop gates. Model selection unlocks once the three
+ * deliberation rounds are recorded (`rounds_complete`) OR the run took the
+ * condensed light path (`light_plan`), which collapses those rounds into one
+ * plan; approval only after the lead marks planning ready. Both are no-ops once
+ * the run has left the planning phase.
+ *
+ * `light_plan` MUST be accepted here: readiness still requires model routing
+ * (`hasOrchestrationModelRouting`), so a light-plan run that could not record a
+ * model on the condensed path would deadlock — model selection rejected as
+ * `planning_not_ready`, yet `ready` unreachable without routing.
  */
 export function isPlanningReadyForModelSelection(
   manifest: OrchestrationManifest,
 ): boolean {
   if (manifest.currentPhase !== "planning") return true;
   const stage = manifest.leadState.planning?.stage;
-  return stage === "rounds_complete" || stage === "ready";
+  return stage === "rounds_complete" || stage === "ready" || stage === "light_plan";
 }
 
 export function isPlanningReadyForApproval(

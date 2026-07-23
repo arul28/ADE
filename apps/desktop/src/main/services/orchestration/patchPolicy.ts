@@ -116,6 +116,20 @@ const LEAD_DENY_PATTERNS = [
   "/bundlePath",
   "/laneId",
   "/agents/*/sessionId",
+  // Service-owned agent-row fields. Written ONLY by service methods through the
+  // mutex-protected directPatch API (which bypasses this policy), never by raw
+  // lead manifestPatch:
+  //  - spawnRequestId: links an agent to its spawn receipt so reserveReceipt can
+  //    reconcile a stale/pruned receipt to the real session. A forged key would
+  //    make a future spawn reconcile onto the wrong existing session.
+  //  - stalled: set/cleared by the heartbeat-liveness sweep and drives stall
+  //    notification dedup; a lead-cleared flag re-fires notifications forever.
+  //  - lastHeartbeatAt (for OTHER agents / via lead): forging a fresh heartbeat
+  //    masks a real stall (the sweep skips setting `stalled`). Workers/validators
+  //    still write their OWN heartbeat via the role allow-list (SELF), unaffected.
+  "/agents/*/spawnRequestId",
+  "/agents/*/stalled",
+  "/agents/*/lastHeartbeatAt",
   "/leadState",
   "/leadState/planApprovedAt",
   "/leadState/planApprovedBySessionId",
@@ -134,6 +148,23 @@ const LEAD_DENY_PATTERNS = [
   // forged or rewritten by an agent.
   "/lineage",
   "/lineage/**",
+  // Idempotency and delivery state are authoritative service-owned records.
+  // Tool implementations write them through mutex-protected directPatch APIs.
+  "/receipts",
+  "/receipts/**",
+  "/outbox",
+  "/outbox/**",
+  // Gated lifecycle decisions are service-owned: finishing mode is captured only
+  // through chooseFinishingMode → recordFinishingChoice (so the branch/PR flow
+  // cannot be triggered without the user-choice card), the goal source through
+  // recordGoalSource (validated kind), and scheduled follow-ups through
+  // recordScheduledFollowup. None are ever written by raw lead manifestPatch.
+  "/finishing",
+  "/finishing/**",
+  "/goalSource",
+  "/goalSource/**",
+  "/scheduledFollowups",
+  "/scheduledFollowups/**",
   "/phases/{id:planning}/status",
   "/phases/{id:planning}/completedAt",
   "/currentPhase",

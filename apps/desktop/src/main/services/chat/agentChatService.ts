@@ -382,10 +382,14 @@ import type {
 } from "../ai/tools/universalTools";
 import {
   createOrchestrationToolSet,
+  type OrchestrationAgentChatHandle,
   type OrchestrationInteractionMode,
+  type OrchestrationLeadReadResult,
+  type OrchestrationLeadReadServices,
   type OrchestrationSessionContext,
   type OrchestrationToolMap,
 } from "../ai/tools/orchestrationTools";
+import { drainOutbox } from "../ai/tools/orchestrationOutbox";
 import type { ExecutableTool } from "../ai/tools/executableTool";
 import { createWorkflowTools } from "../ai/tools/workflowTools";
 import { createLinearTools } from "../ai/tools/linearTools";
@@ -404,6 +408,7 @@ import {
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { buildDeeplink, type DeeplinkTarget } from "../../../shared/deeplinks";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
@@ -6361,6 +6366,18 @@ export function createAgentChatService(args: {
   linearIssueTracker?: IssueTracker | null;
   githubService?: Pick<GithubService, "getIssue"> | null;
   getOrchestrationService?: () => ReturnType<typeof createOrchestrationService> | null;
+  /**
+   * Lazy accessor for the universal search service. Used only to back the
+   * orchestrator lead's read-only `searchWorkspace` tool; may be null in
+   * runtimes where search is not wired (tool degrades to "unavailable").
+   */
+  getSearchService?: () => {
+    query: (args: {
+      query: string;
+      laneId?: string;
+      limit?: number;
+    }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor: unknown }>;
+  } | null;
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
@@ -6413,6 +6430,7 @@ export function createAgentChatService(args: {
     linearIssueTracker,
     githubService,
     getOrchestrationService,
+    getSearchService,
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
@@ -13876,6 +13894,111 @@ export function createAgentChatService(args: {
     },
   });
 
+  // Curated READ-ONLY ADE capability backings for the orchestrator lead. Every
+  // method is attached only when its backing service is actually wired in this
+  // process — a missing service leaves the method undefined, so the lead tool
+  // degrades to a clean "unavailable" result rather than throwing (runtime-
+  // backed-null-services safety). None of these mutate anything.
+  const buildOrchestrationLeadReadServices = (): OrchestrationLeadReadServices => {
+    const services: OrchestrationLeadReadServices = {};
+
+    const searchService = getSearchService?.() ?? null;
+    if (searchService) {
+      services.searchWorkspace = async (args): Promise<OrchestrationLeadReadResult> => {
+        const res = await searchService.query({
+          query: args.query,
+          ...(args.limit ? { limit: args.limit } : {}),
+          ...(args.laneId ? { laneId: args.laneId } : {}),
+        });
+        return { ok: true, results: res.results, totalByKind: res.totalByKind };
+      };
+    }
+
+    if (linearIssueTracker) {
+      services.readLinearIssue = async (args): Promise<OrchestrationLeadReadResult> => {
+        const issue = await linearIssueTracker.fetchIssueById(args.issueId);
+        if (!issue) {
+          return { ok: false, error: "not_found", message: `Linear issue ${args.issueId} not found.` };
+        }
+        let comments: unknown[] = [];
+        try {
+          comments = await linearIssueTracker.fetchIssueComments(args.issueId);
+        } catch {
+          comments = [];
+        }
+        return { ok: true, issue, comments };
+      };
+    }
+
+    if (prService) {
+      services.readPr = async (args): Promise<OrchestrationLeadReadResult> => {
+        if (args.prId) {
+          const [status, checks] = await Promise.all([
+            prService.getStatus(args.prId),
+            prService.getChecks(args.prId).catch(() => []),
+          ]);
+          return { ok: true, status, checks };
+        }
+        const prs = await prService.listPrsByLane();
+        return { ok: true, prs };
+      };
+    }
+
+    // Read the late-bound ref (mutated by setComputerUseArtifactBrokerService to
+    // break a circular dep), not the raw constructor param. This function runs
+    // per-session at tool-map build time, so each session sees current wiring.
+    const artifactBroker = computerUseArtifactBrokerRef;
+    if (artifactBroker) {
+      services.listProofArtifacts = async (args): Promise<OrchestrationLeadReadResult> => {
+        const artifacts = artifactBroker.listArtifacts({
+          ...(args.limit ? { limit: args.limit } : {}),
+        });
+        return { ok: true, artifacts };
+      };
+    }
+
+    // Deeplink minting is pure (side-effect-free) — always available.
+    services.mintDeeplink = async (args): Promise<OrchestrationLeadReadResult> => {
+      const target = args.target as DeeplinkTarget;
+      const ade = buildDeeplink(target, { form: "ade" });
+      const https = buildDeeplink(target, { form: "https" });
+      return { ok: true, ade, https };
+    };
+
+    return services;
+  };
+
+  // Stable chat handle reused for every orchestration tool set and for the
+  // service-registered run-activation drainer. Its methods are stable closures,
+  // so binding it once keeps the drainer valid across runs/sessions.
+  const orchestrationChatHandle: OrchestrationAgentChatHandle = {
+    createSession: (args) => createSession(args),
+    deleteSession: (args) => deleteSession(args),
+    sendMessage: (args, options) => sendMessage(args, options),
+    steer: (args) => steer(args),
+    interrupt: (args) => interrupt(args),
+    // Wrapped (not a direct reference) so the handle can be bound before
+    // `readTranscript` is declared later in this factory body.
+    readTranscript: (sessionId, limit, since) => readTranscript(sessionId, limit, since),
+  };
+
+  // Register (once) the chat-backed drainer the orchestration service invokes
+  // when a run is (re)hydrated with undelivered outbox entries. This is what
+  // delivers a persisted brief/ping after a process restart without waiting for
+  // an unrelated mutating tool to fire a drain. Coalesced per run by the outbox
+  // module's in-process guard, so it is safe to call on every activation.
+  let orchestrationDrainerRegistered = false;
+  const ensureOrchestrationDrainerRegistered = (
+    orchestrationService: ReturnType<typeof createOrchestrationService>,
+  ): void => {
+    if (orchestrationDrainerRegistered) return;
+    if (typeof orchestrationService.registerRunActivationDrainer !== "function") return;
+    orchestrationDrainerRegistered = true;
+    orchestrationService.registerRunActivationDrainer(({ runId, bundlePath }) => {
+      void drainOutbox(orchestrationService, orchestrationChatHandle, { runId, bundlePath });
+    });
+  };
+
   const createOrchestrationRuntimeToolMap = (
     managed: ManagedChatSession,
   ): OrchestrationToolMap | null => {
@@ -13883,20 +14006,17 @@ export function createAgentChatService(args: {
     if (!context) return null;
     const orchestrationService = getOrchestrationService?.() ?? null;
     if (!orchestrationService) return null;
+    ensureOrchestrationDrainerRegistered(orchestrationService);
     return createOrchestrationToolSet({
       cwd: managed.laneWorktreePath,
       interactionMode: context.interactionMode,
       sessionContext: context.sessionContext,
       orchestrationService,
-      agentChatService: {
-        createSession: (args) => createSession(args as never),
-        deleteSession: (args) => deleteSession(args),
-        sendMessage: (args, options) => sendMessage(args as never, options),
-        steer: (args) => steer(args as never),
-        interrupt: (args) => interrupt(args as never),
-        readTranscript,
-      },
+      agentChatService: orchestrationChatHandle,
       universal: buildOrchestrationUniversalOptions(managed),
+      ...(context.interactionMode === "orchestrator-lead"
+        ? { leadReadServices: buildOrchestrationLeadReadServices() }
+        : {}),
     });
   };
 
@@ -39523,6 +39643,18 @@ export function createAgentChatService(args: {
     },
     setComputerUseArtifactBrokerService(svc: ComputerUseArtifactBrokerService) {
       computerUseArtifactBrokerRef = svc;
+    },
+    /**
+     * Register the chat-backed outbox drainer eagerly, as soon as the
+     * orchestration service is available (called from main.ts wiring). Without
+     * this, registration only happens lazily when an orchestration turn first
+     * builds its tool map — so a run hydrated on boot (opened/listed) but with no
+     * turn yet would never drain its persisted brief/ping after a restart. Idempotent.
+     */
+    registerOrchestrationOutboxDrainer() {
+      const orchestrationService = getOrchestrationService?.() ?? null;
+      if (!orchestrationService) return;
+      ensureOrchestrationDrainerRegistered(orchestrationService);
     },
   };
 }
