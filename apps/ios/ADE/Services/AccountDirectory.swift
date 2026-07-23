@@ -26,6 +26,10 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   let name: String?
   let platform: String?
   let deviceType: String?
+  /// Stable machine identity key advertised by the directory. Newer records
+  /// use `ed25519:<base64 raw 32-byte key>`; older rows omit it and remain
+  /// eligible only for the legacy Relay adoption path.
+  let pubkey: String?
   let reachableEndpoints: [AccountMachineEndpoint]
   let lastSeenAt: Double?
   let createdAt: Double?
@@ -40,6 +44,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
     name = try container.decodeIfPresent(String.self, forKey: .name)
     platform = try container.decodeIfPresent(String.self, forKey: .platform)
     deviceType = try container.decodeIfPresent(String.self, forKey: .deviceType)
+    pubkey = try container.decodeIfPresent(String.self, forKey: .pubkey)
     reachableEndpoints = try container.decodeIfPresent([AccountMachineEndpoint].self, forKey: .reachableEndpoints) ?? []
     lastSeenAt = try container.decodeIfPresent(Double.self, forKey: .lastSeenAt)
     createdAt = try container.decodeIfPresent(Double.self, forKey: .createdAt)
@@ -47,7 +52,7 @@ struct AccountMachine: Codable, Equatable, Identifiable, Hashable {
   }
 
   private enum CodingKeys: String, CodingKey {
-    case machineKey, deviceId, name, platform, deviceType, reachableEndpoints, lastSeenAt, createdAt, online
+    case machineKey, deviceId, name, platform, deviceType, pubkey, reachableEndpoints, lastSeenAt, createdAt, online
   }
 
   /// Human display name — falls back to the platform or a generic label so a

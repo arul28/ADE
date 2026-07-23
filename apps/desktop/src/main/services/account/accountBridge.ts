@@ -150,6 +150,7 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   const pairMachineProgressListeners = new Set<
     (progress: AdeAccountPairMachineProgress) => void
   >();
+  const accountMachineNames = new Map<string, string>();
 
   const service = () =>
     getSharedAccountAuthService({
@@ -208,13 +209,30 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
     signOut: () => {
       const accountService = service();
       const status = accountService.signOut();
+      accountMachineNames.clear();
       reconcileLocalMachines(null);
       return toAccountStatus(status, configured());
     },
 
     listMachines: async (): Promise<AdeAccountMachinesResult> => {
       const result = await directoryService().listMachines();
-      if (result.state === "auth_expired") reconcileLocalMachines(null);
+      if (result.state === "ok") {
+        accountMachineNames.clear();
+        for (const machine of result.machines) {
+          const name = machine.name?.trim() || machine.machineKey;
+          accountMachineNames.set(machine.machineKey, name);
+          if (machine.deviceId?.trim()) {
+            accountMachineNames.set(machine.deviceId.trim(), name);
+          }
+          if (machine.name?.trim()) {
+            accountMachineNames.set(machine.name.trim().toLowerCase(), name);
+          }
+        }
+      }
+      if (result.state === "auth_expired") {
+        accountMachineNames.clear();
+        reconcileLocalMachines(null);
+      }
       if (result.state === "unavailable") {
         options.logger?.warn("account.machines_fetch_failed", { state: result.state });
       }
@@ -239,15 +257,30 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
           }
         }
       };
-      emitProgress({
-        machineKey,
-        stage: "relay",
-        label: "Connecting through ADE relay…",
+      const result = await directoryService().pairMachine(machineKey, {
+        onStage: ({ kind, phase }) => {
+          const machineName = accountMachineNames.get(machineKey)
+            ?? accountMachineNames.get(machineKey.trim().toLowerCase())
+            ?? machineKey;
+          if (phase === "verifying") {
+            emitProgress({
+              machineKey,
+              stage: "verifying",
+              label: `Verifying it's really ${machineName}…`,
+            });
+            return;
+          }
+          emitProgress({
+            machineKey,
+            stage: kind,
+            label: kind === "relay"
+              ? "Connecting through ADE relay…"
+              : kind === "tailnet"
+                ? "Trying Tailscale…"
+                : "Trying local network…",
+          });
+        },
       });
-      // AccountMachineDirectoryService does not expose adoption progress yet.
-      // When it does, its onProgress callback can be wired directly to
-      // emitProgress without changing this bridge or the renderer contract.
-      const result = await directoryService().pairMachine(machineKey);
       emitProgress({
         machineKey,
         stage: "opening",

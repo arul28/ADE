@@ -325,6 +325,7 @@ describe("AccountMachineDirectoryService", () => {
   });
 
   it("pairs stale directory presence through a verified account relay and saves an ADE Code target", async () => {
+    const onStage = vi.fn();
     const pairWithAccountMachine = vi.fn(async (): Promise<Pick<
       DesktopPairedMachineCredentials,
       "hostIdentity" | "endpoints"
@@ -370,7 +371,7 @@ describe("AccountMachineDirectoryService", () => {
       relayBaseUrls: ["https://relay.example"],
     });
 
-    await expect(service.pairMachine("mk-studio")).resolves.toEqual({
+    await expect(service.pairMachine("mk-studio", { onStage })).resolves.toEqual({
       targetId: "target-account-studio",
       machineKey: "mk-studio",
       deviceId: "device-studio",
@@ -389,6 +390,7 @@ describe("AccountMachineDirectoryService", () => {
         relayBaseUrls: ["https://relay.example"],
         accountOwnerUserId: "user",
         authorizeAccountCommit: expect.any(Function),
+        onStage,
       },
     );
     expect(save).toHaveBeenCalledWith(expect.objectContaining({

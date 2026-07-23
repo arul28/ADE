@@ -1,6 +1,18 @@
+import CryptoKit
 import XCTest
 import Security
 @testable import ADE
+
+private func pairingTestData(hex: String) -> Data {
+  var data = Data()
+  var index = hex.startIndex
+  while index < hex.endIndex {
+    let next = hex.index(index, offsetBy: 2)
+    data.append(UInt8(hex[index..<next], radix: 16)!)
+    index = next
+  }
+  return data
+}
 
 private final class AccountDirectoryURLProtocolStub: URLProtocol {
   private static let lock = NSLock()
@@ -112,6 +124,65 @@ final class PairingAndDpopTests: XCTestCase {
     XCTAssertTrue(machines.isEmpty)
     XCTAssertEqual(requests.snapshot(), ["Bearer stale-token", "Bearer fresh-token"])
     XCTAssertEqual(refreshCount, 1)
+  }
+
+  // MARK: - Sealed account adoption
+
+  func testAdoptChannelMatchesTypeScriptChaChaPolyVector() throws {
+    // Fixed vector from
+    // apps/desktop/src/shared/sync/adoptChannelCrypto.test.ts.
+    let clientPrivateKey = try Curve25519.KeyAgreement.PrivateKey(
+      rawRepresentation: pairingTestData(
+        hex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+      )
+    )
+    XCTAssertEqual(
+      clientPrivateKey.publicKey.rawRepresentation,
+      pairingTestData(
+        hex: "8f40c5adb68f25624ae5b214ea767a6ec94d829d3d7b5e1ad1ba6f3e2138285f"
+      )
+    )
+    let hostPublicKey = pairingTestData(
+      hex: "358072d6365880d1aeea329adf9121383851ed21a28e3b75e965d0d2cd166254"
+    )
+    let nonce = pairingTestData(
+      hex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    )
+    let sessionKey = try AdoptChannelCrypto.deriveSessionKey(
+      clientPrivateKey: clientPrivateKey,
+      hostPublicKeyRaw: hostPublicKey,
+      nonce: nonce
+    )
+    let sessionKeyData = sessionKey.withUnsafeBytes { Data($0) }
+    XCTAssertEqual(
+      sessionKeyData,
+      pairingTestData(
+        hex: "73dd8c3462d2bd6af30580cd4147d5049e6b96d6e0caad0abb512e47ea9c056e"
+      )
+    )
+
+    let sealed =
+      "AAECAwQFBgcICQoL2ZbKNSOix6tRlgt6GSfO7OGy0Pp8/04VMGCtmGI+2K5fKpJv27j0R8un/fPj0v1aEAizUH3l7uZ6nwS6WM8f+GJfCvAcH6bo1KfPq04vbY2jLUSXuYo="
+    let plaintext = try AdoptChannelCrypto.unseal(
+      sealed,
+      key: sessionKey,
+      aad: Data("ade-adopt-v1|host-vector|client-vector".utf8)
+    )
+    XCTAssertEqual(
+      String(decoding: plaintext, as: UTF8.self),
+      #"{"deviceId":"client-vector","accountToken":"token-vector","dpop":null}"#
+    )
+
+    XCTAssertEqual(
+      AdoptChannelCrypto.challengeSignatureInput(
+        hostDeviceId: "host-device",
+        nonce: "bm9uY2U=",
+        clientEphemeralPublicKey: "Y2xpZW50",
+        hostEphemeralPublicKey: "aG9zdA==",
+        timestampMilliseconds: 1_783_500_123_456
+      ),
+      "ade-adopt-v1|host-device|bm9uY2U=|Y2xpZW50|aG9zdA==|1783500123456"
+    )
   }
 
   // MARK: - Pairing QR codec

@@ -34,9 +34,10 @@ import {
 } from "../../../shared/sync/adoptChannelCrypto";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
+  accountMachineAdoptionRoutes,
   accountMachinePairedSyncEndpoints,
-  accountMachineSecureSyncEndpoints,
   resolveAccountHelloPairing,
+  type AccountMachineAdoptionRoute,
 } from "../../../shared/accountDirectory";
 import {
   buildDesktopPairedHello,
@@ -72,6 +73,10 @@ export type PairWithAccountMachineOptions = Omit<
   authorizeAccountCommit?: (
     expectedOwnerUserId: string,
   ) => boolean | Promise<boolean>;
+  onStage?: (stage: {
+    kind: "relay" | "tailnet" | "lan";
+    phase: "connecting" | "verifying";
+  }) => void;
 };
 
 class AccountPairingAuthorizationError extends Error {
@@ -100,6 +105,45 @@ function parseDirectoryEd25519PublicKey(value: string): Buffer {
   const raw = decodeCanonicalBase64(value.slice(prefix.length), 32);
   if (!raw) throw hostIdentityVerificationError();
   return raw;
+}
+
+type AccountMachineAdoptionFailure = {
+  route: AccountMachineAdoptionRoute;
+  reason: string;
+};
+
+function emitAccountMachineAdoptionStage(
+  callback: PairWithAccountMachineOptions["onStage"],
+  stage: Parameters<NonNullable<PairWithAccountMachineOptions["onStage"]>>[0],
+): void {
+  try {
+    callback?.(stage);
+  } catch {
+    // Progress reporting is best-effort and must not abort adoption.
+  }
+}
+
+function boundedInlineText(value: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim() || "Unknown failure.";
+  return normalized.length <= maxChars
+    ? normalized
+    : `${normalized.slice(0, Math.max(0, maxChars - 1))}…`;
+}
+
+function accountMachineAdoptionRouteHost(route: AccountMachineAdoptionRoute): string {
+  try {
+    return boundedInlineText(new URL(route.endpoint).hostname, 96);
+  } catch {
+    return boundedInlineText(route.endpoint, 96);
+  }
+}
+
+function formatAccountMachineAdoptionFailure(
+  failure: AccountMachineAdoptionFailure,
+): string {
+  return `${failure.route.kind} ${accountMachineAdoptionRouteHost(failure.route)}: ${
+    boundedInlineText(failure.reason, 160)
+  }`;
 }
 
 function nowIso(): string {
@@ -625,21 +669,21 @@ export class DesktopPairedMachineStore {
     const hostSigningPublicKey = hasDirectoryPubkey
       ? parseDirectoryEd25519PublicKey(machine.pubkey!)
       : null;
-    const accountRelayEndpoints = accountMachineSecureSyncEndpoints(
+    const adoptionRoutes = accountMachineAdoptionRoutes(
       machine,
       options.relayBaseUrls,
     );
-    if (!hasDirectoryPubkey && accountRelayEndpoints.length === 0) {
+    const accountAuthenticationRoutes = hostSigningPublicKey
+      ? adoptionRoutes
+      : adoptionRoutes.filter((route) => route.kind === "relay");
+    if (!hostSigningPublicKey && accountAuthenticationRoutes.length === 0) {
       throw new Error("That machine has no directory-verified WSS relay route for account authentication.");
     }
     const pairedEndpoints = accountMachinePairedSyncEndpoints(
       machine,
       options.relayBaseUrls,
     );
-    const accountAuthenticationEndpoints = hasDirectoryPubkey
-      ? pairedEndpoints
-      : accountRelayEndpoints;
-    if (accountAuthenticationEndpoints.length === 0) {
+    if (accountAuthenticationRoutes.length === 0) {
       throw new Error("That machine has no directory-verified sync route for account authentication.");
     }
 
@@ -676,21 +720,32 @@ export class DesktopPairedMachineStore {
       capabilities: [],
       ...(options.appVersion?.trim() ? { appVersion: options.appVersion.trim() } : {}),
     };
-    const failures: string[] = [];
-    let lastHostIdentityFailure: AccountHostIdentityVerificationError | null = null;
-    for (const endpoint of accountAuthenticationEndpoints) {
+    const failures: AccountMachineAdoptionFailure[] = [];
+    for (const route of accountAuthenticationRoutes) {
       throwIfAborted(options.signal);
+      if (route.kind !== "relay" && !hostSigningPublicKey) {
+        throw new Error(
+          "Refusing to send plaintext account authentication over a direct route.",
+        );
+      }
+      emitAccountMachineAdoptionStage(options.onStage, {
+        kind: route.kind,
+        phase: "connecting",
+      });
       let connection: SyncEnvelopeConnection;
       try {
         connection = await openSyncEnvelopeConnection({
-          endpoint,
+          endpoint: route.endpoint,
           connectTimeoutMs: options.connectTimeoutMs,
           signal: options.signal,
           createWebSocket: options.createWebSocket,
         });
       } catch (error) {
         throwIfAborted(options.signal);
-        failures.push(error instanceof Error ? error.message : String(error));
+        failures.push({
+          route,
+          reason: error instanceof Error ? error.message : String(error),
+        });
         continue;
       }
       try {
@@ -709,7 +764,10 @@ export class DesktopPairedMachineStore {
                 envelope.type === "account_challenge_ok"
                 || envelope.type === "account_challenge_error"
               ),
-            ADOPT_CHANNEL_CHALLENGE_TIMEOUT_MS,
+            Math.min(
+              ADOPT_CHANNEL_CHALLENGE_TIMEOUT_MS,
+              options.pairingTimeoutMs ?? DEFAULT_PAIRING_TIMEOUT_MS,
+            ),
             options.signal,
           );
           try {
@@ -722,13 +780,7 @@ export class DesktopPairedMachineStore {
             void challengeResponse.catch(() => {});
             throw error;
           }
-          let challengeEnvelope;
-          try {
-            challengeEnvelope = await challengeResponse;
-          } catch {
-            throwIfAborted(options.signal);
-            throw hostIdentityVerificationError();
-          }
+          const challengeEnvelope = await challengeResponse;
           if (challengeEnvelope.type === "account_challenge_error") {
             throw hostIdentityVerificationError();
           }
@@ -765,8 +817,17 @@ export class DesktopPairedMachineStore {
             peerPublicKeyRaw: hostEphemeralPublicKey,
             nonce,
           });
+          emitAccountMachineAdoptionStage(options.onStage, {
+            kind: route.kind,
+            phase: "verifying",
+          });
         }
 
+        if (route.kind !== "relay" && !adoptSessionKey) {
+          throw new Error(
+            "Refusing to send plaintext account authentication over a direct route.",
+          );
+        }
         const accountDpop = createDesktopSyncDpopProof(proofCredentials);
         const legacyAccountAuth = {
           deviceId: localDeviceId,
@@ -854,7 +915,7 @@ export class DesktopPairedMachineStore {
           throw new Error("Account-authenticated host did not provide or recognize paired credentials.");
         }
         const savedEndpoints = uniqueEndpoints(
-          endpoint,
+          route.endpoint,
           ...pairedEndpoints,
           helloOk.cloudRelayWssUrl,
         );
@@ -883,7 +944,7 @@ export class DesktopPairedMachineStore {
           relayUrl: helloOk.cloudRelayWssUrl ?? null,
           endpointStates: savedEndpoints.map((candidate) => ({
             endpoint: candidate,
-            lastSucceededAt: candidate === endpoint ? Date.now() : null,
+            lastSucceededAt: candidate === route.endpoint ? Date.now() : null,
           })),
           createdAt,
           updatedAt: nowIso(),
@@ -892,16 +953,28 @@ export class DesktopPairedMachineStore {
         throwIfAborted(options.signal);
         if (error instanceof AccountPairingAuthorizationError) throw error;
         if (error instanceof AccountHostIdentityVerificationError) {
-          lastHostIdentityFailure = error;
+          throw error;
         }
-        failures.push(error instanceof Error ? error.message : String(error));
+        failures.push({
+          route,
+          reason: error instanceof Error ? error.message : String(error),
+        });
       } finally {
         connection.close(1000, "Account pairing finished.");
       }
     }
-    if (lastHostIdentityFailure) throw lastHostIdentityFailure;
+    console.warn("[account] Account machine adoption failed on every route.", {
+      machineKey: machine.machineKey,
+      attempts: failures.map((failure) => ({
+        kind: failure.route.kind,
+        endpoint: failure.route.endpoint,
+        reason: failure.reason,
+      })),
+    });
     throw new Error(
-      `Could not connect to ${machine.name ?? machine.machineKey} with your ADE account. ${failures.slice(0, 3).join("; ")}`,
+      `Could not connect to ${machine.name ?? machine.machineKey} with your ADE account. ${
+        failures.map(formatAccountMachineAdoptionFailure).join("; ")
+      }`,
     );
   }
 

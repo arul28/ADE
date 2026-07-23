@@ -77,8 +77,16 @@ vi.mock(
         return listMachines();
       }
 
-      async pairMachine(machineKey: string) {
-        return pairMachine(machineKey);
+      async pairMachine(
+        machineKey: string,
+        options?: {
+          onStage?: (stage: {
+            kind: "relay" | "tailnet" | "lan";
+            phase: "connecting" | "verifying";
+          }) => void;
+        },
+      ) {
+        return pairMachine(machineKey, options);
       }
 
       async deleteMachine(machineKey: string) {
@@ -497,17 +505,41 @@ describe("desktop account machine lifecycle", () => {
   });
 
   it("emits account machine progress at the bridge and per-call boundaries", async () => {
-    pairMachine.mockResolvedValue({
-      targetId: "target-a",
-      machineKey: "machine-a",
-      deviceId: "device-a",
-      name: "Studio",
+    listMachines.mockResolvedValue({
+      state: "ok",
+      machines: [machine({
+        machineKey: "machine-a",
+        deviceId: "device-a",
+        name: "Studio",
+      })],
+      message: null,
+    });
+    pairMachine.mockImplementation(async (
+      _machineKey: string,
+      options?: {
+        onStage?: (stage: {
+          kind: "relay" | "tailnet" | "lan";
+          phase: "connecting" | "verifying";
+        }) => void;
+      },
+    ) => {
+      options?.onStage?.({ kind: "relay", phase: "connecting" });
+      options?.onStage?.({ kind: "tailnet", phase: "connecting" });
+      options?.onStage?.({ kind: "tailnet", phase: "verifying" });
+      options?.onStage?.({ kind: "lan", phase: "connecting" });
+      return {
+        targetId: "target-a",
+        machineKey: "machine-a",
+        deviceId: "device-a",
+        name: "Studio",
+      };
     });
     const { createAccountBridge } = await import("./accountBridge");
     const bridge = createAccountBridge({ getProjectRoot: () => null });
     const listener = vi.fn();
     const onProgress = vi.fn();
     const unsubscribe = bridge.onPairMachineProgress(listener);
+    await bridge.listMachines();
 
     await expect(
       bridge.pairMachine("machine-a", { onProgress }),
@@ -524,11 +556,29 @@ describe("desktop account machine lifecycle", () => {
       },
       {
         machineKey: "machine-a",
+        stage: "tailnet",
+        label: "Trying Tailscale…",
+      },
+      {
+        machineKey: "machine-a",
+        stage: "verifying",
+        label: "Verifying it's really Studio…",
+      },
+      {
+        machineKey: "machine-a",
+        stage: "lan",
+        label: "Trying local network…",
+      },
+      {
+        machineKey: "machine-a",
         stage: "opening",
         label: "Opening connection…",
       },
     ];
-    expect(pairMachine).toHaveBeenCalledWith("machine-a");
+    expect(pairMachine).toHaveBeenCalledWith(
+      "machine-a",
+      expect.objectContaining({ onStage: expect.any(Function) }),
+    );
     expect(listener.mock.calls.map(([progress]) => progress)).toEqual(
       expectedProgress,
     );
@@ -538,7 +588,7 @@ describe("desktop account machine lifecycle", () => {
 
     unsubscribe();
     await bridge.pairMachine("machine-a");
-    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenCalledTimes(5);
   });
 
   it("preserves a classified directory auth failure for the desktop surface", async () => {

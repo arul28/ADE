@@ -3,7 +3,7 @@ import { generateKeyPairSync } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { WebSocket } from "ws";
 import type { SyncDpopVerification } from "../../../../../ade-cli/src/services/sync/syncDpop";
 import {
@@ -64,6 +64,91 @@ class FakeWebSocket extends EventEmitter {
     this.readyState = 3;
     queueMicrotask(() => this.emit("close"));
   }
+}
+
+function successfulSealedAdoptionSocket(args: {
+  signingPrivateKey: Parameters<typeof signEd25519>[0];
+  hostDeviceId: string;
+  hostName: string;
+  pairedSecret?: string;
+}): FakeWebSocket {
+  let hostSessionKey: Buffer | null = null;
+  return new FakeWebSocket((text, ws) => {
+    const envelope = parseSyncEnvelope(wsDataToText(text));
+    if (envelope.type === "account_challenge") {
+      const request = envelope.payload as {
+        nonce: string;
+        clientEphemeralPublicKey: string;
+      };
+      const hostEphemeral = generateX25519EphemeralKeyPair();
+      const hostEphemeralPublicKey = hostEphemeral.publicKeyRaw.toString("base64");
+      const ts = Date.now();
+      const canonical = buildAdoptChallengeSignatureInput({
+        hostDeviceId: args.hostDeviceId,
+        nonce: request.nonce,
+        clientEphemeralPublicKey: request.clientEphemeralPublicKey,
+        hostEphemeralPublicKey,
+        ts,
+      });
+      hostSessionKey = deriveAdoptSessionKey({
+        privateKey: hostEphemeral.privateKey,
+        peerPublicKeyRaw: Buffer.from(request.clientEphemeralPublicKey, "base64"),
+        nonce: Buffer.from(request.nonce, "base64"),
+      });
+      ws.receive(encodeSyncEnvelope({
+        type: "account_challenge_ok",
+        requestId: envelope.requestId,
+        payload: {
+          v: 1,
+          hostDeviceId: args.hostDeviceId,
+          ts,
+          hostEphemeralPublicKey,
+          signature: signEd25519(
+            args.signingPrivateKey,
+            canonical,
+          ).toString("base64"),
+        },
+      }));
+      return;
+    }
+    if (envelope.type !== "hello" || !hostSessionKey) return;
+    const payload = envelope.payload as {
+      peer: { deviceId: string };
+      auth: { kind: string; deviceId: string; sealed: string };
+    };
+    expect(payload.auth.kind).toBe("account_sealed");
+    const helloOk = {
+      peer: payload.peer,
+      brain: {
+        deviceId: args.hostDeviceId,
+        deviceName: args.hostName,
+        platform: "macOS",
+        deviceType: "desktop",
+        siteId: `${args.hostDeviceId}-site`,
+        dbVersion: 0,
+      },
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 5_000,
+      pollIntervalMs: 1_500,
+      features: { rpcChannel: true, portForward: true },
+      accountPairing: {
+        deviceId: payload.auth.deviceId,
+        secret: args.pairedSecret ?? "sealed-paired-secret",
+      },
+    };
+    ws.receive(encodeSyncEnvelope({
+      type: "hello_ok",
+      requestId: envelope.requestId,
+      payload: {
+        v: 1,
+        sealed: seal(
+          hostSessionKey,
+          buildAdoptHelloOkAad(args.hostDeviceId, payload.auth.deviceId),
+          Buffer.from(JSON.stringify(helloOk)),
+        ),
+      },
+    }));
+  });
 }
 
 describe("DesktopPairedMachineStore", () => {
@@ -459,6 +544,179 @@ describe("DesktopPairedMachineStore", () => {
     expect(fs.readFileSync(store.path, "utf8")).not.toContain("clerk-access-token");
   });
 
+  it("does not dial direct adoption routes when the directory row has no pubkey", async () => {
+    const openedEndpoints: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-legacy-relay-only",
+      deviceId: "host-legacy-relay-only",
+      name: "Legacy Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        {
+          kind: "relay",
+          url: "wss://relay.example/connect/machine-legacy-relay-only",
+        },
+        { kind: "tailnet", host: "100.75.20.63", port: 8787 },
+        { kind: "lan", host: "legacy-studio.local", port: 8787 },
+      ],
+    };
+
+    try {
+      await expect(new DesktopPairedMachineStore().pairWithAccountMachine(
+        machine,
+        "legacy-token",
+        "Laptop",
+        {
+          accountOwnerUserId: "account-user",
+          relayBaseUrls: ["https://relay.example"],
+          createWebSocket: (endpoint) => {
+            openedEndpoints.push(endpoint);
+            const ws = new FakeWebSocket(() => {}, false);
+            queueMicrotask(() => ws.emit("error", new Error("relay refused")));
+            return ws as unknown as WebSocket;
+          },
+        },
+      )).rejects.toThrow(/relay relay\.example:.*relay refused/i);
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(openedEndpoints).toEqual([
+      "wss://relay.example/connect/machine-legacy-relay-only",
+    ]);
+  });
+
+  it("stops after a successful sealed relay adoption without dialing direct routes", async () => {
+    process.env.ADE_HOME = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-desktop-relay-wins-"),
+    );
+    const signing = generateKeyPairSync("ed25519");
+    const openedEndpoints: string[] = [];
+    const stages: Array<{
+      kind: "relay" | "tailnet" | "lan";
+      phase: "connecting" | "verifying";
+    }> = [];
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-relay-wins",
+      deviceId: "host-relay-wins",
+      name: "Relay Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${rawPublicKeyFromSpki(signing.publicKey).toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "lan", host: "relay-studio.local", port: 8787 },
+        { kind: "tailnet", host: "100.75.20.63", port: 8787 },
+        {
+          kind: "relay",
+          url: "wss://relay.example/connect/machine-relay-wins",
+        },
+      ],
+    };
+
+    await expect(new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "sealed-token",
+      "Laptop",
+      {
+        accountOwnerUserId: "account-user",
+        relayBaseUrls: ["https://relay.example"],
+        onStage: (stage) => stages.push(stage),
+        createWebSocket: (endpoint) => {
+          openedEndpoints.push(endpoint);
+          return successfulSealedAdoptionSocket({
+            signingPrivateKey: signing.privateKey,
+            hostDeviceId: "host-relay-wins",
+            hostName: "Relay Studio",
+          }) as unknown as WebSocket;
+        },
+      },
+    )).resolves.toMatchObject({
+      hostIdentity: { deviceId: "host-relay-wins" },
+      secret: "sealed-paired-secret",
+    });
+    expect(openedEndpoints).toEqual([
+      "wss://relay.example/connect/machine-relay-wins",
+    ]);
+    expect(stages).toEqual([
+      { kind: "relay", phase: "connecting" },
+      { kind: "relay", phase: "verifying" },
+    ]);
+  });
+
+  it("falls through a closed relay to sealed tailnet adoption with exact stages", async () => {
+    process.env.ADE_HOME = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-desktop-tailnet-fallback-"),
+    );
+    const signing = generateKeyPairSync("ed25519");
+    const openedEndpoints: string[] = [];
+    const stages: Array<{
+      kind: "relay" | "tailnet" | "lan";
+      phase: "connecting" | "verifying";
+    }> = [];
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-tailnet-fallback",
+      deviceId: "host-tailnet-fallback",
+      name: "Tailnet Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${rawPublicKeyFromSpki(signing.publicKey).toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "lan", host: "tailnet-studio.local", port: 8787 },
+        { kind: "tailnet", host: "100.75.20.63", port: 8787 },
+        {
+          kind: "relay",
+          url: "wss://relay.example/connect/machine-tailnet-fallback",
+        },
+      ],
+    };
+
+    await expect(new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "sealed-token",
+      "Laptop",
+      {
+        accountOwnerUserId: "account-user",
+        relayBaseUrls: ["https://relay.example"],
+        onStage: (stage) => stages.push(stage),
+        createWebSocket: (endpoint) => {
+          openedEndpoints.push(endpoint);
+          if (endpoint.startsWith("wss://")) {
+            return new FakeWebSocket((text, ws) => {
+              const envelope = parseSyncEnvelope(wsDataToText(text));
+              if (envelope.type === "account_challenge") ws.close();
+            }) as unknown as WebSocket;
+          }
+          return successfulSealedAdoptionSocket({
+            signingPrivateKey: signing.privateKey,
+            hostDeviceId: "host-tailnet-fallback",
+            hostName: "Tailnet Studio",
+          }) as unknown as WebSocket;
+        },
+      },
+    )).resolves.toMatchObject({
+      hostIdentity: { deviceId: "host-tailnet-fallback" },
+      secret: "sealed-paired-secret",
+    });
+
+    expect(openedEndpoints).toEqual([
+      "wss://relay.example/connect/machine-tailnet-fallback",
+      "ws://100.75.20.63:8787/",
+    ]);
+    expect(stages).toEqual([
+      { kind: "relay", phase: "connecting" },
+      { kind: "tailnet", phase: "connecting" },
+      { kind: "tailnet", phase: "verifying" },
+    ]);
+  });
+
   it("verifies a directory signing key before sending a sealed account hello over a direct route", async () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-sealed-pairing-"));
     process.env.ADE_HOME = adeHome;
@@ -477,7 +735,6 @@ describe("DesktopPairedMachineStore", () => {
       lastSeenAt: Date.now(),
       reachableEndpoints: [
         { kind: "lan", host: "sealed-studio.local", port: 8787 },
-        { kind: "relay", url: "wss://relay.example/connect/machine-sealed" },
       ],
     };
     const createWebSocket = () => new FakeWebSocket((text, ws) => {
@@ -680,6 +937,118 @@ describe("DesktopPairedMachineStore", () => {
       code: "account_host_identity_verification_failed",
     });
     expect(sentTypes).toEqual(["account_challenge"]);
+  });
+
+  it("aborts on a direct-route impostor without dialing later routes or sending hello", async () => {
+    const signing = generateKeyPairSync("ed25519");
+    const openedEndpoints: string[] = [];
+    const sentTypes: string[] = [];
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-direct-impostor",
+      deviceId: "expected-direct-host",
+      name: "Expected Direct Host",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${rawPublicKeyFromSpki(signing.publicKey).toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "tailnet", host: "100.75.20.63", port: 8787 },
+        { kind: "lan", host: "expected-direct-host.local", port: 8787 },
+      ],
+    };
+
+    const pairing = new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "must-remain-sealed",
+      "Laptop",
+      {
+        accountOwnerUserId: "account-user",
+        createWebSocket: (endpoint) => {
+          openedEndpoints.push(endpoint);
+          return new FakeWebSocket((text, ws) => {
+            const envelope = parseSyncEnvelope(wsDataToText(text));
+            sentTypes.push(envelope.type);
+            if (envelope.type !== "account_challenge") return;
+            const hostEphemeral = generateX25519EphemeralKeyPair();
+            ws.receive(encodeSyncEnvelope({
+              type: "account_challenge_ok",
+              requestId: envelope.requestId,
+              payload: {
+                v: 1,
+                hostDeviceId: "expected-direct-host",
+                ts: Date.now(),
+                hostEphemeralPublicKey:
+                  hostEphemeral.publicKeyRaw.toString("base64"),
+                signature: Buffer.alloc(64, 9).toString("base64"),
+              },
+            }));
+          }) as unknown as WebSocket;
+        },
+      },
+    );
+
+    await expect(pairing).rejects.toMatchObject({
+      code: "account_host_identity_verification_failed",
+    });
+    expect(openedEndpoints).toEqual(["ws://100.75.20.63:8787/"]);
+    expect(sentTypes).toEqual(["account_challenge"]);
+  });
+
+  it("aggregates every failed adoption route with its kind and host", async () => {
+    const signing = generateKeyPairSync("ed25519");
+    const openedEndpoints: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-all-routes-fail",
+      deviceId: "host-all-routes-fail",
+      name: "Unavailable Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${rawPublicKeyFromSpki(signing.publicKey).toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        {
+          kind: "relay",
+          url: "wss://relay.example/connect/machine-all-routes-fail",
+        },
+        { kind: "tailnet", host: "100.75.20.63", port: 8787 },
+        { kind: "lan", host: "unavailable-studio.local", port: 8787 },
+      ],
+    };
+
+    let failure: Error | null = null;
+    try {
+      await new DesktopPairedMachineStore().pairWithAccountMachine(
+        machine,
+        "sealed-token",
+        "Laptop",
+        {
+          accountOwnerUserId: "account-user",
+          relayBaseUrls: ["https://relay.example"],
+          createWebSocket: (endpoint) => {
+            openedEndpoints.push(endpoint);
+            const ws = new FakeWebSocket(() => {}, false);
+            queueMicrotask(() => ws.emit("error", new Error(`refused ${endpoint}`)));
+            return ws as unknown as WebSocket;
+          },
+        },
+      );
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error));
+    } finally {
+      warn.mockRestore();
+    }
+
+    expect(failure?.message).toMatch(/relay relay\.example:/);
+    expect(failure?.message).toMatch(/tailnet 100\.75\.20\.63:/);
+    expect(failure?.message).toMatch(/lan unavailable-studio\.local:/);
+    expect(openedEndpoints).toEqual([
+      "wss://relay.example/connect/machine-all-routes-fail",
+      "ws://100.75.20.63:8787/",
+      "ws://unavailable-studio.local:8787/",
+    ]);
   });
 
   it.each([

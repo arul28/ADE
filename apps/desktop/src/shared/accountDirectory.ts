@@ -600,6 +600,49 @@ export function accountMachinePairedSyncEndpoints(
   return endpoints;
 }
 
+export type AccountMachineAdoptionRoute = {
+  endpoint: string;
+  kind: "relay" | "tailnet" | "lan";
+};
+
+/**
+ * Account-adoption routes in failover order. Endpoint validation remains
+ * centralized in the secure/paired endpoint helpers above; this helper only
+ * classifies their already-validated output.
+ */
+export function accountMachineAdoptionRoutes(
+  machine: AdeAccountMachine,
+  relayBaseUrls: readonly string[] = [],
+): AccountMachineAdoptionRoute[] {
+  const relayEndpoints = accountMachineSecureSyncEndpoints(
+    machine,
+    relayBaseUrls,
+  );
+  const relaySet = new Set(relayEndpoints);
+  const tailnet: AccountMachineAdoptionRoute[] = [];
+  const lan: AccountMachineAdoptionRoute[] = [];
+
+  for (const endpoint of accountMachinePairedSyncEndpoints(machine, relayBaseUrls)) {
+    if (relaySet.has(endpoint)) continue;
+    const route = {
+      endpoint,
+      kind: isTailnetHostname(new URL(endpoint).hostname)
+        ? "tailnet" as const
+        : "lan" as const,
+    };
+    (route.kind === "tailnet" ? tailnet : lan).push(route);
+  }
+
+  return [
+    ...relayEndpoints.map((endpoint) => ({
+      endpoint,
+      kind: "relay" as const,
+    })),
+    ...tailnet,
+    ...lan,
+  ];
+}
+
 export function selectAccountMachine(
   machines: AdeAccountMachine[],
   query: string,
