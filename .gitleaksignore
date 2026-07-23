@@ -11,3 +11,9 @@
 # Synthetic encrypted OpenSSH parser fixture. The current test constructs the
 # boundary at runtime; keep this exception scoped to its original PR commit.
 73f8acc461fd37996a95e4765007f2c794df13ee:apps/ios/ADETests/SSHBootstrapTests.swift:private-key:25
+
+# ade-adopt-v1 cross-platform crypto test vector. This is the HKDF-SHA256 output
+# derived from the public RFC 7748 X25519 test keys (documented in-comment); it
+# is not a real secret. The same value is asserted in code (line 123) and in the
+# iOS mirror to lock TS<->Swift byte-compatibility. Scope to its original commit.
+4809aba24a34362fd2014774abf67c85b1251cd0:apps/desktop/src/shared/sync/adoptChannelCrypto.test.ts:generic-api-key:83

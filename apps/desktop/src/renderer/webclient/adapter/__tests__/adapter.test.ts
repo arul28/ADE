@@ -184,6 +184,7 @@ describe("createAdeWebAdapter", () => {
       "cancelLogin",
       "getLocalMachineIdentity",
       "listMachines",
+      "onPairMachineProgress",
       "pairMachine",
       "pollLogin",
       "removeMachine",
