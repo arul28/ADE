@@ -97,6 +97,16 @@ const MANIFEST_FILE = "manifest.json";
 const PLAN_FILE = "plan.md";
 const GEN_FILE = ".gen";
 const HEARTBEATS_FILE = "heartbeats.json";
+// Heartbeat liveness is recorded opportunistically off the mutating-tool wrapper
+// (withHeartbeat → agentHeartbeat). To keep that off the hot path we coalesce:
+// the freshest observation is always kept in memory, but the disk/manifest
+// liveness marker is only rewritten once per this interval per session.
+const HEARTBEAT_PERSIST_INTERVAL_MS = 30_000;
+// During the existing recover-stale sweep, a `running` agent whose effective
+// heartbeat (max of persisted + in-memory) is older than this is flagged
+// `stalled` and the lead is notified once. Not a timer — evaluated only when the
+// lead runs recoverStaleTasks.
+const HEARTBEAT_STALL_THRESHOLD_MS = 10 * 60 * 1000;
 const INDEX_FILE = "index.json";
 const HISTORY_RING_LIMIT = 50;
 const SELF_WRITE_WINDOW_MS = 1_000;
@@ -133,6 +143,15 @@ type RunRuntime = {
   watcherDebounceTimers: WatcherDebounceTimers;
   watcherIdleTimer: NodeJS.Timeout | null;
   suspended: boolean;
+  /**
+   * Freshest heartbeat observation per session (ms epoch), updated on every
+   * agentHeartbeat call. The disk/manifest liveness marker lags this by up to
+   * HEARTBEAT_PERSIST_INTERVAL_MS (coalesced); the stall sweep reads the max of
+   * this and the persisted marker so a recently-active agent is never mis-flagged.
+   */
+  heartbeatFreshnessMs: Map<string, number>;
+  /** Last time the liveness marker was persisted to disk/manifest per session (ms epoch). */
+  heartbeatPersistedAtMs: Map<string, number>;
 };
 
 type RunIndexEntry = {
@@ -596,6 +615,8 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         watcherDebounceTimers: {},
         watcherIdleTimer: null,
         suspended: false,
+        heartbeatFreshnessMs: new Map(),
+        heartbeatPersistedAtMs: new Map(),
       };
       runs.set(runId, runtime);
       return runtime;
@@ -1626,9 +1647,22 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       }
       const manifest = runtime.manifest;
       if (!manifest) return { ok: false, reason: `run ${req.runId} not found` };
-      if (!manifest.agents.some((agent) => agent.sessionId === req.sessionId)) {
+      const current = manifest.agents.find((entry) => entry.sessionId === req.sessionId);
+      if (!current) {
         return { ok: false, reason: `agent ${req.sessionId} not found`, etag: manifest.etag };
       }
+      const nowMs = now().getTime();
+      // Always record the freshest observation in memory — this is the cheap side
+      // of the coalesce and the signal the stall sweep reads. No disk, no clone.
+      runtime.heartbeatFreshnessMs.set(req.sessionId, nowMs);
+      const lastPersistedMs = runtime.heartbeatPersistedAtMs.get(req.sessionId) ?? 0;
+      const wasStalled = current.stalled === true;
+      // Coalesce: skip the disk write + manifest clone unless the persisted marker
+      // is stale, or we owe a `stalled`-clearing patch (recovery must land now).
+      if (!wasStalled && nowMs - lastPersistedMs < HEARTBEAT_PERSIST_INTERVAL_MS) {
+        return { ok: true, etag: manifest.etag };
+      }
+      runtime.heartbeatPersistedAtMs.set(req.sessionId, nowMs);
       const next = structuredClone(manifest) as OrchestrationManifest;
       const agent = next.agents.find((entry) => entry.sessionId === req.sessionId);
       const lastHeartbeatAt = nowIso();
@@ -1644,14 +1678,30 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       } catch (err) {
         throw err;
       }
+      let etag = next.etag;
+      // Recovery: a fresh heartbeat from a previously-stalled agent clears the flag
+      // (service-owned manifest patch) so the lead can be notified again if it
+      // stalls a second time. Rare transition, so the directPatch cost is bounded.
+      if (wasStalled) {
+        try {
+          const res = await directPatch(
+            runtime,
+            [{ op: "replace", path: `/agents/{sessionId:${req.sessionId}}/stalled`, value: false }],
+            `clear stalled flag for ${req.sessionId} (heartbeat resumed)`,
+          );
+          etag = res.etag;
+        } catch (err) {
+          if (!(err instanceof OrchestrationRunSuspendedError)) throw err;
+        }
+      }
       emit({
         runId: req.runId,
         kind: "heartbeat",
-        etag: next.etag,
+        etag,
         sessionId: req.sessionId,
         lastHeartbeatAt,
       });
-      return { ok: true, etag: next.etag };
+      return { ok: true, etag };
     });
   }
 
@@ -3071,10 +3121,101 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   }
 
   /**
+   * Effective liveness of an agent in ms epoch: the max of its persisted
+   * heartbeat marker, the freshest in-memory observation, and — as a floor for an
+   * agent that has never checked in — its spawn time. Returns NaN when none parse.
+   */
+  function effectiveLivenessMs(
+    runtime: RunRuntime,
+    agent: OrchestrationManifest["agents"][number],
+  ): number {
+    const candidates = [
+      typeof agent.lastHeartbeatAt === "string" ? Date.parse(agent.lastHeartbeatAt) : NaN,
+      runtime.heartbeatFreshnessMs.get(agent.sessionId) ?? NaN,
+      typeof agent.spawnedAt === "string" ? Date.parse(agent.spawnedAt) : NaN,
+    ].filter((value) => Number.isFinite(value));
+    return candidates.length ? Math.max(...candidates) : NaN;
+  }
+
+  /**
+   * Heartbeat-liveness sweep body (piggybacked on releaseStaleClaims). Returns
+   * service-owned patch ops that flag `running` agents silent past the stall
+   * threshold, clear the flag on recovered/no-longer-running agents, and enqueue
+   * a single plain-language lead notification per new stall. Dedupe keys on the
+   * `stalled` flag: a still-stalled agent yields no ops and no repeat message.
+   */
+  function buildStallDetectionOps(
+    runtime: RunRuntime,
+    manifest: OrchestrationManifest,
+    nowMs: number,
+  ): { ops: ManifestPatchOp[]; flagged: number } {
+    const lead = manifest.agents.find((agent) => agent.role === "lead");
+    const ops: ManifestPatchOp[] = [];
+    const notifications: NewOutboxEntry[] = [];
+    let flagged = 0;
+    for (const agent of manifest.agents) {
+      if (agent.role === "lead") continue;
+      const stalledNow = agent.stalled === true;
+      if (agent.status !== "running") {
+        // Only a working agent can be stalled; clear a leftover flag lazily.
+        if (stalledNow) {
+          ops.push({ op: "replace", path: `/agents/{sessionId:${agent.sessionId}}/stalled`, value: false });
+        }
+        continue;
+      }
+      const lastMs = effectiveLivenessMs(runtime, agent);
+      if (!Number.isFinite(lastMs)) continue;
+      const silentMs = nowMs - lastMs;
+      if (silentMs > HEARTBEAT_STALL_THRESHOLD_MS) {
+        if (stalledNow) continue; // already flagged + notified — no repeat.
+        ops.push({ op: "replace", path: `/agents/{sessionId:${agent.sessionId}}/stalled`, value: true });
+        flagged += 1;
+        if (lead && lead.sessionId !== agent.sessionId) {
+          const label = agent.tag?.trim() || agent.displayName?.trim() || agent.role;
+          const minutes = Math.max(1, Math.round(silentMs / 60_000));
+          notifications.push({
+            kind: "lead_status",
+            targetSessionId: lead.sessionId,
+            delivery: {
+              op: "steer",
+              text:
+                `${label} hasn't shown signs of life for ${minutes}m — ` +
+                `consider steering, waiting, or reassigning (messageAgent / awaitAgent / spawnAgent).`,
+              metadata: {
+                orchestrationOrigin: {
+                  runId: manifest.runId,
+                  fromSessionId: agent.sessionId,
+                  kind: "queue",
+                  intent: "status",
+                },
+                orchestrationStall: {
+                  sessionId: agent.sessionId,
+                  role: agent.role,
+                  ...(agent.tag ? { tag: agent.tag } : {}),
+                  silentMs,
+                },
+              },
+            },
+          });
+        }
+      } else if (stalledNow) {
+        // Recovery inside the sweep: a heartbeat landed since the last flag.
+        ops.push({ op: "replace", path: `/agents/{sessionId:${agent.sessionId}}/stalled`, value: false });
+      }
+    }
+    if (notifications.length) {
+      ops.push(...buildOutboxEnqueueOps(manifest, notifications));
+    }
+    return { ops, flagged };
+  }
+
+  /**
    * Crash-resume primitive: reset any claimed/in-progress task whose claim lease
    * has expired back to `pending` and clear its assignee, so the lead can
    * re-dispatch work a dead worker abandoned. The manifest already survives
    * restarts on disk; this recovers the in-flight claims that outlived a worker.
+   * Also runs the heartbeat-liveness sweep (buildStallDetectionOps) so a silent
+   * worker is flagged + the lead notified before its 30-min lease even expires.
    */
   async function releaseStaleClaims(
     runId: string,
@@ -3141,6 +3282,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           reconciledEdges += 1;
         }
       }
+      // Heartbeat auto-recovery: flag agents that have gone silent past the stall
+      // threshold and notify the lead once. Piggybacks this existing sweep — no
+      // new interval/timer. Stall flags are orthogonal to the lease/edge ops above
+      // (they touch /stalled + /outbox only), so evaluating against `manifest` is
+      // accurate.
+      const stall = buildStallDetectionOps(runtime, manifest, nowMs);
+      ops.push(...stall.ops);
       if (!ops.length) {
         return { ok: true, manifest, etag: manifest.etag, recovered: [] };
       }
@@ -3148,7 +3296,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         const res = await directPatch(
           runtime,
           ops,
-          `recover ${stale.length} stale task(s)${reconciledEdges ? `, reconcile ${reconciledEdges} edge(s)` : ""}`,
+          `recover ${stale.length} stale task(s)${reconciledEdges ? `, reconcile ${reconciledEdges} edge(s)` : ""}${stall.flagged ? `, flag ${stall.flagged} stalled agent(s)` : ""}`,
         );
         return { ok: true, manifest: res.manifest, etag: res.etag, recovered: stale.map((t) => t.id) };
       } catch (err) {

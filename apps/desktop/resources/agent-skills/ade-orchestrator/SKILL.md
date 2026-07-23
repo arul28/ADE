@@ -214,6 +214,19 @@ Pick `queue` for non-urgent context drops (worker progress reports, validator pa
   nudge. You do not have to await: every worker/validator completion is also
   delivered to you durably as a plain-language note through the run's outbox, so
   you can react whenever the note arrives instead of blocking.
+- **Lead — stalled-worker notices arrive on their own; you decide the recovery.**
+  The service watches worker liveness for you (heartbeats ride the normal tool
+  traffic — no polling). If a working agent goes silent for a while, `recoverStaleTasks`
+  marks it `stalled` and drops one plain-language note in your queue, e.g.
+  *"impl-1 hasn't shown signs of life for 12m — consider steering, waiting, or
+  reassigning (messageAgent / awaitAgent / spawnAgent)."* You get that note **once**
+  per stall (it won't repeat while the agent stays silent, and the flag clears by
+  itself the moment the worker checks in again). Reassignment stays your call — the
+  note never kills or reassigns anything. When one lands, pick one: `messageAgent`
+  to steer/nudge it, `awaitAgent` to give it more time, or `spawnAgent` to hand the
+  task to a fresh worker after releasing the stale claim. Narrate whichever you do
+  in plain words (§14): "impl-1 has gone quiet — I'll nudge it", not "clearing the
+  stalled flag".
 - **Lead — read-only ADE capability tools (planning + status).** The lead has a
   curated, read-only slice of ADE to inform planning and status without a shell:
   `searchWorkspace` (universal search across transcripts / PRs / commits / Linear

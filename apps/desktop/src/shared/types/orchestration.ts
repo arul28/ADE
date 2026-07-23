@@ -84,6 +84,14 @@ export type OrchestrationAgent = {
   currentStepId?: string;
   cancellationRequested?: boolean;
   lastHeartbeatAt?: string;
+  /**
+   * Set true by the service when a heartbeat-liveness sweep finds this agent has
+   * been silent past the stall threshold while still `running` (see
+   * `releaseStaleClaims` in orchestrationService.ts). Service-owned: the lead is
+   * notified once per stall (dedupe keys on this flag) and it clears on the next
+   * fresh heartbeat. Additive/lazy — absent on old manifests means "not stalled".
+   */
+  stalled?: boolean;
   spawnedAt: string;
   spawnFingerprint?: SpawnFingerprint;
   budget?: AgentBudget;

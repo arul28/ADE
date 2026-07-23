@@ -985,6 +985,204 @@ const MODEL_FALLBACK: ModelSelection = {
   reasoningEffort: null,
 };
 
+describe("orchestration heartbeat auto-recovery", () => {
+  let lane: string;
+  let clock: number;
+  const BASE = Date.parse("2026-07-22T00:00:00.000Z");
+  beforeEach(async () => {
+    lane = await makeTempLane();
+    clock = BASE;
+  });
+  afterEach(async () => {
+    await rmTree(lane);
+  });
+
+  function makeSvc() {
+    return createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+      now: () => new Date(clock),
+    });
+  }
+
+  async function seedWorker(
+    svc: ReturnType<typeof createOrchestrationService>,
+    manifest: { runId: string; etag: string; bundlePath: string },
+    opts: {
+      sessionId: string;
+      status?: string;
+      spawnedAtMs?: number;
+      lastHeartbeatAtMs?: number;
+      stalled?: boolean;
+    },
+  ): Promise<string> {
+    const value: Record<string, unknown> = {
+      sessionId: opts.sessionId,
+      role: "worker",
+      tag: opts.sessionId,
+      goalSummary: "implement",
+      status: opts.status ?? "running",
+      spawnedAt: new Date(opts.spawnedAtMs ?? clock).toISOString(),
+    };
+    if (opts.lastHeartbeatAtMs !== undefined) {
+      value.lastHeartbeatAt = new Date(opts.lastHeartbeatAtMs).toISOString();
+    }
+    if (opts.stalled !== undefined) value.stalled = opts.stalled;
+    const res = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [{ op: "add", path: "/agents/-", value }],
+      },
+      manifest.bundlePath,
+    );
+    if (!res.ok) throw new Error(`seed failed: ${res.error}`);
+    return res.etag;
+  }
+
+  function leadStatusEntries(manifest: { outbox?: { kind: string }[] }) {
+    return (manifest.outbox ?? []).filter((entry) => entry.kind === "lead_status");
+  }
+
+  const MIN = 60_000;
+
+  it("coalesces heartbeat persistence: no disk/manifest rewrite when < 30s fresh", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, { sessionId: "S-worker" });
+    const hbPath = path.join(manifest.bundlePath, "heartbeats.json");
+
+    // First call always persists (no prior persist).
+    clock = BASE + 1_000;
+    await svc.agentHeartbeat({ runId: manifest.runId, sessionId: "S-worker" }, manifest.bundlePath);
+    const firstIso = new Date(clock).toISOString();
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "S-worker")?.lastHeartbeatAt).toBe(firstIso);
+    const hbAfterFirst = await fsp.readFile(hbPath, "utf-8");
+
+    // Second call 10s later coalesces: freshness updates in memory, disk unchanged.
+    clock = BASE + 11_000;
+    await svc.agentHeartbeat({ runId: manifest.runId, sessionId: "S-worker" }, manifest.bundlePath);
+    expect(await fsp.readFile(hbPath, "utf-8")).toBe(hbAfterFirst);
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "S-worker")?.lastHeartbeatAt).toBe(firstIso);
+
+    // 40s after the last persist: crosses the interval, persists again.
+    clock = BASE + 41_000;
+    await svc.agentHeartbeat({ runId: manifest.runId, sessionId: "S-worker" }, manifest.bundlePath);
+    expect(await fsp.readFile(hbPath, "utf-8")).not.toBe(hbAfterFirst);
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "S-worker")?.lastHeartbeatAt).toBe(new Date(clock).toISOString());
+    await svc.dispose();
+  });
+
+  it("flags a silent running agent and enqueues exactly one plain-language lead note", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+    const res = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(res.ok).toBe(true);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(true);
+    const notes = leadStatusEntries(after);
+    expect(notes).toHaveLength(1);
+    const note = notes[0] as { targetSessionId: string; delivery: { text?: string } };
+    expect(note.targetSessionId).toBe("S-lead");
+    expect(note.delivery.text).toContain("hasn't shown signs of life for 12m");
+    expect(note.delivery.text).toContain("messageAgent / awaitAgent / spawnAgent");
+    await svc.dispose();
+  });
+
+  it("does not re-notify while an agent stays stalled", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(leadStatusEntries(svc.getManifestForRun(manifest.runId)!)).toHaveLength(1);
+
+    // Still silent 5 minutes later — sweep again, no new note.
+    clock = BASE + 5 * MIN;
+    const second = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(second.ok).toBe(true);
+    expect(leadStatusEntries(svc.getManifestForRun(manifest.runId)!)).toHaveLength(1);
+    await svc.dispose();
+  });
+
+  it("clears the stalled flag on a fresh heartbeat and re-notifies if it stalls again", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    await seedWorker(svc, manifest, {
+      sessionId: "impl-1",
+      spawnedAtMs: BASE - 20 * MIN,
+      lastHeartbeatAtMs: BASE - 12 * MIN,
+    });
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(true);
+
+    // Worker checks back in → stalled clears immediately (recovery patch).
+    clock = BASE + 1 * MIN;
+    const hb = await svc.agentHeartbeat({ runId: manifest.runId, sessionId: "impl-1" }, manifest.bundlePath);
+    expect(hb.ok).toBe(true);
+    expect(svc.getManifestForRun(manifest.runId)!.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(false);
+
+    // Goes silent again long past the threshold → a fresh (second) notification.
+    clock = BASE + 1 * MIN + 15 * MIN;
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "impl-1")?.stalled).toBe(true);
+    expect(leadStatusEntries(after)).toHaveLength(2);
+    await svc.dispose();
+  });
+
+  it("respects the stall threshold boundary (strictly greater than 10m)", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    // Exactly 10m silent → not stalled.
+    await seedWorker(svc, manifest, {
+      sessionId: "edge-1",
+      spawnedAtMs: BASE - 30 * MIN,
+      lastHeartbeatAtMs: BASE - 10 * MIN,
+    });
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    let after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "edge-1")?.stalled).toBeFalsy();
+    expect(leadStatusEntries(after)).toHaveLength(0);
+
+    // 10m + 1s later, still no heartbeat → now over the line.
+    clock = BASE + 1_000;
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "edge-1")?.stalled).toBe(true);
+    expect(leadStatusEntries(after)).toHaveLength(1);
+    await svc.dispose();
+  });
+
+  it("only flags running agents and never the lead", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    // A blocked (intentionally waiting) worker silent past threshold is not stalled.
+    await seedWorker(svc, manifest, {
+      sessionId: "blocked-1",
+      status: "blocked",
+      spawnedAtMs: BASE - 30 * MIN,
+      lastHeartbeatAtMs: BASE - 20 * MIN,
+    });
+    await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+    const after = svc.getManifestForRun(manifest.runId)!;
+    expect(after.agents.find((a) => a.sessionId === "blocked-1")?.stalled).toBeFalsy();
+    // The lead itself is never flagged even though it has no heartbeat.
+    expect(after.agents.find((a) => a.role === "lead")?.stalled).toBeFalsy();
+    expect(leadStatusEntries(after)).toHaveLength(0);
+    await svc.dispose();
+  });
+});
+
 describe("model routing precedence", () => {
   it("byRoleTag wins over byTag/byRole/default", () => {
     const routing: ModelRouting = {
