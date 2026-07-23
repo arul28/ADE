@@ -194,8 +194,20 @@ export function IntegrationBannerHost({
     // 1) GitHub App real-time block (NEW). Only once a real read has landed FOR
     // the current project (loadedRoot === currentProjectRoot), so an unloaded/
     // absent API never masquerades as "not authorized" and a project switch
-    // can't paint the previous repo's state.
-    if (appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot) {
+    // can't paint the previous repo's state. Also require the runtime App-status
+    // DTOs: the standalone web-client adapter returns stubs
+    // (`{authenticated,user}` / `{installed:false,state:"unknown"}`) that lack the
+    // real fields, and treating a stub as loaded would flash a false
+    // "not authorized" banner on every hosted-web project. Detect the real DTO by
+    // fields the stub omits (appName/relayConfigured on install, configured on auth).
+    const rawInstall = appInstall as Record<string, unknown> | null;
+    const rawAuth = appAuth as Record<string, unknown> | null;
+    const githubAppStatusSupported =
+      !!rawInstall
+      && typeof rawInstall.appName === "string"
+      && typeof rawInstall.relayConfigured === "boolean"
+      && (!rawAuth || typeof rawAuth.configured === "boolean");
+    if (appStatusLoaded && currentProjectRoot && loadedRoot === currentProjectRoot && githubAppStatusSupported) {
       const account = deriveGithubAccountAuthState(appAuth);
       const repo = deriveGithubRepoConnectionState(appInstall);
       const block = deriveGithubRealtimeBlock(account, repo);

@@ -100,6 +100,11 @@ export function deriveGithubRealtimeBlock(
   account: GithubAccountAuthState,
   repo: GithubRepoConnectionState,
 ): GithubRealtimeBlock {
+  // A connected repo proves a working relay credential — the installation/webhook
+  // check succeeded, possibly via the ADE account-token fallback rather than the
+  // device-flow user token. Real-time updates flow, so surface no blocker even if
+  // the device-flow token is absent (which would otherwise read as "missing").
+  if (repo === "connected") return null;
   if (account === "missing" || account === "expired") return { kind: "account", account };
   if (repo === "not_installed" || repo === "access_pending" || repo === "webhook_off") {
     return { kind: "repo", repo };
