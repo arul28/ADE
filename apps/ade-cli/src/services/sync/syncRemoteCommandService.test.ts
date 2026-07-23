@@ -787,6 +787,58 @@ describe("createSyncRemoteCommandService", () => {
       recurring: false,
       reason: "CI watcher",
     });
+    await service.execute(makePayload("chat.createScheduledWork", {
+      sessionId: "chat-1",
+      delaySeconds: 720,
+      prompt: "Check CI again.",
+    }));
+    expect(createScheduledWork).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      delaySeconds: 720,
+      prompt: "Check CI again.",
+      recurring: false,
+    });
+    await service.execute(makePayload("chat.createScheduledWork", {
+      sessionId: "chat-1",
+      runAt: "2026-07-23T01:05:00-04:00",
+      prompt: "Check CI at the requested time.",
+    }));
+    expect(createScheduledWork).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      runAt: "2026-07-23T01:05:00-04:00",
+      prompt: "Check CI at the requested time.",
+      recurring: false,
+    });
+    await expect(service.execute(makePayload("chat.createScheduledWork", {
+      sessionId: "chat-1",
+      runAt: "2026-07-23T01:05:00-04:00",
+      prompt: "Invalid recurring run time.",
+      recurring: true,
+    }))).rejects.toThrow(/runAt schedules cannot recur/i);
+    await expect(service.execute(makePayload("chat.createScheduledWork", {
+      sessionId: "chat-1",
+      delaySeconds: "720",
+      prompt: "Invalid delay.",
+    }))).rejects.toThrow(/delaySeconds must be a number/i);
+    await expect(service.execute(makePayload("chat.createScheduledWork", {
+      sessionId: "chat-1",
+      cron: 15,
+      delaySeconds: 720,
+      prompt: "Invalid cron.",
+    }))).rejects.toThrow(/cron must be a non-empty string/i);
+    await expect(service.execute(makePayload("chat.createScheduledWork", {
+      sessionId: "chat-1",
+      runAt: { iso: "2026-07-23T01:00:00Z" },
+      delaySeconds: 720,
+      prompt: "Invalid run time.",
+    }))).rejects.toThrow(/runAt must be a non-empty string/i);
+    await expect(service.execute(makePayload("chat.createScheduledWork", {
+      sessionId: "chat-1",
+      cron: "   ",
+      delaySeconds: 720,
+      prompt: "Blank cron.",
+    }))).rejects.toThrow(/cron must be a non-empty string/i);
+    expect(createScheduledWork).toHaveBeenCalledTimes(3);
     await expect(service.execute(makePayload("chat.listScheduledWork", {
       sessionId: "chat-1",
     }))).resolves.toEqual([{ id: "cron-1", sessionId: "chat-1" }]);

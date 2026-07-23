@@ -4432,6 +4432,7 @@ describe("ADE CLI", () => {
       "Check CI and report",
     ]));
     expect(create.label).toBe("chat scheduled-work create");
+    expect(create.formatter).toBe("scheduled-work-create");
     expect(create.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "chat",
@@ -4470,13 +4471,102 @@ describe("ADE CLI", () => {
         },
       },
     });
+    const createRelative = expectExecutePlan(buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--in",
+      "12m",
+      "--prompt",
+      "Check CI and report",
+    ]));
+    expect(createRelative.steps[0]?.params).toMatchObject({
+      arguments: {
+        action: "createScheduledWork",
+        args: {
+          delaySeconds: 720,
+          prompt: "Check CI and report",
+          recurring: false,
+        },
+      },
+    });
+    const createAbsolute = expectExecutePlan(buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--at",
+      "2026-07-23T01:05:00-04:00",
+      "--prompt",
+      "Check CI and report",
+    ]));
+    expect(createAbsolute.steps[0]?.params).toMatchObject({
+      arguments: {
+        action: "createScheduledWork",
+        args: {
+          runAt: "2026-07-23T01:05:00-04:00",
+          prompt: "Check CI and report",
+          recurring: false,
+        },
+      },
+    });
+    expect(formatOutput({
+      item: {
+        id: "schedule-1",
+        kind: "cron",
+        status: "scheduled",
+        cron: "5 21 * * *",
+        nextRunAt: "2026-07-23T01:05:00.000Z",
+      },
+      timeZone: "America/New_York",
+    }, { text: true } as any, create.formatter)).toMatch(/Scheduled work created[\s\S]*schedule-1[\s\S]*brain timezone[\s\S]*America\/New_York[\s\S]*next run \(brain local\)[\s\S]*2026-07-23T01:05:00\.000Z/i);
+    const actionCreate = expectExecutePlan(buildCliPlan([
+      "actions",
+      "run",
+      "chat.createScheduledWork",
+      "--input-json",
+      "{\"delaySeconds\":720,\"prompt\":\"Check CI\"}",
+    ]));
+    expect(actionCreate.formatter).toBe("scheduled-work-create");
+    expect(formatOutput({
+      domain: "chat",
+      action: "createScheduledWork",
+      result: {
+        item: {
+          id: "action-schedule-1",
+          kind: "wakeup",
+          status: "scheduled",
+          nextRunAt: "2026-07-23T01:05:00.000Z",
+        },
+        timeZone: "America/New_York",
+      },
+    }, { text: true } as any, actionCreate.formatter)).toMatch(/action-schedule-1[\s\S]*America\/New_York[\s\S]*2026-07-23T01:05:00\.000Z/i);
+    expect(() => buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--cron",
+      "0 * * * *",
+      "--in",
+      "12m",
+      "--prompt",
+      "Ambiguous",
+    ])).toThrow(/exactly one of --cron, --at, or --in/i);
+    expect(() => buildCliPlan([
+      "chat",
+      "scheduled-work",
+      "create",
+      "--in",
+      "0m",
+      "--prompt",
+      "Invalid delay",
+    ])).toThrow(/positive, safely representable/i);
     expect(() => buildCliPlan([
       "chat",
       "scheduled-work",
       "create",
       "--prompt",
       "Missing cron",
-    ])).toThrow(/cron is required/);
+    ])).toThrow(/exactly one of --cron, --at, or --in/i);
     expect(() => buildCliPlan([
       "chat",
       "scheduled-work",

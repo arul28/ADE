@@ -1900,12 +1900,16 @@ different machine's cached limits.
   classification, and when it begins inside a fenced block it restores the
   original opening fence (including its language) so the closing fence and
   following prose still parse correctly.
-- **Work transcript parser uses `messageId` as a fallback item id.**
-  `makeWorkChatEvent` (`WorkEventMapping.swift`) and
-  `parseWorkChatTranscript` (`WorkTranscriptParser.swift`) now fall back
-  to the `messageId` from `chat_event` when no `itemId` is present, so
-  streaming assistant-text fragments merge into the same transcript row
-  even when the runtime only surfaces a `messageId`. `buildWorkChatMessages`
+- **Work assistant rows use `messageId` as their cross-source identity.**
+  Canonical transcript entries and live `chat_event` frames can carry both
+  `messageId` and provider `itemId`, but the two paths did not historically
+  choose them in the same order. `workAssistantMessageStableId`
+  (`WorkEventMapping.swift`) now prefers the trimmed `messageId` everywhere
+  and falls back to `itemId` only for providers that omit it. Canonical mapping
+  (`WorkErrorAndMessageHelpers.swift`), typed live-event mapping, and raw JSONL
+  replay (`WorkTranscriptParser.swift`) all use that helper, so live/canonical
+  reconciliation updates one assistant row instead of rendering a duplicate
+  whose partial streaming text appears cut off. `buildWorkChatMessages`
   (`WorkErrorAndMessageHelpers.swift`) tracks a
   `previousEnvelopeWasAssistantText` flag and allows merging into the
   previous assistant bubble when either (a) the text event has an

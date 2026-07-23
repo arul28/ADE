@@ -902,9 +902,9 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       example: "ade actions run chat.getSessionSummary --scalar chat-123",
     },
     createScheduledWork: {
-      description: "Create a durable recurring or one-shot wakeup for an eligible chat or tracked provider CLI session.",
-      input: "object { sessionId?: string, cron: string, prompt: string, recurring?: boolean, reason?: string }",
-      example: "ade actions run chat.createScheduledWork --input-json '{\"cron\":\"9,29,49 * * * *\",\"prompt\":\"Check CI and report\"}' --text",
+      description: "Create durable scheduled work for an eligible chat or tracked provider CLI session. Use delaySeconds or runAt for one-shot wakeups; five-field cron uses the ADE brain machine's local timezone.",
+      input: "object { sessionId?: string, prompt: string, exactly one of cron?: string | runAt?: ISO 8601 string with offset/Z | delaySeconds?: positive integer, recurring?: boolean, reason?: string }",
+      example: "ade actions run chat.createScheduledWork --input-json '{\"delaySeconds\":720,\"prompt\":\"Check CI and report\"}' --text",
     },
     listScheduledWork: {
       description: "List ADE-managed durable wakeups, cron jobs, and loops, optionally for one chat.",

@@ -12,6 +12,7 @@ import {
   isEarlierScheduleItem,
   mergeManagedScheduledWorkSnapshots,
   nextCronFireAt,
+  resolveScheduledWorkTiming,
   scheduledNextFireLabel,
   type ChatScheduledWorkSnapshot,
 } from "./chatScheduledWork";
@@ -96,6 +97,48 @@ describe("mergeManagedScheduledWorkSnapshots", () => {
 });
 
 describe("chatScheduledWork helpers", () => {
+  it("resolves cron in brain-local time and one-shot delays without timezone arithmetic", () => {
+    const nowMs = new Date(2026, 0, 1, 6, 0, 0, 0).getTime();
+
+    expect(resolveScheduledWorkTiming({ cron: "0 9 * * *" }, nowMs)).toEqual({
+      kind: "cron",
+      recurring: true,
+      fireAt: new Date(2026, 0, 1, 9, 0, 0, 0).getTime(),
+      cron: "0 9 * * *",
+    });
+    expect(resolveScheduledWorkTiming({ delaySeconds: 720 }, nowMs)).toEqual({
+      kind: "wakeup",
+      recurring: false,
+      fireAt: nowMs + 720_000,
+    });
+    expect(resolveScheduledWorkTiming({ runAt: "2026-01-02T03:04:05-05:00" }, nowMs)).toEqual({
+      kind: "wakeup",
+      recurring: false,
+      fireAt: Date.parse("2026-01-02T03:04:05-05:00"),
+    });
+  });
+
+  it("rejects ambiguous, timezone-less, recurring one-shot, and unrepresentable schedules", () => {
+    const nowMs = Date.now();
+
+    expect(() => resolveScheduledWorkTiming({ cron: "0 * * * *", delaySeconds: 60 }, nowMs))
+      .toThrow(/exactly one/i);
+    expect(() => resolveScheduledWorkTiming({ runAt: "2100-01-02T03:04:05" }, nowMs))
+      .toThrow(/explicit offset or Z/i);
+    expect(() => resolveScheduledWorkTiming({ delaySeconds: 60, recurring: true }, nowMs))
+      .toThrow(/cannot recur/i);
+    expect(() => resolveScheduledWorkTiming({ delaySeconds: 8_640_000_000_001 }, nowMs))
+      .toThrow(/too large/i);
+    expect(() => resolveScheduledWorkTiming({ cron: 5, delaySeconds: 60 }, nowMs))
+      .toThrow(/cron must be a string/i);
+    expect(() => resolveScheduledWorkTiming({ runAt: {}, delaySeconds: 60 }, nowMs))
+      .toThrow(/runAt must be a string/i);
+    expect(() => resolveScheduledWorkTiming({ cron: " ", delaySeconds: 60 }, nowMs))
+      .toThrow(/cron must not be empty/i);
+    expect(() => resolveScheduledWorkTiming({ cron: "0 * * * *", recurring: "false" }, nowMs))
+      .toThrow(/recurring must be a boolean/i);
+  });
+
   it("uses the shared Earlier membership for background and schedule rows", () => {
     expect(isEarlierBackgroundItem(snapshot({ kind: "background_task", status: "completed" }))).toBe(true);
     expect(isEarlierBackgroundItem(snapshot({ kind: "background_task", status: "failed" }))).toBe(false);

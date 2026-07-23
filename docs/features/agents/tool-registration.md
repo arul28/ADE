@@ -17,6 +17,8 @@ filtering before exposing the final list.
 | `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
 | `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` | Desktop-side client for the local machine runtime at `~/.ade/sock/ade.sock`; registers projects and dispatches runtime-backed actions. |
 | `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, Linear, and orchestration lead/worker/validator tools). |
+| `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Shared provider-runtime prompt assembly. Injects the same timezone-safe scheduled-work guidance into Claude, Codex, Cursor, Droid, and OpenCode sessions. |
+| `apps/desktop/src/main/services/adeActions/registry.ts` | Runtime action contracts and examples, including the mutually exclusive `cron` / `runAt` / `delaySeconds` scheduling inputs. |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side CLI install / status / uninstall. Resolves the launcher target (`$HOME/.local/bin/ade` on POSIX, `%LOCALAPPDATA%\ADE\bin\ade.cmd` on Windows) and, on POSIX install, appends a marked `export PATH=...` block to the user's shell rc when the install dir isn't already on `$PATH`. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | ADE guidance builders injected into agent system prompts and inline CLI preambles. Tells the agent how to find `ade` (PATH → `$ADE_CLI_PATH` → `$ADE_CLI_BIN_DIR/ade` → `node apps/ade-cli/dist/cli.cjs ...`), which bundled ADE skills exist, how Agent Skills are shaped (`<skill>/SKILL.md` plus optional `references/`, `scripts/`, `assets/`), which ADE-hosted surfaces receive the guidance, to try `ade doctor` / typed commands / `ade actions list` before reporting an ADE task as blocked, and to track and clean up stale or finished processes it starts. |
@@ -278,6 +280,14 @@ Both modes expose the same action protocol and output formatters. Agent
 prompts should prefer documented commands such as `ade lanes list`,
 `ade prs show`, or the generic `ade actions run <domain.action>`.
 
+Scheduled-work creation is also identical across both modes. The typed CLI
+accepts exactly one of `--in`, `--at`, or `--cron`; the generic action accepts
+the matching `delaySeconds`, `runAt`, or `cron` field. Relative and absolute
+forms are one-shot, absolute timestamps require `Z` or an offset, and cron uses
+the brain machine's local timezone. Both the typed command and generic action
+select the same text formatter, which prints the authoritative brain timezone
+and the next run in brain-local and ISO forms.
+
 ### Agent-prompt fallbacks for missing `ade` on PATH
 
 `apps/desktop/src/shared/adeCliGuidance.ts` builds the canonical text
@@ -310,6 +320,13 @@ it, and clean up old, stale, or finished processes before leaving the
 task. `buildAdeCliAgentGuidance()` and `buildAdeCliInlineGuidance()`
 currently share the same compact guidance body so system prompts,
 worker launches, and inline Work-tab preambles stay aligned.
+
+Scheduled-work semantics are additionally enforced in the provider runtime
+prompt assembled by `systemPrompt.ts` and documented in the bundled
+`ade-cli-control-plane` skill. All provider runtimes receive the same guidance:
+prefer relative one-shots for elapsed-time intent, use offset-qualified
+timestamps for absolute intent, treat cron as brain-local, and verify the
+server-returned next-run values.
 
 Lane launch directives pair this ADE CLI guidance with worktree write
 boundaries. Agents may inspect files outside the launched lane when they

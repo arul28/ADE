@@ -104,6 +104,21 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).not.toContain("## Runtime Environment");
     });
 
+    it.each([
+      "codex-cli",
+      "codex-app-server",
+      "claude-agent-sdk-query",
+      "cursor-sdk",
+      "droid-sdk",
+      "opencode",
+    ] as const)("gives %s timezone-safe scheduled-work guidance", (runtime) => {
+      const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime });
+      expect(result).toContain("scheduled-work create --in 12m");
+      expect(result).toContain("avoid timezone arithmetic");
+      expect(result).toContain("brain machine's local timezone");
+      expect(result).toContain("verify it before ending the turn");
+    });
+
     it("describes the Codex CLI runtime", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "codex-cli" });
       expect(result).toContain("## Runtime Environment");

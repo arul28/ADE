@@ -16,6 +16,18 @@ func workStableTimelineItemId(itemId: String?, logicalItemId: String?) -> String
   return itemId
 }
 
+/// Assistant text can arrive through both the canonical transcript and the
+/// live event stream. `messageId` is the cross-source logical identity used by
+/// transcript retractions and desktop rendering; `itemId` is only a fallback
+/// for providers that do not emit a message id.
+func workAssistantMessageStableId(messageId: String?, itemId: String?) -> String? {
+  let normalizedMessageId = messageId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !normalizedMessageId.isEmpty { return normalizedMessageId }
+
+  let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return normalizedItemId.isEmpty ? nil : normalizedItemId
+}
+
 private func workNonEmptyImageField(_ value: String?) -> String? {
   let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return trimmed.isEmpty ? nil : trimmed
@@ -169,12 +181,11 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       processed: processed
     )
   case .text(let text, let messageId, let turnId, let itemId):
-    let normalizedMessageId = messageId?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let stableItemId = normalizedItemId?.isEmpty == false
-      ? normalizedItemId
-      : (normalizedMessageId?.isEmpty == false ? normalizedMessageId : nil)
-    return .assistantText(text: text, turnId: turnId, itemId: stableItemId)
+    return .assistantText(
+      text: text,
+      turnId: turnId,
+      itemId: workAssistantMessageStableId(messageId: messageId, itemId: itemId)
+    )
   case .toolCall(let tool, let args, let itemId, let logicalItemId, let parentItemId, let turnId):
     return .toolCall(
       tool: tool,

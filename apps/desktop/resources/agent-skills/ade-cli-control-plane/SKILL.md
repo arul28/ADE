@@ -169,8 +169,19 @@ recurring schedules expire seven days after creation. Users can pause chat jobs
 in Chat Info or all scheduled work in Settings; CLI-owned jobs remain
 manageable through these commands and the Settings recovery list.
 
+Prefer a relative one-shot whenever the intent is "wake me in N minutes":
+`--in 12m` in the typed CLI or `delaySeconds: 720` in the action. This avoids
+timezone conversion entirely. Absolute one-shots use `--at` / `runAt` and must
+include `Z` or an explicit UTC offset. Five-field cron is interpreted in the
+ADE brain machine's local timezone, not UTC unless that machine itself uses UTC.
+The create result prints the computed next run in both local and ISO form;
+verify that time before ending the turn.
+
 ```
-ade actions run chat.createScheduledWork --input-json '{"cron":"9,29,49 * * * *","prompt":"Check CI and report"}' --text
+ade chat scheduled-work create --in 12m --prompt "Check CI and report" --text
+ade actions run chat.createScheduledWork --input-json '{"delaySeconds":720,"prompt":"Check CI and report"}' --text
+ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "Check CI and report" --text
+ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --text
 ade chat scheduled-work list --all --text
 ade chat schedules "$ADE_CHAT_SESSION_ID" --pause --text
 ```

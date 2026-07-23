@@ -489,20 +489,23 @@ function createRuntime() {
         lastActivityAt: "2026-03-17T19:00:00.000Z",
         createdAt: "2026-03-17T19:00:00.000Z",
       })),
-      createScheduledWork: vi.fn(async ({ sessionId, cron, prompt, recurring = true }: {
+      createScheduledWork: vi.fn(async ({ sessionId, cron, runAt, prompt, recurring = true }: {
         sessionId: string;
-        cron: string;
+        cron?: string;
+        runAt?: string;
         prompt: string;
         recurring?: boolean;
       }) => ({
         item: {
           id: `action:${sessionId}:schedule-1`,
           sessionId,
-          cron,
+          ...(cron ? { cron } : {}),
+          ...(runAt ? { nextRunAt: runAt } : {}),
           prompt,
-          kind: recurring ? "cron" : "wakeup",
+          kind: cron && recurring ? "cron" : "wakeup",
           status: "scheduled",
         },
+        timeZone: "America/New_York",
       })),
       listScheduledWork: vi.fn(async ({ sessionId, includeTerminal }: {
         sessionId?: string;
@@ -3296,13 +3299,37 @@ describe("adeRpcServer", () => {
       prompt: "Check CI.",
     });
 
+    const ownRelativeScheduledWorkCreate = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "createScheduledWork",
+      args: { delaySeconds: 720, prompt: "Check CI again." },
+    });
+    expect(ownRelativeScheduledWorkCreate?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.createScheduledWork).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      delaySeconds: 720,
+      prompt: "Check CI again.",
+    });
+
+    const ownAbsoluteScheduledWorkCreate = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "createScheduledWork",
+      args: { runAt: "2026-07-23T01:05:00-04:00", prompt: "Check at the requested time." },
+    });
+    expect(ownAbsoluteScheduledWorkCreate?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.createScheduledWork).toHaveBeenLastCalledWith({
+      sessionId: "chat-1",
+      runAt: "2026-07-23T01:05:00-04:00",
+      prompt: "Check at the requested time.",
+    });
+
     const deniedScheduledWorkCreate = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "createScheduledWork",
       args: { sessionId: "chat-2", cron: "0 * * * *", prompt: "Cross-chat schedule." },
     });
     expect(deniedScheduledWorkCreate.isError).toBe(true);
-    expect(fixture.runtime.agentChatService.createScheduledWork).toHaveBeenCalledTimes(1);
+    expect(fixture.runtime.agentChatService.createScheduledWork).toHaveBeenCalledTimes(3);
 
     const ownScheduledWorkState = await callTool(handler, "run_ade_action", {
       domain: "chat",

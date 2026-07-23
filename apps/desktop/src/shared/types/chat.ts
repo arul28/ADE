@@ -2214,16 +2214,40 @@ export type AgentChatListScheduledWorkArgs = {
   includeTerminal?: boolean;
 };
 
-export type AgentChatCreateScheduledWorkArgs = {
+type AgentChatCreateScheduledWorkBaseArgs = {
   sessionId: string;
   prompt: string;
-  cron: string;
-  recurring?: boolean;
   reason?: string;
 };
 
+export type AgentChatCreateScheduledWorkArgs = AgentChatCreateScheduledWorkBaseArgs & (
+  | {
+      /** Five-field cron interpreted in the ADE brain machine's local timezone. */
+      cron: string;
+      runAt?: never;
+      delaySeconds?: never;
+      recurring?: boolean;
+    }
+  | {
+      /** Absolute one-shot time. Must be ISO 8601 with an explicit offset or Z. */
+      runAt: string;
+      cron?: never;
+      delaySeconds?: never;
+      recurring?: false;
+    }
+  | {
+      /** Relative one-shot delay from creation time. */
+      delaySeconds: number;
+      cron?: never;
+      runAt?: never;
+      recurring?: false;
+    }
+);
+
 export type AgentChatCreateScheduledWorkResult = {
   item: AgentChatScheduledWorkItem;
+  /** IANA timezone of the ADE brain that resolved the schedule. */
+  timeZone: string;
 };
 
 export type AgentChatCancelScheduledWorkArgs = {
