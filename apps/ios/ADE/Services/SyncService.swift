@@ -8035,6 +8035,7 @@ final class SyncService: ObservableObject {
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws -> SavedChatTempAttachment {
+    try requireInvokableRemoteAction("chat.saveTempAttachment")
     var args: [String: Any] = ["dataUrl": dataUrl]
     let trimmedFilename = filename.trimmingCharacters(in: .whitespacesAndNewlines)
     if !trimmedFilename.isEmpty {
@@ -9145,6 +9146,13 @@ final class SyncService: ObservableObject {
     commandDescriptor(for: action) != nil
   }
 
+  /// Whether the connected host advertises an action that this viewer is
+  /// allowed to invoke, independent of the current transport state.
+  func supportsViewerRemoteAction(_ action: String) -> Bool {
+    guard supportsRemoteAction(action) else { return false }
+    return commandPolicy(for: action)?.viewerAllowed != false
+  }
+
   func isRemoteActionQueueable(_ action: String) -> Bool {
     commandPolicy(for: action)?.queueable == true
   }
@@ -9154,8 +9162,7 @@ final class SyncService: ObservableObject {
   /// disabled while offline, while explicitly queueable commands remain
   /// available and are persisted for replay.
   func canInvokeRemoteAction(_ action: String) -> Bool {
-    guard supportsRemoteAction(action) else { return false }
-    guard commandPolicy(for: action)?.viewerAllowed != false else { return false }
+    guard supportsViewerRemoteAction(action) else { return false }
     return canSendLiveRequests() || isRemoteActionQueueable(action)
   }
 

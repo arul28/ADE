@@ -5283,6 +5283,78 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testImageAttachmentCapabilityRequiresAdvertisedTempSaveAction() throws {
+    let legacyDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { legacyDatabase.close() }
+    let legacyService = SyncService(database: legacyDatabase)
+    try legacyService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-legacy",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "work.startCliSession",
+            "policy": ["viewerAllowed": true],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertFalse(legacyService.supportsRemoteAction("chat.saveTempAttachment"))
+    XCTAssertFalse(legacyService.supportsViewerRemoteAction("chat.saveTempAttachment"))
+
+    let deniedDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { deniedDatabase.close() }
+    let deniedService = SyncService(database: deniedDatabase)
+    try deniedService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-denied",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.saveTempAttachment",
+            "policy": ["viewerAllowed": false],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertTrue(deniedService.supportsRemoteAction("chat.saveTempAttachment"))
+    XCTAssertFalse(deniedService.supportsViewerRemoteAction("chat.saveTempAttachment"))
+
+    let supportedDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { supportedDatabase.close() }
+    let supportedService = SyncService(database: supportedDatabase)
+    try supportedService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-current",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "chat.saveTempAttachment",
+            "policy": ["viewerAllowed": true],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertTrue(supportedService.supportsRemoteAction("chat.saveTempAttachment"))
+    XCTAssertTrue(supportedService.supportsViewerRemoteAction("chat.saveTempAttachment"))
+  }
+
+  @MainActor
   func testPersonalChatsStayLocallyActionGatedOnPartialHost() throws {
     let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
     UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)

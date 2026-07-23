@@ -182,6 +182,128 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
     XCTAssertEqual(workChatOutgoingText("  hello  ", attachmentCount: 1), "hello")
   }
 
+  func testCliInitialInputIncludesDesktopParityAttachmentManifest() {
+    let prompt = workCliInitialInput(
+      text: "  Inspect these inputs  ",
+      attachments: [
+        AgentChatFileRef(path: "/tmp/screenshot.jpg", type: "image"),
+        AgentChatFileRef(path: "/tmp/notes.txt", type: "file"),
+        AgentChatFileRef(path: "", type: "image-url", url: "https://example.com/reference.png"),
+      ]
+    )
+
+    XCTAssertEqual(
+      prompt,
+      """
+      Attached files and images:
+      1. Image file: /tmp/screenshot.jpg
+      2. File: /tmp/notes.txt
+      3. Image URL: https://example.com/reference.png
+
+      Inspect these inputs
+      """
+    )
+    XCTAssertEqual(workCliInitialInput(text: "  hello  ", attachments: []), "hello")
+    XCTAssertEqual(
+      workCliInitialInput(
+        text: "",
+        attachments: [AgentChatFileRef(path: "/tmp/only-image.jpg", type: "image")]
+      ),
+      """
+      Attached files and images:
+      1. Image file: /tmp/only-image.jpg
+      """
+    )
+  }
+
+  @MainActor
+  func testOfflinePreparedAttachmentWaitsForReconnectBeforeSend() throws {
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+      UIColor.systemGreen.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+    }
+    let attachment = try XCTUnwrap(workChatInputAttachment(from: image))
+
+    XCTAssertFalse(workChatInputCanSend(
+      text: "Inspect this",
+      attachments: [attachment],
+      baseEnabled: true,
+      canUploadAttachments: false
+    ))
+    XCTAssertTrue(workChatInputCanSend(
+      text: "Inspect this",
+      attachments: [attachment],
+      baseEnabled: true,
+      canUploadAttachments: true
+    ))
+
+    let failed = WorkChatInputAttachment(filename: "bad.jpg", state: .failed("Could not load image."))
+    XCTAssertFalse(workChatInputCanSend(
+      text: "Send anyway",
+      attachments: [failed],
+      baseEnabled: true,
+      canUploadAttachments: true
+    ))
+  }
+
+  @MainActor
+  func testPastedImagesAreBoundedAndOverflowIsVisible() {
+    let image = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { context in
+      UIColor.black.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+    }
+    var attachments: [WorkChatInputAttachment] = []
+    workChatInputPasteImages(
+      Array(repeating: image, count: workChatInputAttachmentLimit + 2),
+      into: Binding(get: { attachments }, set: { attachments = $0 })
+    )
+
+    XCTAssertEqual(workChatInputReadyAttachments(attachments).count, workChatInputAttachmentLimit)
+    XCTAssertEqual(attachments.count, workChatInputAttachmentLimit + 1)
+    XCTAssertTrue(workChatInputHasFailedAttachments(attachments))
+    XCTAssertEqual(attachments.last?.errorMessage, "You can attach up to 10 images at a time.")
+
+    workChatInputPasteImages(
+      Array(repeating: image, count: workChatInputAttachmentLimit),
+      into: Binding(get: { attachments }, set: { attachments = $0 })
+    )
+    XCTAssertEqual(attachments.count, workChatInputAttachmentLimit + 1)
+    XCTAssertEqual(
+      attachments.filter { $0.errorMessage == "You can attach up to 10 images at a time." }.count,
+      1
+    )
+  }
+
+  @MainActor
+  func testImageOnlyClipboardExposesPasteAndDispatchesEveryImage() {
+    let first = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+      UIColor.systemRed.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+    }
+    let second = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4)).image { context in
+      UIColor.systemBlue.setFill()
+      context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+    }
+    let pasteboard = UIPasteboard.general
+    let previousItems = pasteboard.items
+    defer { pasteboard.items = previousItems }
+    pasteboard.images = [first, second]
+
+    let textView = WorkComposerPastingTextView()
+    var receivedImages: [UIImage] = []
+    textView.onPasteImages = { images in
+      receivedImages = images
+      return true
+    }
+
+    XCTAssertTrue(textView.canPerformAction(
+      #selector(UIResponderStandardEditActions.paste(_:)),
+      withSender: nil
+    ))
+    textView.paste(nil)
+    XCTAssertEqual(receivedImages.count, 2)
+  }
+
   @MainActor
   func testPlainComposerDefersFocusTransitionsOutsideSwiftUIUpdate() async {
     var text = ""
