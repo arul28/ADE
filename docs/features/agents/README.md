@@ -103,6 +103,15 @@ their lead. A `subagent` child is additionally handed
 line so it can optionally post its own summary through
 `chat.messageSession` on top of ADE's automatic report.
 
+Orchestration `spawnAgent` / `messageAgent` are idempotent: each carries a
+`requestId` (explicit or deterministically derived) backed by a service-owned
+receipt, so a retried call replays its original result rather than spawning a
+second worker. Completion no longer depends on the lead polling transcripts —
+when a worker or validator reaches a terminal state the service enqueues a
+`completion` entry in the run outbox in the same transaction and drains it to
+the lead, and the lead can also block on the `awaitAgent` tool. See
+[Tool Registration › Orchestration sessions](tool-registration.md#in-process-path).
+
 The runtime mechanics — the completion-report policy, the wake/notice
 delivery, and the navigation/pill/breadcrumb surfacing — live in
 [Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting).
