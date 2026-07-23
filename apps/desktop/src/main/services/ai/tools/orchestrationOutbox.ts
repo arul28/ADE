@@ -28,6 +28,27 @@ function clearRetryTimer(runId: string): void {
 }
 
 /**
+ * Tear down a single run's outbox scheduling state. Called from the service's
+ * run-runtime teardown (`runs.delete`) so a disposed/removed run cannot fire a
+ * stray deferred-retry drain against a service that is gone. Clears the coalesced
+ * retry timer and drops the in-flight coalescing entry.
+ */
+export function disposeRunOutbox(runId: string): void {
+  clearRetryTimer(runId);
+  inFlight.delete(runId);
+}
+
+/**
+ * Tear down all outbox scheduling state (service `dispose()`). Ensures no armed
+ * timer survives service shutdown.
+ */
+export function disposeAllOutbox(): void {
+  for (const timer of retryTimers.values()) clearTimeout(timer);
+  retryTimers.clear();
+  inFlight.clear();
+}
+
+/**
  * After a drain pass, arm a single coalesced timer for the soonest future
  * `nextAttemptAt` among still-pending entries. Delays are measured against the
  * service clock (`svc.nowMs()`) so an injected/frozen test clock cannot make the

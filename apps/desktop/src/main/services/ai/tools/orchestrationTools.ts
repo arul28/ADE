@@ -489,15 +489,27 @@ async function finalizeDelivery(
   svc: ReturnType<typeof createOrchestrationService>,
   chat: OrchestrationAgentChatHandle,
   ctx: OrchestrationSessionContext,
-  args: { requestId: string; entry: NewOutboxEntry },
+  args: {
+    requestId: string;
+    entry: NewOutboxEntry;
+    /**
+     * State that must commit atomically WITH the receipt+outbox entry, built
+     * from the fresh manifest. Used by cancellation so its decision/attempt/flag
+     * patches land in the same transaction as the receipt — a crash between them
+     * can no longer leave cancellation durable while the receipt is released
+     * (which would let a retry re-append a second cancellation decision/attempt).
+     */
+    buildExtraPatches?: (manifest: OrchestrationManifest) => ManifestPatchOp[];
+  },
 ): Promise<{ ok: true } | { ok: false; error: "delivery_failed"; message: string }> {
   const manifest = manifestOrThrow(svc, ctx.runId);
+  const extraPatches = args.buildExtraPatches?.(manifest) ?? [];
   const outboxOps = buildOutboxEnqueueOps(manifest, [args.entry]);
   const completed = await svc.completeReceipt(
     ctx.runId,
     ctx.bundlePath,
     { requestId: args.requestId, result: {} },
-    outboxOps,
+    [...extraPatches, ...outboxOps],
   );
   if (!completed.ok) {
     await svc.releaseReceipt(ctx.runId, ctx.bundlePath, { requestId: args.requestId });
@@ -637,10 +649,15 @@ function createMessageAgentTool(args: {
         };
         if (intent === "cancellation") {
           const cancelledAt = new Date().toISOString();
-          const buildCancellationPatch = (
+          // The cancellation's own state (flag + decision + task-attempt rows) is
+          // committed in the SAME transaction as the receipt completion and the
+          // outbox entry — folded into completeReceipt as extra patches. Built
+          // from the fresh manifest completeReceipt reads under its mutex, so the
+          // `{id:…}` / `{sessionId:…}` paths resolve at apply time and no external
+          // etag/retry is needed (completeReceipt uses the internal direct patch).
+          const buildCancellationPatches = (
             current: OrchestrationManifest,
-            summary: string,
-          ) => {
+          ): ManifestPatchOp[] => {
             const patches: ManifestPatchOp[] = [
               {
                 op: "add",
@@ -690,38 +707,8 @@ function createMessageAgentTool(args: {
                 },
               );
             }
-            return {
-              runId: args.ctx.runId,
-              ifMatchEtag: current.etag,
-              actorRole: args.ctx.role,
-              actorSessionId: args.ctx.sessionId,
-              summary,
-              patches,
-            };
+            return patches;
           };
-          let patchRes = await args.svc.manifestPatch(
-            buildCancellationPatch(manifest, "cancellation requested"),
-            args.ctx.bundlePath,
-          );
-          if (!patchRes.ok && patchRes.error === "etag_conflict") {
-            patchRes = await args.svc.manifestPatch(
-              buildCancellationPatch(patchRes.manifest, "cancellation requested (retry)"),
-              args.ctx.bundlePath,
-            );
-          }
-          if (!patchRes.ok) {
-            await args.svc.releaseReceipt(
-              args.ctx.runId,
-              args.ctx.bundlePath,
-              { requestId },
-            );
-            return {
-              ok: false as const,
-              error: "cancellation_patch_failed",
-              message: "Cancellation could not be recorded in the manifest.",
-              detail: "message" in patchRes ? patchRes.message : patchRes.error,
-            };
-          }
           return finalizeDelivery(args.svc, args.chat, args.ctx, {
             requestId,
             entry: {
@@ -730,6 +717,7 @@ function createMessageAgentTool(args: {
               delivery: { op: "interrupt" },
               requestId,
             },
+            buildExtraPatches: buildCancellationPatches,
           });
         }
 
@@ -1387,6 +1375,16 @@ function createReleaseTaskTool(
         chat,
         notifyText: `${ctx.role} ${ctx.sessionId} released task ${input.taskId} as ${input.status}.`,
         taskId: input.taskId,
+        // A terminal release (done/failed by a worker/validator) already enqueues
+        // a structured `completion` entry to the lead. Suppress the generic
+        // `lead_status` ping for that transition so the lead is notified once.
+        suppressLeadNotify: (result) =>
+          Boolean(
+            result &&
+              typeof result === "object" &&
+              "completionEnqueued" in result &&
+              (result as { completionEnqueued?: boolean }).completionEnqueued,
+          ),
         fn: async () => {
           try {
             const res = await svc.releaseTask(
@@ -1398,7 +1396,7 @@ function createReleaseTaskTool(
               },
               ctx.bundlePath,
             );
-            return { ok: true as const, etag: res.etag };
+            return { ok: true as const, etag: res.etag, completionEnqueued: res.completionEnqueued };
           } catch (err) {
             return {
               ok: false as const,
@@ -1597,8 +1595,9 @@ function createAskUserForModelSelectionTool(
             ok: false as const,
             error: "planning_not_ready",
             message:
-              "Model selection is locked until codebase intake and all three deliberation rounds are recorded. " +
-              "Call recordCodebaseIntake, then askPlanningRound for functional → UI → extras, then pick models.",
+              "Model selection is locked until codebase intake plus either all three deliberation rounds " +
+              "or the condensed light-plan path are recorded. Call recordCodebaseIntake, then either " +
+              "askPlanningRound for functional → UI → extras or enterLightPlan, then pick models.",
           };
         }
         if (!universalOpts.onAskUser) {

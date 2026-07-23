@@ -152,6 +152,14 @@ export async function withMutationSideEffects<T>(args: {
   notifyText: string;
   taskId?: string;
   fn: () => Promise<T>;
+  /**
+   * When provided and it returns true for the successful result, the generic
+   * `lead_status` ping is suppressed — the mutation already enqueued a richer,
+   * structured entry for this transition (e.g. a terminal `releaseTask` enqueues
+   * a `completion` entry), and a second ping would double-notify the lead. The
+   * outbox is still drained so that structured entry is delivered promptly.
+   */
+  suppressLeadNotify?: (result: T) => boolean;
 }): Promise<T> {
   let result: T;
   try {
@@ -160,13 +168,22 @@ export async function withMutationSideEffects<T>(args: {
     await touchHeartbeat(args.ctx, args.svc);
   }
   if (toolResultOk(result)) {
-    await notifyLeadStatus({
-      ctx: args.ctx,
-      svc: args.svc,
-      chat: args.chat,
-      text: args.notifyText,
-      ...(args.taskId ? { taskId: args.taskId } : {}),
-    });
+    if (args.suppressLeadNotify?.(result)) {
+      // Deliver whatever the mutation enqueued (the structured entry) without a
+      // duplicate generic ping. notifyLeadStatus would normally trigger this
+      // drain, so we drain directly here.
+      if (args.ctx.role !== "lead") {
+        await drainOutbox(args.svc, args.chat, args.ctx);
+      }
+    } else {
+      await notifyLeadStatus({
+        ctx: args.ctx,
+        svc: args.svc,
+        chat: args.chat,
+        text: args.notifyText,
+        ...(args.taskId ? { taskId: args.taskId } : {}),
+      });
+    }
   }
   return result;
 }

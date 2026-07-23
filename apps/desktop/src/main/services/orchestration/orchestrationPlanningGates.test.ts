@@ -429,6 +429,24 @@ describe("planning state machine gates", () => {
     expect(manifestOf(s).leadState.planning?.stage).toBe("ready");
   });
 
+  it("light-plan path unlocks model selection so a single-worker run reaches ready (no deadlock)", async () => {
+    await recordIntake(s);
+    // At intake, model selection is still locked.
+    expect(isPlanningReadyForModelSelection(manifestOf(s))).toBe(false);
+    expect((await s.svc.enterLightPlan(s.runId, s.bundlePath)).ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("light_plan");
+    // The condensed path collapses the three rounds but readiness STILL requires
+    // model routing — so model selection must be unlocked at light_plan, else the
+    // run deadlocks (routing never recordable, `ready` never reachable).
+    expect(isPlanningReadyForModelSelection(manifestOf(s))).toBe(true);
+    // One declared worker's routing + validation reaches ready without the full
+    // three-round model-pick sequence.
+    await addValidationStepAndRouting(s);
+    const ready = await s.svc.markPlanningReady(s.runId, s.bundlePath);
+    expect(ready.ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("ready");
+  });
+
   it("light-plan path is refused once deliberation rounds have started", async () => {
     await recordIntake(s);
     await recordRound(s, "functional");

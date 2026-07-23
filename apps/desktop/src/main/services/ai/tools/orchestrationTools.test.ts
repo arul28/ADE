@@ -1407,6 +1407,83 @@ describe("messageAgent tool", () => {
     )).toBe(true);
   });
 
+  it("does not persist cancellation state when completeReceipt fails (atomic with the receipt)", async () => {
+    setup = await setupWithRun("lead");
+    await approveRun(setup);
+    const leadTools = makeToolSet(setup, "lead", "S-lead");
+    const spawnResult: any = await leadTools.spawnAgent!.execute({
+      role: "worker",
+      tag: "backend",
+      goalSummary: "task",
+      stepId: "T-cancel",
+      initialMessage: VALID_BRIEF,
+    });
+    expect(spawnResult.ok).toBe(true);
+    // Give the target an active task so a cancellation would record an attempt.
+    const beforeTask = setup.svc.getManifestForRun(setup.runId)!;
+    const taskPatch = await setup.svc.manifestPatch(
+      {
+        runId: setup.runId,
+        ifMatchEtag: beforeTask.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        summary: "assign cancellation test task",
+        patches: [{
+          op: "add",
+          path: "/tasks/-",
+          value: {
+            id: "T-cancel",
+            phaseId: "developing",
+            title: "Native worker task",
+            description: "Run provider-native Bash work.",
+            status: "in_progress",
+            assigneeSessionId: spawnResult.sessionId,
+            claimedAt: "2026-01-01T00:00:00.000Z",
+            claimLeaseUntil: "2099-01-01T00:00:00.000Z",
+            attempts: [],
+            validationGate: { required: false, stepIds: [] },
+          },
+        }],
+      },
+      setup.bundlePath,
+    );
+    expect(taskPatch.ok).toBe(true);
+
+    const releaseSpy = vi.spyOn(setup.svc, "releaseReceipt");
+    // The cancellation's flag/decision/attempt patches are folded into
+    // completeReceipt, so a failing completeReceipt persists NONE of them.
+    vi.spyOn(setup.svc, "completeReceipt").mockResolvedValueOnce({
+      ok: false,
+      error: "etag_conflict",
+      message: "manifest advanced",
+    });
+
+    const result: any = await leadTools.messageAgent!.execute({
+      targetSessionId: spawnResult.sessionId,
+      kind: "interrupt-replace",
+      intent: "cancellation",
+      text: "stop and revert",
+      cancellation: { revert: true, reason: "test" },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("delivery_failed");
+    // Receipt released so the deterministic requestId stays reservable.
+    expect(releaseSpy).toHaveBeenCalledTimes(1);
+
+    const after = setup.svc.getManifestForRun(setup.runId)!;
+    // Cancellation state must NOT be durable: no flag, no decision, no attempt,
+    // no orphaned outbox entry — a retry re-derives everything from scratch.
+    expect(
+      after.agents.find((a) => a.sessionId === spawnResult.sessionId)?.cancellationRequested,
+    ).toBeFalsy();
+    expect(
+      after.decisions.some((d) => d.summary.includes("Cancellation requested")),
+    ).toBe(false);
+    const task = after.tasks.find((t) => t.id === "T-cancel");
+    expect(task?.attempts?.some((a) => a.outcome === "cancelled")).toBeFalsy();
+    expect((after.outbox ?? []).some((e) => e.kind === "cancel_interrupt")).toBe(false);
+  });
+
   it("releases the receipt when completeReceipt fails (no leaked pending receipt, no orphaned outbox entry)", async () => {
     setup = await setupWithRun("lead");
     await approveRun(setup);
@@ -1990,6 +2067,41 @@ describe("completion outbox on worker/validator terminal transition", () => {
     const completion = (manifest.outbox ?? []).find((e) => e.kind === "completion");
     expect((completion!.delivery.metadata as any)?.orchestrationCompletion?.outcome).toBe("failed");
     expect(completion!.delivery.text).toContain("failed");
+  });
+
+  it("does not also enqueue a generic lead_status ping on a terminal release (single notification)", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "done" });
+    expect(res.ok).toBe(true);
+
+    const outbox = setup.svc.getManifestForRun(setup.runId)!.outbox ?? [];
+    // Exactly one structured completion entry to the lead...
+    expect(
+      outbox.filter((e) => e.kind === "completion" && e.targetSessionId === "S-lead"),
+    ).toHaveLength(1);
+    // ...and NO generic lead_status ping for that same transition — the lead is
+    // notified once, not twice.
+    expect(outbox.some((e) => e.kind === "lead_status")).toBe(false);
+  });
+
+  it("still sends a generic lead_status ping for a non-terminal release (review)", async () => {
+    setup = await setupWithRun("worker");
+    await approveRun(setup);
+    await seedAssignedTask(setup, { sessionId: "S-worker", role: "worker", tag: "impl" });
+
+    const tools = makeToolSet(setup, "worker", "S-worker");
+    // `review` is not a terminal completion, so no completion entry is enqueued
+    // and the generic status ping is the only notification — it must survive.
+    const res: any = await tools.releaseTask!.execute({ taskId: "T-1", status: "review" });
+    expect(res.ok).toBe(true);
+
+    const outbox = setup.svc.getManifestForRun(setup.runId)!.outbox ?? [];
+    expect(outbox.some((e) => e.kind === "completion")).toBe(false);
+    expect(outbox.some((e) => e.kind === "lead_status" && e.targetSessionId === "S-lead")).toBe(true);
   });
 
   it("does not enqueue a completion when the lead itself releases a task", async () => {

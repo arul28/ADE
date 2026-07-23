@@ -2656,3 +2656,76 @@ describe("orchestration watcher resilience", () => {
     });
   });
 });
+
+describe("outbox retry hygiene: expired backoff entries retire", () => {
+  let lane: string;
+  let clock: number;
+  const BASE = Date.parse("2026-07-22T00:00:00.000Z");
+  beforeEach(async () => {
+    lane = await makeTempLane();
+    clock = BASE;
+  });
+  afterEach(async () => {
+    await rmTree(lane);
+  });
+
+  function makeSvc() {
+    return createOrchestrationService({
+      resolveLaneWorktree: () => lane,
+      now: () => new Date(clock),
+    });
+  }
+
+  async function enqueueAndClaim(
+    svc: ReturnType<typeof createOrchestrationService>,
+    manifest: { runId: string; bundlePath: string },
+  ): Promise<string> {
+    const enq = await svc.enqueueOutbox(manifest.runId, manifest.bundlePath, [{
+      kind: "lead_status",
+      targetSessionId: "S-lead",
+      delivery: { op: "steer", text: "hi" },
+    }]);
+    expect(enq.ok).toBe(true);
+    const entryId = (enq as { ok: true; ids: string[] }).ids[0]!;
+    const claimed = await svc.claimOutboxEntry(manifest.runId, manifest.bundlePath, entryId);
+    expect(claimed).not.toBeNull();
+    return entryId;
+  }
+
+  it("settles an aged-out pending entry failed instead of re-arming it for retry", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    const entryId = await enqueueAndClaim(svc, manifest);
+
+    // Age the entry past the 10-minute cap, then settle a *retryable* failure.
+    // Even though attempts (1) is well below maxAttempts (5), the age cap forces
+    // a permanent `failed` settlement so the entry is not re-armed forever.
+    clock = BASE + 11 * 60_000;
+    await svc.settleOutboxEntry(manifest.runId, manifest.bundlePath, entryId, {
+      status: "pending",
+      error: "boom",
+      backoffMs: 500,
+    });
+    const entry = (svc.getManifestForRun(manifest.runId)!.outbox ?? []).find((e) => e.id === entryId)!;
+    expect(entry.status).toBe("failed");
+    expect(entry.nextAttemptAt).toBeUndefined();
+    await svc.dispose();
+  });
+
+  it("re-arms a fresh pending entry for retry (control, within the age cap)", async () => {
+    const svc = makeSvc();
+    const { manifest } = await svc.runCreate({ laneId: "L-1", leadSessionId: "S-lead", bundleRoot: lane });
+    const entryId = await enqueueAndClaim(svc, manifest);
+
+    // No aging: a retryable failure re-arms the entry with a future nextAttemptAt.
+    await svc.settleOutboxEntry(manifest.runId, manifest.bundlePath, entryId, {
+      status: "pending",
+      error: "boom",
+      backoffMs: 500,
+    });
+    const entry = (svc.getManifestForRun(manifest.runId)!.outbox ?? []).find((e) => e.id === entryId)!;
+    expect(entry.status).toBe("pending");
+    expect(entry.nextAttemptAt).toBeTruthy();
+    await svc.dispose();
+  });
+});

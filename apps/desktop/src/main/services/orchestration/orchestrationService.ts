@@ -71,6 +71,10 @@ import {
   hasOrchestrationModelRouting,
   isExplicitValidationWaiverEntry,
 } from "./runtimeProfile";
+import {
+  disposeAllOutbox,
+  disposeRunOutbox,
+} from "../ai/tools/orchestrationOutbox";
 
 // Lightweight async mutex — small, dependency-free, FIFO. Replicates the
 // pattern used elsewhere in agentChatService.ts so behaviour is consistent.
@@ -113,6 +117,12 @@ const HEARTBEAT_STALL_THRESHOLD_MS = 10 * 60 * 1000;
 // deterministic requestId (spawnAgent/messageAgent). Not a timer — evaluated
 // only when the lead runs recoverStaleTasks.
 const PENDING_RECEIPT_TTL_MS = 15 * 60 * 1000;
+// Hard upper bound on how long an outbox entry may keep re-arming for retry. The
+// common case is already bounded by `maxAttempts` (with capped backoff, ~1 min),
+// but a persistently claim-conflicting entry never increments `attempts`; this
+// age cap guarantees such an entry is eventually settled `failed` instead of
+// re-armed forever, retiring its stale backoff metadata.
+const OUTBOX_ENTRY_MAX_AGE_MS = 10 * 60 * 1000;
 const INDEX_FILE = "index.json";
 const HISTORY_RING_LIMIT = 50;
 const SELF_WRITE_WINDOW_MS = 1_000;
@@ -1327,7 +1337,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
   async function releaseTask(
     req: OrchestrationReleaseTaskRequest,
     bundlePath: string,
-  ): Promise<{ manifest: OrchestrationManifest; etag: string }> {
+  ): Promise<{ manifest: OrchestrationManifest; etag: string; completionEnqueued: boolean }> {
     const runtime = getOrCreateRuntime(req.runId, bundlePath);
     return runtime.mutex.run(async () => {
       await loadIntoRuntime(runtime);
@@ -1338,6 +1348,10 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       if (!task) throw new Error(`task ${req.taskId} not found`);
       const actor = manifest.agents.find((agent) => agent.sessionId === req.sessionId);
       if (!actor) throw new Error(`agent ${req.sessionId} not registered in run ${req.runId}`);
+      // Set when this transition enqueues a structured `completion` outbox entry
+      // to the lead. The release tool suppresses the generic `lead_status` ping
+      // for that same transition so the lead gets exactly one notification.
+      let completionEnqueued = false;
       if (
         actor.role !== "lead"
         && task.assigneeSessionId
@@ -1418,9 +1432,16 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           const agentAlreadyTerminal =
             actor.status === "completed" || actor.status === "failed";
           if (!agentAlreadyTerminal) {
-            ops.push(
-              ...buildAgentCompletionOutboxOps(manifest, actor, task, edgeStatus),
+            const completionOps = buildAgentCompletionOutboxOps(
+              manifest,
+              actor,
+              task,
+              edgeStatus,
             );
+            if (completionOps.length) {
+              ops.push(...completionOps);
+              completionEnqueued = true;
+            }
           }
         }
       }
@@ -1434,7 +1455,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         ),
       );
       const patchRes = await directPatch(runtime, ops, "release");
-      return { manifest: patchRes.manifest, etag: patchRes.etag };
+      return { manifest: patchRes.manifest, etag: patchRes.etag, completionEnqueued };
     });
   }
 
@@ -1775,11 +1796,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           runtime.watcher = null;
           if (runtime.refCount === 0) {
             runs.delete(runId);
+            disposeRunOutbox(runId);
           }
         }, WATCHER_IDLE_CLOSE_MS);
         runtime.watcherIdleTimer.unref?.();
       } else {
         runs.delete(runId);
+        disposeRunOutbox(runId);
       }
     }
   }
@@ -1791,6 +1814,9 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       if (runtime.watcherIdleTimer) clearTimeout(runtime.watcherIdleTimer);
     }
     runs.clear();
+    // Clear any armed deferred-retry drain timers so a disposed service can't
+    // fire a stray outbox drain after teardown.
+    disposeAllOutbox();
   }
 
   async function subscribe(runId: string, bundlePath: string): Promise<void> {
@@ -2178,7 +2204,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         outbox[index] = delivered;
       } else {
         const attempts = existing.attempts + 1;
-        const permanent = outcome.status === "failed" || attempts >= existing.maxAttempts;
+        const createdMs = Date.parse(existing.createdAt);
+        const agedOut =
+          Number.isFinite(createdMs) &&
+          now().getTime() - createdMs >= OUTBOX_ENTRY_MAX_AGE_MS;
+        const permanent =
+          outcome.status === "failed" || attempts >= existing.maxAttempts || agedOut;
         const failed: OrchestrationOutboxEntry = {
           ...existing,
           status: permanent ? "failed" : "pending",
