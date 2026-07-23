@@ -215,6 +215,7 @@ export function parseAccountMachine(value: unknown): AdeAccountMachine | null {
     name: optionalBoundedString(value.name, MAX_LABEL_CHARS),
     platform: optionalBoundedString(value.platform, MAX_LABEL_CHARS),
     deviceType: optionalBoundedString(value.deviceType, MAX_LABEL_CHARS),
+    pubkey: optionalBoundedString(value.pubkey, 128),
     reachableEndpoints: endpoints,
     lastSeenAt,
     online: value.online === true,
@@ -549,9 +550,11 @@ function isLanHostname(value: string): boolean {
 }
 
 /**
- * Routes that may be used only after account authentication has produced a
- * normal DPoP-bound paired secret. Plain WS is allowed here for LAN/tailnet
- * parity because the Clerk bearer never traverses these routes.
+ * Directory-verified routes that may carry either `ade-adopt-v1` sealed
+ * account adoption or an already-paired DPoP session. Plain WS is allowed for
+ * LAN/tailnet routes because adoption credentials are sealed to the
+ * directory-published host key; legacy plaintext account auth still uses only
+ * `accountMachineSecureSyncEndpoints`.
  */
 export function accountMachinePairedSyncEndpoints(
   machine: AdeAccountMachine,

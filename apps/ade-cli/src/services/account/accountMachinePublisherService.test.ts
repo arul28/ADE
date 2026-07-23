@@ -166,6 +166,33 @@ describe("account machine publisher health", () => {
     });
   });
 
+  it("includes the machine Ed25519 signing key in the registration payload", async () => {
+    let body: unknown = null;
+    const publicKeyRawBase64 = Buffer.alloc(32, 9).toString("base64");
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: true,
+        sessionReadState: "available" as const,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      getMachineIdentitySigningPublicKey: () => publicKeyRawBase64,
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async (_input, init) => {
+        body = JSON.parse(String(init?.body));
+        return new Response(null, { status: 204 });
+      }),
+    });
+
+    await service.publishNow();
+
+    expect(body).toMatchObject({
+      machineKey: "machine-studio",
+      pubkey: `ed25519:${publicKeyRawBase64}`,
+    });
+  });
+
   it.each([
     {
       name: "sync disabled",

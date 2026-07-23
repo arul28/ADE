@@ -148,6 +148,22 @@ import {
 } from "./syncPairedChannelService";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
+import {
+  ADOPT_CHANNEL_CHALLENGE_TTL_MS,
+  buildAdoptChallengeSignatureInput,
+  buildAdoptHelloAad,
+  buildAdoptHelloOkAad,
+  decodeCanonicalBase64,
+  deriveAdoptSessionKey,
+  generateX25519EphemeralKeyPair,
+  seal,
+  signEd25519,
+  unseal,
+} from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
+import {
+  createMachineIdentitySigningStore,
+  type MachineIdentitySigningStore,
+} from "./machineIdentitySigningStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
@@ -507,6 +523,12 @@ type PeerState = {
   remotePort: number | null;
   transportOrigin: SyncTransportOrigin;
   relayAuthorization: RelayAuthorizationLifecycle | null;
+  adoptChallenge: {
+    sessionKey: Buffer;
+    nonce: string;
+    hostDeviceId: string;
+    expiresAtMs: number;
+  } | null;
   subscribedSessionIds: Set<string>;
   pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
   nextTerminalSnapshotGeneration: number;
@@ -766,6 +788,10 @@ type SyncHostServiceArgs = {
   pinStore: SyncPinStore;
   /** Test/integration seam for serialized pairing commit verification. */
   pairingStore?: ReturnType<typeof createSyncPairingStore>;
+  /** Test seam; production lazily creates the machine-wide signing key. */
+  machineIdentitySigningStore?: MachineIdentitySigningStore;
+  /** Test seam for adoption challenge timestamps and expiry. */
+  adoptNow?: () => number;
   accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   /** Test seam for controlling an in-flight account attestation. */
@@ -1294,6 +1320,12 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       && (typeof normalizedAuth.dpop !== "object" || Array.isArray(normalizedAuth.dpop))
     ) return null;
     if (normalizedAuth.runtimeHostGrant != null && !toOptionalString(normalizedAuth.runtimeHostGrant)) return null;
+  } else if (normalizedAuth.kind === "account_sealed") {
+    if (
+      normalizedAuth.v !== 1
+      || !toOptionalString(normalizedAuth.deviceId)
+      || !toOptionalString(normalizedAuth.sealed)
+    ) return null;
   } else {
     return null;
   }
@@ -1343,6 +1375,64 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       ...(toOptionalString(peer.bundleIdentifier) ? { bundleIdentifier: toOptionalString(peer.bundleIdentifier)! } : {}),
     },
     auth: normalizedAuth,
+  };
+}
+
+type ParsedAccountChallenge = {
+  nonce: string;
+  nonceBytes: Buffer;
+  clientEphemeralPublicKey: string;
+  clientEphemeralPublicKeyBytes: Buffer;
+};
+
+function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const value = payload as Record<string, unknown>;
+  if (value.v !== 1) return null;
+  const nonceBytes = decodeCanonicalBase64(value.nonce, 32);
+  const clientEphemeralPublicKeyBytes = decodeCanonicalBase64(
+    value.clientEphemeralPublicKey,
+    32,
+  );
+  if (
+    !nonceBytes
+    || !clientEphemeralPublicKeyBytes
+    || typeof value.nonce !== "string"
+    || typeof value.clientEphemeralPublicKey !== "string"
+  ) {
+    return null;
+  }
+  return {
+    nonce: value.nonce,
+    nonceBytes,
+    clientEphemeralPublicKey: value.clientEphemeralPublicKey,
+    clientEphemeralPublicKeyBytes,
+  };
+}
+
+function parseUnsealedAccountAuth(value: unknown): Extract<
+  SyncHelloPayload["auth"],
+  { kind: "account" }
+> | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const account = value as Record<string, unknown>;
+  const deviceId = toOptionalString(account.deviceId);
+  const accountToken = toOptionalString(account.accountToken);
+  if (!deviceId || !accountToken) return null;
+  if (
+    account.dpop != null
+    && (typeof account.dpop !== "object" || Array.isArray(account.dpop))
+  ) return null;
+  const runtimeHostGrant = account.runtimeHostGrant == null
+    ? null
+    : toOptionalString(account.runtimeHostGrant);
+  if (account.runtimeHostGrant != null && !runtimeHostGrant) return null;
+  return {
+    kind: "account",
+    deviceId,
+    accountToken,
+    dpop: account.dpop as SyncDpopProof | null | undefined,
+    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
   };
 }
 
@@ -1872,6 +1962,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     filePath: pairingSecretsPath,
     pinStore: args.pinStore,
   });
+  const machineIdentitySigningStore =
+    args.machineIdentitySigningStore
+    ?? createMachineIdentitySigningStore({ logger: args.logger });
+  const adoptNow = args.adoptNow ?? Date.now;
   const dpopNonceCache = createSyncDpopNonceCache();
   const remoteCommandService = args.remoteCommandService ?? createSyncRemoteCommandService({
     db: args.db,
@@ -2284,6 +2378,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   type PairFailureEntry = { count: number; cooldownUntilMs: number; updatedAtMs: number };
   const pairFailures = new Map<string, PairFailureEntry>();
   const globalPairFailures: PairFailureEntry = { count: 0, cooldownUntilMs: 0, updatedAtMs: 0 };
+  const adoptChallengeIssuances = new Map<string, PairFailureEntry>();
+  const globalAdoptChallengeIssuances: PairFailureEntry = {
+    count: 0,
+    cooldownUntilMs: 0,
+    updatedAtMs: 0,
+  };
   const resetPairFailureEntry = (entry: PairFailureEntry): void => {
     entry.count = 0;
     entry.cooldownUntilMs = 0;
@@ -2337,6 +2437,46 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const clearPairFailuresAfterSuccessfulPair = (ip: string | null): void => {
     resetPairFailureEntry(globalPairFailures);
     if (ip) pairFailures.delete(ip);
+  };
+  const pruneExpiredAdoptChallengeIssuances = (now = Date.now()): void => {
+    for (const [ip, entry] of adoptChallengeIssuances) {
+      if (isPairFailureEntryExpired(entry, now)) {
+        adoptChallengeIssuances.delete(ip);
+      }
+    }
+    if (isPairFailureEntryExpired(globalAdoptChallengeIssuances, now)) {
+      resetPairFailureEntry(globalAdoptChallengeIssuances);
+    }
+  };
+  const registerAdoptChallengeIssuance = (ip: string | null): void => {
+    const now = Date.now();
+    pruneExpiredAdoptChallengeIssuances(now);
+    incrementPairFailureEntry(globalAdoptChallengeIssuances, now);
+    if (ip) {
+      const entry = adoptChallengeIssuances.get(ip)
+        ?? { count: 0, cooldownUntilMs: 0, updatedAtMs: now };
+      incrementPairFailureEntry(entry, now);
+      adoptChallengeIssuances.set(ip, entry);
+    }
+  };
+  const adoptChallengeCooldownMsRemaining = (ip: string | null): number => {
+    const now = Date.now();
+    pruneExpiredAdoptChallengeIssuances(now);
+    const globalRemaining = Math.max(
+      0,
+      globalAdoptChallengeIssuances.cooldownUntilMs - now,
+    );
+    const ipEntry = ip ? adoptChallengeIssuances.get(ip) ?? null : null;
+    const ipRemaining = ipEntry
+      ? Math.max(0, ipEntry.cooldownUntilMs - now)
+      : 0;
+    return Math.max(globalRemaining, ipRemaining);
+  };
+  const clearAdoptChallengeIssuancesAfterSuccessfulAuth = (
+    ip: string | null,
+  ): void => {
+    resetPairFailureEntry(globalAdoptChallengeIssuances);
+    if (ip) adoptChallengeIssuances.delete(ip);
   };
 
   const normalizeLaneId = (laneId: string | null | undefined): string | null => {
@@ -3009,6 +3149,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       remotePort,
       transportOrigin,
       relayAuthorization: null,
+      adoptChallenge: null,
       subscribedSessionIds: new Set(),
       pendingTerminalSnapshots: new Map(),
       nextTerminalSnapshotGeneration: 0,
@@ -6054,15 +6195,97 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const heartbeatAwaitedAt = markPeerMessageSeen(peer);
 
     if (!peer.authenticated) {
-      if (envelope.type !== "hello" && envelope.type !== "pairing_request") {
+      if (
+        envelope.type !== "hello"
+        && envelope.type !== "pairing_request"
+        && envelope.type !== "account_challenge"
+      ) {
         send(peer.ws, "hello_error", {
           code: "invalid_hello",
-          message: "Authenticate with hello or pairing_request before sending other messages.",
+          message: "Authenticate with hello, pairing_request, or account_challenge before sending other messages.",
         }, envelope.requestId);
         try {
           peer.ws.close(4003, "Authentication required");
         } catch {
           // ignore
+        }
+        return;
+      }
+      if (envelope.type === "account_challenge") {
+        const cooldownMs = Math.max(
+          pairingCooldownMsRemaining(peer.remoteAddress),
+          adoptChallengeCooldownMsRemaining(peer.remoteAddress),
+        );
+        if (cooldownMs > 0) {
+          const minutes = Math.ceil(cooldownMs / 60_000);
+          send(peer.ws, "account_challenge_error", {
+            message: `Too many failed authentication attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+          }, envelope.requestId);
+          return;
+        }
+        if (peer.adoptChallenge) {
+          registerAdoptChallengeIssuance(peer.remoteAddress);
+          send(peer.ws, "account_challenge_error", {
+            message: "An account adoption challenge is already active on this connection.",
+          }, envelope.requestId);
+          return;
+        }
+        const challenge = envelope.requestId
+          ? parseAccountChallengePayload(envelope.payload)
+          : null;
+        if (!challenge) {
+          peer.adoptChallenge = null;
+          registerAdoptChallengeIssuance(peer.remoteAddress);
+          send(peer.ws, "account_challenge_error", {
+            message: "Invalid account adoption challenge.",
+          }, envelope.requestId);
+          return;
+        }
+        // Count every unauthenticated signing operation, including requests
+        // whose peer key causes X25519 to reject. A successful sealed hello is
+        // the only operation that clears this per-IP/global issuance budget.
+        registerAdoptChallengeIssuance(peer.remoteAddress);
+        try {
+          const identity = machineIdentitySigningStore.getOrCreate();
+          const hostDeviceId = readBrainMetadata().deviceId;
+          const hostEphemeral = generateX25519EphemeralKeyPair();
+          const hostEphemeralPublicKey =
+            hostEphemeral.publicKeyRaw.toString("base64");
+          const ts = adoptNow();
+          const canonical = buildAdoptChallengeSignatureInput({
+            hostDeviceId,
+            nonce: challenge.nonce,
+            clientEphemeralPublicKey: challenge.clientEphemeralPublicKey,
+            hostEphemeralPublicKey,
+            ts,
+          });
+          const sessionKey = deriveAdoptSessionKey({
+            privateKey: hostEphemeral.privateKey,
+            peerPublicKeyRaw: challenge.clientEphemeralPublicKeyBytes,
+            nonce: challenge.nonceBytes,
+          });
+          peer.adoptChallenge = {
+            sessionKey,
+            nonce: challenge.nonce,
+            hostDeviceId,
+            expiresAtMs: ts + ADOPT_CHANNEL_CHALLENGE_TTL_MS,
+          };
+          send(peer.ws, "account_challenge_ok", {
+            v: 1,
+            hostDeviceId,
+            ts,
+            hostEphemeralPublicKey,
+            signature: signEd25519(identity.privateKey, canonical).toString("base64"),
+          }, envelope.requestId);
+        } catch (error) {
+          peer.adoptChallenge = null;
+          args.logger.warn("sync_host.account_challenge_failed", {
+            remoteAddress: peer.remoteAddress,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          send(peer.ws, "account_challenge_error", {
+            message: "Host identity is unavailable.",
+          }, envelope.requestId);
         }
         return;
       }
@@ -6211,6 +6434,72 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // ignore
         }
         return;
+      }
+      let sealedAdoption: {
+        sessionKey: Buffer;
+        hostDeviceId: string;
+        clientDeviceId: string;
+      } | null = null;
+      if (hello.auth?.kind === "account_sealed") {
+        const sealedAuth = hello.auth;
+        const challenge = peer.adoptChallenge;
+        // A challenge is single-use even when unsealing or validation fails.
+        peer.adoptChallenge = null;
+        const rejectSealedHello = (message: string): void => {
+          send(peer.ws, "hello_error", {
+            code: "invalid_hello",
+            message,
+          } satisfies SyncHelloErrorPayload, envelope.requestId);
+          try {
+            peer.ws.close(4003, "Invalid sealed account hello");
+          } catch {
+            // ignore close failures
+          }
+        };
+        if (!challenge) {
+          rejectSealedHello("A completed account challenge is required.");
+          return;
+        }
+        if (challenge.expiresAtMs < adoptNow()) {
+          rejectSealedHello("The account challenge expired.");
+          return;
+        }
+        if (
+          sealedAuth.deviceId !== hello.peer.deviceId
+          || !sealedAuth.sealed
+        ) {
+          rejectSealedHello("The sealed account hello is invalid.");
+          return;
+        }
+        try {
+          const plaintext = unseal(
+            challenge.sessionKey,
+            buildAdoptHelloAad(
+              challenge.hostDeviceId,
+              sealedAuth.deviceId,
+            ),
+            sealedAuth.sealed,
+          );
+          const accountAuth = parseUnsealedAccountAuth(
+            JSON.parse(plaintext.toString("utf8")),
+          );
+          if (
+            !accountAuth
+            || accountAuth.deviceId !== sealedAuth.deviceId
+          ) {
+            rejectSealedHello("The sealed account credentials are invalid.");
+            return;
+          }
+          hello.auth = accountAuth;
+          sealedAdoption = {
+            sessionKey: challenge.sessionKey,
+            hostDeviceId: challenge.hostDeviceId,
+            clientDeviceId: sealedAuth.deviceId,
+          };
+        } catch {
+          rejectSealedHello("The sealed account credentials could not be opened.");
+          return;
+        }
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
       let accountPairing: { deviceId: string; secret: string } | null = null;
@@ -6367,7 +6656,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // Account bearer credentials must never traverse or authenticate a
           // plaintext direct sync route. Existing devices reconnect directly
           // with their stored paired secret + DPoP key instead.
-          if (peer.transportOrigin !== "relay-bridge") {
+          if (!sealedAdoption && peer.transportOrigin !== "relay-bridge") {
             args.logger.warn("sync_host.account_auth_requires_relay", {
               deviceId: accountAuth.deviceId,
               transportOrigin: peer.transportOrigin,
@@ -6516,6 +6805,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       peer.authenticated = true;
+      if (sealedAdoption) {
+        clearAdoptChallengeIssuancesAfterSuccessfulAuth(peer.remoteAddress);
+      }
+      peer.adoptChallenge = null;
       clearPeerAuthTimeout(peer);
       peer.metadata = hello.peer;
       const auth = hello.auth ?? { kind: "bootstrap", token: "" };
@@ -6561,7 +6854,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           && args.projectCatalogProvider.cloneProject
           && args.projectCatalogProvider.listMyGitHubRepos,
       );
-      send(peer.ws, "hello_ok", buildSyncHostHelloOkPayload({
+      const helloOkPayload = buildSyncHostHelloOkPayload({
         peer: hello.peer,
         brain: readBrainMetadata(),
         serverDbVersion,
@@ -6587,7 +6880,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         runtimeChannelEnabled:
           isRecordBackedSyncAuthKind(auth.kind) && isRuntimeHostPairingRecord(authenticatedPairingRecord),
         accountPairing,
-      }), envelope.requestId);
+      });
+      if (sealedAdoption) {
+        send(peer.ws, "hello_ok", {
+          v: 1,
+          sealed: seal(
+            sealedAdoption.sessionKey,
+            buildAdoptHelloOkAad(
+              sealedAdoption.hostDeviceId,
+              sealedAdoption.clientDeviceId,
+            ),
+            Buffer.from(JSON.stringify(helloOkPayload), "utf8"),
+          ),
+        }, envelope.requestId);
+      } else {
+        send(peer.ws, "hello_ok", helloOkPayload, envelope.requestId);
+      }
       args.onStateChanged?.();
       // Catch-up is background work. The periodic poll starts it after the
       // serialized hello queue has had a chance to admit subscriptions.

@@ -358,7 +358,11 @@ describe("AccountMachineDirectoryService", () => {
       getAccessToken: async () => "account-token",
     }, {
       directoryBaseUrl: () => "https://directory.example",
-      fetchImpl: directoryFetch([machine({ online: false, lastSeenAt: 1 })]),
+      fetchImpl: directoryFetch([machine({
+        online: false,
+        lastSeenAt: 1,
+        pubkey: "ed25519:directory-key",
+      })]),
       deviceName: () => "ADE Code test",
       pairedStore: { pairWithAccountMachine },
       targetRegistry: { save },
@@ -373,7 +377,11 @@ describe("AccountMachineDirectoryService", () => {
       name: "Studio",
     });
     expect(pairWithAccountMachine).toHaveBeenCalledWith(
-      expect.objectContaining({ machineKey: "mk-studio", online: false }),
+      expect.objectContaining({
+        machineKey: "mk-studio",
+        online: false,
+        pubkey: "ed25519:directory-key",
+      }),
       "account-token",
       "ADE Code test",
       {

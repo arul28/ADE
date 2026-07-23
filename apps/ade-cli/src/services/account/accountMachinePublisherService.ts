@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   createSyncAccountDirectoryHealth,
   type AdeAccountMachineEndpoint,
@@ -20,6 +21,7 @@ import {
   getSharedAccountAuthService,
   resolveOfficialAccountDirectoryBaseUrl,
 } from "./sharedAccountAuthService";
+import { createMachineIdentitySigningStore } from "../sync/machineIdentitySigningStore";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
 export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
@@ -34,7 +36,7 @@ export type AccountMachineRegistration = {
   name: string;
   platform: string;
   deviceType: string;
-  pubkey: null;
+  pubkey: string | null;
   reachableEndpoints: AdeAccountMachineEndpoint[];
   /**
    * Asks a compatible directory to retain its stored Relay endpoint when this
@@ -148,6 +150,7 @@ export function buildAccountMachineRegistration(args: {
   machineKey: string;
   snapshot: AccountMachineRegistrationSnapshot;
   packageChannel?: string | null;
+  publicKeyRawBase64?: string | null;
 }): AccountMachineRegistration | null {
   const machineKey = args.machineKey.trim();
   const connectInfo = args.snapshot.pairingConnectInfo;
@@ -208,9 +211,9 @@ export function buildAccountMachineRegistration(args: {
     ),
     platform: identity.platform,
     deviceType: identity.deviceType,
-    // Reserved for a future machine-owned key. Account pairing currently
-    // proves the connecting DEVICE's DPoP key during the sync hello instead.
-    pubkey: null,
+    pubkey: args.publicKeyRawBase64?.trim()
+      ? `ed25519:${args.publicKeyRawBase64.trim()}`
+      : null,
     reachableEndpoints: endpoints,
   };
 }
@@ -227,6 +230,7 @@ function relayPublishStateSignature(
     relayBridgeValidated: snapshot.routeHealth.relay.relayBridgeValidated,
     relayEndToEndVerifiedAt: snapshot.routeHealth.relay.relayEndToEndVerifiedAt ?? null,
     relayEndToEndFailure: snapshot.routeHealth.relay.relayEndToEndFailure ?? null,
+    pubkey: registration.pubkey,
     reachableEndpoints,
   });
 }
@@ -236,6 +240,7 @@ export function createAccountMachinePublisherService(options: {
   getAccountStatus?: () => PublisherAccountStatus;
   getSnapshot: () => Promise<AccountMachineRegistrationSnapshot | null>;
   getMachineKey: () => string;
+  getMachineIdentitySigningPublicKey?: () => string;
   directoryBaseUrl?: () => string | null | undefined;
   isSyncEnabled?: () => boolean;
   subscribeToSignIn?: (listener: () => void) => (() => void);
@@ -273,6 +278,14 @@ export function createAccountMachinePublisherService(options: {
     "sync_disabled",
     "Account-directory publishing has not started.",
   );
+
+  const readSigningPublicKey = (): string | null => {
+    try {
+      return options.getMachineIdentitySigningPublicKey?.().trim() || null;
+    } catch {
+      return null;
+    }
+  };
 
   const observeRelayPublishState = (signature: string): boolean => {
     const changed = lastRelayPublishStateSignature !== signature;
@@ -444,10 +457,20 @@ export function createAccountMachinePublisherService(options: {
       return;
     }
 
+    const publicKeyRawBase64 = readSigningPublicKey();
+    if (options.getMachineIdentitySigningPublicKey && !publicKeyRawBase64) {
+      recordOutcome("machine_key_unavailable", {
+        attemptAt,
+        skipReason: "The machine identity signing key is unavailable.",
+        directoryOrigin,
+      });
+      return;
+    }
     const observedRegistration = buildAccountMachineRegistration({
       machineKey,
       snapshot,
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
+      publicKeyRawBase64,
     });
     if (!observedRegistration) {
       recordOutcome("machine_key_unavailable", {
@@ -728,10 +751,13 @@ export function createAccountMachinePublisherService(options: {
       return;
     }
     if (!machineKey) return;
+    const publicKeyRawBase64 = readSigningPublicKey();
+    if (options.getMachineIdentitySigningPublicKey && !publicKeyRawBase64) return;
     const registration = buildAccountMachineRegistration({
       machineKey,
       snapshot,
       packageChannel: process.env.ADE_PACKAGE_CHANNEL,
+      publicKeyRawBase64,
     });
     if (!registration) return;
 
@@ -815,6 +841,10 @@ export function createBrainAccountMachinePublisherService(options: {
     projectRoots: options.projectRoots,
     logger: options.logger,
   });
+  const signingStore = createMachineIdentitySigningStore({
+    filePath: path.join(options.secretsDir, "machine-identity-signing.json"),
+    logger: options.logger,
+  });
   return createAccountMachinePublisherService({
     getAccessToken: (tokenOptions) => getSignedInAccountAccessToken(
       accountAuthService,
@@ -832,6 +862,8 @@ export function createBrainAccountMachinePublisherService(options: {
     isSyncEnabled: options.isSyncEnabled,
     getSnapshot: options.getSnapshot,
     getMachineKey: options.getMachineKey,
+    getMachineIdentitySigningPublicKey: () =>
+      signingStore.getOrCreate().publicKeyRawBase64,
     directoryBaseUrl: () => {
       const explicit = options.directoryBaseUrl?.();
       if (explicit?.trim()) {

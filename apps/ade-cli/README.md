@@ -24,7 +24,7 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `\\.\pipe\ade-runtime` | ADE runtime named-pipe endpoint (Windows). |
 | `$ADE_HOME/projects.json` | Project catalog. |
 | `$ADE_HOME/personal-chats/` | Machine-owned projectless chat runtime state, hidden workspace, transcripts, and attachments. |
-| `~/.ade/secrets/` | Machine credential store (`credentials.safe.enc` for desktop safeStorage, `credentials.json.enc` plus `.machine-key` for headless fallback storage, and per-store `*.lock` files). |
+| `~/.ade/secrets/` | Machine credential store (`credentials.safe.enc` for desktop safeStorage, `credentials.json.enc` plus `.machine-key` for headless fallback storage, per-store `*.lock` files, and the Ed25519 `machine-identity-signing.json` used by account adoption). |
 | `~/.ade/bin/ade` | Bundled static runtime binary (release installs / remote uploads). |
 | `~/.ade/agent-skills/` | Bundled, version-locked ADE agent skills. Desktop remote bootstrap uploads this beside the remote runtime; CLI launch then re-seeds ADE-managed skills into runtime-native home skill directories. |
 | `~/.ade/runtime/<platform-arch>/` | Native node modules for that runtime binary. |
@@ -234,6 +234,7 @@ The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainTo
 - Desktop uses `ElectronSafeStorageCredentialStore`, which encrypts `credentials.safe.enc` with Electron `safeStorage` and migrates legacy file-encrypted stores on first read.
 - Headless CLI fallback uses `EncryptedFileCredentialStore`, which keeps `credentials.json.enc` encrypted with AES-256-GCM and serializes read-modify-write access with `credentials.json.enc.lock`.
 - Secret directories are created with mode `0700`; credential blobs, lock files, and legacy machine keys are written with mode `0600`.
+- Account-machine adoption uses a long-lived Ed25519 identity in `machine-identity-signing.json`. The file is created atomically with mode `0600`; only its raw 32-byte public key is published to the account directory.
 
 `ade login`, `ade logout`, and `ade auth status` operate on the daemon-owned ADE
 account session in that store. Installed ADE uses the production Clerk
@@ -247,6 +248,10 @@ unambiguous; otherwise the command prints the matching stable machine keys.
 Directory presence is a short-lived hint: a machine with a directory-verified
 relay endpoint remains connectable after its most recent heartbeat expires.
 Machines without a verified route remain listed but unavailable.
+When a directory row contains `pubkey: "ed25519:<raw-base64>"`, account
+adoption verifies the host signature and seals the bearer, DPoP proof, and
+returned paired secret over verified LAN, tailnet, or relay routes. Rows
+without a published key retain the legacy WSS-relay-only account path.
 Targets and paired credentials created through `ade machines connect` belong to
 that account and are removed on sign-out or account switch. Direct PIN, SSH, and
 explicit-address pairings remain local and are not converted into account-owned

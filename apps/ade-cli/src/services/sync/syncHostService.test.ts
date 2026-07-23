@@ -72,6 +72,17 @@ import {
 import { encodeSyncEnvelope, parseSyncEnvelope, PEER_BACKPRESSURE_BYTES, SYNC_CHUNKED_ENVELOPES_CAPABILITY, SYNC_RUNTIME_ONLY_CAPABILITY, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
+import {
+  buildAdoptChallengeSignatureInput,
+  buildAdoptHelloAad,
+  buildAdoptHelloOkAad,
+  deriveAdoptSessionKey,
+  generateX25519EphemeralKeyPair,
+  seal,
+  unseal,
+  verifyEd25519,
+} from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
+import { createMachineIdentitySigningStore } from "./machineIdentitySigningStore";
 
 // The sync host now binds to all interfaces (0.0.0.0) by default so phones on
 // the LAN can reach it. These tests assert the LOOPBACK-only posture (no LAN
@@ -1762,6 +1773,307 @@ describe("sync host account authentication", () => {
       },
     }));
   }
+
+  it("authenticates a signed sealed account hello over direct transport and seals hello_ok", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const secretsDir = path.join(projectRoot, ".ade", "secrets");
+    const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+    const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+    const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+    const machineIdentitySigningStore = createMachineIdentitySigningStore({
+      filePath: path.join(secretsDir, "machine-identity-signing.json"),
+    });
+    const baseArgs = createHostArgs(projectRoot, []);
+    let adoptNow = Date.now();
+    const host = createSyncHostService({
+      ...baseArgs,
+      ...accountDependencies(),
+      pinStore,
+      pairingStore,
+      pairingSecretsPath,
+      machineIdentitySigningStore,
+      adoptNow: () => adoptNow,
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...baseArgs.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+    const issueChallenge = async (
+      client: Awaited<ReturnType<typeof openAccountClient>>,
+      requestId: string,
+    ) => {
+      const nonce = Buffer.alloc(32, requestId.length);
+      const ephemeral = generateX25519EphemeralKeyPair();
+      client.ws.send(encodeSyncEnvelope({
+        type: "account_challenge",
+        requestId,
+        payload: {
+          v: 1,
+          nonce: nonce.toString("base64"),
+          clientEphemeralPublicKey: ephemeral.publicKeyRaw.toString("base64"),
+        },
+      }));
+      const envelope = await waitForValue(
+        () => client.envelopes.find((entry) =>
+          entry.type === "account_challenge_ok" && entry.requestId === requestId
+        ),
+        `${requestId} challenge`,
+      );
+      const payload = envelope.payload as {
+        v: number;
+        hostDeviceId: string;
+        ts: number;
+        hostEphemeralPublicKey: string;
+        signature: string;
+      };
+      const canonical = buildAdoptChallengeSignatureInput({
+        hostDeviceId: payload.hostDeviceId,
+        nonce: nonce.toString("base64"),
+        clientEphemeralPublicKey: ephemeral.publicKeyRaw.toString("base64"),
+        hostEphemeralPublicKey: payload.hostEphemeralPublicKey,
+        ts: payload.ts,
+      });
+      expect(verifyEd25519(
+        Buffer.from(
+          machineIdentitySigningStore.getOrCreate().publicKeyRawBase64,
+          "base64",
+        ),
+        canonical,
+        Buffer.from(payload.signature, "base64"),
+      )).toBe(true);
+      return {
+        payload,
+        sessionKey: deriveAdoptSessionKey({
+          privateKey: ephemeral.privateKey,
+          peerPublicKeyRaw: Buffer.from(payload.hostEphemeralPublicKey, "base64"),
+          nonce,
+        }),
+      };
+    };
+
+    try {
+      const port = await host.waitUntilListening();
+      const client = await openAccountClient(port);
+      clients.push(client);
+      const challenge = await issueChallenge(client, "sealed-direct");
+      expect(challenge.payload).toMatchObject({
+        v: 1,
+        hostDeviceId: "host-device-1",
+        ts: adoptNow,
+      });
+      const duplicateEphemeral = generateX25519EphemeralKeyPair();
+      client.ws.send(encodeSyncEnvelope({
+        type: "account_challenge",
+        requestId: "duplicate-challenge",
+        payload: {
+          v: 1,
+          nonce: Buffer.alloc(32, 9).toString("base64"),
+          clientEphemeralPublicKey:
+            duplicateEphemeral.publicKeyRaw.toString("base64"),
+        },
+      }));
+      const duplicateChallenge = await waitForValue(
+        () => client.envelopes.find((entry) =>
+          entry.type === "account_challenge_error"
+          && entry.requestId === "duplicate-challenge"
+        ),
+        "duplicate challenge rejection",
+      );
+      expect(duplicateChallenge.payload).toMatchObject({
+        message: expect.stringMatching(/already active/i),
+      });
+
+      const accountToken = await mintAccountToken();
+      const dpopKey = makeDpopKeyPair();
+      const peer = {
+        deviceId: "sealed-direct-device",
+        deviceName: "Sealed direct device",
+        platform: "macOS",
+        deviceType: "desktop",
+        siteId: "sealed-direct-site",
+        dbVersion: 0,
+      } satisfies SyncPeerMetadata;
+      const accountAuth = {
+        deviceId: peer.deviceId,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: peer.deviceId,
+          accountToken,
+        }),
+      };
+      client.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "sealed-hello",
+        payload: {
+          peer,
+          auth: {
+            kind: "account_sealed",
+            v: 1,
+            deviceId: peer.deviceId,
+            sealed: seal(
+              challenge.sessionKey,
+              buildAdoptHelloAad(challenge.payload.hostDeviceId, peer.deviceId),
+              Buffer.from(JSON.stringify(accountAuth)),
+            ),
+          },
+        },
+      }));
+      const sealedHelloOk = await waitForValue(
+        () => client.envelopes.find((entry) =>
+          entry.type === "hello_ok" && entry.requestId === "sealed-hello"
+        ),
+        "sealed direct hello_ok",
+      );
+      expect(sealedHelloOk.payload).toMatchObject({
+        v: 1,
+        sealed: expect.any(String),
+      });
+      const openedHelloOk = JSON.parse(unseal(
+        challenge.sessionKey,
+        buildAdoptHelloOkAad(challenge.payload.hostDeviceId, peer.deviceId),
+        (sealedHelloOk.payload as { sealed: string }).sealed,
+      ).toString("utf8")) as {
+        brain: { deviceId: string };
+        connectionTransport: string;
+        accountPairing: { deviceId: string; secret: string };
+      };
+      expect(openedHelloOk).toMatchObject({
+        brain: { deviceId: "host-device-1" },
+        connectionTransport: "direct",
+        accountPairing: {
+          deviceId: peer.deviceId,
+          secret: expect.any(String),
+        },
+      });
+      expect(pairingStore.authenticate(
+        peer.deviceId,
+        openedHelloOk.accountPairing.secret,
+      )).toBe(true);
+      expect(baseArgs.logger.warn.mock.calls.some(
+        ([message]) => message === "sync_host.account_auth_requires_relay",
+      )).toBe(false);
+
+      const plainClient = await openAccountClient(port);
+      clients.push(plainClient);
+      const plainPeer = {
+        ...peer,
+        deviceId: "plain-direct-device",
+        siteId: "plain-direct-site",
+      };
+      sendAccountHello({
+        ws: plainClient.ws,
+        peer: plainPeer,
+        accountToken,
+        dpop: signAccountDpop({
+          privateKey: dpopKey.privateKey,
+          publicKeyX963: dpopKey.publicKeyX963,
+          deviceId: plainPeer.deviceId,
+          accountToken,
+        }),
+      });
+      await waitForValue(
+        () => plainClient.envelopes.find((entry) => entry.type === "hello_error"),
+        "plain direct account rejection",
+      );
+      expect(baseArgs.logger.warn.mock.calls.some(
+        ([message]) => message === "sync_host.account_auth_requires_relay",
+      )).toBe(true);
+
+      const noChallengeClient = await openAccountClient(port);
+      clients.push(noChallengeClient);
+      noChallengeClient.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "missing-challenge",
+        payload: {
+          peer: { ...peer, deviceId: "missing-challenge-device" },
+          auth: {
+            kind: "account_sealed",
+            v: 1,
+            deviceId: "missing-challenge-device",
+            sealed: Buffer.alloc(28).toString("base64"),
+          },
+        },
+      }));
+      const missingChallenge = await waitForValue(
+        () => noChallengeClient.envelopes.find((entry) =>
+          entry.type === "hello_error" && entry.requestId === "missing-challenge"
+        ),
+        "missing challenge rejection",
+      );
+      expect(missingChallenge.payload).toMatchObject({
+        code: "invalid_hello",
+        message: expect.stringMatching(/challenge is required/i),
+      });
+
+      const expiredClient = await openAccountClient(port);
+      clients.push(expiredClient);
+      await issueChallenge(expiredClient, "expired-challenge");
+      adoptNow += 60_001;
+      expiredClient.ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "expired-hello",
+        payload: {
+          peer: { ...peer, deviceId: "expired-challenge-device" },
+          auth: {
+            kind: "account_sealed",
+            v: 1,
+            deviceId: "expired-challenge-device",
+            sealed: Buffer.alloc(28).toString("base64"),
+          },
+        },
+      }));
+      const expired = await waitForValue(
+        () => expiredClient.envelopes.find((entry) =>
+          entry.type === "hello_error" && entry.requestId === "expired-hello"
+        ),
+        "expired challenge rejection",
+      );
+      expect(expired.payload).toMatchObject({
+        code: "invalid_hello",
+        message: expect.stringMatching(/expired/i),
+      });
+
+      // The successful sealed hello above cleared its issuance budget. The
+      // expired challenge counts as one new unauthenticated signing operation;
+      // four more are admitted, and the following connection is throttled.
+      for (let index = 0; index < 4; index += 1) {
+        const rateClient = await openAccountClient(port);
+        clients.push(rateClient);
+        await issueChallenge(rateClient, `rate-${index}`);
+      }
+      const throttledClient = await openAccountClient(port);
+      clients.push(throttledClient);
+      const throttledEphemeral = generateX25519EphemeralKeyPair();
+      throttledClient.ws.send(encodeSyncEnvelope({
+        type: "account_challenge",
+        requestId: "rate-throttled",
+        payload: {
+          v: 1,
+          nonce: Buffer.alloc(32, 10).toString("base64"),
+          clientEphemeralPublicKey:
+            throttledEphemeral.publicKeyRaw.toString("base64"),
+        },
+      }));
+      const throttled = await waitForValue(
+        () => throttledClient.envelopes.find((entry) =>
+          entry.type === "account_challenge_error"
+          && entry.requestId === "rate-throttled"
+        ),
+        "challenge issuance throttle",
+      );
+      expect(throttled.payload).toMatchObject({
+        message: expect.stringMatching(/too many failed authentication attempts/i),
+      });
+    } finally {
+      for (const client of clients) client.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
 
   it("commits exactly one concurrent account hello winner for the same connection attempt", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();

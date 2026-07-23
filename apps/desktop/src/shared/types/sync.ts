@@ -784,7 +784,36 @@ export type SyncHelloAuth =
       dpop?: SyncDpopProof | null;
       /** Optional legacy one-time desktop runtime authorization. */
       runtimeHostGrant?: string | null;
+    }
+  | {
+      kind: "account_sealed";
+      v: 1;
+      deviceId: string;
+      sealed: string;
     };
+
+export type SyncAccountChallengePayload = {
+  v: 1;
+  nonce: string;
+  clientEphemeralPublicKey: string;
+};
+
+export type SyncAccountChallengeOkPayload = {
+  v: 1;
+  hostDeviceId: string;
+  ts: number;
+  hostEphemeralPublicKey: string;
+  signature: string;
+};
+
+export type SyncAccountChallengeErrorPayload = {
+  message: string;
+};
+
+export type SyncSealedHelloOkPayload = {
+  v: 1;
+  sealed: string;
+};
 
 export type SyncHelloOkPayload = {
   peer: SyncPeerMetadata;
@@ -1675,8 +1704,23 @@ type SyncEnvelopeWithPayload<TType extends string, TPayload> =
     });
 
 export type SyncHelloEnvelope = SyncEnvelopeWithPayload<"hello", SyncHelloPayload>;
-export type SyncHelloOkEnvelope = SyncEnvelopeWithPayload<"hello_ok", SyncHelloOkPayload>;
+export type SyncHelloOkEnvelope = SyncEnvelopeWithPayload<
+  "hello_ok",
+  SyncHelloOkPayload | SyncSealedHelloOkPayload
+>;
 export type SyncHelloErrorEnvelope = SyncEnvelopeWithPayload<"hello_error", SyncHelloErrorPayload>;
+export type SyncAccountChallengeEnvelope = SyncEnvelopeWithPayload<
+  "account_challenge",
+  SyncAccountChallengePayload
+>;
+export type SyncAccountChallengeOkEnvelope = SyncEnvelopeWithPayload<
+  "account_challenge_ok",
+  SyncAccountChallengeOkPayload
+>;
+export type SyncAccountChallengeErrorEnvelope = SyncEnvelopeWithPayload<
+  "account_challenge_error",
+  SyncAccountChallengeErrorPayload
+>;
 export type SyncRelayReauthorizeEnvelope = SyncEnvelopeWithPayload<"relay_reauthorize", SyncRelayReauthorizePayload>;
 export type SyncRelayReauthorizeResultEnvelope = SyncEnvelopeWithPayload<"relay_reauthorize_result", SyncRelayReauthorizeResultPayload>;
 export type SyncProjectCatalogRequestEnvelope = SyncEnvelopeWithPayload<"project_catalog_request", Record<string, never>>;
@@ -1745,6 +1789,9 @@ export type SyncEnvelope =
   | SyncHelloEnvelope
   | SyncHelloOkEnvelope
   | SyncHelloErrorEnvelope
+  | SyncAccountChallengeEnvelope
+  | SyncAccountChallengeOkEnvelope
+  | SyncAccountChallengeErrorEnvelope
   | SyncRelayReauthorizeEnvelope
   | SyncRelayReauthorizeResultEnvelope
   | SyncProjectCatalogRequestEnvelope

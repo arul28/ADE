@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { generateKeyPairSync } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +15,17 @@ import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { encodeSyncEnvelope, parseSyncEnvelope, wsDataToText } from "../sync/syncProtocol";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
+import {
+  buildAdoptChallengeSignatureInput,
+  buildAdoptHelloAad,
+  buildAdoptHelloOkAad,
+  deriveAdoptSessionKey,
+  generateX25519EphemeralKeyPair,
+  rawPublicKeyFromSpki,
+  seal,
+  signEd25519,
+  unseal,
+} from "../../../shared/sync/adoptChannelCrypto";
 
 const originalAdeHome = process.env.ADE_HOME;
 
@@ -445,6 +457,229 @@ describe("DesktopPairedMachineStore", () => {
     expect(reauthenticated.endpoints).not.toContain("wss://arbitrary.example/account");
     expect(reauthenticated.endpoints).not.toContain("ws://relay-one.example/connect/plaintext");
     expect(fs.readFileSync(store.path, "utf8")).not.toContain("clerk-access-token");
+  });
+
+  it("verifies a directory signing key before sending a sealed account hello over a direct route", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-sealed-pairing-"));
+    process.env.ADE_HOME = adeHome;
+    const signing = generateKeyPairSync("ed25519");
+    const hostSigningPublicKey = rawPublicKeyFromSpki(signing.publicKey);
+    const sentTypes: string[] = [];
+    let hostSessionKey: Buffer | null = null;
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-sealed",
+      deviceId: "host-sealed",
+      name: "Sealed Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${hostSigningPublicKey.toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "lan", host: "sealed-studio.local", port: 8787 },
+        { kind: "relay", url: "wss://relay.example/connect/machine-sealed" },
+      ],
+    };
+    const createWebSocket = () => new FakeWebSocket((text, ws) => {
+      const envelope = parseSyncEnvelope(wsDataToText(text));
+      sentTypes.push(envelope.type);
+      if (envelope.type === "account_challenge") {
+        const request = envelope.payload as {
+          nonce: string;
+          clientEphemeralPublicKey: string;
+        };
+        const hostEphemeral = generateX25519EphemeralKeyPair();
+        const hostEphemeralPublicKey = hostEphemeral.publicKeyRaw.toString("base64");
+        const ts = Date.now();
+        const canonical = buildAdoptChallengeSignatureInput({
+          hostDeviceId: "host-sealed",
+          nonce: request.nonce,
+          clientEphemeralPublicKey: request.clientEphemeralPublicKey,
+          hostEphemeralPublicKey,
+          ts,
+        });
+        hostSessionKey = deriveAdoptSessionKey({
+          privateKey: hostEphemeral.privateKey,
+          peerPublicKeyRaw: Buffer.from(request.clientEphemeralPublicKey, "base64"),
+          nonce: Buffer.from(request.nonce, "base64"),
+        });
+        ws.receive(encodeSyncEnvelope({
+          type: "account_challenge_ok",
+          requestId: envelope.requestId,
+          payload: {
+            v: 1,
+            hostDeviceId: "host-sealed",
+            ts,
+            hostEphemeralPublicKey,
+            signature: signEd25519(signing.privateKey, canonical).toString("base64"),
+          },
+        }));
+        return;
+      }
+      if (envelope.type !== "hello" || !hostSessionKey) return;
+      const payload = envelope.payload as {
+        peer: { deviceId: string };
+        auth: {
+          kind: string;
+          deviceId: string;
+          sealed: string;
+        };
+      };
+      expect(payload.auth.kind).toBe("account_sealed");
+      expect(text).not.toContain("clerk-sealed-token");
+      const accountAuth = JSON.parse(unseal(
+        hostSessionKey,
+        buildAdoptHelloAad("host-sealed", payload.auth.deviceId),
+        payload.auth.sealed,
+      ).toString("utf8")) as {
+        deviceId: string;
+        accountToken: string;
+        dpop: SyncDpopProof;
+      };
+      expect(accountAuth).toMatchObject({
+        deviceId: payload.auth.deviceId,
+        accountToken: "clerk-sealed-token",
+        dpop: { publicKey: expect.any(String) },
+      });
+      const helloOk = {
+        peer: payload.peer,
+        brain: {
+          deviceId: "host-sealed",
+          deviceName: "Sealed Studio",
+          platform: "macOS",
+          deviceType: "desktop",
+          siteId: "host-sealed-site",
+          dbVersion: 0,
+        },
+        serverDbVersion: 0,
+        heartbeatIntervalMs: 5_000,
+        pollIntervalMs: 1_500,
+        connectionTransport: "direct",
+        features: { rpcChannel: true, portForward: true },
+        accountPairing: {
+          deviceId: payload.auth.deviceId,
+          secret: "sealed-paired-secret",
+        },
+      };
+      ws.receive(encodeSyncEnvelope({
+        type: "hello_ok",
+        requestId: envelope.requestId,
+        payload: {
+          v: 1,
+          sealed: seal(
+            hostSessionKey,
+            buildAdoptHelloOkAad("host-sealed", payload.auth.deviceId),
+            Buffer.from(JSON.stringify(helloOk)),
+          ),
+        },
+      }));
+    }) as unknown as WebSocket;
+
+    const adopted = await new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "clerk-sealed-token",
+      "Sealed client",
+      {
+        accountOwnerUserId: "account-user-sealed",
+        pairingTimeoutMs: 2_000,
+        createWebSocket,
+        relayBaseUrls: ["https://relay.example"],
+      },
+    );
+
+    expect(sentTypes).toEqual(["account_challenge", "hello"]);
+    expect(adopted.hostIdentity.deviceId).toBe("host-sealed");
+    expect(adopted.secret).toBe("sealed-paired-secret");
+    expect(adopted.endpoints[0]).toBe("ws://sealed-studio.local:8787/");
+  });
+
+  it.each([
+    { name: "bad signature", mode: "bad_signature" as const },
+    { name: "device id mismatch", mode: "device_mismatch" as const },
+    { name: "stale timestamp", mode: "stale_timestamp" as const },
+    { name: "challenge error", mode: "challenge_error" as const },
+  ])("aborts before hello when signed host verification fails: $name", async ({ mode }) => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-desktop-bad-host-"));
+    process.env.ADE_HOME = adeHome;
+    const signing = generateKeyPairSync("ed25519");
+    const sentTypes: string[] = [];
+    const machine: AdeAccountMachine = {
+      machineKey: `machine-${mode}`,
+      deviceId: "expected-host",
+      name: "Expected host",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${rawPublicKeyFromSpki(signing.publicKey).toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "relay", url: `wss://relay.example/connect/machine-${mode}` },
+      ],
+    };
+
+    const pairing = new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "must-not-leave-client",
+      "Laptop",
+      {
+        accountOwnerUserId: "account-user",
+        pairingTimeoutMs: 500,
+        relayBaseUrls: ["https://relay.example"],
+        createWebSocket: () => new FakeWebSocket((text, ws) => {
+          const envelope = parseSyncEnvelope(wsDataToText(text));
+          sentTypes.push(envelope.type);
+          if (envelope.type !== "account_challenge") return;
+          if (mode === "challenge_error") {
+            ws.receive(encodeSyncEnvelope({
+              type: "account_challenge_error",
+              requestId: envelope.requestId,
+              payload: { message: "unsupported" },
+            }));
+            return;
+          }
+          const request = envelope.payload as {
+            nonce: string;
+            clientEphemeralPublicKey: string;
+          };
+          const hostEphemeral = generateX25519EphemeralKeyPair();
+          const hostDeviceId = mode === "device_mismatch"
+            ? "impersonated-host"
+            : "expected-host";
+          const ts = mode === "stale_timestamp"
+            ? Date.now() - 120_001
+            : Date.now();
+          const hostEphemeralPublicKey = hostEphemeral.publicKeyRaw.toString("base64");
+          const canonical = buildAdoptChallengeSignatureInput({
+            hostDeviceId,
+            nonce: request.nonce,
+            clientEphemeralPublicKey: request.clientEphemeralPublicKey,
+            hostEphemeralPublicKey,
+            ts,
+          });
+          const signature = mode === "bad_signature"
+            ? Buffer.alloc(64, 7)
+            : signEd25519(signing.privateKey, canonical);
+          ws.receive(encodeSyncEnvelope({
+            type: "account_challenge_ok",
+            requestId: envelope.requestId,
+            payload: {
+              v: 1,
+              hostDeviceId,
+              ts,
+              hostEphemeralPublicKey,
+              signature: signature.toString("base64"),
+            },
+          }));
+        }) as unknown as WebSocket,
+      },
+    );
+    await expect(pairing).rejects.toThrow(
+      "Host identity verification failed — the machine may be running an older ADE.",
+    );
+    await expect(pairing).rejects.toMatchObject({
+      code: "account_host_identity_verification_failed",
+    });
+    expect(sentTypes).toEqual(["account_challenge"]);
   });
 
   it.each([

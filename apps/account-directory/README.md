@@ -16,6 +16,11 @@ Device codes and approval-attempt rate limits are stored in D1. The daemon
 secret is stored only as a SHA-256 digest; approved token pairs are cleared by
 the one-time redemption update or when the device code expires.
 
+Machine registration and list records may carry a `pubkey` string. Current ADE
+hosts publish `ed25519:<raw-32-byte-base64>` so clients can verify and seal
+account adoption on direct or relay routes. The Worker treats the value as
+opaque metadata and rejects values longer than 128 characters.
+
 ## Local checks
 
 ```sh
