@@ -3157,6 +3157,18 @@ export function registerIpc({
 
   ipcMain.handle(IPC.appPing, async () => "pong" as const);
 
+  // Dock badge = the LOUD attention tier only (sessions deterministically
+  // waiting on the user). The renderer's attention rollup pushes count
+  // changes; badge clears when nothing needs the user.
+  ipcMain.handle(IPC.appSetDockBadgeCount, async (_event, input: unknown) => {
+    const count = typeof input === "object" && input !== null
+      ? Number((input as { count?: unknown }).count)
+      : Number(input);
+    const normalized = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+    app.setBadgeCount(normalized);
+    return { ok: true } as const;
+  });
+
   ipcMain.handle(
     IPC.analyticsCapture,
     async (

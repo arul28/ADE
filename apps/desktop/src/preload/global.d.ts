@@ -702,6 +702,7 @@ declare global {
       };
       app: {
         ping: () => Promise<"pong">;
+        setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
         getResourceUsage: () => Promise<AppResourceUsageSnapshot>;
         getRuntimeHealth: () => Promise<RuntimeHealthSnapshot>;

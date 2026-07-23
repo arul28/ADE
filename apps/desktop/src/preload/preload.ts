@@ -3271,6 +3271,8 @@ contextBridge.exposeInMainWorld("ade", {
   },
   app: {
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
+    setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
+      ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
     getResourceUsage: async (): Promise<AppResourceUsageSnapshot> =>
       ipcRenderer.invoke(IPC.appGetResourceUsage),
