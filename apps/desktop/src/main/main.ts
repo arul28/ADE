@@ -6193,6 +6193,12 @@ app.whenReady().then(async () => {
       } else if (focusedRoot != null) {
         clearLastRemoteProjectBinding();
         setForegroundProject(focusedRoot);
+        // Genuine window refocus (alt-tab back to an already-open project) doesn't
+        // re-run bindWindowToProject, so schedule the catch-up reconcile here too —
+        // otherwise a PR merged while ADE was unfocused stays stale until the user
+        // switches projects. The per-project 90s throttle + single-flight guard
+        // collapses refocus storms into at most one reconcile per window.
+        scheduleReconcile(buildReconcileRunner(focusedRoot));
       } else if (!activeProjectRoot || !rootsBoundToWindows().has(activeProjectRoot)) {
         // Focusing an unscoped window (e.g. a brand-new File > New Window) must
         // not clobber the foreground project — that would tear down background
