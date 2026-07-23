@@ -650,8 +650,13 @@ struct WorkNewChatScreen: View {
     return lanes.first(where: { $0.id == selectedLaneId })
   }
 
+  private var attachmentsAvailable: Bool {
+    syncService.supportsViewerRemoteAction("chat.saveTempAttachment")
+  }
+
   private var canUploadAttachments: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    attachmentsAvailable
+      && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
   }
 
   /// Fast mode only applies to in-app chat sessions on fast-tier models. The
@@ -931,6 +936,7 @@ struct WorkNewChatScreen: View {
       modelName: prettyNewChatModelName(modelId),
       busy: busy,
       canStart: !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
+      attachmentsAvailable: attachmentsAvailable,
       canUploadAttachments: canUploadAttachments,
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
@@ -1018,6 +1024,7 @@ struct WorkNewChatScreen: View {
   @MainActor
   private func submit(openingMessage: String, attachments inputAttachments: [WorkChatInputAttachment]) async -> Bool {
     let readyAttachments = workChatInputReadyAttachments(inputAttachments)
+    let rawText = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     let opener = workChatOutgoingText(openingMessage, attachmentCount: readyAttachments.count)
     guard !busy && !shellLaunchBusy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
@@ -1078,6 +1085,12 @@ struct WorkNewChatScreen: View {
     var createdChatAttachments: [AgentChatFileRef] = []
 
     do {
+      let attachmentRefs = try await workChatSaveInputAttachments(
+        readyAttachments,
+        syncService: syncService,
+        targetProjectId: targetScope.projectId,
+        targetProjectRootPath: targetScope.projectRootPath
+      )
       if sessionMode == .cli {
         let cliProvider = workResolveCliProvider(for: modelId, provider: provider)
         let cliReasoningEffort = workCliSupportsReasoningSelection(provider: cliProvider) && !normalizedReasoning.isEmpty
@@ -1088,7 +1101,7 @@ struct WorkNewChatScreen: View {
           provider: cliProvider,
           permissionMode: workCliPermissionMode(provider: cliProvider, runtimeMode: runtimeMode),
           title: workCliInitialSessionTitle(provider: cliProvider, opener: opener),
-          initialInput: opener,
+          initialInput: workCliInitialInput(text: rawText, attachments: attachmentRefs),
           modelId: modelId,
           reasoningEffort: cliReasoningEffort,
           fastMode: fastModeSupported ? codexFastMode : nil,
@@ -1131,12 +1144,6 @@ struct WorkNewChatScreen: View {
         busy = false
         return true
       }
-      let attachmentRefs = try await workChatSaveInputAttachments(
-        readyAttachments,
-        syncService: syncService,
-        targetProjectId: targetScope.projectId,
-        targetProjectRootPath: targetScope.projectRootPath
-      )
       let summary = try await syncService.createChatSession(
         laneId: targetLaneId,
         provider: provider,
@@ -1387,6 +1394,7 @@ private struct WorkNewChatComposerBar: View {
   let modelName: String
   let busy: Bool
   let canStart: Bool
+  let attachmentsAvailable: Bool
   let canUploadAttachments: Bool
   @Binding var runtimeMode: String
   @Binding var reasoningEffort: String
@@ -1396,6 +1404,7 @@ private struct WorkNewChatComposerBar: View {
 
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
+  @State private var attachmentPickerPresented = false
   @State private var composerTextHeight: CGFloat = 28
   @State private var composerFocused: Bool = false
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
@@ -1405,19 +1414,13 @@ private struct WorkNewChatComposerBar: View {
   @State private var controlsWidth: CGFloat = 0
   private let dictationTargetId = "work-new-chat-screen"
 
-  private var trimmedDraft: String {
-    draft.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
   private var canSend: Bool {
-    guard canStart else { return false }
-    if sessionMode != .chat {
-      return !trimmedDraft.isEmpty
-    }
-    let readyAttachments = workChatInputReadyAttachments(attachments)
-    return !workChatInputHasLoadingAttachments(attachments)
-      && (!trimmedDraft.isEmpty || !readyAttachments.isEmpty)
-      && (readyAttachments.isEmpty || canUploadAttachments)
+    workChatInputCanSend(
+      text: draft,
+      attachments: attachments,
+      baseEnabled: canStart,
+      canUploadAttachments: canUploadAttachments
+    )
   }
 
   private var runtimeOptions: [WorkRuntimeModeOption] {
@@ -1435,15 +1438,14 @@ private struct WorkNewChatComposerBar: View {
   @MainActor
   private func dispatch() {
     let outgoingAttachments = workChatInputReadyAttachments(attachments)
-    let text = workChatOutgoingText(draft, attachmentCount: outgoingAttachments.count)
-    guard !text.isEmpty else { return }
+    guard canSend else { return }
     let restoredDraft = draft
     let restoredAttachments = attachments
     composerFocused = false
     draft = ""
     attachments.removeAll()
     Task {
-      let started = await onSubmit(text, outgoingAttachments)
+      let started = await onSubmit(restoredDraft, outgoingAttachments)
       if !started {
         draft = restoredDraft
         attachments = restoredAttachments
@@ -1454,69 +1456,76 @@ private struct WorkNewChatComposerBar: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
       WorkChatInputAttachmentTray(attachments: $attachments)
+        .fixedSize(horizontal: false, vertical: true)
+        .layoutPriority(2)
 
-      WorkPlainComposerTextView(
-        text: $draft,
-        isFocused: Binding(
-          get: { composerFocused },
-          set: { composerFocused = $0 }
-        ),
-        measuredHeight: $composerTextHeight,
-        placeholder: placeholder,
-        acceptsPastedImages: sessionMode == .chat,
-        onPasteImages: { images in
-          workChatInputPasteImages(images, into: $attachments)
-        }
-      )
-      .frame(maxWidth: .infinity, minHeight: 28, idealHeight: composerTextHeight, maxHeight: composerTextHeight, alignment: .leading)
-
-      HStack(alignment: .center, spacing: 8) {
-        if !isDictating {
-          WorkChatAttachmentAddButton(
-            attachments: $attachments,
-            disabled: busy || sessionMode != .chat || !canUploadAttachments
-          )
-
-          ScrollView(.horizontal, showsIndicators: false) {
-            WorkComposerControlsRow(
-              provider: provider,
-              modelDisplayName: modelName,
-              reasoningEffort: reasoningEffort,
-              currentMode: runtimeMode,
-              modeOptions: runtimeOptions,
-              modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
-              isCollapsed: isControlsCollapsed,
-              fastModeEnabled: codexFastMode,
-              onOpenModelPicker: onOpenModelPicker,
-              onSelectMode: { runtimeMode = $0 }
-            )
-            .padding(.trailing, 4)
+      VStack(alignment: .leading, spacing: 12) {
+        WorkPlainComposerTextView(
+          text: $draft,
+          isFocused: Binding(
+            get: { composerFocused },
+            set: { composerFocused = $0 }
+          ),
+          measuredHeight: $composerTextHeight,
+          placeholder: placeholder,
+          acceptsPastedImages: attachmentsAvailable,
+          onPasteImages: { images in
+            workChatInputPasteImages(images, into: $attachments)
           }
-          .background(
-            GeometryReader { proxy in
-              Color.clear
-                .onAppear { controlsWidth = proxy.size.width }
-                .onChange(of: proxy.size.width) { _, newValue in
-                  controlsWidth = newValue
-                }
-            }
-          )
-
-          DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
-        }
-
-        DictationMicButton(
-          draft: $draft,
-          coordinator: dictationCoordinator,
-          targetId: dictationTargetId,
-          onRecordingChange: { isDictating = $0 }
         )
-        .frame(maxWidth: isDictating ? .infinity : nil)
+        .frame(maxWidth: .infinity, minHeight: 28, idealHeight: composerTextHeight, maxHeight: composerTextHeight, alignment: .leading)
 
-        if !isDictating {
-          foregroundSendButton
+        HStack(alignment: .center, spacing: 8) {
+          if !isDictating {
+            WorkChatAttachmentAddButton(
+              pickerPresented: $attachmentPickerPresented,
+              attachmentCount: attachments.count,
+              disabled: busy || !attachmentsAvailable
+            )
+
+            ScrollView(.horizontal, showsIndicators: false) {
+              WorkComposerControlsRow(
+                provider: provider,
+                modelDisplayName: modelName,
+                reasoningEffort: reasoningEffort,
+                currentMode: runtimeMode,
+                modeOptions: runtimeOptions,
+                modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
+                isCollapsed: isControlsCollapsed,
+                fastModeEnabled: codexFastMode,
+                onOpenModelPicker: onOpenModelPicker,
+                onSelectMode: { runtimeMode = $0 }
+              )
+              .padding(.trailing, 4)
+            }
+            .background(
+              GeometryReader { proxy in
+                Color.clear
+                  .onAppear { controlsWidth = proxy.size.width }
+                  .onChange(of: proxy.size.width) { _, newValue in
+                    controlsWidth = newValue
+                  }
+              }
+            )
+
+            DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
+          }
+
+          DictationMicButton(
+            draft: $draft,
+            coordinator: dictationCoordinator,
+            targetId: dictationTargetId,
+            onRecordingChange: { isDictating = $0 }
+          )
+          .frame(maxWidth: isDictating ? .infinity : nil)
+
+          if !isDictating {
+            foregroundSendButton
+          }
         }
       }
+      .fixedSize(horizontal: false, vertical: true)
+      .layoutPriority(1)
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 14)
@@ -1543,11 +1552,11 @@ private struct WorkNewChatComposerBar: View {
     .shadow(color: Color.black.opacity(0.32), radius: 14, y: 6)
     .padding(.horizontal, 16)
     .padding(.bottom, 0)
-    .onChange(of: sessionMode) { _, newMode in
-      if newMode != .chat {
-        attachments.removeAll()
-      }
-    }
+    .workChatAttachmentPicker(
+      isPresented: $attachmentPickerPresented,
+      attachments: $attachments,
+      onDismiss: { composerFocused = true }
+    )
   }
 
   /// Primary foreground launch button — the compact arrow-in-circle send glyph

@@ -219,7 +219,7 @@ struct WorkChatSessionView: View {
   var liveTurnActiveHint: Bool? = nil
   var compactComposer = false
   var isPersonalChat: Bool = false
-  var personalAttachmentsAvailable: Bool = true
+  var attachmentsAvailable: Bool = true
   var personalModelCatalogAvailable: Bool = true
   var personalSessionUpdatesAvailable: Bool = true
   /// Present only when the paired host advertises `chat.recoverCodexTurn`.
@@ -748,7 +748,8 @@ struct WorkChatSessionView: View {
         composerPlaceholder: composerPlaceholderText,
         canCompose: canCompose,
         canSend: canSend && !composerSettingMutationInFlight,
-        canUploadAttachments: isLive && (!isPersonalChat || personalAttachmentsAvailable),
+        attachmentsAvailable: attachmentsAvailable,
+        canUploadAttachments: isLive && attachmentsAvailable,
         sending: sending && !sendWillQueue,
         settingsMutationInFlight: composerSettingMutationInFlight,
         codexFastModeOverride: pendingCodexFastMode,
@@ -1662,6 +1663,7 @@ private struct WorkChatComposerCard: View {
   let composerPlaceholder: String
   let canCompose: Bool
   let canSend: Bool
+  let attachmentsAvailable: Bool
   let canUploadAttachments: Bool
   let sending: Bool
   let settingsMutationInFlight: Bool
@@ -1690,6 +1692,7 @@ private struct WorkChatComposerCard: View {
       composerPlaceholder: composerPlaceholder,
       canCompose: canCompose,
       canSend: canSend,
+      attachmentsAvailable: attachmentsAvailable,
       canUploadAttachments: canUploadAttachments,
       sending: sending,
       settingsMutationInFlight: settingsMutationInFlight,
@@ -1728,6 +1731,7 @@ private struct WorkChatComposerDraftInput: View {
   let composerPlaceholder: String
   let canCompose: Bool
   let canSend: Bool
+  let attachmentsAvailable: Bool
   let canUploadAttachments: Bool
   let sending: Bool
   let settingsMutationInFlight: Bool
@@ -1749,6 +1753,7 @@ private struct WorkChatComposerDraftInput: View {
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
+  @State private var attachmentPickerPresented = false
 
   private var hasSendableDraftOrAttachment: Bool {
     draftState.hasSendableText || !workChatInputReadyAttachments(inputAttachments).isEmpty
@@ -1764,13 +1769,19 @@ private struct WorkChatComposerDraftInput: View {
 
         HStack(alignment: .center, spacing: 8) {
           if !isDictating {
+            WorkChatAttachmentAddButton(
+              pickerPresented: $attachmentPickerPresented,
+              attachmentCount: inputAttachments.count,
+              disabled: !canCompose || !attachmentsAvailable || settingsMutationInFlight
+            )
+
             WorkChatComposerTextField(
               draftState: draftState,
               controller: suggestionController,
               canCompose: canCompose,
               placeholder: composerPlaceholder,
+              acceptsPastedImages: canCompose && attachmentsAvailable,
               onPasteImages: { images in
-                guard canUploadAttachments else { return }
                 workChatInputPasteImages(images, into: $inputAttachments)
               },
               maxLines: 1
@@ -1800,8 +1811,8 @@ private struct WorkChatComposerDraftInput: View {
           controller: suggestionController,
           canCompose: canCompose,
           placeholder: composerPlaceholder,
+          acceptsPastedImages: canCompose && attachmentsAvailable,
           onPasteImages: { images in
-            guard canUploadAttachments else { return }
             workChatInputPasteImages(images, into: $inputAttachments)
           }
         )
@@ -1819,8 +1830,9 @@ private struct WorkChatComposerDraftInput: View {
         // expand into the row without a layout jump.
         if !isDictating {
           WorkChatAttachmentAddButton(
-            attachments: $inputAttachments,
-            disabled: !canCompose || !canUploadAttachments || settingsMutationInFlight
+            pickerPresented: $attachmentPickerPresented,
+            attachmentCount: inputAttachments.count,
+            disabled: !canCompose || !attachmentsAvailable || settingsMutationInFlight
           )
 
           WorkComposerChipStrip(
@@ -1883,6 +1895,13 @@ private struct WorkChatComposerDraftInput: View {
     }
     .onChange(of: chatSummary.provider) { _, _ in configureSuggestionController() }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
+    .workChatAttachmentPicker(
+      isPresented: $attachmentPickerPresented,
+      attachments: $inputAttachments,
+      onDismiss: {
+        if canCompose { draftState.isFocused = true }
+      }
+    )
   }
 
   @ViewBuilder
@@ -2185,6 +2204,7 @@ private struct WorkChatComposerTextField: View {
   @ObservedObject var controller: WorkComposerSuggestionController
   let canCompose: Bool
   let placeholder: String
+  var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
   var maxLines = 6
   @State private var measuredHeight: CGFloat = 24
@@ -2196,6 +2216,7 @@ private struct WorkChatComposerTextField: View {
       canCompose: canCompose,
       placeholder: placeholder,
       measuredHeight: $measuredHeight,
+      acceptsPastedImages: acceptsPastedImages,
       onPasteImages: onPasteImages,
       maxLines: maxLines
     )
@@ -2215,11 +2236,12 @@ private struct WorkChatComposerSendButton: View {
   let onSent: () -> Void
 
   private var sendEnabled: Bool {
-    let readyAttachments = workChatInputReadyAttachments(attachments)
-    return canSend
-      && !workChatInputHasLoadingAttachments(attachments)
-      && (draftState.hasSendableText || !readyAttachments.isEmpty)
-      && (readyAttachments.isEmpty || canUploadAttachments)
+    workChatInputCanSend(
+      text: draftState.text,
+      attachments: attachments,
+      baseEnabled: canSend,
+      canUploadAttachments: canUploadAttachments
+    )
   }
 
   var body: some View {

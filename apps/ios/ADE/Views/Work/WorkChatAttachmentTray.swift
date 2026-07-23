@@ -9,6 +9,7 @@ private let workChatAttachmentPreviewMinimumPixels: CGFloat = 96
 private let workChatInputAttachmentMaxBytes = 10 * 1024 * 1024
 private let workChatInputAttachmentInitialMaxDimension: CGFloat = 2400
 private let workChatInputAttachmentMinimumMaxDimension: CGFloat = 960
+let workChatInputAttachmentLimit = 10
 
 private let workChatRemoteImageSession: URLSession = {
   let configuration = URLSessionConfiguration.ephemeral
@@ -100,12 +101,50 @@ func workChatOutgoingText(_ text: String, attachmentCount: Int) -> String {
   return attachmentCount == 1 ? "Attached image." : "Attached \(attachmentCount) images."
 }
 
+func workCliInitialInput(text: String, attachments: [AgentChatFileRef]) -> String {
+  let manifest: String
+  if attachments.isEmpty {
+    manifest = ""
+  } else {
+    let lines = attachments.enumerated().map { index, attachment in
+      if attachment.type == "image-url" {
+        return "\(index + 1). Image URL: \(attachment.url ?? "")"
+      }
+      let label = attachment.type == "image" ? "Image file" : "File"
+      return "\(index + 1). \(label): \(attachment.path)"
+    }
+    manifest = (["Attached files and images:"] + lines).joined(separator: "\n")
+  }
+
+  return [manifest, text.trimmingCharacters(in: .whitespacesAndNewlines)]
+    .filter { !$0.isEmpty }
+    .joined(separator: "\n\n")
+}
+
 func workChatInputReadyAttachments(_ attachments: [WorkChatInputAttachment]) -> [WorkChatInputAttachment] {
   attachments.filter(\.isReady)
 }
 
 func workChatInputHasLoadingAttachments(_ attachments: [WorkChatInputAttachment]) -> Bool {
   attachments.contains(where: \.isLoading)
+}
+
+func workChatInputHasFailedAttachments(_ attachments: [WorkChatInputAttachment]) -> Bool {
+  attachments.contains { $0.errorMessage != nil }
+}
+
+func workChatInputCanSend(
+  text: String,
+  attachments: [WorkChatInputAttachment],
+  baseEnabled: Bool,
+  canUploadAttachments: Bool
+) -> Bool {
+  let readyAttachments = workChatInputReadyAttachments(attachments)
+  return baseEnabled
+    && !workChatInputHasLoadingAttachments(attachments)
+    && !workChatInputHasFailedAttachments(attachments)
+    && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !readyAttachments.isEmpty)
+    && (readyAttachments.isEmpty || canUploadAttachments)
 }
 
 func workChatInputAttachmentDataURL(_ attachment: WorkChatInputAttachment) -> String? {
@@ -136,7 +175,9 @@ func workChatInputAttachment(from image: UIImage, filename: String? = nil, id: U
 func workChatInputPasteImages(_ images: [UIImage], into attachments: Binding<[WorkChatInputAttachment]>) {
   guard !images.isEmpty else { return }
   var next = attachments.wrappedValue
-  for image in images {
+  next.removeAll { $0.filename == "attachment-limit" }
+  let availableSlots = max(0, workChatInputAttachmentLimit - next.count)
+  for image in images.prefix(availableSlots) {
     let id = UUID()
     if let attachment = workChatInputAttachment(from: image, filename: "pasted-\(id.uuidString.prefix(8)).jpg", id: id) {
       next.append(attachment)
@@ -147,6 +188,12 @@ func workChatInputPasteImages(_ images: [UIImage], into attachments: Binding<[Wo
         state: .failed("This image could not be prepared for upload.")
       ))
     }
+  }
+  if images.count > availableSlots {
+    next.append(WorkChatInputAttachment(
+      filename: "attachment-limit",
+      state: .failed("You can attach up to \(workChatInputAttachmentLimit) images at a time.")
+    ))
   }
   attachments.wrappedValue = next
 }
@@ -227,43 +274,60 @@ private func workChatRenderedJPEGImage(_ image: UIImage, maxDimension: CGFloat) 
 }
 
 struct WorkChatAttachmentAddButton: View {
-  @Binding var attachments: [WorkChatInputAttachment]
+  @Binding var pickerPresented: Bool
+  let attachmentCount: Int
   var disabled = false
 
-  @State private var pickerPresented = false
-  @State private var pickerItems: [PhotosPickerItem] = []
+  private var isDisabled: Bool {
+    disabled || attachmentCount >= workChatInputAttachmentLimit
+  }
 
   var body: some View {
-    Menu {
-      Button {
-        pickerPresented = true
-      } label: {
-        Label("Attach from camera roll", systemImage: "photo.on.rectangle")
-      }
+    Button {
+      pickerPresented = true
     } label: {
       Image(systemName: "plus")
         .font(.system(size: 14, weight: .bold))
-        .foregroundStyle(disabled ? ADEColor.textMuted.opacity(0.35) : ADEColor.textPrimary)
+        .foregroundStyle(isDisabled ? ADEColor.textMuted.opacity(0.35) : ADEColor.textPrimary)
         .frame(width: 28, height: 28)
-        .background(ADEColor.surfaceBackground.opacity(disabled ? 0.18 : 0.38), in: Circle())
-        .overlay(Circle().stroke(ADEColor.border.opacity(disabled ? 0.16 : 0.28), lineWidth: 0.6))
+        .background(ADEColor.surfaceBackground.opacity(isDisabled ? 0.18 : 0.38), in: Circle())
+        .overlay(Circle().stroke(ADEColor.border.opacity(isDisabled ? 0.16 : 0.28), lineWidth: 0.6))
+        .frame(width: 44, height: 44)
         .contentShape(Circle())
     }
-    .disabled(disabled)
-    .accessibilityLabel("Add attachment")
-    .accessibilityHint("Shows attachment options.")
-    .photosPicker(
-      isPresented: $pickerPresented,
-      selection: $pickerItems,
-      maxSelectionCount: 0,
-      matching: .images,
-      preferredItemEncoding: .automatic
-    )
-    .onChange(of: pickerItems) { _, newItems in
-      guard !newItems.isEmpty else { return }
-      pickerItems = []
-      Task { await appendPhotoPickerItems(newItems) }
-    }
+    .buttonStyle(.plain)
+    .disabled(isDisabled)
+    .accessibilityLabel("Attach from camera roll")
+    .accessibilityHint("Opens the photo picker.")
+  }
+}
+
+private struct WorkChatAttachmentPickerModifier: ViewModifier {
+  @Binding var isPresented: Bool
+  @Binding var attachments: [WorkChatInputAttachment]
+  let onDismiss: () -> Void
+
+  @State private var pickerItems: [PhotosPickerItem] = []
+
+  func body(content: Content) -> some View {
+    content
+      .photosPicker(
+        isPresented: $isPresented,
+        selection: $pickerItems,
+        maxSelectionCount: max(1, workChatInputAttachmentLimit - attachments.count),
+        matching: .images,
+        preferredItemEncoding: .automatic
+      )
+      .onChange(of: pickerItems) { _, newItems in
+        guard !newItems.isEmpty else { return }
+        pickerItems = []
+        Task { await appendPhotoPickerItems(newItems) }
+      }
+      .onChange(of: isPresented) { wasPresented, nowPresented in
+        if wasPresented && !nowPresented {
+          onDismiss()
+        }
+      }
   }
 
   @MainActor
@@ -308,6 +372,20 @@ struct WorkChatAttachmentAddButton: View {
   private func markAttachment(id: UUID, failed message: String) {
     guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
     attachments[index].state = .failed(message)
+  }
+}
+
+extension View {
+  func workChatAttachmentPicker(
+    isPresented: Binding<Bool>,
+    attachments: Binding<[WorkChatInputAttachment]>,
+    onDismiss: @escaping () -> Void
+  ) -> some View {
+    modifier(WorkChatAttachmentPickerModifier(
+      isPresented: isPresented,
+      attachments: attachments,
+      onDismiss: onDismiss
+    ))
   }
 }
 

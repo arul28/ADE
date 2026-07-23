@@ -1202,6 +1202,10 @@ strip (permission/model/mode/dictation) in place above the keyboard rather than
 presenting a modal drawer. Expansion is explicit state (never derived from
 `@FocusState`, which would snap) so every expand/collapse rides one shared
 spring, and a Project ▸ Lane destination picker chooses where the chat lands.
+The camera-roll picker is presented by the persistent composer root rather than
+the transient plus control. Presenting PhotosPicker may dismiss the keyboard,
+but the composer remains expanded until the picker closes, so its presenter is
+never unmounted underneath the system sheet.
 The chat is created in place and does **not** auto-open — a "Created in
 &lt;project&gt; · &lt;lane&gt;" toast offers an Open shortcut. Project cards are
 drag-reorderable (persisted per machine, mobile-only, never touching desktop
@@ -1281,20 +1285,23 @@ pinned sibling above the composer, so keyboard presentation gives an expanding
 multi-line prompt the available space instead of lifting the activity panel
 with it.
 
-Mobile chat image attachments use the same host-side temp attachment contract as
-desktop. Work and Hub chat composers expose an add-attachment control beside the
-permission/model controls; its menu currently has one action, Attach from camera
-roll, backed by scoped `PhotosPicker` access rather than a full photo-library
-permission. Picked or pasted images stage in `WorkChatInputAttachmentTray` above
-the prompt with thumbnail, loading, and failed states; tapping a staged image
-opens the larger preview sheet with copy and remove actions. The in-session
-`UITextView` composer intercepts pasted `UIPasteboard` images and feeds the same
-tray. Images are normalized to JPEG before upload, saved through
-`chat.saveTempAttachment`, and then sent on `chat.send` / `chat.steer` as
-`AgentChatFileRef` image refs. If a selected asset cannot be loaded yet (for
-example an iCloud-only photo that is not currently available on the phone), the
-tile remains local and shows a recoverable load error instead of sending a
-broken attachment.
+Mobile image attachments use the same host-side temp attachment contract as
+desktop. Hub, Work new-session, compact/in-session, Chat, and CLI composers open
+the scoped `PhotosPicker` directly from the plus control rather than through a
+one-item menu. Their `UITextView` inputs also advertise Paste for image-only
+clipboards and stage pasted images through the same path. Up to ten images are
+normalized to JPEG and retained locally; overflow and load failures stay visible
+as blocking tray errors instead of being silently dropped. Staging works while
+offline, while upload/send waits for reconnection. Hosts that do not advertise
+`chat.saveTempAttachment` do not offer attachment entry.
+
+`WorkChatInputAttachmentTray` is a separate fixed-height shelf above the input
+region, so adding previews grows the composer upward without reducing the text
+field's space. Attachments survive Chat/CLI mode switches. Chat sends attach the
+saved `AgentChatFileRef` image refs to `chat.send` / `chat.steer`. CLI launches
+save through the same contract, then `workCliInitialInput` serializes the temp
+paths into the desktop-compatible `Attached files and images:` manifest inside
+`work.startCliSession.initialInput`.
 
 Work can also import provider-native Claude, Codex, Cursor, Droid, and OpenCode
 CLI sessions. `WorkImportSessionScreen` first shows a compact searchable list,
@@ -1677,7 +1684,7 @@ different machine's cached limits.
 | Hub personal chats | Implemented; runtime-scoped list/create/read/send/interactive actions, owner-only scheduled-work creation capability, controller Cancel/Pause actions, per-host offline summary cache, explicit personal transcript subscriptions, native new-chat/model flow, Chat Info Cancel/Pause controls, and project/lane actions suppressed |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with freely-editable workspaces (mobile read-only file gate removed) and a unified full-screen name + content search page (`FilesSearchScreen`) |
-| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), external provider-session browse/import (`work.listExternalSessions` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, fixed cross-client activity carousel above the new-chat composer |
+| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`) with camera-roll and pasted-image prompts, external provider-session browse/import (`work.listExternalSessions` / `work.importExternalSession`), message-to-continue on ended agent CLI rows, fixed cross-client activity carousel above the new-chat composer |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | Automations / Graph / History tabs | Planned |
@@ -1942,7 +1949,10 @@ different machine's cached limits.
   Claude CLI session at a non-default effort tier without going
   through the desktop.
 - **Codex CLI launches receive the initial prompt as argv, not PTY
-  echo.** Other providers still receive `initialInput` as bytes typed
+  echo.** Image attachments prepend the same `Attached files and images:`
+  temp-path manifest as desktop; attachment-only launches send that manifest
+  without synthetic message text. Other providers receive the same composed
+  `initialInput` as bytes typed
   into the spawned PTY (`writeBySessionId(sessionId, "${input}\\r")`),
   but Codex receives it as the final positional argv on `codex` via
   `buildTrackedCliLaunchCommand` so the model sees a clean first turn

@@ -1231,8 +1231,9 @@ struct WorkSessionDestinationView: View {
       liveTurnActiveHint: liveTurnActiveHint,
       compactComposer: compactComposer,
       isPersonalChat: personalChat,
-      personalAttachmentsAvailable: !personalChat
-        || syncService.canInvokeRemoteAction("personalChats.saveTempAttachment"),
+      attachmentsAvailable: personalChat
+        ? syncService.supportsViewerRemoteAction("personalChats.saveTempAttachment")
+        : syncService.supportsViewerRemoteAction("chat.saveTempAttachment"),
       personalModelCatalogAvailable: !personalChat
         || syncService.canInvokeRemoteAction("personalChats.modelCatalog"),
       personalSessionUpdatesAvailable: !personalChat

@@ -424,12 +424,29 @@ final class WorkComposerChipLayoutManager: NSLayoutManager {
 
 // MARK: - Composer text view
 
-private final class WorkComposerPastingTextView: UITextView {
+final class WorkComposerPastingTextView: UITextView {
   var onPasteImages: (([UIImage]) -> Bool)?
 
+  private var pastedImages: [UIImage] {
+    let images = UIPasteboard.general.images ?? []
+    if !images.isEmpty { return Array(images.prefix(workChatInputAttachmentLimit + 1)) }
+    if let image = UIPasteboard.general.image { return [image] }
+    return []
+  }
+
+  override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+    if action == #selector(paste(_:)),
+       onPasteImages != nil,
+       UIPasteboard.general.hasImages {
+      return true
+    }
+    return super.canPerformAction(action, withSender: sender)
+  }
+
   override func paste(_ sender: Any?) {
-    if let image = UIPasteboard.general.image,
-       onPasteImages?([image]) == true {
+    let images = pastedImages
+    if !images.isEmpty,
+       onPasteImages?(images) == true {
       return
     }
     super.paste(sender)
@@ -579,9 +596,11 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
     textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textView.accessibilityIdentifier = "Work.StartChat.Composer.TextView"
     textView.accessibilityHint = "Long press a link for copy and remove actions."
-    textView.onPasteImages = { [weak coordinator = context.coordinator] images in
-      coordinator?.handlePasteImages(images) ?? false
-    }
+    textView.onPasteImages = acceptsPastedImages
+      ? { [weak coordinator = context.coordinator] images in
+          coordinator?.handlePasteImages(images) ?? false
+        }
+      : nil
 
     context.coordinator.textView = textView
     context.coordinator.installSmartLinkMenu(on: textView)
@@ -596,9 +615,11 @@ struct WorkPlainComposerTextView: UIViewRepresentable {
   func updateUIView(_ textView: UITextView, context: Context) {
     context.coordinator.parent = self
     if let textView = textView as? WorkComposerPastingTextView {
-      textView.onPasteImages = { [weak coordinator = context.coordinator] images in
-        coordinator?.handlePasteImages(images) ?? false
-      }
+      textView.onPasteImages = acceptsPastedImages
+        ? { [weak coordinator = context.coordinator] images in
+            coordinator?.handlePasteImages(images) ?? false
+          }
+        : nil
     }
     if textView.text != text {
       textView.text = text
@@ -771,6 +792,7 @@ struct WorkComposerTextView: UIViewRepresentable {
   let canCompose: Bool
   let placeholder: String
   @Binding var measuredHeight: CGFloat
+  var acceptsPastedImages = true
   var onPasteImages: (([UIImage]) -> Void)? = nil
   var maxLines = 6
 
@@ -816,9 +838,11 @@ struct WorkComposerTextView: UIViewRepresentable {
     textView.setContentHuggingPriority(.defaultLow, for: .horizontal)
     textView.accessibilityIdentifier = "Work.Chat.Composer.TextView"
     textView.accessibilityHint = "Long press a link for copy and remove actions."
-    textView.onPasteImages = { [weak coordinator = context.coordinator] images in
-      coordinator?.handlePasteImages(images) ?? false
-    }
+    textView.onPasteImages = acceptsPastedImages
+      ? { [weak coordinator = context.coordinator] images in
+          coordinator?.handlePasteImages(images) ?? false
+        }
+      : nil
 
     context.coordinator.textView = textView
     context.coordinator.installSmartLinkMenu(on: textView)
@@ -840,9 +864,11 @@ struct WorkComposerTextView: UIViewRepresentable {
     context.coordinator.parent = self
     textView.isEditable = canCompose
     if let textView = textView as? WorkComposerPastingTextView {
-      textView.onPasteImages = { [weak coordinator = context.coordinator] images in
-        coordinator?.handlePasteImages(images) ?? false
-      }
+      textView.onPasteImages = acceptsPastedImages
+        ? { [weak coordinator = context.coordinator] images in
+            coordinator?.handlePasteImages(images) ?? false
+          }
+        : nil
     }
     context.coordinator.applyPlaceholder(placeholder)
 
@@ -1044,7 +1070,9 @@ struct WorkComposerTextView: UIViewRepresentable {
     }
 
     func handlePasteImages(_ images: [UIImage]) -> Bool {
-      guard let onPasteImages = parent.onPasteImages, !images.isEmpty else { return false }
+      guard parent.acceptsPastedImages,
+            let onPasteImages = parent.onPasteImages,
+            !images.isEmpty else { return false }
       onPasteImages(images)
       parent.controller.clear()
       return true
