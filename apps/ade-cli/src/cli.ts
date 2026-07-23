@@ -1342,6 +1342,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade code --lane <id|name|branch>             Launch focused on a specific lane
     $ ade code remote --target <machine> --project <project>
                                                      Launch against a saved desktop remote machine
+    $ ade code remote --target <machine> --route <auto|lan|tailscale|relay>
+                                                     Choose or constrain the paired connection path
     $ ade code remote session --target <machine> --project <project> --session <session>
                                                      Open a specific remote chat or provider CLI terminal session
     $ ade code remote --list-targets               List saved remote machines

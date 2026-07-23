@@ -366,6 +366,31 @@ describe("AdeCodeApp polling", () => {
     await unmountApp(instance);
   });
 
+  it("renders remote startup failures as recoverable connection loss", async () => {
+    mocks.connectToAde.mockImplementation(async () => {
+      throw new Error(
+        "Remote ADE connection to Account Studio was interrupted while ADE Code was starting: " +
+          "the local bridge lost its upstream runtime connection (write EPIPE).",
+      );
+    });
+
+    const instance = await renderApp(
+      <AdeCodeApp
+        project={{ ...project, remote: true, remoteLabel: "Account Studio" }}
+        remote
+      />,
+    );
+
+    await waitForFrame(instance, "ADE Code could not reach Account Studio");
+    const frame = stripAnsi(instance.frames.join("\n"));
+    expect(frame).toContain("write EPIPE");
+    expect(frame).toContain("every retry re-evaluates its saved connection paths");
+    expect(frame).toContain("Retrying automatically");
+    expect(frame).not.toContain("ade-code failed to start");
+
+    await unmountApp(instance);
+  });
+
   it("debounces mention RPCs and caches lane git/pr suggestions", async () => {
     mocks.listChatSessions.mockResolvedValue([chat({ status: "idle" })]);
     const actionMock = vi.fn(async (domain: string, action: string, args?: Record<string, unknown>) => {

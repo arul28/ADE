@@ -67,7 +67,8 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   security model). The published machine name is channel-suffixed (`<name> ·
   Beta` / `<name> · Alpha`, stable left bare) so two channels on one Mac are
   distinguishable rows.
-- `apps/ade-cli/src/tuiClient/remoteLauncher.ts` and `remoteBridge.ts` —
+- `apps/ade-cli/src/tuiClient/remoteLauncher.ts`,
+  `pairedRemoteConnector.ts`, `remoteLaunchBudget.ts`, and `remoteBridge.ts` —
   `ade code remote` target resolution, legacy account-target migration,
   paired/SSH launch ordering, bounded cancellation, project/session selection,
   and the one-connection local socket handed to the normal ADE Code client.
@@ -299,7 +300,15 @@ legacy account-machine match is adopted into the paired store and the obsolete
 SSH-shaped record is removed. If the directory cannot be verified, the machine
 is offline, or adoption fails, that account-created target fails closed; ADE
 does not silently retry it as SSH. Targets with an explicit SSH user or private
-key remain true SSH targets and bypass this migration.
+key remain true SSH targets and bypass this migration. Interactive launches
+always show the machine chooser, including when only one target is saved.
+Paired launches dial LAN → tailnet → relay by default; `--route
+lan|tailscale|relay` restricts the attempt to one path class and never falls
+back to SSH. ADE verifies the long-lived paired connection before it launches
+the TUI, reuses that connection for the first local bridge socket, and leaves
+the bridge available for an explicit retry if the remote path later closes.
+The CLI prints the selected path and reports subsequent path changes without
+showing temporary socket locations or pairing identifiers.
 
 For a true SSH target, each alternate route is passed as
 `-o HostName=<concrete-route>` while the saved hostname stays in the destination

@@ -496,6 +496,9 @@ describe("ADE CLI", () => {
     expect(general.text).toContain("ade code --socket /tmp/ade.sock");
     expect(general.text).toContain("ade code --require-socket");
     expect(general.text).toContain("ade code --lane <id|name|branch>");
+    expect(general.text).toContain(
+      "ade code remote --target <machine> --route <auto|lan|tailscale|relay>",
+    );
     expect(general.text).toContain("Command palette");
 
     expect(buildCliPlan(["code", "remote", "--help"])).toEqual({

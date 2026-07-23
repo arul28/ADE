@@ -59,6 +59,11 @@ export type RemoteBridge = {
   close: () => Promise<void>;
 };
 
+export type PairedRemoteBridgeConnection = {
+  transport: RuntimeRpcTransport;
+  connectionLabel: string;
+};
+
 const REMOTE_RPC_REQUEST_TIMEOUT_MS = 120_000;
 const MAX_RPC_BUFFER_BYTES = 16 * 1024 * 1024;
 const MAX_STDERR_TAIL_BYTES = 32 * 1024;
@@ -280,6 +285,72 @@ export class ProcessJsonRpcClient {
   }
 }
 
+type LocalBridgeListener = {
+  socketUrl: string;
+  close: () => Promise<void>;
+};
+
+async function startLocalBridgeListener(
+  directoryPrefix: string,
+  onConnection: (socket: net.Socket) => void,
+): Promise<LocalBridgeListener> {
+  const bridgeDir = process.platform === "win32"
+    ? null
+    : fs.mkdtempSync(path.join(os.tmpdir(), directoryPrefix));
+  if (bridgeDir) {
+    try { fs.chmodSync(bridgeDir, 0o700); } catch {}
+  }
+  const bridgeSocketPath = bridgeDir ? path.join(bridgeDir, "bridge.sock") : null;
+  const server = net.createServer(onConnection);
+  server.maxConnections = 1;
+  const removeFiles = (): void => {
+    if (bridgeSocketPath) {
+      try { fs.unlinkSync(bridgeSocketPath); } catch {}
+    }
+    if (bridgeDir) {
+      try { fs.rmdirSync(bridgeDir); } catch {}
+    }
+  };
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onListening = () => { cleanup(); resolve(); };
+      const onError = (error: Error) => { cleanup(); reject(error); };
+      const cleanup = () => {
+        server.off("listening", onListening);
+        server.off("error", onError);
+      };
+      server.once("listening", onListening);
+      server.once("error", onError);
+      if (bridgeSocketPath) server.listen(bridgeSocketPath);
+      else server.listen(0, "127.0.0.1");
+    });
+  } catch (error) {
+    removeFiles();
+    throw error;
+  }
+
+  let socketUrl = bridgeSocketPath;
+  if (!socketUrl) {
+    const address = server.address() as AddressInfo | null;
+    if (!address) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      removeFiles();
+      throw new Error("Remote bridge did not bind a local port.");
+    }
+    socketUrl = `tcp://127.0.0.1:${address.port}`;
+  }
+  return {
+    socketUrl,
+    close: async () => {
+      if (server.listening) {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+      removeFiles();
+    },
+  };
+}
+
 export async function startRemoteBridge(args: {
   target: RemoteRuntimeTarget;
   initialAttempt?: RemoteRpcAttempt;
@@ -287,15 +358,6 @@ export async function startRemoteBridge(args: {
 }): Promise<RemoteBridge> {
   const activeSockets = new Set<net.Socket>();
   const activeChildren = new Set<ChildProcessWithoutNullStreams>();
-  const bridgeDir = process.platform === "win32"
-    ? null
-    : fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-remote-"));
-  if (bridgeDir) {
-    try {
-      fs.chmodSync(bridgeDir, 0o700);
-    } catch {}
-  }
-  const bridgeSocketPath = bridgeDir ? path.join(bridgeDir, "bridge.sock") : null;
   let closing = false;
 
   const currentTarget = (): RemoteRuntimeTarget => {
@@ -319,7 +381,7 @@ export async function startRemoteBridge(args: {
     return attempt;
   };
 
-  const server = net.createServer((socket) => {
+  const listener = await startLocalBridgeListener("ade-code-remote-", (socket) => {
     activeSockets.add(socket);
     socket.pause();
     let child: ChildProcessWithoutNullStreams | null = null;
@@ -367,39 +429,8 @@ export async function startRemoteBridge(args: {
         teardown(error instanceof Error ? error.message : String(error));
       });
   });
-  server.maxConnections = 1;
-
-  await new Promise<void>((resolve, reject) => {
-    const cleanup = (): void => {
-      server.off("listening", onListening);
-      server.off("error", onError);
-    };
-    const onListening = (): void => {
-      cleanup();
-      resolve();
-    };
-    const onError = (error: Error): void => {
-      cleanup();
-      reject(error);
-    };
-    server.once("listening", onListening);
-    server.once("error", onError);
-    if (bridgeSocketPath) server.listen(bridgeSocketPath);
-    else server.listen(0, "127.0.0.1");
-  });
-
-  let socketUrl: string;
-  if (bridgeSocketPath) {
-    socketUrl = bridgeSocketPath;
-  } else {
-    const address = server.address() as AddressInfo | null;
-    if (!address) {
-      throw new Error("Remote bridge did not bind a local port.");
-    }
-    socketUrl = `tcp://127.0.0.1:${address.port}`;
-  }
   return {
-    socketUrl,
+    socketUrl: listener.socketUrl,
     close: async () => {
       closing = true;
       for (const socket of [...activeSockets]) socket.destroy();
@@ -409,17 +440,7 @@ export async function startRemoteBridge(args: {
         child.stderr.destroy();
         child.kill();
       }
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      if (bridgeSocketPath) {
-        try {
-          fs.unlinkSync(bridgeSocketPath);
-        } catch {}
-      }
-      if (bridgeDir) {
-        try {
-          fs.rmdirSync(bridgeDir);
-        } catch {}
-      }
+      await listener.close();
     },
   };
 }
@@ -432,18 +453,14 @@ export async function startRemoteBridge(args: {
  */
 export async function startSyncRemoteBridge(args: {
   target: RemoteRuntimeTarget;
-  openTransport: (target: RemoteRuntimeTarget) => Promise<RuntimeRpcTransport>;
+  initialConnection?: PairedRemoteBridgeConnection;
+  openTransport: (target: RemoteRuntimeTarget) => Promise<PairedRemoteBridgeConnection>;
+  onConnectionChanged?: (connectionLabel: string) => void;
 }): Promise<RemoteBridge> {
   const activeSockets = new Set<net.Socket>();
   const activeTransports = new Set<RuntimeRpcTransport>();
-  const bridgeDir = process.platform === "win32"
-    ? null
-    : fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-paired-"));
-  if (bridgeDir) {
-    try { fs.chmodSync(bridgeDir, 0o700); } catch {}
-  }
-  const bridgeSocketPath = bridgeDir ? path.join(bridgeDir, "bridge.sock") : null;
   let closing = false;
+  let initialConnection = args.initialConnection ?? null;
   const currentTarget = (): RemoteRuntimeTarget => {
     try {
       return new RemoteTargetRegistry().get(args.target.id) ?? args.target;
@@ -451,76 +468,77 @@ export async function startSyncRemoteBridge(args: {
       return args.target;
     }
   };
+  const takeConnection = async (): Promise<PairedRemoteBridgeConnection> => {
+    if (initialConnection) {
+      const connection = initialConnection;
+      initialConnection = null;
+      return connection;
+    }
+    return await args.openTransport(currentTarget());
+  };
 
-  const server = net.createServer((socket) => {
-    activeSockets.add(socket);
-    socket.pause();
-    let transport: RuntimeRpcTransport | null = null;
-    let settled = false;
-    const teardown = (reason?: string): void => {
-      if (settled) return;
-      settled = true;
-      activeSockets.delete(socket);
-      if (transport) activeTransports.delete(transport);
-      if (!closing && reason) process.stderr.write(`Paired ADE bridge closed: ${reason}\n`);
-      socket.destroy();
-      try { transport?.close(); } catch {}
-    };
-    socket.on("error", (error) => teardown(error.message));
-    socket.on("close", () => teardown());
-    void args.openTransport(currentTarget()).then((opened) => {
-      if (settled || closing) {
-        opened.close();
-        return;
-      }
-      transport = opened;
-      activeTransports.add(opened);
-      opened.onData((chunk) => {
-        if (!settled && !socket.destroyed) socket.write(chunk);
-      });
-      opened.onError?.((error) => teardown(error.message));
-      opened.onClose?.(() => teardown("remote runtime connection closed"));
-      socket.setEncoding("utf8");
-      socket.on("data", (chunk) => {
-        try { opened.write(String(chunk)); } catch (error) {
-          teardown(error instanceof Error ? error.message : String(error));
+  let listener: LocalBridgeListener;
+  try {
+    listener = await startLocalBridgeListener("ade-code-paired-", (socket) => {
+      activeSockets.add(socket);
+      socket.pause();
+      let transport: RuntimeRpcTransport | null = null;
+      let settled = false;
+      const teardown = (reason?: string): void => {
+        if (settled) return;
+        settled = true;
+        activeSockets.delete(socket);
+        if (transport) activeTransports.delete(transport);
+        if (!closing && reason) process.stderr.write(`Paired ADE bridge closed: ${reason}\n`);
+        socket.destroy();
+        try { transport?.close(); } catch {}
+      };
+      socket.on("error", (error) => teardown(error.message));
+      socket.on("close", () => teardown());
+      void takeConnection().then((opened) => {
+        if (settled || closing) {
+          opened.transport.close();
+          return;
         }
-      });
-      socket.resume();
-    }).catch((error) => teardown(error instanceof Error ? error.message : String(error)));
-  });
-  server.maxConnections = 1;
+        transport = opened.transport;
+        activeTransports.add(opened.transport);
+        try {
+          args.onConnectionChanged?.(opened.connectionLabel);
+        } catch {
+          // Connection reporting must never break the byte bridge.
+        }
+        opened.transport.onData((chunk) => {
+          if (!settled && !socket.destroyed) socket.write(chunk);
+        });
+        opened.transport.onError?.((error) => teardown(error.message));
+        opened.transport.onClose?.(() => teardown("remote runtime connection closed"));
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk) => {
+          try { opened.transport.write(String(chunk)); } catch (error) {
+            teardown(error instanceof Error ? error.message : String(error));
+          }
+        });
+        socket.resume();
+      }).catch((error) => teardown(error instanceof Error ? error.message : String(error)));
+    });
+  } catch (error) {
+    closing = true;
+    try { initialConnection?.transport.close(); } catch {}
+    initialConnection = null;
+    throw error;
+  }
 
-  await new Promise<void>((resolve, reject) => {
-    const onListening = () => { cleanup(); resolve(); };
-    const onError = (error: Error) => { cleanup(); reject(error); };
-    const cleanup = () => {
-      server.off("listening", onListening);
-      server.off("error", onError);
-    };
-    server.once("listening", onListening);
-    server.once("error", onError);
-    if (bridgeSocketPath) server.listen(bridgeSocketPath);
-    else server.listen(0, "127.0.0.1");
-  });
-
-  const socketUrl = bridgeSocketPath
-    ?? `tcp://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
-    socketUrl,
+    socketUrl: listener.socketUrl,
     close: async () => {
       closing = true;
       for (const socket of [...activeSockets]) socket.destroy();
+      try { initialConnection?.transport.close(); } catch {}
+      initialConnection = null;
       for (const transport of [...activeTransports]) {
         try { transport.close(); } catch {}
       }
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      if (bridgeSocketPath) {
-        try { fs.unlinkSync(bridgeSocketPath); } catch {}
-      }
-      if (bridgeDir) {
-        try { fs.rmdirSync(bridgeDir); } catch {}
-      }
+      await listener.close();
     },
   };
 }

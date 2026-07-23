@@ -7513,7 +7513,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         heartbeatRef.current?.stop();
         heartbeatRef.current = null;
         const message = err instanceof Error ? err.message : String(err);
-        setError(`${message} · Retrying automatically. Press r to retry now, Ctrl+C to quit.`);
+        setError(message);
         setMode("connecting");
         connectionRetryTimerRef.current = setTimeout(() => {
           connectionRetryTimerRef.current = null;
@@ -15772,11 +15772,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     : EMPTY_TERMINAL_CHUNKS;
 
   if (error && !connection) {
+    const remoteLabel = project.remoteLabel?.trim() || "the remote Mac";
     return (
       <Box flexDirection="column">
-        <Text color="red">ade-code failed to start</Text>
+        <Text color="red">
+          {remoteLaunch
+            ? `ADE Code could not reach ${remoteLabel}`
+            : "ADE Code failed to start"}
+        </Text>
         <Text>{error}</Text>
-        <Text color={theme.color.mutedFg} dimColor>r retry now · Ctrl+C quit</Text>
+        {remoteLaunch ? (
+          <Text color={theme.color.mutedFg} dimColor>
+            The remote Mac may be restarting; every retry re-evaluates its saved connection paths.
+          </Text>
+        ) : null}
+        <Text color={theme.color.mutedFg} dimColor>
+          Retrying automatically · r retry now · Ctrl+C quit
+        </Text>
       </Box>
     );
   }

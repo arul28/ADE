@@ -267,6 +267,8 @@ ade code --embedded                # force the in-process embedded runtime
 ade code --print-state             # smoke-test the connection and exit
 ade code remote --target mac --project ADE
                                    # attach to a saved paired or SSH remote machine
+ade code remote --target mac --route tailscale --project ADE
+                                   # require a paired Tailscale path; auto also tries LAN then Relay
 ade code remote session --target mac --project ADE --session chat-1
                                    # open a remote chat or provider CLI terminal session
 ade login                          # sign in to the optional shared machine account
@@ -282,7 +284,12 @@ then uses the target's declared transport. Paired targets connect through the
 DPoP-bound sync runtime bridge; SSH targets start `ade rpc --stdio` over a
 validated SSH route. Relay routes are available only while both machines are
 signed into the same ADE account; direct LAN and tailnet routes remain usable
-signed out. Account-created targets are paired-only, are removed when their
+signed out. Interactive launches always show the machine picker, even when
+only one target is saved; scripts can continue selecting a single saved target
+implicitly or pass `--target`. Paired targets use LAN → Tailscale → Relay
+failover by default. `--route lan`, `--route tailscale`, and `--route relay`
+constrain the connection to one path and never silently downgrade to SSH.
+Account-created targets are paired-only, are removed when their
 account signs out or switches, and fail closed instead of falling back to SSH
 or a plaintext address. Legacy account machines
 that desktop ADE saved as uncredentialed SSH targets are adopted into the same

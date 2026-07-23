@@ -77,7 +77,10 @@ describe("startSyncRemoteBridge", () => {
     };
     const bridge = await startSyncRemoteBridge({
       target,
-      openTransport: vi.fn(async () => transport),
+      openTransport: vi.fn(async () => ({
+        transport,
+        connectionLabel: "local network (studio.local:8787)",
+      })),
     });
     const socket = bridge.socketUrl.startsWith("tcp://")
       ? net.connect(Number(new URL(bridge.socketUrl).port), "127.0.0.1")
@@ -92,6 +95,49 @@ describe("startSyncRemoteBridge", () => {
       socket.write(encoded.subarray(splitAt));
       await expect(responseLine).resolves.toBe(response);
       expect(forwarded).toBe(request);
+    } finally {
+      socket.destroy();
+      await bridge.close();
+    }
+    expect(closeTransport).toHaveBeenCalled();
+  });
+
+  it("uses a verified initial transport before opening a replacement route", async () => {
+    let onData: ((chunk: Buffer) => void) | null = null;
+    const closeTransport = vi.fn();
+    const initialTransport: RuntimeRpcTransport = {
+      write: vi.fn((chunk: string) => {
+        onData?.(Buffer.from(chunk, "utf8"));
+      }),
+      close: closeTransport,
+      onData: (callback) => {
+        onData = callback;
+      },
+    };
+    const openTransport = vi.fn();
+    const onConnectionChanged = vi.fn();
+    const bridge = await startSyncRemoteBridge({
+      target,
+      initialConnection: {
+        transport: initialTransport,
+        connectionLabel: "Tailscale (studio.example.ts.net:8787)",
+      },
+      openTransport,
+      onConnectionChanged,
+    });
+    const socket = bridge.socketUrl.startsWith("tcp://")
+      ? net.connect(Number(new URL(bridge.socketUrl).port), "127.0.0.1")
+      : net.connect(bridge.socketUrl);
+
+    try {
+      await once(socket, "connect");
+      const responseLine = readLine(socket);
+      socket.write('{"jsonrpc":"2.0","id":1,"method":"ping"}\n');
+      await expect(responseLine).resolves.toContain('"method":"ping"');
+      expect(openTransport).not.toHaveBeenCalled();
+      expect(onConnectionChanged).toHaveBeenCalledWith(
+        "Tailscale (studio.example.ts.net:8787)",
+      );
     } finally {
       socket.destroy();
       await bridge.close();
