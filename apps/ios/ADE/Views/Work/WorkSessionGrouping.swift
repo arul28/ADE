@@ -369,6 +369,11 @@ private func workRootSessionPresentationRenderSignature(
     hasher.combine(session.pendingInputItemId)
     hasher.combine(session.chatSessionId)
     hasher.combine(session.archivedAt)
+    hasher.combine(session.settledAt)
+    hasher.combine(session.statusNote)
+    hasher.combine(session.attentionRequestedAt)
+    hasher.combine(session.attentionMessage)
+    hasher.combine(session.lastTurnFailedAt)
     hasher.combine(session.endedAt)
     hasher.combine(session.pinned)
     hasher.combine(statusBySessionId[session.id])
@@ -534,6 +539,7 @@ func workSessionGroupsByStatus(
   var pinned: [TerminalSessionSummary] = []
   var running: [TerminalSessionSummary] = []
   var ended: [TerminalSessionSummary] = []
+  var settled: [TerminalSessionSummary] = []
   var archived: [TerminalSessionSummary] = []
 
   for session in sessions {
@@ -541,22 +547,33 @@ func workSessionGroupsByStatus(
       archived.append(session)
       continue
     }
-    let status = statusBySessionId[session.id]
-      ?? normalizedWorkChatSessionStatus(session: session, summary: chatSummaries[session.id])
-    if status == "awaiting-input" {
+    let canonical = workCanonicalSessionState(
+      session: session,
+      summary: chatSummaries[session.id]
+    )
+    switch canonical.phase {
+    case .needsYou, .ready, .idle:
       needsInput.append(session)
-    } else if session.pinned {
-      pinned.append(session)
-    } else if status == "active" || status == "idle" {
-      running.append(session)
-    } else {
-      ended.append(session)
+    case .settled:
+      settled.append(session)
+    case .starting, .running, .stale:
+      if session.pinned {
+        pinned.append(session)
+      } else {
+        running.append(session)
+      }
+    case .failed, .stopped, .ended:
+      if session.pinned {
+        pinned.append(session)
+      } else {
+        ended.append(session)
+      }
     }
   }
 
   var groups: [WorkSessionGroup] = []
   if !needsInput.isEmpty {
-    groups.append(WorkSessionGroup(id: "status:awaiting", label: "Needs input", icon: .statusDot, tint: ADEColor.warning, sessions: needsInput))
+    groups.append(WorkSessionGroup(id: "status:awaiting", label: "Your move", icon: .statusDot, tint: ADEColor.warning, sessions: needsInput))
   }
   if !pinned.isEmpty {
     groups.append(WorkSessionGroup(id: "status:pinned", label: "Pinned", icon: .statusDot, tint: ADEColor.accent, sessions: pinned))
@@ -566,6 +583,9 @@ func workSessionGroupsByStatus(
   }
   if !ended.isEmpty {
     groups.append(WorkSessionGroup(id: "status:ended", label: "Ended", icon: .statusDot, tint: ADEColor.textMuted, sessions: ended))
+  }
+  if !settled.isEmpty {
+    groups.append(WorkSessionGroup(id: "status:settled", label: "Settled", icon: .statusDot, tint: ADEColor.textMuted, sessions: settled))
   }
   if !archived.isEmpty {
     groups.append(WorkSessionGroup(id: "status:archived", label: "Archived", icon: .statusDot, tint: ADEColor.warning, sessions: archived))

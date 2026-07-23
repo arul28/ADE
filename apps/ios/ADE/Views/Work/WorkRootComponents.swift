@@ -827,6 +827,12 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let pullRequestNumber: Int?
   let pullRequestState: String?
   let status: String
+  let canonicalPhase: CanonicalSessionPhase
+  let settledAt: String?
+  let statusNote: String?
+  let attentionRequestedAt: String?
+  let attentionMessage: String?
+  let lastTurnFailedAt: String?
   // Deterministic inputs to the attention capsule, so a badge transition
   // (needs_you / failed) re-renders even when the display status is unchanged.
   let runtimeState: String
@@ -863,6 +869,13 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.pullRequestNumber = pullRequest?.githubPrNumber
     self.pullRequestState = pullRequest.map { lanePrStateLabel($0.state) }
     self.status = status
+    let canonical = workCanonicalSessionState(session: session, summary: chatSummary)
+    self.canonicalPhase = canonical.phase
+    self.settledAt = session.settledAt
+    self.statusNote = session.statusNote
+    self.attentionRequestedAt = session.attentionRequestedAt
+    self.attentionMessage = session.attentionMessage
+    self.lastTurnFailedAt = session.lastTurnFailedAt
     self.runtimeState = session.runtimeState
     self.pendingInputItemId = session.pendingInputItemId
     self.exitCode = session.exitCode
@@ -974,6 +987,7 @@ struct WorkSessionRow: View, Equatable {
       RoundedRectangle(cornerRadius: 11, style: .continuous)
         .stroke(providerTintColor.opacity(0.18), lineWidth: 0.6)
     )
+    .opacity(isSettled ? 0.7 : 1)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel)
   }
@@ -990,9 +1004,16 @@ struct WorkSessionRow: View, Equatable {
 
       VStack(alignment: .leading, spacing: 3) {
         HStack(alignment: .center, spacing: 6) {
-          Circle()
-            .fill(rowTint)
-            .frame(width: 6, height: 6)
+          Group {
+            if isSettled {
+              Circle()
+                .stroke(Color.white.opacity(0.35), lineWidth: 1)
+            } else {
+              Circle()
+                .fill(rowTint)
+            }
+          }
+          .frame(width: 6, height: 6)
           Text(chatSummary?.title ?? session.title)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(ADEColor.textPrimary)
@@ -1020,7 +1041,7 @@ struct WorkSessionRow: View, Equatable {
             .lineLimit(1)
         }
 
-        if let preview = workSessionPreviewText(chatSummary?.summary ?? chatSummary?.lastOutputPreview ?? session.summary ?? session.lastOutputPreview) {
+        if let preview = workSessionPreviewText(rowPreviewSource) {
           Text(preview)
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted)
@@ -1107,6 +1128,7 @@ struct WorkSessionRow: View, Equatable {
       RoundedRectangle(cornerRadius: 16, style: .continuous)
         .stroke(providerTintColor.opacity(0.25), lineWidth: 0.75)
     )
+    .opacity(isSettled ? 0.7 : 1)
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "work-container-\(session.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilityLabel)
@@ -1128,7 +1150,29 @@ struct WorkSessionRow: View, Equatable {
   /// Canonical attention capsule (needs_you / failed / stale); nil for calm
   /// states so the row never shifts layout when no capsule renders.
   var capsuleBadge: SessionBadge? {
-    workSessionCapsuleBadge(session: session, summary: chatSummary)
+    canonicalState.badge
+  }
+
+  var canonicalState: CanonicalSessionState {
+    workCanonicalSessionState(session: session, summary: chatSummary)
+  }
+
+  var isSettled: Bool {
+    canonicalState.phase == .settled
+  }
+
+  var rowPreviewSource: String? {
+    if session.attentionRequestedAt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+       let message = workSessionPreviewText(session.attentionMessage) {
+      return message
+    }
+    if let note = workSessionPreviewText(session.statusNote) {
+      return isSettled ? "done: \(note)" : note
+    }
+    return chatSummary?.summary
+      ?? chatSummary?.lastOutputPreview
+      ?? session.summary
+      ?? session.lastOutputPreview
   }
 
   var isPendingSyncCreation: Bool {
@@ -1148,6 +1192,9 @@ struct WorkSessionRow: View, Equatable {
     }
     if isArchived {
       parts.append("archived")
+    }
+    if isSettled {
+      parts.append("settled")
     }
     return parts.joined(separator: ", ")
   }

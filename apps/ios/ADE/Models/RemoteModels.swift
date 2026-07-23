@@ -3250,6 +3250,11 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
   var startedAt: String
   var endedAt: String?
   var archivedAt: String? = nil
+  var settledAt: String? = nil
+  var statusNote: String? = nil
+  var attentionRequestedAt: String? = nil
+  var attentionMessage: String? = nil
+  var lastTurnFailedAt: String? = nil
   var exitCode: Int?
   var transcriptPath: String
   var headShaStart: String?
@@ -3285,6 +3290,11 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.startedAt == rhs.startedAt
       && lhs.endedAt == rhs.endedAt
       && lhs.archivedAt == rhs.archivedAt
+      && lhs.settledAt == rhs.settledAt
+      && lhs.statusNote == rhs.statusNote
+      && lhs.attentionRequestedAt == rhs.attentionRequestedAt
+      && lhs.attentionMessage == rhs.attentionMessage
+      && lhs.lastTurnFailedAt == rhs.lastTurnFailedAt
       && lhs.exitCode == rhs.exitCode
       && lhs.transcriptPath == rhs.transcriptPath
       && lhs.headShaStart == rhs.headShaStart
@@ -3305,6 +3315,83 @@ struct TerminalSessionSummary: Codable, Identifiable, Equatable {
       && lhs.orchestrationRunId == rhs.orchestrationRunId
       && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationTag == rhs.orchestrationTag
+  }
+}
+
+extension TerminalSessionSummary {
+  private enum CodingKeys: String, CodingKey {
+    case id
+    case laneId
+    case laneName
+    case ptyId
+    case tracked
+    case pinned
+    case manuallyNamed
+    case goal
+    case toolType
+    case title
+    case status
+    case startedAt
+    case endedAt
+    case archivedAt
+    case settledAt
+    case statusNote
+    case attentionRequestedAt
+    case attentionMessage
+    case lastTurnFailedAt
+    case exitCode
+    case transcriptPath
+    case headShaStart
+    case headShaEnd
+    case lastOutputPreview
+    case summary
+    case runtimeState
+    case resumeCommand
+    case resumeMetadata
+    case chatIdleSinceAt
+    case chatSessionId
+    case pendingInputItemId
+    case orchestrationRunId
+    case orchestrationRole
+    case orchestrationTag
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    laneId = try container.decode(String.self, forKey: .laneId)
+    laneName = try container.decode(String.self, forKey: .laneName)
+    ptyId = try container.decodeIfPresent(String.self, forKey: .ptyId)
+    tracked = try container.decode(Bool.self, forKey: .tracked)
+    pinned = try container.decode(Bool.self, forKey: .pinned)
+    manuallyNamed = try container.decodeIfPresent(Bool.self, forKey: .manuallyNamed)
+    goal = try container.decodeIfPresent(String.self, forKey: .goal)
+    toolType = try container.decodeIfPresent(String.self, forKey: .toolType)
+    title = try container.decode(String.self, forKey: .title)
+    status = try container.decode(String.self, forKey: .status)
+    startedAt = try container.decode(String.self, forKey: .startedAt)
+    endedAt = try container.decodeIfPresent(String.self, forKey: .endedAt)
+    archivedAt = try container.decodeIfPresent(String.self, forKey: .archivedAt)
+    settledAt = try container.decodeIfPresent(String.self, forKey: .settledAt)
+    statusNote = try container.decodeIfPresent(String.self, forKey: .statusNote)
+    attentionRequestedAt = try container.decodeIfPresent(String.self, forKey: .attentionRequestedAt)
+    attentionMessage = try container.decodeIfPresent(String.self, forKey: .attentionMessage)
+    lastTurnFailedAt = try container.decodeIfPresent(String.self, forKey: .lastTurnFailedAt)
+    exitCode = try container.decodeIfPresent(Int.self, forKey: .exitCode)
+    transcriptPath = try container.decode(String.self, forKey: .transcriptPath)
+    headShaStart = try container.decodeIfPresent(String.self, forKey: .headShaStart)
+    headShaEnd = try container.decodeIfPresent(String.self, forKey: .headShaEnd)
+    lastOutputPreview = try container.decodeIfPresent(String.self, forKey: .lastOutputPreview)
+    summary = try container.decodeIfPresent(String.self, forKey: .summary)
+    runtimeState = try container.decode(String.self, forKey: .runtimeState)
+    resumeCommand = try container.decodeIfPresent(String.self, forKey: .resumeCommand)
+    resumeMetadata = try container.decodeIfPresent(TerminalResumeMetadata.self, forKey: .resumeMetadata)
+    chatIdleSinceAt = try container.decodeIfPresent(String.self, forKey: .chatIdleSinceAt)
+    chatSessionId = try container.decodeIfPresent(String.self, forKey: .chatSessionId)
+    pendingInputItemId = try container.decodeIfPresent(String.self, forKey: .pendingInputItemId)
+    orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
+    orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
+    orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)
   }
 }
 
