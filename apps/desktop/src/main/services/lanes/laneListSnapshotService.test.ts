@@ -123,6 +123,83 @@ describe("laneListSnapshotService", () => {
     });
   });
 
+  it("degrades persisted chat running state when chat projection fails", async () => {
+    const services = {
+      ...makeHarness({
+        id: "chat-1",
+        laneId: "lane-1",
+        status: "running",
+        runtimeState: "running",
+        toolType: "codex-chat",
+        lastOutputPreview: "Earlier output",
+      }),
+      agentChatService: {
+        listSessions: vi.fn(async () => {
+          throw new Error("chat runtime unavailable");
+        }),
+      },
+    };
+
+    const [snapshot] = await buildLaneListSnapshots(
+      services as any,
+      [{ id: "lane-1", name: "Lane 1", laneType: "worktree", archivedAt: null }] as any,
+      {
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      },
+    );
+
+    expect(snapshot?.runtime).toMatchObject({
+      bucket: "awaiting-input",
+      runningCount: 0,
+      awaitingInputCount: 1,
+    });
+  });
+
+  it("keeps active automation chats in the running lane bucket", async () => {
+    const listSessions = vi.fn(() => [{
+      sessionId: "automation-chat-1",
+      laneId: "lane-1",
+      surface: "automation",
+      status: "active",
+      awaitingInput: false,
+    }]);
+    const services = {
+      ...makeHarness({
+        id: "automation-chat-1",
+        laneId: "lane-1",
+        status: "running",
+        runtimeState: "idle",
+        toolType: "codex-chat",
+        lastOutputPreview: "Earlier output",
+      }),
+      agentChatService: {
+        listSessions,
+      },
+    };
+
+    const [snapshot] = await buildLaneListSnapshots(
+      services as any,
+      [{ id: "lane-1", name: "Lane 1", laneType: "worktree", archivedAt: null }] as any,
+      {
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      },
+    );
+
+    expect(snapshot?.runtime).toMatchObject({
+      bucket: "running",
+      runningCount: 1,
+      awaitingInputCount: 0,
+    });
+    expect(listSessions).toHaveBeenCalledWith(undefined, {
+      includeIdentity: true,
+      includeAutomation: true,
+    });
+  });
+
   it("keeps idle shell sessions in the running bucket", async () => {
     const services = makeHarness({
       laneId: "lane-1",

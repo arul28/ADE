@@ -886,7 +886,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         enqueueAlert({
           sessionId,
           dedupeKey: `alert:${sessionId}:approval`,
-          render: () => ({ title: `${runSubject(run)} needs your approval`, body: laneTitleLine(run) }),
+          render: () => ({ title: `${runSubject(run)} needs you`, body: laneTitleLine(run) }),
           deepLink: `ade://session/${sessionId}`,
           threadId: sessionId,
           phase: "waiting",
@@ -903,7 +903,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         enqueueAlert({
           sessionId,
           dedupeKey: `alert:${sessionId}:question`,
-          render: () => ({ title: `${runSubject(run)} has a question`, body: laneTitleLine(run) }),
+          render: () => ({ title: `${runSubject(run)} needs you`, body: laneTitleLine(run) }),
           deepLink: `ade://session/${sessionId}`,
           threadId: sessionId,
           phase: "waiting",
@@ -1267,7 +1267,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       enqueueAlert({
         sessionId: request.sessionId,
         dedupeKey: `alert:${request.sessionId}:question`,
-        render: () => ({ title: run.title || "ADE session", body: request.message }),
+        render: () => ({ title: `${runSubject(run)} needs you`, body: request.message }),
         deepLink: `ade://session/${request.sessionId}`,
         threadId: request.sessionId,
         phase: "waiting",

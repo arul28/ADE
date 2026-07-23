@@ -126,13 +126,17 @@ describe("session lifecycle parity", () => {
 
     await requestSessionAttention(connection, "session-1", "Which account?");
     await setSessionStatusNote(connection, "session-1", "");
-    await settleSession(connection, "session-1", "PR merged");
+    await settleSession(connection, "session-1", "PR merged", { dismissPendingInput: true });
     await unsettleSession(connection, "session-1");
 
     expect(action.mock.calls).toEqual([
       ["session", "requestSessionAttention", { sessionId: "session-1", message: "Which account?" }],
       ["session", "setSessionStatusNote", { sessionId: "session-1", note: "" }],
-      ["session", "settleSelfSession", { sessionId: "session-1", outcome: "PR merged" }],
+      ["session", "settleSelfSession", {
+        sessionId: "session-1",
+        outcome: "PR merged",
+        dismissPendingInput: true,
+      }],
       ["session", "unsettleSelfSession", { sessionId: "session-1" }],
     ]);
   });

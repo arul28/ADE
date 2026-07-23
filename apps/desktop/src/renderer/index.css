@@ -1898,6 +1898,27 @@ button:active, [role="button"]:active {
   }
 }
 
+@keyframes ade-session-needs-you {
+  0% {
+    box-shadow: 0 0 0 0 rgba(252, 211, 77, 0);
+  }
+  34% {
+    box-shadow: 0 0 0 2px rgba(252, 211, 77, 0.16);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(252, 211, 77, 0);
+  }
+}
+
+@keyframes ade-session-preview-in {
+  from {
+    opacity: 0.35;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
 /* Status motion is intentionally duty-cycled. Long flat holds let Chromium
    skip compositor frames while preserving a clear active/working signal. */
 @keyframes ade-duty-pulse {

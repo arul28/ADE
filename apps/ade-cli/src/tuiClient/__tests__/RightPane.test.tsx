@@ -10,7 +10,7 @@ import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { TuiChatSessionSummary } from "../adeApi";
 
 describe("computeLaneChatCounts", () => {
-  it("counts settled chats as closed and failed turns as killed", () => {
+  it("keeps needs-you, settled, closed, and failed lifecycle counts distinct", () => {
     const base: TuiChatSessionSummary = {
       sessionId: "active",
       laneId: "lane-1",
@@ -36,12 +36,25 @@ describe("computeLaneChatCounts", () => {
         sessionId: "failed",
         lastTurnFailedAt: "2026-07-23T11:32:00.000Z",
       },
+      {
+        ...base,
+        sessionId: "needs-you",
+        awaitingInput: true,
+      },
+      {
+        ...base,
+        sessionId: "closed",
+        status: "ended",
+        endedAt: "2026-07-23T11:33:00.000Z",
+      },
     ];
 
     expect(computeLaneChatCounts(sessions, "lane-1")).toEqual({
       active: 1,
+      needsYou: 1,
+      settled: 1,
       closed: 1,
-      killed: 1,
+      failed: 1,
     });
   });
 });
@@ -824,7 +837,7 @@ describe("RightPane lane-details", () => {
     },
     files: [] as Array<{ path: string; status: "M" | "A" | "D" | "?"; staged: boolean }>,
     pr: null,
-    chats: { active: 0, closed: 0, killed: 0 },
+    chats: { active: 0, needsYou: 0, settled: 0, closed: 0, failed: 0 },
     showFiles: false,
     selectedActionIndex: 0,
   };
@@ -1010,7 +1023,7 @@ describe("RightPane lane-details", () => {
             checksPending: 3,
             checksFailed: 0,
           },
-          chats: { active: 2, closed: 4, killed: 1 },
+          chats: { active: 2, needsYou: 1, settled: 3, closed: 4, failed: 1 },
         }}
         focused
       />,
@@ -1021,8 +1034,10 @@ describe("RightPane lane-details", () => {
     expect(frame).toContain("CI running");
     expect(frame).toContain("CHATS");
     expect(frame).toContain("2 active");
+    expect(frame).toContain("1 needs you");
+    expect(frame).toContain("3 settled");
     expect(frame).toContain("4 closed");
-    expect(frame).toContain("1 killed");
+    expect(frame).toContain("1 failed");
     expect(frame).not.toContain("RUN");
   });
 

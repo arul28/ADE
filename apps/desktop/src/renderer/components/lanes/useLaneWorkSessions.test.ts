@@ -1024,7 +1024,6 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
       selectedItemId: "session-2",
       draftKind: "cli",
       laneFilter: "all",
-      statusFilter: "all",
       search: "",
       sessionListOrganization: "by-lane",
       workCollapsedLaneIds: [],

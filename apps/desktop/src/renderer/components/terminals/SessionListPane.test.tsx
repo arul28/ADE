@@ -77,8 +77,6 @@ function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {})
         awaitingInputFiltered={[]}
         endedFiltered={[]}
         settledFiltered={[]}
-        showSettled
-        setShowSettled={vi.fn()}
         allSessionsUnfiltered={[session]}
         loading={false}
         filterLaneId="all"
@@ -131,7 +129,7 @@ describe("SessionListPane", () => {
       },
     });
 
-    renderPane({
+    const view = renderPane({
       runningFiltered: [session],
       allSessionsUnfiltered: [session],
       sessionsGroupedByLane: new Map([[session.laneId, [session]]]),
@@ -215,6 +213,7 @@ describe("SessionListPane", () => {
     fireEvent.click(within(view.container).getByRole("button", { name: "Time" }));
 
     expect(setSessionListOrganization).toHaveBeenCalledWith("by-time");
+    expect(screen.queryByText("Tiers")).toBeNull();
   });
 
   it("shows an active marker only when the lane filter restricts lanes", () => {
@@ -231,8 +230,6 @@ describe("SessionListPane", () => {
           awaitingInputFiltered={[]}
           endedFiltered={[]}
           settledFiltered={[]}
-          showSettled
-          setShowSettled={vi.fn()}
           allSessionsUnfiltered={[session]}
           loading={false}
           filterLaneId="lane-known"
@@ -375,6 +372,59 @@ describe("SessionListPane", () => {
       "session-second",
       expect.objectContaining({ shiftKey: true }),
       ["session-first", "session-second"],
+    );
+  });
+
+  it("excludes collapsed settled lane tails from range selection until expanded", () => {
+    const onSelectSession = vi.fn();
+    const active = makeSession({
+      id: "session-active-tail",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Active lane work",
+    });
+    const settled = makeSession({
+      id: "session-settled-tail",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Finished lane work",
+      manuallyNamed: true,
+      runtimeState: "idle",
+      settledAt: "2026-07-23T12:00:00.000Z",
+    });
+    const paneProps = {
+      runningFiltered: [active],
+      settledFiltered: [settled],
+      allSessionsUnfiltered: [active, settled],
+      sessionsGroupedByLane: new Map([[active.laneId, [active, settled]]]),
+      onSelectSession,
+    };
+
+    const collapsed = renderPane({
+      ...paneProps,
+      workCollapsedSectionIds: [],
+    });
+
+    fireEvent.click(screen.getByText("Active lane work"), { shiftKey: true });
+    expect(onSelectSession).toHaveBeenLastCalledWith(
+      active.id,
+      expect.objectContaining({ shiftKey: true }),
+      [active.id],
+    );
+
+    collapsed.unmount();
+    onSelectSession.mockClear();
+    renderPane({
+      ...paneProps,
+      workCollapsedSectionIds: ["settled-open:lane-known"],
+    });
+
+    expect(screen.getByRole("button", { name: /1 settled/i }).getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(screen.getByText("Active lane work"), { shiftKey: true });
+    expect(onSelectSession).toHaveBeenLastCalledWith(
+      active.id,
+      expect.objectContaining({ shiftKey: true }),
+      [active.id, settled.id],
     );
   });
 
@@ -531,6 +581,34 @@ describe("SessionListPane", () => {
     expect(screen.getByText("Prepared release checklist")).toBeTruthy();
   });
 
+  it("keeps settled lane tails reachable but collapsed by default", () => {
+    const settled = makeSession({
+      id: "session-settled-tail",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Finished lane work",
+      manuallyNamed: true,
+      runtimeState: "idle",
+      settledAt: "2026-07-23T12:00:00.000Z",
+    });
+
+    const toggleWorkSectionCollapsed = vi.fn();
+    renderPane({
+      runningFiltered: [],
+      settledFiltered: [settled],
+      allSessionsUnfiltered: [settled],
+      sessionsGroupedByLane: new Map([[settled.laneId, [settled]]]),
+      toggleWorkSectionCollapsed,
+    });
+
+    const tailButton = screen.getByRole("button", { name: /1 settled/i });
+    expect(tailButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Finished lane work")).toBeNull();
+
+    fireEvent.click(tailButton);
+    expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("settled-open:lane-known");
+  });
+
   it("bulk settles selected sessions through the preload surface", async () => {
     const settleMany = vi.fn().mockResolvedValue(["session-ended"]);
     Object.defineProperty(window, "ade", {
@@ -565,5 +643,94 @@ describe("SessionListPane", () => {
     await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ended"]));
     expect(screen.getByText("Settled 1")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+  });
+
+  it("excludes loud Needs-you sessions from selected bulk settle", async () => {
+    const settleMany = vi.fn().mockResolvedValue(["session-ended"]);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        sessions: {
+          settleMany,
+          unsettleMany: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+    });
+    const loud = makeSession({
+      id: "session-loud",
+      runtimeState: "waiting-input",
+      pendingInputItemId: "pending-1",
+    });
+    const ended = makeSession({
+      id: "session-ended",
+      status: "disposed",
+      runtimeState: "exited",
+    });
+
+    renderPane({
+      runningFiltered: [],
+      awaitingInputFiltered: [loud],
+      endedFiltered: [ended],
+      allSessionsUnfiltered: [loud, ended],
+      selectedSessionIds: new Set([loud.id, ended.id]),
+      sessionsGroupedByLane: new Map([["lane-mobile", [loud, ended]]]),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Settle 1" }));
+    await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ended"]));
+  });
+
+  it("Settle all in Your move settles only quiet Ready sessions", async () => {
+    const settleMany = vi.fn().mockResolvedValue(["session-ready"]);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        sessions: {
+          settleMany,
+          unsettleMany: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+    });
+    const loud = makeSession({
+      id: "session-loud",
+      runtimeState: "waiting-input",
+      pendingInputItemId: "pending-1",
+    });
+    const quiet = makeSession({
+      id: "session-ready",
+      runtimeState: "idle",
+      pendingInputItemId: null,
+    });
+
+    renderPane({
+      runningFiltered: [],
+      awaitingInputFiltered: [loud, quiet],
+      allSessionsUnfiltered: [loud, quiet],
+      sessionListOrganization: "all-lanes-by-status",
+      sessionsGroupedByLane: new Map([["lane-mobile", [loud, quiet]]]),
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Settle all" }));
+    await waitFor(() => expect(settleMany).toHaveBeenCalledWith(["session-ready"]));
+  });
+
+  it("hides Your move bulk settle when every session needs input", () => {
+    const loud = makeSession({
+      id: "session-loud",
+      runtimeState: "waiting-input",
+      pendingInputItemId: "pending-1",
+    });
+
+    renderPane({
+      runningFiltered: [],
+      awaitingInputFiltered: [loud],
+      allSessionsUnfiltered: [loud],
+      sessionListOrganization: "all-lanes-by-status",
+      sessionsGroupedByLane: new Map([["lane-mobile", [loud]]]),
+    });
+
+    expect(screen.queryByRole("button", { name: "Settle all" })).toBeNull();
   });
 });

@@ -94,6 +94,7 @@ const workMocks = vi.hoisted(() => {
     runningFiltered: [],
     awaitingInputFiltered: [],
     endedFiltered: [],
+    settledFiltered: [],
     runningSessions: [],
     filtered: [],
     sessionsGroupedByLane: [],
@@ -106,7 +107,6 @@ const workMocks = vi.hoisted(() => {
     draftKind: "chat",
     draftLaneId: null,
     filterLaneId: "all",
-    filterStatus: "all",
     q: "",
     sessionListOrganization: "by-lane",
     workCollapsedLaneIds: [],
@@ -125,7 +125,6 @@ const workMocks = vi.hoisted(() => {
     showDraftKind: vi.fn(),
     toggleWorkTabGroupCollapsed: vi.fn(),
     setFilterLaneId: vi.fn(),
-    setFilterStatus: vi.fn(),
     setQ: vi.fn(),
     setSessionListOrganization: vi.fn(),
     toggleWorkLaneCollapsed: vi.fn(),
@@ -280,13 +279,19 @@ vi.mock("./SessionContextMenu", () => ({
   SessionContextMenu: (props: {
     menu: { session: TerminalSessionSummary } | null;
     onStopAndDelete: (session: TerminalSessionSummary) => void;
+    onSettle: (session: TerminalSessionSummary) => void;
   }) => {
     if (!props.menu) return null;
     const session = props.menu.session;
     return (
-      <button type="button" onClick={() => props.onStopAndDelete(session)}>
-        context stop and delete {session.id}
-      </button>
+      <>
+        <button type="button" onClick={() => props.onStopAndDelete(session)}>
+          context stop and delete {session.id}
+        </button>
+        <button type="button" onClick={() => props.onSettle(session)}>
+          context settle {session.id}
+        </button>
+      </>
     );
   },
 }));
@@ -687,6 +692,49 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.currentWork.closeTab).toHaveBeenCalledWith("cli-single");
     });
     expect(agentChatDelete).not.toHaveBeenCalled();
+  });
+
+  it("delegates pending-input dismissal and settlement to one backend operation", async () => {
+    const pendingChat = workMocks.makeTerminalSession(
+      "chat-pending",
+      "lane-primary",
+      "codex-chat",
+      {
+        ptyId: null,
+        runtimeState: "waiting-input",
+        pendingInputItemId: "pending-1",
+      },
+    );
+    const settle = vi.fn().mockResolvedValue(undefined);
+
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { settle },
+      },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [pendingChat],
+      visibleSessions: [pendingChat],
+      runningFiltered: [],
+      awaitingInputFiltered: [pendingChat],
+      runningSessions: [pendingChat],
+      filtered: [pendingChat],
+      sessionsGroupedByLane: new Map([["lane-primary", [pendingChat]]]),
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "context menu chat-pending" }));
+    fireEvent.click(await screen.findByRole("button", { name: "context settle chat-pending" }));
+
+    await waitFor(() => {
+      expect(settle).toHaveBeenCalledWith("chat-pending", {
+        dismissPendingInput: true,
+      });
+    });
   });
 
   it("does not delete when the stop-and-delete confirmation is dismissed", async () => {

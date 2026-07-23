@@ -237,9 +237,7 @@ export function sessionStatusDot(session: SessionCanonicalUiInput): SessionStatu
       return {
         cls: "rounded-full bg-amber-300",
         spinning: false,
-        label: session.runtimeState === "waiting-input" || session.pendingInputItemId || session.attentionRequestedAt
-          ? "Needs you"
-          : "Awaiting input",
+        label: "Needs you",
       };
     case "ready":
       return { cls: "rounded-full bg-amber-300", spinning: false, label: "Ready" };

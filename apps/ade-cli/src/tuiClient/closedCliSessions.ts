@@ -78,6 +78,7 @@ export function terminalSessionToChatSummary(
     lastActivityAt: lifecycle.lastActivityAt ?? session.endedAt ?? session.startedAt,
     lastOutputPreview: session.lastOutputPreview,
     summary: session.summary,
+    awaitingInput: session.runtimeState === "waiting-input",
     nextWakeAt: scheduledWorkState?.nextWakeAt ?? null,
     scheduledWorkPaused: scheduledWorkState?.paused === true,
     scheduledWork: scheduledWorkState?.items ?? [],

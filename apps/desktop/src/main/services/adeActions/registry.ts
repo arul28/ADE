@@ -86,6 +86,7 @@ import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../sha
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 
@@ -1697,13 +1698,23 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       }
       return { ok: true, sessionId };
     },
-    settleSelfSession: (args?: unknown) => {
+    settleSelfSession: async (args?: unknown) => {
       const record = readObjectActionArg(args, "session.settleSelfSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const outcome = typeof record.outcome === "string" && record.outcome.trim()
         ? record.outcome
         : undefined;
-      if (!sessionService.settleSession(sessionId, outcome ? { outcome } : {})) {
+      const dismissPendingInput = record.dismissPendingInput === true;
+      if (!await settleTerminalSession({
+        sessionId,
+        opts: {
+          ...(outcome ? { outcome } : {}),
+          ...(dismissPendingInput ? { dismissPendingInput: true } : {}),
+        },
+        sessionService,
+        agentChatService: runtime.agentChatService,
+        ptyService: runtime.ptyService,
+      })) {
         throw new Error(`Session '${sessionId}' was not found.`);
       }
       return { ok: true, sessionId };

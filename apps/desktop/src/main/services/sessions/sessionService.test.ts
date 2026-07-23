@@ -1379,7 +1379,7 @@ describe("sessionService resume metadata", () => {
     }));
   });
 
-  it("clears settled state at both PTY output activity write sites", async () => {
+  it("lets PTY callers preserve agent settlement while ordinary output clears it", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-output-");
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     activeDisposers.push(async () => db.close());
@@ -1409,6 +1409,17 @@ describe("sessionService resume metadata", () => {
     service.settleSession("session-output", { settledAt: "2026-03-17T02:00:00.000Z" });
     service.touchSessionActivity("session-output", "2026-03-17T02:01:00.000Z");
     expect(service.get("session-output")?.settledAt).toBeNull();
+
+    // A tracked agent CLI may emit its settle command and final answer through
+    // the same PTY after declaring completion. That output refreshes activity
+    // without reopening the thread; the next user turn clears it explicitly.
+    service.settleSession("session-output", { settledAt: "2026-03-17T02:30:00.000Z" });
+    service.touchSessionActivity(
+      "session-output",
+      "2026-03-17T02:31:00.000Z",
+      { clearSettled: false },
+    );
+    expect(service.get("session-output")?.settledAt).toBe("2026-03-17T02:30:00.000Z");
 
     // A turn failure un-settles: the declared outcome is in doubt, and keeping
     // the markers mutually exclusive lets every surface agree on precedence.

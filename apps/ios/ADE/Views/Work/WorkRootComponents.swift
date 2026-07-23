@@ -811,6 +811,52 @@ struct WorkLanePrIndicator: View {
   }
 }
 
+/// The compact second line shared by every native Work session row.
+///
+/// Keep this precedence identical to the desktop card:
+/// explicit ask → agent note → sanitized last output → summary → goal.
+/// Output intentionally wins over the older AI summary so a failed/missing
+/// status-note write still leaves the user with the freshest truthful line.
+func workSessionRowPreviewSource(
+  session: TerminalSessionSummary,
+  chatSummary: AgentChatSessionSummary?,
+  isSettled: Bool
+) -> String? {
+  let primaryText = chatSummary?.title ?? session.title
+
+  func inlineText(_ raw: String?, terminalOutput: Bool = false) -> String? {
+    guard let raw else { return nil }
+    let rendered = terminalOutput ? sanitizeTerminalOutputForDisplay(raw) : raw
+    guard let normalized = workSessionPreviewText(rendered) else { return nil }
+    let inline = workSummarizeInlineText(normalized, maxChars: 120)
+    return inline.isEmpty ? nil : inline
+  }
+
+  if session.attentionRequestedAt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+     let message = inlineText(session.attentionMessage) {
+    return message
+  }
+  if let note = inlineText(session.statusNote) {
+    return isSettled ? "Done: \(note)" : note
+  }
+  for rawOutput in [chatSummary?.lastOutputPreview, session.lastOutputPreview] {
+    if let output = inlineText(rawOutput, terminalOutput: true), output != primaryText {
+      return output
+    }
+  }
+  for rawSummary in [chatSummary?.summary, session.summary] {
+    if let summary = inlineText(rawSummary), summary != primaryText {
+      return summary
+    }
+  }
+  for rawGoal in [chatSummary?.goal, session.goal] {
+    if let goal = inlineText(rawGoal), goal != primaryText {
+      return goal
+    }
+  }
+  return nil
+}
+
 private struct WorkSessionRowRenderSignature: Equatable {
   let sessionId: String
   let title: String
@@ -864,12 +910,16 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.laneAhead = lane?.status.ahead ?? 0
     self.laneBehind = lane?.status.behind ?? 0
     self.activityTimestamp = workSessionActivityTimestamp(session: session, summary: chatSummary)
-    self.previewSource = chatSummary?.summary ?? chatSummary?.lastOutputPreview ?? session.summary ?? session.lastOutputPreview
+    let canonical = workCanonicalSessionState(session: session, summary: chatSummary)
+    self.previewSource = workSessionRowPreviewSource(
+      session: session,
+      chatSummary: chatSummary,
+      isSettled: canonical.phase == .settled
+    )
     self.pinned = session.pinned
     self.pullRequestNumber = pullRequest?.githubPrNumber
     self.pullRequestState = pullRequest.map { lanePrStateLabel($0.state) }
     self.status = status
-    let canonical = workCanonicalSessionState(session: session, summary: chatSummary)
     self.canonicalPhase = canonical.phase
     self.settledAt = session.settledAt
     self.statusNote = session.statusNote
@@ -1162,17 +1212,11 @@ struct WorkSessionRow: View, Equatable {
   }
 
   var rowPreviewSource: String? {
-    if session.attentionRequestedAt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-       let message = workSessionPreviewText(session.attentionMessage) {
-      return message
-    }
-    if let note = workSessionPreviewText(session.statusNote) {
-      return isSettled ? "Done: \(note)" : note
-    }
-    return chatSummary?.summary
-      ?? chatSummary?.lastOutputPreview
-      ?? session.summary
-      ?? session.lastOutputPreview
+    workSessionRowPreviewSource(
+      session: session,
+      chatSummary: chatSummary,
+      isSettled: isSettled
+    )
   }
 
   var isPendingSyncCreation: Bool {

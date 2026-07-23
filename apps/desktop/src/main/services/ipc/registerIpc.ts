@@ -26,6 +26,12 @@ import {
   invalidateProjectPathInspectionCache,
 } from "../projects/projectPathInspector";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { settleTerminalSession } from "../sessions/settleTerminalSession";
+import {
+  fallbackUnprojectedChatSession,
+  isChatToolType,
+  projectChatOntoSession,
+} from "../sessions/chatSessionProjection";
 import {
   removeProjectIconOverride,
   resolveProjectIcon,
@@ -971,51 +977,6 @@ function clampLayout(layout: DockLayout): DockLayout {
   return out;
 }
 
-/**
- * Project chat-level runtime state and orchestration identity onto a terminal
- * session summary. Centralises the mapping so that every IPC endpoint that
- * enriches sessions with chat data produces identical results.
- */
-function projectChatOntoSession(
-  session: TerminalSessionSummary,
-  chat: AgentChatSessionSummary,
-): TerminalSessionSummary {
-  const base: TerminalSessionSummary = {
-    ...session,
-    nextWakeAt: chat.nextWakeAt,
-    ...(chat.claudeTag !== undefined ? { claudeTag: chat.claudeTag } : {}),
-    ...(chat.orchestrationRunId
-      ? {
-          orchestrationRunId: chat.orchestrationRunId,
-          orchestrationRole: chat.orchestrationRole,
-          orchestrationTag: chat.orchestrationTag,
-        }
-      : {}),
-    // Spawn lineage is independent of an orchestration run — a plain `ade new
-    // chat` spawn sets a parent + spawnKind with no run/role. Project both
-    // ungated so the sidebar can render the type pill and the live-children badge.
-    ...(chat.orchestrationParentSessionId
-      ? { orchestrationParentSessionId: chat.orchestrationParentSessionId }
-      : {}),
-    ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
-  };
-  if (chat.awaitingInput) {
-    return {
-      ...base,
-      runtimeState: "waiting-input" as const,
-      chatIdleSinceAt: null,
-      pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
-    };
-  }
-  if (chat.status === "active") {
-    return { ...base, runtimeState: "running" as const, chatIdleSinceAt: null };
-  }
-  if (chat.status === "idle" || chat.status === "ended") {
-    return { ...base, runtimeState: "idle" as const, chatIdleSinceAt: chat.idleSinceAt ?? null };
-  }
-  return base;
-}
-
 function escapeCsvCell(value: string | null | undefined): string {
   const input = value ?? "";
   return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, "\"\"")}"` : input;
@@ -1404,12 +1365,6 @@ function formatLinearConnectionMessage(
     return "Linear rejected the API key. Paste a Linear personal API key from linear.app/settings/api; it should start with lin_api_.";
   }
   return trimmed || null;
-}
-
-function isChatToolType(toolType: string | null | undefined): boolean {
-  if (!toolType) return false;
-  const t = toolType.trim().toLowerCase();
-  return t === "cursor" || t.endsWith("-chat");
 }
 
 function sessionNeedsResumeTargetHydration(session: {
@@ -6409,10 +6364,19 @@ export function registerIpc({
         let sessions = ptyService.enrichSessions(listedSessions);
         const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
         let allChats: AgentChatSessionSummary[] = [];
-        try {
-          allChats = await ctx.agentChatService?.listSessions(laneId || undefined, { includeIdentity: true }) ?? [];
-        } catch {
-          allChats = [];
+        if (ctx.agentChatService) {
+          try {
+            allChats = await ctx.agentChatService.listSessions(laneId || undefined, {
+              includeIdentity: true,
+              includeAutomation: true,
+            });
+          } catch (error) {
+            allChats = [];
+            ctx.logger.warn("sessions.chat_projection_failed", {
+              laneId: laneId || null,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
         }
         const identitySessionIds = new Set(
           allChats
@@ -6423,13 +6387,13 @@ export function registerIpc({
           sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
         }
         const chats = allChats.filter((chat) => !chat.identityKey);
-        if (chats.length === 0) return sessions;
         const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
         return sessions.map((session) => {
           if (!isChatToolType(session.toolType)) return session;
           const chat = chatSummaryBySessionId.get(session.id);
-          if (!chat) return session;
-          return projectChatOntoSession(session, chat);
+          return chat
+            ? projectChatOntoSession(session, chat)
+            : fallbackUnprojectedChatSession(session);
         });
       },
       {
@@ -6464,10 +6428,17 @@ export function registerIpc({
     if (enriched.status === "running" && isChatToolType(enriched.toolType)) {
       try {
         const chat = await ctx.agentChatService?.getSessionSummary(enriched.id);
-        if (chat) enriched = projectChatOntoSession(enriched, chat);
-      } catch {
+        enriched = chat
+          ? projectChatOntoSession(enriched, chat)
+          : fallbackUnprojectedChatSession(enriched);
+      } catch (error) {
         // Detail reads should still return the persisted session if chat state
         // hydration fails during runtime restart/recovery.
+        ctx.logger.warn("sessions.chat_projection_failed", {
+          sessionId: enriched.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        enriched = fallbackUnprojectedChatSession(enriched);
       }
     }
     return enriched;
@@ -6495,13 +6466,26 @@ export function registerIpc({
     IPC.sessionsSettle,
     async (
       _event,
-      arg: { sessionId?: unknown; opts?: { outcome?: unknown } },
+      arg: {
+        sessionId?: unknown;
+        opts?: { outcome?: unknown; dismissPendingInput?: unknown };
+      },
     ): Promise<void> => {
       const ctx = ensureSessionContext();
       const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
       if (!sessionId) throw new Error("Session id is required.");
       const outcome = typeof arg?.opts?.outcome === "string" ? arg.opts.outcome : undefined;
-      ctx.sessionService.settleSession(sessionId, { outcome });
+      const settled = await settleTerminalSession({
+        sessionId,
+        opts: {
+          ...(outcome ? { outcome } : {}),
+          ...(arg?.opts?.dismissPendingInput === true ? { dismissPendingInput: true } : {}),
+        },
+        sessionService: ctx.sessionService,
+        agentChatService: ctx.agentChatService,
+        ptyService: ctx.ptyService,
+      });
+      if (!settled) throw new Error(`Session '${sessionId}' was not found.`);
     },
   );
 

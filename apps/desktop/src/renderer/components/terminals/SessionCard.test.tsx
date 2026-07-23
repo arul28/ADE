@@ -19,6 +19,12 @@ vi.mock("./useSessionDelta", () => ({
   useSessionDelta: () => null,
 }));
 
+vi.mock("./ToolLogos", () => ({
+  ToolLogo: ({ toolType }: { toolType?: string | null }) => (
+    <span data-testid="tool-logo">{toolType ?? "shell"}</span>
+  ),
+}));
+
 afterEach(() => {
   cleanup();
   setLaneNaming("lane-1", false);
@@ -80,7 +86,7 @@ describe("SessionCard orchestration identity", () => {
     expect(screen.getByRole("button", { name: /Worker · ui: Build the plan panel/ })).toBeTruthy();
   });
 
-  it("shows the awaiting badge for chat pending input", () => {
+  it("shows the unified Needs you badge for chat pending input", () => {
     render(
       <SessionCard
         session={makeSession({
@@ -94,10 +100,10 @@ describe("SessionCard orchestration identity", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Awaiting your input")).toBeTruthy();
+    expect(screen.getByLabelText("Needs you")).toBeTruthy();
   });
 
-  it("does not label plain CLI prompts as chat questions", () => {
+  it("uses the same Needs you copy for CLI input prompts", () => {
     render(
       <SessionCard
         session={makeSession({
@@ -113,7 +119,7 @@ describe("SessionCard orchestration identity", () => {
       />,
     );
 
-    expect(screen.queryByLabelText("Awaiting your input")).toBeNull();
+    expect(screen.getByLabelText("Needs you")).toBeTruthy();
   });
 
   it("renders a Claude session tag beside the title", () => {
@@ -341,6 +347,116 @@ describe("SessionCard preview links", () => {
     expect(screen.getByText("merged #841")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "#841" })).toBeNull();
   });
+
+  it("uses ask, note, output, summary, then goal precedence", () => {
+    const base = makeSession({
+      title: "Named chat",
+      manuallyNamed: true,
+      goal: "Goal fallback",
+      summary: "Summary fallback",
+      lastOutputPreview: "\u001b[32mOutput fallback\u001b[0m",
+      statusNote: "Agent note",
+      attentionRequestedAt: "2026-07-23T12:00:00.000Z",
+      attentionMessage: "Which environment?",
+    });
+    const view = render(
+      <SessionCard
+        session={base}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const preview = () => view.container.querySelector("[data-session-preview-source]");
+    expect(preview()?.getAttribute("data-session-preview-source")).toBe("ask");
+    expect(preview()?.textContent).toBe("Which environment?");
+
+    view.rerender(
+      <SessionCard
+        session={{ ...base, attentionRequestedAt: null, attentionMessage: null }}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(preview()?.getAttribute("data-session-preview-source")).toBe("note");
+    expect(preview()?.textContent).toBe("Agent note");
+
+    view.rerender(
+      <SessionCard
+        session={{
+          ...base,
+          attentionRequestedAt: null,
+          attentionMessage: null,
+          statusNote: null,
+        }}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(preview()?.getAttribute("data-session-preview-source")).toBe("output");
+    expect(preview()?.textContent).toBe("Output fallback");
+
+    view.rerender(
+      <SessionCard
+        session={{
+          ...base,
+          attentionRequestedAt: null,
+          attentionMessage: null,
+          statusNote: null,
+          lastOutputPreview: null,
+        }}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(preview()?.getAttribute("data-session-preview-source")).toBe("summary");
+
+    view.rerender(
+      <SessionCard
+        session={{
+          ...base,
+          attentionRequestedAt: null,
+          attentionMessage: null,
+          statusNote: null,
+          lastOutputPreview: null,
+          summary: null,
+        }}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(preview()?.getAttribute("data-session-preview-source")).toBe("goal");
+  });
+
+  it("keeps output fallback plain even when it contains issue-shaped tokens", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          title: "Named chat",
+          manuallyNamed: true,
+          goal: null,
+          lastOutputPreview: "checking #841 and ADE-122",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("checking #841 and ADE-122")).toBeTruthy();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
 });
 
 describe("SessionCard attention capsule", () => {
@@ -409,7 +525,7 @@ describe("SessionCard attention capsule", () => {
     expect(screen.queryByText(/^(Needs you|Failed|Stale)$/)).toBeNull();
   });
 
-  it("does not double up the amber pill for a chat waiting on input", () => {
+  it("renders exactly one Needs you capsule for a chat waiting on input", () => {
     render(
       <SessionCard
         session={makeSession({
@@ -423,10 +539,100 @@ describe("SessionCard attention capsule", () => {
         onContextMenu={vi.fn()}
       />,
     );
-    // The chat-specific "Awaiting you" chip covers this; the canonical capsule
-    // is suppressed so the card never shows two amber pills.
-    expect(screen.getByLabelText("Awaiting your input")).toBeTruthy();
+    expect(screen.getAllByLabelText("Needs you")).toHaveLength(1);
+    expect(screen.getAllByText("Needs you")).toHaveLength(1);
+  });
+
+  it("keeps quiet Ready to the amber dot without a badge", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          runtimeState: "idle",
+          pendingInputItemId: null,
+          attentionRequestedAt: null,
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
     expect(screen.queryByText("Needs you")).toBeNull();
+    expect(screen.getByTitle("Ready")).toBeTruthy();
+  });
+
+  it("pulses once when an existing card transitions into Needs you", () => {
+    vi.useFakeTimers();
+    const baseProps = {
+      lane,
+      isSelected: false,
+      onSelect: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+    const view = render(
+      <SessionCard
+        {...baseProps}
+        session={makeSession({ runtimeState: "running" })}
+      />,
+    );
+    expect(view.container.querySelector("[data-needs-you-pulse]")).toBeNull();
+
+    view.rerender(
+      <SessionCard
+        {...baseProps}
+        session={makeSession({
+          runtimeState: "waiting-input",
+          pendingInputItemId: "pending-1",
+        })}
+      />,
+    );
+    expect(view.container.querySelector('[data-needs-you-pulse="true"]')).toBeTruthy();
+
+    act(() => vi.advanceTimersByTime(900));
+    expect(view.container.querySelector("[data-needs-you-pulse]")).toBeNull();
+  });
+
+  it("clears the Needs you pulse immediately when the session resumes", () => {
+    vi.useFakeTimers();
+    const baseProps = {
+      lane,
+      isSelected: false,
+      onSelect: vi.fn(),
+      onContextMenu: vi.fn(),
+    };
+    const view = render(
+      <SessionCard
+        {...baseProps}
+        session={makeSession({ runtimeState: "running" })}
+      />,
+    );
+
+    view.rerender(
+      <SessionCard
+        {...baseProps}
+        session={makeSession({
+          runtimeState: "waiting-input",
+          pendingInputItemId: "pending-1",
+        })}
+      />,
+    );
+    expect(view.container.querySelector('[data-needs-you-pulse="true"]')).toBeTruthy();
+
+    view.rerender(
+      <SessionCard
+        {...baseProps}
+        session={makeSession({
+          runtimeState: "running",
+          pendingInputItemId: null,
+        })}
+      />,
+    );
+    expect(view.container.querySelector("[data-needs-you-pulse]")).toBeNull();
+
+    act(() => vi.advanceTimersByTime(900));
+    expect(view.container.querySelector("[data-needs-you-pulse]")).toBeNull();
   });
 });
 

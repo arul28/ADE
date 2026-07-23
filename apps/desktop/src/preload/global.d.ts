@@ -1410,7 +1410,7 @@ declare global {
         ) => Promise<TerminalSessionSummary | null>;
         settle: (
           sessionId: string,
-          opts?: { outcome?: string },
+          opts?: { outcome?: string; dismissPendingInput?: boolean },
         ) => Promise<void>;
         unsettle: (sessionId: string) => Promise<void>;
         settleMany: (sessionIds: string[]) => Promise<string[]>;

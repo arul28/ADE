@@ -15,7 +15,6 @@ import {
   type WorkProjectViewState,
   type WorkSidebarTab,
   type WorkSessionListOrganization,
-  type WorkStatusFilter,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { canonicalInputFromSummary, sessionStatusBucket, sessionNeedsYou } from "../../lib/terminalAttention";
@@ -37,6 +36,8 @@ import {
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 
+type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
+
 const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
   activeItemId: null,
@@ -47,8 +48,6 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   orchestratorEnabled: false,
   draftLaneId: null,
   laneFilter: "all",
-  statusFilter: "all",
-  showSettled: true,
   search: "",
   sessionListOrganization: "by-lane",
   workCollapsedLaneIds: [],
@@ -327,7 +326,7 @@ export function reorderLaneSessionIdsForDisplay(args: {
   return arraysEqual(args.baseOrder, next) ? null : next;
 }
 
-function mapUrlStatusFilter(statusParamRaw: string): WorkStatusFilter | null {
+function mapUrlStatusFilter(statusParamRaw: string): WorkStatusNavigation | null {
   const statusParam = statusParamRaw.trim().toLowerCase();
   if (!statusParam) return null;
   if (statusParam === "running") return "running";
@@ -336,6 +335,14 @@ function mapUrlStatusFilter(statusParamRaw: string): WorkStatusFilter | null {
   if (statusParam === "settled") return "settled";
   if (statusParam === "all") return "all";
   if (statusParam === "completed" || statusParam === "failed" || statusParam === "disposed" || statusParam === "detached") return "ended";
+  return null;
+}
+
+function statusSectionId(status: WorkStatusNavigation): string | null {
+  if (status === "running") return "status:running";
+  if (status === "awaiting-input") return "status:awaiting";
+  if (status === "ended") return "status:ended";
+  if (status === "settled") return "status:settled";
   return null;
 }
 
@@ -435,8 +442,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const orchestratorEnabled = projectViewState.orchestratorEnabled;
   const draftLaneId = projectViewState.draftLaneId;
   const filterLaneId = projectViewState.laneFilter;
-  const filterStatus = projectViewState.statusFilter;
-  const showSettled = projectViewState.showSettled ?? true;
   const q = projectViewState.search;
   const sessionListOrganization: WorkSessionListOrganization =
     projectViewState.sessionListOrganization ?? "by-lane";
@@ -555,20 +560,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const setFilterLaneId = useCallback(
     (laneId: string) => {
       setProjectViewState({ laneFilter: laneId || "all" });
-    },
-    [setProjectViewState],
-  );
-
-  const setFilterStatus = useCallback(
-    (status: WorkStatusFilter) => {
-      setProjectViewState({ statusFilter: status });
-    },
-    [setProjectViewState],
-  );
-
-  const setShowSettled = useCallback(
-    (show: boolean) => {
-      setProjectViewState({ showSettled: show });
     },
     [setProjectViewState],
   );
@@ -1071,7 +1062,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     const laneParam = (searchParams.get("laneId") ?? searchParams.get("lane") ?? "").trim();
     const statusParam = (searchParams.get("status") ?? "").trim();
     if (pendingProjectSwitchRef.current != null) return;
-    // When a sessionId is requested, only skip the lane/status fallback if
+    // When a sessionId is requested, only skip the lane/status navigation hint if
     // that session actually exists. If it's stale/missing (after the first
     // load completes) we fall through so the URL's laneId/status hints still
     // narrow the view instead of dumping the user into an unrelated context.
@@ -1085,9 +1076,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }
       if (!hasLoadedOnceRef.current) return;
     }
-    // Apply URL-derived filters at most once per URL signature so later
-    // session-list refreshes (which add sessions to our deps) don't stomp
-    // on a user's manually-changed lane/status filters.
+    // Apply URL-derived navigation at most once per URL signature so later
+    // session-list refreshes don't stomp on the user's lane/grouping choices.
     const urlKey = `${sessionParam}|${laneParam}|${statusParam}`;
     if (appliedUrlFilterKeyRef.current === urlKey) {
       stripUrlFilterParams();
@@ -1104,7 +1094,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // When the URL specifies a laneId but lanes haven't populated yet (e.g. on
     // project open/switch the store resets lanes to [] then repopulates async),
     // we can't tell whether the lane is missing-for-good or just-not-yet-loaded.
-    // In that case, apply any status hint but don't cache the URL signature —
+    // In that case, apply any status navigation hint but don't cache the URL signature —
     // come back once lanes populate so the lane portion can apply too. We only
     // mark the key applied when the lane portion was definitively applied, or
     // when lanes are loaded (non-empty) so "not found" is an authoritative
@@ -1118,11 +1108,24 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     } else {
       partiallyAppliedUrlFilterKeyRef.current = urlKey;
     }
-    setProjectViewState((prev) => ({
-      ...prev,
-      laneFilter: laneExists ? laneParam : prev.laneFilter,
-      statusFilter: status && !wasPartiallyApplied ? status : prev.statusFilter,
-    }));
+    setProjectViewState((prev) => {
+      const shouldApplyStatus = Boolean(status && !wasPartiallyApplied);
+      const targetSectionId = status ? statusSectionId(status) : null;
+      return {
+        ...prev,
+        laneFilter: laneExists ? laneParam : prev.laneFilter,
+        // Status hints are navigation, not an invisible filter: show the
+        // complete Status grouping and expand the requested section.
+        sessionListOrganization: shouldApplyStatus
+          ? "all-lanes-by-status"
+          : prev.sessionListOrganization,
+        workCollapsedSectionIds: shouldApplyStatus && targetSectionId
+          ? (prev.workCollapsedSectionIds ?? []).filter(
+            (sectionId) => sectionId !== targetSectionId,
+          )
+          : prev.workCollapsedSectionIds,
+      };
+    });
     if (laneDeterminable) stripUrlFilterParams();
   }, [isWorkRoute, lanes, searchParams, sessions, setProjectViewState, stripUrlFilterParams]);
 
@@ -1687,8 +1690,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     awaitingInputFiltered,
     endedFiltered,
     settledFiltered,
-    showSettled,
-    setShowSettled,
     runningSessions,
     visibleSessions,
     gridLayoutId,
@@ -1699,8 +1700,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
     filterLaneId,
     setFilterLaneId,
-    filterStatus,
-    setFilterStatus,
     q,
     setQ,
 

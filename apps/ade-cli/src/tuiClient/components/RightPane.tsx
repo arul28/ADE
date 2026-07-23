@@ -194,19 +194,25 @@ export function laneDetailsInteractionLayout(content: LaneDetailsContent): LaneD
 export function computeLaneChatCounts(
   sessions: AgentChatSessionSummary[],
   laneId: string,
-): { active: number; closed: number; killed: number } {
+): { active: number; needsYou: number; settled: number; closed: number; failed: number } {
   const laneSessions = sessions.filter((session) => session.laneId === laneId);
   let active = 0;
+  let needsYou = 0;
+  let settled = 0;
   let closed = 0;
-  let killed = 0;
+  let failed = 0;
   for (const session of laneSessions) {
     const lifecycle = session as TuiChatSessionSummary;
-    if (lifecycle.lastTurnFailedAt) {
-      killed += 1;
+    if (session.awaitingInput || lifecycle.attentionRequestedAt) {
+      needsYou += 1;
       continue;
     }
     if (lifecycle.settledAt && session.status !== "active") {
-      closed += 1;
+      settled += 1;
+      continue;
+    }
+    if (lifecycle.lastTurnFailedAt) {
+      failed += 1;
       continue;
     }
     if (session.status === "active" || session.status === "idle") {
@@ -214,12 +220,12 @@ export function computeLaneChatCounts(
       continue;
     }
     if (session.completion?.status === "blocked") {
-      killed += 1;
+      failed += 1;
     } else {
       closed += 1;
     }
   }
-  return { active, closed, killed };
+  return { active, needsYou, settled, closed, failed };
 }
 
 type LaneDetailsPr = NonNullable<Extract<RightPaneContent, { kind: "lane-details" }>["pr"]>;
@@ -255,8 +261,10 @@ function formatPrActivity(pr: LaneDetailsPr): string {
 function formatLaneChatSummary(chats: Extract<RightPaneContent, { kind: "lane-details" }>["chats"]): string {
   const parts: string[] = [];
   if (chats.active > 0) parts.push(`${chats.active} active`);
+  if (chats.needsYou > 0) parts.push(`${chats.needsYou} needs you`);
+  if (chats.settled > 0) parts.push(`${chats.settled} settled`);
   if (chats.closed > 0) parts.push(`${chats.closed} closed`);
-  if (chats.killed > 0) parts.push(`${chats.killed} killed`);
+  if (chats.failed > 0) parts.push(`${chats.failed} failed`);
   return parts.length ? parts.join(" · ") : "no chats";
 }
 

@@ -1261,37 +1261,157 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("lists the orchestration-safe tool surface for orchestrator callers", async () => {
-    const { runtime } = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+  it("caps a session-bound CTO caller and scopes lifecycle actions to its own session", async () => {
+    await withEnv({ ADE_DEFAULT_ROLE: "cto", ADE_CHAT_SESSION_ID: undefined }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
 
-    await initialize(handler, { callerId: "coord-1", role: "orchestrator" });
-    const result = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
+      await initialize(handler, {
+        callerId: "chat-1",
+        role: "cto",
+        chatSessionId: "chat-1",
+      });
 
-    const names = (result.actions ?? []).map((tool: any) => tool.name);
-    expect(names).toEqual(
-      expect.arrayContaining([
-        "spawn_agent",
-        "create_lane",
-        "check_conflicts",
-        "merge_lane",
-        "ask_user",
-        "get_environment_info",
-        "launch_app",
-        "interact_gui",
-        "screenshot_environment",
-        "record_environment",
-        "run_tests",
-        "start_cli_session",
-        "send_to_session",
-        "get_lane_status",
-        "list_lanes",
-        "commit_changes",
-        "stream_events",
-      ])
-    );
-    expect(names).not.toContain("reflection_add");
-    expect(names.length).toBeGreaterThan(20);
+      const listed = (await handler({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "ade/actions/list",
+      })) as any;
+      const names = (listed.actions ?? []).map((tool: any) => tool.name);
+      expect(names).not.toContain("get_cto_state");
+      expect(names).not.toContain("getLinearSyncDashboard");
+
+      const lifecycleCalls = [
+        {
+          action: "requestSessionAttention",
+          args: { message: "Choose a release channel." },
+          assert: () => expect(runtime.sessionService.requestAttention).toHaveBeenCalledWith(
+            "chat-1",
+            "Choose a release channel.",
+          ),
+        },
+        {
+          action: "setSessionStatusNote",
+          args: { note: "Waiting for release choice" },
+          assert: () => expect(runtime.sessionService.setStatusNote).toHaveBeenCalledWith(
+            "chat-1",
+            "Waiting for release choice",
+          ),
+        },
+        {
+          action: "settleSelfSession",
+          args: { outcome: "Shipped" },
+          assert: () => expect(runtime.sessionService.settleSession).toHaveBeenCalledWith(
+            "chat-1",
+            { outcome: "Shipped" },
+          ),
+        },
+        {
+          action: "unsettleSelfSession",
+          args: {},
+          assert: () => expect(runtime.sessionService.unsettleSession).toHaveBeenCalledWith("chat-1"),
+        },
+      ];
+      for (const lifecycle of lifecycleCalls) {
+        const result = await callTool(handler, "run_ade_action", {
+          domain: "session",
+          action: lifecycle.action,
+          args: lifecycle.args,
+        });
+        expect(result?.isError).toBeUndefined();
+        lifecycle.assert();
+      }
+
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionStatusNote",
+        args: { sessionId: "chat-2", note: "Cross-session write" },
+      });
+      expect(denied.isError).toBe(true);
+      expect(runtime.sessionService.setStatusNote).not.toHaveBeenCalledWith(
+        "chat-2",
+        "Cross-session write",
+      );
+    });
+  });
+
+  it("binds lifecycle actions from an inherited CTO CLI environment to the caller session", async () => {
+    await withEnv({
+      ADE_DEFAULT_ROLE: "cto",
+      ADE_CHAT_SESSION_ID: "chat-from-env",
+    }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+      await initialize(handler, {
+        callerId: "ade-cli",
+        role: "cto",
+      });
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionStatusNote",
+        args: { note: "Running CLI checks" },
+      });
+
+      expect(result?.isError).toBeUndefined();
+      expect(runtime.sessionService.setStatusNote).toHaveBeenCalledWith(
+        "chat-from-env",
+        "Running CLI checks",
+      );
+
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "session",
+        action: "setSessionStatusNote",
+        args: { sessionId: "another-chat", note: "Cross-session write" },
+      });
+      expect(denied.isError).toBe(true);
+      expect(runtime.sessionService.setStatusNote).not.toHaveBeenCalledWith(
+        "another-chat",
+        "Cross-session write",
+      );
+    });
+  });
+
+  it("preserves an explicit orchestrator session under a CTO-capable runtime", async () => {
+    await withEnv({ ADE_DEFAULT_ROLE: "cto", ADE_CHAT_SESSION_ID: undefined }, async () => {
+      const { runtime } = createRuntime();
+      const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+
+      await initialize(handler, {
+        callerId: "coord-1",
+        role: "orchestrator",
+        chatSessionId: "coord-1",
+        runId: "run-1",
+        stepId: "step-1",
+        attemptId: "attempt-1",
+      });
+      const result = (await handler({ jsonrpc: "2.0", id: 3, method: "ade/actions/list" })) as any;
+
+      const names = (result.actions ?? []).map((tool: any) => tool.name);
+      expect(names).toEqual(
+        expect.arrayContaining([
+          "spawn_agent",
+          "create_lane",
+          "check_conflicts",
+          "merge_lane",
+          "ask_user",
+          "get_environment_info",
+          "launch_app",
+          "interact_gui",
+          "screenshot_environment",
+          "record_environment",
+          "run_tests",
+          "start_cli_session",
+          "send_to_session",
+          "get_lane_status",
+          "list_lanes",
+          "commit_changes",
+          "stream_events",
+        ])
+      );
+      expect(names).not.toContain("reflection_add");
+      expect(names.length).toBeGreaterThan(20);
+    });
   });
 
   it("reflects backend availability changes in the action list", async () => {
@@ -1677,6 +1797,9 @@ describe("adeRpcServer", () => {
     expect(finalArg).toContain("control plane for ADE state");
     expect(finalArg).toContain("proof & screenshots");
     expect(finalArg).toContain("clean up processes you start");
+    expect(finalArg).toContain("ade chat note");
+    expect(finalArg).toContain("ade chat ask");
+    expect(finalArg).toContain("ade chat settle");
     expect(finalArg.endsWith("Implement API wiring")).toBe(true);
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
@@ -1705,6 +1828,10 @@ describe("adeRpcServer", () => {
     expect(response?.isError).toBeUndefined();
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
     expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
+    const finalArg = createCall.args?.at(-1) ?? "";
+    expect(finalArg).toContain("ade chat note");
+    expect(finalArg).toContain("ade chat ask");
+    expect(finalArg).toContain("ade chat settle");
     expect(createCall.args).not.toContain("--full-auto");
     expect(createCall.startupCommand).toContain("--sandbox workspace-write --ask-for-approval on-request");
     expect(createCall.startupCommand).not.toContain("--full-auto");
@@ -3420,7 +3547,6 @@ describe("adeRpcServer", () => {
     await initialize(ctoHandler, {
       callerId: "cto-1",
       role: "cto",
-      chatSessionId: "chat-1",
     });
     const ctoScheduledWorkList = await callTool(ctoHandler, "run_ade_action", {
       domain: "chat",

@@ -2822,6 +2822,54 @@ describe("ADE CLI", () => {
         args: { note: "" },
       },
     });
+
+    const textOutput = parseCliArgs(["chat", "note", "working", "--text"]);
+    expect(textOutput.options.text).toBe(true);
+    expect(textOutput.command).toEqual(["chat", "note", "working"]);
+
+    const textInputWithJsonOutput = parseCliArgs([
+      "chat",
+      "note",
+      "--text",
+      "working",
+      "--json",
+    ]);
+    expect(textInputWithJsonOutput.options.text).toBe(false);
+    const textInputPlan = expectExecutePlan(buildCliPlan(textInputWithJsonOutput.command));
+    expect(textInputPlan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "session",
+        action: "setSessionStatusNote",
+        args: { note: "working" },
+      },
+    });
+
+    const result = summarizeExecution({
+      plan: textInputPlan,
+      connection: {} as any,
+      values: {
+        result: {
+          domain: "session",
+          action: "setSessionStatusNote",
+          result: { ok: true, sessionId: "session-x" },
+        },
+      },
+    });
+    expect(result).toEqual({ ok: true, sessionId: "session-x" });
+    expect(formatOutput(result, { text: false, pretty: true } as any, inferFormatter(textInputPlan)))
+      .toBe('{\n  "ok": true,\n  "sessionId": "session-x"\n}\n');
+    expect(formatOutput(result, { text: true } as any, inferFormatter(textInputPlan)))
+      .toContain("session-x");
+
+    const help = buildCliPlan(["chat", "--help"]);
+    expect(help.kind).toBe("help");
+    if (help.kind === "help") {
+      expect(help.text).toContain("ade chat note");
+      expect(help.text).toContain("ade chat ask");
+      expect(help.text).toContain("ade chat settle");
+      expect(help.text).toContain("ade chat unsettle");
+      expect(help.text).toContain("--session <id>");
+    }
   });
 
   it.each([
@@ -3895,6 +3943,7 @@ describe("ADE CLI", () => {
       "ADE_RPC_URL",
       "ADE_ACCOUNT_DIRECTORY_URL",
       "ADE_ACCOUNT_TOKEN",
+      "ADE_CHAT_SESSION_ID",
       "NODE_OPTIONS",
     ] as const;
     const previousEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
@@ -3907,6 +3956,7 @@ describe("ADE CLI", () => {
       delete process.env.ADE_RPC_SOCKET_PATH;
       delete process.env.ADE_RPC_URL;
       delete process.env.ADE_ACCOUNT_TOKEN;
+      delete process.env.ADE_CHAT_SESSION_ID;
       process.env.ADE_ACCOUNT_DIRECTORY_URL = `http://127.0.0.1:${address.port}`;
       process.env.NODE_OPTIONS = process.env.NODE_OPTIONS?.includes("--import tsx")
         ? process.env.NODE_OPTIONS

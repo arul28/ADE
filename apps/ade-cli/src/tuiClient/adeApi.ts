@@ -217,10 +217,12 @@ export async function settleSession(
   connection: AdeCodeConnection,
   sessionId: string,
   outcome?: string,
+  options: { dismissPendingInput?: boolean } = {},
 ): Promise<void> {
   await connection.action("session", "settleSelfSession", {
     sessionId,
     ...(outcome ? { outcome } : {}),
+    ...(options.dismissPendingInput ? { dismissPendingInput: true } : {}),
   });
 }
 

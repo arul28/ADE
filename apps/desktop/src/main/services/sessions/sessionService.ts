@@ -1095,11 +1095,10 @@ export function createSessionService({ db }: { db: AdeDb }) {
     },
 
     /**
-     * PTY output un-settles (`clearSettled: true` from the PTY layer): a live
-     * process producing output is not "done". Chat previews must NOT pass it —
-     * an agent's own final assistant text would otherwise undo the settle it
-     * just declared via `ade chat settle`; chat settles are cleared only by a
-     * user turn start (clearTurnStartMarkers).
+     * Callers decide whether output un-settles. Ordinary PTYs pass
+     * `clearSettled: true`, while chat previews and tracked agent CLIs preserve
+     * a declared settle through the agent's final output. Those agent sessions
+     * are cleared explicitly at the next user turn start.
      */
     setLastOutputPreview(sessionId: string, preview: string, opts?: { clearSettled?: boolean }): void {
       db.run(
@@ -1115,11 +1114,19 @@ export function createSessionService({ db }: { db: AdeDb }) {
      * layer record that a session is still producing output even when the
      * derived preview line is blank or unchanged (spinners, repeated status
      * lines), so the stale-session detector does not treat live work as idle.
-     * PTY-only, so live output also un-settles (see setLastOutputPreview).
+     * PTY-only. Ordinary shell output un-settles by default; tracked agent
+     * CLIs opt out because their own `ade chat settle` command and final line
+     * are still PTY output. Their next input explicitly clears the markers.
      */
-    touchSessionActivity(sessionId: string, at: string = new Date().toISOString()): void {
+    touchSessionActivity(
+      sessionId: string,
+      at: string = new Date().toISOString(),
+      opts?: { clearSettled?: boolean },
+    ): void {
       db.run(
-        "update terminal_sessions set last_output_at = ?, settled_at = null where id = ?",
+        opts?.clearSettled === false
+          ? "update terminal_sessions set last_output_at = ? where id = ?"
+          : "update terminal_sessions set last_output_at = ?, settled_at = null where id = ?",
         [at, sessionId]
       );
     },

@@ -3380,12 +3380,17 @@ export function createPtyService({
     entry.recentOutputTail = tailString(`${entry.recentOutputTail}${data}`, LIVE_TRANSCRIPT_TAIL_BUFFER_CHARS);
   };
 
+  const outputClearsSettledState = (entry: PtyEntry): boolean =>
+    !(entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint));
+
   const flushPreview = (entry: PtyEntry) => {
     const candidate = (entry.latestPreviewLine ?? "").trim();
     if (!candidate) return;
     if (candidate === entry.lastPreviewWritten) return;
     entry.lastPreviewWritten = candidate;
-    sessionService.setLastOutputPreview(entry.sessionId, candidate, { clearSettled: true });
+    sessionService.setLastOutputPreview(entry.sessionId, candidate, {
+      clearSettled: outputClearsSettledState(entry),
+    });
   };
 
   const updatePreviewThrottled = (entry: PtyEntry, chunk: string) => {
@@ -3406,7 +3411,11 @@ export function createPtyService({
     // emitting steady but non-preview-changing output (spinners, repeated
     // status lines) is not wrongly flagged idle by the stale-session detector.
     if (entry.tracked) {
-      sessionService.touchSessionActivity(entry.sessionId, new Date(now).toISOString());
+      sessionService.touchSessionActivity(
+        entry.sessionId,
+        new Date(now).toISOString(),
+        { clearSettled: outputClearsSettledState(entry) },
+      );
     }
     flushPreview(entry);
   };
@@ -4078,6 +4087,30 @@ export function createPtyService({
     return { flight, created: true };
   };
 
+  const clearTrackedCliTurnStartMarkers = (sessionId: string): void => {
+    const session = sessionService.get(sessionId);
+    if (
+      session?.settledAt
+      || session?.attentionRequestedAt
+      || session?.lastTurnFailedAt
+    ) {
+      sessionService.clearTurnStartMarkers(sessionId);
+    }
+  };
+
+  const markPtyUserInput = (entry: PtyEntry): void => {
+    entry.lastUserInputAt = Date.now();
+    if (entry.tracked && isTrackedAgentCliToolType(entry.toolTypeHint)) {
+      clearTrackedCliTurnStartMarkers(entry.sessionId);
+      entry.attentionRequested = false;
+      return;
+    }
+    if (entry.attentionRequested) {
+      entry.attentionRequested = false;
+      sessionService.clearAttentionRequest(entry.sessionId);
+    }
+  };
+
   const service = {
     async ensureResumeTargets(sessionIds: string[]): Promise<void> {
       const uniqueSessionIds = Array.from(new Set(
@@ -4361,6 +4394,9 @@ export function createPtyService({
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
         { preserveNoColor: explicitNoColor },
       );
+      if (isTrackedAgentCliToolType(toolTypeHint)) {
+        launchEnv.ADE_DEFAULT_ROLE = "agent";
+      }
       launchEnv = withResolvedCliLaunchPath(launchEnv, {
         includeInteractiveShell: Boolean(directCommand || startupCommand),
       });
@@ -5047,6 +5083,10 @@ export function createPtyService({
 
       const { flight, created: resumeFlightCreated } = getOrCreateResumeFlight(resumableSession, resumeCommand, args);
       const created = await flight;
+      // The message itself may be embedded in the provider's launch command,
+      // so there is not always a later PTY write that can mark the new turn.
+      // Wait until launch succeeds before clearing the previous turn's state.
+      clearTrackedCliTurnStartMarkers(sessionId);
       if ((resumeFlightCreated && Boolean(openCodeReplayCommand)) || promptAtLaunch) {
         return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
       }
@@ -5105,11 +5145,7 @@ export function createPtyService({
       const entry = ptys.get(ptyId);
       if (!entry) return;
       try {
-        entry.lastUserInputAt = Date.now();
-        if (entry.attentionRequested) {
-          entry.attentionRequested = false;
-          sessionService.clearAttentionRequest(entry.sessionId);
-        }
+        markPtyUserInput(entry);
         entry.pty.write(data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
@@ -5398,7 +5434,7 @@ export function createPtyService({
         entry = live[1];
       }
       try {
-        entry.lastUserInputAt = Date.now();
+        markPtyUserInput(entry);
         entry.pty.write(args.data);
         tryCliUserTitleFromWrite(entry, args.data);
         setRuntimeState(entry.sessionId, "running");
@@ -5499,7 +5535,7 @@ export function createPtyService({
       if (!live) return false;
       const [, entry] = live;
       try {
-        entry.lastUserInputAt = Date.now();
+        markPtyUserInput(entry);
         entry.pty.write(data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");

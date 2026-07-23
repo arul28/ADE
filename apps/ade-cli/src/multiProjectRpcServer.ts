@@ -46,7 +46,7 @@ import {
   isCtoOnlyAdeAction,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
-import { normalizeAdeRuntimeRole, resolveSessionRole } from "./runtimeRoles";
+import { normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import {
   createSyncAccountDirectoryHealth,
   type SyncAccountDirectoryHealth,
@@ -1066,10 +1066,13 @@ export function createMultiProjectRpcRequestHandler(
       const requestedRole = normalizeAdeRuntimeRole(
         identityRecord ? identityRecord.role : null,
       );
-      const callerRole = resolveSessionRole(
-        normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
+      const callerRole = resolveSessionBoundRole({
+        defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
         requestedRole,
-      );
+        chatSessionId: identityRecord && typeof identityRecord.chatSessionId === "string"
+          ? identityRecord.chatSessionId.trim() || null
+          : null,
+      });
       if (isCtoOnlyAdeAction("account", action) && !callerHasRoleAtLeast(callerRole, "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,

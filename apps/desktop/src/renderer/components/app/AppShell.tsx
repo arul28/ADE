@@ -61,7 +61,6 @@ import {
   snoozeStaleCliNotice,
 } from "../../lib/staleCliNoticeSnooze";
 import { hasRecentBannerDismissal } from "../../lib/bannerDismiss";
-import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import {
   getStoredZoomLevel,
   displayZoomToLevel,
@@ -80,6 +79,7 @@ import {
   useProductAnalyticsLifecycle,
   WebAnalyticsConsentBanner,
 } from "../analytics/ProductAnalyticsLifecycle";
+import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
 
 type PrToast = {
   id: string;
@@ -209,14 +209,6 @@ type StaleCliNotice = {
   lanes: StaleCliNoticeLane[];
 };
 
-const EMPTY_TERMINAL_ATTENTION = {
-  runningCount: 0,
-  activeCount: 0,
-  needsAttentionCount: 0,
-  indicator: "none" as const,
-  byLaneId: {},
-};
-
 function shortId(id: string): string {
   const trimmed = (id ?? "").trim();
   if (!trimmed) return "";
@@ -285,7 +277,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const refreshProviderMode = useAppStore((s) => s.refreshProviderMode);
   const refreshKeybindings = useAppStore((s) => s.refreshKeybindings);
-  const setTerminalAttention = useAppStore((s) => s.setTerminalAttention);
   const providerMode = useAppStore((s) => s.providerMode);
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
@@ -305,7 +296,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const [commandOpen, setCommandOpen] = useState(false);
   const visitedTabsRef = useRef(new Set<string>());
-  const lastDockBadgeCountRef = useRef<number | null>(null);
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
   const storeToasts = useToasts();
   const [prToasts, setPrToasts] = useState<PrToast[]>([]);
@@ -369,10 +359,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   });
   const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
   const isLanesRouteRef = useRef(isLanesRoute);
-  const shouldTrackTerminalAttention =
-    Boolean(currentProjectRoot) &&
-    !showWelcome &&
-    isWorkAdjacentRoute;
+  useAppWideSessionAttention();
 
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;
@@ -614,98 +601,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     refreshKeybindings,
     setShowWelcome,
   ]);
-
-  useEffect(() => {
-    if (!shouldTrackTerminalAttention) {
-      setTerminalAttention(EMPTY_TERMINAL_ATTENTION);
-      // Deliberately do NOT zero the dock badge here: navigating away from
-      // Work routes doesn't resolve the sessions that need attention, and
-      // app.setBadgeCount is application-wide. The badge stays at the last
-      // known loud count until attention tracking next refreshes it.
-      return;
-    }
-
-    let refreshTimer: number | null = null;
-    let refreshInFlight = false;
-    let refreshQueued = false;
-
-    const refreshTerminalAttention = async () => {
-      if (refreshInFlight) {
-        refreshQueued = true;
-        return;
-      }
-      // No visibility gate: the dock badge must keep tracking the loud tier
-      // while the window is hidden/minimized — that is its whole purpose. The
-      // refresh stays event-driven + debounced, so hidden cost is bounded.
-      refreshInFlight = true;
-      try {
-        const sessions: TerminalSessionSummary[] = (
-          await listSessionsCached({ limit: 150 })
-        ).filter((session) => !isRunOwnedSession(session));
-        const attention = summarizeTerminalAttention(sessions);
-        setTerminalAttention(attention);
-        // Dock badge mirrors the loud tier only; push on change so a blocked
-        // agent reaches the user even with the window minimized.
-        if (lastDockBadgeCountRef.current !== attention.needsAttentionCount) {
-          lastDockBadgeCountRef.current = attention.needsAttentionCount;
-          void window.ade?.app?.setDockBadgeCount?.(attention.needsAttentionCount)?.catch?.(() => {});
-        }
-      } catch {
-        // best effort
-      } finally {
-        refreshInFlight = false;
-        if (refreshQueued) {
-          refreshQueued = false;
-          scheduleRefresh(250);
-        }
-      }
-    };
-
-    const scheduleRefresh = (delayMs = 2_500) => {
-      if (refreshTimer != null) return;
-      refreshTimer = window.setTimeout(() => {
-        refreshTimer = null;
-        void refreshTerminalAttention();
-      }, delayMs);
-    };
-
-    scheduleRefresh(2_500);
-
-    const isCurrentProjectEvent = (event: { projectRoot?: string | null }) => {
-      const currentRoot = useAppStore.getState().project?.rootPath ?? null;
-      return !event.projectRoot || event.projectRoot === currentRoot;
-    };
-
-    const unsubData = window.ade.pty.onData((event) => {
-      if (isCurrentProjectEvent(event)) scheduleRefresh();
-    });
-    const unsubExit = window.ade.pty.onExit((event) => {
-      if (isCurrentProjectEvent(event)) scheduleRefresh();
-    });
-    const interval = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      scheduleRefresh();
-    }, 15_000);
-    const onFocus = () => scheduleRefresh(0);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") scheduleRefresh(0);
-    };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      try {
-        unsubData();
-        unsubExit();
-      } catch {
-        // ignore
-      }
-      if (refreshTimer != null) window.clearTimeout(refreshTimer);
-      window.clearInterval(interval);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [setTerminalAttention, shouldTrackTerminalAttention]);
 
   useEffect(() => {
     const projectRoot = project?.rootPath ?? null;
@@ -1546,8 +1441,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                               // Reset the lane filter too so stale sessions across
                               // *all* lanes are visible, not just the active one.
                               setWorkViewState(currentProjectRoot, {
-                                statusFilter: "running",
                                 laneFilter: "all",
+                                sessionListOrganization: "all-lanes-by-status",
+                                workCollapsedSectionIds: useAppStore
+                                  .getState()
+                                  .getWorkViewState(currentProjectRoot)
+                                  .workCollapsedSectionIds
+                                  .filter((sectionId) => sectionId !== "status:running"),
                               });
                             }
                             navigate("/work");

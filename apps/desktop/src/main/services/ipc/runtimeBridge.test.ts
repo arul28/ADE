@@ -2325,6 +2325,165 @@ describe("registerIpc sync bridge", () => {
     expect(deleteSession).toHaveBeenCalledWith("terminal-1");
   });
 
+  it("degrades chat rows when list projection fails instead of leaking persisted running state", async () => {
+    const chatSession = {
+      id: "chat-1",
+      laneId: "lane-1",
+      toolType: "claude-chat",
+      status: "running",
+      runtimeState: "running",
+      tracked: false,
+    };
+    const warn = vi.fn();
+
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn, info: vi.fn(), error: vi.fn() },
+        sessionService: {
+          list: vi.fn(() => [chatSession]),
+        },
+        ptyService: {
+          enrichSessions: vi.fn((sessions: any[]) => sessions),
+        },
+        agentChatService: {
+          listSessions: vi.fn(async () => {
+            throw new Error("chat runtime unavailable");
+          }),
+        },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.sessionsList)?.(eventForSender(), {}),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: "chat-1",
+        runtimeState: "idle",
+      }),
+    ]);
+    expect(warn).toHaveBeenCalledWith(
+      "sessions.chat_projection_failed",
+      expect.objectContaining({ error: "chat runtime unavailable" }),
+    );
+  });
+
+  it("projects active automation chats without exposing projection filtering to the UI", async () => {
+    const chatSession = {
+      id: "automation-chat-1",
+      laneId: "lane-1",
+      toolType: "claude-chat",
+      status: "running",
+      runtimeState: "idle",
+      tracked: false,
+    };
+    const listSessions = vi.fn(async () => [{
+      sessionId: "automation-chat-1",
+      laneId: "lane-1",
+      surface: "automation",
+      status: "active",
+      awaitingInput: false,
+    }]);
+
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        sessionService: {
+          list: vi.fn(() => [chatSession]),
+        },
+        ptyService: {
+          enrichSessions: vi.fn((sessions: any[]) => sessions),
+        },
+        agentChatService: {
+          listSessions,
+        },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.sessionsList)?.(eventForSender(), {}),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: "automation-chat-1",
+        runtimeState: "running",
+      }),
+    ]);
+    expect(listSessions).toHaveBeenCalledWith(undefined, {
+      includeIdentity: true,
+      includeAutomation: true,
+    });
+  });
+
+  it("degrades a chat detail when its projection fails instead of leaking persisted running state", async () => {
+    const chatSession = {
+      id: "chat-1",
+      laneId: "lane-1",
+      toolType: "claude-chat",
+      status: "running",
+      runtimeState: "running",
+      tracked: false,
+    };
+    const warn = vi.fn();
+
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn, info: vi.fn(), error: vi.fn() },
+        sessionService: {
+          get: vi.fn(() => chatSession),
+        },
+        ptyService: {
+          enrichSessions: vi.fn((sessions: any[]) => sessions),
+          getRuntimeState: vi.fn(() => "running"),
+        },
+        agentChatService: {
+          getSessionSummary: vi.fn(async () => {
+            throw new Error("chat runtime unavailable");
+          }),
+        },
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.sessionsGet)?.(eventForSender(), { sessionId: "chat-1" }),
+    ).resolves.toEqual(expect.objectContaining({
+      id: "chat-1",
+      runtimeState: "idle",
+    }));
+    expect(warn).toHaveBeenCalledWith(
+      "sessions.chat_projection_failed",
+      expect.objectContaining({
+        sessionId: "chat-1",
+        error: "chat runtime unavailable",
+      }),
+    );
+  });
+
   it("refuses to delete a running terminal owned by another ADE runtime", async () => {
     const terminalSession = {
       id: "terminal-1",

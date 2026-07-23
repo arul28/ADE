@@ -853,7 +853,6 @@ describe("appStore", () => {
     it("returns default state when no project root is set", () => {
       const state = useAppStore.getState().getWorkViewState(null);
       expect(state.draftKind).toBe("chat");
-      expect(state.statusFilter).toBe("all");
       expect(state.openItemIds).toEqual([]);
     });
 
@@ -868,26 +867,25 @@ describe("appStore", () => {
     });
 
     it("stores and retrieves work view state by project root", () => {
-      useAppStore.getState().setWorkViewState("/project/a", { statusFilter: "running" });
+      useAppStore.getState().setWorkViewState("/project/a", { search: "running" });
       const state = useAppStore.getState().getWorkViewState("/project/a");
-      expect(state.statusFilter).toBe("running");
+      expect(state.search).toBe("running");
       expect(state.draftKind).toBe("chat"); // default preserved
     });
 
     it("ignores setWorkViewState for null project root", () => {
-      useAppStore.getState().setWorkViewState(null, { statusFilter: "running" });
+      useAppStore.getState().setWorkViewState(null, { search: "ignored" });
       expect(useAppStore.getState().workViewByProject).toEqual({});
     });
 
     it("supports function updater for setWorkViewState", () => {
-      useAppStore.getState().setWorkViewState("/project/b", { statusFilter: "running" });
+      useAppStore.getState().setWorkViewState("/project/b", { search: "seed" });
       useAppStore.getState().setWorkViewState("/project/b", (prev) => ({
         ...prev,
-        search: "hello",
+        search: `${prev.search} hello`,
       }));
       const state = useAppStore.getState().getWorkViewState("/project/b");
-      expect(state.statusFilter).toBe("running");
-      expect(state.search).toBe("hello");
+      expect(state.search).toBe("seed hello");
     });
 
     it("trims project root keys for normalization", () => {
@@ -913,6 +911,51 @@ describe("appStore", () => {
       expect(updated.workSidebarWidthPct).toBe(48);
       expect(updated.draftKind).toBe("chat");
     });
+
+    it("migrates settled collapse once and preserves a later expansion across reload", async () => {
+      vi.useFakeTimers();
+      try {
+        mockStorage.set("ade.workViewState.v1", JSON.stringify({
+          workViewByProject: {
+            "/project/legacy": {
+              statusFilter: "running",
+              showSettled: false,
+              workCollapsedSectionIds: [],
+            },
+          },
+          laneWorkViewByScope: {},
+        }));
+
+        vi.resetModules();
+        const firstLoad = await import("./appStore");
+        const migrated = firstLoad.useAppStore.getState().getWorkViewState("/project/legacy");
+        expect(migrated.workCollapsedSectionIds).toEqual(["status:settled"]);
+        expect("statusFilter" in migrated).toBe(false);
+        expect("showSettled" in migrated).toBe(false);
+
+        firstLoad.useAppStore.getState().setWorkViewState("/project/legacy", {
+          workCollapsedSectionIds: [],
+        });
+        await vi.advanceTimersByTimeAsync(300);
+
+        const persisted = JSON.parse(mockStorage.get("ade.workViewState.v1") ?? "{}") as {
+          version?: number;
+          workViewByProject?: Record<string, Record<string, unknown>>;
+        };
+        expect(persisted.version).toBe(2);
+        expect(persisted.workViewByProject?.["/project/legacy"]?.workCollapsedSectionIds).toEqual([]);
+        expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("statusFilter");
+        expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("showSettled");
+
+        vi.resetModules();
+        const secondLoad = await import("./appStore");
+        expect(
+          secondLoad.useAppStore.getState().getWorkViewState("/project/legacy").workCollapsedSectionIds,
+        ).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   // ─────────────────────────────────────────────────────────────
@@ -927,16 +970,16 @@ describe("appStore", () => {
     });
 
     it("stores and retrieves lane-scoped work view state", () => {
-      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { statusFilter: "running" });
+      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { search: "running" });
       const state = useAppStore.getState().getLaneWorkViewState("/proj", "lane-1");
-      expect(state.statusFilter).toBe("running");
+      expect(state.search).toBe("running");
     });
 
     it("keeps separate state per lane", () => {
-      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { statusFilter: "running" });
-      useAppStore.getState().setLaneWorkViewState("/proj", "lane-2", { statusFilter: "ended" });
-      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-1").statusFilter).toBe("running");
-      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-2").statusFilter).toBe("ended");
+      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { search: "running" });
+      useAppStore.getState().setLaneWorkViewState("/proj", "lane-2", { search: "ended" });
+      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-1").search).toBe("running");
+      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-2").search).toBe("ended");
     });
 
     it("supports function updater", () => {
@@ -949,8 +992,8 @@ describe("appStore", () => {
     });
 
     it("ignores set when keys are empty", () => {
-      useAppStore.getState().setLaneWorkViewState("", "lane-1", { statusFilter: "running" });
-      useAppStore.getState().setLaneWorkViewState("/proj", "", { statusFilter: "running" });
+      useAppStore.getState().setLaneWorkViewState("", "lane-1", { search: "ignored" });
+      useAppStore.getState().setLaneWorkViewState("/proj", "", { search: "ignored" });
       expect(useAppStore.getState().laneWorkViewByScope).toEqual({});
     });
   });

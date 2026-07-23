@@ -33,6 +33,7 @@ import {
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
+import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
 
 const TERMINALS_TILING_TREE: PaneSplit = {
   type: "split",
@@ -175,9 +176,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       ...work.runningFiltered,
       ...work.awaitingInputFiltered,
       ...work.endedFiltered,
-      ...(work.showSettled ? work.settledFiltered : []),
+      ...work.settledFiltered,
     ],
-    [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered, work.settledFiltered, work.showSettled],
+    [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered, work.settledFiltered],
   );
 
   useEffect(() => {
@@ -384,11 +385,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const handleSettleSession = useCallback((session: TerminalSessionSummary) => {
     setSessionActionError(null);
-    void window.ade.sessions.settle(session.id).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      setSessionActionError(`Settle failed: ${message}`);
-      window.setTimeout(() => setSessionActionError(null), 6000);
-    });
+    void (async () => {
+      try {
+        const dismissPendingInput = sessionNeedsYou(canonicalInputFromSummary(session));
+        await window.ade.sessions.settle(
+          session.id,
+          dismissPendingInput ? { dismissPendingInput: true } : undefined,
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Settle failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      }
+    })();
   }, []);
 
   const handleUnsettleSession = useCallback((session: TerminalSessionSummary) => {
@@ -1094,8 +1103,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             awaitingInputFiltered={work.awaitingInputFiltered}
             endedFiltered={work.endedFiltered}
             settledFiltered={work.settledFiltered}
-            showSettled={work.showSettled}
-            setShowSettled={work.setShowSettled}
             allSessionsUnfiltered={work.sessions}
             loading={work.loading}
             filterLaneId={work.filterLaneId}

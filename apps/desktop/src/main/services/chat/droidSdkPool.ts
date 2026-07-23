@@ -76,6 +76,7 @@ export async function acquireDroidSdkConnection(args: {
   resumeSessionId?: string | null;
   settings: DroidSdkSessionSettings;
   mcpServers?: unknown[];
+  baseEnv?: NodeJS.ProcessEnv;
   logger?: Logger;
 }): Promise<{ pooled: DroidSdkPooled; generation: number }> {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
@@ -116,7 +117,7 @@ export async function acquireDroidSdkConnection(args: {
 async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkConnection>[0]): Promise<DroidSdkPooled> {
   const child = fork(resolveWorkerPath(), [], {
     cwd: args.workspacePath,
-    env: sanitizeEnv(process.env),
+    env: sanitizeEnv(args.baseEnv ?? process.env),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
   });

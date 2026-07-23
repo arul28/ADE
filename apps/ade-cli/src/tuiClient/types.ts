@@ -374,8 +374,10 @@ export type RightPaneContent =
       } | null;
       chats: {
         active: number;
+        needsYou: number;
+        settled: number;
         closed: number;
-        killed: number;
+        failed: number;
       };
       showFiles: boolean;
       selectedActionIndex: number;
