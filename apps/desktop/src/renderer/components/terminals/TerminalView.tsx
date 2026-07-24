@@ -7,6 +7,7 @@ import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   DEFAULT_TERMINAL_PREFERENCES,
   selectActiveProjectRoot,
+  selectActiveProjectStateKey,
   useAppStore,
   type TerminalPreferences,
   type ThemeId,
@@ -53,6 +54,7 @@ type CachedRuntime = {
   key: string;
   ptyId: string;
   sessionId: string;
+  projectKey: string | null;
   projectRoot: string | null;
   projectRevision: number;
   term: Terminal;
@@ -164,9 +166,9 @@ let ptyDataSubscriptionSignature: string | null = null;
 function terminalRuntimeKey(args: {
   sessionId: string;
   ptyId?: string | null;
-  projectRoot?: string | null;
+  projectKey?: string | null;
 }): string {
-  return `${args.projectRoot ?? "<no-project>"}::${args.sessionId}::${args.ptyId ?? "<no-pty>"}`;
+  return `${args.projectKey ?? "<no-project>"}::${args.sessionId}::${args.ptyId ?? "<no-pty>"}`;
 }
 let parkedRoot: HTMLDivElement | null = null;
 
@@ -713,27 +715,27 @@ function parkRuntime(runtime: CachedRuntime) {
   }
 }
 
-function disposeStaleRuntimes(activeProjectRoot: string | null, activeProjectRevision: number) {
+function disposeStaleRuntimes(activeProjectKey: string | null, activeProjectRevision: number) {
   for (const runtime of runtimeCache.values()) {
     const isLiveRuntime = runtime.exitCode == null;
-    if (activeProjectRoot == null) {
-      if (runtime.projectRoot != null && !isLiveRuntime && runtime.refs === 0) {
+    if (activeProjectKey == null) {
+      if (runtime.projectKey != null && !isLiveRuntime && runtime.refs === 0) {
         teardownRuntime(runtime);
       }
       continue;
     }
 
-    if (!isLiveRuntime && runtime.refs === 0 && runtime.projectRoot === activeProjectRoot && runtime.projectRevision !== activeProjectRevision) {
+    if (!isLiveRuntime && runtime.refs === 0 && runtime.projectKey === activeProjectKey && runtime.projectRevision !== activeProjectRevision) {
       scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
     }
   }
 }
 
 export function disposeTerminalRuntimesForProjectChange(
-  activeProjectRoot: string | null,
+  activeProjectKey: string | null,
   activeProjectRevision: number,
 ): void {
-  disposeStaleRuntimes(activeProjectRoot, activeProjectRevision);
+  disposeStaleRuntimes(activeProjectKey, activeProjectRevision);
 }
 
 function setRuntimeInteractionState(runtime: CachedRuntime, active: boolean) {
@@ -1957,6 +1959,7 @@ function flushPendingWebGLRestore(runtime: CachedRuntime): void {
 function createRuntime(args: {
   ptyId: string;
   sessionId: string;
+  projectKey: string | null;
   projectRoot: string | null;
   projectRevision: number;
   theme: XtermTheme;
@@ -1999,6 +2002,7 @@ function createRuntime(args: {
     key: terminalRuntimeKey(args),
     ptyId: args.ptyId,
     sessionId: args.sessionId,
+    projectKey: args.projectKey,
     projectRoot: args.projectRoot,
     projectRevision: args.projectRevision,
     term,
@@ -2187,6 +2191,7 @@ function createRuntime(args: {
 function ensureRuntime(args: {
   ptyId: string;
   sessionId: string;
+  projectKey: string | null;
   projectRoot: string | null;
   projectRevision: number;
   theme: XtermTheme;
@@ -2198,6 +2203,7 @@ function ensureRuntime(args: {
   if (existing && !existing.disposed) {
     if (
       existing.ptyId === args.ptyId
+      && existing.projectKey === args.projectKey
       && existing.projectRoot === args.projectRoot
     ) {
       clearDisposeTimer(existing);
@@ -2257,23 +2263,27 @@ export function TerminalView({
   const appTheme = useAppStore((s) => s.theme);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  const projectKey = useAppStore(selectActiveProjectStateKey);
   const projectRevision = useAppStore((s) => s.projectRevision);
   const runtimeProjectScopeRef = useRef<{
     sessionId: string;
+    projectKey: string | null;
     projectRoot: string | null;
     projectRevision: number;
   } | null>(null);
   if (
     !runtimeProjectScopeRef.current
     || runtimeProjectScopeRef.current.sessionId !== sessionId
-    || (runtimeProjectScopeRef.current.projectRoot == null && projectRoot != null)
+    || (runtimeProjectScopeRef.current.projectKey == null && projectKey != null)
   ) {
     runtimeProjectScopeRef.current = {
       sessionId,
+      projectKey,
       projectRoot,
       projectRevision,
     };
   }
+  const runtimeProjectKey = runtimeProjectScopeRef.current.projectKey;
   const runtimeProjectRoot = runtimeProjectScopeRef.current.projectRoot;
   const runtimeProjectRevision = runtimeProjectScopeRef.current.projectRevision;
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -2293,8 +2303,8 @@ export function TerminalView({
   mountConfigRef.current = currentMountConfig;
 
   useEffect(() => {
-    disposeTerminalRuntimesForProjectChange(projectRoot, projectRevision);
-  }, [projectRoot, projectRevision]);
+    disposeTerminalRuntimesForProjectChange(projectKey, projectRevision);
+  }, [projectKey, projectRevision]);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -2304,6 +2314,7 @@ export function TerminalView({
     const runtime = ensureRuntime({
       ptyId,
       sessionId,
+      projectKey: runtimeProjectKey,
       projectRoot: runtimeProjectRoot,
       projectRevision: runtimeProjectRevision,
       theme: mountConfig.theme,

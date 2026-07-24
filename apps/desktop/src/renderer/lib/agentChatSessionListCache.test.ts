@@ -187,4 +187,46 @@ describe("agentChatSessionListCache", () => {
     await expect(listAgentChatSessionsCached({ laneId: "lane-1" })).resolves.toEqual([session("project-a-new")]);
     expect(list).toHaveBeenCalledTimes(3);
   });
+
+  it("isolates remote bindings that share the same project root", async () => {
+    const list = vi.mocked(window.ade.agentChat.list);
+    list
+      .mockResolvedValueOnce([session("studio-a-session")])
+      .mockResolvedValueOnce([session("studio-b-session")]);
+    const sharedRoot = "/srv/shared";
+    const bindingA = {
+      kind: "remote" as const,
+      key: "remote:studio-a:project-1",
+      targetId: "studio-a",
+      runtimeName: "Studio A",
+      projectId: "project-1",
+      rootPath: sharedRoot,
+      displayName: "Shared",
+    };
+    const bindingB = {
+      ...bindingA,
+      key: "remote:studio-b:project-1",
+      targetId: "studio-b",
+      runtimeName: "Studio B",
+    };
+
+    useAppStore.setState({
+      project: { rootPath: sharedRoot, name: "Shared" } as any,
+      projectBinding: bindingA,
+    } as any);
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1" }),
+    ).resolves.toEqual([session("studio-a-session")]);
+
+    useAppStore.setState({ projectBinding: bindingB } as any);
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1" }),
+    ).resolves.toEqual([session("studio-b-session")]);
+
+    useAppStore.setState({ projectBinding: bindingA } as any);
+    await expect(
+      listAgentChatSessionsCached({ laneId: "lane-1" }),
+    ).resolves.toEqual([session("studio-a-session")]);
+    expect(list).toHaveBeenCalledTimes(2);
+  });
 });

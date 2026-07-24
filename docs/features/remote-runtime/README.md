@@ -121,6 +121,17 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 - `apps/desktop/src/renderer/components/projects/RemoteProjectOpenDialog.tsx` —
   confirmation dialog before opening a remote project, surfaces local matches
   with uncommitted changes.
+- `apps/desktop/src/renderer/state/appStore.ts`,
+  `apps/desktop/src/renderer/components/app/App.tsx`,
+  `TopBar.tsx`, and `projectRouteStorage.ts` — represent every open remote
+  binding as an independent project surface. Work, lane, session, route,
+  layout, and terminal-runtime identity use the binding key rather than the
+  remote filesystem path. Local and remote tabs share one eight-surface warm
+  LRU: inactive mounted surfaces are inert and animation-paused, while older
+  open surfaces snapshot their state before unmounting. Returning to a tab
+  restores its cached surface and revalidates lanes; a failed reconnect leaves
+  that stale surface visible. Explicit tab close or target disconnect switches
+  away first, then evicts only the affected binding state and stored route.
 - `apps/desktop/src/preload/preload.ts` — routes runtime-backed renderer APIs to
   local or remote JSON-RPC actions based on the active project binding. Remote
   project usage/budget reads route through the remote runtime; local project

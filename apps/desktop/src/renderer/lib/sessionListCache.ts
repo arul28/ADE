@@ -1,5 +1,9 @@
 import type { ListSessionsArgs, TerminalSessionSummary } from "../../shared/types";
-import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
+import {
+  selectActiveProjectRoot,
+  selectActiveProjectStateKey,
+  useAppStore,
+} from "../state/appStore";
 
 type SessionToolType = NonNullable<ListSessionsArgs["toolTypes"]>[number];
 
@@ -39,8 +43,10 @@ function normalizeArgs(args?: ListSessionsArgs): ListSessionsArgs {
 
 function cacheKey(args?: ListSessionsArgs): string {
   const normalized = normalizeArgs(args);
+  const state = useAppStore.getState();
   return JSON.stringify({
-    projectRoot: selectActiveProjectRoot(useAppStore.getState()),
+    projectRoot: selectActiveProjectRoot(state),
+    projectKey: selectActiveProjectStateKey(state),
     laneId: normalized.laneId ?? null,
     status: normalized.status ?? null,
     toolTypes: normalized.toolTypes ?? null,

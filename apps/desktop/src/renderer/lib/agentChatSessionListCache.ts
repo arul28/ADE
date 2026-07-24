@@ -2,7 +2,11 @@ import type {
   AgentChatListArgs,
   AgentChatSessionSummary,
 } from "../../shared/types";
-import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
+import {
+  selectActiveProjectRoot,
+  selectActiveProjectStateKey,
+  useAppStore,
+} from "../state/appStore";
 
 type CacheEntry = {
   value?: AgentChatSessionSummary[];
@@ -21,14 +25,12 @@ function normalizeArgs(args?: AgentChatListArgs): AgentChatListArgs {
   return normalized;
 }
 
-function activeProjectRoot(): string | null {
-  return selectActiveProjectRoot(useAppStore.getState());
-}
-
 function cacheKey(args?: AgentChatListArgs): string {
   const normalized = normalizeArgs(args);
+  const state = useAppStore.getState();
   return JSON.stringify({
-    projectRoot: activeProjectRoot(),
+    projectRoot: selectActiveProjectRoot(state),
+    projectKey: selectActiveProjectStateKey(state),
     laneId: normalized.laneId ?? null,
     includeAutomation: normalized.includeAutomation ?? null,
     includeArchived: normalized.includeArchived ?? null,

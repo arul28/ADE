@@ -27,8 +27,8 @@ export function makeGridSetId(): string {
 }
 
 /** Stable per-grid-set tiling-tree layout id (scoped to the project). */
-export function makeGridLayoutId(projectRoot: string | null | undefined, gridSetId: string): string {
-  return `work:grid:v2:${projectRoot ?? "global"}:${gridSetId}`;
+export function makeGridLayoutId(projectKey: string | null | undefined, gridSetId: string): string {
+  return `work:grid:v2:${projectKey ?? "global"}:${gridSetId}`;
 }
 
 export function findGridSetForSession(
@@ -83,12 +83,12 @@ export function addSessionBesideTarget(
   params: {
     sessionId: string;
     targetSessionId: string;
-    projectRoot: string | null | undefined;
+    projectKey: string | null | undefined;
     /** Insert before/after the target within the set's membership order. */
     placeAfterTarget?: boolean;
   },
 ): { gridSets: WorkGridSet[]; gridSetId: string } {
-  const { sessionId, targetSessionId, projectRoot, placeAfterTarget = true } = params;
+  const { sessionId, targetSessionId, projectKey, placeAfterTarget = true } = params;
   if (sessionId === targetSessionId) {
     const existing = findGridSetForSession(gridSets, targetSessionId);
     return { gridSets: [...gridSets], gridSetId: existing?.id ?? makeGridSetId() };
@@ -112,7 +112,7 @@ export function addSessionBesideTarget(
 
   // Target is single — create a new grid set from the pair.
   const id = makeGridSetId();
-  const layoutId = makeGridLayoutId(projectRoot, id);
+  const layoutId = makeGridLayoutId(projectKey, id);
   const sessionIds = placeAfterTarget
     ? [targetSessionId, sessionId]
     : [sessionId, targetSessionId];

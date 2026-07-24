@@ -68,14 +68,23 @@ Related pages for the broader "home" experience:
   binding-scoped route keep-alive, built-in browser view hiding/reveal routing,
   and cold-switch transition veil. The shell keys surfaces by runtime binding
   so a remote project and local project with the same root path keep separate
-  stores, and keeps Work and Lanes mounted after first visit so switching away
-  and back preserves warm renderer state.
+  stores. Its shared local/remote LRU keeps the eight most recently used
+  project surfaces mounted; inactive surfaces are inert and animation-paused,
+  and an older open surface snapshots its scoped state before unmounting so it
+  can be restored when revisited.
 - `apps/desktop/src/renderer/state/appStore.ts` — shared project-tab
   state. Warm project switches restore cached project/lane snapshots and
-  lane selection immediately, derive the active project root from the runtime
-  binding for remote projects, clear stale lane/session/work caches on remote
-  project open, and cache pruning retains Work/lane/session state for every
-  open project tab root.
+  lane selection immediately. Local state uses the project root as its key;
+  remote state uses the full binding key (`remote:<targetId>:<projectId>`) so
+  identical paths on different machines cannot share Work, lane, session, or
+  layout state. Remote opens keep cached state visible while refreshing, a
+  failed reconnect leaves the existing surface intact, and explicit tab close
+  or target disconnect evicts only the affected binding.
+- `apps/desktop/src/renderer/components/app/TopBar.tsx` and
+  `projectRouteStorage.ts` — own remote-tab close/disconnect transitions and
+  binding-scoped route memory. Closing the active remote tab switches to a
+  valid fallback first; only a successful switch removes that tab's cached
+  state and stored route, so a failed fallback does not destroy the surface.
 - `apps/desktop/src/renderer/components/app/AppShell.tsx` — top-level
   nav, routes `/run` to `RunPage`, and mounts project-transition errors below
   the TopBar where long messages can wrap without displacing header controls.

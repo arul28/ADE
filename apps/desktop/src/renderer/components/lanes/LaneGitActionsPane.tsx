@@ -1,7 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, CaretDown, CaretRight, Check, Folder, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import {
+  selectActiveProjectRoot,
+  selectActiveProjectStateKey,
+  useAppStore,
+} from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
@@ -64,7 +68,7 @@ const EMPTY_LANE_GIT_ACTION_RUNTIME_STATE: LaneGitActionRuntimeState = {
   error: null,
 };
 
-const laneGitActionRuntimeByLaneId = new Map<string, LaneGitActionRuntimeState>();
+const laneGitActionRuntimeByScope = new Map<string, LaneGitActionRuntimeState>();
 const laneGitActionRuntimeListeners = new Set<() => void>();
 
 type LaneGitActionsCachedState = {
@@ -82,16 +86,16 @@ const EMPTY_CHANGES: DiffChanges = { unstaged: [], staged: [] };
 const MAX_LANE_GIT_ACTIONS_CACHE_ENTRIES = 96;
 const laneGitActionsStateByScope = new Map<string, LaneGitActionsCachedState>();
 
-function laneGitActionsStateKey(projectRoot: string | null | undefined, laneId: string | null): string | null {
+function laneGitActionsStateKey(projectKey: string | null | undefined, laneId: string | null): string | null {
   if (!laneId) return null;
-  return `${projectRoot?.trim() || "__project__"}::${laneId}`;
+  return `${projectKey?.trim() || "__project__"}::${laneId}`;
 }
 
 function readLaneGitActionsCachedState(
-  projectRoot: string | null | undefined,
+  projectKey: string | null | undefined,
   laneId: string | null,
 ): LaneGitActionsCachedState | null {
-  const key = laneGitActionsStateKey(projectRoot, laneId);
+  const key = laneGitActionsStateKey(projectKey, laneId);
   if (!key) return null;
   const cached = laneGitActionsStateByScope.get(key) ?? null;
   if (!cached) return null;
@@ -101,11 +105,11 @@ function readLaneGitActionsCachedState(
 }
 
 function patchLaneGitActionsCachedState(
-  projectRoot: string | null | undefined,
+  projectKey: string | null | undefined,
   laneId: string | null,
   patch: Partial<Omit<LaneGitActionsCachedState, "updatedAtMs">>,
 ): LaneGitActionsCachedState | null {
-  const key = laneGitActionsStateKey(projectRoot, laneId);
+  const key = laneGitActionsStateKey(projectKey, laneId);
   if (!key) return null;
   const previous = laneGitActionsStateByScope.get(key);
   const next: LaneGitActionsCachedState = {
@@ -135,64 +139,64 @@ function emitLaneGitActionRuntimeChange(): void {
   }
 }
 
-function readLaneGitActionRuntimeState(laneId: string | null): LaneGitActionRuntimeState {
-  if (!laneId) return EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
-  return laneGitActionRuntimeByLaneId.get(laneId) ?? EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
+function readLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRuntimeState {
+  if (!scopeKey) return EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
+  return laneGitActionRuntimeByScope.get(scopeKey) ?? EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
 }
 
 function writeLaneGitActionRuntimeState(
-  laneId: string | null,
+  scopeKey: string | null,
   next: LaneGitActionRuntimeState,
 ): LaneGitActionRuntimeState {
-  if (!laneId) return EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
+  if (!scopeKey) return EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
   if (!next.busyAction && !next.notice && !next.error) {
-    laneGitActionRuntimeByLaneId.delete(laneId);
+    laneGitActionRuntimeByScope.delete(scopeKey);
   } else {
-    laneGitActionRuntimeByLaneId.set(laneId, next);
+    laneGitActionRuntimeByScope.set(scopeKey, next);
   }
   emitLaneGitActionRuntimeChange();
   return next;
 }
 
 function patchLaneGitActionRuntimeState(
-  laneId: string | null,
+  scopeKey: string | null,
   patch: Partial<LaneGitActionRuntimeState>,
 ): LaneGitActionRuntimeState {
-  const prev = readLaneGitActionRuntimeState(laneId);
-  return writeLaneGitActionRuntimeState(laneId, { ...prev, ...patch });
+  const prev = readLaneGitActionRuntimeState(scopeKey);
+  return writeLaneGitActionRuntimeState(scopeKey, { ...prev, ...patch });
 }
 
 function beginLaneGitActionRuntime(
-  laneId: string | null,
+  scopeKey: string | null,
   patch: Pick<LaneGitActionRuntimeState, "busyAction" | "notice" | "error">,
 ): number {
-  const nextVersion = readLaneGitActionRuntimeState(laneId).version + 1;
-  writeLaneGitActionRuntimeState(laneId, { ...patch, version: nextVersion });
+  const nextVersion = readLaneGitActionRuntimeState(scopeKey).version + 1;
+  writeLaneGitActionRuntimeState(scopeKey, { ...patch, version: nextVersion });
   return nextVersion;
 }
 
 function patchLaneGitActionRuntimeStateIfCurrent(
-  laneId: string | null,
+  scopeKey: string | null,
   version: number,
   patch: Partial<LaneGitActionRuntimeState>,
 ): LaneGitActionRuntimeState {
-  const current = readLaneGitActionRuntimeState(laneId);
+  const current = readLaneGitActionRuntimeState(scopeKey);
   if (current.version !== version) return current;
-  return writeLaneGitActionRuntimeState(laneId, { ...current, ...patch, version });
+  return writeLaneGitActionRuntimeState(scopeKey, { ...current, ...patch, version });
 }
 
 function scheduleLaneGitActionRuntimeClear(
-  laneId: string | null,
+  scopeKey: string | null,
   version: number,
   delayMs: number,
   patch: Partial<LaneGitActionRuntimeState>,
 ): void {
   window.setTimeout(() => {
-    patchLaneGitActionRuntimeStateIfCurrent(laneId, version, patch);
+    patchLaneGitActionRuntimeStateIfCurrent(scopeKey, version, patch);
   }, delayMs);
 }
 
-function useLaneGitActionRuntimeState(laneId: string | null): LaneGitActionRuntimeState {
+function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRuntimeState {
   return React.useSyncExternalStore(
     (listener) => {
       laneGitActionRuntimeListeners.add(listener);
@@ -200,7 +204,7 @@ function useLaneGitActionRuntimeState(laneId: string | null): LaneGitActionRunti
         laneGitActionRuntimeListeners.delete(listener);
       };
     },
-    () => readLaneGitActionRuntimeState(laneId),
+    () => readLaneGitActionRuntimeState(scopeKey),
     () => EMPTY_LANE_GIT_ACTION_RUNTIME_STATE,
   );
 }
@@ -213,7 +217,8 @@ export {
 };
 
 export function __resetLaneGitActionRuntimeForTests(): void {
-  laneGitActionRuntimeByLaneId.clear();
+  laneGitActionRuntimeByScope.clear();
+  laneGitActionsStateByScope.clear();
   emitLaneGitActionRuntimeChange();
 }
 
@@ -603,6 +608,7 @@ export function LaneGitActionsPane({
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const parentLane = useMemo(() => {
@@ -619,7 +625,7 @@ export function LaneGitActionsPane({
   const rootRef = useRef<HTMLDivElement>(null);
   const currentLaneIdRef = useRef<string | null>(laneId);
   const [paneWidth, setPaneWidth] = useState(1024);
-  const initialCachedGitState = readLaneGitActionsCachedState(projectRoot, laneId);
+  const initialCachedGitState = readLaneGitActionsCachedState(projectStateKey, laneId);
 
   const [loading, setLoading] = useState(false);
   const [changes, setChanges] = useState<DiffChanges>(initialCachedGitState?.changes ?? EMPTY_CHANGES);
@@ -640,7 +646,8 @@ export function LaneGitActionsPane({
   const autoRebaseStatusSnapshotRef = useRef<AutoRebaseLaneStatus | null | undefined>(autoRebaseStatusSnapshot);
   const [conflictState, setConflictState] = useState<GitConflictState | null>(initialCachedGitState?.conflictState ?? null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(initialCachedGitState?.stuckRebase ?? null);
-  const laneGitActionRuntime = useLaneGitActionRuntimeState(laneId);
+  const laneGitActionScopeKey = laneGitActionsStateKey(projectStateKey, laneId);
+  const laneGitActionRuntime = useLaneGitActionRuntimeState(laneGitActionScopeKey);
   const busyAction = laneGitActionRuntime.busyAction;
   const notice = laneGitActionRuntime.notice;
   const error = laneGitActionRuntime.error;
@@ -736,11 +743,11 @@ export function LaneGitActionsPane({
 
   const refreshChanges = async (targetLaneId: string | null = laneId) => {
     if (!targetLaneId) return;
-    const hasCachedState = Boolean(readLaneGitActionsCachedState(projectRoot, targetLaneId));
+    const hasCachedState = Boolean(readLaneGitActionsCachedState(projectStateKey, targetLaneId));
     if (isViewingLane(targetLaneId) && !hasCachedState) setLoading(true);
     try {
       const next = await window.ade.diff.getChanges({ laneId: targetLaneId });
-      patchLaneGitActionsCachedState(projectRoot, targetLaneId, { changes: next });
+      patchLaneGitActionsCachedState(projectStateKey, targetLaneId, { changes: next });
       if (isViewingLane(targetLaneId)) {
         setChanges(next);
       }
@@ -762,7 +769,7 @@ export function LaneGitActionsPane({
     const stashes = stashesResult.status === "fulfilled" ? stashesResult.value : undefined;
     const nextSyncStatus = syncStatusResult.status === "fulfilled" ? syncStatusResult.value : null;
     const nextConflictState = conflictResult.status === "fulfilled" ? conflictResult.value : null;
-    patchLaneGitActionsCachedState(projectRoot, targetLaneId, {
+    patchLaneGitActionsCachedState(projectStateKey, targetLaneId, {
       ...(stashes ? { stashes } : {}),
       syncStatus: nextSyncStatus,
       conflictState: nextConflictState,
@@ -825,7 +832,7 @@ export function LaneGitActionsPane({
     try {
       const statuses = await window.ade.lanes.listAutoRebaseStatuses();
       const nextStatus = statuses.find((entry) => entry.laneId === targetLaneId) ?? null;
-      patchLaneGitActionsCachedState(projectRoot, targetLaneId, { autoRebaseStatus: nextStatus });
+      patchLaneGitActionsCachedState(projectStateKey, targetLaneId, { autoRebaseStatus: nextStatus });
       if (isViewingLane(targetLaneId)) {
         setAutoRebaseStatus(nextStatus);
       }
@@ -834,7 +841,7 @@ export function LaneGitActionsPane({
         setAutoRebaseStatus(null);
       }
     }
-  }, [isViewingLane, laneId, projectRoot]);
+  }, [isViewingLane, laneId, projectStateKey]);
 
   const refreshCommitMessageAiState = useCallback(async () => {
     try {
@@ -881,7 +888,8 @@ export function LaneGitActionsPane({
   const runAction = async (actionName: string, fn: () => Promise<void>) => {
     const actionLaneId = laneId;
     if (!actionLaneId) return;
-    const actionVersion = beginLaneGitActionRuntime(actionLaneId, {
+    const actionScopeKey = laneGitActionsStateKey(projectStateKey, actionLaneId);
+    const actionVersion = beginLaneGitActionRuntime(actionScopeKey, {
       busyAction: actionName,
       notice: null,
       error: null,
@@ -900,9 +908,9 @@ export function LaneGitActionsPane({
         setForcePushSuggested(false);
       }
       if (isRemoteAction) {
-        patchLaneGitActionsCachedState(projectRoot, actionLaneId, { forcePushSuggested: false });
+        patchLaneGitActionsCachedState(projectStateKey, actionLaneId, { forcePushSuggested: false });
       }
-      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+      patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: `${actionName} completed`,
         error: null,
@@ -932,13 +940,13 @@ export function LaneGitActionsPane({
       } else if (actionName === "rebase and push") {
         showToast({ title: `Rebased & pushed ${laneLabel}`, tone: "success" });
       }
-      scheduleLaneGitActionRuntimeClear(actionLaneId, actionVersion, 3_000, {
+      scheduleLaneGitActionRuntimeClear(actionScopeKey, actionVersion, 3_000, {
         notice: null,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (message === "__ade_cancelled__") {
-        patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+        patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
           busyAction: null,
           notice: null,
           error: null,
@@ -946,12 +954,12 @@ export function LaneGitActionsPane({
         return;
       }
       if (actionName === "push" && isNonFastForwardError(message)) {
-        patchLaneGitActionsCachedState(projectRoot, actionLaneId, { forcePushSuggested: true });
+        patchLaneGitActionsCachedState(projectStateKey, actionLaneId, { forcePushSuggested: true });
         if (isViewingLane(actionLaneId)) {
           setForcePushSuggested(true);
         }
       }
-      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+      patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: null,
         error: formatActionError(actionName, message),
@@ -981,7 +989,8 @@ export function LaneGitActionsPane({
     }
 
     const actionLaneId = laneId;
-    const actionVersion = beginLaneGitActionRuntime(actionLaneId, {
+    const actionScopeKey = laneGitActionsStateKey(projectStateKey, actionLaneId);
+    const actionVersion = beginLaneGitActionRuntime(actionScopeKey, {
       busyAction: AUTO_GENERATE_COMMIT_ACTION,
       notice: "Generating commit message...",
       error: null,
@@ -993,17 +1002,17 @@ export function LaneGitActionsPane({
       }
       await window.ade.git.commit({ laneId: actionLaneId, message: generated.message, amend: amendCommit });
       await completeCommitRefresh(actionLaneId);
-      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+      patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: "commit completed",
         error: null,
       });
-      scheduleLaneGitActionRuntimeClear(actionLaneId, actionVersion, 3_000, {
+      scheduleLaneGitActionRuntimeClear(actionScopeKey, actionVersion, 3_000, {
         notice: null,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+      patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: null,
         error: message,
@@ -1016,10 +1025,11 @@ export function LaneGitActionsPane({
     completeCommitRefresh,
     hasStaged,
     laneId,
+    projectStateKey,
   ]);
 
   useEffect(() => {
-    const cached = readLaneGitActionsCachedState(projectRoot, laneId);
+    const cached = readLaneGitActionsCachedState(projectStateKey, laneId);
     setLoading(false);
     setChanges(cached?.changes ?? EMPTY_CHANGES);
     setStashes(cached?.stashes ?? []);
@@ -1033,13 +1043,13 @@ export function LaneGitActionsPane({
     setStuckRebase(cached?.stuckRebase ?? null);
     if (!active || !laneId) return;
     Promise.all([refreshChanges(laneId), refreshGitMeta(laneId)]).catch((err) => {
-      patchLaneGitActionRuntimeState(laneId, {
+      patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
         error: err instanceof Error ? err.message : String(err),
       });
     });
     void refreshCommitMessageAiState();
-  }, [active, laneId, lane?.branchRef, projectRoot, refreshCommitMessageAiState]);
+  }, [active, laneGitActionScopeKey, laneId, lane?.branchRef, projectStateKey, refreshCommitMessageAiState]);
 
   useEffect(() => {
     if (!active || !laneId) return;
@@ -1061,7 +1071,7 @@ export function LaneGitActionsPane({
       void window.ade.git
         .getSyncStatus({ laneId: effectLaneId })
         .then((nextStatus) => {
-          patchLaneGitActionsCachedState(projectRoot, effectLaneId, { syncStatus: nextStatus });
+          patchLaneGitActionsCachedState(projectStateKey, effectLaneId, { syncStatus: nextStatus });
           if (isViewingLane(effectLaneId)) {
             setSyncStatus(nextStatus);
           }
@@ -1096,7 +1106,7 @@ export function LaneGitActionsPane({
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [active, isViewingLane, laneId, projectRoot]);
+  }, [active, isViewingLane, laneId, projectStateKey]);
 
   useEffect(() => {
     if (!active) return;
@@ -1107,11 +1117,11 @@ export function LaneGitActionsPane({
         return;
       }
       const nextStatus = event.statuses.find((entry) => entry.laneId === laneId) ?? null;
-      patchLaneGitActionsCachedState(projectRoot, laneId, { autoRebaseStatus: nextStatus });
+      patchLaneGitActionsCachedState(projectStateKey, laneId, { autoRebaseStatus: nextStatus });
       setAutoRebaseStatus(nextStatus);
     });
     return unsubscribe;
-  }, [active, laneId, projectRoot]);
+  }, [active, laneId, projectStateKey]);
 
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();
@@ -1203,14 +1213,14 @@ export function LaneGitActionsPane({
   const moveUnstagedToNewLane = useCallback(async () => {
     if (!laneId || busyAction != null) return;
     if (hasStaged) {
-      patchLaneGitActionRuntimeState(laneId, {
+      patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
         error: "This lane has staged changes. Unstage all changes before moving unstaged work to a new lane.",
       });
       return;
     }
     if (!hasUnstaged) {
-      patchLaneGitActionRuntimeState(laneId, {
+      patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
         error: "This lane has no unstaged changes to move.",
       });
@@ -1218,7 +1228,7 @@ export function LaneGitActionsPane({
     }
     if (conflictState?.inProgress) {
       const kindLabel = conflictState.kind === "merge" ? "merge" : "rebase";
-      patchLaneGitActionRuntimeState(laneId, {
+      patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
         error: `Finish the current ${kindLabel} before moving changes to a new lane.`,
       });
@@ -1235,14 +1245,15 @@ export function LaneGitActionsPane({
     if (name == null) return;
 
     const actionLaneId = laneId;
-    const actionVersion = beginLaneGitActionRuntime(actionLaneId, {
+    const actionScopeKey = laneGitActionsStateKey(projectStateKey, actionLaneId);
+    const actionVersion = beginLaneGitActionRuntime(actionScopeKey, {
       busyAction: "move unstaged",
       notice: null,
       error: null,
     });
     try {
       const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name });
-      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+      patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: null,
         error: null,
@@ -1251,13 +1262,25 @@ export function LaneGitActionsPane({
       selectLane(created.id);
       navigate(`/lanes?laneId=${encodeURIComponent(created.id)}&focus=single`);
     } catch (err) {
-      patchLaneGitActionRuntimeStateIfCurrent(actionLaneId, actionVersion, {
+      patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
         busyAction: null,
         notice: null,
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [busyAction, conflictState, hasStaged, hasUnstaged, laneId, navigate, refreshLanes, requestTextInput, selectLane]);
+  }, [
+    busyAction,
+    conflictState,
+    hasStaged,
+    hasUnstaged,
+    laneGitActionScopeKey,
+    laneId,
+    navigate,
+    projectStateKey,
+    refreshLanes,
+    requestTextInput,
+    selectLane,
+  ]);
 
   const unstageAll = () => {
     if (!laneId) return;

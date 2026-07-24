@@ -175,6 +175,7 @@ function resetStore() {
     closePersonalChatsTab: vi.fn(),
     projectTransition: null,
     projectTransitionError: null,
+    openRemoteProjectTabs: [],
     openProjectTabRoots: [],
     projectInfoByRoot: {},
     clearProjectTransitionError: vi.fn(),
@@ -638,6 +639,135 @@ describe("TopBar", () => {
     expect(screen.getByLabelText("Remote: Mac Studio")).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Connections, connected" })).toBeTruthy();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("evicts an active remote tab only after its fallback project opens", async () => {
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    };
+    let resolveSwitch: () => void = () => {};
+    const switchPending = new Promise<void>((resolve) => {
+      resolveSwitch = resolve;
+    });
+    const switchProjectToPath = vi.fn(() => switchPending);
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("studio"));
+    useAppStore.setState({
+      project: {
+        rootPath: binding.rootPath,
+        displayName: binding.displayName,
+        baseRef: "main",
+      },
+      projectBinding: binding,
+      projectHydrated: true,
+      showWelcome: false,
+      openRemoteProjectTabs: [binding],
+      openProjectTabRoots: ["/Users/arul/ADE"],
+      laneSelectionByProject: {
+        [binding.key]: {
+          laneId: "lane-1",
+          sessionId: "session-1",
+        },
+      },
+      switchProjectToPath,
+    } as any);
+    window.localStorage.setItem(
+      `ade:project-route:${binding.key}`,
+      "/work?sessionId=session-1",
+    );
+
+    render(<TopBar />);
+    fireEvent.click(await screen.findByTitle("Close remote project"));
+
+    expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
+    expect(
+      useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key),
+    ).toContain(binding.key);
+    expect(
+      useAppStore.getState().laneSelectionByProject[binding.key],
+    ).toBeDefined();
+
+    await act(async () => {
+      resolveSwitch();
+      await switchPending;
+    });
+
+    await waitFor(() => {
+      expect(
+        useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key),
+      ).not.toContain(binding.key);
+      expect(
+        useAppStore.getState().laneSelectionByProject[binding.key],
+      ).toBeUndefined();
+    });
+    expect(
+      window.localStorage.getItem(`ade:project-route:${binding.key}`),
+    ).toBeNull();
+  });
+
+  it("cancels target disconnect when the active tab cannot switch to its fallback", async () => {
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    };
+    const snapshot = makeRemoteConnectionSnapshot("studio");
+    const switchProjectToPath = vi.fn(async () => {
+      throw new Error("fallback unavailable");
+    });
+    const disconnect = vi.fn(async () => undefined);
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(snapshot);
+    (globalThis.window.ade.remoteRuntime.listTargets as any)
+      .mockResolvedValue([snapshot.connections[0]!.target]);
+    globalThis.window.ade.remoteRuntime.disconnect = disconnect as any;
+    useAppStore.setState({
+      project: {
+        rootPath: binding.rootPath,
+        displayName: binding.displayName,
+        baseRef: "main",
+      },
+      projectBinding: binding,
+      projectHydrated: true,
+      showWelcome: false,
+      openRemoteProjectTabs: [binding],
+      openProjectTabRoots: ["/Users/arul/ADE"],
+      laneSelectionByProject: {
+        [binding.key]: {
+          laneId: "lane-1",
+          sessionId: "session-1",
+        },
+      },
+      switchProjectToPath,
+    } as any);
+
+    renderTopBarWithRouter();
+    act(() => openConnectionsPanel("machines"));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Disconnect" }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "DISCONNECT" }));
+
+    await waitFor(() => {
+      expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
+    });
+    expect(disconnect).not.toHaveBeenCalled();
+    expect(
+      useAppStore.getState().openRemoteProjectTabs.map((entry) => entry.key),
+    ).toContain(binding.key);
+    expect(
+      useAppStore.getState().laneSelectionByProject[binding.key],
+    ).toBeDefined();
   });
 
   it("opens mobile sync from a remote-bound project and reads the routed runtime status", async () => {
