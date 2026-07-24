@@ -40,6 +40,10 @@ private enum PrGitHubDescriptionRegex {
   static let anyTag = expression(#"<[^>]+>"#, options: [.caseInsensitive])
   static let repeatedBlankLines = expression(#"\n{3,}"#)
   static let inlineCode = expression(#"(`+)[^\n]*?\1"#)
+  static let safeAutolink = expression(
+    #"<(?:https?://[^\s<>]+|[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+)>"#,
+    options: [.caseInsensitive]
+  )
   static let fenceOpening = expression(
     #"^[ \t]*(`{3,}|~{3,})[^\n]*(?:\n|$)"#,
     options: [.anchorsMatchLines]
@@ -69,13 +73,13 @@ private enum PrGitHubDescriptionRegex {
 /// details blocks into native disclosures and normalize the remaining safe
 /// GitHub HTML into Markdown before it reaches the shared renderer.
 func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock] {
-  let protectedCode = prProtectMarkdownCode(in: normalizePrMarkdownText(text))
-  let source = protectedCode.text
+  let protectedMarkdown = prProtectMarkdownSyntax(in: normalizePrMarkdownText(text))
+  let source = protectedMarkdown.text
 
   func normalizeFragment(_ fragment: String) -> String {
-    prRestoreMarkdownCode(
+    prRestoreMarkdownSyntax(
       in: normalizePrGitHubHtmlFragment(fragment),
-      segments: protectedCode.segments
+      segments: protectedMarkdown.segments
     )
   }
 
@@ -118,9 +122,9 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
       let titleRange = summaryMatch.range(at: 1)
       title = titleRange.location == NSNotFound
         ? "Details"
-        : prRestoreMarkdownCode(
+        : prRestoreMarkdownSyntax(
           in: prGitHubHtmlPlainText(nsInner.substring(with: titleRange)),
-          segments: protectedCode.segments
+          segments: protectedMarkdown.segments
         )
       let mutableBody = NSMutableString(string: inner)
       mutableBody.replaceCharacters(in: summaryMatch.range, with: "")
@@ -151,8 +155,8 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
 }
 
 func normalizePrGitHubHtmlFragment(_ source: String) -> String {
-  let protectedCode = prProtectMarkdownCode(in: normalizePrMarkdownText(source))
-  var value = protectedCode.text
+  let protectedMarkdown = prProtectMarkdownSyntax(in: normalizePrMarkdownText(source))
+  var value = protectedMarkdown.text
 
   value = prReplaceHtmlMatches(
     in: value,
@@ -241,19 +245,19 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
     withTemplate: "\n\n"
   )
   value = value.trimmingCharacters(in: .whitespacesAndNewlines)
-  return prRestoreMarkdownCode(in: value, segments: protectedCode.segments)
+  return prRestoreMarkdownSyntax(in: value, segments: protectedMarkdown.segments)
 }
 
-private struct PrProtectedMarkdownCode {
+private struct PrProtectedMarkdownSegment {
   let token: String
   let value: String
 }
 
-private func prProtectMarkdownCode(
+private func prProtectMarkdownSyntax(
   in source: String
-) -> (text: String, segments: [PrProtectedMarkdownCode]) {
+) -> (text: String, segments: [PrProtectedMarkdownSegment]) {
   var text = source
-  var segments: [PrProtectedMarkdownCode] = []
+  var segments: [PrProtectedMarkdownSegment] = []
 
   func protect(regex: NSRegularExpression) {
     let original = text as NSString
@@ -265,7 +269,7 @@ private func prProtectMarkdownCode(
     let result = NSMutableString(string: text)
     for match in matches.reversed() {
       let token = "\u{E000}ADEPRCODE\(segments.count)\u{E001}"
-      segments.append(PrProtectedMarkdownCode(
+      segments.append(PrProtectedMarkdownSegment(
         token: token,
         value: original.substring(with: match.range)
       ))
@@ -276,12 +280,13 @@ private func prProtectMarkdownCode(
 
   text = prProtectMarkdownFences(in: text, segments: &segments)
   protect(regex: PrGitHubDescriptionRegex.inlineCode)
+  protect(regex: PrGitHubDescriptionRegex.safeAutolink)
   return (text, segments)
 }
 
 private func prProtectMarkdownFences(
   in source: String,
-  segments: inout [PrProtectedMarkdownCode]
+  segments: inout [PrProtectedMarkdownSegment]
 ) -> String {
   let openingRegex = PrGitHubDescriptionRegex.fenceOpening
   let closingRegex = PrGitHubDescriptionRegex.fenceClosing
@@ -338,7 +343,7 @@ private func prProtectMarkdownFences(
   let result = NSMutableString(string: source)
   for range in protectedRanges.reversed() {
     let token = "\u{E000}ADEPRCODE\(segments.count)\u{E001}"
-    segments.append(PrProtectedMarkdownCode(
+    segments.append(PrProtectedMarkdownSegment(
       token: token,
       value: original.substring(with: range)
     ))
@@ -347,9 +352,9 @@ private func prProtectMarkdownFences(
   return result as String
 }
 
-private func prRestoreMarkdownCode(
+private func prRestoreMarkdownSyntax(
   in source: String,
-  segments: [PrProtectedMarkdownCode]
+  segments: [PrProtectedMarkdownSegment]
 ) -> String {
   segments.reduce(into: source) { value, segment in
     value = value.replacingOccurrences(of: segment.token, with: segment.value)

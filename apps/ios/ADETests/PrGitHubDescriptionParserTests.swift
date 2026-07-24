@@ -59,6 +59,20 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
     XCTAssertTrue(markdown.contains("```swift"))
   }
 
+  func testHtmlNormalizationPreservesSafeMarkdownAutolinks() {
+    let markdown = normalizePrGitHubHtmlFragment("""
+    Visit <https://example.com/docs?q=swift>.
+    Email <user.name+ade@example.co.uk>.
+    Strip <span>HTML</span> and <javascript:alert(1)>.
+    """)
+
+    XCTAssertTrue(markdown.contains("<https://example.com/docs?q=swift>"))
+    XCTAssertTrue(markdown.contains("<user.name+ade@example.co.uk>"))
+    XCTAssertTrue(markdown.contains("Strip HTML and ."))
+    XCTAssertFalse(markdown.contains("<span>"))
+    XCTAssertFalse(markdown.contains("<javascript:"))
+  }
+
   func testDescriptionParserDoesNotPromoteFencedDetailsExample() {
     let blocks = parsePrGitHubDescriptionBlocks("""
     Example:
