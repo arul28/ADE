@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.36] - 2026-07-24
+
+### Account connections
+
+- Fixed the "Unknown cipher" account-connect failure: sealed adoption now negotiates its AEAD (ChaCha20-Poly1305 or AES-256-GCM) inside the signed identity challenge, with the byte-identical legacy path preserved for older apps and iOS.
+- Connecting to a Mac running an older ADE reports that plainly instead of failing cryptically on every route.
+
+### Brain reliability
+
+- Event-loop watchdog: a blocked brain (>15s) records a breadcrumb and restarts cleanly in seconds, with an in-app recovery notice; sleep/wake is never mistaken for a freeze.
+- Freshness self-monitor: the brain stat-checks its installed code every five minutes and restarts itself onto new code when idle — stale brains can no longer persist.
+- Verified handover: repair confirms the predecessor died and released its sync ports; zombie listeners are reaped with PID-reuse guards; port drift triggers immediate republish.
+- Protocol compatibility window: newer brains connect normally instead of being quarantined.
+- Cancellable slow paths: transcript pulls, GitHub calls, and provider probes observe abort signals; GitHub body reads are time-bounded; sync commands over five seconds log their action name.
+
+### Updates
+
+- Transactional installs: aborted updates roll back fully and surface a "didn't finish — restart to retry" banner; a hung quit escalates after ten seconds once consented.
+- Idle auto-apply with a cancelable countdown; declined cancels restore the countdown honestly.
+- Truthful version reporting: running vs installed vs latest for both app and brain (pid, sync port), downloaded-vs-installed distinction, and machine-card route-publish health.
+
+### Diagnostics
+
+- New `ade doctor`: one read-only health table covering versions, wedge history, sync-port ownership, publish health, relay, and account state.
+- Publish pipeline: per-leg budgets and honest timeout classification; caller-isolated, cancellable token refreshes; bounded response reads.
+- The brain writes structured rotating JSONL logs with timestamped stderr mirrors; account-directory Worker observability enabled.
+
 ## [1.2.35] - 2026-07-23
 
 ### Work sidebar: settled thread lifecycle
@@ -961,6 +988,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.34...HEAD
+[1.2.36]: https://github.com/arul28/ADE/compare/v1.2.35...v1.2.36
 [1.2.35]: https://github.com/arul28/ADE/compare/v1.2.34...v1.2.35
 [1.2.34]: https://github.com/arul28/ADE/compare/v1.2.33...v1.2.34
 [1.2.33]: https://github.com/arul28/ADE/compare/v1.2.32...v1.2.33

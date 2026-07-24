@@ -1,0 +1,34 @@
+---
+title: "v1.2.36"
+description: "Release notes for ADE v1.2.36 - July 24, 2026"
+---
+
+v1.2.36 makes ADE's foundations self-healing: the brain keeps itself on the latest code and recovers from freezes in seconds, updates apply transactionally with truthful version reporting everywhere, account connections work again on every route, and a new `ade doctor` diagnoses the whole machine in one command.
+
+---
+
+## Account connections work again
+
+- **The "Unknown cipher" account-connect failure is fixed.** v1.2.35's sealed adoption used a cipher the packaged desktop app cannot provide; clients and hosts now negotiate the AEAD (ChaCha20-Poly1305 or AES-256-GCM) inside the signed identity challenge. Older apps and iOS keep the exact legacy handshake, byte for byte.
+- **Clear errors instead of dead ends.** Connecting to a Mac running an older ADE now says so plainly instead of failing with a cryptic cipher error on every route.
+
+## The brain heals itself
+
+- **A frozen brain restarts in seconds, not minutes.** A watchdog thread detects a blocked event loop (>15s), records what it was doing, and restarts cleanly — with a recovery notice in the app telling you what happened. Sleep/wake is never mistaken for a freeze.
+- **Stale brains are impossible now.** The brain checks its own on-disk code every five minutes (one file stat — effectively free) and restarts itself onto new code when idle. Previously a brain could silently run week-old code while every version label claimed it was current.
+- **Verified handover.** Repairing or replacing the brain now confirms the old process actually died and released its network ports before declaring success; leftover zombie processes squatting on sync ports are identified and reaped with PID-reuse safety checks.
+- **Newer brains connect instead of being quarantined.** A protocol compatibility window lets an older desktop talk to a newer brain normally.
+- **Slow operations can't freeze everything.** Known-slow work (transcript pulls, GitHub calls, provider probes) is now cancellable, GitHub response reads are time-bounded, and any sync command taking over five seconds is logged with its name.
+
+## Updates that actually apply
+
+- **Transactional installs.** If a consented update is interrupted — a hung quit, a cancelled dialog — everything rolls back and an amber banner tells you the update didn't finish, instead of silently stranding you on old code with the brain service stopped.
+- **A hung quit can't block an update.** Once you consent, the app gives itself ten seconds to quit gracefully, then forces the handoff.
+- **Idle auto-apply.** A downloaded update applies itself after two quiet minutes, with a ten-second cancelable countdown — so an ignored update can no longer leave you stale overnight.
+- **Truthful versions everywhere.** Settings now shows the *running* version of both the app and the brain (with pid and sync port), distinguishes a downloaded update from an installed one, and warns when a restart is pending. Machine cards show route-publish health — including a clear warning when other devices may not be able to reach the Mac.
+
+## Diagnostics
+
+- **`ade doctor`.** One read-only command reports app and brain versions (running vs installed), recent freeze recoveries, sync-port ownership, account-directory publish health, Relay status, and sign-in state as a green/red table.
+- **Honest publish failures.** Route publishing to the account directory now measures every leg (token, snapshot, HTTP) separately, classifies timeouts truthfully, keeps token refreshes cancellable and caller-isolated, and bounds response reads so a stalled server can't silently stop the heartbeat.
+- **The brain finally has real logs.** Structured, timestamped, rotating JSONL at `~/.ade/runtime/brain.jsonl`, with timestamped warnings mirrored to the launchd log.
