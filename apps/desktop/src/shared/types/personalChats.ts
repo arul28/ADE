@@ -168,7 +168,7 @@ export type PersonalChatStreamEventsResult = RemoteRuntimeStreamEventsResult;
 /** Backend contract shared by machine RPC and both sync-host ingress paths. */
 export type PersonalChatScopeContract = {
   capabilities(): PersonalChatCapabilities;
-  call(action: unknown, args: unknown): Promise<PersonalChatCallResponse>;
+  call(action: unknown, args: unknown, signal?: AbortSignal): Promise<PersonalChatCallResponse>;
   streamEvents(args: unknown): Promise<PersonalChatStreamEventsResult>;
   transcriptPath(sessionId: unknown): Promise<string | null>;
   isTurnActive(sessionId: unknown): Promise<boolean>;

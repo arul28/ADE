@@ -2253,7 +2253,7 @@ describe("createAgentChatService", () => {
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
       // Make the session look active so routeActiveToSteer would otherwise
       // convert the send into a steer() that bypasses the disk gate.
-      service.runSessionTurn({ sessionId: session.id, text: "Kick off a long turn." });
+      void service.runSessionTurn({ sessionId: session.id, text: "Kick off a long turn." }).catch(() => undefined);
       await vi.waitFor(() => expect(mockState.codexRequestPayloads.some((p) => p.method === "turn/start")).toBe(true));
       mockState.codexRequestPayloads = [];
 
@@ -2305,6 +2305,7 @@ describe("createAgentChatService", () => {
     expect(service.getSessionSummary).toBeTypeOf("function");
     expect(service.hasActiveWorkloads).toBeTypeOf("function");
     expect(service.getChatTranscript).toBeTypeOf("function");
+    expect(service.getChatTranscriptPage).toBeTypeOf("function");
     expect(service.ensureIdentitySession).toBeTypeOf("function");
     expect(service.approveToolUse).toBeTypeOf("function");
     expect(service.getAvailableModels).toBeTypeOf("function");
@@ -2502,7 +2503,7 @@ describe("createAgentChatService", () => {
       });
       expect(sessionService.get(result.chatSessionId)?.title).toBe("Please inspect the failing test");
 
-      const history = service.getChatEventHistory(result.chatSessionId, { maxEvents: 10 });
+      const history = await service.getChatEventHistory(result.chatSessionId, { maxEvents: 10 });
       expect(history.events.map((envelope) => envelope.event.type)).toEqual([
         "system_notice",
         "user_message",
@@ -4680,7 +4681,7 @@ describe("createAgentChatService", () => {
         && (envelope.provenance as { providerOrigin?: string } | undefined)?.providerOrigin === "handoff_fork");
       expect(publishedSeeded).toHaveLength(0);
 
-      const history = service.getChatEventHistory(result.session.id, { maxEvents: 50 });
+      const history = await service.getChatEventHistory(result.session.id, { maxEvents: 50 });
       const seededHistory = history.events.filter((envelope) =>
         (envelope.provenance as { providerOrigin?: string } | undefined)?.providerOrigin === "handoff_fork");
       expect(seededHistory).toHaveLength(sourceEnvelopes.length);
@@ -8409,7 +8410,7 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(eventTypes.indexOf("prompt_suggestion")).toBeLessThan(eventTypes.indexOf("done"));
-      expect(service.getChatEventHistory(session.id, { maxEvents: 50 }).events
+      expect((await service.getChatEventHistory(session.id, { maxEvents: 50 })).events
         .some((event) => event.event.type === "prompt_suggestion")).toBe(false);
     });
 
@@ -9323,13 +9324,13 @@ describe("createAgentChatService", () => {
         modelId: "opencode/anthropic/claude-sonnet-5",
       });
 
-      const subagents = service.listSubagents({ sessionId: session.id });
+      const subagents = await service.listSubagents({ sessionId: session.id });
       expect(subagents).toEqual([]);
     });
 
-    it("returns empty array for unknown session", () => {
+    it("returns empty array for unknown session", async () => {
       const { service } = createService();
-      const subagents = service.listSubagents({ sessionId: "unknown-id" });
+      const subagents = await service.listSubagents({ sessionId: "unknown-id" });
       expect(subagents).toEqual([]);
     });
 
@@ -9386,7 +9387,7 @@ describe("createAgentChatService", () => {
         "utf8",
       );
 
-      const subagents = service.listSubagents({ sessionId: session.id });
+      const subagents = await service.listSubagents({ sessionId: session.id });
 
       expect(subagents).toEqual([
         expect.objectContaining({
@@ -9400,6 +9401,121 @@ describe("createAgentChatService", () => {
           endTimestamp: "2026-06-30T01:02:00.000Z",
         }),
       ]);
+    });
+
+    it("caps persisted subagent lifecycle hydration to the newest 1,000 rows", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const transcriptFile = path.join(
+        tmpRoot,
+        ".ade",
+        "transcripts",
+        "chat",
+        `${session.id}.jsonl`,
+      );
+      const rows = Array.from({ length: 1_200 }, (_, index): AgentChatEventEnvelope => ({
+        sessionId: session.id,
+        timestamp: new Date(Date.UTC(2026, 6, 24, 12, 0, index)).toISOString(),
+        sequence: index,
+        event: {
+          type: "subagent_started",
+          taskId: `task-${index}`,
+          agentId: `agent-${index}`,
+          description: `Review slice ${index}`,
+          turnId: `turn-${index}`,
+        },
+      }));
+      fs.writeFileSync(
+        transcriptFile,
+        `${rows.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+        "utf8",
+      );
+
+      const subagents = await service.listSubagents({ sessionId: session.id });
+
+      expect(subagents).toHaveLength(1_000);
+      expect(subagents.some((entry) => entry.taskId === "task-0")).toBe(false);
+      expect(subagents.some((entry) => entry.taskId === "task-1199")).toBe(true);
+    });
+
+    it("serves all viewer transcript endpoints from a large gzip without synchronous whole-file reads", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const actualTranscript = await vi.importActual<typeof import("../../../shared/chatTranscript")>("../../../shared/chatTranscript");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(actualTranscript.parseAgentChatTranscript);
+      const transcriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      const lifecycle: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-30T01:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "subagent_started",
+          taskId: "agent-thread-gzip",
+          agentId: "agent-thread-gzip",
+          description: "Inspect compressed history",
+        },
+      };
+      const captured: AgentChatEventEnvelope = {
+        ...lifecycle,
+        sequence: 2,
+        provenance: {
+          threadId: "agent-thread-gzip",
+          role: "agent",
+          targetKind: "codex_subagent",
+        },
+      };
+      const recent: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-30T01:01:00.000Z",
+        sequence: 3,
+        event: { type: "user_message", text: "recent transcript tail" },
+      };
+      const oversizedButBounded: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-30T00:59:00.000Z",
+        sequence: 0,
+        event: { type: "text", text: "x".repeat(5 * 1024 * 1024) },
+      };
+      const compressedPath = `${transcriptFile}.gz`;
+      fs.writeFileSync(compressedPath, gzipSync([
+        JSON.stringify(oversizedButBounded),
+        JSON.stringify(lifecycle),
+        JSON.stringify(captured),
+        JSON.stringify(recent),
+        "",
+      ].join("\n")));
+      fs.rmSync(transcriptFile, { force: true });
+      const readFileSyncSpy = vi.spyOn(fs, "readFileSync");
+
+      const [subagents, subagentTranscript, chatTranscript, transcriptEntries] = await Promise.all([
+        service.listSubagents({ sessionId: session.id }),
+        service.getSubagentTranscript({
+          sessionId: session.id,
+          agentId: "agent-thread-gzip",
+        }),
+        service.getChatTranscript({ sessionId: session.id }),
+        service.readTranscript(session.id, 10),
+      ]);
+
+      expect(subagents).toEqual([
+        expect.objectContaining({ taskId: "agent-thread-gzip", status: "running" }),
+      ]);
+      expect(subagentTranscript).toEqual([
+        expect.objectContaining({ sessionId: "agent-thread-gzip" }),
+      ]);
+      expect(chatTranscript.entries.at(-1)?.text).toBe("recent transcript tail");
+      expect(transcriptEntries.at(-1)?.text).toBe("recent transcript tail");
+      expect(
+        readFileSyncSpy.mock.calls.some(([filePath]) => filePath === compressedPath),
+      ).toBe(false);
     });
   });
 
@@ -18451,7 +18567,7 @@ describe("createAgentChatService", () => {
         ),
       ).toBe(true);
       expect(
-        service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
+        (await service.listSubagents({ sessionId: session.id })).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
       ).toBe("running");
 
       mockState.emitCodexPayload({
@@ -18531,7 +18647,7 @@ describe("createAgentChatService", () => {
         && event.event.summary === "Agent resumed"
       )).toBe(false);
       expect(
-        service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
+        (await service.listSubagents({ sessionId: session.id })).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
       ).toBe("stopped");
     });
 
@@ -18590,7 +18706,7 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(
-        service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
+        (await service.listSubagents({ sessionId: session.id })).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
       ).toBe("running");
 
       mockState.emitCodexPayload({
@@ -18628,7 +18744,7 @@ describe("createAgentChatService", () => {
         }),
       ]));
       expect(
-        service.listSubagents({ sessionId: session.id }).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
+        (await service.listSubagents({ sessionId: session.id })).find((snapshot) => snapshot.taskId === "agent-thread-1")?.status,
       ).toBe("completed");
     });
 
@@ -19042,7 +19158,7 @@ describe("createAgentChatService", () => {
         event.event.type === "text"
         && event.event.text === "Live child output."
       )).toBe(false);
-      const parentHistory = service.getChatEventHistory(session.id);
+      const parentHistory = await service.getChatEventHistory(session.id);
       expect(parentHistory.events.some((event) =>
         event.event.type === "text"
         && event.event.text === "Live child output."
@@ -19168,7 +19284,7 @@ describe("createAgentChatService", () => {
           },
         },
       });
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({
           taskId: "call-spawn-1",
           parentToolUseId: "call-spawn-1",
@@ -19192,7 +19308,7 @@ describe("createAgentChatService", () => {
         },
       });
 
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({
           taskId: "agent-thread-1",
           parentToolUseId: "call-spawn-1",
@@ -19220,7 +19336,7 @@ describe("createAgentChatService", () => {
         },
       });
 
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({
           taskId: "agent-thread-1",
           parentToolUseId: "call-spawn-1",
@@ -19268,7 +19384,7 @@ describe("createAgentChatService", () => {
         },
       });
 
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({
           taskId: "call-spawn-1",
           parentToolUseId: "call-spawn-1",
@@ -19311,14 +19427,14 @@ describe("createAgentChatService", () => {
           }),
         }),
       ]));
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({
           taskId: "call-spawn-1",
           status: "failed",
           summary: "spawn_agent is not available in this runtime",
         }),
       ]);
-      expect(service.listSubagents({ sessionId: session.id }).some((snapshot) => snapshot.status === "running")).toBe(false);
+      expect((await service.listSubagents({ sessionId: session.id })).some((snapshot) => snapshot.status === "running")).toBe(false);
     });
 
     it("uses content text instead of object stringification for Codex spawn failures", async () => {
@@ -19539,7 +19655,7 @@ describe("createAgentChatService", () => {
           && event.event.turnId === "turn-1",
       );
 
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({
           taskId: "agent-thread-1",
           parentToolUseId: "call-spawn-1",
@@ -19573,7 +19689,7 @@ describe("createAgentChatService", () => {
           && event.event.status === "completed",
       );
 
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({
           taskId: "agent-thread-1",
           parentToolUseId: "call-spawn-1",
@@ -19603,7 +19719,7 @@ describe("createAgentChatService", () => {
       expect(events.filter((event) =>
         event.event.type === "subagent_result" && event.event.taskId === "agent-thread-1"
       )).toHaveLength(1);
-      expect(service.listSubagents({ sessionId: session.id })[0]).toMatchObject({
+      expect((await service.listSubagents({ sessionId: session.id }))[0]).toMatchObject({
         status: "completed",
         finalSummary: "The renderer lifecycle is correct.",
       });
@@ -19772,7 +19888,7 @@ describe("createAgentChatService", () => {
         { threadId: "thread-1", turnId: "turn-2" },
         { threadId: "agent-thread-1", turnId: "agent-turn-1" },
       ]);
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({ taskId: "agent-thread-1", status: "running" }),
       ]);
 
@@ -19788,7 +19904,7 @@ describe("createAgentChatService", () => {
           && event.event.turnId === "turn-2"
           && event.event.status === "interrupted",
       );
-      expect(service.listSubagents({ sessionId: session.id })).toEqual([
+      expect(await service.listSubagents({ sessionId: session.id })).toEqual([
         expect.objectContaining({ taskId: "agent-thread-1", status: "running" }),
       ]);
 
@@ -21309,6 +21425,154 @@ describe("createAgentChatService", () => {
         turnId: "turn-ids",
       });
     });
+
+    it("pages with append-stable byte cursors without parsing the full transcript", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const exactLine = (index: number): string => {
+        const text = `message-${index}-`;
+        const envelope: AgentChatEventEnvelope = {
+          sessionId: session.id,
+          timestamp: new Date(Date.UTC(2026, 6, 24, 10, 0, index)).toISOString(),
+          sequence: index,
+          event: {
+            type: "user_message",
+            text,
+            turnId: `turn-${index}`,
+          },
+        };
+        let line = `${JSON.stringify(envelope)}\n`;
+        const padding = 40_000 - Buffer.byteLength(line, "utf8");
+        expect(padding).toBeGreaterThanOrEqual(0);
+        envelope.event = {
+          type: "user_message",
+          text: `${text}${"x".repeat(padding)}`,
+          turnId: `turn-${index}`,
+        };
+        line = `${JSON.stringify(envelope)}\n`;
+        expect(Buffer.byteLength(line, "utf8")).toBe(40_000);
+        return line;
+      };
+      const transcriptFile = path.join(
+        tmpRoot,
+        ".ade",
+        "transcripts",
+        "chat",
+        `${session.id}.jsonl`,
+      );
+      const original = Array.from({ length: 10 }, (_, index) => exactLine(index));
+      fs.writeFileSync(transcriptFile, original.join(""), "utf8");
+
+      const newest = await service.getChatTranscriptPage({
+        sessionId: session.id,
+        limit: 2,
+        maxChars: 100_000,
+      });
+      expect(newest.cursorKind).toBe("byte");
+      expect(newest.entries.map((entry) => entry.text.slice(0, 10))).toEqual([
+        "message-8-",
+        "message-9-",
+      ]);
+      expect(newest.nextCursor).toBe(8 * 40_000);
+
+      fs.appendFileSync(transcriptFile, exactLine(10), "utf8");
+      const older = await service.getChatTranscriptPage({
+        sessionId: session.id,
+        beforeOffset: newest.nextCursor!,
+        limit: 2,
+        maxChars: 100_000,
+      });
+      expect(older.entries.map((entry) => entry.text.slice(0, 10))).toEqual([
+        "message-6-",
+        "message-7-",
+      ]);
+      expect(older.nextCursor).toBe(6 * 40_000);
+      expect(older.entries.some((entry) => entry.text.startsWith("message-10-"))).toBe(false);
+    });
+
+    it("pages duplicate-looking transcript rows by occurrence without skipping one", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const duplicate: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-07-24T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "same text",
+          turnId: "same-turn",
+        },
+      };
+      const line = `${JSON.stringify(duplicate)}\n`;
+      const lineBytes = Buffer.byteLength(line, "utf8");
+      const transcriptFile = path.join(
+        tmpRoot,
+        ".ade",
+        "transcripts",
+        "chat",
+        `${session.id}.jsonl`,
+      );
+      fs.writeFileSync(transcriptFile, line.repeat(3), "utf8");
+
+      const newest = await service.getChatTranscriptPage({
+        sessionId: session.id,
+        limit: 2,
+      });
+      expect(newest.entries).toHaveLength(2);
+      expect(newest.nextCursor).toBe(lineBytes);
+
+      const older = await service.getChatTranscriptPage({
+        sessionId: session.id,
+        beforeOffset: newest.nextCursor!,
+        limit: 2,
+      });
+      expect(older.entries).toHaveLength(1);
+      expect(older.nextCursor).toBeNull();
+    });
+
+    it("keeps an oversize boundary entry whole so its suffix is not lost behind the byte cursor", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const fullText = "x".repeat(1_000);
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-07-24T10:00:00.000Z",
+        sequence: 1,
+        event: { type: "text", text: fullText, turnId: "turn-oversize" },
+      };
+      const transcriptFile = path.join(
+        tmpRoot,
+        ".ade",
+        "transcripts",
+        "chat",
+        `${session.id}.jsonl`,
+      );
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+
+      const page = await service.getChatTranscriptPage({
+        sessionId: session.id,
+        limit: 10,
+        maxChars: 200,
+      });
+
+      expect(page.entries).toHaveLength(1);
+      expect(page.entries[0]?.text).toBe(fullText);
+      expect(page.nextCursor).toBeNull();
+    });
   });
 
   describe("readTranscript", () => {
@@ -21358,7 +21622,7 @@ describe("createAgentChatService", () => {
       fs.rmSync(transcriptFile, { force: true });
       vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => raw.includes("compressed history") ? [envelope] : []);
 
-      expect(service.getChatEventHistory(session.id).events).toEqual([envelope]);
+      expect((await service.getChatEventHistory(session.id)).events).toEqual([envelope]);
     });
 
     it("prefers the plain transcript in a both-exist crash window", async () => {
@@ -21379,7 +21643,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(`${transcriptFile}.gz`, gzipSync(`${JSON.stringify(gzipEnvelope)}\n`));
       vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => raw.includes("plain wins") ? [plainEnvelope] : [gzipEnvelope]);
 
-      expect(service.getChatEventHistory(session.id).events).toEqual([plainEnvelope]);
+      expect((await service.getChatEventHistory(session.id)).events).toEqual([plainEnvelope]);
       expect(logger.warn).toHaveBeenCalledWith(
         "agent_chat.transcript_plain_preferred",
         expect.objectContaining({ path: expect.stringContaining(`${session.id}.jsonl`) }),
@@ -21388,7 +21652,7 @@ describe("createAgentChatService", () => {
 
     it("returns an empty history for an unknown session", async () => {
       const { service } = createService();
-      const history = service.getChatEventHistory("unknown-session");
+      const history = await service.getChatEventHistory("unknown-session");
       expect(history.events).toEqual([]);
       expect(history.truncated).toBe(false);
       expect(history.transcriptTruncated).toBe(false);
@@ -21427,13 +21691,101 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n${JSON.stringify(envelope2)}\n`, "utf8");
       vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope1, envelope2]);
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
       expect(history.sessionId).toBe(session.id);
       expect(history.sessionFound).toBe(true);
       expect(history.events).toHaveLength(2);
       expect(history.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
       )).toEqual(["persisted-1", "persisted-2"]);
+    });
+
+    it("hydrates through the async path without synchronous realpath or transcript flushing", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "async-persisted" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+      const realpathSyncSpy = vi.spyOn(fs, "realpathSync").mockImplementation(() => {
+        throw new Error("synchronous realpath is forbidden");
+      });
+      try {
+        const history = await service.getChatEventHistory(session.id);
+        expect(history.events).toEqual([envelope]);
+      } finally {
+        realpathSyncSpy.mockRestore();
+      }
+    });
+
+    it("keeps async transcript hydration retryable when a candidate cannot be read", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify({
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "persisted" },
+        sequence: 1,
+      })}\n`, "utf8");
+      const openError = Object.assign(new Error("too many open files"), { code: "EMFILE" });
+      const openSpy = vi.spyOn(fs.promises, "open").mockRejectedValueOnce(openError);
+      try {
+        await expect(service.getChatEventHistory(session.id)).rejects.toBe(openError);
+      } finally {
+        openSpy.mockRestore();
+      }
+    });
+
+    it("uses a healthy dedicated transcript when a lower-priority legacy candidate fails", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const dedicatedPath = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      const legacyPath = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "dedicated survives" },
+        sequence: 1,
+      };
+      fs.writeFileSync(dedicatedPath, `${JSON.stringify(envelope)}\n`, "utf8");
+      fs.writeFileSync(legacyPath, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+        raw.includes("dedicated survives") ? [envelope] : []);
+      const legacyError = Object.assign(new Error("legacy read failed"), { code: "EIO" });
+      const originalOpen = fs.promises.open.bind(fs.promises);
+      const openSpy = vi.spyOn(fs.promises, "open").mockImplementation((async (
+        filePath: fs.PathLike,
+        flags: fs.OpenMode,
+        mode?: fs.Mode,
+      ) => {
+        if (String(filePath) === legacyPath) throw legacyError;
+        return await originalOpen(filePath, flags, mode);
+      }) as typeof fs.promises.open);
+
+      try {
+        const history = await service.getChatEventHistory(session.id);
+        expect(history.events).toEqual([envelope]);
+      } finally {
+        openSpy.mockRestore();
+      }
     });
 
     it("hydrates from the more complete dedicated chat transcript when the legacy transcript is capped", async () => {
@@ -21477,7 +21829,7 @@ describe("createAgentChatService", () => {
           : [cappedLegacyEnvelope],
       );
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
 
       expect(history.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
@@ -21521,7 +21873,7 @@ describe("createAgentChatService", () => {
           : [cappedLegacyEnvelope],
       );
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
 
       expect(history.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
@@ -21557,7 +21909,7 @@ describe("createAgentChatService", () => {
         raw.includes("legacy-chat-event") ? [legacyEnvelope] : [],
       );
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
 
       expect(history.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
@@ -21605,7 +21957,7 @@ describe("createAgentChatService", () => {
           : [staleLegacyEnvelope],
       );
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
 
       expect(fs.statSync(legacyTranscriptFile).size).toBeGreaterThan(fs.statSync(dedicatedTranscriptFile).size);
       expect(history.events.map((envelope) =>
@@ -21652,13 +22004,14 @@ describe("createAgentChatService", () => {
         "utf8",
       );
       vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => {
+        if (!raw.includes("recent-tail") && !raw.includes("old-head")) return [];
         expect(raw.length).toBeLessThan(50_000);
         expect(raw).toContain("recent-tail");
         expect(raw).not.toContain("old-head");
         return [recentEnvelope];
       });
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
 
       expect(history.truncated).toBe(true);
       expect(history.transcriptTruncated).toBe(true);
@@ -21686,7 +22039,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, `${envelopes.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
       vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
 
-      const history = service.getChatEventHistory(session.id, { maxEvents: 3 });
+      const history = await service.getChatEventHistory(session.id, { maxEvents: 3 });
 
       expect(history.truncated).toBe(true);
       expect(history.transcriptTruncated).toBe(false);
@@ -21718,7 +22071,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
       vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
 
       // 4 × ~3 MB events exceed the 8 MB response budget: only the newest
       // events that fit are returned, and the trim is reported as window
@@ -21750,7 +22103,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
       vi.mocked(parseAgentChatTranscript).mockReturnValue([giant]);
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
       expect(history.events).toHaveLength(1);
     });
 
@@ -21772,7 +22125,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
       vi.mocked(parseAgentChatTranscript).mockReturnValue([giant]);
 
-      const history = service.getChatEventHistory(session.id, { maxBytes: 8_192 });
+      const history = await service.getChatEventHistory(session.id, { maxBytes: 8_192 });
 
       expect(history.events).toHaveLength(0);
       expect(history.windowTruncated).toBe(true);
@@ -21797,7 +22150,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
       vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
 
       expect(history.events).toHaveLength(20_000);
       expect(history.truncated).toBe(true);
@@ -21828,8 +22181,8 @@ describe("createAgentChatService", () => {
         raw.includes("persisted-once") ? [envelope] : [],
       );
 
-      const firstHistory = service.getChatEventHistory(session.id);
-      const secondHistory = service.getChatEventHistory(session.id);
+      const firstHistory = await service.getChatEventHistory(session.id);
+      const secondHistory = await service.getChatEventHistory(session.id);
 
       expect(firstHistory.events).toHaveLength(1);
       expect(secondHistory.events).toHaveLength(1);
@@ -21865,14 +22218,14 @@ describe("createAgentChatService", () => {
         return [];
       });
 
-      const firstHistory = service.getChatEventHistory(session.id);
+      const firstHistory = await service.getChatEventHistory(session.id);
       expect(firstHistory.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
       )).toEqual(["persisted-before-switch"]);
 
       fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n${JSON.stringify(envelope2)}\n`, "utf8");
 
-      const secondHistory = service.getChatEventHistory(session.id);
+      const secondHistory = await service.getChatEventHistory(session.id);
       expect(secondHistory.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
       )).toEqual(["persisted-before-switch", "persisted-after-switch"]);
@@ -21907,7 +22260,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n${JSON.stringify(envelope2)}\n`, "utf8");
       vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope1, envelope2]);
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
       expect(history.events).toHaveLength(2);
       expect(history.events.map((e) => e.event.type === "text" ? e.event.text : "")).toEqual([
         "fragment-a",
@@ -21937,7 +22290,7 @@ describe("createAgentChatService", () => {
       fs.symlinkSync(outsideTranscriptPath, transcriptFile);
       vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
 
       expect(history.events).toEqual([]);
       expect(parseAgentChatTranscript).not.toHaveBeenCalled();
@@ -21975,7 +22328,7 @@ describe("createAgentChatService", () => {
       fs.mkdirSync(path.dirname(transcriptFile), { recursive: true });
       fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
       vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
-      const beforeDelete = service.getChatEventHistory(session.id);
+      const beforeDelete = await service.getChatEventHistory(session.id);
       expect(beforeDelete.events).toHaveLength(1);
 
       await service.deleteSession({ sessionId: session.id });
@@ -21984,7 +22337,7 @@ describe("createAgentChatService", () => {
       // deleteSession fails to clear the cache / on-disk file, the next read
       // would still surface envelopes. An empty result proves both the
       // in-memory ring buffer and the hydrated state were cleared.
-      const afterDelete = service.getChatEventHistory(session.id);
+      const afterDelete = await service.getChatEventHistory(session.id);
       expect(afterDelete.events).toEqual([]);
       expect(afterDelete.truncated).toBe(false);
       expect(afterDelete.sessionFound).toBe(false);
@@ -22010,9 +22363,9 @@ describe("createAgentChatService", () => {
       return line;
     };
 
-    it("returns sessionFound:false for unknown sessions", () => {
+    it("returns sessionFound:false for unknown sessions", async () => {
       const { service } = createService();
-      const page = service.getChatEventHistoryPage("unknown-session", { beforeOffset: 1_000 });
+      const page = await service.getChatEventHistoryPage("unknown-session", { beforeOffset: 1_000 });
       expect(page).toEqual({
         sessionId: "unknown-session",
         events: [],
@@ -22026,7 +22379,7 @@ describe("createAgentChatService", () => {
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
       for (const beforeOffset of [0, -25]) {
-        const page = service.getChatEventHistoryPage(session.id, { beforeOffset });
+        const page = await service.getChatEventHistoryPage(session.id, { beforeOffset });
         expect(page.sessionFound).toBe(true);
         expect(page.events).toEqual([]);
         expect(page.hasMore).toBe(false);
@@ -22038,11 +22391,37 @@ describe("createAgentChatService", () => {
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
       fs.rmSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), { force: true });
-      const page = service.getChatEventHistoryPage(session.id, { beforeOffset: 5_000 });
+      const page = await service.getChatEventHistoryPage(session.id, { beforeOffset: 5_000 });
       expect(page.sessionFound).toBe(true);
       expect(page.events).toEqual([]);
       expect(page.hasMore).toBe(false);
       expect(page.startOffset).toBe(0);
+    });
+
+    it("keeps transcript paging retryable when a resolved file cannot be read", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "persisted" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const raw = `${JSON.stringify(envelope)}\n`;
+      fs.writeFileSync(transcriptFile, raw, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+      await service.getChatEventHistory(session.id);
+
+      const openError = Object.assign(new Error("too many open files"), { code: "EMFILE" });
+      const openSpy = vi.spyOn(fs.promises, "open").mockRejectedValueOnce(openError);
+      try {
+        await expect(service.getChatEventHistoryPage(session.id, {
+          beforeOffset: Buffer.byteLength(raw, "utf8"),
+        })).rejects.toBe(openError);
+      } finally {
+        openSpy.mockRestore();
+      }
     });
 
     it("reads the requested byte window and filters Codex subagent envelopes", async () => {
@@ -22074,7 +22453,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, raw, "utf8");
       vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
 
-      const page = service.getChatEventHistoryPage(session.id, {
+      const page = await service.getChatEventHistoryPage(session.id, {
         beforeOffset: Buffer.byteLength(raw, "utf8"),
       });
       expect(page.sessionFound).toBe(true);
@@ -22106,14 +22485,14 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, lines.join(""), "utf8");
       vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
       expect(history.transcriptTruncated).toBe(true);
       // The tail window starts exactly at line 2 (a line boundary).
       expect(history.tailStartOffset).toBe(2 * LINE_BYTES);
       expect(history.events[0]?.event).toMatchObject({ type: "text" });
       expect((history.events[0]?.event as { text: string }).text.startsWith("line-2-")).toBe(true);
 
-      const page = service.getChatEventHistoryPage(session.id, { beforeOffset: history.tailStartOffset! });
+      const page = await service.getChatEventHistoryPage(session.id, { beforeOffset: history.tailStartOffset! });
       expect(page.sessionFound).toBe(true);
       expect(page.events.map((entry) => (entry.event.type === "text" ? entry.event.text.split("x")[0] : ""))).toEqual([
         "line-0-",
@@ -22140,12 +22519,12 @@ describe("createAgentChatService", () => {
       const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
       fs.writeFileSync(transcriptFile, `${line}${line}`, "utf8");
 
-      const history = service.getChatEventHistory(session.id, { maxEvents: 1 });
+      const history = await service.getChatEventHistory(session.id, { maxEvents: 1 });
       expect(history.events).toHaveLength(1);
       expect(history.events[0]?.event).toEqual(duplicate.event);
       expect(history.tailStartOffset).toBe(lineBytes);
 
-      const page = service.getChatEventHistoryPage(session.id, {
+      const page = await service.getChatEventHistoryPage(session.id, {
         beforeOffset: history.tailStartOffset!,
       });
       expect(page.events).toHaveLength(1);
@@ -22199,7 +22578,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(durableTranscript, raw, "utf8");
 
       const maxBytes = 128 * 1024;
-      const history = service.getChatEventHistory(session.id, { maxEvents: 512, maxBytes });
+      const history = await service.getChatEventHistory(session.id, { maxEvents: 512, maxBytes });
       expect(history.events).toContainEqual(liveRingEvent);
       expect(history.tailStartOffset).toEqual(expect.any(Number));
       expect(history.tailStartOffset).toBeGreaterThan(0);
@@ -22214,7 +22593,7 @@ describe("createAgentChatService", () => {
       const firstSnapshotSequence = snapshotSequences[0]!;
       expect(history.tailStartOffset).toBe(firstSnapshotSequence * LINE_BYTES);
 
-      const page = service.getChatEventHistoryPage(session.id, {
+      const page = await service.getChatEventHistoryPage(session.id, {
         beforeOffset: history.tailStartOffset!,
         maxBytes,
       });
@@ -22274,7 +22653,7 @@ describe("createAgentChatService", () => {
       vi.mocked(parseAgentChatTranscript).mockClear();
 
       const maxBytes = 128 * 1024;
-      const history = service.getChatEventHistory(session.id, { maxEvents: 512, maxBytes });
+      const history = await service.getChatEventHistory(session.id, { maxEvents: 512, maxBytes });
       expect(history.tailStartOffset).toBe(Buffer.byteLength(durableLines.join(""), "utf8"));
       expect(history.events.some((entry) =>
         entry.event.type === "text" && entry.event.text.startsWith("legacy-"),
@@ -22287,7 +22666,7 @@ describe("createAgentChatService", () => {
       let beforeOffset = history.tailStartOffset!;
       while (beforeOffset > 0) {
         const parseCallsBeforePage = vi.mocked(parseAgentChatTranscript).mock.calls.length;
-        const page = service.getChatEventHistoryPage(session.id, { beforeOffset, maxBytes });
+        const page = await service.getChatEventHistoryPage(session.id, { beforeOffset, maxBytes });
         // Candidate ranking reuses both fixed-window cache entries. The only
         // parse here is the page payload itself, rather than synchronously
         // re-reading both candidates on every scroll-back request.
@@ -22322,7 +22701,7 @@ describe("createAgentChatService", () => {
       fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
       vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
 
-      const history = service.getChatEventHistory(session.id);
+      const history = await service.getChatEventHistory(session.id);
       expect(history.transcriptTruncated).toBe(false);
       expect(history.tailStartOffset).toBeNull();
     });
@@ -25671,7 +26050,7 @@ describe("createAgentChatService", () => {
       expect(commandEvent.event.outputOriginalBytes).toBeUndefined();
       expect(commandEvent.event.outputOmittedBytes).toBeUndefined();
 
-      const historyEvent = service.getChatEventHistory(session.id).events.find((event) =>
+      const historyEvent = (await service.getChatEventHistory(session.id)).events.find((event) =>
         event.event.type === "command" && event.event.itemId === "cmd-large-output"
       );
       expect(historyEvent?.event.type).toBe("command");
@@ -25741,7 +26120,7 @@ describe("createAgentChatService", () => {
         event.event.type === "command" ? event.event.output : "",
       )).toEqual(chunks);
 
-      const storedCommandEvents = service.getChatEventHistory(session.id).events.filter((event) =>
+      const storedCommandEvents = (await service.getChatEventHistory(session.id)).events.filter((event) =>
         event.event.type === "command" && event.event.itemId === "cmd-stream-output"
       );
       expect(storedCommandEvents).toHaveLength(2);
@@ -25825,7 +26204,7 @@ describe("createAgentChatService", () => {
       expect(liveLarge.event.result).toBe(largeData);
       expect(liveLarge.event.resultOriginalBytes).toBeUndefined();
 
-      const history = service.getChatEventHistory(session.id).events;
+      const history = (await service.getChatEventHistory(session.id)).events;
       const storedSmall = history.find((event) =>
         event.event.type === "codex_image_generation" && event.event.itemId === "image-small"
       );
@@ -25946,7 +26325,7 @@ describe("createAgentChatService", () => {
       expect(fileEvent.event.diffOriginalBytes).toBeUndefined();
       expect(fileEvent.event.diffOmittedBytes).toBeUndefined();
 
-      const history = service.getChatEventHistory(session.id).events;
+      const history = (await service.getChatEventHistory(session.id)).events;
       const storedToolEvent = history.find((event) =>
         event.event.type === "tool_result" && event.event.itemId === "tool-large-result"
       );
@@ -27415,8 +27794,8 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(getSessionMessages).toHaveBeenCalledWith("sdk-splice-repair", { dir: fs.realpathSync(tmpRoot) });
       });
-      await vi.waitFor(() => {
-        const textEvents = resumed.service.getChatEventHistory(session.id).events
+      await vi.waitFor(async () => {
+        const textEvents = (await resumed.service.getChatEventHistory(session.id)).events
           .filter((entry) => entry.event.type === "text");
         expect(textEvents.find((entry) => entry.event.type === "text" && entry.event.messageId === "msg-stable-sdk")?.event).toMatchObject({
           type: "text",
@@ -28327,7 +28706,7 @@ describe("createAgentChatService", () => {
       expect(stopTask.mock.calls.map((call) => call[0]).sort()).toEqual(["sub-task-1", "sub-task-2"]);
 
       // After interrupt, listSubagents should reflect the stopped status
-      const subagents = service.listSubagents({ sessionId: session.id });
+      const subagents = await service.listSubagents({ sessionId: session.id });
       const stoppedSubagents = subagents.filter((s: any) => s.status === "stopped");
       expect(stoppedSubagents).toHaveLength(2);
 
@@ -30823,7 +31202,7 @@ describe("createAgentChatService", () => {
     expect(inlineImage.event.result).toBe(inlineData);
     expect(inlineImage.event.resultOriginalBytes).toBeUndefined();
 
-    const storedInlineImage = service.getChatEventHistory(session.id).events.find((event) =>
+    const storedInlineImage = (await service.getChatEventHistory(session.id)).events.find((event) =>
       event.event.type === "codex_image_generation" && event.event.itemId === "generated-inline-image"
     );
     expect(storedInlineImage?.event.type).toBe("codex_image_generation");
@@ -30832,9 +31211,9 @@ describe("createAgentChatService", () => {
     expect(storedInlineImage.event.resultOriginalBytes).toBe(Buffer.byteLength(inlineData, "utf8"));
     expect(storedInlineImage.event.resultOmittedBytes).toBe(Buffer.byteLength(inlineData, "utf8"));
     expect(JSON.stringify(storedInlineImage.event)).not.toContain("A".repeat(1024));
-    expect(JSON.stringify(service.getChatEventHistory(session.id).events)).not.toContain("A".repeat(1024));
+    expect(JSON.stringify((await service.getChatEventHistory(session.id)).events)).not.toContain("A".repeat(1024));
 
-    const storedToolResult = service.getChatEventHistory(session.id).events.find((event) =>
+    const storedToolResult = (await service.getChatEventHistory(session.id)).events.find((event) =>
       event.event.type === "tool_result" && event.event.itemId === "image-tool-call"
     );
     expect(storedToolResult?.event.type).toBe("tool_result");

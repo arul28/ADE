@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { WebSocket, WebSocketServer } from "ws";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7790,6 +7791,7 @@ describe("chat_subscribe snapshots", () => {
       expect(getChatEventHistory).toHaveBeenCalledWith("chat-1", {
         maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
         maxBytes: 4_096,
+        signal: expect.any(AbortSignal),
       });
       expect((ack.payload as { events?: AgentChatEventEnvelope[] }).events).toEqual([event]);
       expect(ack.payload).toMatchObject({ turnActive: true });
@@ -7812,6 +7814,318 @@ describe("chat_subscribe snapshots", () => {
       } catch {
         // ignore
       }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("holds live pumping behind a slow snapshot and replays only concurrent appends after the ack", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "slow-snapshot.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    const snapshotEvent: AgentChatEventEnvelope = {
+      sessionId: "slow-snapshot",
+      timestamp: "2026-07-24T09:10:00.000Z",
+      sequence: 1,
+      event: { type: "text", text: "snapshot history" },
+    };
+    const concurrentEvent: AgentChatEventEnvelope = {
+      sessionId: "slow-snapshot",
+      timestamp: "2026-07-24T09:10:01.000Z",
+      sequence: 2,
+      event: { type: "text", text: "appended during hydration" },
+    };
+    fs.writeFileSync(transcriptPath, `${JSON.stringify(snapshotEvent)}\n`, "utf8");
+    const session = {
+      id: snapshotEvent.sessionId,
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    let markSnapshotStarted = () => {};
+    const snapshotStarted = new Promise<void>((resolve) => {
+      markSnapshotStarted = resolve;
+    });
+    let releaseSnapshot = () => {};
+    const snapshotGate = new Promise<void>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      pollIntervalMs: 25,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-slow-snapshot",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => id === session.id ? session : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn(async () => {
+          markSnapshotStarted();
+          await snapshotGate;
+          return {
+            sessionId: session.id,
+            events: [snapshotEvent],
+            truncated: false,
+            transcriptTruncated: false,
+            windowTruncated: false,
+            sessionFound: true,
+          };
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "slow-snapshot-peer");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "slow-snapshot-subscribe",
+        payload: { sessionId: session.id },
+      }));
+      await snapshotStarted;
+      fs.appendFileSync(transcriptPath, `${JSON.stringify(concurrentEvent)}\n`, "utf8");
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(peer.envelopes.some((entry) => entry.type === "chat_event")).toBe(false);
+      expect(peer.envelopes.some((entry) =>
+        entry.type === "chat_subscribe" && entry.requestId === "slow-snapshot-subscribe"
+      )).toBe(false);
+
+      releaseSnapshot();
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "slow-snapshot-subscribe");
+      const delivered = await waitForValue(
+        () => peer?.envelopes.find((entry) => entry.type === "chat_event"),
+        "concurrent post-snapshot chat event",
+      );
+      expect(delivered.payload).toMatchObject({
+        sessionId: session.id,
+        event: { type: "text", text: "appended during hydration" },
+      });
+      expect(peer.envelopes.filter((entry) => entry.type === "chat_event")).toHaveLength(1);
+    } finally {
+      releaseSnapshot();
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("restores an existing live subscription when a refresh snapshot fails", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "refresh-failure.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    const initialEvent: AgentChatEventEnvelope = {
+      sessionId: "refresh-failure",
+      timestamp: "2026-07-24T09:20:00.000Z",
+      sequence: 1,
+      event: { type: "text", text: "initial snapshot" },
+    };
+    const laterEvent: AgentChatEventEnvelope = {
+      sessionId: "refresh-failure",
+      timestamp: "2026-07-24T09:20:01.000Z",
+      sequence: 2,
+      event: { type: "text", text: "still live after failed refresh" },
+    };
+    fs.writeFileSync(transcriptPath, `${JSON.stringify(initialEvent)}\n`, "utf8");
+    const session = {
+      id: initialEvent.sessionId,
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const getChatEventHistory = vi.fn()
+      .mockResolvedValueOnce({
+        sessionId: session.id,
+        events: [initialEvent],
+        truncated: false,
+        transcriptTruncated: false,
+        windowTruncated: false,
+        sessionFound: true,
+      })
+      .mockRejectedValueOnce(new Error("compressed_history_read_superseded"));
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      pollIntervalMs: 25,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-refresh-failure",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => id === session.id ? session : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory,
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "refresh-failure-peer");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "refresh-initial",
+        payload: { sessionId: session.id },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "refresh-initial");
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "refresh-rejected",
+        payload: { sessionId: session.id },
+      }));
+      await waitForValue(
+        () => getChatEventHistory.mock.calls.length >= 2,
+        "failed refresh snapshot attempt",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      fs.appendFileSync(transcriptPath, `${JSON.stringify(laterEvent)}\n`, "utf8");
+
+      const delivered = await waitForValue(
+        () => peer?.envelopes.find((entry) =>
+          entry.type === "chat_event"
+          && (entry.payload as AgentChatEventEnvelope).sequence === laterEvent.sequence),
+        "live event after rejected refresh",
+      );
+      expect(delivered.payload).toMatchObject({
+        sessionId: session.id,
+        event: { type: "text", text: "still live after failed refresh" },
+      });
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("starts the transcript pump at the logical end of a compressed snapshot", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const transcriptPath = path.join(projectRoot, "transcripts", "compressed-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    const snapshotEvent: AgentChatEventEnvelope = {
+      sessionId: "compressed-chat",
+      timestamp: "2026-07-24T09:00:00.000Z",
+      sequence: 1,
+      event: { type: "text", text: "already included in the snapshot" },
+    };
+    const nextEvent: AgentChatEventEnvelope = {
+      sessionId: "compressed-chat",
+      timestamp: "2026-07-24T09:00:01.000Z",
+      sequence: 2,
+      event: { type: "text", text: "new after reinflate" },
+    };
+    const snapshotLine = `${JSON.stringify(snapshotEvent)}\n`;
+    fs.writeFileSync(`${transcriptPath}.gz`, gzipSync(snapshotLine));
+    const session = {
+      id: "compressed-chat",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "",
+    };
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      pollIntervalMs: 25,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-compressed-chat",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => id === session.id ? session : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService: {
+        subscribeToEvents: vi.fn().mockReturnValue(() => {}),
+        getChatEventHistory: vi.fn().mockResolvedValue({
+          sessionId: session.id,
+          events: [snapshotEvent],
+          truncated: false,
+          transcriptTruncated: false,
+          windowTruncated: false,
+          sessionFound: true,
+        }),
+        getSessionSummary: vi.fn().mockResolvedValue({ status: "active" }),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "compressed-chat-peer");
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "compressed-chat-subscribe",
+        payload: { sessionId: session.id },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "compressed-chat-subscribe");
+
+      fs.writeFileSync(
+        transcriptPath,
+        `${snapshotLine}${JSON.stringify(nextEvent)}\n`,
+        "utf8",
+      );
+      const delivered = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "chat_event"),
+        "post-reinflate chat event",
+      );
+
+      expect(delivered.payload).toMatchObject({
+        sessionId: session.id,
+        event: { type: "text", text: "new after reinflate" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(peer.envelopes.filter((envelope) => envelope.type === "chat_event")).toHaveLength(1);
+    } finally {
+      peer?.ws.close();
       await host.dispose();
       cleanup();
     }

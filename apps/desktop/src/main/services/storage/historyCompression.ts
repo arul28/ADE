@@ -1,5 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { Transform, Writable, type TransformCallback } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -20,6 +22,11 @@ const DEFAULT_MAX_FILES = 25;
 const BETWEEN_FILES_DELAY_MS = 250;
 const COMPRESSION_HEADROOM_FACTOR = 1.2;
 export const MAX_TRANSPARENT_HISTORY_BYTES = 256 * 1024 * 1024;
+// A valid gzip can be slightly larger than its source when the source is
+// incompressible. Keep the logical payload ceiling exact while allowing a
+// conservative amount of gzip framing/deflate overhead on disk.
+const MAX_TRANSPARENT_HISTORY_COMPRESSED_BYTES =
+  MAX_TRANSPARENT_HISTORY_BYTES + (1024 * 1024);
 
 export type CompressionCandidate = {
   path: string;
@@ -101,7 +108,7 @@ function delay(ms: number): Promise<void> {
 /** Read a compressed history file with a hard decompressed-size ceiling. */
 export function readCompressedHistoryFileSync(filePath: string): Buffer {
   const compressed = fs.readFileSync(filePath);
-  if (compressed.length > MAX_TRANSPARENT_HISTORY_BYTES) {
+  if (compressed.length > MAX_TRANSPARENT_HISTORY_COMPRESSED_BYTES) {
     throw new Error("compressed_history_too_large");
   }
   return gunzipSync(compressed, { maxOutputLength: MAX_TRANSPARENT_HISTORY_BYTES });
@@ -113,22 +120,638 @@ export function readHistoryFileSync(filePath: string): Buffer {
     : fs.readFileSync(filePath);
 }
 
-/**
- * Restore a compressed append target atomically before its writer opens it.
- * A leftover .gz beside an existing plain file is a completed crash-window
- * copy; the plain append target is authoritative and the stale copy is removed.
- */
-export function reinflateHistoryFileSync(
-  plainPath: string,
-  writeAtomic: (filePath: string, data: Buffer) => void,
-): boolean {
+/** Prefer the plain append target, then its transparent gzip replacement. */
+export function resolveReadableHistoryPath(filePath: string): string | null {
+  const normalizedPath = path.resolve(filePath);
+  const plainPath = normalizedPath.endsWith(".gz")
+    ? normalizedPath.slice(0, -3)
+    : normalizedPath;
+  if (fs.existsSync(plainPath)) return plainPath;
   const gzipPath = `${plainPath}.gz`;
-  if (!fs.existsSync(gzipPath)) return false;
-  if (!fs.existsSync(plainPath)) {
-    writeAtomic(plainPath, readCompressedHistoryFileSync(gzipPath));
+  return fs.existsSync(gzipPath) ? gzipPath : null;
+}
+
+/** Read an exact bounded raw byte range, tolerating permitted short FileHandle reads. */
+async function readPlainHistoryFileRange(
+  filePath: string,
+  position: number,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  if (length <= 0) return Buffer.alloc(0);
+  signal?.throwIfAborted();
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const out = Buffer.allocUnsafe(length);
+    let totalRead = 0;
+    while (totalRead < length) {
+      signal?.throwIfAborted();
+      const { bytesRead } = await handle.read(
+        out,
+        totalRead,
+        length - totalRead,
+        position + totalRead,
+      );
+      if (bytesRead <= 0) break;
+      totalRead += bytesRead;
+    }
+    return totalRead === length ? out : out.subarray(0, totalRead);
+  } finally {
+    await handle.close();
   }
-  fs.unlinkSync(gzipPath);
-  return true;
+}
+
+const SMALL_HISTORY_SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+const SMALL_HISTORY_SNAPSHOT_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+const SMALL_HISTORY_SNAPSHOT_CACHE_MAX_ENTRIES = 4;
+const LARGE_HISTORY_DISK_CACHE_MAX_BYTES = MAX_TRANSPARENT_HISTORY_BYTES;
+const LARGE_HISTORY_DISK_CACHE_MAX_ENTRIES = 4;
+const smallHistorySnapshotCache = new Map<string, {
+  mtimeMs: number;
+  size: number;
+  snapshot: Buffer;
+}>();
+let smallHistorySnapshotCacheBytes = 0;
+type HistoryInflateAdmission = {
+  sequence: number;
+  read: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
+  reject: (reason: unknown) => void;
+  signal?: AbortSignal;
+  removeAbortListener: () => void;
+};
+const pendingHistoryInflateAdmissions: HistoryInflateAdmission[] = [];
+let historyInflateAdmissionActive = false;
+let historyInflateRequestSequence = 0;
+let latestHistoryInflateRequestSequence = 0;
+type LargeHistoryDiskSnapshot = {
+  sourceMtimeMs: number;
+  sourceSize: number;
+  logicalSize: number;
+  handle: FileHandle;
+  activeReaders: number;
+  evicted: boolean;
+  closePromise: Promise<void> | null;
+};
+const largeHistoryDiskSnapshotCache = new Map<string, LargeHistoryDiskSnapshot>();
+const largeHistoryDiskSnapshotReads = new Map<string, Promise<LargeHistoryDiskSnapshot>>();
+let largeHistoryDiskSnapshotCacheBytes = 0;
+
+function removeSmallHistorySnapshot(cacheKey: string): void {
+  const cached = smallHistorySnapshotCache.get(cacheKey);
+  if (!cached) return;
+  smallHistorySnapshotCache.delete(cacheKey);
+  smallHistorySnapshotCacheBytes -= cached.snapshot.length;
+}
+
+function reserveSmallHistorySnapshotBytes(bytes: number): void {
+  while (
+    smallHistorySnapshotCache.size > 0
+    && (
+      smallHistorySnapshotCache.size >= SMALL_HISTORY_SNAPSHOT_CACHE_MAX_ENTRIES
+      || smallHistorySnapshotCacheBytes + bytes > SMALL_HISTORY_SNAPSHOT_CACHE_MAX_BYTES
+    )
+  ) {
+    const oldestKey = smallHistorySnapshotCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    removeSmallHistorySnapshot(oldestKey);
+  }
+}
+
+async function gzipUncompressedSize(filePath: string, compressedSize: number): Promise<number> {
+  if (compressedSize < 4 || compressedSize > MAX_TRANSPARENT_HISTORY_COMPRESSED_BYTES) {
+    throw new Error("compressed_history_too_large");
+  }
+  const trailer = await readPlainHistoryFileRange(filePath, compressedSize - 4, 4);
+  if (trailer.length !== 4) throw new Error("compressed_history_invalid");
+  const size = trailer.readUInt32LE(0);
+  if (size > MAX_TRANSPARENT_HISTORY_BYTES) {
+    throw new Error("compressed_history_too_large");
+  }
+  return size;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  try {
+    signal.throwIfAborted();
+  } catch (error) {
+    return error;
+  }
+  return new Error("History read aborted.");
+}
+
+function startNextHistoryInflateAdmission(): void {
+  if (historyInflateAdmissionActive) return;
+  const next = pendingHistoryInflateAdmissions.shift();
+  if (!next) return;
+  next.removeAbortListener();
+  if (next.signal?.aborted) {
+    next.reject(abortReason(next.signal));
+    startNextHistoryInflateAdmission();
+    return;
+  }
+  historyInflateAdmissionActive = true;
+  void Promise.resolve()
+    .then(next.read)
+    .then(next.resolve, next.reject)
+    .finally(() => {
+      historyInflateAdmissionActive = false;
+      startNextHistoryInflateAdmission();
+    });
+}
+
+/**
+ * Admit one inflater at a time and retain only the newest queued request.
+ * Rapid chat switching can therefore leave at most the active archive plus
+ * the current destination; superseded queued reads fail through the existing
+ * retryable history-error path instead of keeping the brain busy long after
+ * the viewer moved on.
+ */
+function withAsyncHistoryInflateAdmission<T>(
+  read: () => Promise<T>,
+  sequence: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  signal?.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    if (sequence < latestHistoryInflateRequestSequence) {
+      reject(new Error("compressed_history_read_superseded"));
+      return;
+    }
+    while (pendingHistoryInflateAdmissions.length > 0) {
+      const superseded = pendingHistoryInflateAdmissions.shift()!;
+      superseded.removeAbortListener();
+      superseded.reject(new Error("compressed_history_read_superseded"));
+    }
+    let admission: HistoryInflateAdmission;
+    const onAbort = () => {
+      const index = pendingHistoryInflateAdmissions.indexOf(admission);
+      if (index >= 0) pendingHistoryInflateAdmissions.splice(index, 1);
+      admission.removeAbortListener();
+      reject(signal ? abortReason(signal) : new Error("History read aborted."));
+    };
+    admission = {
+      sequence,
+      read,
+      resolve: (value) => resolve(value as T),
+      reject,
+      signal,
+      removeAbortListener: () => signal?.removeEventListener("abort", onAbort),
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    pendingHistoryInflateAdmissions.push(admission);
+    startNextHistoryInflateAdmission();
+  });
+}
+
+function readCachedSmallHistorySnapshot(
+  cacheKey: string,
+  stat: Pick<fs.Stats, "mtimeMs" | "size">,
+  position: number,
+  length: number,
+): Buffer | null {
+  const cached = smallHistorySnapshotCache.get(cacheKey);
+  if (!cached) return null;
+  if (cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) {
+    removeSmallHistorySnapshot(cacheKey);
+    return null;
+  }
+  smallHistorySnapshotCache.delete(cacheKey);
+  smallHistorySnapshotCache.set(cacheKey, cached);
+  return cached.snapshot.subarray(position, position + length);
+}
+
+async function readFileHandleRange(
+  handle: FileHandle,
+  position: number,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  if (length <= 0) return Buffer.alloc(0);
+  signal?.throwIfAborted();
+  const out = Buffer.allocUnsafe(length);
+  let totalRead = 0;
+  while (totalRead < length) {
+    signal?.throwIfAborted();
+    const { bytesRead } = await handle.read(
+      out,
+      totalRead,
+      length - totalRead,
+      position + totalRead,
+    );
+    if (bytesRead <= 0) break;
+    totalRead += bytesRead;
+  }
+  return totalRead === length ? out : out.subarray(0, totalRead);
+}
+
+async function closeLargeHistoryDiskSnapshot(snapshot: LargeHistoryDiskSnapshot): Promise<void> {
+  snapshot.closePromise ??= snapshot.handle.close().catch(() => {});
+  await snapshot.closePromise;
+}
+
+async function evictLargeHistoryDiskSnapshot(cacheKey: string): Promise<void> {
+  const snapshot = largeHistoryDiskSnapshotCache.get(cacheKey);
+  if (!snapshot) return;
+  largeHistoryDiskSnapshotCache.delete(cacheKey);
+  largeHistoryDiskSnapshotCacheBytes -= snapshot.logicalSize;
+  snapshot.evicted = true;
+  if (snapshot.activeReaders === 0) {
+    // A caller may already have received this snapshot from an async cache
+    // lookup but not yet resumed far enough to increment activeReaders. Give
+    // promise continuations one event-loop turn to pin the handle before
+    // closing an otherwise idle eviction.
+    setImmediate(() => {
+      if (snapshot.evicted && snapshot.activeReaders === 0) {
+        void closeLargeHistoryDiskSnapshot(snapshot);
+      }
+    });
+  }
+}
+
+async function reserveLargeHistoryDiskSnapshotBytes(bytes: number): Promise<void> {
+  while (
+    largeHistoryDiskSnapshotCache.size > 0
+    && (
+      largeHistoryDiskSnapshotCache.size >= LARGE_HISTORY_DISK_CACHE_MAX_ENTRIES
+      || largeHistoryDiskSnapshotCacheBytes + bytes > LARGE_HISTORY_DISK_CACHE_MAX_BYTES
+    )
+  ) {
+    const oldestKey = largeHistoryDiskSnapshotCache.keys().next().value as string | undefined;
+    if (!oldestKey) break;
+    await evictLargeHistoryDiskSnapshot(oldestKey);
+  }
+}
+
+async function createLargeHistoryDiskSnapshot(
+  cacheKey: string,
+  sourceStat: Pick<fs.Stats, "mtimeMs" | "size">,
+  logicalSize: number,
+  signal?: AbortSignal,
+): Promise<LargeHistoryDiskSnapshot> {
+  signal?.throwIfAborted();
+  const tempVolume = readVolumeSpace(os.tmpdir());
+  if (
+    tempVolume
+    && tempVolume.freeBytes < Math.ceil(logicalSize * COMPRESSION_HEADROOM_FACTOR)
+  ) {
+    throw new Error("compressed_history_insufficient_temp_space");
+  }
+  const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-history-read-"));
+  const tempPath = path.join(tempDir, "snapshot");
+  let outputBytes = 0;
+  let handle: FileHandle | null = null;
+  try {
+    await pipeline(
+      fs.createReadStream(cacheKey),
+      createGunzip(),
+      new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          outputBytes += chunk.length;
+          if (outputBytes > MAX_TRANSPARENT_HISTORY_BYTES) {
+            callback(new Error("compressed_history_too_large"));
+            return;
+          }
+          callback(null, chunk);
+        },
+      }),
+      fs.createWriteStream(tempPath, { flags: "wx" }),
+      { signal },
+    );
+    if (outputBytes !== logicalSize) {
+      throw new Error("compressed_history_size_mismatch");
+    }
+    handle = await fs.promises.open(tempPath, "r");
+    await fs.promises.unlink(tempPath);
+    await fs.promises.rmdir(tempDir);
+    return {
+      sourceMtimeMs: sourceStat.mtimeMs,
+      sourceSize: sourceStat.size,
+      logicalSize,
+      handle,
+      activeReaders: 0,
+      evicted: false,
+      closePromise: null,
+    };
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await fs.promises.unlink(tempPath).catch(() => {});
+    await fs.promises.rmdir(tempDir).catch(() => {});
+    throw error;
+  }
+}
+
+async function ensureLargeHistoryDiskSnapshot(
+  cacheKey: string,
+  sourceStat: Pick<fs.Stats, "mtimeMs" | "size">,
+  logicalSize: number,
+  requestSequence: number,
+  signal?: AbortSignal,
+): Promise<LargeHistoryDiskSnapshot> {
+  signal?.throwIfAborted();
+  const cached = largeHistoryDiskSnapshotCache.get(cacheKey);
+  if (
+    cached
+    && cached.sourceMtimeMs === sourceStat.mtimeMs
+    && cached.sourceSize === sourceStat.size
+  ) {
+    largeHistoryDiskSnapshotCache.delete(cacheKey);
+    largeHistoryDiskSnapshotCache.set(cacheKey, cached);
+    return cached;
+  }
+  if (cached) await evictLargeHistoryDiskSnapshot(cacheKey);
+
+  const readKey = `${cacheKey}\0${sourceStat.mtimeMs}\0${sourceStat.size}`;
+  const existingRead = signal ? null : largeHistoryDiskSnapshotReads.get(readKey);
+  if (existingRead) return await existingRead;
+  const read = withAsyncHistoryInflateAdmission(async () => {
+    signal?.throwIfAborted();
+    const admittedStat = await fs.promises.stat(cacheKey);
+    const admittedCached = largeHistoryDiskSnapshotCache.get(cacheKey);
+    if (
+      admittedCached
+      && admittedCached.sourceMtimeMs === admittedStat.mtimeMs
+      && admittedCached.sourceSize === admittedStat.size
+    ) {
+      largeHistoryDiskSnapshotCache.delete(cacheKey);
+      largeHistoryDiskSnapshotCache.set(cacheKey, admittedCached);
+      return admittedCached;
+    }
+    if (admittedCached) await evictLargeHistoryDiskSnapshot(cacheKey);
+    if (
+      admittedStat.mtimeMs !== sourceStat.mtimeMs
+      || admittedStat.size !== sourceStat.size
+    ) {
+      throw new Error("compressed_history_changed");
+    }
+    const snapshot = await createLargeHistoryDiskSnapshot(
+      cacheKey,
+      admittedStat,
+      logicalSize,
+      signal,
+    );
+    await reserveLargeHistoryDiskSnapshotBytes(snapshot.logicalSize);
+    largeHistoryDiskSnapshotCache.set(cacheKey, snapshot);
+    largeHistoryDiskSnapshotCacheBytes += snapshot.logicalSize;
+    return snapshot;
+  }, requestSequence, signal);
+  if (!signal) largeHistoryDiskSnapshotReads.set(readKey, read);
+  try {
+    return await read;
+  } finally {
+    if (!signal && largeHistoryDiskSnapshotReads.get(readKey) === read) {
+      largeHistoryDiskSnapshotReads.delete(readKey);
+    }
+  }
+}
+
+async function readLargeHistoryDiskSnapshotRange(
+  snapshot: LargeHistoryDiskSnapshot,
+  position: number,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  snapshot.activeReaders += 1;
+  try {
+    return await readFileHandleRange(snapshot.handle, position, length, signal);
+  } finally {
+    snapshot.activeReaders -= 1;
+    if (snapshot.evicted && snapshot.activeReaders === 0) {
+      await closeLargeHistoryDiskSnapshot(snapshot);
+    }
+  }
+}
+
+/**
+ * Return the logical (decompressed) byte size without reading the full file.
+ */
+export async function readHistoryFileSize(filePath: string): Promise<number> {
+  const stat = await fs.promises.stat(filePath);
+  if (!filePath.endsWith(".gz")) return stat.size;
+  return await gzipUncompressedSize(filePath, stat.size);
+}
+
+/**
+ * Read a bounded logical byte range without blocking the Electron/runtime
+ * event loop. Large gzip files are streamed to a bounded collector instead of
+ * retaining both the compressed and decompressed snapshots in memory.
+ * Inflations are globally admitted one at a time so unrelated archive reads
+ * cannot multiply zlib CPU and memory pressure.
+ */
+const historyFileRangeReads = new Map<string, Promise<Buffer>>();
+
+async function readHistoryFileRangeUncoalesced(
+  filePath: string,
+  position: number,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  const normalizedPosition = Math.max(0, Number.isFinite(position) ? Math.floor(position) : 0);
+  const normalizedLength = Math.max(
+    0,
+    Math.min(
+      MAX_TRANSPARENT_HISTORY_BYTES,
+      Number.isFinite(length) ? Math.floor(length) : 0,
+    ),
+  );
+  if (normalizedLength <= 0) return Buffer.alloc(0);
+  signal?.throwIfAborted();
+  if (!filePath.endsWith(".gz")) {
+    return await readPlainHistoryFileRange(
+      filePath,
+      normalizedPosition,
+      normalizedLength,
+      signal,
+    );
+  }
+
+  const requestSequence = ++historyInflateRequestSequence;
+  latestHistoryInflateRequestSequence = requestSequence;
+  const cacheKey = path.resolve(filePath);
+  const initialStat = await fs.promises.stat(cacheKey);
+  const initialCached = readCachedSmallHistorySnapshot(
+    cacheKey,
+    initialStat,
+    normalizedPosition,
+    normalizedLength,
+  );
+  if (initialCached) return initialCached;
+  const initialLogicalSize = await gzipUncompressedSize(cacheKey, initialStat.size);
+  if (initialLogicalSize > SMALL_HISTORY_SNAPSHOT_MAX_BYTES) {
+    const snapshot = await ensureLargeHistoryDiskSnapshot(
+      cacheKey,
+      initialStat,
+      initialLogicalSize,
+      requestSequence,
+      signal,
+    );
+    const requestedEnd = Math.min(
+      snapshot.logicalSize,
+      normalizedPosition + normalizedLength,
+    );
+    return await readLargeHistoryDiskSnapshotRange(
+      snapshot,
+      normalizedPosition,
+      Math.max(0, requestedEnd - normalizedPosition),
+      signal,
+    );
+  }
+
+  return await withAsyncHistoryInflateAdmission(async () => {
+    signal?.throwIfAborted();
+    const stat = await fs.promises.stat(cacheKey);
+    const admittedCached = readCachedSmallHistorySnapshot(
+      cacheKey,
+      stat,
+      normalizedPosition,
+      normalizedLength,
+    );
+    if (admittedCached) return admittedCached;
+
+    const logicalSize = await gzipUncompressedSize(cacheKey, stat.size);
+    const snapshotChunks: Buffer[] = [];
+    let decompressedOffset = 0;
+    await pipeline(
+      fs.createReadStream(cacheKey),
+      createGunzip(),
+      new Writable({
+        write(chunk: Buffer, _encoding, callback) {
+          decompressedOffset += chunk.length;
+          if (decompressedOffset > MAX_TRANSPARENT_HISTORY_BYTES) {
+            callback(new Error("compressed_history_too_large"));
+            return;
+          }
+          snapshotChunks.push(Buffer.from(chunk));
+          callback();
+        },
+      }),
+      { signal },
+    );
+    if (decompressedOffset !== logicalSize) {
+      throw new Error("compressed_history_size_mismatch");
+    }
+    const snapshot = Buffer.concat(snapshotChunks, logicalSize);
+    reserveSmallHistorySnapshotBytes(snapshot.length);
+    smallHistorySnapshotCache.set(cacheKey, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      snapshot,
+    });
+    smallHistorySnapshotCacheBytes += snapshot.length;
+    return snapshot.subarray(
+      normalizedPosition,
+      normalizedPosition + normalizedLength,
+    );
+  }, requestSequence, signal);
+}
+
+export async function readHistoryFileRange(
+  filePath: string,
+  position: number,
+  length: number,
+  signal?: AbortSignal,
+): Promise<Buffer> {
+  if (signal) {
+    return await readHistoryFileRangeUncoalesced(filePath, position, length, signal);
+  }
+  const readKey = `${path.resolve(filePath)}\0${position}\0${length}`;
+  const existing = historyFileRangeReads.get(readKey);
+  if (existing) return await existing;
+  const read = readHistoryFileRangeUncoalesced(filePath, position, length);
+  historyFileRangeReads.set(readKey, read);
+  try {
+    return await read;
+  } finally {
+    if (historyFileRangeReads.get(readKey) === read) {
+      historyFileRangeReads.delete(readKey);
+    }
+  }
+}
+
+const historyReinflateInFlight = new Map<string, Promise<boolean>>();
+
+/**
+ * Restore a compressed append target without materializing the archive on the
+ * Electron/runtime event loop. Calls for the same path coalesce, and the gzip
+ * remains intact unless a fully-written, fsynced plain file is ready.
+ */
+export async function reinflateHistoryFile(plainPath: string): Promise<boolean> {
+  const normalizedPath = path.resolve(plainPath);
+  const existing = historyReinflateInFlight.get(normalizedPath);
+  if (existing) return await existing;
+
+  const reinflate = (async () => {
+    const gzipPath = `${normalizedPath}.gz`;
+    let gzipStat: fs.Stats;
+    try {
+      gzipStat = await fs.promises.stat(gzipPath);
+    } catch (error) {
+      if (isEnoentError(error)) return false;
+      throw error;
+    }
+    if (!gzipStat.isFile()) return false;
+    if (gzipStat.size > MAX_TRANSPARENT_HISTORY_COMPRESSED_BYTES) {
+      throw new Error("compressed_history_too_large");
+    }
+
+    try {
+      const plainStat = await fs.promises.stat(normalizedPath);
+      if (plainStat.isFile()) {
+        await removeFileBestEffort(gzipPath);
+        return true;
+      }
+    } catch (error) {
+      if (!isEnoentError(error)) throw error;
+    }
+
+    const partialPath = `${normalizedPath}.${process.pid}.${randomUUID()}.reinflate.partial`;
+    let outputBytes = 0;
+    try {
+      if (freeBytesFor(normalizedPath) < MAX_TRANSPARENT_HISTORY_BYTES * COMPRESSION_HEADROOM_FACTOR) {
+        throw new Error("compressed_history_insufficient_headroom");
+      }
+      await fs.promises.mkdir(path.dirname(normalizedPath), { recursive: true });
+      await pipeline(
+        fs.createReadStream(gzipPath),
+        createGunzip(),
+        new Transform({
+          transform(chunk: Buffer, _encoding, callback) {
+            outputBytes += chunk.length;
+            if (outputBytes > MAX_TRANSPARENT_HISTORY_BYTES) {
+              callback(new Error("compressed_history_too_large"));
+              return;
+            }
+            callback(null, chunk);
+          },
+        }),
+        fs.createWriteStream(partialPath, { flags: "wx", mode: 0o600 }),
+      );
+      await fsyncFile(partialPath);
+      try {
+        const plainStat = await fs.promises.stat(normalizedPath);
+        if (plainStat.isFile()) {
+          await removeFileBestEffort(partialPath);
+          await removeFileBestEffort(gzipPath);
+          return true;
+        }
+      } catch (error) {
+        if (!isEnoentError(error)) throw error;
+      }
+      await fs.promises.rename(partialPath, normalizedPath);
+      await removeFileBestEffort(gzipPath);
+      return true;
+    } finally {
+      await removeFileBestEffort(partialPath).catch(() => {});
+    }
+  })();
+  historyReinflateInFlight.set(normalizedPath, reinflate);
+  try {
+    return await reinflate;
+  } finally {
+    if (historyReinflateInFlight.get(normalizedPath) === reinflate) {
+      historyReinflateInFlight.delete(normalizedPath);
+    }
+  }
 }
 
 export function createHistoryCompressor(deps: {

@@ -132,6 +132,11 @@ function renderMessageList(
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     scrollToRowKeyRequest?: { key: string; requestId: number } | null;
+    hasOlderHistory?: boolean;
+    loadingOlderHistory?: boolean;
+    olderHistoryError?: string | null;
+    onLoadOlderHistory?: () => void;
+    onReturnToLatest?: () => void;
   },
 ) {
   return render(
@@ -145,6 +150,11 @@ function renderMessageList(
         onApproval={options?.onApproval as any}
         onCodexRecovery={options?.onCodexRecovery}
         scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
+        hasOlderHistory={options?.hasOlderHistory}
+        loadingOlderHistory={options?.loadingOlderHistory}
+        olderHistoryError={options?.olderHistoryError}
+        onLoadOlderHistory={options?.onLoadOlderHistory}
+        onReturnToLatest={options?.onReturnToLatest}
       />
       <LocationProbe />
     </MemoryRouter>,
@@ -1200,6 +1210,7 @@ describe("AgentChatMessageList transcript rendering", () => {
   });
 
   it("shows jump-to-latest after manual transcript scroll", async () => {
+    const onReturnToLatest = vi.fn();
     renderMessageList([
       {
         sessionId: "session-1",
@@ -1220,7 +1231,7 @@ describe("AgentChatMessageList transcript rendering", () => {
           turnId: "turn-1",
         },
       },
-    ]);
+    ], { onReturnToLatest });
 
     const transcript = document.querySelector(".ade-chat-timeline-pane") as HTMLDivElement;
     Object.defineProperty(transcript, "scrollHeight", { configurable: true, value: 1_000 });
@@ -1231,10 +1242,60 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     const jumpButton = await screen.findByRole("button", { name: "Jump to latest message" });
     fireEvent.click(jumpButton);
+    expect(onReturnToLatest).toHaveBeenCalledTimes(1);
 
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "Jump to latest message" })).toBeNull();
     });
+  });
+
+  it("automatically backfills an underfilled transcript without requiring a scroll event", async () => {
+    const onLoadOlderHistory = vi.fn();
+    renderMessageList([], {
+      hasOlderHistory: true,
+      onLoadOlderHistory,
+    });
+
+    await waitFor(() => expect(onLoadOlderHistory).toHaveBeenCalledTimes(1));
+  });
+
+  it("stops automatic retries after an older-history failure and exposes a retry button", async () => {
+    const onLoadOlderHistory = vi.fn();
+    const originalIntersectionObserver = globalThis.IntersectionObserver;
+    let intersectionCallback: IntersectionObserverCallback | null = null;
+    globalThis.IntersectionObserver = class {
+      readonly root = null;
+      readonly rootMargin = "0px";
+      readonly thresholds = [0];
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+      disconnect() {}
+      observe() {}
+      takeRecords(): IntersectionObserverEntry[] { return []; }
+      unobserve() {}
+    } as typeof IntersectionObserver;
+    try {
+      renderMessageList([], {
+        hasOlderHistory: true,
+        olderHistoryError: "Host disconnected",
+        onLoadOlderHistory,
+      });
+
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      const observedIntersection = intersectionCallback as IntersectionObserverCallback | null;
+      expect(observedIntersection).not.toBeNull();
+      observedIntersection?.(
+        [{ isIntersecting: true } as IntersectionObserverEntry],
+        {} as IntersectionObserver,
+      );
+      expect(onLoadOlderHistory).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry loading earlier messages" }));
+      expect(onLoadOlderHistory).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.IntersectionObserver = originalIntersectionObserver;
+    }
   });
 
   it("does not resume bottom stickiness until the user returns to latest", () => {

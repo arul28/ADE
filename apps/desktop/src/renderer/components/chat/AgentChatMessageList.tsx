@@ -5012,7 +5012,9 @@ function AgentChatMessageListMain({
   sessionEnded = false,
   hasOlderHistory = false,
   loadingOlderHistory = false,
+  olderHistoryError = null,
   onLoadOlderHistory,
+  onReturnToLatest,
   mosaic,
   scrollToRowKeyRequest,
 }: {
@@ -5043,8 +5045,12 @@ function AgentChatMessageListMain({
   hasOlderHistory?: boolean;
   /** True while an older transcript page is being fetched. */
   loadingOlderHistory?: boolean;
+  /** Retryable error from the most recent older-history request. */
+  olderHistoryError?: string | null;
   /** Called when the user scrolls near the top and older pages exist. */
   onLoadOlderHistory?: () => void;
+  /** Called when a detached historical window returns to the live transcript tail. */
+  onReturnToLatest?: () => void;
   /** Present only for Claude-family sessions; enables interactive mosaic cards. */
   mosaic?: MosaicRenderContext;
   /** Imperative jump request used by the while-you-were-away wake digest. */
@@ -5055,6 +5061,7 @@ function AgentChatMessageListMain({
   const timelineRowGapPx = useMemo(() => transcriptRowGapPx(chatTranscriptDensity), [chatTranscriptDensity]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const contentWrapperRef = useRef<HTMLDivElement | null>(null);
+  const olderHistorySentinelRef = useRef<HTMLDivElement | null>(null);
   const lastHandledScrollToRowRequestIdRef = useRef<number | null>(null);
   const location = useLocation();
   const navigate = useNavigate();
@@ -5125,17 +5132,40 @@ function AgentChatMessageListMain({
   const onLoadOlderHistoryRef = useRef(onLoadOlderHistory);
   const hasOlderHistoryRef = useRef(hasOlderHistory);
   const loadingOlderHistoryRef = useRef(loadingOlderHistory);
+  const olderHistoryErrorRef = useRef(olderHistoryError);
   useEffect(() => {
     onLoadOlderHistoryRef.current = onLoadOlderHistory;
     hasOlderHistoryRef.current = hasOlderHistory;
     loadingOlderHistoryRef.current = loadingOlderHistory;
-  }, [onLoadOlderHistory, hasOlderHistory, loadingOlderHistory]);
+    olderHistoryErrorRef.current = olderHistoryError;
+  }, [onLoadOlderHistory, hasOlderHistory, loadingOlderHistory, olderHistoryError]);
 
   const maybeRequestOlderHistory = useCallback((scrollTopNow: number) => {
     if (scrollTopNow > LOAD_OLDER_THRESHOLD_PX) return;
-    if (!hasOlderHistoryRef.current || loadingOlderHistoryRef.current) return;
+    if (
+      !hasOlderHistoryRef.current
+      || loadingOlderHistoryRef.current
+      || olderHistoryErrorRef.current
+    ) return;
     onLoadOlderHistoryRef.current?.();
   }, []);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    const sentinel = olderHistorySentinelRef.current;
+    if (!root || !sentinel || !hasOlderHistory || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        maybeRequestOlderHistory(root.scrollTop);
+      }
+    }, {
+      root,
+      rootMargin: `${LOAD_OLDER_THRESHOLD_PX}px 0px 0px`,
+      threshold: 0,
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasOlderHistory, maybeRequestOlderHistory]);
 
   useEffect(() => {
     onApprovalRef.current = onApproval;
@@ -5430,6 +5460,29 @@ function AgentChatMessageListMain({
     measureScrollContainerHeight();
     return () => ro.disconnect();
   }, [measureScrollContainerHeight]);
+
+  // A short initial tail may not create a scrollbar, so no scroll event can
+  // ever ask for the next page. Keep backfilling while the viewport is
+  // underfilled; stop after a retryable failure so the explicit retry control
+  // remains stable instead of hammering a disconnected host.
+  useEffect(() => {
+    if (!hasOlderHistory || loadingOlderHistory || olderHistoryError) return;
+    const frame = requestAnimationFrame(() => {
+      const el = scrollRef.current;
+      if (!el) return;
+      if (el.scrollHeight <= el.clientHeight + LOAD_OLDER_THRESHOLD_PX) {
+        maybeRequestOlderHistory(el.scrollTop);
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [
+    containerHeight,
+    groupedRows.length,
+    hasOlderHistory,
+    loadingOlderHistory,
+    maybeRequestOlderHistory,
+    olderHistoryError,
+  ]);
 
   const shouldVirtualize = groupedRows.length >= VIRTUALIZATION_THRESHOLD;
 
@@ -5751,10 +5804,11 @@ function AgentChatMessageListMain({
     if (nextStick !== stickToBottomRef.current) {
       stickToBottomRef.current = nextStick;
       setStickToBottom(nextStick);
+      if (nextStick) onReturnToLatest?.();
     }
     setScrollTop(target.scrollTop);
     maybeRequestOlderHistory(target.scrollTop);
-  }, [maybeRequestOlderHistory]);
+  }, [maybeRequestOlderHistory, onReturnToLatest]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     if (event.deltaY < 0) {
@@ -5782,8 +5836,9 @@ function AgentChatMessageListMain({
   const jumpToLatest = useCallback(() => {
     stickToBottomRef.current = true;
     setStickToBottom(true);
+    onReturnToLatest?.();
     scrollToBottomSoon();
-  }, [scrollToBottomSoon]);
+  }, [onReturnToLatest, scrollToBottomSoon]);
 
   const fullUserMinimapEntries = useMemo(
     () => collectUserMessageMinimapSourceEntries(groupedRows),
@@ -6011,11 +6066,24 @@ function AgentChatMessageListMain({
                loading text never shifts the transcript below it. Unmounts
                entirely once the head of the transcript is reached. */
             <div
+              ref={olderHistorySentinelRef}
               className="flex h-7 shrink-0 items-center justify-center font-sans text-[11px] text-fg/45"
               role="status"
               aria-live="polite"
             >
-              {loadingOlderHistory ? "loading earlier messages…" : null}
+              {loadingOlderHistory ? (
+                "loading earlier messages…"
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => onLoadOlderHistory?.()}
+                  className="rounded px-2 py-0.5 text-fg/55 transition-colors hover:bg-white/[0.05] hover:text-fg/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
+                  aria-label={olderHistoryError ? "Retry loading earlier messages" : "Load earlier messages"}
+                  title={olderHistoryError ?? undefined}
+                >
+                  {olderHistoryError ? "couldn’t load earlier messages · retry" : "load earlier messages"}
+                </button>
+              )}
             </div>
           ) : null}
           {rows.length === 0 && !streamingIndicator ? (

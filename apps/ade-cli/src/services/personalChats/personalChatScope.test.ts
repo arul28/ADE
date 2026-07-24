@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdeRuntime } from "../../bootstrap";
 import { PersonalChatScope } from "./personalChatScope";
@@ -111,6 +112,17 @@ describe("PersonalChatScope", () => {
     ): Promise<AdeRuntime> => runtime);
     return { summary, service, runtime, createRuntime };
   }
+
+  it("resolves a compressed durable personal transcript", async () => {
+    const { runtime, createRuntime } = fixture();
+    const durablePath = path.join(runtime.projectRoot, ".ade", "transcripts", "chat", "chat-1.jsonl");
+    fs.mkdirSync(path.dirname(durablePath), { recursive: true });
+    fs.writeFileSync(`${durablePath}.gz`, gzipSync("history\n"));
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.transcriptPath("chat-1")).resolves.toBe(`${durablePath}.gz`);
+    await scope.dispose();
+  });
 
   it("creates a hidden personal session and dispatches an optional kickoff", async () => {
     const { service, createRuntime } = fixture();

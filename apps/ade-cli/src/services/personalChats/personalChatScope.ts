@@ -10,6 +10,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import { PERSONAL_CHAT_ACTIONS } from "../../../../desktop/src/shared/types";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import type { AdeRuntime } from "../../bootstrap";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
@@ -98,7 +99,11 @@ export class PersonalChatScope {
     return summarizeRuntimeActivity(runtime);
   }
 
-  async call(actionValue: unknown, argsValue: unknown): Promise<PersonalChatCallResponse> {
+  async call(
+    actionValue: unknown,
+    argsValue: unknown,
+    signal?: AbortSignal,
+  ): Promise<PersonalChatCallResponse> {
     if (!isPersonalChatAction(actionValue)) {
       throw new Error(`Unsupported personal chat action: ${String(actionValue ?? "")}.`);
     }
@@ -166,6 +171,7 @@ export class PersonalChatScope {
           sessionId,
           readLimit(args.limit),
           typeof args.since === "string" ? args.since : undefined,
+          signal,
         );
         break;
       }
@@ -265,18 +271,20 @@ export class PersonalChatScope {
       case "getEventHistory": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
-        result = service.getChatEventHistory(sessionId, {
+        result = await service.getChatEventHistory(sessionId, {
           ...(typeof args.maxEvents === "number" ? { maxEvents: args.maxEvents } : {}),
           ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}),
+          ...(signal ? { signal } : {}),
         });
         break;
       }
       case "getEventHistoryPage": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
-        result = service.getChatEventHistoryPage(sessionId, {
+        result = await service.getChatEventHistoryPage(sessionId, {
           beforeOffset: Number(args.beforeOffset),
           ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}),
+          ...(signal ? { signal } : {}),
         });
         break;
       }
@@ -370,8 +378,10 @@ export class PersonalChatScope {
     // The session transcript is byte-capped. Remote clients must tail the
     // dedicated durable chat transcript or long conversations stop updating.
     const durablePath = path.join(resolveAdeLayout(runtime.projectRoot).chatTranscriptsDir, `${sessionId}.jsonl`);
-    if (fs.existsSync(durablePath)) return durablePath;
-    return runtime.sessionService.get(sessionId)?.transcriptPath ?? null;
+    const legacyPath = runtime.sessionService.get(sessionId)?.transcriptPath ?? "";
+    return resolveReadableHistoryPath(durablePath)
+      ?? resolveReadableHistoryPath(legacyPath)
+      ?? (legacyPath || durablePath);
   }
 
   async isTurnActive(sessionIdValue: unknown): Promise<boolean> {

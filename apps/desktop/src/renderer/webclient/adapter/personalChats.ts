@@ -17,7 +17,9 @@ function fallbackFor(action: PersonalChatAction): unknown {
     return { sessionId: "", events: [], truncated: false, sessionFound: false };
   }
   if (action === "getEventHistoryPage") {
-    return { sessionId: "", events: [], nextBeforeOffset: null, hasMore: false };
+    return () => {
+      throw new Error("Personal chat history paging is unavailable on the connected ADE host.");
+    };
   }
   return null;
 }

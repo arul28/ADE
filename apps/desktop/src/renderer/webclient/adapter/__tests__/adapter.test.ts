@@ -308,6 +308,48 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("keeps an older-history cursor retryable when the host cannot page it", async () => {
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.getEventHistoryPage({
+      sessionId: "chat-long-running",
+      beforeOffset: 4096,
+    })).rejects.toThrow("Chat history action 'chat.getChatEventHistoryPage' is unavailable");
+
+    adapter.dispose();
+  });
+
+  it("bounds web transcript page reads before sending them to the host", async () => {
+    fake.descriptors = descriptors(["chat.getChatEventHistoryPage"]);
+    fake.commandResults.set("chat.getChatEventHistoryPage", {
+      sessionId: "chat-long-running",
+      events: [],
+      startOffset: 1024,
+      hasMore: true,
+      sessionFound: true,
+    });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await adapter.ade.agentChat.getEventHistoryPage({
+      sessionId: "chat-long-running",
+      beforeOffset: 4096,
+      maxBytes: 2_000_000,
+    });
+
+    expect(fake.commandCalls.at(-1)).toMatchObject({
+      action: "chat.getChatEventHistoryPage",
+      args: {
+        sessionId: "chat-long-running",
+        beforeOffset: 4096,
+        maxBytes: 256 * 1024,
+      },
+    });
+
+    adapter.dispose();
+  });
+
   it("keeps only the eight most recently used project chat subscriptions", async () => {
     fake.descriptors = descriptors(["chat.getChatEventHistory"]);
     const adapter = createAdeWebAdapter(fake.asClient());
@@ -1217,6 +1259,19 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("does not run GitHub authentication work as a side effect of transport connect", async () => {
+    fake.descriptors = descriptors(["github.getStatus"]);
+    fake.commandResults.set("github.getStatus", { connected: true });
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    fake.emitStatus();
+    await Promise.resolve();
+
+    expect(fake.commandCalls.filter((call) => call.action === "github.getStatus")).toHaveLength(0);
+    adapter.dispose();
+  });
+
   it("fans out table, chat, and terminal events and unsubscribes listeners", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors(["work.listSessions"]);
@@ -1683,6 +1738,11 @@ class FakeAdeSyncClient {
   subscribe(listener: (payload: ReturnType<FakeAdeSyncClient["getStatus"]>) => void): () => void {
     this.statusListeners.add(listener);
     return () => this.statusListeners.delete(listener);
+  }
+
+  emitStatus(): void {
+    const status = this.getStatus();
+    for (const listener of this.statusListeners) listener(status);
   }
 
   getCommandDescriptors(): SyncRemoteCommandDescriptor[] {

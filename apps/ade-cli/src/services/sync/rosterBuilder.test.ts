@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import {
@@ -346,6 +347,22 @@ describe("buildRosterSnapshot", () => {
     expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "../../etc/passwd" })).toBeNull();
     expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "a/b" })).toBeNull();
     expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "" })).toBeNull();
+  });
+
+  it("resolves compressed dedicated and legacy foreign transcripts", () => {
+    const resolver = createForeignChatTranscriptResolver({ projectRegistry });
+    const dedicated = path.join(projectRoot, ".ade", "transcripts", "chat", "gzip-chat.jsonl");
+    fs.mkdirSync(path.dirname(dedicated), { recursive: true });
+    fs.writeFileSync(`${dedicated}.gz`, gzipSync("dedicated\n"));
+    expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "gzip-chat" }))
+      .toBe(`${dedicated}.gz`);
+
+    fs.unlinkSync(`${dedicated}.gz`);
+    const legacy = path.join(projectRoot, ".ade", "transcripts", "gzip-chat.chat.jsonl");
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(`${legacy}.gz`, gzipSync("legacy\n"));
+    expect(resolver.resolveTranscriptPath({ projectId: PROJECT_ID, sessionId: "gzip-chat" }))
+      .toBe(`${legacy}.gz`);
   });
 
   it("tolerates a project with no ADE database (empty lanes/chats)", async () => {

@@ -121,6 +121,18 @@ const mocks = vi.hoisted(() => {
       return stream;
     }),
     promises: {
+      stat: vi.fn(async (filePath: string) => {
+        if (!fileContents.has(filePath) && !fileStats.has(filePath)) {
+          const error = new Error(`ENOENT: no such file or directory, stat '${filePath}'`) as NodeJS.ErrnoException;
+          error.code = "ENOENT";
+          throw error;
+        }
+        return {
+          size: fileStats.get(filePath)?.size
+            ?? Buffer.byteLength(fileContents.get(filePath) ?? "", "utf8"),
+          isFile: () => true,
+        };
+      }),
       open: vi.fn(async (filePath: string, flags: string) => {
         if (flags === "wx" && (fileContents.has(filePath) || fileStats.has(filePath))) {
           const error = new Error(`EEXIST: file already exists, open '${filePath}'`) as NodeJS.ErrnoException;

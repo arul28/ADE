@@ -2585,15 +2585,29 @@ button:active, [role="button"]:active {
 
 .ade-chat-timeline-pane {
   /* Flat, calm canvas — no gradient/sheen, a touch lighter than the chrome
-     (Codex reference). Scrollbar fully hidden: the message-history indicator,
-     jump-to-latest pill, and obvious scroll affordance make it redundant. */
+     (Codex reference). ADE maintains its own prepend/bottom anchors, so native
+     scroll anchoring is disabled to avoid double compensation. */
   background: var(--chat-canvas-bg);
-  scrollbar-width: none; /* Firefox */
+  overflow-anchor: none;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--fg) 22%, transparent) transparent;
 }
 .ade-chat-timeline-pane::-webkit-scrollbar {
-  display: none; /* WebKit/Blink */
-  width: 0;
-  height: 0;
+  width: 8px;
+  height: 8px;
+}
+.ade-chat-timeline-pane::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ade-chat-timeline-pane::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 22%, transparent);
+  background-clip: padding-box;
+}
+.ade-chat-timeline-pane::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg) 34%, transparent);
+  background-clip: padding-box;
 }
 
 .ade-chat-message-card-user {

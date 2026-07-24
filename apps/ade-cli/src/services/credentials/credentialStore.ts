@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
@@ -54,7 +54,11 @@ const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_STALE_MS = 10_000;
 const LOCK_RETRY_MS = 25;
 const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;
+const MACOS_KEYCHAIN_READ_TIMEOUT_MS = 2_000;
+const MACOS_KEYCHAIN_NEGATIVE_CACHE_MS = 30_000;
 let cachedDefaultOsBoundKeyMaterial: Buffer | null = null;
+let defaultOsBoundKeyMaterialReadInFlight: Promise<Buffer | null> | null = null;
+let lastMissingDefaultOsBoundKeyMaterialAt = 0;
 
 type CredentialLockMetadata = {
   pid?: number;
@@ -326,6 +330,23 @@ function readJsonObject(filePath: string): Record<string, unknown> | null {
   }
 }
 
+async function readJsonObjectAsync(filePath: string): Promise<{
+  value: Record<string, unknown> | null;
+  exists: boolean;
+}> {
+  try {
+    const raw = await fs.promises.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { value: null, exists: true };
+    }
+    return { value: parsed as Record<string, unknown>, exists: true };
+  } catch (error: unknown) {
+    if (isEnoent(error)) return { value: {}, exists: false };
+    throw error;
+  }
+}
+
 function normalizeStoredCredentialValues(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const out: Record<string, string> = {};
@@ -447,6 +468,38 @@ function readOrCreateMachineKey(machineKeyPath: string): Buffer {
   }
 }
 
+async function readMachineKeyIfExistsAsync(machineKeyPath: string): Promise<Buffer | null> {
+  try {
+    const raw = (await fs.promises.readFile(machineKeyPath, "utf8")).trim();
+    const key = Buffer.from(raw, "base64");
+    if (key.length === 32) return key;
+    throw new Error("ADE credential machine key is invalid.");
+  } catch (error: unknown) {
+    if (isEnoent(error)) return null;
+    throw error;
+  }
+}
+
+async function readOrCreateMachineKeyAsync(machineKeyPath: string): Promise<Buffer> {
+  const existing = await readMachineKeyIfExistsAsync(machineKeyPath);
+  if (existing) return existing;
+
+  const key = crypto.randomBytes(32);
+  await fs.promises.mkdir(path.dirname(machineKeyPath), { recursive: true, mode: 0o700 });
+  try {
+    await fs.promises.writeFile(machineKeyPath, `${key.toString("base64")}\n`, { flag: "wx", mode: 0o600 });
+    if (process.platform !== "win32") {
+      await fs.promises.chmod(machineKeyPath, 0o600).catch(() => undefined);
+    }
+    return key;
+  } catch (error: unknown) {
+    if (!isEexist(error)) throw error;
+    const winner = await readMachineKeyIfExistsAsync(machineKeyPath);
+    if (winner) return winner;
+    throw new Error("ADE credential machine key is invalid.");
+  }
+}
+
 function readCredentialPassphraseFromEnv(): Buffer | null {
   const passphrase = process.env.ADE_CREDENTIAL_STORE_PASSPHRASE?.trim();
   return passphrase ? Buffer.from(passphrase, "utf8") : null;
@@ -465,6 +518,7 @@ function readOrCreateMacKeychainMaterial(): Buffer | null {
     ], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      timeout: MACOS_KEYCHAIN_READ_TIMEOUT_MS,
     }).trim();
     const decoded = Buffer.from(raw, "base64");
     return decoded.length >= 32 ? decoded : Buffer.from(raw, "utf8");
@@ -485,12 +539,44 @@ function readOrCreateMacKeychainMaterial(): Buffer | null {
     ], {
       input: `${secret}\n`,
       stdio: ["pipe", "ignore", "ignore"],
+      timeout: MACOS_KEYCHAIN_READ_TIMEOUT_MS,
     });
     if (result.status !== 0) return null;
     return Buffer.from(secret, "base64");
   } catch {
     return null;
   }
+}
+
+async function readMacKeychainMaterialAsync(): Promise<Buffer | null> {
+  if (process.platform !== "darwin") return null;
+  return await new Promise((resolve) => {
+    execFile(
+      "security",
+      [
+        "find-generic-password",
+        "-a",
+        MACOS_KEYCHAIN_ACCOUNT,
+        "-s",
+        MACOS_KEYCHAIN_SERVICE,
+        "-w",
+      ],
+      {
+        encoding: "utf8",
+        timeout: MACOS_KEYCHAIN_READ_TIMEOUT_MS,
+        maxBuffer: 64 * 1024,
+      },
+      (error, stdout) => {
+        if (error) {
+          resolve(null);
+          return;
+        }
+        const raw = stdout.trim();
+        const decoded = Buffer.from(raw, "base64");
+        resolve(decoded.length >= 32 ? decoded : Buffer.from(raw, "utf8"));
+      },
+    );
+  });
 }
 
 function readDefaultOsBoundKeyMaterial(): Buffer | null {
@@ -500,8 +586,45 @@ function readDefaultOsBoundKeyMaterial(): Buffer | null {
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
   if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
   const material = readOrCreateMacKeychainMaterial();
-  if (material) cachedDefaultOsBoundKeyMaterial = material;
+  if (material) {
+    cachedDefaultOsBoundKeyMaterial = material;
+    lastMissingDefaultOsBoundKeyMaterialAt = 0;
+  }
   return material;
+}
+
+async function readDefaultOsBoundKeyMaterialAsync(): Promise<Buffer | null> {
+  const envMaterial = readCredentialPassphraseFromEnv();
+  if (envMaterial) return envMaterial;
+  if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
+  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
+  if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
+  if (
+    lastMissingDefaultOsBoundKeyMaterialAt > 0
+    && Date.now() - lastMissingDefaultOsBoundKeyMaterialAt < MACOS_KEYCHAIN_NEGATIVE_CACHE_MS
+  ) {
+    return null;
+  }
+  if (defaultOsBoundKeyMaterialReadInFlight) {
+    return await defaultOsBoundKeyMaterialReadInFlight;
+  }
+  const read = readMacKeychainMaterialAsync().then((material) => {
+    if (material) {
+      cachedDefaultOsBoundKeyMaterial = material;
+      lastMissingDefaultOsBoundKeyMaterialAt = 0;
+    } else {
+      lastMissingDefaultOsBoundKeyMaterialAt = Date.now();
+    }
+    return material;
+  });
+  defaultOsBoundKeyMaterialReadInFlight = read;
+  try {
+    return await read;
+  } finally {
+    if (defaultOsBoundKeyMaterialReadInFlight === read) {
+      defaultOsBoundKeyMaterialReadInFlight = null;
+    }
+  }
 }
 
 function deriveOsBoundCredentialKey(machineKey: Buffer, osMaterial: Buffer | null): Buffer {
@@ -514,6 +637,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly machineKeyPath: string;
   private readonly lockPath: string;
   private readonly keyMaterialProvider: () => Buffer | null;
+  private readonly keyMaterialProviderAsync: () => Promise<Buffer | null>;
   private readonly credentialChangePollIntervalMs: number | null;
   private readonly credentialFileWatchers = new Set<CredentialFileStatWatcher>();
   private lastReadState: CredentialStoreReadState = "missing";
@@ -524,6 +648,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     machineKeyPath?: string;
     lockPath?: string;
     keyMaterialProvider?: () => Buffer | null;
+    keyMaterialProviderAsync?: () => Promise<Buffer | null>;
     /** Set to null when tests drive checkForChangesNow() explicitly. */
     credentialChangePollIntervalMs?: number | null;
   } = {}) {
@@ -532,6 +657,10 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
     this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
     this.keyMaterialProvider = args.keyMaterialProvider ?? readDefaultOsBoundKeyMaterial;
+    this.keyMaterialProviderAsync = args.keyMaterialProviderAsync
+      ?? (args.keyMaterialProvider
+        ? async () => args.keyMaterialProvider?.() ?? null
+        : readDefaultOsBoundKeyMaterialAsync);
     this.credentialChangePollIntervalMs = args.credentialChangePollIntervalMs === undefined
       ? CREDENTIAL_CHANGE_POLL_INTERVAL_MS
       : args.credentialChangePollIntervalMs;
@@ -544,7 +673,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   async get(key: string): Promise<string | null> {
-    return this.getSync(key);
+    const normalized = normalizeKey(key);
+    return (await this.readAllAsync())[normalized] ?? null;
   }
 
   async set(key: string, value: string): Promise<void> {
@@ -666,6 +796,44 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       // account record could not be obtained to publisher health.
       this.lastReadState = "unreadable";
       if (args.allowRewrite) throw error;
+      return {};
+    }
+  }
+
+  private async readAllAsync(): Promise<Record<string, string>> {
+    const { value: raw, exists: credentialsExist } = await readJsonObjectAsync(this.credentialsPath);
+    if (!credentialsExist) {
+      this.lastReadState = "missing";
+      return {};
+    }
+    if (!raw || Object.keys(raw).length === 0) {
+      this.lastReadState = "unreadable";
+      throw new Error("Unsupported ADE credential store format.");
+    }
+    const machineKey = await readOrCreateMachineKeyAsync(this.machineKeyPath);
+    const key = deriveOsBoundCredentialKey(machineKey, await this.keyMaterialProviderAsync());
+    if (!key.equals(machineKey)) {
+      try {
+        const values = deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+        this.lastReadState = credentialsExist ? "available" : "missing";
+        return values;
+      } catch {
+        try {
+          const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+          this.lastReadState = credentialsExist ? "available" : "missing";
+          return values;
+        } catch (error) {
+          this.lastReadState = "unreadable";
+          throw error;
+        }
+      }
+    }
+    try {
+      const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+      this.lastReadState = credentialsExist ? "available" : "missing";
+      return values;
+    } catch {
+      this.lastReadState = "unreadable";
       return {};
     }
   }

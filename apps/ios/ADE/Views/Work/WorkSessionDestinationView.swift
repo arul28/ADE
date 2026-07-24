@@ -186,6 +186,36 @@ func mergeWorkTranscriptEntries(
   return result
 }
 
+/// Merge a refreshed tail without collapsing repeated physical rows inside
+/// either page. Only the ordered suffix/prefix overlap is removed.
+func mergeWorkTranscriptPageOccurrences(
+  older: [AgentChatTranscriptEntry],
+  newer: [AgentChatTranscriptEntry]
+) -> [AgentChatTranscriptEntry] {
+  guard !older.isEmpty else { return newer }
+  guard !newer.isEmpty else { return older }
+  let maxOverlap = min(older.count, newer.count)
+  var overlap = 0
+  if maxOverlap > 0 {
+    for candidate in stride(from: maxOverlap, through: 1, by: -1) {
+      let olderStart = older.count - candidate
+      var matches = true
+      for index in 0..<candidate {
+        if workTranscriptEntryIdentity(older[olderStart + index])
+          != workTranscriptEntryIdentity(newer[index]) {
+          matches = false
+          break
+        }
+      }
+      if matches {
+        overlap = candidate
+        break
+      }
+    }
+  }
+  return older + newer.dropFirst(overlap)
+}
+
 struct WorkLiveTranscriptCache {
   private var sessionId: String?
   private var eventCount = 0
@@ -276,6 +306,7 @@ private struct WorkChatTranscriptPresentationCacheEntry {
   var transcript: [WorkChatEnvelope]
   var fallbackEntries: [AgentChatTranscriptEntry]
   var olderTranscriptCursor: Int?
+  var transcriptCursorKind: String?
   var olderChatEventHistoryCursor: Int?
   var storedAt: Date
 
@@ -288,6 +319,16 @@ private struct WorkChatTranscriptPresentationCacheEntry {
 private var workChatTranscriptPresentationCacheBySession: [String: WorkChatTranscriptPresentationCacheEntry] = [:]
 
 private let workChatTranscriptPresentationCacheLimit = 8
+
+func workChatTranscriptEntriesByIndexForRestoredPresentation(
+  fallbackEntries: [AgentChatTranscriptEntry],
+  cursorKind: String?
+) -> [Int: AgentChatTranscriptEntry] {
+  guard cursorKind == "byte" else { return [:] }
+  return Dictionary(
+    uniqueKeysWithValues: fallbackEntries.enumerated().map { ($0.offset, $0.element) }
+  )
+}
 
 private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
   let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
@@ -364,6 +405,7 @@ struct WorkSessionDestinationView: View {
   // is the oldest fetched index (0 = transcript head reached).
   @State var transcriptEntriesByIndex: [Int: AgentChatTranscriptEntry] = [:]
   @State var olderTranscriptCursor: Int?
+  @State var transcriptCursorKind: String?
   // Newer hosts page canonical chat JSONL by byte offset. Prefer this path for
   // scrollback because it keeps the websocket stream tail-sized while still
   // walking arbitrarily old transcript history.
@@ -461,6 +503,7 @@ struct WorkSessionDestinationView: View {
   func resetTranscriptHistoryState() {
     transcriptEntriesByIndex = [:]
     olderTranscriptCursor = nil
+    transcriptCursorKind = nil
     olderChatEventHistoryCursor = nil
     initialTranscriptTailHydrated = false
   }
@@ -472,6 +515,7 @@ struct WorkSessionDestinationView: View {
       transcript: transcript,
       fallbackEntries: fallbackEntries,
       olderTranscriptCursor: olderTranscriptCursor,
+      transcriptCursorKind: transcriptCursorKind,
       olderChatEventHistoryCursor: olderChatEventHistoryCursor,
       storedAt: Date()
     )
@@ -496,7 +540,12 @@ struct WorkSessionDestinationView: View {
     else { return }
 
     olderTranscriptCursor = cached.olderTranscriptCursor
+    transcriptCursorKind = cached.transcriptCursorKind
     olderChatEventHistoryCursor = cached.olderChatEventHistoryCursor
+    transcriptEntriesByIndex = workChatTranscriptEntriesByIndexForRestoredPresentation(
+      fallbackEntries: cached.fallbackEntries,
+      cursorKind: cached.transcriptCursorKind
+    )
     if !cached.transcript.isEmpty {
       setTranscript(cached.transcript)
     }
@@ -1655,11 +1704,30 @@ struct WorkSessionDestinationView: View {
     liveTranscriptCache.compact(sessionId: sessionId, events: compactedEvents)
   }
 
-  /// Fold one host transcript page into the index-keyed store. `cursor` is
-  /// the `before` index the page was requested with (nil for a tail fetch).
-  /// Host indices are stable because the transcript is append-only.
+  /// Fold one host transcript page into the local ordered store. New hosts
+  /// return byte cursors, so ordering is maintained locally instead of
+  /// pretending byte offsets are dense entry indices.
   @MainActor
   func recordTranscriptPage(_ page: SyncService.AgentChatTranscriptPage, before cursor: Int?) {
+    if page.cursorKind == "byte" {
+      transcriptCursorKind = "byte"
+      let existing = combinedTranscriptEntries()
+      let merged = cursor == nil
+        ? mergeWorkTranscriptPageOccurrences(older: existing, newer: page.entries)
+        : page.entries + existing
+      transcriptEntriesByIndex = Dictionary(
+        uniqueKeysWithValues: merged.enumerated().map { ($0.offset, $0.element) }
+      )
+      if cursor == nil {
+        if olderTranscriptCursor == nil {
+          olderTranscriptCursor = page.nextCursor ?? 0
+        }
+      } else {
+        olderTranscriptCursor = page.nextCursor ?? 0
+      }
+      return
+    }
+    transcriptCursorKind = page.cursorKind
     let end = min(cursor ?? page.totalEntries, page.totalEntries)
     let start = max(0, end - page.entries.count)
     let pageCursor = page.nextCursor ?? 0
@@ -1693,7 +1761,7 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func seedOlderChatEventHistoryCursor(from page: AgentChatEventHistoryPage) {
     guard page.sessionFound else {
-      olderChatEventHistoryCursor = nil
+      olderChatEventHistoryCursor = 0
       return
     }
     updateOlderChatEventHistoryCursor(page.hasMore ? page.startOffset : nil)
@@ -1701,15 +1769,18 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func updateOlderChatEventHistoryCursor(_ cursor: Int?) {
-    guard let cursor, cursor > 0 else {
-      olderChatEventHistoryCursor = nil
+    if let existing = olderChatEventHistoryCursor {
+      // Zero is an explicit exhausted sentinel. Periodic tail refreshes must
+      // not re-seed already-consumed history and download the same pages again.
+      if existing == 0 { return }
+      guard let cursor, cursor > 0 else {
+        olderChatEventHistoryCursor = 0
+        return
+      }
+      olderChatEventHistoryCursor = min(existing, cursor)
       return
     }
-    if let existing = olderChatEventHistoryCursor, existing > 0 {
-      olderChatEventHistoryCursor = min(existing, cursor)
-    } else {
-      olderChatEventHistoryCursor = cursor
-    }
+    olderChatEventHistoryCursor = cursor.flatMap { $0 > 0 ? $0 : nil } ?? 0
   }
 
   @MainActor
@@ -1770,14 +1841,14 @@ struct WorkSessionDestinationView: View {
         return false
       }
       guard page.sessionFound else {
-        olderChatEventHistoryCursor = nil
+        olderChatEventHistoryCursor = 0
         return true
       }
       guard page.startOffset < cursor else {
-        olderChatEventHistoryCursor = nil
+        olderChatEventHistoryCursor = 0
         return true
       }
-      olderChatEventHistoryCursor = page.hasMore && page.startOffset > 0 ? page.startOffset : nil
+      olderChatEventHistoryCursor = page.hasMore && page.startOffset > 0 ? page.startOffset : 0
       cursor = page.startOffset
 
       let olderTranscript = makeWorkChatTranscript(from: page.events)

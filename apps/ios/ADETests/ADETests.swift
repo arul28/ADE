@@ -19748,6 +19748,56 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(merged, [oldest, overlap, newest])
   }
 
+  func testWorkTranscriptPageOccurrenceMergePreservesDuplicateRowsInsidePage() {
+    let duplicate = AgentChatTranscriptEntry(
+      role: "user",
+      text: "same",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let newest = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "newest",
+      timestamp: "2026-07-24T10:01:00.000Z",
+      turnId: "turn-new"
+    )
+
+    let merged = mergeWorkTranscriptPageOccurrences(
+      older: [duplicate, duplicate],
+      newer: [duplicate, newest]
+    )
+
+    XCTAssertEqual(merged, [duplicate, duplicate, newest])
+  }
+
+  func testRestoredByteCursorTranscriptCacheRehydratesOrderedIndexStore() {
+    let oldest = AgentChatTranscriptEntry(
+      role: "user",
+      text: "oldest",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-old"
+    )
+    let newest = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "newest",
+      timestamp: "2026-07-24T10:01:00.000Z",
+      turnId: "turn-new"
+    )
+
+    let restored = workChatTranscriptEntriesByIndexForRestoredPresentation(
+      fallbackEntries: [oldest, newest],
+      cursorKind: "byte"
+    )
+
+    XCTAssertEqual(restored.keys.sorted().compactMap { restored[$0] }, [oldest, newest])
+    XCTAssertTrue(
+      workChatTranscriptEntriesByIndexForRestoredPresentation(
+        fallbackEntries: [oldest, newest],
+        cursorKind: "entry"
+      ).isEmpty
+    )
+  }
+
   // MARK: - Orchestration session fields forward-compat
 
   func testAgentChatSessionSummaryDecodesOrchestrationFields() throws {

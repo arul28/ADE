@@ -9287,17 +9287,16 @@ final class SyncService: ObservableObject {
     return response.entries
   }
 
-  /// One page of a paginated chat transcript walk. `nextCursor` is the
-  /// host-side index of the oldest entry returned (the transcript is
-  /// append-only, so indices are stable); pass it back via
-  /// `fetchChatTranscriptPage(cursor:)` to load the previous (older) page.
-  /// `nil` means the start of the transcript was reached.
+  /// One page of a paginated chat transcript walk. `nextCursor` is opaque to
+  /// the client. Current hosts advertise `cursorKind == "byte"` and use a
+  /// stable logical JSONL byte offset; older hosts omit it and use indices.
   struct AgentChatTranscriptPage: Equatable {
     var sessionId: String
     var entries: [AgentChatTranscriptEntry]
     var truncated: Bool
     var totalEntries: Int
     var nextCursor: Int?
+    var cursorKind: String?
   }
 
   struct AgentChatSubagentTranscriptMessage: Codable, Equatable {
@@ -9333,7 +9332,10 @@ final class SyncService: ObservableObject {
   /// Fetch a transcript page. Without `cursor` this returns the newest
   /// entries (same data as `fetchChatTranscriptResponse`) plus a cursor for
   /// walking backwards; with `cursor` it returns the page strictly BEFORE
-  /// that index. Older hosts that predate pagination simply omit
+  /// that append-stable logical byte offset. Older hosts that used dense
+  /// entry indices or predate pagination identify the mode by omitting
+  /// `cursorKind`; clients retain the legacy merge path for those responses.
+  /// Hosts without pagination simply omit
   /// `nextCursor`, which surfaces here as `nil` (no more pages).
   func fetchChatTranscriptPage(
     sessionId: String,
@@ -9351,7 +9353,8 @@ final class SyncService: ObservableObject {
           entries: [],
           truncated: false,
           totalEntries: 0,
-          nextCursor: nil
+          nextCursor: nil,
+          cursorKind: nil
         )
       }
       let transcript = try await fetchChatTranscriptResponse(
@@ -9364,10 +9367,16 @@ final class SyncService: ObservableObject {
         entries: transcript.entries,
         truncated: transcript.truncated,
         totalEntries: transcript.totalEntries,
-        nextCursor: nil
+        nextCursor: nil,
+        cursorKind: nil
       )
     }
-    var args: [String: Any] = ["sessionId": sessionId, "limit": limit, "maxChars": maxChars]
+    var args: [String: Any] = [
+      "sessionId": sessionId,
+      "limit": limit,
+      "maxChars": maxChars,
+      "cursorKind": "byte"
+    ]
     if let cursor, cursor > 0 {
       args["cursor"] = String(cursor)
     }
@@ -9383,7 +9392,8 @@ final class SyncService: ObservableObject {
     }
     let transcript = try decode(response, as: AgentChatTranscriptResponse.self)
     var nextCursor: Int?
-    if let dict = response as? [String: Any], let rawCursor = dict["nextCursor"] {
+    let responseDictionary = response as? [String: Any]
+    if let rawCursor = responseDictionary?["nextCursor"] {
       if let text = rawCursor as? String {
         nextCursor = Int(text)
       } else if let number = rawCursor as? NSNumber, !(rawCursor is Bool) {
@@ -9395,7 +9405,8 @@ final class SyncService: ObservableObject {
       entries: transcript.entries,
       truncated: transcript.truncated,
       totalEntries: transcript.totalEntries,
-      nextCursor: nextCursor
+      nextCursor: nextCursor,
+      cursorKind: responseDictionary?["cursorKind"] as? String
     )
   }
 

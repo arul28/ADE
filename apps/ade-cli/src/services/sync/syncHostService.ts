@@ -10,6 +10,11 @@ import {
   recordUsageInteraction,
   usageClientSurfaceFromPeer,
 } from "../../../../desktop/src/main/services/usage/usageStatsStore";
+import {
+  readHistoryFileRange,
+  readHistoryFileSize,
+  resolveReadableHistoryPath,
+} from "../../../../desktop/src/main/services/storage/historyCompression";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
@@ -539,6 +544,7 @@ type PeerState = {
   pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
   nextTerminalSnapshotGeneration: number;
   subscribedChatSessionIds: Set<string>;
+  hydratingChatSessionIds: Set<string>;
   chatSubscriptionScopes: Map<string, ChatSubscriptionScope>;
   chatTranscriptOffsets: Map<string, number>;
   // Progress while scanning one JSONL record that exceeded a normal bounded
@@ -3190,6 +3196,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pendingTerminalSnapshots: new Map(),
       nextTerminalSnapshotGeneration: 0,
       subscribedChatSessionIds: new Set(),
+      hydratingChatSessionIds: new Set(),
       chatSubscriptionScopes: new Map(),
       chatTranscriptOffsets: new Map(),
       chatTranscriptScanOffsets: new Map(),
@@ -5064,18 +5071,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   async function readForeignChatSnapshot(
     transcriptPath: string,
     maxBytes: number,
+    signal?: AbortSignal,
   ): Promise<{ events: AgentChatEventEnvelope[]; transcriptSize: number; truncated: boolean }> {
-    let fh: fs.promises.FileHandle | null = null;
     try {
-      fh = await fs.promises.open(transcriptPath, "r");
-      const stat = await fh.stat();
-      const size = stat.size;
+      const size = await readHistoryFileSize(transcriptPath);
       const start = Math.max(0, size - Math.max(1_024, maxBytes));
       if (size <= start) {
         return { events: [], transcriptSize: size, truncated: false };
       }
-      const out = Buffer.alloc(size - start);
-      await fh.read(out, 0, out.length, start);
+      const out = await readHistoryFileRange(
+        transcriptPath,
+        start,
+        size - start,
+        signal,
+      );
       // Drop a leading partial line when starting mid-file so the parser never
       // sees a truncated JSON object as the first record.
       let sliceStart = 0;
@@ -5091,9 +5100,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       };
     } catch {
       return { events: [], transcriptSize: 0, truncated: false };
-    } finally {
-      await fh?.close().catch(() => {});
     }
+  }
+
+  async function readTranscriptLogicalSize(transcriptPath: string | null): Promise<number> {
+    if (!transcriptPath) return 0;
+    const candidates = transcriptPath.endsWith(".gz")
+      ? [transcriptPath]
+      : [transcriptPath, `${transcriptPath}.gz`];
+    for (const candidate of candidates) {
+      try {
+        return await readHistoryFileSize(candidate);
+      } catch {
+        // A session row normally points at the plain append target even after
+        // storage compression. Try its transparent gzip sibling next.
+      }
+    }
+    return 0;
   }
 
   // Resolve a foreign-project subscription's transcript path via the provider
@@ -5182,11 +5205,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (disposed || !peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) return;
     if (isPeerBackpressured(peer)) return;
     for (const sessionId of peer.subscribedChatSessionIds) {
+      if (peer.hydratingChatSessionIds.has(sessionId)) continue;
       // A foreign quick-look session has no local row; tail its resolved
       // transcript path directly. Local sessions resolve via sessionService.
       const resolvedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
-      const transcriptPath = resolvedTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
+      const configuredTranscriptPath = resolvedTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
+      const transcriptPath = configuredTranscriptPath
+        ? resolveReadableHistoryPath(configuredTranscriptPath) ?? configuredTranscriptPath
+        : null;
       if (!transcriptPath) continue;
+      if (resolvedTranscriptPath && transcriptPath !== resolvedTranscriptPath) {
+        peer.resolvedChatTranscriptPaths.set(sessionId, transcriptPath);
+      }
 
       const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
       const scanOffset = peer.chatTranscriptScanOffsets.get(sessionId) ?? null;
@@ -5232,6 +5262,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
+      if (peer.hydratingChatSessionIds.has(event.sessionId)) continue;
       // Personal and foreign-project subscriptions get events from their
       // resolved transcript paths — never the active project's live broadcast,
       // even when a local session shares the session id.
@@ -7424,6 +7455,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
         const personalChatRequested = payload?.chatScope === "personal";
+        const priorSubscription = {
+          subscribed: peer.subscribedChatSessionIds.has(sessionId),
+          scope: peer.chatSubscriptionScopes.get(sessionId),
+          transcriptPath: peer.resolvedChatTranscriptPaths.get(sessionId),
+          offset: peer.chatTranscriptOffsets.get(sessionId),
+          scanOffset: peer.chatTranscriptScanOffsets.get(sessionId),
+          sentIds: peer.chatEventIdsSent.get(sessionId),
+        };
+        let hydrationSucceeded = false;
+        peer.hydratingChatSessionIds.add(sessionId);
+        try {
 
         // Cross-project "quick look": a payload targeting a registered FOREIGN
         // project is served read-only from that project's `.ade` transcript
@@ -7470,6 +7512,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
         const session = foreignScope.kind === "local" ? args.sessionService.get(sessionId) : null;
         const transcriptPath = foreignTranscriptPath ?? session?.transcriptPath ?? null;
+        // Establish the durable handoff boundary before any async snapshot
+        // work. The pump stays behind the hydration barrier until after the
+        // ack, then starts here so appends that race the snapshot are replayed
+        // (snapshot overlap is removed by the normal delivery-key dedupe).
+        const hydrationStartOffset = await readTranscriptLogicalSize(transcriptPath);
         // Snapshots are byte-capped transcript tails — a long-running turn's
         // `status: started` event can sit outside the tail, leaving a client
         // that subscribes mid-turn unable to tell the session is streaming.
@@ -7509,10 +7556,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           // snapshot, fast-forward the transcript pump past content the
           // replay already carries, and re-send just the missed events as
           // ordinary chat_event envelopes (in order, after the ack).
-          const transcriptSize = transcriptPath && fs.existsSync(transcriptPath)
-            ? fs.statSync(transcriptPath).size
-            : 0;
-          peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
+          peer.chatTranscriptOffsets.set(sessionId, hydrationStartOffset);
           peer.chatTranscriptScanOffsets.delete(sessionId);
           const resumeAck: SyncChatSubscribeSnapshotPayload = {
             sessionId,
@@ -7523,6 +7567,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ...(await resolveLiveStatusFields()),
           };
           sendRequired(peer, "chat_subscribe", resumeAck, envelope.requestId);
+          hydrationSucceeded = true;
           for (const entry of resumePlan.entries) {
             // Skip events already delivered on this connection — TCP ordering
             // guarantees the peer has (or will get) them.
@@ -7544,7 +7589,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         let transcriptSize: number;
         if (foreignTranscriptPath) {
           const foreignSnapshot = await runWithAbortSignal(
-            () => readForeignChatSnapshot(foreignTranscriptPath, maxBytes),
+            () => readForeignChatSnapshot(foreignTranscriptPath, maxBytes, signal),
             signal,
             "Sync operation aborted.",
           );
@@ -7558,18 +7603,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           truncated = false;
           transcriptSize = 0;
         } else {
-          const history: AgentChatEventHistorySnapshot | null = args.agentChatService?.getChatEventHistory(sessionId, {
-            maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
-            maxBytes,
-          }) ?? null;
+          const history: AgentChatEventHistorySnapshot | null = args.agentChatService
+            ? await args.agentChatService.getChatEventHistory(sessionId, {
+              maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
+              maxBytes,
+              ...(signal ? { signal } : {}),
+              })
+            : null;
           events = history?.events ?? [];
-          transcriptSize = transcriptPath && fs.existsSync(transcriptPath)
-            ? fs.statSync(transcriptPath).size
-            : 0;
+          transcriptSize = await readTranscriptLogicalSize(transcriptPath);
           truncated = history?.truncated ?? (transcriptSize > maxBytes);
         }
         events = events.map(compactChatEventEnvelopeForSync);
-        peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
+        peer.chatTranscriptOffsets.set(sessionId, hydrationStartOffset);
         peer.chatTranscriptScanOffsets.delete(sessionId);
         const snapshot: SyncChatSubscribeSnapshotPayload = {
           sessionId,
@@ -7582,6 +7628,45 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         for (const event of events) {
           markChatEventSent(peer, event);
         }
+        hydrationSucceeded = true;
+        } finally {
+          peer.hydratingChatSessionIds.delete(sessionId);
+          if (!hydrationSucceeded) {
+            // A failed snapshot must not leave a half-subscribed peer behind.
+            // Otherwise the pump resumes from its default offset and can
+            // replay the entire transcript as live traffic after no ack. A
+            // refresh of an existing subscription restores its exact prior
+            // cursor/dedupe state so one transient snapshot failure cannot
+            // silently disconnect a client that was already receiving events.
+            if (priorSubscription.subscribed) peer.subscribedChatSessionIds.add(sessionId);
+            else peer.subscribedChatSessionIds.delete(sessionId);
+            if (priorSubscription.scope !== undefined) {
+              peer.chatSubscriptionScopes.set(sessionId, priorSubscription.scope);
+            } else {
+              peer.chatSubscriptionScopes.delete(sessionId);
+            }
+            if (priorSubscription.transcriptPath !== undefined) {
+              peer.resolvedChatTranscriptPaths.set(sessionId, priorSubscription.transcriptPath);
+            } else {
+              peer.resolvedChatTranscriptPaths.delete(sessionId);
+            }
+            if (priorSubscription.offset !== undefined) {
+              peer.chatTranscriptOffsets.set(sessionId, priorSubscription.offset);
+            } else {
+              peer.chatTranscriptOffsets.delete(sessionId);
+            }
+            if (priorSubscription.scanOffset !== undefined) {
+              peer.chatTranscriptScanOffsets.set(sessionId, priorSubscription.scanOffset);
+            } else {
+              peer.chatTranscriptScanOffsets.delete(sessionId);
+            }
+            if (priorSubscription.sentIds !== undefined) {
+              peer.chatEventIdsSent.set(sessionId, priorSubscription.sentIds);
+            } else {
+              peer.chatEventIdsSent.delete(sessionId);
+            }
+          }
+        }
         break;
       }
       case "chat_unsubscribe": {
@@ -7589,6 +7674,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const sessionId = toOptionalString(payload?.sessionId);
         if (sessionId) {
           peer.subscribedChatSessionIds.delete(sessionId);
+          peer.hydratingChatSessionIds.delete(sessionId);
           peer.chatSubscriptionScopes.delete(sessionId);
           peer.chatTranscriptOffsets.delete(sessionId);
           peer.chatTranscriptScanOffsets.delete(sessionId);
