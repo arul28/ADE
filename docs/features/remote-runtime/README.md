@@ -32,7 +32,8 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   failures), remote connection pool (paired-first with eligible SSH fallback,
   eviction listeners, connection-failure retryable reads, preview forwards,
   optional-action fallbacks, event-stream gap/epoch propagation, route-pinned
-  sensitive action dispatch, and capability-gated handoff storage preflight),
+  sensitive action dispatch, unknown-outcome errors for non-replayable actions
+  that lose confirmation, and capability-gated handoff storage preflight),
   connection service, and Bonjour + Tailscale discovery.
 - `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — runtime IPC boundary:
   remote target registry, connect / projects / project-open channels, remote
@@ -458,6 +459,11 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 - `Remote ADE service <version> does not support <capability>.` — the remote runtime connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update ADE on that machine.
 - `Remote ADE service method <method> failed (code N): <message> Details: ...` — the runtime RPC client now surfaces the JSON-RPC error `code`, `message`, and `data` together so a remote handler failure (e.g. a missing project capability or a service action error) is no longer reported as a generic `Remote ADE service request failed.` string.
 - `Remote ADE service timed out waiting for method ...` — only that request expired. The shared runtime connection and event subscriptions remain live; retry explicitly if the operation is still needed, because ADE does not replay timed-out mutations automatically.
+- A cross-machine handoff warning that ADE lost confirmation — destination
+  acceptance was already dispatched, but its request timed out or the runtime
+  connection closed. The destination may still finish. Check that machine
+  before retrying; the handoff ID makes an explicit retry reconcile the same
+  destination lane/chat rather than automatically replaying the mutation.
 - "Tailscale CLI was not found / timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; install or unblock `tailscale` to add tailnet peers.
 - Agent provider missing or unauthenticated — use the inline `AgentCliAuthCard` to install or authenticate that provider on the active runtime machine.
 

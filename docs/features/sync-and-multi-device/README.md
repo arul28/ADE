@@ -395,8 +395,9 @@ Desktop connection UI:
   rows are unavailable in that mode until a local-scoped device IPC exists.
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,
-  preload routing, and the Connections recovery copy. Keep these predicates
-  aligned rather than duplicating message regexes at each boundary.
+  preload routing, remote-runtime connection/timeout reconciliation, and the
+  Connections recovery copy. Keep these predicates aligned rather than
+  duplicating message regexes at each boundary.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` — the Connections
   control, connected summary, dialog portal/focus ownership, and external
   requests that open a specific tab. Browser peers are identified by
@@ -420,7 +421,8 @@ Cross-machine Work chat handoff:
 - `apps/desktop/src/main/services/remoteRuntime/remoteConnectionPool.ts`,
   `remoteConnectionService.ts`, and `apps/desktop/src/main/services/ipc/runtimeBridge.ts`
   — destination machine capability checks, storage preflight dispatch, route
-  pinning, timeout policy, and local/remote runtime routing.
+  pinning, paired/SSH runtime JSON-RPC routing, request-local timeout policy,
+  and non-replayable action reconciliation when confirmation is lost.
 - `apps/desktop/src/preload/preload.ts` — source project-runtime routing plus
   the renderer bridge for machine-level project setup and destination actions.
 
@@ -653,6 +655,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   source and destination work inside their owning project runtimes. Final
   acceptance is not queueable; destination idempotency is keyed by the
   capsule's handoff id and fingerprint instead of relying on command replay.
+  Desktop **Send to machine** reaches the destination through multi-project
+  runtime JSON-RPC: paired routes carry that stream in `rpc_data` envelopes,
+  while SSH uses `ade rpc --stdio`. The sync host's remote-command responder
+  timeout therefore does not bound the paired desktop acceptance action.
   Stalled-turn recovery is viewer-allowed but not queueable because it must
   target the currently active Codex turn. Mobile/remote Codex CLI launches
   also resolve the explicitly opted-in, verified standalone Computer Use MCP

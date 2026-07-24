@@ -67,6 +67,7 @@ import type {
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../shared/laneNameFallback";
+import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -8408,7 +8409,7 @@ export function AgentChatPane({
       // the two transport wrappers (registerIpc invoke timeout, RuntimeRpcClient
       // request timeout) — daemon-internal errors also say "timed out after Nms"
       // but those are real failures that must surface as errors.
-      const isTransportTimeout = /IPC handler for .+ timed out after \d+ms|Remote ADE service timed out waiting for method/i.test(rawMessage);
+      const isTransportTimeout = isRuntimeTransportTimeoutError(handoffError);
       const message = isTransportTimeout
         ? "The handoff is taking longer than expected. ADE is still finishing it in the background — if it completes, the new chat will appear in the session list."
         : rawMessage;

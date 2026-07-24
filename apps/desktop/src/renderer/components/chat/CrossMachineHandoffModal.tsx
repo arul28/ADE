@@ -36,6 +36,10 @@ import {
 import { providerSupportsHandoffFork } from "../../../shared/types/chat";
 import { providerDisplayLabel as providerDisplayLabelShared } from "../../../shared/pendingInputLabels";
 import {
+  isRemoteRuntimeConnectionError,
+  isRuntimeTransportTimeoutError,
+} from "../../../shared/runtimeErrors";
+import {
   resolveProviderGroupForModel,
   type ModelDescriptor,
   type ProviderFamily,
@@ -57,6 +61,10 @@ type ModalStage = "choose" | "clone" | "review" | "sending" | "complete";
 type HandoffMode = "brief" | "fork";
 
 type ForkHandoffSupport = { supported: boolean; reason?: string };
+
+const CROSS_MACHINE_HANDOFF_STILL_COMPLETING_MESSAGE =
+  "ADE lost confirmation from the destination while it was creating the handoff. "
+  + "The new chat may still appear there. Check that computer before retrying; retrying this handoff is safe.";
 
 function providerDisplayLabel(provider: AgentChatProvider | null | undefined): string {
   return providerDisplayLabelShared(provider, "This chat");
@@ -524,6 +532,7 @@ export function CrossMachineHandoffModal({
     setStage("sending");
     setBusyLabel("Rechecking source branch and chat…");
     setError(null);
+    let destinationAcceptanceStarted = false;
     try {
       await window.ade.agentChat.validateCrossMachineSource({
         sourceSessionId,
@@ -532,6 +541,7 @@ export function CrossMachineHandoffModal({
       });
       setBusyLabel("Creating destination lane and chat…");
       const requiredRouteKind = requireRemoteRuntimeRouteKind(selectedConnection.route?.kind);
+      destinationAcceptanceStarted = true;
       const response = await window.ade.remoteRuntime.callAction(
         selectedConnection.target.id,
         destinationProject.projectId,
@@ -559,7 +569,15 @@ export function CrossMachineHandoffModal({
       }
       setStage("complete");
     } catch (sendError) {
-      setError(sendError instanceof Error ? sendError.message : String(sendError));
+      const rawMessage = sendError instanceof Error ? sendError.message : String(sendError);
+      const completionMayBeUnconfirmed =
+        isRemoteRuntimeConnectionError(sendError)
+        || isRuntimeTransportTimeoutError(sendError);
+      setError(
+        destinationAcceptanceStarted && completionMayBeUnconfirmed
+          ? CROSS_MACHINE_HANDOFF_STILL_COMPLETING_MESSAGE
+          : rawMessage,
+      );
       setStage("review");
     } finally {
       setBusyLabel(null);
@@ -584,6 +602,7 @@ export function CrossMachineHandoffModal({
   const reviewBlocked = Boolean(destinationPreflight?.blockingErrors.length) || forkUnsupportedAtReview;
   const routeNeedsApproval = isInsecureRoute(selectedConnection);
   const reviewIsFork = prepared?.capsule.mode === "fork";
+  const handoffMayStillComplete = error === CROSS_MACHINE_HANDOFF_STILL_COMPLETING_MESSAGE;
   const insecureConsentLine = reviewIsFork
     ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
     : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
@@ -972,7 +991,14 @@ export function CrossMachineHandoffModal({
           ) : null}
 
           {error && stage !== "complete" ? (
-            <div className="mx-auto mt-4 max-w-[620px] rounded-lg border border-red-300/20 bg-red-400/[0.07] px-3 py-2.5 text-[10px] leading-4 text-red-100/75">
+            <div
+              className={cn(
+                "mx-auto mt-4 max-w-[620px] rounded-lg border px-3 py-2.5 text-[10px] leading-4",
+                handoffMayStillComplete
+                  ? "border-amber-300/20 bg-amber-400/[0.07] text-amber-100/75"
+                  : "border-red-300/20 bg-red-400/[0.07] text-red-100/75",
+              )}
+            >
               {error}
             </div>
           ) : null}

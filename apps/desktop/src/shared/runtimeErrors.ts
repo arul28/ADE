@@ -16,3 +16,15 @@ export function isProjectRegistrationRequiredError(error: unknown): boolean {
 export function isSyncServiceUnavailableError(error: unknown): boolean {
   return /Sync service is not available|Register a project first/i.test(errorMessage(error));
 }
+
+export function isRemoteRuntimeConnectionError(error: unknown): boolean {
+  return /remote (?:runtime|ADE service) connection (?:(?:was )?interrupted|closed|failed)|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
+    errorMessage(error),
+  );
+}
+
+export function isRuntimeTransportTimeoutError(error: unknown): boolean {
+  return /IPC handler for .+ timed out after \d+ms|Remote ADE service timed out waiting for method/i.test(
+    errorMessage(error),
+  );
+}
