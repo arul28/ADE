@@ -1107,11 +1107,7 @@ function removeAgentChatSessionViewCache(sessionId: string): void {
 function estimateAgentChatSessionViewBytes(events: readonly AgentChatEventEnvelope[]): number {
   let estimatedBytes = 0;
   for (const event of events) {
-    try {
-      estimatedBytes += JSON.stringify(event).length * 2;
-    } catch {
-      return Number.POSITIVE_INFINITY;
-    }
+    estimatedBytes += estimatedChatEventResidentBytes(event);
     if (estimatedBytes > MAX_AGENT_CHAT_VIEW_CACHE_BYTES_PER_SESSION) break;
   }
   return estimatedBytes;
@@ -1754,17 +1750,14 @@ export function resolveNextSelectedSessionId(args: {
 
 const chatEventResidentSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
 
-function estimatedChatEventResidentBytes(
-  event: AgentChatEventEnvelope,
-  maxBytes: number,
-): number {
+function estimatedChatEventResidentBytes(event: AgentChatEventEnvelope): number {
   const cached = chatEventResidentSizeCache.get(event);
   if (cached !== undefined) return cached;
   let eventBytes: number;
   try {
     eventBytes = JSON.stringify(event).length * 2;
   } catch {
-    eventBytes = maxBytes + 1;
+    eventBytes = Number.POSITIVE_INFINITY;
   }
   chatEventResidentSizeCache.set(event, eventBytes);
   return eventBytes;
@@ -1782,7 +1775,7 @@ function trimChatEventHistory(
   let estimatedBytes = 0;
   let byteStart = events.length;
   for (let index = events.length - 1; index >= countStart; index -= 1) {
-    const eventBytes = estimatedChatEventResidentBytes(events[index]!, maxBytes);
+    const eventBytes = estimatedChatEventResidentBytes(events[index]!);
     if (byteStart < events.length && estimatedBytes + eventBytes > maxBytes) break;
     estimatedBytes += eventBytes;
     byteStart = index;
@@ -1803,7 +1796,7 @@ function trimChatEventHistoryFromStart(
   let estimatedBytes = 0;
   let byteEnd = 0;
   for (let index = 0; index < countEnd; index += 1) {
-    const eventBytes = estimatedChatEventResidentBytes(events[index]!, maxBytes);
+    const eventBytes = estimatedChatEventResidentBytes(events[index]!);
     if (byteEnd > 0 && estimatedBytes + eventBytes > maxBytes) break;
     estimatedBytes += eventBytes;
     byteEnd = index + 1;

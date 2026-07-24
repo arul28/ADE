@@ -142,20 +142,7 @@ async function readPlainHistoryFileRange(
   signal?.throwIfAborted();
   const handle = await fs.promises.open(filePath, "r");
   try {
-    const out = Buffer.allocUnsafe(length);
-    let totalRead = 0;
-    while (totalRead < length) {
-      signal?.throwIfAborted();
-      const { bytesRead } = await handle.read(
-        out,
-        totalRead,
-        length - totalRead,
-        position + totalRead,
-      );
-      if (bytesRead <= 0) break;
-      totalRead += bytesRead;
-    }
-    return totalRead === length ? out : out.subarray(0, totalRead);
+    return await readFileHandleRange(handle, position, length, signal);
   } finally {
     await handle.close();
   }

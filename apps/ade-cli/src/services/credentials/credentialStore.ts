@@ -550,7 +550,7 @@ function readOrCreateMacKeychainMaterial(): Buffer | null {
 
 async function readMacKeychainMaterialAsync(): Promise<Buffer | null> {
   if (process.platform !== "darwin") return null;
-  return await new Promise((resolve) => {
+  return new Promise((resolve) => {
     execFile(
       "security",
       [
@@ -815,12 +815,12 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     if (!key.equals(machineKey)) {
       try {
         const values = deserializeStore(raw, key, { emptyOnDecryptFailure: false });
-        this.lastReadState = credentialsExist ? "available" : "missing";
+        this.lastReadState = "available";
         return values;
       } catch {
         try {
           const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
-          this.lastReadState = credentialsExist ? "available" : "missing";
+          this.lastReadState = "available";
           return values;
         } catch (error) {
           this.lastReadState = "unreadable";
@@ -830,7 +830,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     }
     try {
       const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
-      this.lastReadState = credentialsExist ? "available" : "missing";
+      this.lastReadState = "available";
       return values;
     } catch {
       this.lastReadState = "unreadable";

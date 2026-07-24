@@ -694,6 +694,12 @@ export function createMultiProjectRpcRequestHandler(
   };
   const ownsPersonalChatScope = options.personalChatScope == null;
   const personalChatScope = options.personalChatScope ?? new PersonalChatScope();
+  if (ownsPersonalChatScope && personalChatScope instanceof PersonalChatScope) {
+    void personalChatScope.warmExisting().catch(() => {
+      // The first explicit personal-chat call retries runtime creation and
+      // returns the actionable error to the caller.
+    });
+  }
   const handlers = new Map<ProjectId, Promise<HandlerEntry>>();
   const eventSubscriptions = new Map<string, RuntimeEventSubscription>();
   const disposeProjectRuntimeCaches = (projectId: ProjectId): void => {

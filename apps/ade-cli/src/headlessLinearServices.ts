@@ -423,12 +423,12 @@ async function readGitOriginAsync(projectRoot: string): Promise<string | null> {
   return remote || null;
 }
 
-async function runGitHeadlessAsync(
+function runGitHeadlessAsync(
   projectRoot: string,
   args: string[],
   timeoutMs: number,
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  return await runCommandAsync("git", args, {
+  return runCommandAsync("git", args, {
     cwd: projectRoot,
     timeoutMs,
   });
@@ -1123,7 +1123,7 @@ export function createHeadlessGitHubService(
       };
     },
     async detectRepo() {
-      return await detectGitHubRepoAsync(projectRoot);
+      return detectGitHubRepoAsync(projectRoot);
     },
     async getAppInstallationStatus(args = {}) {
       const owner = args.owner?.trim();

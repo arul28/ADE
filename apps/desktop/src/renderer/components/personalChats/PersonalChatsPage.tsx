@@ -32,6 +32,11 @@ import { buildChatAppearanceRootStyle } from "../chat/chatAppearance";
 import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { isWebClientMode } from "../../lib/webClientMode";
+import {
+  ADE_OPEN_BUILT_IN_BROWSER_EVENT,
+  navigateUrlInAdeBrowser,
+  type OpenBuiltInBrowserDetail,
+} from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
 
 type ToolPanel = "browser" | "terminal" | null;
@@ -227,20 +232,42 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     setModelId(DEFAULT_MODEL_ID);
     setLoading(true);
     setError(null);
-    void Promise.all([
-      refreshSessions(generation),
-      callPersonal<AgentChatModelCatalog>("modelCatalog", { mode: "cached" })
-        .then((next) => {
-          if (generation === targetGenerationRef.current) setCatalog(next);
-        }),
-    ]).catch((reason) => {
+    void refreshSessions(generation).catch((reason) => {
       if (generation === targetGenerationRef.current) {
         setError(reason instanceof Error ? reason.message : String(reason));
       }
     }).finally(() => {
       if (generation === targetGenerationRef.current) setLoading(false);
     });
+    void callPersonal<AgentChatModelCatalog>("modelCatalog", { mode: "cached" })
+      .then((next) => {
+        if (generation === targetGenerationRef.current) setCatalog(next);
+      })
+      .catch((reason) => {
+        if (generation === targetGenerationRef.current) {
+          setError(reason instanceof Error ? reason.message : String(reason));
+        }
+      });
   }, [refreshSessions, targetKey]);
+
+  useEffect(() => {
+    const openPersonalBrowser = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent<OpenBuiltInBrowserDetail>;
+      const browser = window.ade?.builtInBrowser;
+      if (!browser || !event.detail?.url) return;
+      event.preventDefault();
+      setToolPanel("browser");
+      navigateUrlInAdeBrowser(event.detail.url, {
+        newTab: true,
+        projectRoot: null,
+      }, {
+        fallbackToExternal: false,
+        onFailure: () => setError("ADE Browser couldn't open that link. Try again."),
+      });
+    };
+    window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
+    return () => window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openPersonalBrowser);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

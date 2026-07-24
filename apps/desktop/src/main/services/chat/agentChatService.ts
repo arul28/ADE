@@ -15418,6 +15418,7 @@ export function createAgentChatService(args: {
         ...(persisted?.cursorPromotedTurnId ? { cursorPromotedTurnId: persisted.cursorPromotedTurnId } : {}),
         ...(persisted?.permissionMode ? { permissionMode: persisted.permissionMode } : {}),
         ...(persisted?.identityKey ? { identityKey: persisted.identityKey } : {}),
+        ...(persisted?.surface ? { surface: persisted.surface } : {}),
         capabilityMode: persisted?.capabilityMode ?? inferCapabilityMode(provider),
         completion: persisted?.completion ?? null,
         codexGoal: persisted?.codexGoal ?? null,
@@ -35665,6 +35666,23 @@ export function createAgentChatService(args: {
     return await summarizeSessionRow(row);
   };
 
+  /**
+   * Repairs the owning surface for a session loaded from legacy metadata.
+   * This is intentionally not part of the public chat action contract; the
+   * machine-owned personal-chat scope uses it to migrate sessions that predate
+   * persisted `surface` metadata without exposing a cross-surface mutation.
+   */
+  const ensureSessionSurface = (
+    sessionId: string,
+    surface: AgentChatSurface,
+  ): void => {
+    const managed = ensureManagedSession(sessionId);
+    if (managed.session.surface !== surface) {
+      managed.session.surface = surface;
+      persistChatState(managed);
+    }
+  };
+
   const toScheduledWorkItem = (schedule: ChatScheduledWorkRecord): AgentChatScheduledWorkItem => ({
     id: schedule.id,
     sessionId: schedule.sessionId,
@@ -40616,6 +40634,7 @@ export function createAgentChatService(args: {
     resumeSession,
     listSessions,
     getSessionSummary,
+    ensureSessionSurface,
     hasActiveWorkloads,
     hasRetainableSessions,
     countActiveForLane,

@@ -99,6 +99,17 @@ export class PersonalChatScope {
     return summarizeRuntimeActivity(runtime);
   }
 
+  /**
+   * Existing personal-chat users should not pay the hidden runtime's cold boot
+   * after opening the Chats pane. Fresh installs remain lazy.
+   */
+  async warmExisting(): Promise<void> {
+    const layout = resolveMachineAdeLayout();
+    const stateRoot = layout.personalChatsStateRoot ?? path.join(layout.adeDir, "personal-chats", "state");
+    if (!fs.existsSync(path.join(stateRoot, ".ade", "ade.db"))) return;
+    await this.getRuntime();
+  }
+
   async call(
     actionValue: unknown,
     argsValue: unknown,
@@ -115,13 +126,28 @@ export class PersonalChatScope {
 
     let result: unknown;
     switch (action) {
-      case "list":
-        result = (await service.listSessions(undefined, {
+      case "list": {
+        const sessions = await service.listSessions(undefined, {
           includeIdentity: false,
           includeAutomation: true,
           includeArchived: args.includeArchived === true,
-        })).filter((session) => session.surface === "personal");
+        });
+        // This runtime is a private machine-owned scope: every chat row inside
+        // it is personal. Older rows may have lost their surface while being
+        // reconstructed for a follow-up, so repair and return them instead of
+        // filtering intact transcripts out of the UI.
+        result = sessions
+          .filter((session) => session.surface !== "automation")
+          .map((session) => {
+            if (session.surface !== "personal") {
+              service.ensureSessionSurface(session.sessionId, "personal");
+            }
+            return session.surface === "personal"
+              ? session
+              : { ...session, surface: "personal" as const };
+          });
         break;
+      }
       case "create": {
         const provider = requiredString(args.provider, "provider") as AgentChatCreateArgs["provider"];
         const model = requiredString(args.model, "model");
@@ -373,8 +399,8 @@ export class PersonalChatScope {
   async transcriptPath(sessionIdValue: unknown): Promise<string | null> {
     const sessionId = requiredString(sessionIdValue, "sessionId");
     const runtime = await this.getRuntime();
-    const summary = await runtime.agentChatService?.getSessionSummary(sessionId);
-    if (!summary || summary.surface !== "personal") return null;
+    const service = runtime.agentChatService;
+    if (!service || !(await this.resolvePersonalSession(service, sessionId))) return null;
     // The session transcript is byte-capped. Remote clients must tail the
     // dedicated durable chat transcript or long conversations stop updating.
     const durablePath = path.join(resolveAdeLayout(runtime.projectRoot).chatTranscriptsDir, `${sessionId}.jsonl`);
@@ -387,8 +413,10 @@ export class PersonalChatScope {
   async isTurnActive(sessionIdValue: unknown): Promise<boolean> {
     const sessionId = requiredString(sessionIdValue, "sessionId");
     const runtime = await this.getRuntime();
-    const summary = await runtime.agentChatService?.getSessionSummary(sessionId);
-    return summary?.surface === "personal" && summary.status === "active";
+    const service = runtime.agentChatService;
+    if (!service) return false;
+    const summary = await this.resolvePersonalSession(service, sessionId);
+    return summary?.status === "active";
   }
 
   async dispose(): Promise<void> {
@@ -440,9 +468,24 @@ export class PersonalChatScope {
     service: NonNullable<AdeRuntime["agentChatService"]>,
     sessionId: string,
   ): Promise<AgentChatSessionSummary> {
-    const summary = await service.getSessionSummary(sessionId);
-    if (!summary || summary.surface !== "personal") {
+    const summary = await this.resolvePersonalSession(service, sessionId);
+    if (!summary) {
       throw new Error(`Personal chat session '${sessionId}' was not found.`);
+    }
+    return summary;
+  }
+
+  private async resolvePersonalSession(
+    service: NonNullable<AdeRuntime["agentChatService"]>,
+    sessionId: string,
+  ): Promise<AgentChatSessionSummary | null> {
+    const summary = await service.getSessionSummary(sessionId);
+    if (!summary || summary.surface === "automation") {
+      return null;
+    }
+    if (summary.surface !== "personal") {
+      service.ensureSessionSurface(sessionId, "personal");
+      return { ...summary, surface: "personal" };
     }
     return summary;
   }

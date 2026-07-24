@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer } from "./eventBuffer";
 import {
   createMultiProjectRpcRequestHandler,
@@ -14,6 +14,20 @@ import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { SyncRoleSnapshot } from "../../desktop/src/shared/types";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+
+const originalAdeHome = process.env.ADE_HOME;
+let isolatedAdeHome = "";
+
+beforeEach(() => {
+  isolatedAdeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-home-"));
+  process.env.ADE_HOME = isolatedAdeHome;
+});
+
+afterEach(() => {
+  if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+  else process.env.ADE_HOME = originalAdeHome;
+  fs.rmSync(isolatedAdeHome, { recursive: true, force: true });
+});
 
 function createRegistry() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-rpc-"));

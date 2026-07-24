@@ -117,16 +117,15 @@ export function projectChatSummariesOntoSessions(
   sessions: TerminalSessionSummary[],
   allChats: AgentChatSessionSummary[],
 ): TerminalSessionSummary[] {
-  const identitySessionIds = new Set(
-    allChats
-      .filter((chat) => Boolean(chat.identityKey))
-      .map((chat) => chat.sessionId),
-  );
-  const chatSummaryBySessionId = new Map(
-    allChats
-      .filter((chat) => !chat.identityKey)
-      .map((chat) => [chat.sessionId, chat] as const),
-  );
+  const identitySessionIds = new Set<string>();
+  const chatSummaryBySessionId = new Map<string, AgentChatSessionSummary>();
+  for (const chat of allChats) {
+    if (chat.identityKey) {
+      identitySessionIds.add(chat.sessionId);
+    } else {
+      chatSummaryBySessionId.set(chat.sessionId, chat);
+    }
+  }
 
   return sessions
     .filter((session) => !identitySessionIds.has(session.id))
