@@ -586,7 +586,10 @@ function readDefaultOsBoundKeyMaterial(): Buffer | null {
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
   if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
   const material = readOrCreateMacKeychainMaterial();
-  if (material) cachedDefaultOsBoundKeyMaterial = material;
+  if (material) {
+    cachedDefaultOsBoundKeyMaterial = material;
+    lastMissingDefaultOsBoundKeyMaterialAt = 0;
+  }
   return material;
 }
 

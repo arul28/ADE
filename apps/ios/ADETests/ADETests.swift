@@ -19770,6 +19770,34 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(merged, [duplicate, duplicate, newest])
   }
 
+  func testRestoredByteCursorTranscriptCacheRehydratesOrderedIndexStore() {
+    let oldest = AgentChatTranscriptEntry(
+      role: "user",
+      text: "oldest",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-old"
+    )
+    let newest = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "newest",
+      timestamp: "2026-07-24T10:01:00.000Z",
+      turnId: "turn-new"
+    )
+
+    let restored = workChatTranscriptEntriesByIndexForRestoredPresentation(
+      fallbackEntries: [oldest, newest],
+      cursorKind: "byte"
+    )
+
+    XCTAssertEqual(restored.keys.sorted().compactMap { restored[$0] }, [oldest, newest])
+    XCTAssertTrue(
+      workChatTranscriptEntriesByIndexForRestoredPresentation(
+        fallbackEntries: [oldest, newest],
+        cursorKind: "entry"
+      ).isEmpty
+    )
+  }
+
   // MARK: - Orchestration session fields forward-compat
 
   func testAgentChatSessionSummaryDecodesOrchestrationFields() throws {

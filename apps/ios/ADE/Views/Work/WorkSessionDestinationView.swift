@@ -320,6 +320,16 @@ private var workChatTranscriptPresentationCacheBySession: [String: WorkChatTrans
 
 private let workChatTranscriptPresentationCacheLimit = 8
 
+func workChatTranscriptEntriesByIndexForRestoredPresentation(
+  fallbackEntries: [AgentChatTranscriptEntry],
+  cursorKind: String?
+) -> [Int: AgentChatTranscriptEntry] {
+  guard cursorKind == "byte" else { return [:] }
+  return Dictionary(
+    uniqueKeysWithValues: fallbackEntries.enumerated().map { ($0.offset, $0.element) }
+  )
+}
+
 private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
   let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
   guard !raw.isEmpty else { return nil }
@@ -532,6 +542,10 @@ struct WorkSessionDestinationView: View {
     olderTranscriptCursor = cached.olderTranscriptCursor
     transcriptCursorKind = cached.transcriptCursorKind
     olderChatEventHistoryCursor = cached.olderChatEventHistoryCursor
+    transcriptEntriesByIndex = workChatTranscriptEntriesByIndexForRestoredPresentation(
+      fallbackEntries: cached.fallbackEntries,
+      cursorKind: cached.transcriptCursorKind
+    )
     if !cached.transcript.isEmpty {
       setTranscript(cached.transcript)
     }
