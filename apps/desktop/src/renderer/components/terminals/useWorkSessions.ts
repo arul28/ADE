@@ -7,6 +7,7 @@ import {
   type ExternalSessionSummary,
 } from "./importSessions/contract";
 import {
+  selectActiveProjectStateKey,
   selectActiveProjectRoot,
   useAppStore,
   useAppStoreApi,
@@ -380,6 +381,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const [searchParams] = useSearchParams();
   const appStore = useAppStoreApi();
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
@@ -419,9 +421,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [projectRoot]);
 
   const projectViewState = useMemo(() => {
-    if (!projectRoot) return DEFAULT_PROJECT_WORK_STATE;
-    return workViewByProject[projectRoot] ?? DEFAULT_PROJECT_WORK_STATE;
-  }, [projectRoot, workViewByProject]);
+    if (!projectStateKey) return DEFAULT_PROJECT_WORK_STATE;
+    return workViewByProject[projectStateKey] ?? DEFAULT_PROJECT_WORK_STATE;
+  }, [projectStateKey, workViewByProject]);
 
   const setProjectViewState = useCallback(
     (
@@ -429,10 +431,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         | Partial<WorkProjectViewState>
         | ((prev: WorkProjectViewState) => WorkProjectViewState),
     ) => {
-      if (!projectRoot) return;
-      setWorkViewState(projectRoot, next);
+      if (!projectStateKey) return;
+      setWorkViewState(projectStateKey, next);
     },
-    [projectRoot, setWorkViewState],
+    [projectStateKey, setWorkViewState],
   );
 
   const openItemIds = projectViewState.openItemIds;
@@ -971,8 +973,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     // (sessionListCache) is already keyed per project, so DON'T invalidate it
     // either — leave each project's hot cache alone.
     const cachedSessions =
-      (projectRoot ? (appStore.getState().sessionsCacheByProject[projectRoot] as TerminalSessionSummary[] | undefined) : undefined) ?? null;
-    pendingProjectSwitchRef.current = projectRoot;
+      (projectStateKey
+        ? appStore.getState().sessionsCacheByProject[projectStateKey]
+        : undefined) ?? null;
+    pendingProjectSwitchRef.current = projectStateKey;
     hasAuthoritativeSessionsRef.current = false;
     setSessions(cachedSessions ?? []);
     setLoading(false);
@@ -990,29 +994,29 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     partiallyAppliedUrlFilterKeyRef.current = null;
     pendingOptimisticSessionsRef.current.clear();
     pendingHiddenSessionRefreshRef.current = false;
-  }, [appStore, projectRoot]);
+  }, [appStore, projectStateKey]);
 
   useLayoutEffect(() => {
-    if (pendingProjectSwitchRef.current !== projectRoot) return;
+    if (pendingProjectSwitchRef.current !== projectStateKey) return;
     // `sessions` has caught up after hydrate's setState — safe to mirror again.
     pendingProjectSwitchRef.current = null;
-  }, [projectRoot, sessions]);
+  }, [projectStateKey, sessions]);
 
   // Mirror the locally-fetched sessions into the per-project cache in the
   // global store. The next time the user switches BACK to this project the
   // effect above can render these sessions instantly instead of blanking.
   useEffect(() => {
-    if (!projectRoot) return;
+    if (!projectStateKey) return;
     // During a project switch, `sessions` can still be the previous project's list
     // for one render; mirroring it into the new project's cache poisons warm reload.
     if (pendingProjectSwitchRef.current != null) return;
     appStore.setState((prev) => ({
       sessionsCacheByProject: {
         ...prev.sessionsCacheByProject,
-        [projectRoot]: sessions,
+        [projectStateKey]: sessions,
       },
     }));
-  }, [appStore, sessions, projectRoot]);
+  }, [appStore, sessions, projectStateKey]);
 
   useEffect(() => {
     if (!projectRoot || !isWorkRoute) return;
@@ -1021,7 +1025,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       laneRecoveryRefreshKeyRef.current = null;
       return;
     }
-    const recoveryKey = `${projectRoot}:${missingSessionLaneIdsSignature}`;
+    const recoveryKey = `${projectStateKey}:${missingSessionLaneIdsSignature}`;
     if (laneRecoveryRefreshKeyRef.current === recoveryKey) return;
     laneRecoveryRefreshKeyRef.current = recoveryKey;
     void refreshLanes({
@@ -1035,14 +1039,15 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     isWorkRoute,
     missingSessionLaneIdsSignature,
     projectRoot,
+    projectStateKey,
     refreshLanes,
   ]);
 
   useEffect(() => {
-    if (!projectRoot || !isWorkRoute) return;
+    if (!projectRoot || !projectStateKey || !isWorkRoute) return;
     const isInitialLoad = !hasLoadedOnceRef.current;
     refresh({ showLoading: isInitialLoad, force: isInitialLoad }).catch(() => {});
-  }, [isWorkRoute, projectRoot, refresh]);
+  }, [isWorkRoute, projectRoot, projectStateKey, refresh]);
 
   useEffect(() => {
     if (isWorkRoute) return;
@@ -1339,8 +1344,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   );
 
   const gridLayoutId = useMemo(
-    () => `work:grid:tiling:v1:${projectRoot ?? "global"}`,
-    [projectRoot],
+    () => `work:grid:tiling:v1:${projectStateKey ?? "global"}`,
+    [projectStateKey],
   );
 
   const selectedSession = useMemo(
@@ -1349,7 +1354,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   );
 
   useEffect(() => {
-    if (!projectRoot) return;
+    if (!projectStateKey) return;
     // Don't prune open tabs until sessions have been fetched at least once for
     // this project. On remount or warm cache hydration, `sessions` can briefly
     // reflect the previous project — pruning then drops the destination tabs.
@@ -1388,7 +1393,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: nextSelected,
       };
     });
-  }, [projectRoot, sessions, setProjectViewState]);
+  }, [projectStateKey, sessions, setProjectViewState]);
 
   const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
     if (!sessionId) return;

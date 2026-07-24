@@ -126,7 +126,17 @@ vi.mock("../../state/appStore", () => {
     const project = state.project as { rootPath?: string | null } | null | undefined;
     return project?.rootPath?.trim() || null;
   };
-  return { selectActiveProjectRoot, useAppStore, useAppStoreApi };
+  const selectActiveProjectStateKey = (state: Record<string, unknown>) => {
+    const binding = state.projectBinding as { kind?: string; key?: string | null } | null | undefined;
+    if (binding?.kind === "remote") return binding.key?.trim() || null;
+    return selectActiveProjectRoot(state);
+  };
+  return {
+    selectActiveProjectRoot,
+    selectActiveProjectStateKey,
+    useAppStore,
+    useAppStoreApi,
+  };
 });
 
 // ---------------------------------------------------------------------------

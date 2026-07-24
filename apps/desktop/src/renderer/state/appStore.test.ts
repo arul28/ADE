@@ -53,6 +53,7 @@ const mockLocalStorage = {
 // Import after window is set up
 import {
   createProjectAppStore,
+  retainProjectAppStoreState,
   useAppStore,
   THEME_IDS,
   DEFAULT_TERMINAL_PREFERENCES,
@@ -102,6 +103,7 @@ function resetStore() {
     sessionsCacheByProject: {},
     dismissedMissingAiBannerRoots: {},
     dismissedGithubBannerRoots: {},
+    openRemoteProjectTabs: [],
     openProjectTabRoots: [],
     projectInfoByRoot: {},
   });
@@ -175,6 +177,52 @@ describe("appStore", () => {
 
       await useAppStore.getState().closeProject();
       expect(useAppStore.getState().personalChatsTabOpen).toBe(true);
+    });
+  });
+
+  describe("project-scoped store retention", () => {
+    it("retains the reconciled live selection instead of a stale selection map", () => {
+      const binding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-1",
+        rootPath: "/remote/one",
+        displayName: "Remote One",
+      };
+      const project = {
+        rootPath: binding.rootPath,
+        displayName: binding.displayName,
+        baseRef: "main",
+      };
+      useAppStore.setState({
+        laneSelectionByProject: {
+          [binding.key]: {
+            laneId: "removed-lane",
+            sessionId: "removed-session",
+          },
+        },
+      } as any);
+      const projectStore = createProjectAppStore(project, binding);
+      projectStore.setState({
+        selectedLaneId: "remaining-lane",
+        focusedSessionId: "remaining-session",
+      });
+
+      retainProjectAppStoreState(projectStore, binding);
+
+      expect(
+        useAppStore.getState().laneSelectionByProject[binding.key],
+      ).toEqual({
+        laneId: "remaining-lane",
+        sessionId: "remaining-session",
+      });
+      const restoredStore = createProjectAppStore(project, binding);
+      expect(restoredStore.getState().selectedLaneId).toBe("remaining-lane");
+      expect(restoredStore.getState().focusedSessionId).toBe(
+        "remaining-session",
+      );
     });
   });
 
@@ -1497,7 +1545,7 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectBinding).toEqual(bindingB);
     });
 
-    it("drops stale project-scoped Work and lane caches when opening a remote project", async () => {
+    it("restores binding-scoped Work, lane, and session state when returning to a remote project", async () => {
       const binding = {
         kind: "remote" as const,
         key: "remote:target-1:project-a",
@@ -1507,18 +1555,25 @@ describe("appStore", () => {
         rootPath: "/remote/a",
         displayName: "Project A",
       };
-      const defaultWorkState = useAppStore.getState().getWorkViewState("/remote/a");
+      const defaultWorkState = useAppStore.getState().getWorkViewState(binding.key);
       (window.ade.remoteRuntime.openProject as any).mockResolvedValueOnce(binding);
       useAppStore.setState({
         project: { rootPath: "/local/project", displayName: "Local", baseRef: "main" } as any,
+        projectBinding: {
+          kind: "local",
+          key: "local:/local/project",
+          rootPath: "/local/project",
+          displayName: "Local",
+        },
         selectedLaneId: "local-lane",
         focusedSessionId: "local-session",
+        openRemoteProjectTabs: [binding],
         workViewByProject: {
-          "/remote/a": {
+          [binding.key]: {
             ...defaultWorkState,
-            openItemIds: ["local-session"],
-            activeItemId: "local-session",
-            selectedItemId: "local-session",
+            openItemIds: ["remote-session"],
+            activeItemId: "remote-session",
+            selectedItemId: "remote-session",
           },
           "/local/project": {
             ...defaultWorkState,
@@ -1527,9 +1582,9 @@ describe("appStore", () => {
           },
         },
         laneWorkViewByScope: {
-          "/remote/a::local-lane": {
+          [`${binding.key}::remote-lane`]: {
             ...defaultWorkState,
-            openItemIds: ["local-session"],
+            openItemIds: ["remote-session"],
           },
           "/local/project::local-lane": {
             ...defaultWorkState,
@@ -1537,15 +1592,15 @@ describe("appStore", () => {
           },
         },
         laneSelectionByProject: {
-          "/remote/a": { laneId: "local-lane", sessionId: "local-session" },
+          [binding.key]: { laneId: "remote-lane", sessionId: "remote-session" },
           "/local/project": { laneId: "local-lane", sessionId: "local-session" },
         },
         laneCacheByProject: {
-          "/remote/a": { lanes: [{ id: "local-lane", name: "Local lane" }] as any[], laneSnapshots: [] },
+          [binding.key]: { lanes: [{ id: "remote-lane", name: "Remote lane" }] as any[], laneSnapshots: [] },
           "/local/project": { lanes: [{ id: "local-lane", name: "Local lane" }] as any[], laneSnapshots: [] },
         },
         sessionsCacheByProject: {
-          "/remote/a": [{ id: "local-session", laneId: "local-lane" }],
+          [binding.key]: [{ id: "remote-session", laneId: "remote-lane" }],
           "/local/project": [{ id: "local-session", laneId: "local-lane" }],
         },
       } as any);
@@ -1559,13 +1614,18 @@ describe("appStore", () => {
         displayName: "Project A",
         baseRef: "main",
       });
-      expect(state.selectedLaneId).toBeNull();
-      expect(state.focusedSessionId).toBeNull();
-      expect(state.workViewByProject["/remote/a"]).toBeUndefined();
-      expect(state.laneWorkViewByScope["/remote/a::local-lane"]).toBeUndefined();
-      expect(state.laneSelectionByProject["/remote/a"]).toBeUndefined();
-      expect(state.laneCacheByProject["/remote/a"]).toBeUndefined();
-      expect(state.sessionsCacheByProject["/remote/a"]).toBeUndefined();
+      expect(state.selectedLaneId).toBe("remote-lane");
+      expect(state.focusedSessionId).toBe("remote-session");
+      expect(state.workViewByProject[binding.key]?.openItemIds).toEqual(["remote-session"]);
+      expect(state.laneWorkViewByScope[`${binding.key}::remote-lane`]?.openItemIds).toEqual(["remote-session"]);
+      expect(state.laneSelectionByProject[binding.key]).toEqual({
+        laneId: "remote-lane",
+        sessionId: "remote-session",
+      });
+      expect(state.laneCacheByProject[binding.key]?.lanes[0]?.id).toBe("remote-lane");
+      expect(state.sessionsCacheByProject[binding.key]).toEqual([
+        { id: "remote-session", laneId: "remote-lane" },
+      ]);
       expect(state.workViewByProject["/local/project"]?.openItemIds).toEqual(["local-session"]);
       expect(state.laneWorkViewByScope["/local/project::local-lane"]?.openItemIds).toEqual(["local-session"]);
       expect(state.laneSelectionByProject["/local/project"]).toEqual({
@@ -1578,6 +1638,184 @@ describe("appStore", () => {
       ]);
       expect(window.ade.lanes.list).toHaveBeenCalled();
       expect(window.ade.keybindings.get).toHaveBeenCalled();
+    });
+
+    it("isolates remote projects with the same root path by target and project identity", async () => {
+      const bindingA = {
+        kind: "remote" as const,
+        key: "remote:target-a:project-1",
+        targetId: "target-a",
+        runtimeName: "Studio A",
+        projectId: "project-1",
+        rootPath: "/srv/shared",
+        displayName: "Shared A",
+      };
+      const bindingB = {
+        ...bindingA,
+        key: "remote:target-b:project-1",
+        targetId: "target-b",
+        runtimeName: "Studio B",
+        displayName: "Shared B",
+      };
+      const workState = useAppStore.getState().getWorkViewState(bindingA.key);
+      useAppStore.setState({
+        workViewByProject: {
+          [bindingA.key]: { ...workState, openItemIds: ["session-a"], activeItemId: "session-a" },
+          [bindingB.key]: { ...workState, openItemIds: ["session-b"], activeItemId: "session-b" },
+          "/srv/shared": { ...workState, openItemIds: ["local-session"], activeItemId: "local-session" },
+        },
+        laneSelectionByProject: {
+          [bindingA.key]: { laneId: "lane-a", sessionId: "session-a" },
+          [bindingB.key]: { laneId: "lane-b", sessionId: "session-b" },
+          "/srv/shared": { laneId: "local-lane", sessionId: "local-session" },
+        },
+        laneCacheByProject: {
+          [bindingA.key]: { lanes: [{ id: "lane-a", name: "Lane A" }] as any[], laneSnapshots: [] },
+          [bindingB.key]: { lanes: [{ id: "lane-b", name: "Lane B" }] as any[], laneSnapshots: [] },
+          "/srv/shared": { lanes: [{ id: "local-lane", name: "Local lane" }] as any[], laneSnapshots: [] },
+        },
+        sessionsCacheByProject: {
+          [bindingA.key]: [{ id: "session-a" }],
+          [bindingB.key]: [{ id: "session-b" }],
+          "/srv/shared": [{ id: "local-session" }],
+        },
+      } as any);
+      (window.ade.remoteRuntime.openProject as any)
+        .mockResolvedValueOnce(bindingA)
+        .mockResolvedValueOnce(bindingB)
+        .mockResolvedValueOnce(bindingA);
+
+      await useAppStore.getState().switchRemoteProject(bindingA.targetId, bindingA.projectId);
+      expect(useAppStore.getState().selectedLaneId).toBe("lane-a");
+      await useAppStore.getState().switchRemoteProject(bindingB.targetId, bindingB.projectId);
+      expect(useAppStore.getState().selectedLaneId).toBe("lane-b");
+      await useAppStore.getState().switchRemoteProject(bindingA.targetId, bindingA.projectId);
+
+      const state = useAppStore.getState();
+      expect(state.selectedLaneId).toBe("lane-a");
+      expect(state.focusedSessionId).toBe("session-a");
+      expect(state.workViewByProject[bindingA.key]?.openItemIds).toEqual(["session-a"]);
+      expect(state.workViewByProject[bindingB.key]?.openItemIds).toEqual(["session-b"]);
+      expect(state.workViewByProject["/srv/shared"]?.openItemIds).toEqual(["local-session"]);
+      expect(state.openRemoteProjectTabs.map((entry) => entry.key)).toEqual([
+        bindingA.key,
+        bindingB.key,
+      ]);
+    });
+
+    it("keeps the active remote selection and Work view across a reconnect", async () => {
+      const binding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-a",
+        rootPath: "/remote/a",
+        displayName: "Project A",
+      };
+      (window.ade.remoteRuntime.openProject as any)
+        .mockResolvedValueOnce(binding)
+        .mockResolvedValueOnce(binding);
+
+      await useAppStore.getState().switchRemoteProject(binding.targetId, binding.projectId);
+      useAppStore.getState().selectLane("remote-lane");
+      useAppStore.getState().focusSession("remote-session");
+      useAppStore.getState().setWorkViewState(binding.rootPath, {
+        openItemIds: ["remote-session"],
+        activeItemId: "remote-session",
+        selectedItemId: "remote-session",
+      });
+
+      await useAppStore.getState().switchRemoteProject(binding.targetId, binding.projectId);
+
+      const state = useAppStore.getState();
+      expect(state.selectedLaneId).toBe("remote-lane");
+      expect(state.focusedSessionId).toBe("remote-session");
+      expect(state.workViewByProject[binding.key]?.openItemIds).toEqual([
+        "remote-session",
+      ]);
+    });
+
+    it("keeps the stale remote surface intact when a reconnect fails", async () => {
+      const binding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-a",
+        rootPath: "/remote/a",
+        displayName: "Project A",
+      };
+      const workState = useAppStore.getState().getWorkViewState(binding.key);
+      useAppStore.setState({
+        project: {
+          rootPath: binding.rootPath,
+          displayName: binding.displayName,
+          baseRef: "main",
+        } as any,
+        projectBinding: binding,
+        openRemoteProjectTabs: [binding],
+        selectedLaneId: "remote-lane",
+        focusedSessionId: "remote-session",
+        workViewByProject: {
+          [binding.key]: {
+            ...workState,
+            openItemIds: ["remote-session"],
+            activeItemId: "remote-session",
+          },
+        },
+      } as any);
+      (window.ade.remoteRuntime.openProject as any).mockRejectedValueOnce(
+        new Error("remote unavailable"),
+      );
+
+      await expect(
+        useAppStore.getState().switchRemoteProject(
+          binding.targetId,
+          binding.projectId,
+        ),
+      ).rejects.toThrow("remote unavailable");
+
+      const state = useAppStore.getState();
+      expect(state.projectBinding).toEqual(binding);
+      expect(state.project?.rootPath).toBe(binding.rootPath);
+      expect(state.selectedLaneId).toBe("remote-lane");
+      expect(state.focusedSessionId).toBe("remote-session");
+      expect(state.workViewByProject[binding.key]?.openItemIds).toEqual([
+        "remote-session",
+      ]);
+      expect(state.projectTransition).toBeNull();
+      expect(state.projectTransitionError?.message).toContain(
+        "remote unavailable",
+      );
+    });
+
+    it("evicts only the explicitly closed remote project's retained state", () => {
+      const stateA = useAppStore.getState().getWorkViewState("remote:target:project-a");
+      const stateB = useAppStore.getState().getWorkViewState("remote:target:project-b");
+      useAppStore.setState({
+        workViewByProject: {
+          "remote:target:project-a": { ...stateA, openItemIds: ["session-a"] },
+          "remote:target:project-b": { ...stateB, openItemIds: ["session-b"] },
+        },
+        laneSelectionByProject: {
+          "remote:target:project-a": { laneId: "lane-a", sessionId: "session-a" },
+          "remote:target:project-b": { laneId: "lane-b", sessionId: "session-b" },
+        },
+        sessionsCacheByProject: {
+          "remote:target:project-a": [{ id: "session-a" }],
+          "remote:target:project-b": [{ id: "session-b" }],
+        },
+      } as any);
+
+      useAppStore.getState().evictProjectState("remote:target:project-a");
+
+      expect(useAppStore.getState().workViewByProject["remote:target:project-a"]).toBeUndefined();
+      expect(useAppStore.getState().laneSelectionByProject["remote:target:project-a"]).toBeUndefined();
+      expect(useAppStore.getState().sessionsCacheByProject["remote:target:project-a"]).toBeUndefined();
+      expect(useAppStore.getState().workViewByProject["remote:target:project-b"]?.openItemIds).toEqual(["session-b"]);
+      expect(useAppStore.getState().laneSelectionByProject["remote:target:project-b"]?.laneId).toBe("lane-b");
+      expect(useAppStore.getState().sessionsCacheByProject["remote:target:project-b"]).toEqual([{ id: "session-b" }]);
     });
   });
 });

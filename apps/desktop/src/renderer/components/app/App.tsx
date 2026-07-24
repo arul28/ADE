@@ -104,6 +104,7 @@ import {
   AppStoreProvider,
   createProjectAppStore,
   hydrateProjectAppStore,
+  retainProjectAppStoreState,
   selectActiveProjectRoot,
   useAppStore,
   type AppStoreApi,
@@ -631,14 +632,17 @@ function ProjectSurface({
   React.useEffect(() => {
     if (!active) return;
     const state = store.getState();
-    if (state.lanes.length === 0 && !state.lanesLoading) {
+    if (
+      projectBinding.kind === "remote"
+      || (state.lanes.length === 0 && !state.lanesLoading)
+    ) {
       void state.refreshLanes({ includeStatus: false }).catch(() => {});
     }
     if (!state.keybindings) {
       void state.refreshKeybindings().catch(() => {});
     }
     void state.refreshProviderMode().catch(() => {});
-  }, [active, store]);
+  }, [active, projectBinding.kind, store]);
 
   React.useEffect(() => {
     const node = surfaceRef.current;
@@ -654,6 +658,7 @@ function ProjectSurface({
         className="h-full min-h-0 w-full"
         aria-hidden={!active}
         data-ade-animation-state={active ? "running" : "paused"}
+        data-project-binding-key={projectBinding.key}
         data-project-root={project.rootPath}
         style={!active
           ? {
@@ -680,6 +685,7 @@ function ProjectTabHost() {
   const showWelcome = useAppStore((s) => s.showWelcome);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const projectTransitionError = useAppStore((s) => s.projectTransitionError);
+  const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots ?? EMPTY_PROJECT_TAB_ROOTS);
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
   const rootPrefs = useAppStore(useShallow((s) => ({
@@ -702,6 +708,7 @@ function ProjectTabHost() {
     voiceInputEnabled: s.voiceInputEnabled,
   })));
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
+  const bindingsRef = React.useRef(new Map<string, OpenProjectBinding>());
   const filesCacheKeysRef = React.useRef(new Map<string, string>());
   const lruRef = React.useRef<string[]>([]);
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
@@ -809,6 +816,17 @@ function ProjectTabHost() {
       const binding = localProjectBindingForProject(project);
       entries.push({ surfaceKey: binding.key, project, binding });
     }
+    for (const binding of openRemoteProjectTabs) {
+      entries.push({
+        surfaceKey: binding.key,
+        project: {
+          rootPath: binding.rootPath,
+          displayName: binding.displayName,
+          baseRef: "main",
+        },
+        binding,
+      });
+    }
     if (activeProject && activeBinding && !entries.some((entry) => entry.surfaceKey === activeBinding.key)) {
       entries.unshift({
         surfaceKey: activeBinding.key,
@@ -817,7 +835,26 @@ function ProjectTabHost() {
       });
     }
     return entries;
-  }, [activeBinding, activeProject, activeProjectBinding, openProjectTabRoots, projectInfoByRoot]);
+  }, [
+    activeBinding,
+    activeProject,
+    activeProjectBinding,
+    openProjectTabRoots,
+    openRemoteProjectTabs,
+    projectInfoByRoot,
+  ]);
+
+  React.useEffect(() => {
+    const openKeys = new Set(projectEntries.map((entry) => entry.surfaceKey));
+    setRoutesBySurfaceKey((prev) => {
+      const retainedEntries = Object.entries(prev).filter(([key]) =>
+        openKeys.has(key),
+      );
+      return retainedEntries.length === Object.keys(prev).length
+        ? prev
+        : Object.fromEntries(retainedEntries);
+    });
+  }, [projectEntries]);
 
   const mountedProjects = React.useMemo(() => {
     const lru = lruRef.current;
@@ -844,6 +881,7 @@ function ProjectTabHost() {
         entry.binding,
       ));
     }
+    bindingsRef.current.set(entry.surfaceKey, entry.binding);
     filesCacheKeysRef.current.set(
       entry.surfaceKey,
       filesProjectCacheKey(entry.binding, entry.project.rootPath),
@@ -852,9 +890,18 @@ function ProjectTabHost() {
 
   React.useEffect(() => {
     const mountedKeys = new Set(mountedProjects.map((entry) => entry.surfaceKey));
+    const openKeys = new Set(projectEntries.map((entry) => entry.surfaceKey));
     for (const key of storesRef.current.keys()) {
       if (!mountedKeys.has(key)) {
+        const store = storesRef.current.get(key);
+        const binding = bindingsRef.current.get(key);
+        // Preserve warm state only when the project remains open and fell out
+        // of the bounded LRU. Explicit close/disconnect has already evicted it.
+        if (store && binding && openKeys.has(key)) {
+          retainProjectAppStoreState(store, binding);
+        }
         storesRef.current.delete(key);
+        bindingsRef.current.delete(key);
         // Release the evicted surface's Files roster/tree caches with it —
         // module-level caches must not outlive the warm project surface.
         const filesCacheKey = filesCacheKeysRef.current.get(key);
@@ -862,7 +909,7 @@ function ProjectTabHost() {
         if (filesCacheKey) releaseFilesProjectCaches(filesCacheKey);
       }
     }
-  }, [mountedProjects]);
+  }, [mountedProjects, projectEntries]);
 
   // A project open/switch that failed with a typed code takes over the whole
   // surface with the recovery flow. Un-coded string errors still fall through

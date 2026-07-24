@@ -4,22 +4,30 @@
 /// TopBar (read when routing back to a project from the Chats machine tab).
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
 
-function projectRouteStorageKey(projectRoot: string): string {
-  return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
+function projectRouteStorageKey(bindingKey: string): string {
+  return `${PROJECT_ROUTE_STORAGE_PREFIX}${bindingKey}`;
 }
 
-export function readStoredProjectRoute(projectRoot: string): string | null {
+export function readStoredProjectRoute(bindingKey: string): string | null {
   try {
-    const value = window.localStorage.getItem(projectRouteStorageKey(projectRoot));
+    const value = window.localStorage.getItem(projectRouteStorageKey(bindingKey));
     return value?.startsWith("/") ? value : null;
   } catch {
     return null;
   }
 }
 
-export function writeStoredProjectRoute(projectRoot: string, route: string): void {
+export function writeStoredProjectRoute(bindingKey: string, route: string): void {
   try {
-    window.localStorage.setItem(projectRouteStorageKey(projectRoot), route);
+    window.localStorage.setItem(projectRouteStorageKey(bindingKey), route);
+  } catch {
+    // localStorage can be unavailable in private/test environments.
+  }
+}
+
+export function removeStoredProjectRoute(bindingKey: string): void {
+  try {
+    window.localStorage.removeItem(projectRouteStorageKey(bindingKey));
   } catch {
     // localStorage can be unavailable in private/test environments.
   }

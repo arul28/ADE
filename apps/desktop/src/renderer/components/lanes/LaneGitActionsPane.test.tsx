@@ -23,6 +23,14 @@ let mockStoreState: {
   refreshLanes: ReturnType<typeof vi.fn>;
   selectLane: ReturnType<typeof vi.fn>;
   smartTooltipsEnabled: boolean;
+  project: { rootPath: string } | null;
+  projectBinding:
+    | {
+        kind: "local" | "remote";
+        key: string;
+        rootPath: string;
+      }
+    | null;
 };
 
 let mockAutoRebaseStatuses: Array<{
@@ -41,6 +49,13 @@ vi.mock("../../state/appStore", () => ({
     project?: { rootPath?: string | null } | null;
   }) => {
     if (state.projectBinding?.kind === "remote") return state.projectBinding.rootPath?.trim() || null;
+    return state.project?.rootPath?.trim() || null;
+  },
+  selectActiveProjectStateKey: (state: {
+    projectBinding?: { kind?: string; key?: string | null } | null;
+    project?: { rootPath?: string | null } | null;
+  }) => {
+    if (state.projectBinding?.kind === "remote") return state.projectBinding.key?.trim() || null;
     return state.project?.rootPath?.trim() || null;
   },
   useAppStore: (selector: (state: typeof mockStoreState) => unknown) => selector(mockStoreState),
@@ -122,6 +137,12 @@ describe("LaneGitActionsPane rescue action", () => {
       refreshLanes: vi.fn(async () => undefined),
       selectLane: vi.fn(),
       smartTooltipsEnabled: false,
+      project: { rootPath: "/tmp/ade" },
+      projectBinding: {
+        kind: "local",
+        key: "local:/tmp/ade",
+        rootPath: "/tmp/ade",
+      },
     };
     __resetLaneGitActionRuntimeForTests();
     mockChangesByLaneId = {
@@ -273,6 +294,63 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(window.ade.git.getConflictState).toHaveBeenCalledTimes(1);
     expect(window.ade.lanes.onAutoRebaseEvent).toHaveBeenCalledTimes(1);
     expect(commitTimelineMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
+  });
+
+  it("isolates cached Git state for remote bindings with the same root and lane id", async () => {
+    const sharedRoot = "/srv/shared";
+    const bindingA = {
+      kind: "remote" as const,
+      key: "remote:studio-a:project-1",
+      rootPath: sharedRoot,
+    };
+    const bindingB = {
+      kind: "remote" as const,
+      key: "remote:studio-b:project-1",
+      rootPath: sharedRoot,
+    };
+    mockStoreState.project = { rootPath: sharedRoot };
+    mockStoreState.projectBinding = bindingA;
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: [{ path: "src/studio-a.ts", kind: "modified" }],
+    };
+
+    const studioAView = renderPane({ active: true });
+    expect(await screen.findByText("src/studio-a.ts")).toBeTruthy();
+    studioAView.unmount();
+
+    mockStoreState.projectBinding = bindingB;
+    mockChangesByLaneId["lane-1"] = {
+      staged: [],
+      unstaged: [{ path: "src/studio-b.ts", kind: "modified" }],
+    };
+    const studioBView = renderPane({ active: false });
+    expect(screen.queryByText("src/studio-a.ts")).toBeNull();
+    expect(screen.getByText("No changes")).toBeTruthy();
+
+    studioBView.rerender(
+      <MemoryRouter>
+        <LaneGitActionsPane
+          laneId="lane-1"
+          active
+          autoRebaseEnabled={false}
+          onOpenSettings={vi.fn()}
+          onSelectFile={vi.fn()}
+          onSelectCommit={vi.fn()}
+          selectedPath={null}
+          selectedMode={null}
+          selectedCommit={null}
+          selectedCommitSha={null}
+        />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText("src/studio-b.ts")).toBeTruthy();
+    studioBView.unmount();
+
+    mockStoreState.projectBinding = bindingA;
+    renderPane({ active: false });
+    expect(screen.getByText("src/studio-a.ts")).toBeTruthy();
+    expect(screen.queryByText("src/studio-b.ts")).toBeNull();
   });
 
   it("does not refresh the global lane store on initial mount", async () => {

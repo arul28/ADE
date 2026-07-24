@@ -35,6 +35,12 @@ describe("sessionListCache", () => {
     listMock.mockReset();
     useAppStore.setState({
       project: { rootPath: "/project/a" } as any,
+      projectBinding: {
+        kind: "local",
+        key: "local:/project/a",
+        rootPath: "/project/a",
+        displayName: "Project A",
+      },
     });
     Object.defineProperty(globalThis, "window", {
       configurable: true,
@@ -101,6 +107,43 @@ describe("sessionListCache", () => {
     expect(projectARows).toHaveLength(3);
     expect(projectBRows).toHaveLength(4);
     expect(projectARowsAgain).toHaveLength(3);
+    expect(listMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("isolates remote bindings that share the same project root", async () => {
+    listMock
+      .mockResolvedValueOnce(makeRows(3))
+      .mockResolvedValueOnce(makeRows(4));
+    const sharedRoot = "/srv/shared";
+    const bindingA = {
+      kind: "remote" as const,
+      key: "remote:studio-a:project-1",
+      targetId: "studio-a",
+      runtimeName: "Studio A",
+      projectId: "project-1",
+      rootPath: sharedRoot,
+      displayName: "Shared",
+    };
+    const bindingB = {
+      ...bindingA,
+      key: "remote:studio-b:project-1",
+      targetId: "studio-b",
+      runtimeName: "Studio B",
+    };
+    useAppStore.setState({
+      project: { rootPath: sharedRoot } as any,
+      projectBinding: bindingA,
+    });
+
+    const studioARows = await listSessionsCached({ limit: 3 });
+    useAppStore.setState({ projectBinding: bindingB });
+    const studioBRows = await listSessionsCached({ limit: 5 });
+    useAppStore.setState({ projectBinding: bindingA });
+    const studioARowsAgain = await listSessionsCached({ limit: 3 });
+
+    expect(studioARows).toHaveLength(3);
+    expect(studioBRows).toHaveLength(4);
+    expect(studioARowsAgain).toHaveLength(3);
     expect(listMock).toHaveBeenCalledTimes(2);
   });
 

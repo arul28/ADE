@@ -38,7 +38,10 @@ import {
   applyShellHeaderInset,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
-import { readStoredProjectRoute } from "./projectRouteStorage";
+import {
+  readStoredProjectRoute,
+  removeStoredProjectRoute,
+} from "./projectRouteStorage";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import type {
@@ -888,9 +891,11 @@ export function TopBar({
   const [publishOpen, setPublishOpen] = useState(false);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
   const setOpenProjectTabRoots = useAppStore((s) => s.setOpenProjectTabRoots);
-  const [openRemoteProjectTabs, setOpenRemoteProjectTabs] = useState<
-    RemoteProjectTab[]
-  >([]);
+  const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
+  const setOpenRemoteProjectTabs = useAppStore(
+    (s) => s.setOpenRemoteProjectTabs,
+  );
+  const evictProjectState = useAppStore((s) => s.evictProjectState);
   const openProjectTabRootsRef = useRef(openProjectTabRoots);
   const openRemoteProjectTabsRef = useRef(openRemoteProjectTabs);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
@@ -1431,27 +1436,40 @@ export function TopBar({
     const nextRemoteTabs = openRemoteProjectTabs.filter(
       (entry) => entry.key !== binding.key,
     );
-    setOpenRemoteProjectTabs(nextRemoteTabs);
-    if (remoteBinding?.key !== binding.key) return;
+    const finishClose = () => {
+      setOpenRemoteProjectTabs((prev) =>
+        prev.filter((entry) => entry.key !== binding.key),
+      );
+      evictProjectState(binding.key);
+      removeStoredProjectRoute(binding.key);
+    };
+    if (remoteBinding?.key !== binding.key) {
+      finishClose();
+      return;
+    }
 
     const nextRemoteTab =
       nextRemoteTabs[closedIndex] ?? nextRemoteTabs[closedIndex - 1] ?? null;
     if (nextRemoteTab) {
-      switchRemoteProject(nextRemoteTab.targetId, nextRemoteTab.projectId).catch(
-        () => {},
-      );
+      void switchRemoteProject(
+        nextRemoteTab.targetId,
+        nextRemoteTab.projectId,
+      ).then(finishClose).catch(() => {});
       return;
     }
 
     const nextLocalRoot =
       openProjectTabRoots[openProjectTabRoots.length - 1] ?? null;
     if (nextLocalRoot) {
-      switchProjectToPath(nextLocalRoot).catch(() => {});
+      void switchProjectToPath(nextLocalRoot).then(finishClose).catch(() => {});
     } else {
-      closeProject().catch(() => {});
+      void closeProject()
+        .then(() => removeStoredProjectRoute(binding.key))
+        .catch(() => {});
     }
   }, [
     closeProject,
+    evictProjectState,
     isProjectBusy,
     openProjectTabRoots,
     openRemoteProjectTabs,
@@ -1506,8 +1524,14 @@ export function TopBar({
       const nextRemoteTabs = latestRemoteTabs.filter(
         (entry) => !affectedKeys.has(entry.key),
       );
-      openRemoteProjectTabsRef.current = nextRemoteTabs;
-      setOpenRemoteProjectTabs(nextRemoteTabs);
+      const finishAffectedTabClose = () => {
+        openRemoteProjectTabsRef.current = nextRemoteTabs;
+        setOpenRemoteProjectTabs(nextRemoteTabs);
+        for (const binding of affectedTabs) {
+          useAppStore.getState().evictProjectState(binding.key);
+          removeStoredProjectRoute(binding.key);
+        }
+      };
 
       const latestState = useAppStore.getState();
       const latestRemoteBinding =
@@ -1515,27 +1539,36 @@ export function TopBar({
           ? latestState.projectBinding
           : null;
       if (!latestRemoteBinding || !affectedKeys.has(latestRemoteBinding.key)) {
+        finishAffectedTabClose();
         return true;
       }
 
-      const nextRemoteTab = nextRemoteTabs[0] ?? null;
-      if (nextRemoteTab) {
-        latestState.switchRemoteProject(
-          nextRemoteTab.targetId,
-          nextRemoteTab.projectId,
-        ).catch(() => {});
-        return true;
+      try {
+        const nextRemoteTab = nextRemoteTabs[0] ?? null;
+        if (nextRemoteTab) {
+          await latestState.switchRemoteProject(
+            nextRemoteTab.targetId,
+            nextRemoteTab.projectId,
+          );
+        } else {
+          const nextLocalRoot =
+            openProjectTabRootsRef.current[
+              openProjectTabRootsRef.current.length - 1
+            ] ?? null;
+          if (nextLocalRoot) {
+            await latestState.switchProjectToPath(nextLocalRoot);
+          } else {
+            await latestState.closeProject();
+            for (const binding of affectedTabs) {
+              removeStoredProjectRoute(binding.key);
+            }
+            return true;
+          }
+        }
+      } catch {
+        return false;
       }
-
-      const nextLocalRoot =
-        openProjectTabRootsRef.current[
-          openProjectTabRootsRef.current.length - 1
-        ] ?? null;
-      if (nextLocalRoot) {
-        latestState.switchProjectToPath(nextLocalRoot).catch(() => {});
-      } else {
-        latestState.closeProject().catch(() => {});
-      }
+      finishAffectedTabClose();
       return true;
     },
     [confirmRemoteDisconnect],

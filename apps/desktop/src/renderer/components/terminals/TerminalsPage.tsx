@@ -19,7 +19,13 @@ import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import type { DropEdge } from "../ui/paneTreeOps";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { selectActiveProjectRoot, useAppStore, useRootAppStore, type WorkDraftKind } from "../../state/appStore";
+import {
+  selectActiveProjectRoot,
+  selectActiveProjectStateKey,
+  useAppStore,
+  useRootAppStore,
+  type WorkDraftKind,
+} from "../../state/appStore";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openExternalUrl } from "../../lib/openExternal";
 import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
@@ -120,6 +126,7 @@ async function allSettledWithConcurrency<T>(
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
@@ -807,11 +814,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     work.setGridSets((prev) => addSessionBesideTarget(prev, {
       sessionId: draggedId,
       targetSessionId: targetId,
-      projectRoot,
+      projectKey: projectStateKey,
     }).gridSets);
     work.openSessionTab(draggedId);
     work.setActiveItemId(draggedId);
-  }, [work, projectRoot]);
+  }, [work, projectStateKey]);
 
   // A session card dropped onto a single (non-grid) session — create a new grid
   // from the pair, seeding the split tree to honor the drop edge.
@@ -821,7 +828,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     const { gridSets: next, gridSetId } = addSessionBesideTarget(work.gridSets, {
       sessionId: draggedId,
       targetSessionId: targetId,
-      projectRoot,
+      projectKey: projectStateKey,
       placeAfterTarget: placeAfter,
     });
     const set = next.find((entry) => entry.id === gridSetId);
@@ -833,7 +840,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     work.setGridSets(next);
     work.openSessionTab(draggedId);
     work.setActiveItemId(draggedId);
-  }, [work, projectRoot]);
+  }, [work, projectStateKey]);
 
   // Remove a session from any grid it belongs to (right-click / drag-out) and
   // open it as a single session.

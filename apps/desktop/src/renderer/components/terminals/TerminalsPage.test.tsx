@@ -186,6 +186,13 @@ vi.mock("../../state/appStore", () => ({
     if (state.projectBinding?.kind === "remote") return state.projectBinding.rootPath?.trim() || null;
     return state.project?.rootPath?.trim() || null;
   },
+  selectActiveProjectStateKey: (state: {
+    projectBinding?: { kind?: string; key?: string | null } | null;
+    project?: { rootPath?: string | null } | null;
+  }) => {
+    if (state.projectBinding?.kind === "remote") return state.projectBinding.key?.trim() || null;
+    return state.project?.rootPath?.trim() || null;
+  },
   useAppStore: <T,>(selector: (state: {
     selectedLaneId: string;
     project: { rootPath: string } | null;

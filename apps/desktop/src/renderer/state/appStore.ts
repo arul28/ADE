@@ -2,7 +2,7 @@ import React, { createContext, useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
-import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode } from "../../shared/types";
+import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode, TerminalSessionSummary } from "../../shared/types";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import { parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode } from "../../shared/types/recovery";
@@ -429,6 +429,36 @@ function normalizeProjectKey(projectRoot: string | null | undefined): string {
   return typeof projectRoot === "string" ? projectRoot.trim() : "";
 }
 
+export function projectStateKeyForBinding(
+  binding: OpenProjectBinding | null | undefined,
+  fallbackRoot?: string | null,
+): string {
+  if (binding?.kind === "remote") return normalizeProjectKey(binding.key);
+  return normalizeProjectKey(binding?.rootPath ?? fallbackRoot);
+}
+
+export function selectActiveProjectStateKey(
+  state: Pick<AppState, "project" | "projectBinding">,
+): string | null {
+  return projectStateKeyForBinding(state.projectBinding, state.project?.rootPath) || null;
+}
+
+function resolveProjectStateKey(
+  state: Pick<AppState, "project" | "projectBinding">,
+  projectRootOrKey: string | null | undefined,
+): string {
+  const requested = normalizeProjectKey(projectRootOrKey);
+  if (!requested) return "";
+  const binding = state.projectBinding;
+  if (
+    binding?.kind === "remote"
+    && (requested === binding.rootPath || requested === binding.key)
+  ) {
+    return binding.key;
+  }
+  return requested;
+}
+
 /**
  * Drops keys from a session-dismiss map that aren't in the allow-list. Used on project
  * close/switch so banner-dismiss maps don't grow unbounded across a long session.
@@ -774,6 +804,7 @@ export type AppState = {
   project: ProjectInfo | null;
   projectBinding: OpenProjectBinding | null;
   projectHydrated: boolean;
+  openRemoteProjectTabs: Extract<OpenProjectBinding, { kind: "remote" }>[];
   openProjectTabRoots: string[];
   projectInfoByRoot: Record<string, ProjectInfo>;
   /** True when the user removed all projects — forces welcome screen even though backend still has a project loaded. */
@@ -856,12 +887,20 @@ export type AppState = {
    * seconds until the IPC fetch returns. With this, the cached sessions
    * render instantly and the refresh runs silently in the background.
    */
-  sessionsCacheByProject: Record<string, unknown[]>;
+  sessionsCacheByProject: Record<string, TerminalSessionSummary[]>;
   /** Session-scoped banner dismissals. Pruned when a project is closed/switched so the maps don't leak. */
   dismissedMissingAiBannerRoots: SessionDismissMap;
   dismissedGithubBannerRoots: SessionDismissMap;
 
   setProject: (project: ProjectInfo | null) => void;
+  setOpenRemoteProjectTabs: (
+    next:
+      | Extract<OpenProjectBinding, { kind: "remote" }>[]
+      | ((
+          prev: Extract<OpenProjectBinding, { kind: "remote" }>[],
+        ) => Extract<OpenProjectBinding, { kind: "remote" }>[])
+  ) => void;
+  evictProjectState: (projectKey: string) => void;
   setOpenProjectTabRoots: (
     next: string[] | ((prev: string[]) => string[])
   ) => void;
@@ -1152,6 +1191,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   sessionsCacheByProject: {},
   dismissedMissingAiBannerRoots: {},
   dismissedGithubBannerRoots: {},
+  openRemoteProjectTabs: [],
 
   setProject: (project) =>
     set((prev) => {
@@ -1211,6 +1251,40 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           : {}),
       };
     }),
+  setOpenRemoteProjectTabs: (next) =>
+    set((prev) => ({
+      openRemoteProjectTabs:
+        typeof next === "function" ? next(prev.openRemoteProjectTabs) : next,
+    })),
+  evictProjectState: (projectKey) => {
+    const key = normalizeProjectKey(projectKey);
+    if (!key) return;
+    removePersistedLaneCache(key);
+    set((prev) => {
+      const {
+        workViewByProject,
+        laneWorkViewByScope,
+      } = removeWorkViewStateForProject(
+        key,
+        prev.workViewByProject,
+        prev.laneWorkViewByScope,
+      );
+      const laneSelectionByProject = { ...prev.laneSelectionByProject };
+      const laneCacheByProject = { ...prev.laneCacheByProject };
+      const sessionsCacheByProject = { ...prev.sessionsCacheByProject };
+      delete laneSelectionByProject[key];
+      delete laneCacheByProject[key];
+      delete sessionsCacheByProject[key];
+      persistWorkViewState({ workViewByProject, laneWorkViewByScope });
+      return {
+        workViewByProject,
+        laneWorkViewByScope,
+        laneSelectionByProject,
+        laneCacheByProject,
+        sessionsCacheByProject,
+      };
+    });
+  },
   setOpenProjectTabRoots: (next) =>
     set((prev) => ({
       openProjectTabRoots:
@@ -1228,8 +1302,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const shouldDropStaleRemoteRoot =
         projectBinding?.kind === "remote" &&
         !prev.projectInfoByRoot[projectBinding.rootPath];
+      const openRemoteProjectTabs =
+        projectBinding?.kind === "remote"
+          ? prev.openRemoteProjectTabs.some((entry) => entry.key === projectBinding.key)
+            ? prev.openRemoteProjectTabs.map((entry) =>
+                entry.key === projectBinding.key ? projectBinding : entry,
+              )
+            : [...prev.openRemoteProjectTabs, projectBinding]
+          : prev.openRemoteProjectTabs;
       return {
         projectBinding,
+        openRemoteProjectTabs,
         openProjectTabRoots: shouldDropStaleRemoteRoot
           ? prev.openProjectTabRoots.filter(
               (rootPath) => rootPath !== projectBinding.rootPath,
@@ -1249,15 +1332,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     })),
   selectLane: (laneId) =>
     set((prev) => {
-      const projectRoot = selectActiveProjectRoot(prev);
-      if (!projectRoot) return { selectedLaneId: laneId };
+      const projectKey = selectActiveProjectStateKey(prev);
+      if (!projectKey) return { selectedLaneId: laneId };
       const previousSelection =
-        prev.laneSelectionByProject[projectRoot] ?? { laneId: null, sessionId: null };
+        prev.laneSelectionByProject[projectKey] ?? { laneId: null, sessionId: null };
       return {
         selectedLaneId: laneId,
         laneSelectionByProject: {
           ...prev.laneSelectionByProject,
-          [projectRoot]: { ...previousSelection, laneId },
+          [projectKey]: { ...previousSelection, laneId },
         },
       };
     }),
@@ -1275,15 +1358,15 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }),
   focusSession: (sessionId) =>
     set((prev) => {
-      const projectRoot = selectActiveProjectRoot(prev);
-      if (!projectRoot) return { focusedSessionId: sessionId };
+      const projectKey = selectActiveProjectStateKey(prev);
+      if (!projectKey) return { focusedSessionId: sessionId };
       const previousSelection =
-        prev.laneSelectionByProject[projectRoot] ?? { laneId: null, sessionId: null };
+        prev.laneSelectionByProject[projectKey] ?? { laneId: null, sessionId: null };
       return {
         focusedSessionId: sessionId,
         laneSelectionByProject: {
           ...prev.laneSelectionByProject,
-          [projectRoot]: { ...previousSelection, sessionId },
+          [projectKey]: { ...previousSelection, sessionId },
         },
       };
     }),
@@ -1439,12 +1522,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set({ personalChatsTabOpen }),
   closePersonalChatsTab: () => set({ personalChatsTabOpen: false }),
   getWorkViewState: (projectRoot) => {
-    const key = normalizeProjectKey(projectRoot);
+    const key = resolveProjectStateKey(get(), projectRoot);
     if (!key) return createDefaultWorkProjectViewState();
     return get().workViewByProject[key] ?? createDefaultWorkProjectViewState();
   },
   setWorkViewState: (projectRoot, next) => {
-    const key = normalizeProjectKey(projectRoot);
+    const key = resolveProjectStateKey(get(), projectRoot);
     if (!key) return;
     set((prev) => {
       const current = prev.workViewByProject[key] ?? createDefaultWorkProjectViewState();
@@ -1469,12 +1552,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     });
   },
   getLaneWorkViewState: (projectRoot, laneId) => {
-    const key = normalizeLaneWorkScopeKey(projectRoot, laneId);
+    const projectKey = resolveProjectStateKey(get(), projectRoot);
+    const key = normalizeLaneWorkScopeKey(projectKey, laneId);
     if (!key) return createDefaultWorkProjectViewState();
     return get().laneWorkViewByScope[key] ?? createDefaultWorkProjectViewState();
   },
   setLaneWorkViewState: (projectRoot, laneId, next) => {
-    const key = normalizeLaneWorkScopeKey(projectRoot, laneId);
+    const projectKey = resolveProjectStateKey(get(), projectRoot);
+    const key = normalizeLaneWorkScopeKey(projectKey, laneId);
     if (!key) return;
     set((prev) => {
       const current = prev.laneWorkViewByScope[key] ?? createDefaultWorkProjectViewState();
@@ -1540,7 +1625,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   refreshLanes: async (options) => {
     const request = normalizeLaneRefreshRequest(options);
     const runRefresh = async (currentRequest: LaneRefreshRequest) => {
-      const requestedProjectKey = normalizeProjectKey(selectActiveProjectRoot(get()));
+      const requestedProjectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
       activeLaneRefreshProjectKey = requestedProjectKey;
       const token = ++laneRefreshVersion;
       const previousLanesById = new Map(get().lanes.map((lane) => [lane.id, lane] as const));
@@ -1573,7 +1658,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       if (token !== laneRefreshVersion) {
         return;
       }
-      const projectKey = normalizeProjectKey(selectActiveProjectRoot(get()));
+      const projectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
       if (projectKey !== requestedProjectKey) {
         return;
       }
@@ -1611,14 +1696,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         });
         // Cache the lane list per project root so the next switch back to this
         // project can apply lanes immediately (no flicker, no chat unmount).
-        const activeProjectRoot = selectActiveProjectRoot(get());
-        const nextLaneCache = activeProjectRoot
+        const activeProjectKey = selectActiveProjectStateKey(get());
+        const nextLaneCache = activeProjectKey
           ? {
               ...prev.laneCacheByProject,
-              [activeProjectRoot]: { lanes, laneSnapshots: nextSnapshots },
+              [activeProjectKey]: { lanes, laneSnapshots: nextSnapshots },
             }
           : prev.laneCacheByProject;
-        persistLaneCache(activeProjectRoot, lanes);
+        persistLaneCache(activeProjectKey, lanes);
         return {
           laneSnapshots: nextSnapshots,
           lanes,
@@ -1642,7 +1727,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     if (laneRefreshInFlight) {
       const activeRequest = activeLaneRefreshRequest;
       const activeProjectKey = activeLaneRefreshProjectKey;
-      const requestProjectKey = normalizeProjectKey(selectActiveProjectRoot(get()));
+      const requestProjectKey = normalizeProjectKey(selectActiveProjectStateKey(get()));
       const activeSatisfies =
         activeRequest != null
         && activeProjectKey === requestProjectKey
@@ -1837,7 +1922,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     ++laneRefreshVersion;
     // Stash the OUTGOING project's lane/session selection so switching back
     // restores it instead of falling through to "first lane".
-    const outgoingProjectRoot = selectActiveProjectRoot(get());
+    const outgoingProjectKey = selectActiveProjectStateKey(get());
     const outgoingSelection = {
       laneId: get().selectedLaneId,
       sessionId: get().focusedSessionId,
@@ -1887,11 +1972,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
           }
         : {}),
-      ...(outgoingProjectRoot
+      ...(outgoingProjectKey
         ? {
             laneSelectionByProject: {
               ...get().laneSelectionByProject,
-              [outgoingProjectRoot]: outgoingSelection,
+              [outgoingProjectKey]: outgoingSelection,
             },
           }
         : {}),
@@ -1954,10 +2039,18 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       window.setTimeout(() => {
         void window.ade.project.listRecent().then((recentRows) => {
           const recentRoots = new Set(recentRows.map((r: { rootPath: string }) => r.rootPath));
-          const activeRoot = selectActiveProjectRoot(get());
+          const activeProjectKey = selectActiveProjectStateKey(get());
           const openProjectRoots = new Set(get().openProjectTabRoots);
+          const openRemoteProjectKeys = new Set(
+            get().openRemoteProjectTabs.map((binding) => binding.key),
+          );
           const retainedRootSet = new Set<string>();
-          for (const root of [activeRoot, ...recentRoots, ...openProjectRoots]) {
+          for (const root of [
+            activeProjectKey,
+            ...recentRoots,
+            ...openProjectRoots,
+            ...openRemoteProjectKeys,
+          ]) {
             const key = normalizeProjectKey(root);
             if (key) retainedRootSet.add(key);
           }
@@ -1967,7 +2060,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             const nextLaneWorkViews: Record<string, WorkProjectViewState> = {};
             const nextLaneSelections: Record<string, { laneId: string | null; sessionId: string | null }> = {};
             const nextLaneCache: Record<string, WarmLaneCache> = {};
-            const nextSessionsCache: Record<string, unknown[]> = {};
+            const nextSessionsCache: Record<string, TerminalSessionSummary[]> = {};
             for (const [key, value] of Object.entries(prev.workViewByProject)) {
               if (retainedRootSet.has(key)) nextWorkViews[key] = value;
             }
@@ -2017,40 +2110,62 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   switchRemoteProject: async (targetId: string, projectId: string) => {
     const switchGeneration = ++remoteProjectSwitchGeneration;
     ++laneRefreshVersion;
-    set({
+    const outgoingProjectKey = selectActiveProjectStateKey(get());
+    const outgoingSelection = {
+      laneId: get().selectedLaneId,
+      sessionId: get().focusedSessionId,
+    };
+    set((prev) => ({
       projectTransition: {
         kind: "switching",
         rootPath: null,
         startedAtMs: Date.now(),
       },
       projectTransitionError: null,
-      projectBinding: null,
-    });
+      ...(outgoingProjectKey
+        ? {
+            laneSelectionByProject: {
+              ...prev.laneSelectionByProject,
+              [outgoingProjectKey]: outgoingSelection,
+            },
+          }
+        : {}),
+    }));
     try {
       const binding = await window.ade.remoteRuntime.openProject(targetId, projectId);
       if (switchGeneration !== remoteProjectSwitchGeneration) {
         return binding;
       }
-      removePersistedLaneCache(binding.rootPath);
+      if (binding.kind !== "remote") {
+        throw new Error("Remote project open returned a local project binding.");
+      }
       set((prev) => {
-        const projectKey = normalizeProjectKey(binding.rootPath);
-        const {
-          workViewByProject,
-          laneWorkViewByScope,
-        } = removeWorkViewStateForProject(
-          projectKey,
-          prev.workViewByProject,
-          prev.laneWorkViewByScope,
+        const projectKey = normalizeProjectKey(binding.key);
+        const cachedLanes =
+          prev.laneCacheByProject[projectKey]
+          ?? readPersistedLaneCache(projectKey);
+        const restoredSelection =
+          prev.laneSelectionByProject[projectKey]
+          ?? {
+            laneId: cachedLanes?.lanes[0]?.id ?? null,
+            sessionId: null,
+          };
+        const laneCacheByProject =
+          cachedLanes && !prev.laneCacheByProject[projectKey]
+            ? {
+                ...prev.laneCacheByProject,
+                [projectKey]: cachedLanes,
+              }
+            : prev.laneCacheByProject;
+        const existingBindingIndex = prev.openRemoteProjectTabs.findIndex(
+          (entry) => entry.key === binding.key,
         );
-        persistWorkViewState({ workViewByProject, laneWorkViewByScope });
-        const laneSelectionByProject = { ...prev.laneSelectionByProject };
-        const laneCacheByProject = { ...prev.laneCacheByProject };
-        const sessionsCacheByProject = { ...prev.sessionsCacheByProject };
-        if (projectKey) {
-          delete laneSelectionByProject[projectKey];
-          delete laneCacheByProject[projectKey];
-          delete sessionsCacheByProject[projectKey];
-        }
+        const openRemoteProjectTabs =
+          existingBindingIndex === -1
+            ? [...prev.openRemoteProjectTabs, binding]
+            : prev.openRemoteProjectTabs.map((entry, index) =>
+                index === existingBindingIndex ? binding : entry,
+              );
         return {
           project: {
             rootPath: binding.rootPath,
@@ -2058,26 +2173,26 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             baseRef: "main",
           },
           projectBinding: binding,
-          projectRevision: prev.projectRevision + 1,
+          projectRevision:
+            outgoingProjectKey === projectKey
+              ? prev.projectRevision
+              : prev.projectRevision + 1,
           projectHydrated: true,
           showWelcome: false,
           projectTransition: null,
           projectTransitionError: null,
           isNewTabOpen: false,
-          laneSnapshots: [],
-          lanes: [],
-          lanesLoading: true,
+          openRemoteProjectTabs,
+          laneSnapshots: cachedLanes?.laneSnapshots ?? [],
+          lanes: cachedLanes?.lanes ?? [],
+          lanesLoading: !cachedLanes,
           laneDeleteProgressByLaneId: {},
-          selectedLaneId: null,
-          focusedSessionId: null,
+          selectedLaneId: restoredSelection.laneId,
+          focusedSessionId: restoredSelection.sessionId,
           laneInspectorTabs: {},
           keybindings: null,
           terminalAttention: EMPTY_TERMINAL_ATTENTION,
-          workViewByProject,
-          laneWorkViewByScope,
-          laneSelectionByProject,
           laneCacheByProject,
-          sessionsCacheByProject,
         };
       });
       invalidateAiDiscoveryCache(binding.rootPath);
@@ -2116,6 +2231,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       await window.ade.project.closeCurrent();
       invalidateAiDiscoveryCache(closingProjectRoot);
       invalidateProjectConfigCache(closingProjectRoot);
+      for (const binding of get().openRemoteProjectTabs) {
+        get().evictProjectState(binding.key);
+      }
       get().setProject(null);
       set({
         projectHydrated: true,
@@ -2133,6 +2251,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         keybindings: null,
         terminalAttention: EMPTY_TERMINAL_ATTENTION,
         openProjectTabRoots: [],
+        openRemoteProjectTabs: [],
         // No active project: drop every dismiss entry so reopening the same project later starts with a clean slate.
         dismissedMissingAiBannerRoots: {},
         dismissedGithubBannerRoots: {},
@@ -2172,6 +2291,16 @@ export function createProjectAppStore(
 ): AppStoreApi {
   const store = createStore<AppState>()(createAppState);
   const rootState = rootAppStore.getState();
+  const projectKey = projectStateKeyForBinding(projectBinding, project.rootPath);
+  const cachedLanes =
+    rootState.laneCacheByProject[projectKey]
+    ?? readPersistedLaneCache(projectKey);
+  const restoredSelection =
+    rootState.laneSelectionByProject[projectKey]
+    ?? {
+      laneId: cachedLanes?.lanes[0]?.id ?? null,
+      sessionId: null,
+    };
   store.setState({
     project,
     projectBinding,
@@ -2214,8 +2343,80 @@ export function createProjectAppStore(
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
     setVoiceInputEnabled: rootState.setVoiceInputEnabled,
+    workViewByProject: rootState.workViewByProject,
+    laneWorkViewByScope: rootState.laneWorkViewByScope,
+    laneSelectionByProject: rootState.laneSelectionByProject,
+    laneCacheByProject: cachedLanes && !rootState.laneCacheByProject[projectKey]
+      ? {
+          ...rootState.laneCacheByProject,
+          [projectKey]: cachedLanes,
+        }
+      : rootState.laneCacheByProject,
+    sessionsCacheByProject: rootState.sessionsCacheByProject,
+    laneSnapshots: cachedLanes?.laneSnapshots ?? [],
+    lanes: cachedLanes?.lanes ?? [],
+    // The scoped surface owns its refresh lifecycle. Keep cached lanes visible,
+    // but let ProjectSurface start a refresh when this surface becomes active.
+    lanesLoading: false,
+    selectedLaneId: restoredSelection.laneId,
+    focusedSessionId: restoredSelection.sessionId,
   });
   return store;
+}
+
+export function retainProjectAppStoreState(
+  store: AppStoreApi,
+  binding: OpenProjectBinding,
+): void {
+  const projectKey = projectStateKeyForBinding(binding);
+  if (!projectKey) return;
+  const surfaceState = store.getState();
+  rootAppStore.setState((prev) => {
+    const workViewByProject = { ...prev.workViewByProject };
+    if (surfaceState.workViewByProject[projectKey]) {
+      workViewByProject[projectKey] = surfaceState.workViewByProject[projectKey];
+    }
+
+    const laneWorkViewByScope = { ...prev.laneWorkViewByScope };
+    const laneScopePrefix = `${projectKey}::`;
+    for (const key of Object.keys(laneWorkViewByScope)) {
+      if (key.startsWith(laneScopePrefix)) delete laneWorkViewByScope[key];
+    }
+    for (const [key, value] of Object.entries(surfaceState.laneWorkViewByScope)) {
+      if (key.startsWith(laneScopePrefix)) laneWorkViewByScope[key] = value;
+    }
+
+    const laneSelectionByProject = {
+      ...prev.laneSelectionByProject,
+      [projectKey]: {
+        laneId: surfaceState.selectedLaneId,
+        sessionId: surfaceState.focusedSessionId,
+      },
+    };
+    const laneCacheByProject = {
+      ...prev.laneCacheByProject,
+      [projectKey]:
+        surfaceState.laneCacheByProject[projectKey]
+        ?? {
+          lanes: surfaceState.lanes,
+          laneSnapshots: surfaceState.laneSnapshots,
+        },
+    };
+    const sessionsCacheByProject = { ...prev.sessionsCacheByProject };
+    if (surfaceState.sessionsCacheByProject[projectKey]) {
+      sessionsCacheByProject[projectKey] =
+        surfaceState.sessionsCacheByProject[projectKey];
+    }
+    persistWorkViewState({ workViewByProject, laneWorkViewByScope });
+    persistLaneCache(projectKey, laneCacheByProject[projectKey]?.lanes ?? []);
+    return {
+      workViewByProject,
+      laneWorkViewByScope,
+      laneSelectionByProject,
+      laneCacheByProject,
+      sessionsCacheByProject,
+    };
+  });
 }
 
 export function hydrateProjectAppStore(store: AppStoreApi, state: Partial<AppState>): void {

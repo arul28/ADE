@@ -53,6 +53,15 @@ const appStoreState = vi.hoisted(() => ({
     const current = appStoreState.workViewByProject[projectRoot] ?? {};
     appStoreState.workViewByProject[projectRoot] = { ...current, ...next };
   }),
+  openRemoteProjectTabs: [] as Array<{
+    kind: "remote";
+    key: string;
+    targetId: string;
+    runtimeName: string;
+    projectId: string;
+    rootPath: string;
+    displayName: string;
+  }>,
   openProjectTabRoots: [] as string[],
   projectInfoByRoot: {} as Record<string, { rootPath: string; displayName?: string }>,
 }));
@@ -90,6 +99,7 @@ vi.mock("../../state/appStore", async () => {
     hydrateProjectAppStore: vi.fn((store, partial) => {
       store.setState(partial);
     }),
+    retainProjectAppStoreState: vi.fn(),
     AppStoreProvider: ({ children }: { children: React.ReactNode }) => ReactModule.createElement(ReactModule.Fragment, null, children),
     selectActiveProjectRoot: (state: typeof appStoreState) => state.project?.rootPath ?? null,
   };
@@ -274,6 +284,7 @@ describe("App Work route keep-alive", () => {
     appStoreState.voiceInputEnabled = true;
     appStoreState.workViewByProject = {};
     appStoreState.setWorkViewState.mockClear();
+    appStoreState.openRemoteProjectTabs = [];
     appStoreState.openProjectTabRoots = [];
     appStoreState.projectInfoByRoot = {};
     window.localStorage.clear();
@@ -680,6 +691,104 @@ describe("App Work route keep-alive", () => {
       .find((node) => node.closest("[data-project-root='/fake/project']"));
     expect(localSurface?.closest("[aria-hidden='true']")).not.toBeNull();
     expect(localSurface?.closest("[data-project-root]")?.getAttribute("data-ade-animation-state")).toBe("paused");
+  });
+
+  it("retains inactive remote project surfaces by binding key even when roots match", async () => {
+    const remoteA = {
+      kind: "remote" as const,
+      key: "remote:studio-a:project-1",
+      targetId: "studio-a",
+      runtimeName: "Studio A",
+      projectId: "project-1",
+      rootPath: "/srv/shared",
+      displayName: "Shared A",
+    };
+    const remoteB = {
+      ...remoteA,
+      key: "remote:studio-b:project-1",
+      targetId: "studio-b",
+      runtimeName: "Studio B",
+      displayName: "Shared B",
+    };
+    appStoreState.project = {
+      rootPath: remoteB.rootPath,
+      displayName: remoteB.displayName,
+    } as any;
+    appStoreState.projectBinding = remoteB;
+    appStoreState.openRemoteProjectTabs = [remoteA, remoteB];
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId("work-page")).toHaveLength(2);
+    });
+    const surfaceA = document.querySelector(
+      `[data-project-binding-key="${remoteA.key}"]`,
+    );
+    const surfaceB = document.querySelector(
+      `[data-project-binding-key="${remoteB.key}"]`,
+    );
+    expect(surfaceA?.getAttribute("aria-hidden")).toBe("true");
+    expect(surfaceA?.getAttribute("data-ade-animation-state")).toBe("paused");
+    expect(surfaceB?.getAttribute("aria-hidden")).toBe("false");
+    expect(surfaceB?.getAttribute("data-ade-animation-state")).toBe("running");
+
+    const { createProjectAppStore } = await import("../../state/appStore");
+    const createMock = vi.mocked(createProjectAppStore);
+    const activeStoreIndex = createMock.mock.calls.findIndex(
+      ([, binding]) => binding?.key === remoteB.key,
+    );
+    const inactiveStoreIndex = createMock.mock.calls.findIndex(
+      ([, binding]) => binding?.key === remoteA.key,
+    );
+    expect(activeStoreIndex).toBeGreaterThanOrEqual(0);
+    expect(inactiveStoreIndex).toBeGreaterThanOrEqual(0);
+    expect(
+      createMock.mock.results[activeStoreIndex]?.value.getState().refreshLanes,
+    ).toHaveBeenCalledWith({ includeStatus: false });
+    expect(
+      createMock.mock.results[inactiveStoreIndex]?.value.getState().refreshLanes,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("does not retain an explicitly closed remote surface", async () => {
+    const remote = {
+      kind: "remote" as const,
+      key: "remote:studio-a:project-1",
+      targetId: "studio-a",
+      runtimeName: "Studio A",
+      projectId: "project-1",
+      rootPath: "/srv/shared",
+      displayName: "Shared",
+    };
+    appStoreState.project = {
+      rootPath: remote.rootPath,
+      displayName: remote.displayName,
+    } as any;
+    appStoreState.projectBinding = remote;
+    appStoreState.openRemoteProjectTabs = [remote];
+    const appStoreModule = await import("../../state/appStore");
+    const { App } = await import("./App");
+    const { rerender } = render(<App />);
+    await screen.findByTestId("work-page");
+
+    appStoreState.openRemoteProjectTabs = [];
+    appStoreState.project = { rootPath: "/fake/project" };
+    appStoreState.projectBinding = {
+      kind: "local",
+      key: "local:/fake/project",
+      rootPath: "/fake/project",
+      displayName: "project",
+    };
+    rerender(<App />);
+
+    await waitFor(() => {
+      expect(
+        document.querySelector(`[data-project-binding-key="${remote.key}"]`),
+      ).toBeNull();
+    });
+    expect(appStoreModule.retainProjectAppStoreState).not.toHaveBeenCalled();
   });
 
   it("converts legacy hash app routes into BrowserRouter paths", async () => {
