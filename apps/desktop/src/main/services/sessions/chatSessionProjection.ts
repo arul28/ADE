@@ -1,8 +1,10 @@
 import type {
   AgentChatSessionSummary,
   ListSessionsArgs,
+  TerminalSessionDetail,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { getErrorMessage } from "../shared/utils";
 
 type ChatProjectionServices = {
@@ -12,6 +14,7 @@ type ChatProjectionServices = {
   };
   ptyService?: {
     enrichSessions(sessions: TerminalSessionSummary[]): TerminalSessionSummary[];
+    ensureResumeTargets?(sessionIds: string[]): Promise<void>;
   } | null;
   agentChatService?: {
     listSessions(
@@ -24,6 +27,17 @@ type ChatProjectionServices = {
     warn(event: string, data: Record<string, unknown>): void;
   };
 };
+
+function sessionNeedsResumeTargetHydration(session: TerminalSessionSummary): boolean {
+  if (!session.tracked || session.status === "running") return false;
+  if (sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) return false;
+  return (
+    session.toolType === "claude"
+    || session.toolType === "codex"
+    || session.toolType === "claude-orchestrated"
+    || session.toolType === "codex-orchestrated"
+  );
+}
 
 export function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
@@ -129,7 +143,22 @@ export async function listSessionsWithChatProjection(
   services: ChatProjectionServices,
   args: ListSessionsArgs = {},
 ): Promise<TerminalSessionSummary[]> {
-  const listedSessions = services.sessionService.list(args);
+  let listedSessions = services.sessionService.list(args);
+  const missingResumeTargetIds = listedSessions
+    .filter(sessionNeedsResumeTargetHydration)
+    .slice(0, 10)
+    .map((session) => session.id);
+  if (missingResumeTargetIds.length > 0 && services.ptyService?.ensureResumeTargets) {
+    try {
+      await services.ptyService.ensureResumeTargets(missingResumeTargetIds);
+      listedSessions = services.sessionService.list(args);
+    } catch (error) {
+      services.logger.warn("sessions.resume_target_hydration_failed", {
+        sessionIds: missingResumeTargetIds,
+        err: String(error),
+      });
+    }
+  }
   const sessions = services.ptyService
     ? services.ptyService.enrichSessions(listedSessions)
     : listedSessions;
@@ -154,9 +183,20 @@ export async function listSessionsWithChatProjection(
 export async function getSessionWithChatProjection(
   services: ChatProjectionServices,
   sessionId: string,
-): Promise<TerminalSessionSummary | null> {
-  const persisted = services.sessionService.get(sessionId);
+): Promise<TerminalSessionDetail | null> {
+  let persisted = services.sessionService.get(sessionId);
   if (!persisted) return null;
+  if (sessionNeedsResumeTargetHydration(persisted) && services.ptyService?.ensureResumeTargets) {
+    try {
+      await services.ptyService.ensureResumeTargets([sessionId]);
+      persisted = services.sessionService.get(sessionId) ?? persisted;
+    } catch (error) {
+      services.logger.warn("sessions.resume_target_hydration_failed", {
+        sessionIds: [sessionId],
+        err: String(error),
+      });
+    }
+  }
   const session = services.ptyService?.enrichSessions([persisted])[0] ?? persisted;
   if (!isChatToolType(session.toolType)) return session;
   try {

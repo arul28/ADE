@@ -1046,6 +1046,62 @@ describe("runtime session actions", () => {
     });
   });
 
+  it("hydrates missing resume targets before runtime list and detail reads", async () => {
+    const persisted = makeSession({
+      id: "resumable-codex",
+      laneId: "lane-1",
+      toolType: "codex",
+      status: "completed",
+      runtimeState: "idle",
+      resumeMetadata: null,
+    });
+    const hydrated = {
+      ...persisted,
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetId: "thread-123",
+      },
+    };
+    const list = vi.fn()
+      .mockReturnValueOnce([persisted])
+      .mockReturnValueOnce([hydrated]);
+    const get = vi.fn()
+      .mockReturnValueOnce(persisted)
+      .mockReturnValueOnce(hydrated);
+    const ensureResumeTargets = vi.fn(async () => {});
+    const enrichSessions = vi.fn((rows: TerminalSessionSummary[]) => rows);
+    const runtime = {
+      sessionService: {
+        list,
+        get,
+      },
+      ptyService: {
+        ensureResumeTargets,
+        enrichSessions,
+      },
+      agentChatService: {
+        listSessions: vi.fn(async () => []),
+      },
+      logger: {
+        warn: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as {
+      list: (args?: { laneId?: string }) => Promise<TerminalSessionSummary[]>;
+      get: (sessionId: string) => Promise<TerminalSessionSummary | null>;
+    };
+
+    await expect(sessionActions.list({ laneId: "lane-1" })).resolves.toEqual([hydrated]);
+    await expect(sessionActions.get("resumable-codex")).resolves.toEqual(hydrated);
+
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(ensureResumeTargets).toHaveBeenNthCalledWith(1, ["resumable-codex"]);
+    expect(ensureResumeTargets).toHaveBeenNthCalledWith(2, ["resumable-codex"]);
+    expect(enrichSessions).toHaveBeenNthCalledWith(1, [hydrated]);
+    expect(enrichSessions).toHaveBeenNthCalledWith(2, [hydrated]);
+  });
+
   it("launches tracked CLI agents through runtime chat actions", async () => {
     const ptyCreate = vi.fn(async (args: { sessionId: string }) => ({
       sessionId: args.sessionId,
