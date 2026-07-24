@@ -7,6 +7,7 @@ export type OpenBuiltInBrowserDetail = {
 type BuiltInBrowserNavigationOptions = {
   newTab: boolean;
   projectRoot?: string | null;
+  tabCollection?: "personal";
 };
 
 type BuiltInBrowserNavigationFailureOptions = {

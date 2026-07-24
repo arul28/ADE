@@ -269,8 +269,29 @@ describe("PersonalChatsPage", () => {
     expect(navigate).toHaveBeenCalledWith({
       url: "https://example.test/docs",
       newTab: true,
-      projectRoot: null,
+      tabCollection: "personal",
     });
+  });
+
+  it("claims valid link requests and shows an ADE error when the browser bridge is missing", async () => {
+    const openExternal = vi.fn(async () => undefined);
+    const current = window.ade;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ...current, app: { openExternal }, builtInBrowser: undefined },
+    });
+    await renderPage();
+
+    const handled = !window.dispatchEvent(new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
+      detail: { url: "https://example.test/docs" },
+      cancelable: true,
+    }));
+
+    expect(handled).toBe(true);
+    expect(await screen.findByTestId("browser-panel")).toBeTruthy();
+    expect(await screen.findByText("ADE Browser couldn't open that link. Try again.")).toBeTruthy();
+    expect(openExternal).not.toHaveBeenCalled();
   });
 
   it("shows an ADE error instead of surprise-opening Safari when personal link navigation fails", async () => {
@@ -295,7 +316,7 @@ describe("PersonalChatsPage", () => {
     expect(navigate).toHaveBeenCalledWith({
       url: "https://example.test/docs",
       newTab: true,
-      projectRoot: null,
+      tabCollection: "personal",
     });
     expect(openExternal).not.toHaveBeenCalled();
   });

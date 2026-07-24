@@ -253,13 +253,12 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   useEffect(() => {
     const openPersonalBrowser = (rawEvent: Event) => {
       const event = rawEvent as CustomEvent<OpenBuiltInBrowserDetail>;
-      const browser = window.ade?.builtInBrowser;
-      if (!browser || !event.detail?.url) return;
+      if (!event.detail?.url) return;
       event.preventDefault();
       setToolPanel("browser");
       navigateUrlInAdeBrowser(event.detail.url, {
         newTab: true,
-        projectRoot: null,
+        tabCollection: "personal",
       }, {
         fallbackToExternal: false,
         onFailure: () => setError("ADE Browser couldn't open that link. Try again."),
