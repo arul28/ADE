@@ -329,6 +329,72 @@ describe("external session provider discovery", () => {
     expect(openedPaths.some((filePath) => filePath.startsWith(outsideDir))).toBe(false);
   });
 
+  it("batches Codex scope index rewrites while an active rollout changes", async () => {
+    vi.useFakeTimers();
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const id = "26000000-0000-4000-8000-000000000002";
+    const rolloutPath = path.join(
+      homeDir,
+      ".codex",
+      "sessions",
+      "2026",
+      "07",
+      "08",
+      `rollout-${id}.jsonl`,
+    );
+    fs.mkdirSync(cwd, { recursive: true });
+    writeJsonl(rolloutPath, [
+      {
+        type: "session_meta",
+        payload: { id, cwd, source: "cli", originator: "codex-tui" },
+      },
+      { type: "event_msg", payload: { type: "user_message", message: "first turn" } },
+    ]);
+
+    const writeFileSync = vi.spyOn(fs, "writeFileSync");
+    try {
+      await discoverCodexSessions({ homeDir, limit: 1, scopeRoots: [cwd] });
+      const indexWrites = () => writeFileSync.mock.calls.filter(
+        ([filePath]) => String(filePath).includes("codex-cwd-index-"),
+      );
+      expect(indexWrites()).toHaveLength(1);
+
+      fs.appendFileSync(
+        rolloutPath,
+        `${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "second turn" } })}\n`,
+        "utf8",
+      );
+      await discoverCodexSessions({ homeDir, limit: 1, scopeRoots: [cwd] });
+
+      expect(indexWrites()).toHaveLength(1);
+      fs.appendFileSync(
+        rolloutPath,
+        `${JSON.stringify({ type: "event_msg", payload: { type: "user_message", message: "third turn" } })}\n`,
+        "utf8",
+      );
+      await discoverCodexSessions({ homeDir, limit: 1, scopeRoots: [cwd] });
+      expect(indexWrites()).toHaveLength(1);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(indexWrites()).toHaveLength(2);
+
+      const cacheDir = path.join(homeDir, ".ade", "cache", "external-sessions");
+      const indexPath = path.join(cacheDir, fs.readdirSync(cacheDir)[0]!);
+      const index = JSON.parse(fs.readFileSync(indexPath, "utf8")) as {
+        entries: Record<string, { size: number }>;
+      };
+      const relativePath = path.relative(
+        path.join(homeDir, ".codex", "sessions"),
+        rolloutPath,
+      ).split(path.sep).join("/");
+      expect(index.entries[relativePath]?.size).toBe(fs.statSync(rolloutPath).size);
+    } finally {
+      writeFileSync.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("excludes Codex subagent rollouts with object-shaped source metadata", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "repo");

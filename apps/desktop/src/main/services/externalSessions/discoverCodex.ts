@@ -59,10 +59,14 @@ type CodexScopeIndexEntry = {
 type CodexScopeIndexState = {
   codexDir: string;
   entries: Map<string, CodexScopeIndexEntry>;
+  persisted: boolean;
+  dirty: boolean;
+  pendingWrite: ReturnType<typeof setTimeout> | null;
 };
 
 const CODEX_SESSION_META_MAX_BYTES = 64 * 1024;
 const CODEX_SCOPE_INDEX_VERSION = 1;
+const CODEX_SCOPE_INDEX_WRITE_DELAY_MS = 30_000;
 const CODEX_RECENT_SCAN_FLOOR = 1000;
 const codexScopeIndexStates = new Map<string, CodexScopeIndexState>();
 
@@ -309,6 +313,9 @@ function loadCodexScopeIndex(
   const state: CodexScopeIndexState = {
     codexDir,
     entries: new Map(),
+    persisted: false,
+    dirty: false,
+    pendingWrite: null,
   };
   try {
     const parsed = asRecord(safeParseJson(fs.readFileSync(indexPath, "utf8")));
@@ -337,6 +344,7 @@ function loadCodexScopeIndex(
       ) continue;
       state.entries.set(relativePath, { mtimeMs, size, meta });
     }
+    state.persisted = true;
   } catch {
     // Missing or corrupt indexes are rebuildable from Codex rollout metadata.
   }
@@ -348,7 +356,7 @@ function writeCodexScopeIndex(
   indexPath: string,
   state: CodexScopeIndexState,
   logger: ExternalSessionDiscoveryArgs["logger"],
-): void {
+): boolean {
   const serializedEntries = Object.fromEntries(
     Array.from(state.entries.entries()).sort(([left], [right]) => left.localeCompare(right)),
   );
@@ -377,7 +385,32 @@ function writeCodexScopeIndex(
       indexPath,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
+  return true;
+}
+
+function scheduleCodexScopeIndexWrite(
+  indexPath: string,
+  state: CodexScopeIndexState,
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): void {
+  if (!state.dirty) return;
+  if (!state.persisted) {
+    if (writeCodexScopeIndex(indexPath, state, logger)) {
+      state.persisted = true;
+      state.dirty = false;
+    }
+    return;
+  }
+  if (state.pendingWrite) return;
+  state.pendingWrite = setTimeout(() => {
+    state.pendingWrite = null;
+    if (writeCodexScopeIndex(indexPath, state, logger)) {
+      state.dirty = false;
+    }
+  }, CODEX_SCOPE_INDEX_WRITE_DELAY_MS);
+  state.pendingWrite.unref();
 }
 
 function firstCodexUserText(records: unknown[]): string | null {
@@ -605,9 +638,8 @@ function collectIndexedProjectScopedCodexSessionCandidates(
 
   if (nextEntries.size !== indexState.entries.size) indexChanged = true;
   indexState.entries = nextEntries;
-  if (indexChanged) {
-    writeCodexScopeIndex(indexPath, indexState, args.logger);
-  }
+  if (indexChanged) indexState.dirty = true;
+  scheduleCodexScopeIndexWrite(indexPath, indexState, args.logger);
   return sortFileCandidatesByMtime(Array.from(candidatesById.values()), limit);
 }
 
