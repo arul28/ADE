@@ -146,8 +146,12 @@ import type { createProcessService } from "../processes/processService";
 import type { createPtyService } from "../pty/ptyService";
 import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
 import {
+  MAX_TRANSPARENT_HISTORY_BYTES,
+  readHistoryFileRange,
+  readHistoryFileSize,
   readHistoryFileSync,
-  reinflateHistoryFileSync,
+  reinflateHistoryFile,
+  resolveReadableHistoryPath,
 } from "../storage/historyCompression";
 import { runGit } from "../git/git";
 import { CLAUDE_RUNTIME_AUTH_ERROR, isClaudeRuntimeAuthError } from "../ai/claudeRuntimeProbe";
@@ -424,7 +428,11 @@ import {
   deriveBackgroundItems,
   resolveScheduledWorkTiming,
 } from "../../../shared/chatScheduledWork";
-import { readTranscriptHistoryPage, type TranscriptHistoryPageRead } from "./chatTranscriptHistoryPager";
+import {
+  CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+  readTranscriptHistoryPage,
+  type TranscriptHistoryPageRead,
+} from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
   deriveDeterministicLaneNameFromPrompt,
@@ -2438,6 +2446,8 @@ type AgentChatTranscriptEntry = {
   displayText?: string;
   timestamp: string;
   turnId?: string;
+  messageId?: string;
+  itemId?: string;
 };
 
 type HandoffArtifacts = {
@@ -2513,6 +2523,8 @@ type SessionTurnCollector = {
   }) => void;
   reject: (error: Error) => void;
   outputText: string;
+  turnId: string | null;
+  turnStarted: boolean;
   usage?: {
     inputTokens?: number | null;
     outputTokens?: number | null;
@@ -2646,68 +2658,76 @@ type PendingTranscriptWrite = {
 };
 
 const pendingTranscriptWrites = new Map<string, PendingTranscriptWrite>();
+const transcriptWriteFlushInFlight = new Map<string, Promise<void>>();
 const checkedTranscriptTails = new Set<string>();
 
 function normalizeTranscriptWritePath(filePath: string): string {
   return path.resolve(filePath);
 }
 
-function flushQueuedTranscriptWrite(filePath: string): void {
+function flushQueuedTranscriptWrite(filePath: string): Promise<void> {
   const normalizedPath = normalizeTranscriptWritePath(filePath);
   const pending = pendingTranscriptWrites.get(normalizedPath);
-  if (!pending) return;
+  if (!pending) return transcriptWriteFlushInFlight.get(normalizedPath) ?? Promise.resolve();
   pendingTranscriptWrites.delete(normalizedPath);
   if (pending.timer) {
     clearTimeout(pending.timer);
     pending.timer = null;
   }
-  if (!pending.chunks.length) return;
-  try {
-    fs.mkdirSync(path.dirname(normalizedPath), { recursive: true });
-    reinflateHistoryFileSync(normalizedPath, (targetPath, data) => {
-      writeFileAtomic(targetPath, data, { fsync: true });
-    });
-    let chunk = Buffer.concat(pending.chunks);
-    const needsTailCheck = !checkedTranscriptTails.has(normalizedPath);
-    if (needsTailCheck) {
-      try {
-        const stat = fs.statSync(normalizedPath);
-        if (stat.size > 0) {
-          const fd = fs.openSync(normalizedPath, "r");
+  if (!pending.chunks.length) return transcriptWriteFlushInFlight.get(normalizedPath) ?? Promise.resolve();
+  const prior = transcriptWriteFlushInFlight.get(normalizedPath) ?? Promise.resolve();
+  const flush = prior.catch(() => {}).then(async () => {
+    try {
+      await fs.promises.mkdir(path.dirname(normalizedPath), { recursive: true });
+      await reinflateHistoryFile(normalizedPath);
+      let chunk = Buffer.concat(pending.chunks);
+      const needsTailCheck = !checkedTranscriptTails.has(normalizedPath);
+      if (needsTailCheck) {
+        try {
+          const handle = await fs.promises.open(normalizedPath, "r");
           try {
-            const lastByte = Buffer.allocUnsafe(1);
-            fs.readSync(fd, lastByte, 0, 1, stat.size - 1);
-            if (lastByte[0] !== 0x0a) {
-              chunk = Buffer.concat([Buffer.from("\n", "utf8"), chunk]);
-              try {
-                pending.onTailHealed?.({ path: normalizedPath, priorSize: stat.size });
-              } catch {
-                // Logging must not block transcript persistence.
+            const stat = await handle.stat();
+            if (stat.size > 0) {
+              const lastByte = Buffer.allocUnsafe(1);
+              await handle.read(lastByte, 0, 1, stat.size - 1);
+              if (lastByte[0] !== 0x0a) {
+                chunk = Buffer.concat([Buffer.from("\n", "utf8"), chunk]);
+                try {
+                  pending.onTailHealed?.({ path: normalizedPath, priorSize: stat.size });
+                } catch {
+                  // Logging must not block transcript persistence.
+                }
               }
             }
           } finally {
-            fs.closeSync(fd);
+            await handle.close();
           }
+        } catch {
+          // A missing or unreadable prior file needs no healing.
         }
-      } catch {
-        // A missing or unreadable prior file needs no healing.
       }
+      await fs.promises.appendFile(normalizedPath, chunk);
+      // Only mark the tail verified once the append actually landed. A partial
+      // append that threw (e.g. ENOSPC) can leave the file without a trailing
+      // newline, so the next flush must re-check and heal it.
+      checkedTranscriptTails.add(normalizedPath);
+    } catch {
+      // Transcript persistence is best effort; callers still receive live events.
     }
-    fs.appendFileSync(normalizedPath, chunk);
-    // Only mark the tail verified once the append actually landed. A partial
-    // append that threw (e.g. ENOSPC) can leave the file without a trailing
-    // newline, so the next flush must re-check and heal it rather than skip
-    // validation forever and corrupt the following event.
-    checkedTranscriptTails.add(normalizedPath);
-  } catch {
-    // Transcript persistence is best effort; callers still receive live events.
-  }
+  });
+  transcriptWriteFlushInFlight.set(normalizedPath, flush);
+  void flush.finally(() => {
+    if (transcriptWriteFlushInFlight.get(normalizedPath) === flush) {
+      transcriptWriteFlushInFlight.delete(normalizedPath);
+    }
+  });
+  return flush;
 }
 
-function flushAllQueuedTranscriptWrites(): void {
-  for (const filePath of [...pendingTranscriptWrites.keys()]) {
-    flushQueuedTranscriptWrite(filePath);
-  }
+async function flushAllQueuedTranscriptWrites(): Promise<void> {
+  const queued = [...pendingTranscriptWrites.keys()]
+    .map((filePath) => flushQueuedTranscriptWrite(filePath));
+  await Promise.all([...transcriptWriteFlushInFlight.values(), ...queued]);
 }
 
 function queueTranscriptWrite(
@@ -2727,7 +2747,7 @@ function queueTranscriptWrite(
   pending.chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, "utf8"));
   if (pending.timer) return;
   pending.timer = setTimeout(() => {
-    flushQueuedTranscriptWrite(normalizedPath);
+    void flushQueuedTranscriptWrite(normalizedPath);
   }, TRANSCRIPT_WRITE_FLUSH_MS);
   pending.timer.unref?.();
 }
@@ -7013,6 +7033,9 @@ export function createAgentChatService(args: {
     envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
   };
   const transcriptHistoryCacheBySession = new Map<string, Map<string, TranscriptHistoryCacheEntry>>();
+  const transcriptHistoryReadInFlight = new Map<string, Promise<TranscriptHistoryCacheEntry>>();
+  const resolvedTranscriptPathBySession = new Map<string, string>();
+  const transcriptPathResolutionInFlight = new Map<string, Promise<string | null>>();
   type TranscriptSubagentSnapshotCacheEntry = {
     transcriptPath: string;
     size: number;
@@ -7020,6 +7043,16 @@ export function createAgentChatService(args: {
     snapshots: AgentChatSubagentSnapshot[];
   };
   const transcriptSubagentSnapshotCacheBySession = new Map<string, TranscriptSubagentSnapshotCacheEntry>();
+
+  const rememberResolvedTranscriptPath = (sessionId: string, transcriptPath: string): void => {
+    resolvedTranscriptPathBySession.delete(sessionId);
+    resolvedTranscriptPathBySession.set(sessionId, transcriptPath);
+    while (resolvedTranscriptPathBySession.size > CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS) {
+      const oldestSessionId = resolvedTranscriptPathBySession.keys().next().value;
+      if (typeof oldestSessionId !== "string") break;
+      resolvedTranscriptPathBySession.delete(oldestSessionId);
+    }
+  };
 
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
@@ -8075,9 +8108,14 @@ export function createAgentChatService(args: {
   const transcriptEntriesFromEnvelopes = (
     sessionId: string,
     envelopes: readonly AgentChatEventEnvelope[],
+    options?: {
+      sourceOffsetForEnvelope?: (envelope: AgentChatEventEnvelope) => number | null;
+      onEntrySourceOffset?: (offset: number | null) => void;
+    },
   ): AgentChatTranscriptEntry[] => {
     type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
     const entries: TranscriptDraftEntry[] = [];
+    const sourceOffsetByDraft = new WeakMap<TranscriptDraftEntry, number>();
     const assistantDraftsByKey = new Map<string, TranscriptDraftEntry>();
     let assistantDraft: (AgentChatTranscriptEntry & BufferedAssistantText) | null = null;
     let lastAssistantTranscriptMergeKey: string | null = null;
@@ -8085,16 +8123,26 @@ export function createAgentChatService(args: {
       if (!assistantDraft) return;
       const text = assistantDraft.text.trim();
       if (text.length > 0) {
-        entries.push({
+        const flushed: TranscriptDraftEntry = {
           role: "assistant",
           text,
           timestamp: assistantDraft.timestamp,
           ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
           ...(assistantDraft.messageId ? { messageId: assistantDraft.messageId } : {}),
           ...(assistantDraft.itemId ? { itemId: assistantDraft.itemId } : {}),
-        });
+        };
+        const sourceOffset = sourceOffsetByDraft.get(assistantDraft);
+        if (sourceOffset != null) sourceOffsetByDraft.set(flushed, sourceOffset);
+        entries.push(flushed);
       }
       assistantDraft = null;
+    };
+    const rememberDraftSource = (
+      draft: TranscriptDraftEntry,
+      envelope: AgentChatEventEnvelope,
+    ): void => {
+      const sourceOffset = options?.sourceOffsetForEnvelope?.(envelope);
+      if (sourceOffset != null) sourceOffsetByDraft.set(draft, sourceOffset);
     };
     const assistantTranscriptMergeKey = (event: Extract<AgentChatEvent, { type: "text" }>): string | null => {
       const messageId = event.messageId?.trim();
@@ -8121,13 +8169,16 @@ export function createAgentChatService(args: {
         const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
           ? entry.event.displayText.trim()
           : undefined;
-        entries.push({
+        const draft: TranscriptDraftEntry = {
           role: "user",
           text,
           ...(displayText ? { displayText } : {}),
           timestamp: entry.timestamp,
           turnId: entry.event.turnId,
-        });
+          ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
+        };
+        rememberDraftSource(draft, entry);
+        entries.push(draft);
         continue;
       }
       if (entry.event.type === "text") {
@@ -8153,6 +8204,7 @@ export function createAgentChatService(args: {
             ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
             ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
           };
+          rememberDraftSource(draft, entry);
           assistantDraftsByKey.set(mergeKey, draft);
           entries.push(draft);
           lastAssistantTranscriptMergeKey = mergeKey;
@@ -8172,6 +8224,7 @@ export function createAgentChatService(args: {
           ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
           ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
         };
+        rememberDraftSource(assistantDraft, entry);
         lastAssistantTranscriptMergeKey = null;
         continue;
       }
@@ -8179,21 +8232,31 @@ export function createAgentChatService(args: {
       lastAssistantTranscriptMergeKey = null;
     }
     flushAssistantDraft();
-    return entries
-      .map((entry) => ({
+    return entries.flatMap((entry) => {
+      const text = entry.text.trim();
+      if (!text.length) return [];
+      const normalized: AgentChatTranscriptEntry = {
         role: entry.role,
-        text: entry.text.trim(),
+        text,
         ...(entry.displayText ? { displayText: entry.displayText } : {}),
         timestamp: entry.timestamp,
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
         ...(entry.messageId ? { messageId: entry.messageId } : {}),
         ...(entry.itemId ? { itemId: entry.itemId } : {}),
-      }))
-      .filter((entry) => entry.text.length > 0);
+      };
+      options?.onEntrySourceOffset?.(sourceOffsetByDraft.get(entry) ?? null);
+      return [normalized];
+    });
   };
 
-  const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
-    return transcriptEntriesFromEnvelopes(managed.session.id, readTranscriptEnvelopes(managed));
+  const readTranscriptEntries = async (
+    managed: ManagedChatSession,
+    signal?: AbortSignal,
+  ): Promise<AgentChatTranscriptEntry[]> => {
+    return transcriptEntriesFromEnvelopes(
+      managed.session.id,
+      await readRecentTranscriptEnvelopesForSessionIdAsync(managed.session.id, signal),
+    );
   };
 
   const readLatestTranscriptTodoItems = (
@@ -8230,10 +8293,12 @@ export function createAgentChatService(args: {
     sessionId,
     limit = DEFAULT_TRANSCRIPT_READ_LIMIT,
     maxChars = DEFAULT_TRANSCRIPT_READ_CHARS,
+    signal,
   }: {
     sessionId: string;
     limit?: number;
     maxChars?: number;
+    signal?: AbortSignal;
   }): Promise<{
     sessionId: string;
     entries: AgentChatTranscriptEntry[];
@@ -8245,7 +8310,7 @@ export function createAgentChatService(args: {
     const normalizedMaxChars = Math.max(200, Math.min(MAX_TRANSCRIPT_READ_CHARS, Math.floor(maxChars)));
     // Flush any pending buffered text so the transcript includes all content
     flushBufferedText(managed);
-    const transcriptEntries = readTranscriptEntries(managed);
+    const transcriptEntries = await readTranscriptEntries(managed, signal);
     const fallbackEntries = transcriptEntries.length
       ? transcriptEntries
       : managed.recentConversationEntries.map((entry) => ({
@@ -8287,6 +8352,136 @@ export function createAgentChatService(args: {
       entries: bounded,
       truncated,
       totalEntries: fallbackEntries.length,
+    };
+  };
+
+  const getChatTranscriptPage = async ({
+    sessionId,
+    beforeOffset,
+    limit = DEFAULT_TRANSCRIPT_READ_LIMIT,
+    maxChars = DEFAULT_TRANSCRIPT_READ_CHARS,
+    signal,
+  }: {
+    sessionId: string;
+    beforeOffset?: number;
+    limit?: number;
+    maxChars?: number;
+    signal?: AbortSignal;
+  }): Promise<{
+    sessionId: string;
+    entries: AgentChatTranscriptEntry[];
+    truncated: boolean;
+    totalEntries: number;
+    nextCursor: number | null;
+    cursorKind: "byte";
+  }> => {
+    const managed = ensureManagedSession(sessionId);
+    flushBufferedText(managed);
+    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
+    if (!transcriptPath) {
+      return {
+        sessionId,
+        entries: [],
+        truncated: false,
+        totalEntries: 0,
+        nextCursor: null,
+        cursorKind: "byte",
+      };
+    }
+    const logicalSize = await readHistoryFileSize(transcriptPath);
+    const normalizedLimit = Math.max(1, Math.min(MAX_TRANSCRIPT_READ_LIMIT, Math.floor(limit)));
+    const normalizedMaxChars = Math.max(200, Math.min(MAX_TRANSCRIPT_READ_CHARS, Math.floor(maxChars)));
+    let cursor = Math.min(
+      logicalSize,
+      typeof beforeOffset === "number" && Number.isFinite(beforeOffset)
+        ? Math.max(0, Math.floor(beforeOffset))
+        : logicalSize,
+    );
+    const collected: Array<{ envelope: AgentChatEventEnvelope; offset: number }> = [];
+    let converted: AgentChatTranscriptEntry[] = [];
+    let convertedEntryOffsets: Array<number | null> = [];
+    // Keep one request small and interruptible. Tool-heavy gaps can return an
+    // empty page with a decreasing byte cursor; the next request continues
+    // without forcing one viewer action to parse hundreds of megabytes.
+    for (let pageCount = 0; cursor > 0 && pageCount < 8; pageCount += 1) {
+      const page = await readTranscriptHistoryPage({
+        transcriptPath,
+        sessionId,
+        beforeOffset: cursor,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+        signal,
+      });
+      const pageRows = page.envelopes.map((envelope, index) => ({
+        envelope,
+        offset: page.envelopeStartOffsets[index] ?? page.startOffset,
+      }));
+      collected.unshift(...pageRows);
+      cursor = page.startOffset;
+      const sourceOffsetByEnvelope = new WeakMap<AgentChatEventEnvelope, number>();
+      for (const row of collected) sourceOffsetByEnvelope.set(row.envelope, row.offset);
+      convertedEntryOffsets = [];
+      converted = transcriptEntriesFromEnvelopes(
+        sessionId,
+        collected.map((row) => row.envelope),
+        {
+          sourceOffsetForEnvelope: (envelope) => sourceOffsetByEnvelope.get(envelope) ?? null,
+          onEntrySourceOffset: (offset) => convertedEntryOffsets.push(offset),
+        },
+      );
+      const convertedChars = converted.reduce((total, entry) => total + entry.text.length, 0);
+      if (
+        converted.length >= normalizedLimit
+        || convertedChars >= normalizedMaxChars
+        || !page.hasMore
+      ) {
+        break;
+      }
+    }
+
+    const byLimit = converted.slice(-normalizedLimit);
+    let charTruncated = converted.length > byLimit.length;
+    let remainingChars = normalizedMaxChars;
+    const boundedNewestFirst: AgentChatTranscriptEntry[] = [];
+    for (let index = byLimit.length - 1; index >= 0; index -= 1) {
+      const entry = byLimit[index]!;
+      if (remainingChars <= 0) {
+        charTruncated = true;
+        break;
+      }
+      if (entry.text.length <= remainingChars) {
+        boundedNewestFirst.push(entry);
+        remainingChars -= entry.text.length;
+      } else {
+        // A byte cursor can only resume at an envelope boundary. Splitting a
+        // coalesced transcript entry here would advance past the entry and
+        // silently discard its omitted suffix. Keep one oversize boundary
+        // entry whole instead; the collected source window is itself bounded,
+        // so this remains safely below the remote RPC response limit.
+        if (boundedNewestFirst.length === 0) {
+          boundedNewestFirst.push(entry);
+        }
+        charTruncated = true;
+        break;
+      }
+    }
+    const entries = boundedNewestFirst.reverse();
+    let nextCursor = cursor > 0 ? cursor : null;
+    if (entries.length > 0) {
+      const oldestEntryIndex = converted.length - entries.length;
+      const oldestSourceOffset = convertedEntryOffsets[oldestEntryIndex];
+      if (oldestSourceOffset != null) {
+        nextCursor = oldestSourceOffset > 0 ? oldestSourceOffset : null;
+      }
+    }
+    return {
+      sessionId,
+      entries,
+      truncated: charTruncated || nextCursor != null,
+      // Byte-cursor consumers must treat this as the count resident in this
+      // bounded page, not as a global transcript index.
+      totalEntries: entries.length,
+      nextCursor,
+      cursorKind: "byte",
     };
   };
 
@@ -8370,44 +8565,90 @@ export function createAgentChatService(args: {
     }
   };
 
-  const parseTranscriptHistoryTail = (
-    sessionId: string,
+  const readTranscriptTailForHistoryAsync = async (
     transcriptPath: string,
-    requestedMaxBytes = CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
-  ): {
-    envelopes: AgentChatEventEnvelope[];
-    truncated: boolean;
-    startOffset: number;
-    endOffset: number;
-    hasCapNotice: boolean;
-    envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
-  } => {
-    const stat = fs.statSync(transcriptPath);
-    const maxBytes = Math.max(
-      1_024,
-      Math.min(CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES, Math.floor(requestedMaxBytes)),
-    );
-    const cacheKey = `${transcriptPath}\0${maxBytes}`;
-    const cached = transcriptHistoryCacheBySession.get(sessionId)?.get(cacheKey);
-    if (
-      cached
-      && cached.transcriptPath === transcriptPath
-      && cached.size === stat.size
-      && cached.mtimeMs === stat.mtimeMs
-      && cached.maxBytes === maxBytes
-    ) {
-      rememberTranscriptHistoryCache(sessionId, cached);
-      return cached;
+    stat: fs.Stats,
+    maxBytes: number,
+    signal?: AbortSignal,
+  ): Promise<{ raw: string; truncated: boolean; startOffset: number; endOffset: number }> => {
+    if (transcriptPath.endsWith(".gz")) {
+      const size = await readHistoryFileSize(transcriptPath);
+      const start = Math.max(0, size - maxBytes);
+      let slice = await readHistoryFileRange(
+        transcriptPath,
+        start,
+        size - start,
+        signal,
+      );
+      let startOffset = start;
+      if (start > 0 && slice.length > 0) {
+        const nextNewline = slice.indexOf(0x0a);
+        if (nextNewline >= 0 && start + nextNewline + 1 < size) {
+          slice = slice.subarray(nextNewline + 1);
+          startOffset = start + nextNewline + 1;
+        } else {
+          slice = Buffer.alloc(0);
+        }
+      }
+      return {
+        raw: slice.toString("utf8"),
+        truncated: start > 0,
+        startOffset: start > 0 ? startOffset : 0,
+        endOffset: size,
+      };
     }
+    const size = stat.size;
+    const start = Math.max(0, size - maxBytes);
+    const readStart = Math.max(0, start - 1);
+    const length = size - readStart;
+    if (length <= 0) return { raw: "", truncated: false, startOffset: 0, endOffset: size };
+    let slice = await readHistoryFileRange(
+      transcriptPath,
+      readStart,
+      length,
+      signal,
+    );
+    const truncated = start > 0;
+    let startOffset = readStart;
+    if (truncated && slice.length > 0) {
+      const nextNewline = slice.indexOf(0x0a);
+      const lineStart = nextNewline >= 0 ? readStart + nextNewline + 1 : -1;
+      if (lineStart >= 0 && lineStart < size) {
+        slice = slice.subarray(nextNewline + 1);
+        startOffset = lineStart;
+      } else {
+        slice = Buffer.alloc(0);
+        startOffset = start;
+      }
+    }
+    return {
+      raw: slice.toString("utf8"),
+      truncated,
+      startOffset: truncated ? startOffset : 0,
+      endOffset: size,
+    };
+  };
 
-    const { raw, truncated, startOffset, endOffset } = readTranscriptTailForHistory(
+  const buildTranscriptHistoryCacheEntry = (args: {
+    sessionId: string;
+    transcriptPath: string;
+    stat: Pick<fs.Stats, "size" | "mtimeMs">;
+    maxBytes: number;
+    tail: { raw: string; truncated: boolean; startOffset: number; endOffset: number };
+  }): TranscriptHistoryCacheEntry => {
+    const {
+      sessionId,
       transcriptPath,
       stat,
       maxBytes,
-    );
+      tail: { raw, truncated, startOffset, endOffset },
+    } = args;
     const hasCapNotice = raw.includes(CHAT_TRANSCRIPT_LIMIT_NOTICE.trim());
     const envelopes = parseAgentChatTranscript(raw)
-      .filter((entry) => entry.sessionId === sessionId);
+      .filter((entry) =>
+        entry.sessionId === sessionId
+        && entry.event
+        && typeof entry.event === "object");
     const physicalEnvelopeStartOffsets: number[] = [];
     let rawByteOffset = 0;
     for (const line of raw.split(/(?<=\n)/)) {
@@ -8455,6 +8696,82 @@ export function createAgentChatService(args: {
     return entry;
   };
 
+  const normalizedTranscriptHistoryMaxBytes = (requestedMaxBytes: number): number =>
+    Math.max(
+      1_024,
+      Math.min(CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES, Math.floor(requestedMaxBytes)),
+    );
+
+  const cachedTranscriptHistoryTail = (
+    sessionId: string,
+    transcriptPath: string,
+    stat: Pick<fs.Stats, "size" | "mtimeMs">,
+    maxBytes: number,
+  ): TranscriptHistoryCacheEntry | null => {
+    const cacheKey = `${transcriptPath}\0${maxBytes}`;
+    const cached = transcriptHistoryCacheBySession.get(sessionId)?.get(cacheKey);
+    if (
+      cached
+      && cached.transcriptPath === transcriptPath
+      && cached.size === stat.size
+      && cached.mtimeMs === stat.mtimeMs
+      && cached.maxBytes === maxBytes
+    ) {
+      rememberTranscriptHistoryCache(sessionId, cached);
+      return cached;
+    }
+    return null;
+  };
+
+  const parseTranscriptHistoryTail = (
+    sessionId: string,
+    transcriptPath: string,
+    requestedMaxBytes = CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
+  ): TranscriptHistoryCacheEntry => {
+    const stat = fs.statSync(transcriptPath);
+    const maxBytes = normalizedTranscriptHistoryMaxBytes(requestedMaxBytes);
+    const cached = cachedTranscriptHistoryTail(sessionId, transcriptPath, stat, maxBytes);
+    if (cached) return cached;
+    const tail = readTranscriptTailForHistory(
+      transcriptPath,
+      stat,
+      maxBytes,
+    );
+    return buildTranscriptHistoryCacheEntry({ sessionId, transcriptPath, stat, maxBytes, tail });
+  };
+
+  const parseTranscriptHistoryTailAsync = async (
+    sessionId: string,
+    transcriptPath: string,
+    requestedMaxBytes = CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
+    signal?: AbortSignal,
+  ): Promise<TranscriptHistoryCacheEntry> => {
+    const stat = await fs.promises.stat(transcriptPath);
+    const maxBytes = normalizedTranscriptHistoryMaxBytes(requestedMaxBytes);
+    const cached = cachedTranscriptHistoryTail(sessionId, transcriptPath, stat, maxBytes);
+    if (cached) return cached;
+    const readKey = `${sessionId}\0${transcriptPath}\0${stat.size}\0${stat.mtimeMs}\0${maxBytes}`;
+    const existingRead = signal ? null : transcriptHistoryReadInFlight.get(readKey);
+    if (existingRead) return await existingRead;
+    const read = (async () => {
+      const tail = await readTranscriptTailForHistoryAsync(
+        transcriptPath,
+        stat,
+        maxBytes,
+        signal,
+      );
+      return buildTranscriptHistoryCacheEntry({ sessionId, transcriptPath, stat, maxBytes, tail });
+    })();
+    if (!signal) transcriptHistoryReadInFlight.set(readKey, read);
+    try {
+      return await read;
+    } finally {
+      if (!signal && transcriptHistoryReadInFlight.get(readKey) === read) {
+        transcriptHistoryReadInFlight.delete(readKey);
+      }
+    }
+  };
+
   const transcriptPathCandidatesForSessionId = (
     sessionId: string,
     managed?: ManagedChatSession | null,
@@ -8483,27 +8800,52 @@ export function createAgentChatService(args: {
     };
   };
 
+  const readTranscriptHistoryCandidateMetadataAsync = async (
+    sessionId: string,
+    transcriptPath: string,
+    signal?: AbortSignal,
+  ): Promise<{ endOffset: number; envelopeCount: number; hasCapNotice: boolean }> => {
+    const cachedWindow = await parseTranscriptHistoryTailAsync(
+      sessionId,
+      transcriptPath,
+      CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
+      signal,
+    );
+    return {
+      endOffset: cachedWindow.endOffset,
+      envelopeCount: cachedWindow.envelopes.length,
+      hasCapNotice: cachedWindow.hasCapNotice,
+    };
+  };
+
+  type TranscriptPathCandidate = {
+    path: string;
+    size: number;
+    mtimeMs: number;
+    envelopeCount: number;
+    hasCapNotice: boolean;
+  };
+
+  const isBetterTranscriptPathCandidate = (
+    candidate: TranscriptPathCandidate,
+    currentBest: TranscriptPathCandidate,
+  ): boolean => {
+    const candidateHasEvents = candidate.envelopeCount > 0;
+    const bestHasEvents = currentBest.envelopeCount > 0;
+    if (candidateHasEvents !== bestHasEvents) return candidateHasEvents;
+    if (candidate.hasCapNotice !== currentBest.hasCapNotice) return !candidate.hasCapNotice;
+    if (candidate.mtimeMs !== currentBest.mtimeMs) return candidate.mtimeMs > currentBest.mtimeMs;
+    return candidate.size > currentBest.size;
+  };
+
   const resolveBestTranscriptPathForSessionId = (
     sessionId: string,
     managed?: ManagedChatSession | null,
   ): string | null => {
-    type Candidate = {
-      path: string;
-      size: number;
-      mtimeMs: number;
-      envelopeCount: number;
-      hasCapNotice: boolean;
-    };
-    let best: Candidate | null = null;
-    const isBetterCandidate = (candidate: Candidate, currentBest: Candidate): boolean => {
-      const candidateHasEvents = candidate.envelopeCount > 0;
-      const bestHasEvents = currentBest.envelopeCount > 0;
-      if (candidateHasEvents !== bestHasEvents) return candidateHasEvents;
-      if (candidate.hasCapNotice !== currentBest.hasCapNotice) return !candidate.hasCapNotice;
-      if (candidate.mtimeMs !== currentBest.mtimeMs) return candidate.mtimeMs > currentBest.mtimeMs;
-      return candidate.size > currentBest.size;
-    };
-    for (const candidatePath of transcriptPathCandidatesForSessionId(sessionId, managed)) {
+    let best: TranscriptPathCandidate | null = null;
+    const candidates = transcriptPathCandidatesForSessionId(sessionId, managed);
+    for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+      const candidatePath = candidates[candidateIndex]!;
       try {
         const plainPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
         const gzipPath = resolveReadableChatPath(`${candidatePath}.gz`, "agent_chat.transcript_read_skipped_path_outside_ade");
@@ -8523,58 +8865,173 @@ export function createAgentChatService(args: {
         // so a small web hydration and a later page cannot address different
         // legacy/durable transcripts.
         const metadata = readTranscriptHistoryCandidateMetadata(sessionId, transcriptPath);
-        const candidate: Candidate = {
+        const candidate: TranscriptPathCandidate = {
           path: transcriptPath,
           size: metadata.endOffset,
           mtimeMs: stat.mtimeMs,
           envelopeCount: metadata.envelopeCount,
           hasCapNotice: metadata.hasCapNotice,
         };
-        if (!best || isBetterCandidate(candidate, best)) {
+        if (!best || isBetterTranscriptPathCandidate(candidate, best)) {
           best = candidate;
+        }
+        // The dedicated `.ade/transcripts/chat` file is the authoritative,
+        // uncapped source once it contains real events. Avoid opening legacy
+        // fallbacks: for large gzip archives that can otherwise evict and
+        // immediately reinflate the selected source.
+        if (candidateIndex === 0 && candidate.envelopeCount > 0 && !candidate.hasCapNotice) {
+          break;
         }
       } catch {
         // try next candidate
       }
     }
+    if (best) rememberResolvedTranscriptPath(sessionId, best.path);
     return best?.path ?? null;
   };
 
-  // Read a bounded on-disk transcript tail for a session without requiring an
-  // active ManagedChatSession. Used by getChatEventHistory to hydrate the
-  // in-memory ring buffer without allocating huge historical transcripts.
-  const readTranscriptEnvelopesForSessionId = (
+  const statReadableFile = async (candidatePath: string | null): Promise<fs.Stats | null> => {
+    if (!candidatePath) return null;
+    try {
+      const stat = await fs.promises.stat(candidatePath);
+      return stat.isFile() ? stat : null;
+    } catch (error) {
+      if (isEnoentError(error)) return null;
+      throw error;
+    }
+  };
+
+  const resolveBestTranscriptPathForSessionIdAsync = async (
+    sessionId: string,
+    managed?: ManagedChatSession | null,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    const existing = signal ? null : transcriptPathResolutionInFlight.get(sessionId);
+    if (existing) return await existing;
+    const resolution = (async () => {
+      let best: TranscriptPathCandidate | null = null;
+      let bestCandidateIndex = Number.POSITIVE_INFINITY;
+      let firstReadError: { error: unknown; candidateIndex: number } | null = null;
+      const candidates = transcriptPathCandidatesForSessionId(sessionId, managed);
+      for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex += 1) {
+        const candidatePath = candidates[candidateIndex]!;
+        try {
+          const [plainPath, gzipPath] = await Promise.all([
+            resolveReadableChatPathAsync(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade"),
+            resolveReadableChatPathAsync(`${candidatePath}.gz`, "agent_chat.transcript_read_skipped_path_outside_ade"),
+          ]);
+          const [plainStat, gzipStat] = await Promise.all([
+            statReadableFile(plainPath),
+            statReadableFile(gzipPath),
+          ]);
+          if (plainStat && gzipStat) {
+            logger.warn("agent_chat.transcript_plain_preferred", { path: plainPath, compressedPath: gzipPath });
+          }
+          const transcriptPath = plainStat ? plainPath : gzipStat ? gzipPath : null;
+          const stat = plainStat ?? gzipStat;
+          if (!transcriptPath || !stat) continue;
+          const metadata = await readTranscriptHistoryCandidateMetadataAsync(
+            sessionId,
+            transcriptPath,
+            signal,
+          );
+          const candidate: TranscriptPathCandidate = {
+            path: transcriptPath,
+            size: metadata.endOffset,
+            mtimeMs: stat.mtimeMs,
+            envelopeCount: metadata.envelopeCount,
+            hasCapNotice: metadata.hasCapNotice,
+          };
+          if (!best || isBetterTranscriptPathCandidate(candidate, best)) {
+            best = candidate;
+            bestCandidateIndex = candidateIndex;
+          }
+          if (candidateIndex === 0 && candidate.envelopeCount > 0 && !candidate.hasCapNotice) {
+            break;
+          }
+        } catch (error) {
+          firstReadError ??= { error, candidateIndex };
+        }
+      }
+      // Candidate order is authoritative: the dedicated transcript comes
+      // before provider/legacy fallbacks. A damaged lower-priority fallback
+      // must not hide a healthy dedicated transcript, but a transient failure
+      // in a more authoritative candidate must remain retryable rather than
+      // silently caching and serving a potentially stale fallback.
+      if (
+        firstReadError
+        && (!best || firstReadError.candidateIndex < bestCandidateIndex)
+      ) {
+        throw firstReadError.error;
+      }
+      if (best) rememberResolvedTranscriptPath(sessionId, best.path);
+      return best?.path ?? null;
+    })();
+    if (!signal) transcriptPathResolutionInFlight.set(sessionId, resolution);
+    try {
+      return await resolution;
+    } finally {
+      if (!signal && transcriptPathResolutionInFlight.get(sessionId) === resolution) {
+        transcriptPathResolutionInFlight.delete(sessionId);
+      }
+    }
+  };
+
+  const readTranscriptEnvelopesForSessionIdAsync = async (
     sessionId: string,
     maxBytes = CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES,
-  ): {
+    signal?: AbortSignal,
+  ): Promise<{
     envelopes: AgentChatEventEnvelope[];
     truncated: boolean;
     startOffset: number;
     endOffset: number;
     envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
-  } => {
+  }> => {
     const managed = managedSessions.get(sessionId);
-    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managed);
-    if (transcriptPath) {
-      try {
-        return parseTranscriptHistoryTail(sessionId, transcriptPath, maxBytes);
-      } catch {
-        return {
-          envelopes: [],
-          truncated: false,
-          startOffset: 0,
-          endOffset: 0,
-          envelopeStartOffsetByIdentity: new WeakMap(),
-        };
-      }
-    }
-    return {
+    let transcriptPath = await resolveBestTranscriptPathForSessionIdAsync(
+      sessionId,
+      managed,
+      signal,
+    );
+    const empty = (): {
+      envelopes: AgentChatEventEnvelope[];
+      truncated: boolean;
+      startOffset: number;
+      endOffset: number;
+      envelopeStartOffsetByIdentity: WeakMap<AgentChatEventEnvelope, number | null>;
+    } => ({
       envelopes: [],
       truncated: false,
       startOffset: 0,
       endOffset: 0,
       envelopeStartOffsetByIdentity: new WeakMap(),
-    };
+    });
+    if (!transcriptPath) return empty();
+    try {
+      return await parseTranscriptHistoryTailAsync(
+        sessionId,
+        transcriptPath,
+        maxBytes,
+        signal,
+      );
+    } catch (error) {
+      if (!isEnoentError(error)) throw error;
+      resolvedTranscriptPathBySession.delete(sessionId);
+      const replacementPath = await resolveBestTranscriptPathForSessionIdAsync(
+        sessionId,
+        managed,
+        signal,
+      );
+      if (!replacementPath || replacementPath === transcriptPath) throw error;
+      transcriptPath = replacementPath;
+      return await parseTranscriptHistoryTailAsync(
+        sessionId,
+        transcriptPath,
+        maxBytes,
+        signal,
+      );
+    }
   };
 
   // Resolve the best on-disk transcript path for a session the same
@@ -8583,8 +9040,173 @@ export function createAgentChatService(args: {
   // Prefer candidates that actually contain chat envelopes, then uncapped files,
   // then newest readable candidate, using size only as a tie-breaker.
   // Used by getChatEventHistoryPage.
-  const resolveTranscriptPathForSessionId = (sessionId: string): string | null => {
-    return resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
+  const resolveTranscriptPathForSessionId = async (
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> => {
+    const cached = resolvedTranscriptPathBySession.get(sessionId);
+    if (cached) {
+      const appendTarget = cached.endsWith(".gz") ? cached.slice(0, -3) : cached;
+      await flushQueuedTranscriptWrite(appendTarget);
+      const refreshedPath = resolveReadableHistoryPath(cached);
+      if (refreshedPath && await statReadableFile(refreshedPath)) {
+        rememberResolvedTranscriptPath(sessionId, refreshedPath);
+        return refreshedPath;
+      }
+    }
+    resolvedTranscriptPathBySession.delete(sessionId);
+    return await resolveBestTranscriptPathForSessionIdAsync(
+      sessionId,
+      managedSessions.get(sessionId),
+      signal,
+    );
+  };
+
+  const TRANSCRIPT_SCAN_CHUNK_BYTES = 1024 * 1024;
+  const TRANSCRIPT_SCAN_MAX_LINE_BYTES = 8 * 1024 * 1024;
+
+  /**
+   * Scan at most the newest 256 MiB of a transcript without synchronously
+   * materializing the file. Gzip sources reuse historyCompression's bounded
+   * on-disk snapshot, so a drill-in scan and subsequent scroll pages share one
+   * inflate. Oversized individual JSONL rows are skipped instead of becoming
+   * a one-line heap spike.
+   */
+  const scanTranscriptEnvelopesForSessionIdAsync = async (
+    sessionId: string,
+    visit: (envelope: AgentChatEventEnvelope) => void,
+    signal?: AbortSignal,
+    parseLine: (raw: string) => AgentChatEventEnvelope[] = parseAgentChatTranscript,
+    lineMayMatch?: (line: Buffer) => boolean,
+  ): Promise<void> => {
+    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
+    if (!transcriptPath) return;
+    const logicalSize = await readHistoryFileSize(transcriptPath);
+    const scanStart = Math.max(0, logicalSize - MAX_TRANSPARENT_HISTORY_BYTES);
+    let readOffset = Math.max(0, scanStart - 1);
+    let carry: Buffer = Buffer.alloc(0);
+    let skipOversizedLine = false;
+    let alignFirstLine = readOffset > 0;
+
+    const processLine = (line: Buffer): void => {
+      if (line.length === 0 || line.length > TRANSCRIPT_SCAN_MAX_LINE_BYTES) return;
+      if (lineMayMatch && !lineMayMatch(line)) return;
+      const raw = line.toString("utf8");
+      for (const envelope of parseLine(raw)) {
+        if (envelope.sessionId === sessionId) visit(envelope);
+      }
+    };
+
+    while (readOffset < logicalSize) {
+      const length = Math.min(TRANSCRIPT_SCAN_CHUNK_BYTES, logicalSize - readOffset);
+      const chunk = await readHistoryFileRange(
+        transcriptPath,
+        readOffset,
+        length,
+        signal,
+      );
+      if (chunk.length === 0) break;
+      readOffset += chunk.length;
+      let buffer = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+      carry = Buffer.alloc(0);
+
+      if (alignFirstLine || skipOversizedLine) {
+        const firstNewline = buffer.indexOf(0x0a);
+        if (firstNewline < 0) {
+          skipOversizedLine = true;
+          alignFirstLine = false;
+          continue;
+        }
+        buffer = buffer.subarray(firstNewline + 1);
+        alignFirstLine = false;
+        skipOversizedLine = false;
+      }
+
+      let lineStart = 0;
+      for (;;) {
+        const newline = buffer.indexOf(0x0a, lineStart);
+        if (newline < 0) break;
+        processLine(buffer.subarray(lineStart, newline));
+        lineStart = newline + 1;
+      }
+      carry = buffer.subarray(lineStart);
+      if (carry.length > TRANSCRIPT_SCAN_MAX_LINE_BYTES) {
+        carry = Buffer.alloc(0);
+        skipOversizedLine = true;
+      }
+    }
+    if (!skipOversizedLine && carry.length > 0) processLine(carry);
+  };
+
+  const readRecentTranscriptEnvelopesForSessionIdAsync = async (
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<AgentChatEventEnvelope[]> => {
+    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
+    if (!transcriptPath) return [];
+    let cursor = await readHistoryFileSize(transcriptPath);
+    const newestFirst: AgentChatEventEnvelope[] = [];
+    let retainedChars = 0;
+    let retainedConversationEvents = 0;
+    const maxRetainedEvents = 10_000;
+    const maxRetainedChars = 4_000_000;
+    for (let pageCount = 0; cursor > 0 && pageCount < 8; pageCount += 1) {
+      let page: TranscriptHistoryPageRead;
+      try {
+        page = await readTranscriptHistoryPage({
+          transcriptPath,
+          sessionId,
+          beforeOffset: cursor,
+          maxBytes: CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
+          signal,
+        });
+      } catch (error) {
+        if (
+          error instanceof Error
+          && error.message === "chat_history_row_too_large"
+          && newestFirst.length > 0
+        ) {
+          break;
+        }
+        throw error;
+      }
+      cursor = page.startOffset;
+      for (let index = page.envelopes.length - 1; index >= 0; index -= 1) {
+        const envelope = page.envelopes[index]!;
+        const conversational = envelope.event.type === "user_message" || envelope.event.type === "text";
+        const envelopeChars = conversational ? safeJsonChars(envelope) : 0;
+        if (
+          conversational
+          && envelopeChars <= maxRetainedChars
+          && retainedConversationEvents < maxRetainedEvents
+          && retainedChars + envelopeChars <= maxRetainedChars
+        ) {
+          newestFirst.push(envelope);
+          retainedConversationEvents += 1;
+          retainedChars += envelopeChars;
+        } else if (newestFirst.length > 0 && newestFirst.at(-1)?.event.type !== "status") {
+          newestFirst.push({
+            sessionId: envelope.sessionId,
+            timestamp: envelope.timestamp,
+            event: { type: "status", turnStatus: "started" },
+          });
+        }
+        if (
+          retainedConversationEvents >= maxRetainedEvents
+          || retainedChars >= maxRetainedChars
+        ) {
+          break;
+        }
+      }
+      if (
+        retainedConversationEvents >= maxRetainedEvents
+        || retainedChars >= maxRetainedChars
+        || !page.hasMore
+      ) {
+        break;
+      }
+    }
+    return newestFirst.reverse();
   };
 
   const readFullTranscriptEnvelopesForSessionId = (sessionId: string): AgentChatEventEnvelope[] => {
@@ -8598,11 +9220,14 @@ export function createAgentChatService(args: {
     }
   };
 
-  const readSubagentSnapshotsFromTranscript = (sessionId: string): AgentChatSubagentSnapshot[] => {
-    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
+  const readSubagentSnapshotsFromTranscript = async (
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<AgentChatSubagentSnapshot[]> => {
+    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
     if (!transcriptPath) return [];
     try {
-      const stat = fs.statSync(transcriptPath);
+      const stat = await fs.promises.stat(transcriptPath);
       const cached = transcriptSubagentSnapshotCacheBySession.get(sessionId);
       if (
         cached
@@ -8614,22 +9239,31 @@ export function createAgentChatService(args: {
       }
 
       const map = new Map<string, AgentChatSubagentSnapshot>();
-      const raw = readHistoryFileSync(transcriptPath).toString("utf8");
-      for (const line of raw.split(/\r?\n/)) {
-        if (!line.includes("subagent_")) continue;
-        let envelope: AgentChatEventEnvelope | null = null;
-        try {
-          const parsed = JSON.parse(line) as AgentChatEventEnvelope;
-          envelope = parsed && typeof parsed === "object" ? parsed : null;
-        } catch {
-          envelope = null;
-        }
-        if (!envelope || envelope.sessionId !== sessionId || isCodexSubagentTranscriptEnvelope(envelope)) continue;
+      const lifecycleNeedle = Buffer.from("\"subagent_");
+      await scanTranscriptEnvelopesForSessionIdAsync(sessionId, (envelope) => {
+        if (envelope.sessionId !== sessionId || isCodexSubagentTranscriptEnvelope(envelope)) return;
         const event = envelope.event;
-        if (!event || typeof event !== "object" || !isSubagentLifecycleEvent(event)) continue;
+        if (!event || typeof event !== "object" || !isSubagentLifecycleEvent(event)) return;
         trackSubagentEventInMap(map, event, envelope.timestamp || nowIso());
-      }
-      const snapshots = Array.from(map.values());
+        while (map.size > 1_000) {
+          const oldestKey = map.keys().next().value;
+          if (typeof oldestKey !== "string") break;
+          map.delete(oldestKey);
+        }
+      }, signal, (raw) => {
+        if (!raw.includes("subagent_")) return [];
+        try {
+          const envelope = JSON.parse(raw) as AgentChatEventEnvelope;
+          return envelope && typeof envelope === "object" ? [envelope] : [];
+        } catch {
+          return [];
+        }
+      }, (line) => line.includes(lifecycleNeedle));
+      const snapshots = keepNewestWithinCharBudget(
+        Array.from(map.values()),
+        2_000_000,
+        safeJsonChars,
+      ).slice(-1_000);
       transcriptSubagentSnapshotCacheBySession.set(sessionId, {
         transcriptPath,
         size: stat.size,
@@ -8660,6 +9294,25 @@ export function createAgentChatService(args: {
     const byKey = new Map<string, AgentChatSubagentSnapshot>();
     const put = (snapshot: AgentChatSubagentSnapshot): void => {
       const key = subagentSnapshotKey(snapshot);
+      if (!byKey.has(key) && snapshot.parentToolUseId) {
+        const placeholderKey = order.find((candidateKey) => {
+          const candidate = byKey.get(candidateKey);
+          if (!candidate) return false;
+          return candidate.parentToolUseId === snapshot.parentToolUseId
+            && (
+              candidate.taskId === snapshot.parentToolUseId
+              || candidate.agentId === snapshot.parentToolUseId
+            );
+        });
+        if (placeholderKey) {
+          const index = order.indexOf(placeholderKey);
+          const placeholder = byKey.get(placeholderKey);
+          byKey.delete(placeholderKey);
+          order[index] = key;
+          byKey.set(key, { ...placeholder, ...snapshot });
+          return;
+        }
+      }
       if (!byKey.has(key)) order.push(key);
       byKey.set(key, { ...byKey.get(key), ...snapshot });
     };
@@ -8682,13 +9335,25 @@ export function createAgentChatService(args: {
     return rightValue - leftValue;
   };
 
-  const getTrackedSubagents = (sessionId: string): AgentChatSubagentSnapshot[] => {
+  const getTrackedSubagents = async (
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<AgentChatSubagentSnapshot[]> => {
     const trimmedId = sessionId.trim();
     if (!trimmedId.length) return [];
     const row = sessionService.get(trimmedId);
     if (!row || !isChatToolType(row.toolType)) return [];
-    const live = Array.from(subagentStates.get(trimmedId)?.values() ?? []);
-    const historical = readSubagentSnapshotsFromTranscript(trimmedId);
+    const live = Array.from(subagentStates.get(trimmedId)?.values() ?? []).map((snapshot) => {
+      if (
+        snapshot.status === "running"
+        || !snapshot.finalSummary?.trim()
+        || snapshot.summary === snapshot.finalSummary
+      ) {
+        return snapshot;
+      }
+      return { ...snapshot, summary: snapshot.finalSummary };
+    });
+    const historical = await readSubagentSnapshotsFromTranscript(trimmedId, signal);
     return mergeSubagentSnapshots(historical, live).sort(compareSubagentSnapshotsNewestFirst);
   };
 
@@ -8732,42 +9397,9 @@ export function createAgentChatService(args: {
     return entry.provenance?.targetKind === "codex_subagent";
   }
 
-  /**
-   * Return the recent, ordered event history for a chat session.
-   *
-   * Each snapshot merges a bounded on-disk transcript tail with the in-memory
-   * ring buffer so that:
-   *   - events that were emitted while the renderer was on a different project
-   *     (and therefore dropped by emitProjectEvent) are still recovered;
-   *   - events that are still in fs.appendFile flight but already recorded in
-   *     the buffer are still delivered;
-   *   - oversized transcripts do not have to be fully read and inflated into
-   *     JS objects just to hydrate the Work chat pane.
-   *
-   * This is the canonical snapshot path for renderer resubscribe / remount.
-   */
-  const getChatEventHistory = (
-    sessionId: string,
+  const chatEventHistoryLimits = (
     options?: { maxEvents?: number; maxBytes?: number },
-  ): AgentChatEventHistorySnapshot => {
-    const trimmedId = sessionId.trim();
-    if (!trimmedId.length) {
-      return { sessionId: trimmedId, events: [], truncated: false, sessionFound: false };
-    }
-    // Validate the session belongs to an agent chat before reading any
-    // transcript path — this function is reachable via IPC and builds
-    // filesystem paths from `trimmedId` downstream.
-    const row = sessionService.get(trimmedId);
-    if (!row || !isChatToolType(row.toolType)) {
-      return {
-        sessionId: trimmedId,
-        events: [],
-        truncated: false,
-        transcriptTruncated: false,
-        windowTruncated: false,
-        sessionFound: false,
-      };
-    }
+  ): { maxEvents: number; requestedMaxBytes: number | null; responseMaxChars: number } => {
     const maxEvents = Math.max(
       1,
       Math.min(
@@ -8781,23 +9413,33 @@ export function createAgentChatService(args: {
     const responseMaxChars = requestedMaxBytes == null
       ? CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS
       : Math.max(1_024, Math.min(CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS, requestedMaxBytes));
+    return { maxEvents, requestedMaxBytes, responseMaxChars };
+  };
 
-    // Stat the transcript on every snapshot; actual I/O is skipped when the
-    // file size and mtime are unchanged (cached). A long-running background
-    // chat can age older entries out of the live ring buffer; the persisted
-    // transcript is the durable source for project/tab switch recovery, while
-    // the buffer contributes events that fs.appendFile may not have flushed yet.
-    const bufferExisting = eventHistoryBySession.get(trimmedId) ?? [];
-    const transcriptHistory = readTranscriptEnvelopesForSessionId(
-      trimmedId,
-      requestedMaxBytes == null ? CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES : responseMaxChars,
-    );
+  const buildChatEventHistorySnapshot = (args: {
+    sessionId: string;
+    maxEvents: number;
+    requestedMaxBytes: number | null;
+    responseMaxChars: number;
+    transcriptHistory: Pick<
+      TranscriptHistoryCacheEntry,
+      "envelopes" | "truncated" | "endOffset" | "envelopeStartOffsetByIdentity"
+    >;
+  }): AgentChatEventHistorySnapshot => {
+    const {
+      sessionId,
+      maxEvents,
+      requestedMaxBytes,
+      responseMaxChars,
+      transcriptHistory,
+    } = args;
+    const bufferExisting = eventHistoryBySession.get(sessionId) ?? [];
     let merged = mergeEnvelopeStreams(transcriptHistory.envelopes, bufferExisting);
     const mergedLengthBeforeResponseCap = merged.length;
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
       merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
-    eventHistoryBySession.set(trimmedId, boundRingEnvelopes(merged.slice()));
+    eventHistoryBySession.set(sessionId, boundRingEnvelopes(merged.slice()));
 
     const parentVisibleMerged = merged.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry));
     const parentVisibleLength = parentVisibleMerged.length;
@@ -8805,9 +9447,6 @@ export function createAgentChatService(args: {
     const countWindowed = parentVisibleLength > maxEvents
       ? parentVisibleMerged.slice(-maxEvents)
       : parentVisibleMerged;
-    // Desktop keeps its historical character-budget behavior. A caller that
-    // explicitly requests maxBytes gets a strict UTF-8 byte budget, including
-    // live ring events that have not reached the transcript file yet.
     const windowed = requestedMaxBytes == null
       ? trimEnvelopesToByteBudget(countWindowed, responseMaxChars)
       : keepNewestWithinCharBudget(countWindowed, responseMaxChars, estimateEnvelopeBytes, {
@@ -8833,24 +9472,63 @@ export function createAgentChatService(args: {
     if (firstReturnedTranscriptOffset != null) {
       tailStartOffset = firstReturnedTranscriptOffset > 0 ? firstReturnedTranscriptOffset : null;
     } else if (transcriptHistory.endOffset > 0 && (truncated || !returnedTranscriptEvent)) {
-      // A legacy/repaired transcript line may not have a direct JSONL offset,
-      // and a snapshot can consist solely of not-yet-flushed ring events. Page
-      // from the current transcript end in those cases: it may overlap already
-      // returned events, but it can never skip persisted history.
       tailStartOffset = transcriptHistory.endOffset;
     }
     return {
-      sessionId: trimmedId,
+      sessionId,
       events: windowed,
       truncated,
       transcriptTruncated,
       windowTruncated,
       sessionFound: true,
-      // Exact byte offset of the first persisted event in this response. When
-      // response caps remove rows inside the raw tail window, older pagination
-      // resumes at that event instead of the original window boundary.
       tailStartOffset,
     };
+  };
+
+  const missingChatEventHistorySnapshot = (sessionId: string): AgentChatEventHistorySnapshot => ({
+    sessionId,
+    events: [],
+    truncated: false,
+    transcriptTruncated: false,
+    windowTruncated: false,
+    sessionFound: false,
+  });
+
+  /**
+   * Return the recent, ordered event history for a chat session.
+   *
+   * Each snapshot merges a bounded on-disk transcript tail with the in-memory
+   * ring buffer so that:
+   *   - events that were emitted while the renderer was on a different project
+   *     (and therefore dropped by emitProjectEvent) are still recovered;
+   *   - events that are still in fs.appendFile flight but already recorded in
+   *     the buffer are still delivered;
+   *   - oversized transcripts do not have to be fully read and inflated into
+   *     JS objects just to hydrate the Work chat pane.
+   *
+   * This is the canonical snapshot path for renderer resubscribe / remount.
+   */
+  const getChatEventHistory = async (
+    sessionId: string,
+    options?: { maxEvents?: number; maxBytes?: number; signal?: AbortSignal },
+  ): Promise<AgentChatEventHistorySnapshot> => {
+    const trimmedId = sessionId.trim();
+    if (!trimmedId.length) return missingChatEventHistorySnapshot(trimmedId);
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) return missingChatEventHistorySnapshot(trimmedId);
+    const { maxEvents, requestedMaxBytes, responseMaxChars } = chatEventHistoryLimits(options);
+    const transcriptHistory = await readTranscriptEnvelopesForSessionIdAsync(
+      trimmedId,
+      requestedMaxBytes == null ? CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES : responseMaxChars,
+      options?.signal,
+    );
+    return buildChatEventHistorySnapshot({
+      sessionId: trimmedId,
+      maxEvents,
+      requestedMaxBytes,
+      responseMaxChars,
+      transcriptHistory,
+    });
   };
 
   /**
@@ -8866,10 +9544,10 @@ export function createAgentChatService(args: {
    * The transcript is append-only and pages are bounded by `beforeOffset`,
    * so concurrent appends never affect the pages being read.
    */
-  const getChatEventHistoryPage = (
+  const getChatEventHistoryPage = async (
     sessionId: string,
-    options: { beforeOffset: number; maxBytes?: number },
-  ): AgentChatEventHistoryPage => {
+    options: { beforeOffset: number; maxBytes?: number; signal?: AbortSignal },
+  ): Promise<AgentChatEventHistoryPage> => {
     const trimmedId = sessionId.trim();
     const emptyPage = (sessionFound: boolean): AgentChatEventHistoryPage => ({
       sessionId: trimmedId,
@@ -8891,21 +9569,35 @@ export function createAgentChatService(args: {
       : 0;
     if (beforeOffset <= 0) return emptyPage(true);
 
-    const transcriptPath = resolveTranscriptPathForSessionId(trimmedId);
+    let transcriptPath = await resolveTranscriptPathForSessionId(trimmedId, options.signal);
     if (!transcriptPath) return emptyPage(true);
 
-    let page: TranscriptHistoryPageRead;
-    try {
-      page = readTranscriptHistoryPage({
-        transcriptPath,
+    const readPage = async (readPath: string): Promise<TranscriptHistoryPageRead> =>
+      await readTranscriptHistoryPage({
+        transcriptPath: readPath,
         sessionId: trimmedId,
         beforeOffset,
         maxBytes: options?.maxBytes,
+        signal: options.signal,
       });
-    } catch {
-      // Transcript disappeared between resolution and read (or is unreadable)
-      // — the session exists but has no pageable history.
-      return emptyPage(true);
+
+    let page: TranscriptHistoryPageRead;
+    try {
+      page = await readPage(transcriptPath);
+    } catch (error) {
+      if (!isEnoentError(error)) throw error;
+      // Compression and retention replace transcript files atomically. If the
+      // cached path disappeared between resolution and read, resolve once more
+      // so a newly-created plain/gzip sibling can take over. A still-missing
+      // transcript remains retryable instead of masquerading as end-of-history.
+      resolvedTranscriptPathBySession.delete(trimmedId);
+      const replacementPath = await resolveTranscriptPathForSessionId(
+        trimmedId,
+        options.signal,
+      );
+      if (!replacementPath || replacementPath === transcriptPath) throw error;
+      transcriptPath = replacementPath;
+      page = await readPage(transcriptPath);
     }
     return {
       sessionId: trimmedId,
@@ -10334,6 +11026,15 @@ export function createAgentChatService(args: {
     try { return fs.realpathSync(p); } catch { return null; }
   };
 
+  const safeRealpathAsync = async (p: string): Promise<string | null> => {
+    try {
+      return await fs.promises.realpath(p);
+    } catch (error) {
+      if (isEnoentError(error)) return null;
+      throw error;
+    }
+  };
+
   const isWithinRoot = (target: string, root: string | null): boolean => {
     if (!root) return false;
     const rel = path.relative(root, target);
@@ -10376,6 +11077,42 @@ export function createAgentChatService(args: {
     const trimmed = typeof filePath === "string" ? filePath.trim() : "";
     flushQueuedTranscriptWrite(path.resolve(trimmed));
     return resolveContainedChatPath(filePath, warnEvent);
+  };
+
+  const resolveReadableChatPathAsync = async (
+    filePath: string | null | undefined,
+    warnEvent = "agent_chat.transcript_read_skipped_path_outside_ade",
+  ): Promise<string | null> => {
+    const trimmed = typeof filePath === "string" ? filePath.trim() : "";
+    if (!trimmed.length) return null;
+    const resolvedPath = path.resolve(trimmed);
+    const resolvedAdeDir = path.resolve(layout.adeDir);
+    const resolvedTranscriptRoot = path.resolve(transcriptsDir);
+    if (
+      !isWithinRoot(resolvedPath, resolvedAdeDir)
+      && !isWithinRoot(resolvedPath, resolvedTranscriptRoot)
+    ) {
+      logger.warn(warnEvent, { filePath: resolvedPath });
+      return null;
+    }
+    await flushQueuedTranscriptWrite(resolvedPath);
+    const [realTarget, realAdeDir, realTranscriptRoot] = await Promise.all([
+      safeRealpathAsync(resolvedPath),
+      safeRealpathAsync(resolvedAdeDir),
+      safeRealpathAsync(resolvedTranscriptRoot),
+    ]);
+    if (!realTarget) return null;
+    if (
+      !isWithinRoot(realTarget, realAdeDir)
+      && !isWithinRoot(realTarget, realTranscriptRoot)
+    ) {
+      logger.warn(warnEvent, {
+        filePath: resolvedPath,
+        realTarget,
+      });
+      return null;
+    }
+    return realTarget;
   };
 
   const deletePersistedChatFile = (filePath: string | null | undefined): void => {
@@ -11532,6 +12269,22 @@ export function createAgentChatService(args: {
 
     const collector = sessionTurnCollectors.get(managed.session.id);
     if (!collector) return;
+
+    if (liveEvent.type === "status" && liveEvent.turnStatus === "started") {
+      collector.turnStarted = true;
+      if (liveEvent.turnId) collector.turnId = liveEvent.turnId;
+      return;
+    }
+
+    // A provider stream can finish unwinding after interrupt() has returned.
+    // Never let late text/error/done events from that abandoned turn satisfy a
+    // newly-created blocking runSessionTurn collector.
+    if (!collector.turnStarted) return;
+    if (collector.turnId && liveEvent.turnId && liveEvent.turnId !== collector.turnId) return;
+    if (!collector.turnId && liveEvent.turnId && liveEvent.type !== "done") {
+      collector.turnId = liveEvent.turnId;
+    }
+    if (collector.turnId && liveEvent.type === "done" && liveEvent.turnId !== collector.turnId) return;
 
     if (liveEvent.type === "text") {
       collector.outputText += liveEvent.text;
@@ -13249,8 +14002,10 @@ export function createAgentChatService(args: {
       // One append syscall per file per chunk (instead of one forced flush per
       // seeded user message) bounds queued-write memory without the sync-write
       // storm that stalled the runtime.
-      flushQueuedTranscriptWrite(chatTranscriptFile);
-      flushQueuedTranscriptWrite(managed.transcriptPath);
+      await Promise.all([
+        flushQueuedTranscriptWrite(chatTranscriptFile),
+        flushQueuedTranscriptWrite(managed.transcriptPath),
+      ]);
       if (start + IMPORTED_CHAT_EVENT_CHUNK_SIZE < envelopes.length) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
@@ -14514,8 +15269,10 @@ export function createAgentChatService(args: {
     clearSubagentSnapshots(managed.session.id);
     flushBufferedText(managed);
     flushBufferedReasoning(managed);
-    flushQueuedTranscriptWrite(managed.transcriptPath);
-    flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`));
+    await Promise.all([
+      flushQueuedTranscriptWrite(managed.transcriptPath),
+      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${managed.session.id}.jsonl`)),
+    ]);
     for (const pending of managed.localPendingInputs.values()) {
       pending.resolve({ decision: "cancel" });
     }
@@ -25448,7 +26205,7 @@ export function createAgentChatService(args: {
     let repairedTurns = 0;
     let filesChanged = 0;
     for (const transcriptPath of transcriptPaths) {
-      flushQueuedTranscriptWrite(transcriptPath);
+      await flushQueuedTranscriptWrite(transcriptPath);
       const result = repairSplicedEnvelopeFileSync(transcriptPath, sdkMessages, {
         onSkip: (reason, detail) => {
           logger.debug("agent_chat.envelope_splice_repair_skipped", {
@@ -25474,6 +26231,7 @@ export function createAgentChatService(args: {
     }
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
+    resolvedTranscriptPathBySession.delete(sessionId);
     logger.info("agent_chat.envelope_splice_repaired", {
       sessionId,
       sdkSessionId,
@@ -27979,8 +28737,10 @@ export function createAgentChatService(args: {
       throw new Error("The source branch changed after the handoff was prepared. Run the checks again before sending.");
     }
     const preparedAt = Date.parse(args.capsule.createdAt);
-    flushQueuedTranscriptWrite(managed.transcriptPath);
-    flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`));
+    await Promise.all([
+      flushQueuedTranscriptWrite(managed.transcriptPath),
+      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sourceSessionId}.jsonl`)),
+    ]);
     const hasNewChatActivity = readTranscriptEnvelopes(managed).some((entry) => {
       const timestamp = Date.parse(entry.timestamp);
       return Number.isFinite(timestamp) && timestamp > preparedAt;
@@ -28768,10 +29528,10 @@ export function createAgentChatService(args: {
     }
   };
 
-  const persistedImportedChatResult = (
+  const persistedImportedChatResult = async (
     managed: ManagedChatSession,
     provider: AgentChatImportProvider,
-  ): AgentChatImportExternalSessionResult => {
+  ): Promise<AgentChatImportExternalSessionResult> => {
     const summaryRow = sessionService.get(managed.session.id);
     if (!summaryRow) {
       throw externalChatImportError(
@@ -28781,7 +29541,7 @@ export function createAgentChatService(args: {
     }
     return {
       chatSessionId: managed.session.id,
-      chatSummary: summarizeSessionRow(summaryRow),
+      chatSummary: await summarizeSessionRow(summaryRow),
     };
   };
 
@@ -28882,7 +29642,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
-      return persistedImportedChatResult(managed, "claude");
+      return await persistedImportedChatResult(managed, "claude");
     } catch (error) {
       if (createdSessionId) {
         await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
@@ -29031,7 +29791,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
-      return persistedImportedChatResult(managed, "codex");
+      return await persistedImportedChatResult(managed, "codex");
     } catch (error) {
       if (createdSessionId && forkedProviderThreadId) {
         const managed = managedSessions.get(createdSessionId);
@@ -33922,19 +34682,10 @@ export function createAgentChatService(args: {
     }
     const preserveQueryForQueuedMessages = (interruptResponse?.still_queued?.length ?? 0) > 0;
     if (!preserveQueryForQueuedMessages) {
-      runtime.queryGeneration += 1;
-      runtime.queryStartPromise = null;
-      try { runtime.query?.close(); } catch { /* ignore */ }
-      // close() only ends stream iteration — it does not guarantee the SDK
-      // subprocess exits. Reap it so an interrupted turn never leaves a live
-      // `claude --resume` twin streaming into a dead reader (the same enforcement
-      // resetClaudeQuerySession applies on reset/remodel).
-      claudeSubprocessReaper.reapForSession(managed.session.id, "claude_interrupt");
-      runtime.inputPump?.close();
-      resetClaudeProcessBackgroundLevel(runtime);
-      runtime.query = null;
-      runtime.inputPump = null;
-      runtime.warmupDone = null;
+      // Invalidate the idle reader and any already-issued `next()` promise as
+      // part of the same reset. Clearing only query/inputPump lets that stale
+      // promise consume the next turn after an interrupt.
+      await resetClaudeQuerySession(managed, runtime, "interrupt");
     }
     cancelQueuedSteers(managed, runtime, "interrupted");
     // Drain pending approvals so their promises settle instead of hanging forever
@@ -34645,12 +35396,12 @@ export function createAgentChatService(args: {
     return latest;
   };
 
-  const latestTranscriptPlanApprovalRequest = (
+  const latestTranscriptPlanApprovalRequest = async (
     sessionId: string,
     itemId: string,
-  ): PendingInputRequest | null => {
+  ): Promise<PendingInputRequest | null> => {
     const pending = new Map<string, PendingInputRequest>();
-    for (const envelope of getChatEventHistory(sessionId, { maxEvents: 512 }).events) {
+    for (const envelope of (await getChatEventHistory(sessionId, { maxEvents: 512 })).events) {
       const event = envelope.event;
       if (event.type === "approval_request") {
         const detail = asRecord(event.detail);
@@ -34700,20 +35451,20 @@ export function createAgentChatService(args: {
     return pending.get(itemId) ?? null;
   };
 
-  const latestPendingInputItemIdForSession = (
+  const latestPendingInputItemIdForSession = async (
     sessionId: string,
     managed: ManagedChatSession | null | undefined,
-  ): string | null => {
+  ): Promise<string | null> => {
     const live = latestLivePendingInputItemId(managed);
     if (live) return live;
     return latestPendingInputItemIdFromEvents(
-      getChatEventHistory(sessionId, { maxEvents: 512 }).events,
+      (await getChatEventHistory(sessionId, { maxEvents: 512 })).events,
     );
   };
 
-  const summarizeSessionRow = (
+  const summarizeSessionRow = async (
     row: ReturnType<ReturnType<typeof createSessionService>["list"]>[number],
-  ): AgentChatSessionSummary => {
+  ): Promise<AgentChatSessionSummary> => {
     const persisted = readPersistedState(row.id);
     const liveManaged = managedSessions.get(row.id) ?? null;
     const liveSession = liveManaged?.session ?? null;
@@ -34741,7 +35492,7 @@ export function createAgentChatService(args: {
       : null;
     const sessionHasPendingInput = hasLivePendingInput(liveManaged) || persisted?.awaitingInput === true;
     const pendingInputItemId = sessionHasPendingInput
-      ? latestPendingInputItemIdForSession(row.id, liveManaged)
+      ? await latestPendingInputItemIdForSession(row.id, liveManaged)
       : null;
     const hasLiveCodexServiceTier = liveSession
       ? Object.prototype.hasOwnProperty.call(liveSession, "codexServiceTier")
@@ -34899,8 +35650,7 @@ export function createAgentChatService(args: {
     const includeAutomation = options?.includeAutomation === true;
     const includeArchived = options?.includeArchived !== false;
 
-    return chatRows
-      .map((row) => summarizeSessionRow(row))
+    return (await Promise.all(chatRows.map((row) => summarizeSessionRow(row))))
       .filter((summary) => includeIdentity || !summary.identityKey)
       .filter((summary) => includeAutomation || (summary.surface ?? "work") !== "automation")
       .filter((summary) => includeArchived || summary.archivedAt == null);
@@ -34912,7 +35662,7 @@ export function createAgentChatService(args: {
     if (!trimmed.length) return null;
     const row = sessionService.get(trimmed);
     if (!row || !isChatToolType(row.toolType)) return null;
-    return summarizeSessionRow(row);
+    return await summarizeSessionRow(row);
   };
 
   const toScheduledWorkItem = (schedule: ChatScheduledWorkRecord): AgentChatScheduledWorkItem => ({
@@ -34949,7 +35699,7 @@ export function createAgentChatService(args: {
       throw new Error(`Agent session '${normalizedSessionId}' was not found.`);
     }
     const chatBacked = isChatToolType(row.toolType);
-    const summary = chatBacked ? summarizeSessionRow(row) : null;
+    const summary = chatBacked ? await summarizeSessionRow(row) : null;
     if (row.archivedAt || summary?.status === "ended") {
       throw new Error(`Agent session '${normalizedSessionId}' is ended or archived.`);
     }
@@ -35295,6 +36045,7 @@ export function createAgentChatService(args: {
     revokeBuiltInBrowserActorCapability(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
+    resolvedTranscriptPathBySession.delete(sessionId);
   };
 
   const countActiveForLane = (laneId: string): number => {
@@ -35563,7 +36314,7 @@ export function createAgentChatService(args: {
       }
     }
     if (persisted?.awaitingInput === true) {
-      rememberPendingItem(latestPendingInputItemIdForSession(sessionId, managed));
+      rememberPendingItem(await latestPendingInputItemIdForSession(sessionId, managed));
     }
 
     if (runtime) {
@@ -35678,7 +36429,7 @@ export function createAgentChatService(args: {
         : await ensureCodexSessionRuntime(managed);
       const pending = runtime.approvals.get(itemId);
       if (!pending) {
-        const recoveredPlanApproval = latestTranscriptPlanApprovalRequest(sessionId, itemId);
+        const recoveredPlanApproval = await latestTranscriptPlanApprovalRequest(sessionId, itemId);
         if (recoveredPlanApproval) {
           stageCodexPlanApprovalFollowup(managed, runtime, {
             itemId,
@@ -36816,8 +37567,10 @@ export function createAgentChatService(args: {
       managed.endedNotified = true;
       managed.ctoSessionStartedAt = null;
       clearSubagentSnapshots(trimmedSessionId);
-      flushQueuedTranscriptWrite(managed.transcriptPath);
-      flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`));
+      await Promise.all([
+        flushQueuedTranscriptWrite(managed.transcriptPath),
+        flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`)),
+      ]);
       teardownRuntime(managed, "ended_session");
       managedSessions.delete(trimmedSessionId);
     } else {
@@ -36825,6 +37578,7 @@ export function createAgentChatService(args: {
     }
     eventHistoryBySession.delete(trimmedSessionId);
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
+    resolvedTranscriptPathBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -36889,7 +37643,7 @@ export function createAgentChatService(args: {
         // ignore shutdown errors
       }
     }
-    flushAllQueuedTranscriptWrites();
+    await flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("dispose_all");
   };
 
@@ -36920,7 +37674,7 @@ export function createAgentChatService(args: {
       revokeBuiltInBrowserActorCapability(sessionId);
     }
     managedSessions.clear();
-    flushAllQueuedTranscriptWrites();
+    void flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("force_dispose_all");
   };
 
@@ -37479,8 +38233,11 @@ export function createAgentChatService(args: {
     persistChatState(managed);
   };
 
-  const listSubagents = ({ sessionId }: AgentChatSubagentListArgs): AgentChatSubagentSnapshot[] => {
-    return getTrackedSubagents(sessionId);
+  const listSubagents = async (
+    { sessionId }: AgentChatSubagentListArgs,
+    signal?: AbortSignal,
+  ): Promise<AgentChatSubagentSnapshot[]> => {
+    return await getTrackedSubagents(sessionId, signal);
   };
 
   // Terminate a single Droid AGI mission worker (Missions tab). Only valid for a
@@ -38007,6 +38764,7 @@ export function createAgentChatService(args: {
   const fetchCodexSubagentTranscriptFromAppServer = async (
     runtime: CodexRuntime,
     threadId: string,
+    signal?: AbortSignal,
   ): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
     type CodexTurnsListResponse = {
       data?: Array<{ id?: unknown; items?: unknown; startedAt?: unknown }>;
@@ -38018,6 +38776,7 @@ export function createAgentChatService(args: {
     const MAX_PAGES = 10;
     try {
       do {
+        signal?.throwIfAborted();
         const params: Record<string, unknown> = {
           threadId,
           itemsView: "full",
@@ -38028,6 +38787,7 @@ export function createAgentChatService(args: {
         };
         if (cursor) params.cursor = cursor;
         const response = await runtime.request<CodexTurnsListResponse>("thread/turns/list", params);
+        signal?.throwIfAborted();
         const turns = Array.isArray(response?.data) ? response.data : [];
         for (const turn of turns) {
           const turnId = typeof turn?.id === "string" ? turn.id : null;
@@ -38129,8 +38889,6 @@ export function createAgentChatService(args: {
     left: AgentChatSubagentTranscriptMessage[],
     right: AgentChatSubagentTranscriptMessage[],
   ): AgentChatSubagentTranscriptMessage[] {
-    if (!left.length) return right.slice();
-    if (!right.length) return left.slice();
     const byKey = new Map<string, AgentChatSubagentTranscriptMessage>();
     const order: string[] = [];
     const messageSignalLength = (message: AgentChatSubagentTranscriptMessage): number => {
@@ -38172,48 +38930,106 @@ export function createAgentChatService(args: {
     return order.map((key) => byKey.get(key)!).filter(Boolean);
   }
 
-  function readCapturedCodexSubagentTranscript(
+  async function readCapturedCodexSubagentTranscript(
+    sessionId: string,
+    threadId: string,
+    runtime: CodexRuntime | null,
+    signal?: AbortSignal,
+  ): Promise<AgentChatSubagentTranscriptMessage[]> {
+    const metadata = codexSubagentMetadataForThread(runtime, threadId);
+    const captured: AgentChatSubagentTranscriptMessage[] = [];
+    const capturedSizes: number[] = [];
+    let capturedHead = 0;
+    let capturedChars = 0;
+    const capture = (envelope: AgentChatEventEnvelope): void => {
+      if (
+        isCodexSubagentTranscriptEnvelope(envelope)
+        && envelope.provenance?.threadId === threadId
+      ) {
+        const message = codexSubagentEnvelopeToTranscriptMessage(envelope, metadata);
+        if (!message) return;
+        const messageChars = safeJsonChars(message);
+        captured.push(message);
+        capturedSizes.push(messageChars);
+        capturedChars += messageChars;
+        while (
+          captured.length - capturedHead > 1_000
+          || (
+            capturedChars > SUBAGENT_TRANSCRIPT_RESPONSE_MAX_CHARS
+            && captured.length - capturedHead > 1
+          )
+        ) {
+          capturedChars -= capturedSizes[capturedHead] ?? 0;
+          capturedHead += 1;
+        }
+        if (capturedHead >= 512 && capturedHead * 2 >= captured.length) {
+          captured.splice(0, capturedHead);
+          capturedSizes.splice(0, capturedHead);
+          capturedHead = 0;
+        }
+      }
+    };
+    const threadNeedle = Buffer.from(JSON.stringify(threadId));
+    const targetKindNeedle = Buffer.from("\"codex_subagent\"");
+    await scanTranscriptEnvelopesForSessionIdAsync(
+      sessionId,
+      capture,
+      signal,
+      parseAgentChatTranscript,
+      (line) => line.includes(threadNeedle) && line.includes(targetKindNeedle),
+    );
+    for (const envelope of eventHistoryBySession.get(sessionId) ?? []) capture(envelope);
+    return boundSubagentTranscriptResponse(
+      mergeSubagentTranscriptMessages(captured.slice(capturedHead), []),
+    );
+  }
+
+  function readBufferedCodexSubagentTranscript(
     sessionId: string,
     threadId: string,
     runtime: CodexRuntime | null,
   ): AgentChatSubagentTranscriptMessage[] {
     const metadata = codexSubagentMetadataForThread(runtime, threadId);
-    const persisted = readFullTranscriptEnvelopesForSessionId(sessionId);
-    const buffered = eventHistoryBySession.get(sessionId) ?? [];
-    return mergeEnvelopeStreams(persisted, buffered)
+    const captured = (eventHistoryBySession.get(sessionId) ?? [])
       .filter((envelope) =>
         isCodexSubagentTranscriptEnvelope(envelope)
-        && envelope.provenance?.threadId === threadId
-      )
+        && envelope.provenance?.threadId === threadId)
       .map((envelope) => codexSubagentEnvelopeToTranscriptMessage(envelope, metadata))
-      .filter((entry): entry is AgentChatSubagentTranscriptMessage => entry !== null);
+      .filter((message): message is AgentChatSubagentTranscriptMessage => message !== null);
+    return boundSubagentTranscriptResponse(captured);
   }
 
-  function readClaudeSubagentProviderSessionId(
+  async function readClaudeSubagentProviderSessionId(
     sessionId: string,
     taskId: string | null,
     agentId: string,
-  ): string | null {
-    const persisted = readFullTranscriptEnvelopesForSessionId(sessionId);
-    const buffered = eventHistoryBySession.get(sessionId) ?? [];
-    const envelopes = mergeEnvelopeStreams(persisted, buffered);
-    const findNewestMatch = (
-      predicate: (event: Extract<AgentChatEvent, { type: "subagent_started" }>) => boolean,
-    ): string | null => {
-      for (let index = envelopes.length - 1; index >= 0; index -= 1) {
-        const event = envelopes[index]?.event;
-        if (event?.type !== "subagent_started" || !predicate(event)) continue;
-        const providerSessionId = event.providerSessionId?.trim();
-        if (providerSessionId) return providerSessionId;
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    let exactTaskMatch: string | null = null;
+    let identityMatch: string | null = null;
+    const inspect = (envelope: AgentChatEventEnvelope): void => {
+      const event = envelope.event;
+      if (event.type !== "subagent_started") return;
+      const providerSessionId = event.providerSessionId?.trim();
+      if (!providerSessionId) return;
+      if (taskId && event.taskId === taskId) exactTaskMatch = providerSessionId;
+      if (event.agentId === agentId || event.taskId === agentId) {
+        identityMatch = providerSessionId;
       }
-      return null;
     };
-
-    if (taskId) {
-      const exactTaskMatch = findNewestMatch((event) => event.taskId === taskId);
-      if (exactTaskMatch) return exactTaskMatch;
-    }
-    return findNewestMatch((event) => event.agentId === agentId || event.taskId === agentId);
+    const startedNeedle = Buffer.from("\"subagent_started\"");
+    const identityNeedles = [taskId, agentId]
+      .filter((value): value is string => Boolean(value))
+      .map((value) => Buffer.from(JSON.stringify(value)));
+    await scanTranscriptEnvelopesForSessionIdAsync(
+      sessionId,
+      inspect,
+      signal,
+      parseAgentChatTranscript,
+      (line) => line.includes(startedNeedle) && identityNeedles.some((needle) => line.includes(needle)),
+    );
+    for (const envelope of eventHistoryBySession.get(sessionId) ?? []) inspect(envelope);
+    return exactTaskMatch ?? identityMatch;
   }
 
   /**
@@ -38240,14 +39056,17 @@ export function createAgentChatService(args: {
    * Exposed via getSubagentTranscript, which byte-bounds whatever this
    * returns — new runtime branches here need no size handling of their own.
    */
-  const collectSubagentTranscript = async ({
-    sessionId,
-    agentId,
-    taskId,
-    laneId,
-    limit,
-    offset,
-  }: AgentChatSubagentTranscriptArgs): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+  const collectSubagentTranscript = async (
+    {
+      sessionId,
+      agentId,
+      taskId,
+      laneId,
+      limit,
+      offset,
+    }: AgentChatSubagentTranscriptArgs,
+    signal?: AbortSignal,
+  ): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
     const normalizedSessionId = sessionId.trim();
     const normalizedAgentId = agentId.trim();
     const normalizedTaskId = taskId?.trim() || null;
@@ -38328,21 +39147,22 @@ export function createAgentChatService(args: {
       refreshCodexSubagentThreadMetadata(codexManaged, codexRuntime, normalizedAgentId);
     }
 
-    const capturedCodexTranscript = treatAsCodexLike
-      ? readCapturedCodexSubagentTranscript(normalizedSessionId, normalizedAgentId, codexRuntime)
-      : [];
-
-    // When the Codex runtime is live we also ask the app-server directly for
-    // the subagent's own thread. Captured live rows remain the first source
-    // of truth because older Codex builds may stream child-thread content but
-    // return an empty turn list for those threads.
+    // Query a live Codex runtime before touching the potentially huge parent
+    // transcript. The in-memory ring is a cheap complementary source for
+    // builds that stream child-thread content before exposing it through
+    // thread/turns/list.
     if (codexRuntime) {
       const liveTranscript = await fetchCodexSubagentTranscriptFromAppServer(
         codexRuntime,
         normalizedAgentId,
+        signal,
       );
       const mergedTranscript = mergeSubagentTranscriptMessages(
-        capturedCodexTranscript,
+        readBufferedCodexSubagentTranscript(
+          normalizedSessionId,
+          normalizedAgentId,
+          codexRuntime,
+        ),
         liveTranscript ?? [],
       );
       if (mergedTranscript.length > 0) {
@@ -38352,6 +39172,15 @@ export function createAgentChatService(args: {
         });
       }
     }
+
+    const capturedCodexTranscript = treatAsCodexLike
+      ? await readCapturedCodexSubagentTranscript(
+          normalizedSessionId,
+          normalizedAgentId,
+          codexRuntime,
+          signal,
+        )
+      : [];
 
     if (capturedCodexTranscript.length > 0) {
       return sliceTranscriptMessages(capturedCodexTranscript, {
@@ -38405,10 +39234,11 @@ export function createAgentChatService(args: {
     // drill-in go empty as soon as the live runtime was reset or reopened.
     const persisted = readPersistedState(normalizedSessionId);
     const pointer = getClaudeSessionPointerForChat(normalizedSessionId);
-    const eventBoundClaudeSessionId = readClaudeSubagentProviderSessionId(
+    const eventBoundClaudeSessionId = await readClaudeSubagentProviderSessionId(
       normalizedSessionId,
       normalizedTaskId,
       normalizedAgentId,
+      signal,
     );
     const claudeSessionId = (
       eventBoundClaudeSessionId
@@ -38449,8 +39279,9 @@ export function createAgentChatService(args: {
   // construction rather than by remembering to wrap each return.
   const getSubagentTranscript = async (
     args: AgentChatSubagentTranscriptArgs,
+    signal?: AbortSignal,
   ): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
-    const messages = await collectSubagentTranscript(args);
+    const messages = await collectSubagentTranscript(args, signal);
     return messages ? boundSubagentTranscriptResponse(messages) : messages;
   };
 
@@ -39044,6 +39875,8 @@ export function createAgentChatService(args: {
         resolve,
         reject,
         outputText: "",
+        turnId: null,
+        turnStarted: false,
         lastError: null,
         timeout: null,
       };
@@ -39250,15 +40083,16 @@ export function createAgentChatService(args: {
     sessionId: string,
     limit?: number,
     since?: string,
+    signal?: AbortSignal,
   ): Promise<AgentChatTranscriptEntry[]> => {
     const trimmedId = sessionId.trim();
     if (!trimmedId.length) return [];
     const row = sessionService.get(trimmedId);
     if (!row || !isChatToolType(row.toolType)) return [];
-    const managed = managedSessions.get(trimmedId);
-    const entries = managed
-      ? readTranscriptEntries(managed)
-      : transcriptEntriesFromEnvelopes(trimmedId, readFullTranscriptEnvelopesForSessionId(trimmedId));
+    const entries = transcriptEntriesFromEnvelopes(
+      trimmedId,
+      await readRecentTranscriptEnvelopesForSessionIdAsync(trimmedId, signal),
+    );
     let filtered = entries;
     if (typeof since === "string" && since.trim().length) {
       filtered = filtered.filter((entry) => entry.timestamp >= since);
@@ -39731,7 +40565,11 @@ export function createAgentChatService(args: {
 
   const isTranscriptPathActive = (filePath: string): boolean => {
     const normalized = path.resolve(filePath);
-    if (pendingTranscriptWrites.has(normalized) || checkedTranscriptTails.has(normalized)) return true;
+    if (
+      pendingTranscriptWrites.has(normalized)
+      || transcriptWriteFlushInFlight.has(normalized)
+      || checkedTranscriptTails.has(normalized)
+    ) return true;
     for (const managed of managedSessions.values()) {
       if (transcriptPathCandidatesForSessionId(managed.session.id, managed)
         .some((candidate) => path.resolve(candidate) === normalized)) {
@@ -39783,6 +40621,7 @@ export function createAgentChatService(args: {
     countActiveForLane,
     disposeForLane,
     getChatTranscript,
+    getChatTranscriptPage,
     getChatEventHistory,
     getChatEventHistoryPage,
     ensureIdentitySession,

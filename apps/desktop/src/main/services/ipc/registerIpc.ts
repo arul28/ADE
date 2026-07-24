@@ -7026,7 +7026,8 @@ export function registerIpc({
       rawMaxEvents != null && Number.isFinite(rawMaxEvents) && rawMaxEvents > 0
         ? rawMaxEvents
         : undefined;
-    return service.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
+    const options = maxEvents != null ? { maxEvents } : undefined;
+    return await service.getChatEventHistory(sessionId, options);
   });
 
   ipcMain.handle(IPC.agentChatGetEventHistoryPage, async (
@@ -7050,7 +7051,7 @@ export function registerIpc({
     const maxBytes = rawMaxBytes != null && Number.isFinite(rawMaxBytes) && rawMaxBytes > 0
       ? rawMaxBytes
       : undefined;
-    return service.getChatEventHistoryPage(sessionId, {
+    return await service.getChatEventHistoryPage(sessionId, {
       beforeOffset,
       ...(maxBytes != null ? { maxBytes } : {}),
     });

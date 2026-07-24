@@ -241,9 +241,13 @@ so the win is transport and decode, not host compute.
   `rewindFiles`, `getTurnFileDiff`, `saveTempAttachment`, `getImageDataUrl`
 
 `chat.getTranscript` supports cursor pagination: responses carry an
-opaque index-based `nextCursor`, and requests can pass `cursor` to
-page strictly-older history. Calls without a cursor behave exactly as
-before.
+opaque `nextCursor`, and requests can pass `cursor` to page strictly-older
+history. Full agent runtimes advertise `cursorKind: "byte"` and use an
+append-stable logical JSONL offset, so serving a page never requires parsing the
+whole transcript. The minimal non-agent headless fallback advertises
+`cursorKind: "index"` over its bounded in-memory transcript. Clients must keep
+the cursor opaque and use `cursorKind` only to select their local merge
+strategy.
 - `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,

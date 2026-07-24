@@ -616,10 +616,12 @@ describe("spawnAgent tool", () => {
         expect.anything(),
       ),
     );
-    const entry = svc2
-      .getManifestForRun(setup.runId)!
-      .outbox?.find((e) => e.kind === "brief")!;
-    expect(entry.status).toBe("delivered");
+    await vi.waitFor(() => {
+      const entry = svc2
+        .getManifestForRun(setup.runId)!
+        .outbox?.find((e) => e.kind === "brief")!;
+      expect(entry.status).toBe("delivered");
+    });
     await svc2.dispose();
   });
 

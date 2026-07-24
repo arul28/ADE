@@ -10,6 +10,7 @@ import type {
   SyncRosterProject,
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import type { SyncForeignChatTranscriptResolver } from "./syncHostService";
 
 // Anchor builtin resolution to the active runtime, mirroring kvDb / the cheap
@@ -538,10 +539,9 @@ export function createForeignChatTranscriptResolver(args: {
       if (!dedicatedPath.startsWith(chatTranscriptsDir + path.sep)) return null;
       const legacyPath = path.resolve(path.join(legacyTranscriptsDir, `${safeSessionId}.chat.jsonl`));
       if (!legacyPath.startsWith(legacyTranscriptsDir + path.sep)) return null;
-      if (!fs.existsSync(dedicatedPath) && fs.existsSync(legacyPath)) {
-        return legacyPath;
-      }
-      return dedicatedPath;
+      return resolveReadableHistoryPath(dedicatedPath)
+        ?? resolveReadableHistoryPath(legacyPath)
+        ?? dedicatedPath;
     },
   };
 }

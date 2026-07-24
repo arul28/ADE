@@ -1565,25 +1565,26 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     };
   }
   if (typeof base.getChatEventHistory === "function") {
-    service.getChatEventHistory = (args?: unknown) => {
+    service.getChatEventHistory = async (args?: unknown) => {
       const { sessionId, options } = readChatHistoryActionArgs(args, "chat.getChatEventHistory");
       const maxEvents = readOptionalIntegerActionField(options.maxEvents, "maxEvents");
       const maxBytes = readOptionalIntegerActionField(options.maxBytes, "maxBytes");
-      return agentChatService.getChatEventHistory(sessionId, {
+      const historyOptions = {
         ...(maxEvents !== undefined ? { maxEvents } : {}),
         ...(maxBytes !== undefined ? { maxBytes } : {}),
-      });
+      };
+      return await agentChatService.getChatEventHistory(sessionId, historyOptions);
     };
   }
   if (typeof base.getChatEventHistoryPage === "function") {
-    service.getChatEventHistoryPage = (args?: unknown) => {
+    service.getChatEventHistoryPage = async (args?: unknown) => {
       const { sessionId, options } = readChatHistoryActionArgs(args, "chat.getChatEventHistoryPage");
       const beforeOffset = readOptionalIntegerActionField(options.beforeOffset, "beforeOffset");
       if (beforeOffset === undefined) {
         throw new Error("Expected 'beforeOffset' to be a finite number.");
       }
       const maxBytes = readOptionalIntegerActionField(options.maxBytes, "maxBytes");
-      return agentChatService.getChatEventHistoryPage(sessionId, {
+      return await agentChatService.getChatEventHistoryPage(sessionId, {
         beforeOffset,
         ...(maxBytes !== undefined ? { maxBytes } : {}),
       });

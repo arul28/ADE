@@ -79,7 +79,7 @@ describe("clampHistoryPageBytes", () => {
 });
 
 describe("readTranscriptHistoryPage", () => {
-  it("returns identical events from a compressed transcript", () => {
+  it("returns identical events from a compressed transcript", async () => {
     const { size } = writeTranscript([
       envelopeLine({ text: "compressed first", sequence: 1 }),
       envelopeLine({ text: "compressed second", sequence: 2 }),
@@ -88,7 +88,7 @@ describe("readTranscriptHistoryPage", () => {
     fs.writeFileSync(compressedPath, gzipSync(fs.readFileSync(transcriptPath)));
     fs.unlinkSync(transcriptPath);
 
-    const page = readTranscriptHistoryPage({
+    const page = await readTranscriptHistoryPage({
       transcriptPath: compressedPath,
       sessionId: SESSION_ID,
       beforeOffset: size,
@@ -97,7 +97,7 @@ describe("readTranscriptHistoryPage", () => {
     expect(page.envelopes.map(eventText)).toEqual(["compressed first", "compressed second"]);
   });
 
-  it("reuses a valid compressed snapshot across pages", () => {
+  it("serves concurrent compressed pages without whole-file promise reads", async () => {
     const { size } = writeTranscript([
       envelopeLine({ text: "compressed first", sequence: 1, exactLineBytes: 40_000 }),
       envelopeLine({ text: "compressed second", sequence: 2, exactLineBytes: 40_000 }),
@@ -106,40 +106,50 @@ describe("readTranscriptHistoryPage", () => {
     const compressedPath = `${transcriptPath}.gz`;
     fs.writeFileSync(compressedPath, gzipSync(fs.readFileSync(transcriptPath)));
     fs.unlinkSync(transcriptPath);
-    const readFile = vi.spyOn(fs, "readFileSync");
+    const readFile = vi.spyOn(fs.promises, "readFile");
 
-    const first = readTranscriptHistoryPage({
-      transcriptPath: compressedPath,
-      sessionId: SESSION_ID,
-      beforeOffset: size,
-      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
-    });
-    readTranscriptHistoryPage({
+    const [first, duplicate] = await Promise.all([
+      readTranscriptHistoryPage({
+        transcriptPath: compressedPath,
+        sessionId: SESSION_ID,
+        beforeOffset: size,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+      }),
+      readTranscriptHistoryPage({
+        transcriptPath: compressedPath,
+        sessionId: SESSION_ID,
+        beforeOffset: size,
+        maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+      }),
+    ]);
+    const older = await readTranscriptHistoryPage({
       transcriptPath: compressedPath,
       sessionId: SESSION_ID,
       beforeOffset: first.startOffset,
       maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
     });
 
-    expect(readFile.mock.calls.filter(([filePath]) => filePath === compressedPath)).toHaveLength(1);
+    expect(duplicate).toEqual(first);
+    expect(older.startOffset).toBeLessThan(first.startOffset);
+    expect(readFile.mock.calls.filter(([filePath]) => filePath === compressedPath)).toHaveLength(0);
   });
 
-  it("returns an empty head-reached page for beforeOffset <= 0", () => {
+  it("returns an empty head-reached page for beforeOffset <= 0", async () => {
     writeTranscript([envelopeLine({ text: "a" })]);
     for (const beforeOffset of [0, -1, Number.NaN]) {
-      const page = readTranscriptHistoryPage({ transcriptPath, sessionId: SESSION_ID, beforeOffset });
+      const page = await readTranscriptHistoryPage({ transcriptPath, sessionId: SESSION_ID, beforeOffset });
       expect(page.envelopes).toEqual([]);
       expect(page.startOffset).toBe(0);
       expect(page.hasMore).toBe(false);
     }
   });
 
-  it("clamps beforeOffset beyond the file size to the file size", () => {
+  it("clamps beforeOffset beyond the file size to the file size", async () => {
     const { size } = writeTranscript([
       envelopeLine({ text: "first", sequence: 1 }),
       envelopeLine({ text: "second", sequence: 2 }),
     ]);
-    const page = readTranscriptHistoryPage({
+    const page = await readTranscriptHistoryPage({
       transcriptPath,
       sessionId: SESSION_ID,
       beforeOffset: size + 50_000,
@@ -149,15 +159,15 @@ describe("readTranscriptHistoryPage", () => {
     expect(page.hasMore).toBe(false);
   });
 
-  it("throws when the transcript file is missing (caller decides the fallback)", () => {
-    expect(() => readTranscriptHistoryPage({
+  it("throws when the transcript file is missing (caller decides the fallback)", async () => {
+    await expect(readTranscriptHistoryPage({
       transcriptPath: path.join(tmpRoot, "missing.jsonl"),
       sessionId: SESSION_ID,
       beforeOffset: 100,
-    })).toThrow();
+    })).rejects.toThrow();
   });
 
-  it("walks the whole transcript backwards with strictly decreasing line-start cursors and no gaps or overlaps", () => {
+  it("walks the whole transcript backwards with strictly decreasing line-start cursors and no gaps or overlaps", async () => {
     // ~40KB lines so the (min-clamped) 64KB window holds ~1 complete line per page.
     const lines = Array.from({ length: 12 }, (_, index) =>
       envelopeLine({ text: `line-${index}-`, sequence: index, exactLineBytes: 40_000 }));
@@ -167,7 +177,7 @@ describe("readTranscriptHistoryPage", () => {
     const cursors: number[] = [];
     let beforeOffset = size;
     for (let guard = 0; guard < 100 && beforeOffset > 0; guard += 1) {
-      const page = readTranscriptHistoryPage({
+      const page = await readTranscriptHistoryPage({
         transcriptPath,
         sessionId: SESSION_ID,
         beforeOffset,
@@ -192,13 +202,13 @@ describe("readTranscriptHistoryPage", () => {
     }
   });
 
-  it("keeps a complete first line when the window boundary lands exactly on a line start", () => {
+  it("keeps a complete first line when the window boundary lands exactly on a line start", async () => {
     const headLine = envelopeLine({ text: "head", sequence: 0, exactLineBytes: 10_000 });
     // Tail line sized so `end - pageBytes` lands exactly at its first byte.
     const tailLine = envelopeLine({ text: "tail", sequence: 1, exactLineBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES });
     const { size, lineOffsets } = writeTranscript([headLine, tailLine]);
 
-    const page = readTranscriptHistoryPage({
+    const page = await readTranscriptHistoryPage({
       transcriptPath,
       sessionId: SESSION_ID,
       beforeOffset: size,
@@ -211,7 +221,7 @@ describe("readTranscriptHistoryPage", () => {
     expect(page.hasMore).toBe(true);
   });
 
-  it("pages past a single line larger than the window with strictly decreasing empty pages", () => {
+  it("expands a small requested window to recover one larger JSONL row", async () => {
     const before = envelopeLine({ text: "before-giant", sequence: 0, exactLineBytes: 5_000 });
     const giant = envelopeLine({ text: "giant", sequence: 1, exactLineBytes: 3 * CHAT_EVENT_HISTORY_PAGE_MIN_BYTES });
     const after = envelopeLine({ text: "after-giant", sequence: 2, exactLineBytes: 5_000 });
@@ -219,33 +229,44 @@ describe("readTranscriptHistoryPage", () => {
 
     const seenTexts: string[] = [];
     let beforeOffset = size;
-    let sawEmptyPage = false;
     for (let guard = 0; guard < 100 && beforeOffset > 0; guard += 1) {
-      const page = readTranscriptHistoryPage({
+      const page = await readTranscriptHistoryPage({
         transcriptPath,
         sessionId: SESSION_ID,
         beforeOffset,
         maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
       });
-      // Never loops: the cursor strictly decreases even for empty pages.
       expect(page.startOffset).toBeLessThan(beforeOffset);
-      if (!page.envelopes.length && page.hasMore) sawEmptyPage = true;
       seenTexts.unshift(...page.envelopes.map(eventText));
       beforeOffset = page.startOffset;
     }
 
     expect(beforeOffset).toBe(0);
-    expect(sawEmptyPage).toBe(true);
-    // The giant line itself is unrecoverable within a single window, but both
-    // neighbours are reachable and ordered.
     expect(seenTexts.some((text) => text.startsWith("before-giant"))).toBe(true);
+    expect(seenTexts.some((text) => text.startsWith("giant"))).toBe(true);
     expect(seenTexts.some((text) => text.startsWith("after-giant"))).toBe(true);
     expect(
       seenTexts.findIndex((text) => text.startsWith("before-giant")),
     ).toBeLessThan(seenTexts.findIndex((text) => text.startsWith("after-giant")));
   });
 
-  it("keeps byte cursors on line boundaries when lines contain multi-byte UTF-8", () => {
+  it("fails explicitly instead of advancing past a row above the hard page ceiling", async () => {
+    const giant = envelopeLine({
+      text: "too-large",
+      sequence: 1,
+      exactLineBytes: CHAT_EVENT_HISTORY_PAGE_MAX_BYTES + 1_000,
+    });
+    const { size } = writeTranscript([envelopeLine({ text: "head" }), giant]);
+
+    await expect(readTranscriptHistoryPage({
+      transcriptPath,
+      sessionId: SESSION_ID,
+      beforeOffset: size,
+      maxBytes: CHAT_EVENT_HISTORY_PAGE_MIN_BYTES,
+    })).rejects.toThrow("chat_history_row_too_large");
+  });
+
+  it("keeps byte cursors on line boundaries when lines contain multi-byte UTF-8", async () => {
     // Multi-byte payloads make byte length != char length; offsets must stay
     // byte-accurate or pages would split codepoints / skip lines.
     const emoji = "🚀汉字Ωé".repeat(1_000);
@@ -259,7 +280,7 @@ describe("readTranscriptHistoryPage", () => {
     const collected: string[] = [];
     let beforeOffset = size;
     for (let guard = 0; guard < 50 && beforeOffset > 0; guard += 1) {
-      const page = readTranscriptHistoryPage({
+      const page = await readTranscriptHistoryPage({
         transcriptPath,
         sessionId: SESSION_ID,
         beforeOffset,
@@ -277,24 +298,24 @@ describe("readTranscriptHistoryPage", () => {
     expect(collected[2]!.startsWith("tail-ascii")).toBe(true);
   });
 
-  it("filters envelopes to the requested session while still advancing the cursor", () => {
+  it("filters envelopes to the requested session while still advancing the cursor", async () => {
     const { size } = writeTranscript([
       envelopeLine({ text: "mine-1", sequence: 1 }),
       envelopeLine({ text: "other", sessionId: "someone-else", sequence: 2 }),
       envelopeLine({ text: "mine-2", sequence: 3 }),
     ]);
-    const page = readTranscriptHistoryPage({ transcriptPath, sessionId: SESSION_ID, beforeOffset: size });
+    const page = await readTranscriptHistoryPage({ transcriptPath, sessionId: SESSION_ID, beforeOffset: size });
     expect(page.envelopes.map(eventText)).toEqual(["mine-1", "mine-2"]);
     expect(page.startOffset).toBe(0);
     expect(page.hasMore).toBe(false);
   });
 
-  it("returns identical pages for the same cursor while the file is concurrently appended", () => {
+  it("returns identical pages for the same cursor while the file is concurrently appended", async () => {
     const lines = Array.from({ length: 4 }, (_, index) =>
       envelopeLine({ text: `stable-${index}`, sequence: index, exactLineBytes: 30_000 }));
     const { size } = writeTranscript(lines);
 
-    const first = readTranscriptHistoryPage({
+    const first = await readTranscriptHistoryPage({
       transcriptPath,
       sessionId: SESSION_ID,
       beforeOffset: size,
@@ -302,7 +323,7 @@ describe("readTranscriptHistoryPage", () => {
     });
     // Concurrent append after the cursor was issued.
     fs.appendFileSync(transcriptPath, envelopeLine({ text: "appended-later", sequence: 99 }), "utf8");
-    const second = readTranscriptHistoryPage({
+    const second = await readTranscriptHistoryPage({
       transcriptPath,
       sessionId: SESSION_ID,
       beforeOffset: size,

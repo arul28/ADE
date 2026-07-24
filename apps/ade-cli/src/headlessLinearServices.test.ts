@@ -132,6 +132,92 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("does not let an invalidated GitHub status lookup overwrite the newer cache", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-status-race-"));
+    let resolveOldResponse: ((response: Response) => void) | undefined;
+    const oldResponse = new Promise<Response>((resolve) => {
+      resolveOldResponse = resolve;
+    });
+    const responseFor = (login: string) => new Response(JSON.stringify({ login }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-oauth-scopes": "repo, workflow",
+      },
+    });
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization");
+      if (authorization === "Bearer ghp_old_token") return await oldResponse;
+      return responseFor("new-user");
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+    try {
+      githubService.setToken("ghp_old_token");
+      const staleLookup = githubService.getStatus({ forceRefresh: true });
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+      githubService.setToken("ghp_new_token");
+      const freshLookup = githubService.getStatus({ forceRefresh: true });
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+      resolveOldResponse?.(responseFor("old-user"));
+
+      await expect(staleLookup).resolves.toMatchObject({ userLogin: "old-user" });
+      await expect(freshLookup).resolves.toMatchObject({ userLogin: "new-user" });
+      await expect(githubService.getStatus()).resolves.toMatchObject({ userLogin: "new-user" });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+    }
+  });
+
+  it("coalesces concurrent forced GitHub status lookups", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-status-coalesce-"));
+    let resolveResponse: ((response: Response) => void) | undefined;
+    const response = new Promise<Response>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const fetchImpl = vi.fn(async () => await response) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+    try {
+      githubService.setToken("ghp_test_token");
+      const lookups = Array.from(
+        { length: 16 },
+        () => githubService.getStatus({ forceRefresh: true }),
+      );
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+      resolveResponse?.(new Response(JSON.stringify({ login: "octocat" }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-oauth-scopes": "repo, workflow",
+        },
+      }));
+
+      const statuses = await Promise.all(lookups);
+      expect(statuses).toHaveLength(16);
+      expect(statuses.every((status) => status.userLogin === "octocat")).toBe(true);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+    }
+  });
+
   it("creates secret gists through the headless GitHub service", async () => {
     const previousAdeHome = process.env.ADE_HOME;
     const previousFetch = globalThis.fetch;
@@ -295,6 +381,43 @@ describe("headlessLinearServices", () => {
     const clipped = await services.agentChatService.getChatTranscript({ sessionId: session.id, limit: 1, maxChars: 50 });
     expect(clipped.entries[0]!.text.length).toBeLessThanOrEqual(50);
 
+    services.dispose();
+  });
+
+  it("provides index pagination for the non-agent headless chat fallback", async () => {
+    const services = createHeadlessLinearServices(createDeps());
+    const session = await services.agentChatService.createSession({ laneId: "lane-1" });
+    for (let index = 0; index < 5; index += 1) {
+      await services.agentChatService.sendMessage({
+        sessionId: session.id,
+        text: `Message ${index}`,
+      });
+    }
+
+    const newest = await services.agentChatService.getChatTranscriptPage({
+      sessionId: session.id,
+      limit: 2,
+    });
+    expect(newest).toMatchObject({
+      cursorKind: "index",
+      totalEntries: 5,
+      nextCursor: 3,
+    });
+    expect(newest.entries.map((entry) => entry.text)).toEqual([
+      "Message 3",
+      "Message 4",
+    ]);
+
+    const older = await services.agentChatService.getChatTranscriptPage({
+      sessionId: session.id,
+      beforeOffset: newest.nextCursor!,
+      limit: 2,
+    });
+    expect(older.entries.map((entry) => entry.text)).toEqual([
+      "Message 1",
+      "Message 2",
+    ]);
+    expect(older.nextCursor).toBe(1);
     services.dispose();
   });
 

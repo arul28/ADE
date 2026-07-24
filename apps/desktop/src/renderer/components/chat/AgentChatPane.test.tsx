@@ -43,6 +43,7 @@ import {
   parallelLaneModelSuffix,
   prependOlderChatHistoryPage,
   resolveNextSelectedSessionId,
+  shouldCacheAgentChatSessionView,
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
@@ -7825,10 +7826,26 @@ describe("mergeOlderChatHistoryPageWithCap", () => {
     });
 
     expect(merged.events.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "older",
       "loaded-a",
       "loaded-b",
-      "loaded-c",
     ]);
+    expect(merged.hitResidentCap).toBe(true);
+  });
+
+  it("bounds resident history by bytes even when the event count is small", () => {
+    const older = envelope("2026-06-10T09:00:00.000Z", 1, `older-${"x".repeat(700_000)}`);
+    const loadedA = envelope("2026-06-10T10:00:00.000Z", 2, `loaded-a-${"x".repeat(700_000)}`);
+    const loadedB = envelope("2026-06-10T10:01:00.000Z", 3, `loaded-b-${"x".repeat(700_000)}`);
+
+    const merged = mergeOlderChatHistoryPageWithCap({
+      older: [older],
+      existing: [loadedA, loadedB],
+      maxEvents: 10,
+      maxBytes: 2_000_000,
+    });
+
+    expect(merged.events).toEqual([older]);
     expect(merged.hitResidentCap).toBe(true);
   });
 
@@ -7850,6 +7867,22 @@ describe("mergeOlderChatHistoryPageWithCap", () => {
     expect(merged.hitResidentCap).toBe(false);
     expect(merged.events).toHaveLength(existing.length + 1);
     expect(merged.events[0]).toBe(older);
+  });
+});
+
+describe("shouldCacheAgentChatSessionView", () => {
+  it("keeps large paged histories in the active view instead of the cross-session cache", () => {
+    expect(shouldCacheAgentChatSessionView(60_000, 60_000, 0)).toBe(false);
+    expect(shouldCacheAgentChatSessionView(1_001, 60_000, 0)).toBe(false);
+    expect(shouldCacheAgentChatSessionView(1_000, 60_000, 0)).toBe(true);
+  });
+
+  it("does not cache a trimmed view with a cursor that could skip uncached events", () => {
+    expect(shouldCacheAgentChatSessionView(1_001, 1_000, 0)).toBe(false);
+  });
+
+  it("rejects a small event list that exceeds the per-session byte budget", () => {
+    expect(shouldCacheAgentChatSessionView(2, 1_000, 2 * 1024 * 1024 + 1)).toBe(false);
   });
 });
 

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -157,6 +157,24 @@ type HeadlessLinearServices = {
       truncated: boolean;
       totalEntries: number;
     }>;
+    getChatTranscriptPage: (args: {
+      sessionId: string;
+      beforeOffset?: number;
+      limit?: number;
+      maxChars?: number;
+      signal?: AbortSignal;
+    }) => Promise<{
+      sessionId: string;
+      entries: Array<{
+        role: "user" | "assistant";
+        text: string;
+        timestamp: string;
+      }>;
+      truncated: boolean;
+      totalEntries: number;
+      nextCursor: number | null;
+      cursorKind: "index";
+    }>;
     previewSessionToolNames: (args?: {
       sessionId?: string | null;
     }) => Promise<string[]>;
@@ -256,6 +274,30 @@ function readGhHostsFileToken(): string | null {
   return null;
 }
 
+async function readGhHostsFileTokenAsync(): Promise<string | null> {
+  const configDir = process.env.GH_CONFIG_DIR?.trim()
+    || path.join(process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config"), "gh");
+  try {
+    const raw = await fs.promises.readFile(path.join(configDir, "hosts.yml"), "utf8");
+    let inGithubHost = false;
+    for (const line of raw.split(/\r?\n/)) {
+      if (/^\S/.test(line)) {
+        inGithubHost = /^github\.com\s*:/.test(line.trim());
+        continue;
+      }
+      if (!inGithubHost) continue;
+      const match = line.match(/^\s+oauth_token\s*:\s*(\S+)\s*$/);
+      if (match) {
+        const token = match[1].replace(/^["']|["']$/g, "").trim();
+        if (token) return token;
+      }
+    }
+  } catch {
+    // No hosts.yml (keychain-stored creds or gh absent) — fall through.
+  }
+  return null;
+}
+
 function resolveGhCliPath(): string {
   const candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
   for (const candidate of candidates) {
@@ -269,9 +311,56 @@ function resolveGhCliPath(): string {
   return "gh";
 }
 
+async function resolveGhCliPathAsync(): Promise<string> {
+  const candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
+  for (const candidate of candidates) {
+    try {
+      await fs.promises.access(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
+  return "gh";
+}
+
+function runCommandAsync(
+  executable: string,
+  args: string[],
+  options: { cwd?: string; timeoutMs: number; maxBuffer?: number },
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      executable,
+      args,
+      {
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+        encoding: "utf8",
+        timeout: options.timeoutMs,
+        maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
+      },
+      (error, stdout, stderr) => {
+        resolve({
+          exitCode: typeof (error as NodeJS.ErrnoException | null)?.code === "number"
+            ? Number((error as NodeJS.ErrnoException).code)
+            : error
+              ? 1
+              : 0,
+          stdout,
+          stderr: stderr || (error ? error.message : ""),
+        });
+      },
+    );
+  });
+}
+
 function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | "ghAuthError"> {
   if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
     return { token: null, ghCliPath: null, ghAuthError: null };
+  }
+  const hostsToken = readGhHostsFileToken();
+  if (hostsToken) {
+    return { token: hostsToken, ghCliPath: null, ghAuthError: null };
   }
   const ghCliPath = resolveGhCliPath();
   try {
@@ -283,10 +372,6 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
     if (token.length > 0) {
       return { token, ghCliPath, ghAuthError: null };
     }
-    const hostsToken = readGhHostsFileToken();
-    if (hostsToken) {
-      return { token: hostsToken, ghCliPath, ghAuthError: null };
-    }
     const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
     return {
       token: null,
@@ -294,10 +379,6 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
       ghAuthError: stderr || "GitHub CLI is installed, but `gh auth token` did not return a token.",
     };
   } catch (error) {
-    const hostsToken = readGhHostsFileToken();
-    if (hostsToken) {
-      return { token: hostsToken, ghCliPath, ghAuthError: null };
-    }
     return {
       token: null,
       ghCliPath: null,
@@ -306,43 +387,51 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
   }
 }
 
-function readGitOrigin(projectRoot: string): string | null {
-  try {
-    const result = spawnSync("git", ["remote", "get-url", "origin"], {
-      cwd: projectRoot,
-      encoding: "utf8",
-    });
-    if (result.error) return null;
-    const remote = typeof result.stdout === "string" ? result.stdout.trim() : "";
-    return remote.length > 0 ? remote : null;
-  } catch {
-    return null;
+async function ghAuthTokenAsync(): Promise<Pick<
+  HeadlessGitHubTokenLookup,
+  "token" | "ghCliPath" | "ghAuthError"
+>> {
+  if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
+    return { token: null, ghCliPath: null, ghAuthError: null };
   }
+  const hostsToken = await readGhHostsFileTokenAsync();
+  if (hostsToken) {
+    return { token: hostsToken, ghCliPath: null, ghAuthError: null };
+  }
+  const ghCliPath = await resolveGhCliPathAsync();
+  const result = await runCommandAsync(ghCliPath, ["auth", "token"], {
+    timeoutMs: 5_000,
+    maxBuffer: 64 * 1024,
+  });
+  const token = result.exitCode === 0 ? result.stdout.trim() : "";
+  if (token) return { token, ghCliPath, ghAuthError: null };
+  return {
+    token: null,
+    ghCliPath,
+    ghAuthError: result.stderr.trim()
+      || "GitHub CLI is installed, but `gh auth token` did not return a token.",
+  };
 }
 
-function runGitHeadless(
+async function readGitOriginAsync(projectRoot: string): Promise<string | null> {
+  const result = await runCommandAsync("git", ["remote", "get-url", "origin"], {
+    cwd: projectRoot,
+    timeoutMs: 2_000,
+    maxBuffer: 64 * 1024,
+  });
+  const remote = result.exitCode === 0 ? result.stdout.trim() : "";
+  return remote || null;
+}
+
+async function runGitHeadlessAsync(
   projectRoot: string,
   args: string[],
   timeoutMs: number,
-): { exitCode: number; stdout: string; stderr: string } {
-  try {
-    const result = spawnSync("git", args, {
-      cwd: projectRoot,
-      encoding: "utf8",
-      timeout: timeoutMs,
-    });
-    return {
-      exitCode: result.status ?? 1,
-      stdout: typeof result.stdout === "string" ? result.stdout : "",
-      stderr: typeof result.stderr === "string" ? result.stderr : "",
-    };
-  } catch (error) {
-    return {
-      exitCode: 1,
-      stdout: "",
-      stderr: error instanceof Error ? error.message : String(error),
-    };
-  }
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return await runCommandAsync("git", args, {
+    cwd: projectRoot,
+    timeoutMs,
+  });
 }
 
 function parseGitHubRepoFromRemoteUrl(
@@ -402,10 +491,10 @@ function repoIdentityFromGitHubResponse(
   };
 }
 
-function detectGitHubRepo(
+async function detectGitHubRepoAsync(
   projectRoot: string,
-): { owner: string; name: string } | null {
-  return parseGitHubRepoFromRemoteUrl(readGitOrigin(projectRoot) ?? "");
+): Promise<{ owner: string; name: string } | null> {
+  return parseGitHubRepoFromRemoteUrl(await readGitOriginAsync(projectRoot) ?? "");
 }
 
 function parseNextGitHubLink(linkHeader: string | null): string | null {
@@ -459,6 +548,17 @@ export function createHeadlessGitHubService(
   let cachedAt = 0;
   let tokenOverride: string | null = null;
   let tokenDecryptionFailed = false;
+  let statusLookupGeneration = 0;
+  let statusLookupInFlight: {
+    generation: number;
+    promise: Promise<HeadlessGitHubStatus>;
+  } | null = null;
+
+  const invalidateStatusCache = (): void => {
+    cachedStatus = null;
+    cachedAt = 0;
+    statusLookupGeneration += 1;
+  };
 
   const readStoredPatToken = (): string | null => {
     if (tokenOverride != null) return tokenOverride;
@@ -494,6 +594,47 @@ export function createHeadlessGitHubService(
       };
     }
     const gh = ghAuthToken();
+    return {
+      ...gh,
+      source: gh.token ? "gh" : "none",
+      patTokenStored: false,
+    };
+  };
+
+  const readStoredPatTokenAsync = async (): Promise<string | null> => {
+    if (tokenOverride != null) return tokenOverride;
+    try {
+      const stored = await credentialStore.get(tokenKey);
+      tokenDecryptionFailed = false;
+      if (stored?.trim()) return stored.trim();
+    } catch {
+      tokenDecryptionFailed = true;
+    }
+    return null;
+  };
+
+  const readTokenAsync = async (): Promise<HeadlessGitHubTokenLookup> => {
+    const patToken = await readStoredPatTokenAsync();
+    if (patToken) {
+      return {
+        token: patToken,
+        source: "pat",
+        patTokenStored: true,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
+    const env = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+    if (env) {
+      return {
+        token: env,
+        source: "environment",
+        patTokenStored: false,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
+    const gh = await ghAuthTokenAsync();
     return {
       ...gh,
       source: gh.token ? "gh" : "none",
@@ -607,7 +748,7 @@ export function createHeadlessGitHubService(
     body?: unknown;
     token?: string;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
-    const token = (args.token ?? getToken()).trim();
+    const token = (args.token ?? (await readTokenAsync()).token ?? "").trim();
     if (!token) {
       throw new Error(
         "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
@@ -853,154 +994,141 @@ export function createHeadlessGitHubService(
 
   service = {
     async getStatus(opts: { forceRefresh?: boolean } = {}) {
-      if (opts.forceRefresh) {
-        cachedStatus = null;
-        cachedAt = 0;
+      if (
+        opts.forceRefresh
+        && statusLookupInFlight?.generation !== statusLookupGeneration
+      ) {
+        invalidateStatusCache();
       }
       const now = Date.now();
-      const repo = detectGitHubRepo(projectRoot);
-      const hasOrigin = Boolean(readGitOrigin(projectRoot));
-      const tokenLookup = readToken();
-      if (cachedStatus && now - cachedAt < 30_000) {
-        const repoChanged =
-          (cachedStatus.repo?.owner ?? null) !== (repo?.owner ?? null) ||
-          (cachedStatus.repo?.name ?? null) !== (repo?.name ?? null);
-        const authSourceChanged =
-          cachedStatus.authSource !== tokenLookup.source ||
-          cachedStatus.patTokenStored !== tokenLookup.patTokenStored;
-        if (!authSourceChanged) {
-          const repoAccessOk = repoChanged ? null : cachedStatus.repoAccessOk;
-          const repoAccessError = repoChanged
-            ? null
-            : cachedStatus.repoAccessError;
+      if (cachedStatus && now - cachedAt < 30_000) return cachedStatus;
+      const generation = statusLookupGeneration;
+      if (statusLookupInFlight?.generation === generation) {
+        return await statusLookupInFlight.promise;
+      }
+
+      const lookup = (async (): Promise<HeadlessGitHubStatus> => {
+        const [origin, tokenLookup] = await Promise.all([
+          readGitOriginAsync(projectRoot),
+          readTokenAsync(),
+        ]);
+        const repo = parseGitHubRepoFromRemoteUrl(origin ?? "");
+        const hasOrigin = Boolean(origin);
+        const token = tokenLookup.token;
+        if (!token) {
           return {
-            ...cachedStatus,
+            tokenStored: false,
+            patTokenStored: tokenLookup.patTokenStored,
+            tokenDecryptionFailed,
+            storageScope: "app",
+            authSource: "none",
+            tokenType: "unknown",
             repo,
             hasOrigin,
-            ghCliPath: tokenLookup.ghCliPath ?? cachedStatus.ghCliPath,
+            userLogin: null,
+            scopes: [],
+            ghCliPath: tokenLookup.ghCliPath,
             ghAuthError: tokenLookup.ghAuthError,
+            checkedAt: null,
+            repoAccessOk: null,
+            repoAccessError: null,
+            connected: false,
+          };
+        }
+
+        try {
+          const validated = await validateToken(token);
+          let repoAccessOk: boolean | null = null;
+          let repoAccessError: string | null = null;
+          if (repo) {
+            const probe = await probeRepoAccess(token, repo);
+            repoAccessOk = probe.ok;
+            repoAccessError = probe.error;
+            if (!probe.ok) {
+              logger.warn("github.repo_probe_failed", {
+                repo: `${repo.owner}/${repo.name}`,
+                tokenType: validated.tokenType,
+                error: probe.error,
+              });
+            }
+          }
+          return {
+            tokenStored: true,
+            patTokenStored: tokenLookup.patTokenStored,
+            tokenDecryptionFailed: false,
+            storageScope: "app",
+            authSource: tokenLookup.source,
+            tokenType: validated.tokenType,
+            repo,
+            hasOrigin,
+            userLogin: validated.userLogin,
+            scopes: validated.scopes,
+            ghCliPath: tokenLookup.ghCliPath,
+            ghAuthError: tokenLookup.ghAuthError,
+            checkedAt: new Date(now).toISOString(),
             repoAccessOk,
             repoAccessError,
             connected: computeConnected({
-              tokenStored: cachedStatus.tokenStored,
-              userLogin: cachedStatus.userLogin,
-              tokenType: cachedStatus.tokenType,
-              scopes: cachedStatus.scopes,
+              tokenStored: true,
+              userLogin: validated.userLogin,
+              tokenType: validated.tokenType,
+              scopes: validated.scopes,
               repo,
               repoAccessOk,
             }),
           };
-        }
-      }
-      const token = tokenLookup.token;
-      if (!token) {
-        const status: HeadlessGitHubStatus = {
-          tokenStored: false,
-          patTokenStored: tokenLookup.patTokenStored,
-          tokenDecryptionFailed,
-          storageScope: "app",
-          authSource: "none",
-          tokenType: "unknown",
-          repo,
-          hasOrigin,
-          userLogin: null,
-          scopes: [],
-          ghCliPath: tokenLookup.ghCliPath,
-          ghAuthError: tokenLookup.ghAuthError,
-          checkedAt: null,
-          repoAccessOk: null,
-          repoAccessError: null,
-          connected: false,
-        };
-        cachedStatus = status;
-        cachedAt = now;
-        return status;
-      }
-
-      try {
-        const validated = await validateToken(token);
-        let repoAccessOk: boolean | null = null;
-        let repoAccessError: string | null = null;
-        if (repo) {
-          const probe = await probeRepoAccess(token, repo);
-          repoAccessOk = probe.ok;
-          repoAccessError = probe.error;
-          if (!probe.ok) {
-            logger.warn("github.repo_probe_failed", {
-              repo: `${repo.owner}/${repo.name}`,
-              tokenType: validated.tokenType,
-              error: probe.error,
-            });
-          }
-        }
-        const status: HeadlessGitHubStatus = {
-          tokenStored: true,
-          patTokenStored: tokenLookup.patTokenStored,
-          tokenDecryptionFailed: false,
-          storageScope: "app",
-          authSource: tokenLookup.source,
-          tokenType: validated.tokenType,
-          repo,
-          hasOrigin,
-          userLogin: validated.userLogin,
-          scopes: validated.scopes,
-          ghCliPath: tokenLookup.ghCliPath,
-          ghAuthError: tokenLookup.ghAuthError,
-          checkedAt: new Date(now).toISOString(),
-          repoAccessOk,
-          repoAccessError,
-          connected: computeConnected({
+        } catch (error) {
+          logger.warn("github.token_validation_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return {
             tokenStored: true,
-            userLogin: validated.userLogin,
-            tokenType: validated.tokenType,
-            scopes: validated.scopes,
+            patTokenStored: tokenLookup.patTokenStored,
+            tokenDecryptionFailed: false,
+            storageScope: "app",
+            authSource: tokenLookup.source,
+            tokenType: getTokenType(token),
             repo,
-            repoAccessOk,
-          }),
-        };
-        cachedStatus = status;
-        cachedAt = now;
+            hasOrigin,
+            userLogin: null,
+            scopes: [],
+            ghCliPath: tokenLookup.ghCliPath,
+            ghAuthError: tokenLookup.ghAuthError,
+            checkedAt: new Date(now).toISOString(),
+            repoAccessOk: null,
+            repoAccessError: null,
+            connected: false,
+          };
+        }
+      })();
+      statusLookupInFlight = { generation, promise: lookup };
+      try {
+        const status = await lookup;
+        if (statusLookupGeneration === generation) {
+          cachedStatus = status;
+          cachedAt = Date.now();
+        }
         return status;
-      } catch (error) {
-        logger.warn("github.token_validation_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        const status: HeadlessGitHubStatus = {
-          tokenStored: true,
-          patTokenStored: tokenLookup.patTokenStored,
-          tokenDecryptionFailed: false,
-          storageScope: "app",
-          authSource: tokenLookup.source,
-          tokenType: getTokenType(token),
-          repo,
-          hasOrigin,
-          userLogin: null,
-          scopes: [],
-          ghCliPath: tokenLookup.ghCliPath,
-          ghAuthError: tokenLookup.ghAuthError,
-          checkedAt: new Date(now).toISOString(),
-          repoAccessOk: null,
-          repoAccessError: null,
-          connected: false,
-        };
-        cachedStatus = status;
-        cachedAt = now;
-        return status;
+      } finally {
+        if (statusLookupInFlight?.promise === lookup) {
+          statusLookupInFlight = null;
+        }
       }
     },
     async getRemoteStatus() {
+      const origin = await readGitOriginAsync(projectRoot);
       return {
-        repo: detectGitHubRepo(projectRoot),
-        hasOrigin: Boolean(readGitOrigin(projectRoot)),
+        repo: parseGitHubRepoFromRemoteUrl(origin ?? ""),
+        hasOrigin: Boolean(origin),
       };
     },
     async detectRepo() {
-      return detectGitHubRepo(projectRoot);
+      return await detectGitHubRepoAsync(projectRoot);
     },
     async getAppInstallationStatus(args = {}) {
       const owner = args.owner?.trim();
       const name = args.name?.trim();
-      const repo = owner && name ? { owner, name } : detectGitHubRepo(projectRoot);
+      const repo = owner && name ? { owner, name } : await detectGitHubRepoAsync(projectRoot);
       const githubAppUserToken = await appUserAuth.getValidTokenForRelay().catch(() => null);
       const accountAccessToken = options.getAccountAccessToken
         ? await options.getAccountAccessToken().catch(() => null)
@@ -1027,7 +1155,7 @@ export function createHeadlessGitHubService(
       return appUserAuth.clearAuth();
     },
     async getRepoOrThrow() {
-      const repo = detectGitHubRepo(projectRoot);
+      const repo = await detectGitHubRepoAsync(projectRoot);
       if (!repo)
         throw new Error(
           "Unable to detect GitHub repo from git remote 'origin'.",
@@ -1043,7 +1171,13 @@ export function createHeadlessGitHubService(
       return token;
     },
     async getTokenOrThrowAsync() {
-      return service.getTokenOrThrow();
+      const token = (await readTokenAsync()).token ?? "";
+      if (!token) {
+        throw new Error(
+          "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
+        );
+      }
+      return token;
     },
     async getAppUserTokenForRelay() {
       return await appUserAuth.getValidTokenForRelay();
@@ -1059,16 +1193,14 @@ export function createHeadlessGitHubService(
         credentialStore.deleteSync(tokenKey);
       }
       tokenDecryptionFailed = false;
-      cachedStatus = null;
-      cachedAt = 0;
+      invalidateStatusCache();
       emitStatusChanged();
     },
     clearToken() {
       tokenOverride = null;
       credentialStore.deleteSync(tokenKey);
       tokenDecryptionFailed = false;
-      cachedStatus = null;
-      cachedAt = 0;
+      invalidateStatusCache();
       emitStatusChanged();
     },
     apiRequest,
@@ -1135,7 +1267,7 @@ export function createHeadlessGitHubService(
     listRepoPulls,
     listPullRequestReviews,
     async publishCurrentProject(args) {
-      const token = getToken();
+      const token = (await readTokenAsync()).token ?? "";
       if (!token) {
         const err = new Error(
           "GitHub is not connected. Run `gh auth login -h github.com -s repo -s workflow` or add a PAT in Settings.",
@@ -1144,7 +1276,7 @@ export function createHeadlessGitHubService(
         throw err;
       }
 
-      const existingRemote = runGitHeadless(
+      const existingRemote = await runGitHeadlessAsync(
         projectRoot,
         ["remote", "get-url", "origin"],
         8_000,
@@ -1208,36 +1340,36 @@ export function createHeadlessGitHubService(
         };
       }
 
-      const cleanupLocalOrigin = (): void => {
-        runGitHeadless(projectRoot, ["remote", "remove", "origin"], 8_000);
+      const cleanupLocalOrigin = async (): Promise<void> => {
+        await runGitHeadlessAsync(projectRoot, ["remote", "remove", "origin"], 8_000);
       };
 
-      const remoteAddRes = runGitHeadless(
+      const remoteAddRes = await runGitHeadlessAsync(
         projectRoot,
         ["remote", "add", "origin", created.cloneUrl],
         8_000,
       );
       if (remoteAddRes.exitCode !== 0) {
-        cleanupLocalOrigin();
+        await cleanupLocalOrigin();
         throw new Error(
           `Failed to add origin remote: ${remoteAddRes.stderr.trim() || `exit ${remoteAddRes.exitCode}`}`,
         );
       }
 
-      const headRes = runGitHeadless(
+      const headRes = await runGitHeadlessAsync(
         projectRoot,
         ["rev-parse", "--verify", "HEAD"],
         5_000,
       );
       let resultState: "pushed" | "remote_added";
       if (headRes.exitCode === 0) {
-        const pushRes = runGitHeadless(
+        const pushRes = await runGitHeadlessAsync(
           projectRoot,
           ["push", "-u", "origin", "HEAD"],
           5 * 60_000,
         );
         if (pushRes.exitCode !== 0) {
-          cleanupLocalOrigin();
+          await cleanupLocalOrigin();
           throw new Error(
             `Failed to push to origin: ${pushRes.stderr.trim() || `exit ${pushRes.exitCode}`}`,
           );
@@ -1247,8 +1379,7 @@ export function createHeadlessGitHubService(
         resultState = "remote_added";
       }
 
-      cachedStatus = null;
-      cachedAt = 0;
+      invalidateStatusCache();
 
       return {
         state: resultState,
@@ -1809,6 +1940,64 @@ function createHeadlessAgentChatService(
           source.length > entries.length ||
           entries.some((entry) => entry.text.length >= safeMaxChars),
         totalEntries: source.length,
+      };
+    },
+    async getChatTranscriptPage({
+      sessionId,
+      beforeOffset,
+      limit,
+      maxChars,
+      signal,
+    }: {
+      sessionId: string;
+      beforeOffset?: number;
+      limit?: number;
+      maxChars?: number;
+      signal?: AbortSignal;
+    }) {
+      signal?.throwIfAborted();
+      const source = ensureTranscript(sessionId.trim());
+      const safeLimit = Math.max(1, Math.min(1_000, Math.floor(limit ?? 200)));
+      const safeMaxChars = Math.max(
+        200,
+        Math.min(2_000_000, Math.floor(maxChars ?? 600_000)),
+      );
+      const end = Math.max(
+        0,
+        Math.min(
+          source.length,
+          typeof beforeOffset === "number" && Number.isFinite(beforeOffset)
+            ? Math.floor(beforeOffset)
+            : source.length,
+        ),
+      );
+      const byLimit = source.slice(Math.max(0, end - safeLimit), end);
+      const newestFirst: typeof byLimit = [];
+      let remainingChars = safeMaxChars;
+      let contentTruncated = false;
+      for (let index = byLimit.length - 1; index >= 0; index -= 1) {
+        signal?.throwIfAborted();
+        const entry = byLimit[index]!;
+        if (remainingChars <= 0) {
+          contentTruncated = true;
+          break;
+        }
+        if (entry.text.length > remainingChars) contentTruncated = true;
+        newestFirst.push({
+          ...entry,
+          text: clipText(entry.text, remainingChars),
+        });
+        remainingChars -= Math.min(entry.text.length, remainingChars);
+      }
+      const entries = newestFirst.reverse();
+      const nextCursor = end - entries.length;
+      return {
+        sessionId,
+        entries,
+        truncated: nextCursor > 0 || contentTruncated || entries.length < byLimit.length,
+        totalEntries: source.length,
+        nextCursor: nextCursor > 0 ? nextCursor : null,
+        cursorKind: "index" as const,
       };
     },
     async previewSessionToolNames() {

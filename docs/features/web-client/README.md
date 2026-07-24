@@ -645,6 +645,44 @@ coalesced `prs.getMobileSnapshot` and derives the list views from it, and a
 empty-list marker. These caches are freshness hints over the authoritative
 relay reads, not a persisted store.
 
+A transport transition is not a blanket domain refresh. In particular, the
+adapter emits sync status without directly calling `github.getStatus`, because
+headless GitHub discovery can touch git, the GitHub CLI, credential files, and
+macOS Keychain. On a GitHub-relevant route, the shell consumes each transition
+to `connected` once and schedules a forced status read after 750 ms; later route
+changes keep the normal 12/30-second policy. The headless implementation uses
+asynchronous child processes and credential/file I/O with hard timeouts and
+coalesces concurrent status reads, so even an explicit refresh cannot block the
+brain's WebSocket event loop.
+
+Chat opens hydrate a 128 KiB recent tail and keep a byte cursor for older
+history. Older pages are capped to 256 KiB per request and read with
+asynchronous filesystem/zlib APIs on the runtime. Large gzip archives stream
+through one globally admitted inflater; during rapid chat switching, only the
+active inflate and newest queued destination survive. Archives below 4 MiB may enter a
+16 MiB memory cache; larger archives materialize at most once into an unlinked,
+process-private temporary file with a 256 MiB logical-size ceiling and bounded
+LRU plus a temporary-volume free-space guard, so every older page becomes a
+random-access disk read instead of another full inflate. Disconnecting or
+replacing a request aborts the queued/read/inflate work. Legacy
+`chat.getTranscript` pagination now returns the same append-stable logical byte
+cursor (`cursorKind: "byte"`) instead of deriving an index from a bounded tail.
+The transcript viewport uses a top sentinel plus an underfill
+check, so a short tail keeps loading until the viewport is scrollable (or the
+transcript head is reached) without requiring a synthetic scroll event.
+Failures preserve the cursor and expose a stable Retry control instead of
+treating a missing descriptor or transient disconnect as the end of history.
+The scrollbar stays visible, live appends follow only while the reader is
+already at the bottom, and ADE's explicit prepend anchor disables native CSS
+scroll anchoring to prevent double compensation.
+
+The host also places a per-session hydration barrier before it captures a
+`chat_subscribe` snapshot. The live broadcast and transcript pump remain behind
+that barrier until the acknowledgement is sent, then resume from the byte
+offset captured before the snapshot began. An event appended during a slow
+snapshot is therefore delivered after the acknowledgement—never before it and
+never lost; overlap is removed by the normal delivery-key dedupe.
+
 Incoming `invalidation_batch` envelopes already contain only table names and
 database-version bounds; `connection.ts` validates their table-count and name
 limits before emitting them. `createInvalidationScheduler` maps those names to

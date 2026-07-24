@@ -1,8 +1,8 @@
 /* @vitest-environment jsdom */
 
 import type { ReactNode } from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
@@ -18,7 +18,11 @@ vi.mock("./CommandPalette", () => ({
 }));
 
 vi.mock("./TabNav", () => ({
-  TabNav: () => <nav data-testid="tab-nav" />,
+  TabNav: ({ githubStatus }: { githubStatus: unknown }) => (
+    <nav data-testid="tab-nav">
+      <span data-testid="github-status">{githubStatus ? JSON.stringify(githubStatus) : "none"}</span>
+    </nav>
+  ),
 }));
 
 vi.mock("./TopBar", () => ({
@@ -98,6 +102,8 @@ describe("AppShell AI provider status", () => {
   const githubGetStatusMock = vi.fn();
   const analyticsCaptureMock = vi.fn();
   const chatEventListeners = new Set<(envelope: AgentChatEventEnvelope) => void>();
+  const syncEventListeners = new Set<(event: any) => void>();
+  const syncGetStatusMock = vi.fn();
   let sessionChangedListener: (() => void) | null = null;
   const emitChatEvent = (envelope: AgentChatEventEnvelope) => {
     for (const listener of chatEventListeners) listener(envelope);
@@ -110,13 +116,16 @@ describe("AppShell AI provider status", () => {
     invalidateAiDiscoveryCache();
     getStatusMock.mockReset();
     githubGetStatusMock.mockReset();
+    syncGetStatusMock.mockReset();
     analyticsCaptureMock.mockReset();
     analyticsCaptureMock.mockResolvedValue({ accepted: true, reason: "accepted" });
     vi.mocked(listSessionsCached).mockClear();
     vi.mocked(listSessionsCached).mockResolvedValue([]);
     vi.mocked(invalidateSessionListCache).mockClear();
     githubGetStatusMock.mockResolvedValue(null);
+    syncGetStatusMock.mockResolvedValue({ client: { state: "disconnected" } });
     chatEventListeners.clear();
+    syncEventListeners.clear();
     sessionChangedListener = null;
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -188,7 +197,13 @@ describe("AppShell AI provider status", () => {
           }),
         },
         sync: {
-          onEvent: vi.fn(() => () => {}),
+          getStatus: syncGetStatusMock,
+          onEvent: vi.fn((listener: (event: any) => void) => {
+            syncEventListeners.add(listener);
+            return () => {
+              syncEventListeners.delete(listener);
+            };
+          }),
         },
         zoom: {
           setLevel: vi.fn(),
@@ -675,6 +690,129 @@ describe("AppShell AI provider status", () => {
     });
 
     expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("forces one fast GitHub refresh after reconnect without changing later route delays", async () => {
+    getStatusMock.mockResolvedValue(makeAiStatus(true));
+    const remoteBinding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      projectId: "project-1",
+      runtimeName: "Mac Studio",
+      displayName: "perf pass",
+      rootPath: "/Users/admin/Projects/perf pass",
+    } as any;
+    (window.ade.app.getWindowSession as any).mockResolvedValue({
+      project: {
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+        baseRef: "main",
+      },
+      binding: remoteBinding,
+    });
+    useAppStore.setState({
+      project,
+      projectBinding: remoteBinding,
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+    const NavigateWithinPrs = () => {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate("/prs/queue")}>Open queue</button>;
+    };
+
+    render(
+      <MemoryRouter initialEntries={["/prs"]}>
+        <AppShell>
+          <NavigateWithinPrs />
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      for (const listener of syncEventListeners) {
+        listener({
+          type: "sync-status",
+          snapshot: { client: { state: "connected" } },
+        });
+      }
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+      await Promise.resolve();
+    });
+
+    expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
+    expect(githubGetStatusMock).toHaveBeenLastCalledWith({ forceRefresh: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "Open queue" }));
+    await act(async () => {
+      vi.advanceTimersByTime(11_999);
+      await Promise.resolve();
+    });
+    expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(githubGetStatusMock).toHaveBeenCalledTimes(2);
+    expect(githubGetStatusMock).toHaveBeenLastCalledWith({ forceRefresh: false });
+  });
+
+  it("does not let a failed reconnect refresh clear a newer route status", async () => {
+    getStatusMock.mockResolvedValue(makeAiStatus(true));
+    useAppStore.setState({
+      project,
+      projectBinding: null,
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+    let rejectReconnect: ((error: Error) => void) | null = null;
+    githubGetStatusMock
+      .mockImplementationOnce(() => new Promise((_, reject) => {
+        rejectReconnect = reject;
+      }))
+      .mockResolvedValue({ authenticated: true, source: "new-route" } as any);
+    const NavigateWithinPrs = () => {
+      const navigate = useNavigate();
+      return <button onClick={() => navigate("/prs/queue")}>Open queue</button>;
+    };
+    render(
+      <MemoryRouter initialEntries={["/prs"]}>
+        <AppShell>
+          <NavigateWithinPrs />
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      for (const listener of syncEventListeners) {
+        listener({
+          type: "sync-status",
+          snapshot: { client: { state: "connected" } },
+        });
+      }
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open queue" }));
+    await act(async () => {
+      vi.advanceTimersByTime(12_000);
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("github-status").textContent).toContain("new-route");
+
+    await act(async () => {
+      rejectReconnect?.(new Error("stale reconnect failure"));
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId("github-status").textContent).toContain("new-route");
   });
 
   it("skips remote shell AI and stale-session polling on Files routes", async () => {

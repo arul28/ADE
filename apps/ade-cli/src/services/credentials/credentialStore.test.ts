@@ -196,6 +196,62 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(unbound.getSync("linear.token.v1")).toBeNull();
   });
 
+  it("uses the asynchronous key-material path for asynchronous reads", async () => {
+    const osMaterial = Buffer.from("test-os-material");
+    new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => osMaterial,
+    }).setSync("github.token.v1", "ghp_async_read");
+    const syncProvider = vi.fn(() => {
+      throw new Error("synchronous keychain access must not run");
+    });
+    const asyncProvider = vi.fn(async () => osMaterial);
+    const reader = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: syncProvider,
+      keyMaterialProviderAsync: asyncProvider,
+    });
+
+    await expect(reader.get("github.token.v1")).resolves.toBe("ghp_async_read");
+    expect(asyncProvider).toHaveBeenCalledTimes(1);
+    expect(syncProvider).not.toHaveBeenCalled();
+  });
+
+  it("does not touch key material when an asynchronous credential store is empty", async () => {
+    const syncProvider = vi.fn(() => {
+      throw new Error("synchronous keychain access must not run");
+    });
+    const asyncProvider = vi.fn(async () => {
+      throw new Error("asynchronous keychain access must not run");
+    });
+    const reader = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: syncProvider,
+      keyMaterialProviderAsync: asyncProvider,
+    });
+
+    await expect(reader.get("github.token.v1")).resolves.toBeNull();
+    expect(asyncProvider).not.toHaveBeenCalled();
+    expect(syncProvider).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
+  });
+
+  it.each(["{}", "null"])("fails closed on an existing invalid async credential store: %s", async (raw) => {
+    const credentialPath = path.join(tempDir, "credentials.json.enc");
+    fs.writeFileSync(credentialPath, raw, "utf8");
+    const asyncProvider = vi.fn(async () => Buffer.from("unused"));
+    const reader = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProviderAsync: asyncProvider,
+    });
+
+    await expect(reader.get("github.token.v1")).rejects.toThrow(
+      "Unsupported ADE credential store format.",
+    );
+    expect(reader.getLastReadState()).toBe("unreadable");
+    expect(asyncProvider).not.toHaveBeenCalled();
+  });
+
   it("can read legacy machine-key ciphertext before rewriting with OS-bound key material", async () => {
     const legacy = new EncryptedFileCredentialStore({
       secretsDir: tempDir,

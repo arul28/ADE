@@ -20,7 +20,7 @@ import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { DiskPressureMonitor } from "../storage/diskPressure";
-import { readHistoryFileSync, reinflateHistoryFileSync } from "../storage/historyCompression";
+import { readHistoryFileSync, reinflateHistoryFile } from "../storage/historyCompression";
 import { writeFileAtomic } from "../state/durableFile";
 import {
   resolveCodexComputerUseMcpConfig,
@@ -4241,9 +4241,7 @@ export function createPtyService({
         try {
           fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
           await restoreInterruptedTranscriptReplacement(transcriptPath);
-          reinflateHistoryFileSync(transcriptPath, (targetPath, data) => {
-            writeFileAtomic(targetPath, data, { fsync: true });
-          });
+          await reinflateHistoryFile(transcriptPath);
           try {
             transcriptRetainedBytes = fs.existsSync(transcriptPath) ? fs.statSync(transcriptPath).size : 0;
             const rolloverState = loadTranscriptRolloverStateSync(transcriptPath, transcriptRetainedBytes);

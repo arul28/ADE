@@ -133,6 +133,32 @@ Measured Work run:
 
 Keep the unavailable sync snapshot in `apps/desktop/src/main/services/ipc/registerIpc.ts`. It is a perf-mode/status fallback, not a replacement for real sync service behavior.
 
+### A web transport connect must not launch domain work
+
+The hosted web client's socket `connected` transition is a transport fact, not
+permission to refresh every product domain. Keep the adapter connect listener
+limited to sync status. Do not add `github.getStatus` there: headless GitHub
+discovery may touch git, `gh`, credential files, macOS Keychain, and the
+network. Domain surfaces should request their own cached status when visible.
+
+Brain-facing transcript and credential reads must use asynchronous filesystem,
+zlib, and child-process APIs with hard bounds/timeouts. Coalesce same-key
+in-flight work. Do not promise-read and then repeatedly inflate a large gzip
+archive: globally admit streaming inflations, memory-cache only small archives,
+and materialize a larger archive at most once into an unlinked, process-private
+temporary file under a hard logical-size/LRU/free-space budget. Admit only one
+inflate at a time and retain only the newest queued destination. Thread request
+cancellation through admission, file reads, and the inflater. Put a hydration
+barrier around `chat_subscribe`: capture the logical byte offset before the
+snapshot, do not broadcast/pump that session before its ack, then replay from
+the captured offset. For web chat, keep the initial
+tail small, cap older pages at 256 KiB, preserve the cursor on transient
+failures, automatically backfill an underfilled viewport, and keep a visible
+manual Retry path. Use append-stable logical byte cursors for transcript paging
+and advertise `cursorKind` when a legacy consumer could otherwise interpret the
+number as a dense entry index. The chat list owns prepend/bottom anchoring, so keep
+`overflow-anchor: none` on its scroll pane.
+
 ### Work tools pane must remain operable when narrow
 
 The Work tools pane can be narrow after the session list, chat surface, and tools pane are all visible. Do not assume all tab labels fit. The tab strip should collapse to icon buttons under narrow widths while preserving `aria-label`, tooltips, and stable hit targets.

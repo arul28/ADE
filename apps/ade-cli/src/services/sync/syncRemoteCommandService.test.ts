@@ -128,6 +128,7 @@ describe("createSyncRemoteCommandService", () => {
       "chat.getChatEventHistory",
       "chat.getTranscript",
       "chat.getSubagentTranscript",
+      "chat.listSubagents",
       "chat.getMainTranscript",
       "chat.getChatEventHistoryPage",
       "agentChat.getEventHistoryPage",
@@ -202,17 +203,95 @@ describe("createSyncRemoteCommandService", () => {
   });
 
   it("stops waiting for transcript pulls when the execution signal aborts", async () => {
-    const getChatTranscript = vi.fn(() => new Promise<never>(() => {}));
+    const getChatTranscriptPage = vi.fn(() => new Promise<never>(() => {}));
     const { service } = createService({
-      agentChatService: { getChatTranscript },
+      agentChatService: { getChatTranscriptPage },
     });
     const controller = new AbortController();
     const pending = service.execute(
-      makePayload("chat.getTranscript", { sessionId: "chat-1" }),
+      makePayload("chat.getTranscript", { sessionId: "chat-1", cursorKind: "byte" }),
       { signal: controller.signal },
     );
     controller.abort(new Error("peer closed"));
     await expect(pending).rejects.toThrow("peer closed");
+    expect(getChatTranscriptPage).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: "chat-1",
+      signal: controller.signal,
+    }));
+  });
+
+  it("serializes stable byte cursors from bounded transcript pages", async () => {
+    const getChatTranscriptPage = vi.fn().mockResolvedValue({
+      sessionId: "chat-1",
+      entries: [{ role: "user", text: "older", timestamp: "2026-07-24T10:00:00.000Z" }],
+      truncated: true,
+      totalEntries: 1,
+      nextCursor: 320_000,
+      cursorKind: "byte",
+    });
+    const { service } = createService({
+      agentChatService: { getChatTranscriptPage },
+    });
+
+    await expect(service.execute(makePayload("chat.getTranscript", {
+      sessionId: "chat-1",
+      cursor: "400000",
+      cursorKind: "byte",
+      limit: 20,
+      maxChars: 50_000,
+    }))).resolves.toMatchObject({
+      nextCursor: "320000",
+      cursorKind: "byte",
+    });
+    expect(getChatTranscriptPage).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      beforeOffset: 400_000,
+      limit: 20,
+      maxChars: 50_000,
+    });
+  });
+
+  it("keeps dense index cursors for clients that do not opt into byte paging", async () => {
+    const getChatTranscript = vi.fn().mockResolvedValue({
+      sessionId: "chat-1",
+      entries: [{ role: "user", text: "tail", timestamp: "2026-07-24T10:00:00.000Z" }],
+      truncated: true,
+      totalEntries: 5,
+    });
+    const getChatTranscriptPage = vi.fn();
+    const { service } = createService({
+      agentChatService: { getChatTranscript, getChatTranscriptPage },
+    });
+
+    await expect(service.execute(makePayload("chat.getTranscript", {
+      sessionId: "chat-1",
+      limit: 20,
+      maxChars: 50_000,
+    }))).resolves.toMatchObject({
+      totalEntries: 5,
+      nextCursor: "4",
+    });
+    expect(getChatTranscriptPage).not.toHaveBeenCalled();
+  });
+
+  it("propagates abort signals into personal transcript history reads", async () => {
+    const call = vi.fn(() => new Promise<never>(() => {}));
+    const { service } = createService({
+      personalChatScope: { call },
+    });
+    const controller = new AbortController();
+    const pending = service.execute(
+      makePayload("personalChats.getEventHistory", { sessionId: "personal-1" }),
+      { signal: controller.signal },
+    );
+    controller.abort(new Error("viewer changed chats"));
+
+    await expect(pending).rejects.toThrow("viewer changed chats");
+    expect(call).toHaveBeenCalledWith(
+      "getEventHistory",
+      { sessionId: "personal-1" },
+      controller.signal,
+    );
   });
 
   it("forwards bounded GitHub history pagination for mobile PR lists", async () => {

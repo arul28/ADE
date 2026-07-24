@@ -19,6 +19,7 @@ import { chatEventDedupKey } from "./infra/chatEventDedup";
 const WEB_CHAT_INITIAL_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const WEB_CHAT_INITIAL_HISTORY_MAX_EVENTS = 512;
 const WEB_CHAT_INITIAL_HISTORY_MAX_BYTES = 128 * 1024;
+const WEB_CHAT_HISTORY_PAGE_MAX_BYTES = 256 * 1024;
 const WEB_CHAT_PROJECT_SUBSCRIPTION_LIMIT = 8;
 
 export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"agentChat"> {
@@ -119,6 +120,15 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         throw new Error(`Scheduled work action '${action}' is unavailable on the connected ADE host.`);
       },
       idempotent: false,
+    });
+  }
+
+  function callRequiredRead<T>(action: string, args: unknown): Promise<T> {
+    return commands.call<T>(action, asRecord(args), {
+      fallback: () => {
+        throw new Error(`Chat history action '${action}' is unavailable on the connected ADE host.`);
+      },
+      idempotent: true,
     });
   }
 
@@ -295,14 +305,14 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     getEventHistoryPage: async (args: unknown) => {
       const record = asRecord(args);
       ensureChatSubscription(stringField(record, "sessionId"), { visible: true });
-      return await call(
+      return await callRequiredRead(
         "chat.getChatEventHistoryPage",
-        args,
         {
-          sessionId: stringField(record, "sessionId"),
-          events: [],
-          nextBeforeOffset: null,
-          hasMore: false,
+          ...record,
+          maxBytes: boundedPositiveInteger(
+            record.maxBytes,
+            WEB_CHAT_HISTORY_PAGE_MAX_BYTES,
+          ),
         }
       );
     },

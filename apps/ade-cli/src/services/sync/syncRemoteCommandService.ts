@@ -2412,12 +2412,14 @@ function parseGetTranscriptArgs(value: Record<string, unknown>): {
   limit?: number;
   maxChars?: number;
   cursor?: number;
+  cursorKind?: "byte";
 } {
   return {
     sessionId: requireString(value.sessionId, "chat.getTranscript requires sessionId."),
     limit: asOptionalNumber(value.limit),
     maxChars: asOptionalNumber(value.maxChars),
     cursor: parseTranscriptCursor(value.cursor),
+    ...(value.cursorKind === "byte" ? { cursorKind: "byte" as const } : {}),
   };
 }
 
@@ -2454,11 +2456,9 @@ function parseAgentChatSubagentListArgs(value: Record<string, unknown>): AgentCh
   };
 }
 
-// Pagination cursor for chat.getTranscript. The cursor is the index (within
-// the session's full, append-only entry list) of the oldest entry returned by
-// the previous page; a request with `cursor` returns the page strictly BEFORE
-// that index. Serialized as a string on the wire so clients can treat it as
-// opaque, but numbers are accepted too.
+// Pagination cursor for chat.getTranscript. New hosts use the logical JSONL
+// byte offset of the oldest entry returned. Offsets remain stable while the
+// append-only transcript grows and avoid parsing the full transcript.
 function parseTranscriptCursor(value: unknown): number | undefined {
   const parsed = typeof value === "string" && value.trim().length ? Number(value) : value;
   if (typeof parsed !== "number" || !Number.isFinite(parsed)) return undefined;
@@ -2471,10 +2471,6 @@ const TRANSCRIPT_PAGE_MAX_LIMIT = 1_000;
 const TRANSCRIPT_PAGE_DEFAULT_MAX_CHARS = 600_000;
 const TRANSCRIPT_PAGE_MAX_CHARS = 2_000_000;
 
-// Mirror agentChatService.getChatTranscript's char-bounding: walk the page
-// from newest to oldest, keep whole entries while budget remains, and trim
-// the boundary entry's text. Returns a suffix of `page` (oldest entries are
-// the ones dropped) so cursor arithmetic stays index-stable.
 function boundTranscriptEntriesByChars(
   page: AgentChatTranscriptEntry[],
   maxChars: number,
@@ -2495,7 +2491,9 @@ function boundTranscriptEntriesByChars(
     }
     bounded.push({
       ...entry,
-      text: remainingChars > 3 ? `${entry.text.slice(0, remainingChars - 3).trimEnd()}...` : entry.text.slice(0, remainingChars),
+      text: remainingChars > 3
+        ? `${entry.text.slice(0, remainingChars - 3).trimEnd()}...`
+        : entry.text.slice(0, remainingChars),
     });
     truncated = true;
     break;
@@ -4067,7 +4065,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       paused,
     });
   });
-  register("chat.getChatEventHistory", { viewerAllowed: true, observesAbort: true }, async (payload): Promise<AgentChatEventHistorySnapshot> => {
+  register("chat.getChatEventHistory", { viewerAllowed: true, observesAbort: true }, async (payload, context): Promise<AgentChatEventHistorySnapshot> => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistory requires sessionId.");
     const maxEvents = asOptionalNumber(payload.maxEvents);
@@ -4075,58 +4073,83 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const options = {
       ...(maxEvents != null ? { maxEvents } : {}),
       ...(maxBytes != null ? { maxBytes } : {}),
+      ...(context.signal ? { signal: context.signal } : {}),
     };
-    return agentChatService.getChatEventHistory(
-      sessionId,
-      Object.keys(options).length > 0 ? options : undefined,
-    );
+    const historyOptions = Object.keys(options).length > 0 ? options : undefined;
+    return await agentChatService.getChatEventHistory(sessionId, historyOptions);
   });
-  register("chat.getTranscript", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+  register("chat.getTranscript", { viewerAllowed: true, observesAbort: true }, async (payload, context) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseGetTranscriptArgs(payload);
-
-    if (parsed.cursor == null) {
-      // Tail page (today's behavior) + nextCursor so clients can walk back.
-      const result = await agentChatService.getChatTranscript(parsed);
-      const oldestReturnedIndex = result.totalEntries - result.entries.length;
-      return {
-        ...result,
-        nextCursor: oldestReturnedIndex > 0 ? String(oldestReturnedIndex) : null,
-      };
-    }
-
-    // Cursor page: entries strictly BEFORE the cursor index. The transcript
-    // is append-only, so indices are stable across pages even while the
-    // session keeps streaming new entries at the tail.
     const limit = Math.max(1, Math.min(TRANSCRIPT_PAGE_MAX_LIMIT, Math.floor(parsed.limit ?? TRANSCRIPT_PAGE_DEFAULT_LIMIT)));
     const maxChars = Math.max(200, Math.min(TRANSCRIPT_PAGE_MAX_CHARS, Math.floor(parsed.maxChars ?? TRANSCRIPT_PAGE_DEFAULT_MAX_CHARS)));
-    const allEntries = await agentChatService.readTranscript(parsed.sessionId);
-    const end = Math.max(0, Math.min(parsed.cursor, allEntries.length));
-    const start = Math.max(0, end - limit);
-    const { entries, truncated } = boundTranscriptEntriesByChars(allEntries.slice(start, end), maxChars);
-    const oldestReturnedIndex = end - entries.length;
-    const hasMore = oldestReturnedIndex > 0 && entries.length > 0;
-    return {
+    if (parsed.cursorKind !== "byte") {
+      if (parsed.cursor == null) {
+        const result = await agentChatService.getChatTranscript({
+          sessionId: parsed.sessionId,
+          limit,
+          maxChars,
+          ...(context.signal ? { signal: context.signal } : {}),
+        });
+        const oldestReturnedIndex = result.totalEntries - result.entries.length;
+        return {
+          ...result,
+          nextCursor: oldestReturnedIndex > 0 ? String(oldestReturnedIndex) : null,
+        };
+      }
+      const allEntries = await agentChatService.readTranscript(
+        parsed.sessionId,
+        undefined,
+        undefined,
+        context.signal,
+      );
+      const end = Math.max(0, Math.min(parsed.cursor, allEntries.length));
+      const start = Math.max(0, end - limit);
+      const { entries, truncated } = boundTranscriptEntriesByChars(allEntries.slice(start, end), maxChars);
+      const oldestReturnedIndex = end - entries.length;
+      const hasMore = oldestReturnedIndex > 0 && entries.length > 0;
+      return {
+        sessionId: parsed.sessionId,
+        entries,
+        truncated: truncated || hasMore,
+        totalEntries: allEntries.length,
+        nextCursor: hasMore ? String(oldestReturnedIndex) : null,
+      };
+    }
+    const page = await agentChatService.getChatTranscriptPage({
       sessionId: parsed.sessionId,
-      entries,
-      truncated: truncated || hasMore,
-      totalEntries: allEntries.length,
-      nextCursor: hasMore ? String(oldestReturnedIndex) : null,
+      ...(parsed.cursor != null ? { beforeOffset: parsed.cursor } : {}),
+      limit,
+      maxChars,
+      ...(context.signal ? { signal: context.signal } : {}),
+    });
+    return {
+      ...page,
+      nextCursor: page.nextCursor == null ? null : String(page.nextCursor),
     };
   });
-  register("chat.getSubagentTranscript", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").getSubagentTranscript(
-      parseAgentChatSubagentTranscriptArgs(payload),
-    ));
+  register("chat.getSubagentTranscript", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload, context) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const parsed = parseAgentChatSubagentTranscriptArgs(payload);
+    return context.signal
+      ? agentChatService.getSubagentTranscript(parsed, context.signal)
+      : agentChatService.getSubagentTranscript(parsed);
+  });
   register("chat.getMainTranscript", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getMainTranscript(
       parseAgentChatMainTranscriptArgs(payload),
     ));
-  register("chat.listSubagents", { viewerAllowed: true, queueable: false }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").listSubagents(
-      parseAgentChatSubagentListArgs(payload),
-    ));
-  const getChatEventHistoryPage = async (payload: Record<string, unknown>) => {
+  register("chat.listSubagents", { viewerAllowed: true, queueable: false, observesAbort: true }, async (payload, context) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const parsed = parseAgentChatSubagentListArgs(payload);
+    return context.signal
+      ? agentChatService.listSubagents(parsed, context.signal)
+      : agentChatService.listSubagents(parsed);
+  });
+  const getChatEventHistoryPage = async (
+    payload: Record<string, unknown>,
+    context: SyncRemoteCommandExecutionContext,
+  ) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const sessionId = requireString(payload.sessionId, "chat.getChatEventHistoryPage requires sessionId.");
     const beforeOffset = typeof payload.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
@@ -4135,9 +4158,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes) && payload.maxBytes > 0
       ? payload.maxBytes
       : undefined;
-    return agentChatService.getChatEventHistoryPage(sessionId, {
+    return await agentChatService.getChatEventHistoryPage(sessionId, {
       beforeOffset,
       ...(maxBytes != null ? { maxBytes } : {}),
+      ...(context.signal ? { signal: context.signal } : {}),
     });
   };
   // Byte-offset transcript pagination for chat event envelopes (scroll-back
@@ -4234,13 +4258,23 @@ function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandReg
   const scope = args.personalChatScope;
   if (!scope) return;
   for (const action of PERSONAL_CHAT_ACTIONS) {
+    const observesAbort = action === "read"
+      || action === "getEventHistory"
+      || action === "getEventHistoryPage";
     register(
       `personalChats.${action}`,
       {
         viewerAllowed: isPersonalChatActionViewerAllowed(action),
         queueable: isPersonalChatActionQueueable(action),
+        ...(observesAbort ? { observesAbort: true } : {}),
       },
-      async (payload) => (await scope.call(action, payload)).result,
+      async (payload, context) => (
+        await (
+          context.signal
+            ? scope.call(action, payload, context.signal)
+            : scope.call(action, payload)
+        )
+      ).result,
       "runtime",
     );
   }

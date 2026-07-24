@@ -146,6 +146,7 @@ const AI_STATUS_STARTUP_DELAY_MS = 1_000;
 const AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS = 30_000;
 const GITHUB_STATUS_STARTUP_DELAY_MS = 12_000;
 const GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS = 30_000;
+const GITHUB_STATUS_RECONNECT_DELAY_MS = 750;
 
 function projectRouteStorageKey(projectRoot: string): string {
   return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
@@ -333,6 +334,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [aiStatus, setAiStatus] = useState<AiSettingsStatus | null>(null);
   const [aiStatusLoaded, setAiStatusLoaded] = useState(false);
   const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+  const [githubConnectionGeneration, setGithubConnectionGeneration] = useState(0);
   const [onboardingStatus, setOnboardingStatus] =
     useState<OnboardingStatus | null>(null);
   const [onboardingStatusLoading, setOnboardingStatusLoading] = useState(false);
@@ -347,6 +349,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [feedbackGenerating, setFeedbackGenerating] = useState(false);
   const lastRouteSaveProjectRootRef = useRef<string | null | undefined>(undefined);
   const githubStatusProjectRootRef = useRef<string | null>(null);
+  const githubConnectionStateRef = useRef<string | null>(null);
+  const githubReconnectContextRef = useRef({
+    currentProjectRoot,
+    isRemoteProject,
+    pathname: location.pathname,
+  });
+  githubReconnectContextRef.current = {
+    currentProjectRoot,
+    isRemoteProject,
+    pathname: location.pathname,
+  };
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isPersonalChatsRoute =
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
@@ -416,6 +429,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     disposeTerminalRuntimesForProjectChange(project?.rootPath ?? null, projectRevision);
   }, [project?.rootPath, projectRevision]);
+
+  useEffect(() => {
+    const syncApi = window.ade.sync;
+    if (!syncApi?.onEvent) return;
+    let cancelled = false;
+    const observeConnection = (snapshot: { client?: { state?: string | null } } | null | undefined) => {
+      const nextState = snapshot?.client?.state ?? null;
+      const previousState = githubConnectionStateRef.current;
+      githubConnectionStateRef.current = nextState;
+      if (!cancelled && nextState === "connected" && previousState !== "connected") {
+        setGithubConnectionGeneration((generation) => generation + 1);
+      }
+    };
+    if (typeof syncApi.getStatus === "function") {
+      void syncApi.getStatus().then(observeConnection).catch(() => {});
+    }
+    const dispose = syncApi.onEvent((event) => {
+      if (event.type === "sync-status") observeConnection(event.snapshot);
+    });
+    return () => {
+      cancelled = true;
+      dispose();
+    };
+  }, []);
 
   useEffect(() => {
     const syncApi = window.ade.sync;
@@ -879,12 +916,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       githubStatusProjectRootRef.current = currentProjectRoot;
       setGithubStatus(null);
     }
-    const delayMs =
-      currentProjectRoot && hasRecentBannerDismissal(`github-cli:${currentProjectRoot}`)
-        ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
-        : GITHUB_STATUS_STARTUP_DELAY_MS;
+    const delayMs = currentProjectRoot && hasRecentBannerDismissal(`github-cli:${currentProjectRoot}`)
+      ? GITHUB_STATUS_DISMISSED_BANNER_DELAY_MS
+      : GITHUB_STATUS_STARTUP_DELAY_MS;
     const githubTimer = window.setTimeout(() => {
-      void window.ade.github.getStatus().then((status) => {
+      void window.ade.github.getStatus({
+        forceRefresh: false,
+      }).then((status) => {
         if (cancelled) return;
         setGithubStatus(status);
       }).catch(() => {
@@ -896,7 +934,45 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       cancelled = true;
       window.clearTimeout(githubTimer);
     };
-  }, [currentProjectRoot, isRemoteProject, location.pathname]);
+  }, [
+    currentProjectRoot,
+    isRemoteProject,
+    location.pathname,
+  ]);
+
+  useEffect(() => {
+    if (githubConnectionGeneration <= 0) return;
+    let cancelled = false;
+    const context = githubReconnectContextRef.current;
+    if (
+      !context.currentProjectRoot
+      || !shouldLoadShellGithubStatus(context.pathname, context.isRemoteProject)
+    ) {
+      return;
+    }
+    const isCurrentContext = () => {
+      const current = githubReconnectContextRef.current;
+      return (
+        !cancelled
+        && current.currentProjectRoot === context.currentProjectRoot
+        && current.pathname === context.pathname
+        && current.isRemoteProject === context.isRemoteProject
+      );
+    };
+    const githubTimer = window.setTimeout(() => {
+      if (!isCurrentContext()) return;
+      void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
+        if (!isCurrentContext()) return;
+        setGithubStatus(status);
+      }).catch(() => {
+        if (isCurrentContext()) setGithubStatus(null);
+      });
+    }, GITHUB_STATUS_RECONNECT_DELAY_MS);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(githubTimer);
+    };
+  }, [githubConnectionGeneration]);
 
   // Refresh the GitHub banner the moment Settings saves/clears a token, so the
   // shell does not lag behind the Settings UI (the original "banner stays up

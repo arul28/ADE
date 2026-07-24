@@ -1827,7 +1827,11 @@ different machine's cached limits.
 - **Transcript history pages through an opaque cursor.**
   `chat.getTranscript` responses carry `nextCursor`; the phone's
   `fetchChatTranscriptPage` requests strictly-older history with it.
-  The default fetch budget is 500 messages / 600k chars.
+  Current full agent runtimes also return `cursorKind: "byte"` for their
+  append-stable logical JSONL offsets; the phone merges those pages locally
+  rather than treating the cursor as a dense array index. Older hosts and the
+  minimal headless fallback retain the legacy index merge. The default fetch
+  budget is 500 messages / 600k chars.
 - **Chat subscribe requests a 2 MB snapshot window.** The phone sends
   `chat_subscribe` with `maxBytes: 2_000_000`
   (`syncChatSubscriptionMaxBytes`) so the initial snapshot can carry
@@ -1836,6 +1840,10 @@ different machine's cached limits.
   `mergeChatEventHistory` instead of `replaceChatEventHistory`: the
   existing cached events are unioned with the truncated snapshot,
   deduplicated by `id`, and re-sorted by `(timestamp, sequence)`.
+  The host installs a hydration barrier before reading the snapshot and
+  resumes its live transcript pump from the pre-capture byte offset only after
+  sending the ack, so an event appended during a slow snapshot cannot arrive
+  before the ack or disappear between the snapshot and live stream.
   Non-truncated snapshots take the replace path. Both paths run through
   `deduplicatedChatEventHistory` and then through `trimChatEventHistory`,
   which caps retained events at `chatEventHistoryMaxEvents = 1_000`

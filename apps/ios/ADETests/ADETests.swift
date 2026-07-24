@@ -19748,6 +19748,28 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(merged, [oldest, overlap, newest])
   }
 
+  func testWorkTranscriptPageOccurrenceMergePreservesDuplicateRowsInsidePage() {
+    let duplicate = AgentChatTranscriptEntry(
+      role: "user",
+      text: "same",
+      timestamp: "2026-07-24T10:00:00.000Z",
+      turnId: "turn-same"
+    )
+    let newest = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "newest",
+      timestamp: "2026-07-24T10:01:00.000Z",
+      turnId: "turn-new"
+    )
+
+    let merged = mergeWorkTranscriptPageOccurrences(
+      older: [duplicate, duplicate],
+      newer: [duplicate, newest]
+    )
+
+    XCTAssertEqual(merged, [duplicate, duplicate, newest])
+  }
+
   // MARK: - Orchestration session fields forward-compat
 
   func testAgentChatSessionSummaryDecodesOrchestrationFields() throws {

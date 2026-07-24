@@ -4972,7 +4972,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             sessionFound: browserMockPersonalChats.some((chat) => chat.sessionId === args.sessionId),
           };
         }
-        if (action === "getEventHistoryPage") result = { sessionId: args.sessionId ?? "", events: [], nextBeforeOffset: null, hasMore: false };
+        if (action === "getEventHistoryPage") {
+          result = {
+            sessionId: args.sessionId ?? "",
+            events: [],
+            startOffset: 0,
+            hasMore: false,
+            sessionFound: browserMockPersonalChats.some((chat) => chat.sessionId === args.sessionId),
+          };
+        }
         if (action === "updateSession") {
           const chat = browserMockPersonalChats.find((entry) => entry.sessionId === args.sessionId);
           if (chat) Object.assign(chat, args, { updatedAt: new Date().toISOString() });
