@@ -1,0 +1,133 @@
+import XCTest
+@testable import ADE
+
+final class PrGitHubDescriptionParserTests: XCTestCase {
+  func testDetailsBecomeNativeDisclosureContent() {
+    let blocks = parsePrGitHubDescriptionBlocks("""
+    Bumps dorny/paths-filter from 3 to 4.
+    <details>
+    <summary>Release notes</summary>
+    <h2>v4.0.0</h2>
+    <ul>
+      <li>feat: update runtime by <a href="https://github.com/octocat"><code>@octocat</code></a></li>
+      <li><strong>Full changelog</strong></li>
+    </ul>
+    </details>
+    """)
+
+    XCTAssertEqual(blocks.count, 2)
+    XCTAssertEqual(
+      blocks.first,
+      .markdown(id: "description-markdown-0", markdown: "Bumps dorny/paths-filter from 3 to 4.")
+    )
+
+    guard case .disclosure(_, let title, let markdown) = blocks[1] else {
+      return XCTFail("Expected the GitHub details block to become a native disclosure")
+    }
+    XCTAssertEqual(title, "Release notes")
+    XCTAssertTrue(markdown.contains("## v4.0.0"))
+    XCTAssertTrue(markdown.contains("- feat: update runtime by [`@octocat`](https://github.com/octocat)"))
+    XCTAssertTrue(markdown.contains("- **Full changelog**"))
+    XCTAssertFalse(markdown.contains("<"))
+  }
+
+  func testHtmlNormalizationKeepsSafeLinksAndDropsUnsafeMarkup() {
+    let markdown = normalizePrGitHubHtmlFragment("""
+    <p>See <a href="https://github.com/ADE">ADE</a> &amp; <a href="javascript:alert(1)">unsafe</a>.</p>
+    <script>alert("no")</script>
+    """)
+
+    XCTAssertTrue(markdown.contains("[ADE](https://github.com/ADE) & unsafe."))
+    XCTAssertFalse(markdown.contains("javascript:"))
+    XCTAssertFalse(markdown.contains("<script"))
+  }
+
+  func testHtmlNormalizationPreservesMarkdownCodeWithAngleBrackets() {
+    let markdown = normalizePrGitHubHtmlFragment("""
+    Use `<T>` in `Result<T>`.
+
+    ```swift
+    struct Box<T> {
+      let value: T
+    }
+    ```
+    """)
+
+    XCTAssertTrue(markdown.contains("`<T>`"))
+    XCTAssertTrue(markdown.contains("`Result<T>`"))
+    XCTAssertTrue(markdown.contains("struct Box<T>"))
+    XCTAssertTrue(markdown.contains("```swift"))
+  }
+
+  func testDescriptionParserDoesNotPromoteFencedDetailsExample() {
+    let blocks = parsePrGitHubDescriptionBlocks("""
+    Example:
+
+    ```html
+    <details><summary>Example</summary>content</details>
+    ```
+    """)
+
+    XCTAssertEqual(blocks.count, 1)
+    guard case .markdown(_, let markdown) = blocks[0] else {
+      return XCTFail("Expected fenced HTML to remain Markdown code")
+    }
+    XCTAssertTrue(markdown.contains("```html"))
+    XCTAssertTrue(markdown.contains("<details><summary>Example</summary>content</details>"))
+    XCTAssertFalse(blocks.contains { block in
+      if case .disclosure = block { return true }
+      return false
+    })
+  }
+
+  func testDescriptionParserPreservesFourBacktickFence() {
+    let blocks = parsePrGitHubDescriptionBlocks("""
+    ````markdown
+    <details><summary>Example</summary>content</details>
+    ```
+    ````
+    """)
+
+    XCTAssertEqual(blocks.count, 1)
+    guard case .markdown(_, let markdown) = blocks[0] else {
+      return XCTFail("Expected the four-backtick fence to remain Markdown")
+    }
+    XCTAssertTrue(markdown.contains("````markdown"))
+    XCTAssertTrue(markdown.contains("<details><summary>Example</summary>content</details>"))
+    XCTAssertFalse(markdown.contains("ADEPRCODE"))
+  }
+
+  func testDescriptionParserAllowsLongerClosingFence() {
+    let blocks = parsePrGitHubDescriptionBlocks("""
+    ```html
+    <details><summary>Example</summary>content</details>
+    ````
+    """)
+
+    XCTAssertEqual(blocks.count, 1)
+    guard case .markdown(_, let markdown) = blocks[0] else {
+      return XCTFail("Expected the longer closing fence to remain Markdown")
+    }
+    XCTAssertTrue(markdown.contains("```html"))
+    XCTAssertTrue(markdown.contains("````"))
+    XCTAssertTrue(markdown.contains("<details><summary>Example</summary>content</details>"))
+    XCTAssertFalse(markdown.contains("ADEPRCODE"))
+  }
+
+  func testDescriptionParserRestoresInlineCodeInDisclosureTitle() {
+    let blocks = parsePrGitHubDescriptionBlocks("""
+    <details>
+    <summary>About `Result<T>`</summary>
+    Body
+    </details>
+    """)
+
+    XCTAssertEqual(blocks.count, 1)
+    guard case .disclosure(_, let title, let markdown) = blocks[0] else {
+      return XCTFail("Expected a disclosure block")
+    }
+    XCTAssertEqual(title, "About `Result<T>`")
+    XCTAssertEqual(markdown, "Body")
+    XCTAssertFalse(title.contains("ADEPRCODE"))
+  }
+}

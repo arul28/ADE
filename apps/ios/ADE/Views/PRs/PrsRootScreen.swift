@@ -322,7 +322,7 @@ struct PRsTabView: View {
 
         if isLoadingSkeleton {
           ForEach(0..<3, id: \.self) { _ in
-            ADECardSkeleton(rows: 3)
+            PrRowCardSkeleton()
               .prListRow()
           }
         } else {
@@ -419,6 +419,7 @@ struct PRsTabView: View {
       .listStyle(.plain)
       .listRowSpacing(0)
       .contentMargins(.horizontal, 0, for: .scrollContent)
+      .contentMargins(.bottom, 88, for: .scrollContent)
       .scrollContentBackground(.hidden)
       .adeScreenBackground()
       .adeNavigationGlass()
@@ -973,7 +974,6 @@ struct PRsTabView: View {
         actionRuns: [],
         activityEvents: [],
         deployments: [],
-        aiSummary: nil,
         groupMembers: [],
         capabilities: nil,
         unavailableParts: [],

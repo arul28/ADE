@@ -401,7 +401,6 @@ struct PrDetailWarmEntry {
   var actionRuns: [PrActionRun]
   var activityEvents: [PrActivityEvent]
   var deployments: [PrDeployment]
-  var aiSummary: AiReviewSummary?
   var groupMembers: [PrGroupMemberSummary]
   var capabilities: PrActionCapabilities?
   var unavailableParts: [String]

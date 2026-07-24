@@ -107,7 +107,19 @@ private enum PrDetailPreviewFixtures {
 
   static let detail = PrDetail(
     prId: "pr-fixture",
-    body: "Rebuilds the mobile PR detail view: flat adaptive palette, per-row list virtualization, and `desktop` merge-rail parity.",
+    body: """
+    Bumps [dorny/paths-filter](https://github.com/dorny/paths-filter) from 3 to 4.
+
+    <details>
+    <summary>Release notes</summary>
+    <h2>v4.0.0</h2>
+    <h3>What's changed</h3>
+    <ul>
+    <li>feat: update action runtime to node24 by <a href="https://github.com/saschabratton"><code>@saschabratton</code></a></li>
+    <li><strong>Full changelog:</strong> <a href="https://github.com/dorny/paths-filter/compare/v3.0.3...v4.0.0">v3.0.3...v4.0.0</a></li>
+    </ul>
+    </details>
+    """,
     assignees: [PrUser(login: "arul28", avatarUrl: nil)],
     author: PrUser(login: "arul28", avatarUrl: nil),
     isDraft: false,
@@ -124,6 +136,57 @@ private enum PrDetailPreviewFixtures {
     PrReview(reviewer: "greptile-apps[bot]", state: "changes_requested", body: nil, submittedAt: iso(minutesAgo: 60 * 20)),
     PrReview(reviewer: "codex", state: "approved", body: nil, submittedAt: iso(minutesAgo: 55)),
   ]
+
+  static let pr = PullRequestListItem(
+    id: "pr-fixture",
+    laneId: "lane-prs-mobile",
+    laneName: "PRs mobile polish",
+    projectId: "project-ade",
+    repoOwner: "arul28",
+    repoName: "ADE",
+    githubPrNumber: 855,
+    githubUrl: "https://github.com/arul28/ADE/pull/855",
+    title: "build(deps): bump dorny/paths-filter from 3 to 4",
+    state: "open",
+    baseBranch: "main",
+    headBranch: "dependabot/github_actions/dorny/paths-filter-4",
+    checksStatus: "passing",
+    reviewStatus: "requested",
+    additions: 3,
+    deletions: 1,
+    lastSyncedAt: nil,
+    createdAt: iso(minutesAgo: 60 * 24),
+    updatedAt: iso(minutesAgo: 60 * 24),
+    adeKind: "single",
+    linkedGroupId: nil,
+    linkedGroupType: nil,
+    linkedGroupName: nil,
+    linkedGroupPosition: nil,
+    linkedGroupCount: 0,
+    workflowDisplayState: nil,
+    cleanupState: nil
+  )
+
+  static let snapshot = PullRequestSnapshot(
+    detail: detail,
+    status: PrStatus(
+      prId: pr.id,
+      state: "open",
+      checksStatus: "passing",
+      reviewStatus: "requested",
+      isMergeable: true,
+      mergeConflicts: false,
+      behindBaseBy: 0,
+      reviewDecision: .reviewRequired,
+      approvalsCount: 0,
+      requiredApprovals: 1
+    ),
+    checks: checks,
+    reviews: reviews,
+    comments: [],
+    files: files,
+    commits: commits
+  )
 
   static let unresolvedThread = PrReviewThread(
     id: "thread-1",
@@ -182,20 +245,23 @@ private enum PrDetailPreviewFixtures {
 private struct PrDetailOverviewPreviewScreen: View {
   @State private var replyDraft = ""
   @State private var commentInput = ""
+  @State private var commitsExpanded = false
 
   var body: some View {
     List {
-      PrAiSummaryCard(
-        summary: nil,
-        additions: 698,
-        deletions: 559,
-        fileCount: PrDetailPreviewFixtures.files.count,
-        isLoading: false,
-        isLive: true,
-        onRegenerate: {}
+      PrDetailSummarySection(
+        pr: PrDetailPreviewFixtures.pr,
+        snapshot: PrDetailPreviewFixtures.snapshot,
+        mergeGate: PrMergeGateInfo(
+          tone: .amber,
+          subline: "0/1 approvals · 1 approval needed",
+          target: .reviews
+        ),
+        commitsExpanded: $commitsExpanded,
+        onChecksTap: {},
+        onFilesTap: {},
+        onCommitTap: { _ in }
       )
-      .padding(14)
-      .prGlassCard(cornerRadius: 16)
       .prListRow()
 
       PrThreadDescriptionCard(
@@ -261,6 +327,30 @@ private struct PrDetailOverviewPreviewScreen: View {
   }
 }
 
+private struct PrUnmappedBannerPreviewScreen: View {
+  @State private var expanded = true
+
+  var body: some View {
+    VStack(spacing: 20) {
+      PrUnmappedThreadBanner(
+        canAutoMap: true,
+        canMap: true,
+        isExpanded: $expanded,
+        onAutoMap: {},
+        onMap: {},
+        onOpenInGitHub: {}
+      )
+
+      Text(expanded ? "Expanded" : "Collapsed")
+        .font(.caption)
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(16)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .background(prLiquidGlassBackdrop().ignoresSafeArea())
+  }
+}
+
 #Preview("PR detail · Overview thread") {
   PrDetailOverviewPreviewScreen()
     .preferredColorScheme(.dark)
@@ -269,4 +359,9 @@ private struct PrDetailOverviewPreviewScreen: View {
 #Preview("PR detail · Overview thread · light") {
   PrDetailOverviewPreviewScreen()
     .preferredColorScheme(.light)
+}
+
+#Preview("PR detail · Unmapped banner") {
+  PrUnmappedBannerPreviewScreen()
+    .preferredColorScheme(.dark)
 }

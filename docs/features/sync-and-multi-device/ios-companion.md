@@ -342,6 +342,10 @@ apps/ios/
 │   │   │                            #   sibling List rows, not a monolith),
 │   │   │                            # PrDetailActivityTab (timeline builder +
 │   │   │                            #   commit-group folding), PrDetailOverviewTab,
+│   │   │                            # PrDetailHeaderComponents (compact summary,
+│   │   │                            #   collapsible unmapped notice, description),
+│   │   │                            # PrGitHubDescriptionParser (safe embedded
+│   │   │                            #   HTML → Markdown/native disclosures),
 │   │   │                            # PrMergeGateCard (PrGlassPalette tokens),
 │   │   │                            # PrHelpers, PrModels, PrRowCard,
 │   │   │                            # PrListRowModifier,
@@ -1546,18 +1550,23 @@ the view coalesces bursts for 300 ms and reads the newest projected snapshot
 once with row revalidation disabled, so freshness requires neither a timer nor
 one request per PR. Manual refresh runs PR and lane refreshes concurrently.
 
-`PrRowCard` keeps scroll-time rendering deliberately compact: a state symbol,
-two-line title, age, identity line, and one signal line for branch/lane/checks/
-reviews/comments. It does not fetch author avatars from the network. Filtering,
-sorting, counts, and mapped-row reconciliation are recomputed only when their
-inputs change rather than during each SwiftUI `body` pass.
+`PrRowCard` keeps scroll-time rendering deliberately compact: a fixed state
+symbol, two-line title with age, one identity line with a non-wrapping
+`Unmapped` capsule or lane label, then a branch line whose trailing checks /
+reviews / comments remain horizontal. It does not fetch author avatars from
+the network. Filtering, sorting, counts, and mapped-row reconciliation are
+recomputed only when their inputs change rather than during each SwiftUI
+`body` pass. `PrRowCardSkeleton` mirrors that three-line geometry so loading
+does not jump into the final layout.
 
 ### PR detail screen
 
 Source: `apps/ios/ADE/Views/PRs/PrDetailScreen.swift` (the `PrDetailView`
 struct), with the timeline builder + commit-group folding in
-`PrDetailActivityTab.swift` and card views in `PrDetailOverviewTab.swift` /
-`PrHelpers.swift`.
+`PrDetailActivityTab.swift`, the compact header/description views in
+`PrDetailHeaderComponents.swift`, the embedded GitHub HTML normalizer in
+`PrGitHubDescriptionParser.swift`, and the remaining thread cards in
+`PrDetailOverviewTab.swift` / `PrHelpers.swift`.
 
 The detail screen is a single-column adaptation of the desktop
 Timeline+Rails PR view. Its Overview is emitted as sibling `List` rows
@@ -1567,29 +1576,32 @@ every scroll frame. The navigation header uses a plain back chevron, centered
 PR title with `#number · lane · branch`, and a plain ellipsis actions button.
 Reading order (desktop parity, folded to one column):
 
-1. a compact summary section (`PrDetailSummarySection`) with state, merge/check
-   status, diff totals, and an expandable commit list whose rows jump to the
-   matching timeline anchor;
-2. an unmapped-PR banner (`PrUnmappedThreadBanner`) when the PR has no ADE
-   lane, offering auto-map (`prs.createLaneFromPrBranch`), map to an existing
-   lane (`prs.linkToLane`), or Open in GitHub;
-3. the AI summary card (`PrAiSummaryCard`, +/- totals from the file list);
-4. the PR description (`PrThreadDescriptionCard`);
-5. a chronological event feed — one row per timeline event or folded
+1. a compact summary section (`PrDetailSummarySection`) with a state/approval
+   line and three metrics: Checks, Changes, and Commits. Commits expand inline
+   from their metric and jump to the matching timeline anchor;
+2. a collapsed-by-default unmapped-PR notice (`PrUnmappedThreadBanner`) when
+   the PR has no ADE lane. Its expanded state is remembered per PR for the
+   current scene; expanded actions offer auto-map
+   (`prs.createLaneFromPrBranch`), map to an existing lane
+   (`prs.linkToLane`), or Open in GitHub;
+3. the PR description (`PrThreadDescriptionCard`). GitHub's embedded HTML is
+   normalized into safe Markdown, while `<details>/<summary>` regions become
+   native `DisclosureGroup` rows instead of visible raw tags;
+4. a chronological event feed — one row per timeline event or folded
    commit group, ascending oldest → newest, built by
    `buildPullRequestTimeline` and folded via `buildPrTimelineDisplayItems`
    (`PrDetailActivityTab.swift`) so runs of same-author commits collapse
    into a single group row;
-6. review threads (unresolved first, resolved folded into a collapsible
+5. review threads (unresolved first, resolved folded into a collapsible
    section). Individual thread/comment cards are also collapsible on mobile:
    folded rows use cheap inline preview text, while expanded rows render the
    full normalized markdown body through `WorkMarkdownRenderer`;
-7. the comment composer (locked for unmapped PRs);
-8. the inline merge rail (`PrOverviewMergeRail`) carrying the desktop
+6. the comment composer (locked for unmapped PRs);
+7. the inline merge rail (`PrOverviewMergeRail`) carrying the desktop
    GitHub-style requirement checklist (`PrMergeChecklist` —
    conflicts / behind-base / checks / review), the merge-method sheet, and
    admin-bypass gating;
-9. metadata cards — checks, commits, files, people, and the stack card,
+8. metadata cards — checks, commits, files, people, and the stack card,
    plus a post-merge cleanup banner.
 
 There is no separate Activity sub-tab — the activity feed lives inside
@@ -1624,9 +1636,9 @@ the previous stacked radial-gradient / `.plusLighter` backdrop was dropped
 because it forced expensive re-compositing under every scroll frame.
 
 **Freshness.** `PrDetailView` re-fetches its action sidecars (review threads,
-activity feed, action runs, deployments, AI summary, capabilities) on a task
-keyed by both the replicated PR projection revision and the lightweight remote
-GitHub projection revision, throttled by a warm-cache freshness window
+activity feed, action runs, deployments, capabilities) on a task keyed by both
+the replicated PR projection revision and the lightweight remote GitHub
+projection revision, throttled by a warm-cache freshness window
 (`detailFreshnessWindow = 25 s`). It first seeds from the service warm cache for
 an instant render; when the cached entry is younger than 25 s the
 revision-driven reload skips the cold sidecar fan-out (8+ network calls) and

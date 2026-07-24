@@ -7040,14 +7040,6 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "prs.getDeployments", args: ["prId": prId], as: [PrDeployment].self)
   }
 
-  func fetchPullRequestAiSummary(prId: String, model: String? = nil) async throws -> AiReviewSummary {
-    var args: [String: Any] = ["prId": prId]
-    if let model, !model.isEmpty {
-      args["model"] = model
-    }
-    return try await sendDecodableCommand(action: "prs.aiReviewSummary", args: args, as: AiReviewSummary.self)
-  }
-
   // MARK: - Durable PR in-flight action registry
 
   /// Register an in-flight PR action. Returns an opaque token that must be

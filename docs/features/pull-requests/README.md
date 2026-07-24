@@ -904,9 +904,9 @@ scroll-time view work bounded.
 
 The mobile PR **detail** screen (`PrDetailView`, a single-column
 adaptation of the desktop Timeline+Rails layout) pulls its per-PR action
-sidecars — review threads, activity feed, action runs, deployments, AI
-summary, and this snapshot's capabilities — separately, and keeps them
-live while open through a warm-cache freshness gate keyed on both the
+sidecars — review threads, activity feed, action runs, deployments, and this
+snapshot's capabilities — separately, and keeps them live while open through a
+warm-cache freshness gate keyed on both the
 replicated PR revision and the lightweight remote GitHub revision. Mapped-row
 changes arrive through the changeset stream; local-only projection changes use
 `prs_updated`. The detail screen re-fetches sidecars at most once every 25 s.
@@ -923,16 +923,22 @@ true zero. Partial aggregates use the normal 25 s freshness window as retry
 backoff; explicit Retry bypasses it. The phone renders the same
 description/files/checks/timeline it would for a mapped PR while keeping
 mutation controls locked until the PR is mapped.
-The same banner offers both create-from-branch and map-to-existing-lane actions,
-so mapping does not require backing out to the list.
+The compact unmapped notice starts collapsed and remembers its expanded state
+per PR for the current scene. Its expanded actions offer both
+create-from-branch and map-to-existing-lane, so mapping does not require backing
+out to the list.
 
 The mobile detail header is intentionally compact: a plain back chevron,
 centered PR title with `#number · lane · branch`, and a plain ellipsis
 actions button. The old large PR hero is replaced by a small summary section
-showing state, merge/check status, diff totals, and commit count. Commit rows
-expand inline and tap into the same timeline anchors that desktop uses for
-commit-focused navigation. Markdown bodies are normalized for escaped GitHub
-newlines and rendered through the shared mobile Work markdown renderer;
+showing a state/approval line and Checks, Changes, and Commits metrics. Commit
+rows expand inline from that metric and tap into the same timeline anchors that
+desktop uses for commit-focused navigation. PR descriptions additionally
+normalize safe embedded GitHub HTML into Markdown and turn
+`<details>/<summary>` regions into native disclosure rows, avoiding raw
+Dependabot release-note markup. Other Markdown bodies are normalized for
+escaped GitHub newlines and rendered through the shared mobile Work markdown
+renderer;
 collapsed comment/thread previews stay cheap text so large PRs do not pay
 markdown layout cost for offscreen or folded content.
 

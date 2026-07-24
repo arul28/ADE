@@ -191,6 +191,7 @@
 		F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* SettingsDiagnosticsSection.swift */; };
 		G10000000000000000000001 /* PrModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000001 /* PrModels.swift */; };
 		G10000000000000000000002 /* PrHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000002 /* PrHelpers.swift */; };
+		G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000032 /* PrGitHubDescriptionParser.swift */; };
 		G10000000000000000000003 /* PrListRowModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000003 /* PrListRowModifier.swift */; };
 		G10000000000000000000004 /* PrFiltersCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000004 /* PrFiltersCard.swift */; };
 		G10000000000000000000005 /* PrRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000005 /* PrRowCard.swift */; };
@@ -200,6 +201,7 @@
 		G10000000000000000000006 /* PrsRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000006 /* PrsRootScreen.swift */; };
 		G10000000000000000000007 /* PrDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000007 /* PrDetailScreen.swift */; };
 		G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000008 /* PrDetailOverviewTab.swift */; };
+		G10000000000000000000033 /* PrDetailHeaderComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000033 /* PrDetailHeaderComponents.swift */; };
 		G10000000000000000000009 /* PrDetailFilesTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000009 /* PrDetailFilesTab.swift */; };
 		G1000000000000000000000A /* PrDetailChecksTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000A /* PrDetailChecksTab.swift */; };
 		G1000000000000000000000B /* PrDetailActivityTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000B /* PrDetailActivityTab.swift */; };
@@ -208,7 +210,6 @@
 		G1000000000000000000000E /* CreatePrWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000E /* CreatePrWizardView.swift */; };
 		G10000000000000000000027 /* PrTargetBranchPickerDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */; };
 		G1000000000000000000000F /* PrMergeGateCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000F /* PrMergeGateCard.swift */; };
-		G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000020 /* PrAiSummaryCard.swift */; };
 		G10000000000000000000021 /* PrCommitRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000021 /* PrCommitRailView.swift */; };
 		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
 		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
@@ -244,6 +245,7 @@
 		DD20000000000000000000B1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = DD10000000000000000000B1 /* SwiftTerm */; };
 		A90000000000000000000001 /* ProductAnalytics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000011 /* ProductAnalytics.swift */; };
 		A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */; };
+		A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */; };
 		A90100000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90100000000000000000011 /* PrivacyInfo.xcprivacy */; };
 		A90200000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90200000000000000000011 /* PrivacyInfo.xcprivacy */; };
 		A90300000000000000000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A90300000000000000000011 /* PrivacyInfo.xcprivacy */; };
@@ -484,6 +486,7 @@
 		F20000000000000000000006 /* SettingsDiagnosticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDiagnosticsSection.swift; path = ADE/Views/Settings/SettingsDiagnosticsSection.swift; sourceTree = "<group>"; };
 		G20000000000000000000001 /* PrModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrModels.swift; path = ADE/Views/PRs/PrModels.swift; sourceTree = "<group>"; };
 		G20000000000000000000002 /* PrHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrHelpers.swift; path = ADE/Views/PRs/PrHelpers.swift; sourceTree = "<group>"; };
+		G20000000000000000000032 /* PrGitHubDescriptionParser.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParser.swift; path = ADE/Views/PRs/PrGitHubDescriptionParser.swift; sourceTree = "<group>"; };
 		G20000000000000000000003 /* PrListRowModifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrListRowModifier.swift; path = ADE/Views/PRs/PrListRowModifier.swift; sourceTree = "<group>"; };
 		G20000000000000000000004 /* PrFiltersCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrFiltersCard.swift; path = ADE/Views/PRs/PrFiltersCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000026 /* PrsRootScreenPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreenPreviews.swift; path = ADE/Views/PRs/PrsRootScreenPreviews.swift; sourceTree = "<group>"; };
@@ -493,6 +496,7 @@
 		G20000000000000000000006 /* PrsRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreen.swift; path = ADE/Views/PRs/PrsRootScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000007 /* PrDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailScreen.swift; path = ADE/Views/PRs/PrDetailScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000008 /* PrDetailOverviewTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailOverviewTab.swift; path = ADE/Views/PRs/PrDetailOverviewTab.swift; sourceTree = "<group>"; };
+		G20000000000000000000033 /* PrDetailHeaderComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailHeaderComponents.swift; path = ADE/Views/PRs/PrDetailHeaderComponents.swift; sourceTree = "<group>"; };
 		G20000000000000000000009 /* PrDetailFilesTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailFilesTab.swift; path = ADE/Views/PRs/PrDetailFilesTab.swift; sourceTree = "<group>"; };
 		G2000000000000000000000A /* PrDetailChecksTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailChecksTab.swift; path = ADE/Views/PRs/PrDetailChecksTab.swift; sourceTree = "<group>"; };
 		G2000000000000000000000B /* PrDetailActivityTab.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailActivityTab.swift; path = ADE/Views/PRs/PrDetailActivityTab.swift; sourceTree = "<group>"; };
@@ -501,7 +505,6 @@
 		G2000000000000000000000E /* CreatePrWizardView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CreatePrWizardView.swift; path = ADE/Views/PRs/CreatePrWizardView.swift; sourceTree = "<group>"; };
 		G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrTargetBranchPickerDropdown.swift; path = ADE/Views/PRs/PrTargetBranchPickerDropdown.swift; sourceTree = "<group>"; };
 		G2000000000000000000000F /* PrMergeGateCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeGateCard.swift; path = ADE/Views/PRs/PrMergeGateCard.swift; sourceTree = "<group>"; };
-		G20000000000000000000020 /* PrAiSummaryCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrAiSummaryCard.swift; path = ADE/Views/PRs/PrAiSummaryCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000021 /* PrCommitRailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrCommitRailView.swift; path = ADE/Views/PRs/PrCommitRailView.swift; sourceTree = "<group>"; };
 		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
 		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
@@ -519,6 +522,7 @@
 		B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = KeychainService.swift; path = ADE/Services/KeychainService.swift; sourceTree = "<group>"; };
 		A90000000000000000000011 /* ProductAnalytics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalytics.swift; path = ADE/Services/ProductAnalytics.swift; sourceTree = "<group>"; };
 		A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ProductAnalyticsPolicyTests.swift; path = ADETests/ProductAnalyticsPolicyTests.swift; sourceTree = "<group>"; };
+		A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrGitHubDescriptionParserTests.swift; path = ADETests/PrGitHubDescriptionParserTests.swift; sourceTree = "<group>"; };
 		A90100000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADE/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A90200000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADEWidgets/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A90300000000000000000011 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = ADEClip/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
@@ -720,6 +724,7 @@
 			children = (
 				G20000000000000000000001 /* PrModels.swift */,
 				G20000000000000000000002 /* PrHelpers.swift */,
+				G20000000000000000000032 /* PrGitHubDescriptionParser.swift */,
 				G20000000000000000000003 /* PrListRowModifier.swift */,
 				G20000000000000000000004 /* PrFiltersCard.swift */,
 				G20000000000000000000005 /* PrRowCard.swift */,
@@ -728,6 +733,7 @@
 				G20000000000000000000026 /* PrsRootScreenPreviews.swift */,
 				G20000000000000000000007 /* PrDetailScreen.swift */,
 				G20000000000000000000008 /* PrDetailOverviewTab.swift */,
+				G20000000000000000000033 /* PrDetailHeaderComponents.swift */,
 				G20000000000000000000031 /* PrDetailOverviewPreviews.swift */,
 				G20000000000000000000009 /* PrDetailFilesTab.swift */,
 				G2000000000000000000000A /* PrDetailChecksTab.swift */,
@@ -738,7 +744,6 @@
 				G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */,
 				G2000000000000000000000F /* PrMergeGateCard.swift */,
 				G20000000000000000000030 /* PrMergeChecklist.swift */,
-				G20000000000000000000020 /* PrAiSummaryCard.swift */,
 				G20000000000000000000021 /* PrCommitRailView.swift */,
 				G20000000000000000000023 /* PrStackDiagramView.swift */,
 				G20000000000000000000024 /* PrRebaseScreen.swift */,
@@ -1053,6 +1058,7 @@
 				FA000000000000000000C2C3 /* WorkAssistantRenderingTests.swift */,
 				FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */,
 				A90000000000000000000013 /* ProductAnalyticsPolicyTests.swift */,
+				A90000000000000000000014 /* PrGitHubDescriptionParserTests.swift */,
 				C5A00000000000000000000E /* SSHBootstrapTests.swift */,
 			);
 			name = ADETests;
@@ -1431,6 +1437,7 @@
 				F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */,
 				G10000000000000000000001 /* PrModels.swift in Sources */,
 				G10000000000000000000002 /* PrHelpers.swift in Sources */,
+				G10000000000000000000032 /* PrGitHubDescriptionParser.swift in Sources */,
 				G10000000000000000000003 /* PrListRowModifier.swift in Sources */,
 				G10000000000000000000004 /* PrFiltersCard.swift in Sources */,
 				G10000000000000000000005 /* PrRowCard.swift in Sources */,
@@ -1440,6 +1447,7 @@
 				G10000000000000000000006 /* PrsRootScreen.swift in Sources */,
 				G10000000000000000000007 /* PrDetailScreen.swift in Sources */,
 				G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */,
+				G10000000000000000000033 /* PrDetailHeaderComponents.swift in Sources */,
 				G10000000000000000000009 /* PrDetailFilesTab.swift in Sources */,
 				G1000000000000000000000A /* PrDetailChecksTab.swift in Sources */,
 				G1000000000000000000000B /* PrDetailActivityTab.swift in Sources */,
@@ -1449,7 +1457,6 @@
 				G10000000000000000000027 /* PrTargetBranchPickerDropdown.swift in Sources */,
 				G1000000000000000000000F /* PrMergeGateCard.swift in Sources */,
 				G10000000000000000000030 /* PrMergeChecklist.swift in Sources */,
-				G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */,
 				G10000000000000000000021 /* PrCommitRailView.swift in Sources */,
 				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
 				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
@@ -1549,6 +1556,7 @@
 				FB000000000000000000C2C3 /* WorkAssistantRenderingTests.swift in Sources */,
 				FB000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift in Sources */,
 				A90000000000000000000003 /* ProductAnalyticsPolicyTests.swift in Sources */,
+				A90000000000000000000004 /* PrGitHubDescriptionParserTests.swift in Sources */,
 				C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
