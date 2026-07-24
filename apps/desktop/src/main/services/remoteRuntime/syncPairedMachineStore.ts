@@ -29,8 +29,10 @@ import {
   deriveAdoptSessionKey,
   generateX25519EphemeralKeyPair,
   seal,
+  supportedAdoptChannelAeads,
   unseal,
   verifyEd25519,
+  type AdoptChannelAead,
 } from "../../../shared/sync/adoptChannelCrypto";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import {
@@ -85,6 +87,8 @@ class AccountPairingAuthorizationError extends Error {
 
 const HOST_IDENTITY_VERIFICATION_ERROR =
   "Host identity verification failed — the machine may be running an older ADE.";
+const ADOPT_CHANNEL_UPDATE_REQUIRED_ERROR =
+  "The other Mac is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.";
 
 export class AccountHostIdentityVerificationError extends Error {
   readonly code = "account_host_identity_verification_failed";
@@ -750,6 +754,8 @@ export class DesktopPairedMachineStore {
       }
       try {
         let adoptSessionKey: Buffer | null = null;
+        let adoptAead: AdoptChannelAead = "chacha20-poly1305";
+        let clientSupportedAeads: AdoptChannelAead[] = [];
         if (hostSigningPublicKey) {
           const challengeRequestId = `challenge-${randomUUID()}`;
           const nonce = randomBytes(32);
@@ -757,6 +763,7 @@ export class DesktopPairedMachineStore {
           const clientEphemeral = generateX25519EphemeralKeyPair();
           const clientEphemeralPublicKey =
             clientEphemeral.publicKeyRaw.toString("base64");
+          clientSupportedAeads = supportedAdoptChannelAeads();
           const challengeResponse = waitForSyncEnvelope(
             connection,
             (envelope) => envelope.requestId === challengeRequestId
@@ -775,6 +782,7 @@ export class DesktopPairedMachineStore {
               v: 1,
               nonce: nonceBase64,
               clientEphemeralPublicKey,
+              supportedAeads: clientSupportedAeads,
             }, challengeRequestId);
           } catch (error) {
             void challengeResponse.catch(() => {});
@@ -802,6 +810,19 @@ export class DesktopPairedMachineStore {
             32,
           );
           const signature = decodeCanonicalBase64(challenge?.signature, 64);
+          const challengeHasAead = challenge?.aead !== undefined;
+          if (
+            challengeHasAead
+            && (
+              typeof challenge?.aead !== "string"
+              || !clientSupportedAeads.includes(challenge.aead as AdoptChannelAead)
+            )
+          ) {
+            throw hostIdentityVerificationError();
+          }
+          if (challengeHasAead) {
+            adoptAead = challenge!.aead as AdoptChannelAead;
+          }
           if (
             challenge?.v !== 1
             || challenge.hostDeviceId !== expectedHostDeviceId
@@ -819,6 +840,7 @@ export class DesktopPairedMachineStore {
             clientEphemeralPublicKey,
             hostEphemeralPublicKey: challenge.hostEphemeralPublicKey!,
             ts: challenge.ts!,
+            ...(challengeHasAead ? { aead: challenge.aead! } : {}),
           });
           if (!verifyEd25519(hostSigningPublicKey, canonical, signature)) {
             throw hostIdentityVerificationError();
@@ -845,6 +867,33 @@ export class DesktopPairedMachineStore {
           accountToken,
           dpop: accountDpop,
         };
+        let sealedAccountAuth: string | null = null;
+        if (adoptSessionKey) {
+          try {
+            if (!clientSupportedAeads.includes(adoptAead)) {
+              throw new Error(`Unsupported adoption cipher: ${adoptAead}`);
+            }
+            sealedAccountAuth = seal(
+              adoptSessionKey,
+              buildAdoptHelloAad(
+                expectedHostDeviceId,
+                localDeviceId,
+              ),
+              Buffer.from(JSON.stringify(legacyAccountAuth), "utf8"),
+              undefined,
+              adoptAead,
+            );
+          } catch (error) {
+            const reason = error instanceof Error ? error.message : String(error);
+            if (
+              !clientSupportedAeads.includes(adoptAead)
+              || /unknown cipher|unsupported/i.test(reason)
+            ) {
+              throw new Error(ADOPT_CHANNEL_UPDATE_REQUIRED_ERROR);
+            }
+            throw error;
+          }
+        }
         const hello: SyncHelloPayload = {
           peer,
           auth: adoptSessionKey
@@ -852,14 +901,7 @@ export class DesktopPairedMachineStore {
                 kind: "account_sealed",
                 v: 1,
                 deviceId: localDeviceId,
-                sealed: seal(
-                  adoptSessionKey,
-                  buildAdoptHelloAad(
-                    expectedHostDeviceId,
-                    localDeviceId,
-                  ),
-                  Buffer.from(JSON.stringify(legacyAccountAuth), "utf8"),
-                ),
+                sealed: sealedAccountAuth!,
               }
             : {
                 kind: "account",
@@ -904,6 +946,7 @@ export class DesktopPairedMachineStore {
                 localDeviceId,
               ),
               sealedHelloOk.sealed,
+              adoptAead,
             ).toString("utf8")) as PairedRuntimeHelloOkPayload;
           } catch {
             throw hostIdentityVerificationError();

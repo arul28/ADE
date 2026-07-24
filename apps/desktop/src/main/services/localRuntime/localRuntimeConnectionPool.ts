@@ -6,6 +6,11 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
+import {
+  isRuntimeProtocolCompatible,
+  parseRuntimeLastWedge,
+  parseRuntimePublishHealth,
+} from "../../../shared/adeRuntimeProtocol";
 import type {
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
@@ -18,6 +23,7 @@ import type {
 import type {
   AdeActionRegistryEntry,
   LocalRuntimeStatus,
+  RuntimeActivitySummary,
   SyncCloudRelayStatus,
   SyncDeviceRecord,
   SyncDeviceRuntimeState,
@@ -80,6 +86,7 @@ type LocalRuntimeConnectionPoolOptions = {
   preferServiceRepair?: boolean;
   desktopBridgeAuthToken?: string | null;
   queryServiceStatus?: () => ServiceManagerStatusResult;
+  onRuntimeStatusChange?: (status: LocalRuntimeStatus) => void;
   /**
    * Invoked when the pool enters or leaves isolated (no-sync fallback) mode.
    * "isolated" fires once per degradation, "primary" once per recovery.
@@ -90,6 +97,7 @@ type LocalRuntimeConnectionPoolOptions = {
 type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
 const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
+const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
@@ -429,29 +437,77 @@ function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<Run
   });
 }
 
-function readRuntimeInfo(value: unknown): {
+export function readLocalRuntimeInfo(value: unknown): {
   version: string | null;
   buildHash: string | null;
   defaultRole: string | null;
   pid: number | null;
+  syncPort: number | null;
+  publishHealth: LocalRuntimeStatus["publishHealth"];
+  lastWedge: LocalRuntimeStatus["lastWedge"];
+  minCompatibleProtocol: number | null;
+  protocolVersion: number | null;
 } {
+  const empty = {
+    version: null,
+    buildHash: null,
+    defaultRole: null,
+    pid: null,
+    syncPort: null,
+    publishHealth: null,
+    lastWedge: null,
+    minCompatibleProtocol: null,
+    protocolVersion: null,
+  } satisfies ReturnType<typeof readLocalRuntimeInfo>;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return { version: null, buildHash: null, defaultRole: null, pid: null };
+    return empty;
   }
   const runtimeInfo = (value as { runtimeInfo?: unknown }).runtimeInfo;
   if (!runtimeInfo || typeof runtimeInfo !== "object" || Array.isArray(runtimeInfo)) {
-    return { version: null, buildHash: null, defaultRole: null, pid: null };
+    return empty;
   }
   const info = runtimeInfo as Record<string, unknown>;
   const version = info.version;
   const buildHash = info.buildHash;
   const defaultRole = info.defaultRole;
   const pid = info.pid;
+  const syncPort = info.syncPort;
+  const parsedPublishHealth = parseRuntimePublishHealth(info.publishHealth);
+  const minCompatibleProtocol = info.minCompatibleProtocol;
+  const protocolVersion = info.protocolVersion;
   return {
     version: typeof version === "string" && version.trim() ? version.trim() : null,
     buildHash: typeof buildHash === "string" && buildHash.trim() ? buildHash.trim() : null,
     defaultRole: typeof defaultRole === "string" && defaultRole.trim() ? defaultRole.trim() : null,
     pid: typeof pid === "number" && Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null,
+    syncPort:
+      typeof syncPort === "number"
+      && Number.isInteger(syncPort)
+      && syncPort > 0
+      && syncPort <= 65_535
+        ? syncPort
+        : null,
+    publishHealth:
+      parsedPublishHealth
+        ? {
+            state: parsedPublishHealth.state,
+            failingSinceMs: parsedPublishHealth.failingSinceMs,
+            lastLegDurations: parsedPublishHealth.lastLegDurations,
+          }
+        : null,
+    lastWedge: parseRuntimeLastWedge(info.lastWedge),
+    minCompatibleProtocol:
+      typeof minCompatibleProtocol === "number"
+      && Number.isInteger(minCompatibleProtocol)
+      && minCompatibleProtocol > 0
+        ? minCompatibleProtocol
+        : null,
+    protocolVersion:
+      typeof protocolVersion === "number"
+      && Number.isInteger(protocolVersion)
+      && protocolVersion > 0
+        ? protocolVersion
+        : null,
   };
 }
 
@@ -699,6 +755,9 @@ export class LocalRuntimeConnectionPool {
   private activeConnection: LocalRuntimeConnection | null = null;
   private activeClient: RuntimeRpcClient | null = null;
   private activeRuntimePid: number | null = null;
+  private activeRuntimeSyncPort: number | null = null;
+  private activeRuntimePublishHealth: LocalRuntimeStatus["publishHealth"] = null;
+  private activeRuntimeLastWedge: LocalRuntimeStatus["lastWedge"] = null;
   private ownedRuntimeChild: ChildProcess | null = null;
   private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private isolatedModeActive = false;
@@ -735,6 +794,7 @@ export class LocalRuntimeConnectionPool {
   };
   private serviceHealthCheckedAtMs = 0;
   private serviceInstallPromise: Promise<void> | null = null;
+  private runtimeStatusRefreshPromise: Promise<void> | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private slowActionSamples: SlowActionSample[] = [];
@@ -751,17 +811,79 @@ export class LocalRuntimeConnectionPool {
 
   getStatus(): LocalRuntimeStatus {
     this.refreshServiceHealthIfStale();
+    return this.statusSnapshot();
+  }
+
+  private statusSnapshot(): LocalRuntimeStatus {
     return {
       connectionState: this.activeClient
         ? "connected"
         : this.connection
           ? "connecting"
           : "idle",
+      pid: this.activeRuntimePid,
+      syncPort: this.activeRuntimeSyncPort,
+      publishHealth: this.activeRuntimePublishHealth
+        ? {
+            ...this.activeRuntimePublishHealth,
+            lastLegDurations: { ...this.activeRuntimePublishHealth.lastLegDurations },
+          }
+        : null,
+      lastWedge: this.activeRuntimeLastWedge ? { ...this.activeRuntimeLastWedge } : null,
       runtimeMode: this.isolatedModeActive ? "isolated" : "primary",
       versionSkew: { ...this.versionSkewStatus },
       serviceInstall: { ...this.serviceInstallStatus },
       serviceHealth: { ...this.serviceHealthStatus },
     };
+  }
+
+  async getFreshStatus(): Promise<LocalRuntimeStatus> {
+    await this.refreshRuntimeDiagnostics();
+    return this.getStatus();
+  }
+
+  private async refreshRuntimeDiagnostics(): Promise<void> {
+    if (this.runtimeStatusRefreshPromise) {
+      await this.runtimeStatusRefreshPromise;
+      return;
+    }
+    const client = this.activeClient;
+    if (!client) return;
+    const refresh = (async () => {
+      try {
+        const value = await client.call("runtime/info", {}, {
+          timeoutMs: LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS,
+        });
+        if (this.activeClient !== client) return;
+        const runtimeInfo = readLocalRuntimeInfo(value);
+        if (runtimeInfo.version == null && runtimeInfo.pid == null) return;
+        this.activeRuntimePid = runtimeInfo.pid;
+        this.activeRuntimeSyncPort = runtimeInfo.syncPort;
+        this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
+        this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+        this.emitRuntimeStatusChange();
+      } catch (error) {
+        this.logger.debug("local_runtime.status_refresh_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })().finally(() => {
+      if (this.runtimeStatusRefreshPromise === refresh) {
+        this.runtimeStatusRefreshPromise = null;
+      }
+    });
+    this.runtimeStatusRefreshPromise = refresh;
+    await refresh;
+  }
+
+  private emitRuntimeStatusChange(): void {
+    try {
+      this.options.onRuntimeStatusChange?.(this.statusSnapshot());
+    } catch (error) {
+      this.logger.warn("local_runtime.status_listener_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   getRuntimeProcessIds(): number[] {
@@ -945,7 +1067,32 @@ export class LocalRuntimeConnectionPool {
       return;
     }
     const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
-    const runningCompatibilityError = await this.probeRuntimeCompatibilityError(socketPath);
+    const runningProbe = await this.probeRuntimeCompatibility(socketPath);
+    const runningCompatibilityError = runningProbe?.error ?? null;
+    if (
+      !runningCompatibilityError
+      && runningProbe
+      && runningProbe.compatibleNewer
+    ) {
+      this.clearVersionSkewStatus();
+      this.serviceInstallStatus = {
+        state: "skipped",
+        attempted: false,
+        path: cliPath,
+        message: "Skipped ADE service install because the newer running brain is protocol-compatible.",
+        exitCode: null,
+        updatedAt: new Date().toISOString(),
+      };
+      this.logger.info("local_runtime.service_install_skipped", {
+        cliPath,
+        socketPath,
+        reason: "compatible_newer_runtime",
+        runtimeVersion: runningProbe.runtimeInfo.version,
+        appVersion: this.appVersion,
+        runtimePid: runningProbe.runtimeInfo.pid,
+      });
+      return;
+    }
     if (runningCompatibilityError?.skewState === "runtime_newer") {
       this.noteCompatibilityError(runningCompatibilityError);
       this.serviceInstallStatus = {
@@ -1173,6 +1320,10 @@ export class LocalRuntimeConnectionPool {
   async projects(): Promise<RemoteRuntimeProjectRecord[]> {
     const entry = await this.connect();
     return coerceProjects(await entry.client.call("projects.list", {}));
+  }
+
+  async activitySummary(): Promise<RuntimeActivitySummary> {
+    return await this.callSync<RuntimeActivitySummary>("runtime.activitySummary");
   }
 
   async syncStatusForRoot(rootPath: string, args: SyncGetStatusArgs = {}): Promise<SyncRoleSnapshot> {
@@ -1480,6 +1631,9 @@ export class LocalRuntimeConnectionPool {
     this.activeConnection = null;
     this.activeClient = null;
     this.activeRuntimePid = null;
+    this.activeRuntimeSyncPort = null;
+    this.activeRuntimePublishHealth = null;
+    this.activeRuntimeLastWedge = null;
     this.ownedRuntimeChild = null;
     this.projectsByRoot.clear();
     this.projectRegistrationsByRoot.clear();
@@ -1507,6 +1661,9 @@ export class LocalRuntimeConnectionPool {
         this.activeConnection = null;
         this.activeClient = null;
         this.activeRuntimePid = null;
+        this.activeRuntimeSyncPort = null;
+        this.activeRuntimePublishHealth = null;
+        this.activeRuntimeLastWedge = null;
       }
       throw error;
     });
@@ -1532,6 +1689,9 @@ export class LocalRuntimeConnectionPool {
     this.activeConnection = null;
     this.activeClient = null;
     this.activeRuntimePid = null;
+    this.activeRuntimeSyncPort = null;
+    this.activeRuntimePublishHealth = null;
+    this.activeRuntimeLastWedge = null;
     this.projectsByRoot.clear();
     return true;
   }
@@ -1556,11 +1716,19 @@ export class LocalRuntimeConnectionPool {
     };
   }
 
+  private isCompatibleNewerRuntime(
+    runtimeInfo: ReturnType<typeof readLocalRuntimeInfo>,
+  ): boolean {
+    return compareRuntimeVersionStrings(runtimeInfo.version, this.appVersion) === 1
+      && isRuntimeProtocolCompatible(runtimeInfo);
+  }
+
   private runtimeCompatibilityError(
     socketPath: string,
-    runtimeInfo: ReturnType<typeof readRuntimeInfo>,
+    runtimeInfo: ReturnType<typeof readLocalRuntimeInfo>,
   ): LocalRuntimeCompatibilityError | null {
     const expectedBuildHash = computeLocalRuntimeBuildHash();
+    let acceptedNewerRuntime = false;
     if (!isCompatibleRuntimeVersion({
       runtimeVersion: runtimeInfo.version,
       appVersion: this.appVersion,
@@ -1576,17 +1744,29 @@ export class LocalRuntimeConnectionPool {
         runtimePid: runtimeInfo.pid,
       });
       const comparison = compareRuntimeVersionStrings(runtimeInfo.version, this.appVersion);
-      return new LocalRuntimeCompatibilityError(
-        `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
-        runtimeInfo,
-        comparison == null || comparison === 0
-          ? "unknown"
-          : comparison > 0
-            ? "runtime_newer"
-            : "runtime_older",
-      );
+      if (this.isCompatibleNewerRuntime(runtimeInfo)) {
+        acceptedNewerRuntime = true;
+        this.logger.info("local_runtime.newer_brain_accepted", {
+          socketPath,
+          runtimeVersion: runtimeInfo.version,
+          appVersion: this.appVersion,
+          runtimePid: runtimeInfo.pid,
+          minCompatibleProtocol: runtimeInfo.minCompatibleProtocol,
+          protocolVersion: runtimeInfo.protocolVersion,
+        });
+      } else {
+        return new LocalRuntimeCompatibilityError(
+          `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
+          runtimeInfo,
+          comparison == null || comparison === 0
+            ? "unknown"
+            : comparison > 0
+              ? "runtime_newer"
+              : "runtime_older",
+        );
+      }
     }
-    if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
+    if (!acceptedNewerRuntime && expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
       this.logger.info("local_runtime.build_mismatch_detected", {
         socketPath,
         runtimeBuildHash: runtimeInfo.buildHash,
@@ -1615,13 +1795,22 @@ export class LocalRuntimeConnectionPool {
     return null;
   }
 
-  private async probeRuntimeCompatibilityError(socketPath: string): Promise<LocalRuntimeCompatibilityError | null> {
+  private async probeRuntimeCompatibility(socketPath: string): Promise<{
+    error: LocalRuntimeCompatibilityError | null;
+    runtimeInfo: ReturnType<typeof readLocalRuntimeInfo>;
+    compatibleNewer: boolean;
+  } | null> {
     let client: RuntimeRpcClient | null = null;
     try {
       const transport = await openSocketTransport(socketPath);
       client = new RuntimeRpcClient(transport);
       const initializeResult = await client.initialize("ade-desktop-service-install-probe", this.appVersion);
-      return this.runtimeCompatibilityError(socketPath, readRuntimeInfo(initializeResult));
+      const runtimeInfo = readLocalRuntimeInfo(initializeResult);
+      return {
+        error: this.runtimeCompatibilityError(socketPath, runtimeInfo),
+        runtimeInfo,
+        compatibleNewer: this.isCompatibleNewerRuntime(runtimeInfo),
+      };
     } catch {
       return null;
     } finally {
@@ -1911,6 +2100,7 @@ export class LocalRuntimeConnectionPool {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    this.emitRuntimeStatusChange();
   }
 
   private async tryRecoverFromIsolatedRuntime(primarySocketPath: string): Promise<void> {
@@ -1977,16 +2167,8 @@ export class LocalRuntimeConnectionPool {
       const transport = await openSocketTransport(socketPath);
       client = new RuntimeRpcClient(transport);
       const initializeResult = await client.initialize("ade-desktop-local-probe", this.appVersion);
-      const runtimeInfo = readRuntimeInfo(initializeResult);
-      const expectedBuildHash = computeLocalRuntimeBuildHash();
-      return isCompatibleRuntimeVersion({
-        runtimeVersion: runtimeInfo.version,
-        appVersion: this.appVersion,
-        runtimeBuildHash: runtimeInfo.buildHash,
-        expectedBuildHash,
-      })
-        && (!expectedBuildHash || runtimeInfo.buildHash === expectedBuildHash)
-        && runtimeInfo.defaultRole === "cto";
+      const runtimeInfo = readLocalRuntimeInfo(initializeResult);
+      return this.runtimeCompatibilityError(socketPath, runtimeInfo) == null;
     } catch {
       return false;
     } finally {
@@ -2013,7 +2195,7 @@ export class LocalRuntimeConnectionPool {
       closeRuntimeClient(client);
       throw error;
     }
-    const runtimeInfo = readRuntimeInfo(initializeResult);
+    const runtimeInfo = readLocalRuntimeInfo(initializeResult);
     const compatibilityError = this.runtimeCompatibilityError(socketPath, runtimeInfo);
     if (compatibilityError) {
       closeRuntimeClient(client);
@@ -2024,6 +2206,10 @@ export class LocalRuntimeConnectionPool {
     }
     this.activeClient = client;
     this.activeRuntimePid = runtimeInfo.pid;
+    this.activeRuntimeSyncPort = runtimeInfo.syncPort;
+    this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
+    this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+    this.emitRuntimeStatusChange();
     client.onDisconnect((error) => {
       if (this.activeClient !== client && this.activeConnection?.client !== client) return;
       this.logger.warn("local_runtime.disconnected", {
@@ -2034,7 +2220,11 @@ export class LocalRuntimeConnectionPool {
       this.activeConnection = null;
       this.activeClient = null;
       this.activeRuntimePid = null;
+      this.activeRuntimeSyncPort = null;
+      this.activeRuntimePublishHealth = null;
+      this.activeRuntimeLastWedge = null;
       this.projectsByRoot.clear();
+      this.emitRuntimeStatusChange();
     });
     return client;
   }
@@ -2080,6 +2270,9 @@ export class LocalRuntimeConnectionPool {
       this.activeConnection = null;
       this.activeClient = null;
       this.activeRuntimePid = null;
+      this.activeRuntimeSyncPort = null;
+      this.activeRuntimePublishHealth = null;
+      this.activeRuntimeLastWedge = null;
       this.projectsByRoot.clear();
       if (client) closeRuntimeClient(client);
     };

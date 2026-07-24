@@ -30,7 +30,7 @@ export function getRuntimeServiceMainPid(): number | null {
   }
 }
 
-export function installRuntimeService(): ServiceManagerResult {
+export async function installRuntimeService(): Promise<ServiceManagerResult> {
   switch (process.platform) {
     case "darwin":
       return installLaunchdService();

@@ -25,6 +25,7 @@ import {
   localReleaseBuildOutputRuntimeBlock,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
+  readLocalRuntimeInfo,
   shouldAutoInstallRuntimeServiceFromPath,
 } from "./localRuntimeConnectionPool";
 import {
@@ -124,19 +125,19 @@ function withTsxNodeOptions(value: string | undefined, loaderPath: string): stri
 }
 
 async function waitForRuntimeSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
-  const startedAt = Date.now();
-  let lastError: Error | null = null;
-  while (Date.now() - startedAt < timeoutMs) {
+  await vi.waitFor(async () => {
+    let client: RawRuntimeSocketClient | null = null;
     try {
-      const client = await RawRuntimeSocketClient.connect(socketPath);
-      client.close();
-      return;
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      await new Promise((resolve) => setTimeout(resolve, 100));
+      client = await RawRuntimeSocketClient.connect(socketPath);
+      await client.request("ade/initialize", {
+        protocolVersion: "2025-06-18",
+        clientName: "local-runtime-test-readiness",
+        identity: { role: "external", callerId: "local-runtime-test-readiness" },
+      });
+    } finally {
+      client?.close();
     }
-  }
-  throw lastError ?? new Error(`ADE service socket did not become available: ${socketPath}`);
+  }, { timeout: timeoutMs, interval: 100 });
 }
 
 function startServeProcess(args: {
@@ -150,6 +151,18 @@ function startServeProcess(args: {
     env: args.env,
     stdio: ["ignore", "ignore", "ignore"],
   });
+}
+
+function runningTestServiceStatus() {
+  return {
+    ok: true,
+    serviceName: "com.ade.runtime",
+    action: "status" as const,
+    installed: true,
+    running: true,
+    path: "/test/com.ade.runtime",
+    message: "ADE test service is running.",
+  };
 }
 
 function removeTempDir(dir: string): void {
@@ -217,6 +230,56 @@ describe("local runtime connection pool", () => {
     expect(compareRuntimeVersionStrings("0.0.0", "1.2.13")).toBe(-1);
     expect(compareRuntimeVersionStrings(null, "1.2.13")).toBeNull();
     expect(compareRuntimeVersionStrings("next", "1.2.13")).toBeNull();
+  });
+
+  it("quarantines a newer brain whose protocol window excludes this desktop", async () => {
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pool = new LocalRuntimeConnectionPool("1.0.0", logger as never);
+    const internals = pool as unknown as {
+      runtimeCompatibilityError: (socketPath: string, runtimeInfo: {
+        version: string;
+        buildHash: string;
+        defaultRole: string;
+        pid: number;
+        minCompatibleProtocol: number;
+        protocolVersion: number;
+      }) => Error & { skewState: string };
+      connectClient: (socketPath: string) => Promise<unknown>;
+      startIsolatedRuntime: (socketPath: string, error: Error) => Promise<{
+        client: unknown;
+        child: null;
+        socketPath: string;
+      }>;
+      tryConnect: (socketPath: string) => Promise<{ socketPath: string } | null>;
+    };
+    const compatibilityError = internals.runtimeCompatibilityError("/tmp/ade.sock", {
+      version: "2.0.0",
+      buildHash: "newer-build",
+      defaultRole: "cto",
+      pid: 4321,
+      minCompatibleProtocol: 2,
+      protocolVersion: 2,
+    });
+    vi.spyOn(internals, "connectClient").mockRejectedValue(compatibilityError);
+    const startIsolatedRuntime = vi.spyOn(internals, "startIsolatedRuntime")
+      .mockResolvedValue({
+        client: {},
+        child: null,
+        socketPath: "/tmp/ade-isolated.sock",
+      });
+
+    try {
+      await expect(internals.tryConnect("/tmp/ade.sock")).resolves.toMatchObject({
+        socketPath: "/tmp/ade-isolated.sock",
+      });
+      expect(compatibilityError.skewState).toBe("runtime_newer");
+      expect(startIsolatedRuntime).toHaveBeenCalledWith(
+        "/tmp/ade.sock",
+        compatibilityError,
+      );
+    } finally {
+      pool.dispose();
+    }
   });
 
   it("starts fallback runtimes with sync enabled by default", () => {
@@ -328,7 +391,7 @@ describe("local runtime connection pool", () => {
     }
   });
 
-  it("skips service install when a newer brain is already running", async () => {
+  it("skips service install when a newer compatible brain is already running", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");
     const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
@@ -348,6 +411,10 @@ describe("local runtime connection pool", () => {
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       ADE_CLI_VERSION: "2.0.0",
+      // A real desktop-spawned brain always runs with the CTO role. Pin it
+      // here instead of inheriting ADE_DEFAULT_ROLE from the test host: ADE
+      // sessions set it on macOS, while GitHub's Linux runner does not.
+      ADE_DEFAULT_ROLE: "cto",
       NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
     };
     const daemon = startServeProcess({
@@ -362,7 +429,9 @@ describe("local runtime connection pool", () => {
       warn: vi.fn(),
       error: vi.fn(),
     };
-    const pool = new LocalRuntimeConnectionPool("1.0.0", logger as never);
+    const pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, {
+      queryServiceStatus: runningTestServiceStatus,
+    });
 
     try {
       await waitForRuntimeSocket(socketPath);
@@ -375,9 +444,9 @@ describe("local runtime connection pool", () => {
 
       expect(pool.getStatus()).toMatchObject({
         versionSkew: {
-          state: "runtime_newer",
+          state: "none",
           appVersion: "1.0.0",
-          runtimeVersion: "2.0.0",
+          runtimeVersion: null,
         },
         serviceInstall: {
           state: "skipped",
@@ -385,11 +454,10 @@ describe("local runtime connection pool", () => {
           path: cliPath,
         },
       });
-      expect(logger.warn).toHaveBeenCalledWith(
+      expect(logger.info).toHaveBeenCalledWith(
         "local_runtime.service_install_skipped",
         expect.objectContaining({
-          reason: "preserve_running_runtime",
-          skewState: "runtime_newer",
+          reason: "compatible_newer_runtime",
           runtimeVersion: "2.0.0",
           appVersion: "1.0.0",
         }),
@@ -486,6 +554,10 @@ describe("local runtime connection pool", () => {
 
     expect(pool.getStatus()).toMatchObject({
       connectionState: "idle",
+      pid: null,
+      syncPort: null,
+      publishHealth: null,
+      lastWedge: null,
       versionSkew: {
         state: "none",
       },
@@ -515,6 +587,119 @@ describe("local runtime connection pool", () => {
         state: "running",
       },
     });
+  });
+
+  it("parses and carries runtime recovery health onto LocalRuntimeStatus", () => {
+    const parsed = readLocalRuntimeInfo({
+      runtimeInfo: {
+        version: "1.2.35",
+        buildHash: "build",
+        defaultRole: "cto",
+        pid: 4321,
+        syncPort: 8789,
+        publishHealth: {
+          state: "http_timeout",
+          failingSinceMs: 123_000,
+          lastLegDurations: { snapshot: 12, token: 34, http: 9_200 },
+        },
+        lastWedge: {
+          lastCommand: "chat.send",
+          blockedMs: 16_500,
+          ts: "2026-07-23T12:00:00.000Z",
+        },
+        minCompatibleProtocol: 1,
+        protocolVersion: 1,
+      },
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.35", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const internals = pool as unknown as {
+      activeClient: unknown;
+      activeRuntimePid: number | null;
+      activeRuntimeSyncPort: number | null;
+      activeRuntimePublishHealth: typeof parsed.publishHealth;
+      activeRuntimeLastWedge: typeof parsed.lastWedge;
+    };
+    internals.activeClient = {};
+    internals.activeRuntimePid = parsed.pid;
+    internals.activeRuntimeSyncPort = parsed.syncPort;
+    internals.activeRuntimePublishHealth = parsed.publishHealth;
+    internals.activeRuntimeLastWedge = parsed.lastWedge;
+
+    expect(pool.getStatus()).toMatchObject({
+      connectionState: "connected",
+      pid: 4321,
+      syncPort: 8789,
+      publishHealth: {
+        state: "http_timeout",
+        failingSinceMs: 123_000,
+        lastLegDurations: { snapshot: 12, token: 34, http: 9_200 },
+      },
+      lastWedge: {
+        lastCommand: "chat.send",
+        blockedMs: 16_500,
+        ts: "2026-07-23T12:00:00.000Z",
+      },
+    });
+    pool.dispose();
+  });
+
+  it("refreshes live publish and wedge health when status is read", async () => {
+    const onRuntimeStatusChange = vi.fn();
+    const call = vi.fn(async () => ({
+      runtimeInfo: {
+        version: "1.2.35",
+        pid: 4321,
+        syncPort: 8789,
+        publishHealth: {
+          state: "http_timeout",
+          failingSinceMs: 456_000,
+          lastLegDurations: { snapshot: 15, token: 45, http: 9_500 },
+        },
+        lastWedge: {
+          lastCommand: "chat.send",
+          blockedMs: 17_000,
+          ts: "2026-07-23T13:00:00.000Z",
+        },
+      },
+    }));
+    const pool = new LocalRuntimeConnectionPool("1.2.35", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, {
+      queryServiceStatus: runningTestServiceStatus,
+      onRuntimeStatusChange,
+    });
+    (pool as unknown as { activeClient: unknown }).activeClient = { call };
+
+    const status = await pool.getFreshStatus();
+
+    expect(call).toHaveBeenCalledWith("runtime/info", {}, { timeoutMs: 2_000 });
+    expect(status).toMatchObject({
+      connectionState: "connected",
+      pid: 4321,
+      syncPort: 8789,
+      publishHealth: {
+        state: "http_timeout",
+        failingSinceMs: 456_000,
+        lastLegDurations: { snapshot: 15, token: 45, http: 9_500 },
+      },
+      lastWedge: {
+        lastCommand: "chat.send",
+        blockedMs: 17_000,
+        ts: "2026-07-23T13:00:00.000Z",
+      },
+    });
+    expect(onRuntimeStatusChange).toHaveBeenCalledWith(expect.objectContaining({
+      lastWedge: expect.objectContaining({ lastCommand: "chat.send" }),
+    }));
+    pool.dispose();
   });
 
   it("retries the service install from isolated recovery and reports runtime mode transitions", async () => {
@@ -1948,7 +2133,7 @@ describe("local runtime connection pool", () => {
     }
   }, 45_000);
 
-  it("does not repair over a newer local brain", async () => {
+  it("connects normally to a newer protocol-compatible local brain", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");
     const tsxLoaderPath = path.join(adeCliRoot, "node_modules", "tsx", "dist", "loader.mjs");
@@ -1968,6 +2153,7 @@ describe("local runtime connection pool", () => {
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       ADE_CLI_VERSION: "2.0.0",
+      ADE_DEFAULT_ROLE: "cto",
       NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
     };
     const daemon = startServeProcess({
@@ -1997,6 +2183,7 @@ describe("local runtime connection pool", () => {
       pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, {
         disableSync: true,
         preferServiceRepair: true,
+        queryServiceStatus: runningTestServiceStatus,
       });
       const internals = pool as unknown as {
         tryConnect: (socketPath: string) => Promise<{ socketPath: string } | null>;
@@ -2005,20 +2192,18 @@ describe("local runtime connection pool", () => {
       const tryRepair = vi.spyOn(internals, "tryRepairServiceConnection");
       const connection = await internals.tryConnect(socketPath);
 
-      expect(connection?.socketPath).toBeTruthy();
-      expect(connection?.socketPath).not.toBe(socketPath);
+      expect(connection?.socketPath).toBe(socketPath);
       expect(tryRepair).not.toHaveBeenCalled();
-      expect(logger.warn).toHaveBeenCalledWith("local_runtime.newer_brain_preserved", expect.objectContaining({
+      expect(logger.info).toHaveBeenCalledWith("local_runtime.newer_brain_accepted", expect.objectContaining({
         appVersion: "1.0.0",
         runtimeVersion: "2.0.0",
         runtimePid: daemonPid,
       }));
       expect(pool.getStatus()).toMatchObject({
-        runtimeMode: "isolated",
         versionSkew: {
-          state: "runtime_newer",
+          state: "none",
           appVersion: "1.0.0",
-          runtimeVersion: "2.0.0",
+          runtimeVersion: null,
         },
       });
       expect(() => process.kill(daemonPid, 0)).not.toThrow();

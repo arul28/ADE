@@ -3,6 +3,7 @@ import http from "node:http";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
+import { runWithAbortSignal } from "./abortSignal";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -158,7 +159,9 @@ import {
   generateX25519EphemeralKeyPair,
   seal,
   signEd25519,
+  supportedAdoptChannelAeads,
   unseal,
+  type AdoptChannelAead,
 } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import {
   createMachineIdentitySigningStore,
@@ -170,6 +173,7 @@ import { createSyncRemoteCommandService, type SyncRemoteCommandService } from ".
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import type { PushPublisherService } from "../push/pushPublisherService";
+import { trackBrainLoopWatchdogCommand } from "../runtime/brainLoopWatchdog";
 import {
   buildChangesetBatchPayload,
   DEFAULT_MAX_CHANGESET_BATCH_BYTES,
@@ -297,6 +301,7 @@ const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const REQUIRED_SEND_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 const SEND_AND_WAIT_TIMEOUT_MS = 15_000;
 const DEFAULT_SYNC_MESSAGE_TIMEOUT_MS = 60_000;
+const DEFAULT_SYNC_SLOW_COMMAND_MS = 5_000;
 const MAX_SYNC_ARTIFACT_BYTES = 8 * 1024 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
@@ -528,6 +533,7 @@ type PeerState = {
     nonce: string;
     hostDeviceId: string;
     expiresAtMs: number;
+    aead: AdoptChannelAead;
   } | null;
   subscribedSessionIds: Set<string>;
   pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
@@ -557,6 +563,7 @@ type PeerState = {
   queuedMessageCount: number;
   terminalInputQueue: Promise<void>;
   pendingTerminalOwnershipChanges: number;
+  inFlightOperationControllers: Set<AbortController>;
   /** Local consent for this browser/phone; never mutates machine-wide consent. */
   productAnalyticsEnabled: boolean;
 };
@@ -817,6 +824,8 @@ type SyncHostServiceArgs = {
   pollIntervalMs?: number;
   authTimeoutMs?: number;
   messageTimeoutMs?: number;
+  /** Test seam; production warns for commands taking at least five seconds. */
+  slowCommandThresholdMs?: number;
   brainStatusIntervalMs?: number;
   compressionThresholdBytes?: number;
   deviceRegistryService?: DeviceRegistryService;
@@ -1383,6 +1392,7 @@ type ParsedAccountChallenge = {
   nonceBytes: Buffer;
   clientEphemeralPublicKey: string;
   clientEphemeralPublicKeyBytes: Buffer;
+  supportedAeads: string[] | null;
 };
 
 function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge | null {
@@ -1394,11 +1404,21 @@ function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge 
     value.clientEphemeralPublicKey,
     32,
   );
+  const supportedAeads = value.supportedAeads === undefined
+    ? null
+    : value.supportedAeads;
   if (
     !nonceBytes
     || !clientEphemeralPublicKeyBytes
     || typeof value.nonce !== "string"
     || typeof value.clientEphemeralPublicKey !== "string"
+    || (
+      supportedAeads !== null
+      && (
+        !Array.isArray(supportedAeads)
+        || supportedAeads.some((entry) => typeof entry !== "string")
+      )
+    )
   ) {
     return null;
   }
@@ -1407,6 +1427,7 @@ function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge 
     nonceBytes,
     clientEphemeralPublicKey: value.clientEphemeralPublicKey,
     clientEphemeralPublicKeyBytes,
+    supportedAeads,
   };
 }
 
@@ -2034,6 +2055,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
   const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? SYNC_HOST_AUTH_TIMEOUT_MS));
   const messageTimeoutMs = Math.max(100, Math.floor(args.messageTimeoutMs ?? DEFAULT_SYNC_MESSAGE_TIMEOUT_MS));
+  const slowCommandThresholdMs = Math.max(
+    1,
+    Math.floor(args.slowCommandThresholdMs ?? DEFAULT_SYNC_SLOW_COMMAND_MS),
+  );
   const compressionThresholdBytes = Math.max(256, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
   const maxChangesetBatchBytes = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
   const maxChangesetBatchRows = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
@@ -2919,6 +2944,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     peer.authTimeout = null;
   }
 
+  function abortPeerOperations(peer: PeerState, reason: string): void {
+    for (const controller of peer.inFlightOperationControllers) {
+      if (!controller.signal.aborted) controller.abort(new Error(reason));
+    }
+    peer.inFlightOperationControllers.clear();
+  }
+
   function isPeerLifecycleCurrent(peer: PeerState, generation: number): boolean {
     return !disposed
       && peers.has(peer)
@@ -3172,6 +3204,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       queuedMessageCount: 0,
       terminalInputQueue: Promise.resolve(),
       pendingTerminalOwnershipChanges: 0,
+      inFlightOperationControllers: new Set(),
       // Paired clients own their local preference. Fail closed on every new
       // connection until that client explicitly reasserts consent, so an
       // opted-out reconnect cannot leak an exportable first mutation.
@@ -3230,6 +3263,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     ws.on("close", (code, reason) => {
       peer.lifecycleGeneration += 1;
+      abortPeerOperations(peer, "Sync peer closed.");
       peer.pendingTerminalSnapshots.clear();
       clearPeerAuthTimeout(peer);
       releaseConnectionAttemptWinner(peer);
@@ -5607,7 +5641,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  async function handleCommand(peer: PeerState, requestId: string | null, payload: SyncCommandPayload): Promise<void> {
+  async function handleCommand(
+    peer: PeerState,
+    requestId: string | null,
+    payload: SyncCommandPayload,
+    signal: AbortSignal,
+  ): Promise<void> {
     const commandId = toOptionalString(payload.commandId) ?? requestId ?? `cmd-${Date.now()}`;
     const requestedProjectId = toOptionalString(payload.projectId);
     const hostProjectId = toOptionalString(args.projectId);
@@ -5813,9 +5852,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const routedPayload = matchesHostProject && hostProjectId
         ? { ...surfaceBoundPayload, projectId: hostProjectId }
         : surfaceBoundPayload;
-      const created = preparedAnalytics.captureDisabled
-        ? { accepted: false, reason: "disabled" }
-        : await executor.execute(routedPayload);
+      const executionStartedAtMs = Date.now();
+      const stopTrackingCommand = trackBrainLoopWatchdogCommand(payload.action);
+      let created: unknown;
+      try {
+        created = preparedAnalytics.captureDisabled
+          ? { accepted: false, reason: "disabled" }
+          : await executor.execute(routedPayload, { signal });
+      } finally {
+        stopTrackingCommand();
+        const durationMs = Math.max(0, Date.now() - executionStartedAtMs);
+        if (durationMs >= slowCommandThresholdMs) {
+          args.logger.warn("sync_host.command_slow", {
+            action: payload.action,
+            durationMs,
+            peerKind: surface,
+          });
+        }
+      }
       if (
         matchesHostProject
         && !payload.action.startsWith("analytics.")
@@ -6168,15 +6222,35 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function handleMessageWithTimeout(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
     const operationGeneration = peer.lifecycleGeneration;
+    const operationController = new AbortController();
+    peer.inFlightOperationControllers.add(operationController);
+    const operationStartedAtMs = Date.now();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
+        const durationMs = Math.max(messageTimeoutMs, Date.now() - operationStartedAtMs);
+        if (envelope.type === "command") {
+          const action = toOptionalString(
+            (envelope.payload as Partial<SyncCommandPayload> | null)?.action,
+          ) ?? "unknown";
+          args.logger.warn("sync_host.command_timed_out", {
+            action,
+            durationMs,
+            peerKind: usageClientSurfaceFromPeer(
+              peer.metadata?.deviceType,
+              peer.metadata?.platform,
+            ),
+            timedOut: true,
+          });
+        }
+        operationController.abort(
+          new Error(`Timed out handling sync message ${envelope.type} after ${messageTimeoutMs}ms.`),
+        );
         if (peer.lifecycleGeneration === operationGeneration) {
-          // Promise.race does not cancel the handler. Invalidate its operation
-          // generation and close the peer so lifecycle-guarded auth, pairing,
-          // and host-state work cannot resume. Accepted commands intentionally
-          // keep running: their commandId ledger must capture the eventual
-          // result so a replacement peer can retry without executing twice.
+          // Invalidate the operation generation and close the peer. Known-slow
+          // handlers observe operationController.signal and stop waiting;
+          // handlers that cannot safely cancel keep the existing exactly-once
+          // ledger behavior and may still publish an eventual replay result.
           peer.lifecycleGeneration += 1;
           try {
             peer.ws.close(4002, "Sync message timed out");
@@ -6188,12 +6262,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }, messageTimeoutMs);
       timer.unref?.();
     });
-    return Promise.race([handleMessage(peer, envelope), timeout]).finally(() => {
+    return Promise.race([
+      handleMessage(peer, envelope, operationController.signal),
+      timeout,
+    ]).finally(() => {
       if (timer) clearTimeout(timer);
+      peer.inFlightOperationControllers.delete(operationController);
     });
   }
 
-  async function handleMessage(peer: PeerState, envelope: ParsedSyncEnvelope): Promise<void> {
+  async function handleMessage(
+    peer: PeerState,
+    envelope: ParsedSyncEnvelope,
+    signal: AbortSignal,
+  ): Promise<void> {
     const lifecycleGeneration = peer.lifecycleGeneration;
     if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
     const heartbeatAwaitedAt = markPeerMessageSeen(peer);
@@ -6245,6 +6327,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }, envelope.requestId);
           return;
         }
+        const hostSupportedAeads = supportedAdoptChannelAeads();
+        const negotiatedAead = challenge.supportedAeads?.find(
+          (aead): aead is AdoptChannelAead =>
+            hostSupportedAeads.includes(aead as AdoptChannelAead),
+        );
+        if (challenge.supportedAeads !== null && !negotiatedAead) {
+          send(peer.ws, "account_challenge_error", {
+            message:
+              "No compatible account adoption cipher is available. Update ADE on both Macs.",
+          }, envelope.requestId);
+          return;
+        }
+        const adoptAead = negotiatedAead ?? "chacha20-poly1305";
         // A well-formed challenge only triggers one public signature and is the
         // normal adoption operation, so it feeds no cooldown at all. Signing
         // load is already bounded by the per-connection single-active-challenge
@@ -6267,6 +6362,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             clientEphemeralPublicKey: challenge.clientEphemeralPublicKey,
             hostEphemeralPublicKey,
             ts,
+            ...(negotiatedAead ? { aead: negotiatedAead } : {}),
           });
           const sessionKey = deriveAdoptSessionKey({
             privateKey: hostEphemeral.privateKey,
@@ -6278,6 +6374,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             nonce: challenge.nonce,
             hostDeviceId,
             expiresAtMs: ts + ADOPT_CHANNEL_CHALLENGE_TTL_MS,
+            aead: adoptAead,
           };
           send(peer.ws, "account_challenge_ok", {
             v: 1,
@@ -6285,6 +6382,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ts,
             hostEphemeralPublicKey,
             signature: signEd25519(identity.privateKey, canonical).toString("base64"),
+            ...(negotiatedAead ? { aead: negotiatedAead } : {}),
           }, envelope.requestId);
         } catch (error) {
           peer.adoptChallenge = null;
@@ -6452,6 +6550,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         sessionKey: Buffer;
         hostDeviceId: string;
         clientDeviceId: string;
+        aead: AdoptChannelAead;
       } | null = null;
       if (hello.auth?.kind === "account_sealed") {
         const sealedAuth = hello.auth;
@@ -6492,6 +6591,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               sealedAuth.deviceId,
             ),
             sealedAuth.sealed,
+            challenge.aead,
           );
           const accountAuth = parseUnsealedAccountAuth(
             JSON.parse(plaintext.toString("utf8")),
@@ -6508,6 +6608,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             sessionKey: challenge.sessionKey,
             hostDeviceId: challenge.hostDeviceId,
             clientDeviceId: sealedAuth.deviceId,
+            aead: challenge.aead,
           };
         } catch {
           rejectSealedHello("The sealed account credentials could not be opened.");
@@ -6904,6 +7005,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               sealedAdoption.clientDeviceId,
             ),
             Buffer.from(JSON.stringify(helloOkPayload), "utf8"),
+            undefined,
+            sealedAdoption.aead,
           ),
         }, envelope.requestId);
       } else {
@@ -7118,11 +7221,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             barrier.captureAttempt += 1;
             const session = args.sessionService.get(sessionId);
             const transcriptSnapshot = session
-              ? await args.ptyService.readTranscriptSnapshot({
-                  sessionId,
-                  maxBytes,
-                  alignStartToSafeBoundary: true,
-                })
+              ? await runWithAbortSignal(
+                  () => args.ptyService.readTranscriptSnapshot({
+                    sessionId,
+                    maxBytes,
+                    alignStartToSafeBoundary: true,
+                  }),
+                  signal,
+                  "Sync operation aborted.",
+                )
               : null;
             if (!isCurrentTerminalSnapshotBarrier(peer, sessionId, barrier, lifecycleGeneration)) break;
 
@@ -7265,12 +7372,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           Math.min(beforeOffset, transcriptWindow.endOffset),
         );
         const requestedStartOffset = Math.max(transcriptWindow.startOffset, endOffset - pageBytes);
-        const range = await args.ptyService.readTranscriptRange({
-          sessionId,
-          startOffset: requestedStartOffset,
-          endOffset,
-          alignStartToSafeBoundary: true,
-        });
+        const range = await runWithAbortSignal(
+          () => args.ptyService.readTranscriptRange({
+            sessionId,
+            startOffset: requestedStartOffset,
+            endOffset,
+            alignStartToSafeBoundary: true,
+          }),
+          signal,
+          "Sync operation aborted.",
+        );
         if (!range) {
           sendRequired(peer, "terminal_history", refused, envelope.requestId);
           break;
@@ -7325,7 +7436,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // subscription at all, or the periodic pump would stream the ACTIVE
         // project's transcript for the same session id after the empty ack.
         const personalTranscriptPath = personalChatRequested
-          ? await args.personalChatScope?.transcriptPath?.(sessionId).catch(() => null) ?? null
+          ? await runWithAbortSignal(
+              () => args.personalChatScope?.transcriptPath?.(sessionId).catch(() => null) ?? null,
+              signal,
+              "Sync operation aborted.",
+            )
           : null;
         const foreignScope = personalChatRequested
           ? personalTranscriptPath
@@ -7367,11 +7482,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // derive turn state from the streamed status events instead.
         const resolveLiveStatusFields = async (): Promise<{ turnActive?: boolean }> => {
           if (personalChatRequested) {
-            const turnActive = await args.personalChatScope?.isTurnActive?.(sessionId).catch(() => false);
+            const turnActive = await runWithAbortSignal(
+              () => args.personalChatScope?.isTurnActive?.(sessionId).catch(() => false) ?? false,
+              signal,
+              "Sync operation aborted.",
+            );
             return typeof turnActive === "boolean" ? { turnActive } : {};
           }
           if (foreignScope.kind !== "local") return {};
-          const liveSummary = await args.agentChatService?.getSessionSummary(sessionId).catch(() => null);
+          const liveSummary = await runWithAbortSignal(
+            () => args.agentChatService?.getSessionSummary(sessionId).catch(() => null) ?? null,
+            signal,
+            "Sync operation aborted.",
+          );
           return liveSummary ? { turnActive: liveSummary.status === "active" } : {};
         };
         // Replay buffers hold the ACTIVE project's live events — a foreign
@@ -7420,7 +7543,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         let truncated: boolean;
         let transcriptSize: number;
         if (foreignTranscriptPath) {
-          const foreignSnapshot = await readForeignChatSnapshot(foreignTranscriptPath, maxBytes);
+          const foreignSnapshot = await runWithAbortSignal(
+            () => readForeignChatSnapshot(foreignTranscriptPath, maxBytes),
+            signal,
+            "Sync operation aborted.",
+          );
           events = foreignSnapshot.events;
           truncated = foreignSnapshot.truncated;
           transcriptSize = foreignSnapshot.transcriptSize;
@@ -7484,7 +7611,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           ...(!toOptionalString((envelope.payload as SyncCommandPayload | null)?.projectId) && envelope.projectId
             ? { projectId: envelope.projectId }
             : {}),
-        });
+        }, signal);
         break;
       default:
         break;
@@ -7827,6 +7954,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         detachSharedListener = null;
         const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
+          abortPeerOperations(peer, "Sync host changed.");
           pairedChannelService.closePeer(peer.ws, "Sync host changed.", true);
           clearPeerAuthTimeout(peer);
           const relayAuthorizationSnapshot = peer.relayAuthorization?.snapshot() ?? null;
@@ -7896,6 +8024,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         await new Promise<void>((resolve) => {
           const finish = () => resolve();
           for (const peer of peers) {
+            abortPeerOperations(peer, "Sync host stopped.");
             pairedChannelService.closePeer(peer.ws, "Sync host stopped.", false);
             clearPeerAuthTimeout(peer);
             try {

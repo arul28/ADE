@@ -73,6 +73,7 @@ import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
+import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 
 // Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
@@ -5177,6 +5178,8 @@ export function createAdeRpcRequestHandler(args: {
         runtimeInfo: {
           name: "ade-rpc",
           version: serverVersion,
+          minCompatibleProtocol: RUNTIME_COMPAT_LEVEL,
+          protocolVersion: RUNTIME_COMPAT_LEVEL,
           buildHash:
             typeof process.env.ADE_RUNTIME_BUILD_HASH === "string" &&
             process.env.ADE_RUNTIME_BUILD_HASH.trim()

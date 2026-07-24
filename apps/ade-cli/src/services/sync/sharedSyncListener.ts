@@ -1,8 +1,9 @@
 import http from "node:http";
+import { spawnSync } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
-import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
+import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 import type { RelayAuthorizationSnapshot } from "./relayAuthorization";
 import {
   assertAdeLoopbackListener,
@@ -13,6 +14,14 @@ import {
   type SyncLoopbackProbeResult,
   type SyncLoopbackValidationStatus,
 } from "./syncLoopbackProbe";
+import {
+  isStaleChannelServeCommandLine,
+  resolveAdeServeCliScriptPath,
+  resolveAdeServeCommand,
+  terminatePidGracefullyAsync,
+} from "../../serviceManager/common";
+import { getRuntimeServiceMainPid } from "../../serviceManager";
+import { resolveMachineAdeLayout } from "../projects/machineLayout";
 
 // Bind the sync host on all interfaces by default so phones on the same
 // wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
@@ -54,6 +63,16 @@ const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
 type SharedSyncListenerLogger = {
   info?: (message: string, fields?: Record<string, unknown>) => void;
   warn?: (message: string, fields?: Record<string, unknown>) => void;
+};
+
+export type SyncListenerPortDiagnosis = {
+  port: number;
+  holders: Array<{
+    pid: number;
+    command: string | null;
+    /** Stable process birth identity used to guard against PID reuse. */
+    startTime: string | null;
+  }>;
 };
 
 export type SharedSyncListenerConnection = {
@@ -241,12 +260,36 @@ export function createSharedSyncListener(options: {
   maxPayloadBytes?: number;
   parkedPeerGraceMs?: number;
   loopbackProbe?: (port: number, expectedNonce: string) => Promise<SyncLoopbackProbeResult>;
+  inspectPort?: (port: number) => SyncListenerPortDiagnosis | Promise<SyncListenerPortDiagnosis>;
+  activeServicePid?: () => number | null;
+  terminatePid?: (pid: number) => Promise<void>;
 } = {}): SharedSyncListener {
   const logger = options.logger ?? {};
   const bindHost = options.bindHost ?? SYNC_HOST_BIND_HOST;
   const maxPayloadBytes = options.maxPayloadBytes ?? SYNC_HOST_MAX_PAYLOAD_BYTES;
   const parkedPeerGraceMs = Math.max(50, Math.floor(options.parkedPeerGraceMs ?? DEFAULT_PARKED_PEER_GRACE_MS));
   const loopbackProbe = options.loopbackProbe ?? probeAdeLoopbackListener;
+  const inspectPort = options.inspectPort ?? inspectSyncListenerPort;
+  const activeServicePid = options.activeServicePid ?? getRuntimeServiceMainPid;
+  const terminatePid = options.terminatePid ?? ((pid) => terminatePidGracefullyAsync(pid));
+  const serviceCommand = resolveAdeServeCommand();
+  const staleServeMatch = {
+    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
+    primarySocketPath: resolveMachineAdeLayout().socketPath,
+  };
+  const findStaleHolder = (
+    diagnosis: SyncListenerPortDiagnosis,
+  ): SyncListenerPortDiagnosis["holders"][number] | null => {
+    const excludedPids = new Set([
+      process.pid,
+      activeServicePid() ?? -1,
+    ]);
+    return diagnosis.holders.find((holder) =>
+      !excludedPids.has(holder.pid)
+      && holder.command != null
+      && isStaleChannelServeCommandLine(holder.command, staleServeMatch),
+    ) ?? null;
+  };
   // One identity per listener instance. Every candidate bind for this
   // instance emits the same nonce, and only in-process validators receive the
   // expected value they must compare against.
@@ -434,7 +477,22 @@ export function createSharedSyncListener(options: {
     // (each re-bind resolves a different port), so a shadow on one ephemeral
     // port does not short-circuit the remaining fresh-port attempts.
     const shadowedPorts = new Set<number>();
-    for (const attemptedPort of attemptPlan) {
+    const zombieReapedPorts = new Set<number>();
+    const portDiagnoses = new Map<number, SyncListenerPortDiagnosis>();
+    const diagnosePort = async (
+      port: number,
+      refresh = false,
+    ): Promise<SyncListenerPortDiagnosis> => {
+      if (!refresh) {
+        const cached = portDiagnoses.get(port);
+        if (cached) return cached;
+      }
+      const diagnosis = await inspectPort(port);
+      portDiagnoses.set(port, diagnosis);
+      return diagnosis;
+    };
+    for (let attemptIndex = 0; attemptIndex < attemptPlan.length; attemptIndex += 1) {
+      const attemptedPort = attemptPlan[attemptIndex]!;
       if (closed) throw new Error("The shared sync listener has been closed.");
       if (attemptedPort !== 0 && shadowedPorts.has(attemptedPort)) continue;
       // The retry delay lets a dying listener free a FIXED port; an ephemeral
@@ -527,6 +585,36 @@ export function createSharedSyncListener(options: {
         }
         const retryable = isRetryableListenerBindError(error)
           && (attemptedPort !== 0 || isLoopbackShadowedError(error));
+        if (
+          (error as NodeJS.ErrnoException | null | undefined)?.code === "EADDRINUSE"
+          && attemptedPort >= DEFAULT_SYNC_HOST_PORT
+          && attemptedPort <= SYNC_HOST_MAX_PORT
+          && !zombieReapedPorts.has(attemptedPort)
+        ) {
+          const diagnosis = await diagnosePort(attemptedPort);
+          const staleHolder = findStaleHolder(diagnosis);
+          if (staleHolder) {
+            // Reconfirm ownership immediately before signaling. The original
+            // holder may have exited and its pid may have been reused while
+            // the first lsof/ps diagnosis was being assembled.
+            const confirmedHolder = findStaleHolder(await diagnosePort(attemptedPort, true));
+            if (
+              staleHolder.startTime != null
+              && confirmedHolder?.pid === staleHolder.pid
+              && confirmedHolder.startTime === staleHolder.startTime
+            ) {
+              zombieReapedPorts.add(attemptedPort);
+              await terminatePid(staleHolder.pid);
+              logger.info?.("sync_listener.zombie_reaped", {
+                port: attemptedPort,
+                pid: staleHolder.pid,
+              });
+              // Non-preferred candidates occur only once in the normal plan.
+              // Insert exactly one immediate retry for the newly-freed port.
+              attemptPlan.splice(attemptIndex + 1, 0, attemptedPort);
+            }
+          }
+        }
         logger.warn?.(
           isLoopbackShadowedError(error)
             ? "sync_listener.loopback_shadowed"
@@ -540,6 +628,16 @@ export function createSharedSyncListener(options: {
         if (!retryable) throw error;
       }
     }
+    const candidateDiagnosis = await Promise.all(
+      [...new Set(candidates)]
+        .filter((port) => port > 0)
+        .slice(0, 5)
+        .map((port) => diagnosePort(port)),
+    );
+    logger.warn?.("sync_listener.bind_exhausted", {
+      candidates: candidateDiagnosis,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    });
     throw lastError instanceof Error
       ? lastError
       : new Error("Unable to bind the shared sync listener.");
@@ -695,5 +793,47 @@ export function createSharedSyncListener(options: {
         }
       });
     },
+  };
+}
+
+export function inspectSyncListenerPort(port: number): SyncListenerPortDiagnosis {
+  const lsof = spawnSync(
+    "lsof",
+    ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"],
+    { encoding: "utf8", timeout: 200 },
+  );
+  if (lsof.status !== 0) return { port, holders: [] };
+  const pids = [...new Set(
+    String(lsof.stdout ?? "")
+      .split(/\r?\n/)
+      .filter((line) => /^p\d+$/.test(line))
+      .map((line) => Number(line.slice(1)))
+      .filter((pid) => Number.isFinite(pid) && pid > 0),
+  )];
+  return {
+    port,
+    holders: pids.map((pid) => {
+      const commandResult = spawnSync(
+        "ps",
+        ["-p", String(pid), "-o", "command="],
+        { encoding: "utf8", timeout: 200 },
+      );
+      const startResult = spawnSync(
+        "ps",
+        ["-p", String(pid), "-o", "lstart="],
+        { encoding: "utf8", timeout: 200 },
+      );
+      const command = commandResult.status === 0
+        ? String(commandResult.stdout ?? "").trim()
+        : "";
+      const startTime = startResult.status === 0
+        ? String(startResult.stdout ?? "").trim()
+        : "";
+      return {
+        pid,
+        command: command || null,
+        startTime: startTime || null,
+      };
+    }),
   };
 }

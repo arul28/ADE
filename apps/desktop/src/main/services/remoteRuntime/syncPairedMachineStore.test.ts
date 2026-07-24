@@ -15,6 +15,7 @@ import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { DesktopPairedMachineCredentials } from "../../../shared/types/pairedRuntime";
 import { encodeSyncEnvelope, parseSyncEnvelope, wsDataToText } from "../sync/syncProtocol";
 import { DesktopPairedMachineStore } from "./syncPairedMachineStore";
+import * as adoptChannelCrypto from "../../../shared/sync/adoptChannelCrypto";
 import {
   buildAdoptChallengeSignatureInput,
   buildAdoptHelloAad,
@@ -25,11 +26,13 @@ import {
   seal,
   signEd25519,
   unseal,
+  type AdoptChannelAead,
 } from "../../../shared/sync/adoptChannelCrypto";
 
 const originalAdeHome = process.env.ADE_HOME;
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (originalAdeHome === undefined) delete process.env.ADE_HOME;
   else process.env.ADE_HOME = originalAdeHome;
 });
@@ -71,6 +74,8 @@ function successfulSealedAdoptionSocket(args: {
   hostDeviceId: string;
   hostName: string;
   pairedSecret?: string;
+  aead?: AdoptChannelAead;
+  onSupportedAeads?: (aeads: string[] | undefined) => void;
 }): FakeWebSocket {
   let hostSessionKey: Buffer | null = null;
   return new FakeWebSocket((text, ws) => {
@@ -79,7 +84,9 @@ function successfulSealedAdoptionSocket(args: {
       const request = envelope.payload as {
         nonce: string;
         clientEphemeralPublicKey: string;
+        supportedAeads?: string[];
       };
+      args.onSupportedAeads?.(request.supportedAeads);
       const hostEphemeral = generateX25519EphemeralKeyPair();
       const hostEphemeralPublicKey = hostEphemeral.publicKeyRaw.toString("base64");
       const ts = Date.now();
@@ -89,6 +96,7 @@ function successfulSealedAdoptionSocket(args: {
         clientEphemeralPublicKey: request.clientEphemeralPublicKey,
         hostEphemeralPublicKey,
         ts,
+        ...(args.aead ? { aead: args.aead } : {}),
       });
       hostSessionKey = deriveAdoptSessionKey({
         privateKey: hostEphemeral.privateKey,
@@ -107,6 +115,7 @@ function successfulSealedAdoptionSocket(args: {
             args.signingPrivateKey,
             canonical,
           ).toString("base64"),
+          ...(args.aead ? { aead: args.aead } : {}),
         },
       }));
       return;
@@ -117,6 +126,17 @@ function successfulSealedAdoptionSocket(args: {
       auth: { kind: string; deviceId: string; sealed: string };
     };
     expect(payload.auth.kind).toBe("account_sealed");
+    const accountAuth = JSON.parse(unseal(
+      hostSessionKey,
+      buildAdoptHelloAad(args.hostDeviceId, payload.auth.deviceId),
+      payload.auth.sealed,
+      args.aead,
+    ).toString("utf8")) as {
+      deviceId: string;
+      accountToken: string;
+    };
+    expect(accountAuth.deviceId).toBe(payload.auth.deviceId);
+    expect(accountAuth.accountToken).toBeTruthy();
     const helloOk = {
       peer: payload.peer,
       brain: {
@@ -145,6 +165,8 @@ function successfulSealedAdoptionSocket(args: {
           hostSessionKey,
           buildAdoptHelloOkAad(args.hostDeviceId, payload.auth.deviceId),
           Buffer.from(JSON.stringify(helloOk)),
+          undefined,
+          args.aead,
         ),
       },
     }));
@@ -647,6 +669,140 @@ describe("DesktopPairedMachineStore", () => {
       { kind: "relay", phase: "connecting" },
       { kind: "relay", phase: "verifying" },
     ]);
+  });
+
+  it("offers only runtime-supported AEADs and completes adoption with negotiated AES-256-GCM", async () => {
+    process.env.ADE_HOME = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-desktop-aes-adoption-"),
+    );
+    vi.spyOn(adoptChannelCrypto, "supportedAdoptChannelAeads")
+      .mockReturnValue(["aes-256-gcm"]);
+    const signing = generateKeyPairSync("ed25519");
+    let offeredAeads: string[] | undefined;
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-aes-adoption",
+      deviceId: "host-aes-adoption",
+      name: "AES Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${rawPublicKeyFromSpki(signing.publicKey).toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "lan", host: "aes-studio.local", port: 8787 },
+      ],
+    };
+
+    const adopted = await new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "aes-account-token",
+      "AES client",
+      {
+        accountOwnerUserId: "aes-account-user",
+        pairingTimeoutMs: 2_000,
+        createWebSocket: () => successfulSealedAdoptionSocket({
+          signingPrivateKey: signing.privateKey,
+          hostDeviceId: "host-aes-adoption",
+          hostName: machine.name ?? "AES Studio",
+          pairedSecret: "aes-paired-secret",
+          aead: "aes-256-gcm",
+          onSupportedAeads: (aeads) => {
+            offeredAeads = aeads;
+          },
+        }) as unknown as WebSocket,
+      },
+    );
+
+    expect(offeredAeads).toEqual(["aes-256-gcm"]);
+    expect(adopted.hostIdentity.deviceId).toBe(machine.deviceId);
+    expect(adopted.secret).toBe("aes-paired-secret");
+  });
+
+  it.each([
+    {
+      name: "requires an update when an old host omits AEAD negotiation",
+      responseAead: undefined,
+      expectedError:
+        "The other Mac is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.",
+    },
+    {
+      name: "rejects a host AEAD that the client did not offer",
+      responseAead: "chacha20-poly1305" as const,
+      expectedError:
+        "Host identity verification failed — the machine may be running an older ADE.",
+    },
+  ])("$name", async ({ responseAead, expectedError }) => {
+    process.env.ADE_HOME = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-desktop-aead-rejection-"),
+    );
+    vi.spyOn(adoptChannelCrypto, "supportedAdoptChannelAeads")
+      .mockReturnValue(["aes-256-gcm"]);
+    const signing = generateKeyPairSync("ed25519");
+    const sentTypes: string[] = [];
+    const machine: AdeAccountMachine = {
+      machineKey: "machine-aead-rejection",
+      deviceId: "host-aead-rejection",
+      name: "Cipher Studio",
+      platform: "macOS",
+      deviceType: "desktop",
+      pubkey: `ed25519:${rawPublicKeyFromSpki(signing.publicKey).toString("base64")}`,
+      online: true,
+      lastSeenAt: Date.now(),
+      reachableEndpoints: [
+        { kind: "lan", host: "cipher-studio.local", port: 8787 },
+      ],
+    };
+
+    const pairing = new DesktopPairedMachineStore().pairWithAccountMachine(
+      machine,
+      "must-remain-local",
+      "AES-only client",
+      {
+        accountOwnerUserId: "aes-only-account-user",
+        pairingTimeoutMs: 500,
+        createWebSocket: () => new FakeWebSocket((text, ws) => {
+          const envelope = parseSyncEnvelope(wsDataToText(text));
+          sentTypes.push(envelope.type);
+          if (envelope.type !== "account_challenge") return;
+          const request = envelope.payload as {
+            nonce: string;
+            clientEphemeralPublicKey: string;
+            supportedAeads?: string[];
+          };
+          expect(request.supportedAeads).toEqual(["aes-256-gcm"]);
+          const hostEphemeral = generateX25519EphemeralKeyPair();
+          const hostEphemeralPublicKey =
+            hostEphemeral.publicKeyRaw.toString("base64");
+          const ts = Date.now();
+          const canonical = buildAdoptChallengeSignatureInput({
+            hostDeviceId: "host-aead-rejection",
+            nonce: request.nonce,
+            clientEphemeralPublicKey: request.clientEphemeralPublicKey,
+            hostEphemeralPublicKey,
+            ts,
+            ...(responseAead ? { aead: responseAead } : {}),
+          });
+          ws.receive(encodeSyncEnvelope({
+            type: "account_challenge_ok",
+            requestId: envelope.requestId,
+            payload: {
+              v: 1,
+              hostDeviceId: "host-aead-rejection",
+              ts,
+              hostEphemeralPublicKey,
+              signature: signEd25519(
+                signing.privateKey,
+                canonical,
+              ).toString("base64"),
+              ...(responseAead ? { aead: responseAead } : {}),
+            },
+          }));
+        }) as unknown as WebSocket,
+      },
+    );
+
+    await expect(pairing).rejects.toThrow(expectedError);
+    expect(sentTypes).toEqual(["account_challenge"]);
   });
 
   it("falls through a closed relay to sealed tailnet adoption with exact stages", async () => {

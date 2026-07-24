@@ -5,11 +5,13 @@ import { autoUpdater, type UpdateInfo } from "electron-updater";
 import type {
   AutoUpdateErrorDetails,
   AutoUpdateErrorKind,
+  AutoUpdateInstallAbortReason,
   AutoUpdatePhase,
   AutoUpdateSnapshot,
   RecentlyInstalledUpdate,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { readGlobalState, writeGlobalState, type GlobalState } from "../state/globalState";
 import {
   classifyUpdateError,
@@ -19,10 +21,19 @@ import {
   updateDownloadBytes,
   type DiskSpaceInfo,
 } from "./autoUpdateErrors";
+import {
+  buildGithubReleaseUrl,
+  buildReleaseNotesUrl,
+  compareUpdateVersions,
+  DEFAULT_RELEASE_NOTES_BASE_URL,
+} from "./autoUpdateVersions";
 
-const DEFAULT_RELEASE_NOTES_BASE_URL = "https://www.ade-app.dev";
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
-const DEFAULT_NATIVE_HANDOFF_WATCHDOG_MS = 5 * 60_000;
+const DEFAULT_QUIT_DEADLINE_MS = 10_000;
+const DEFAULT_AUTO_APPLY_IDLE_MS = 2 * 60_000;
+const DEFAULT_AUTO_APPLY_COUNTDOWN_MS = 10_000;
+const DEFAULT_AUTO_APPLY_SUPPRESSION_MS = 4 * 60 * 60_000;
+const DEFAULT_ACTIVITY_CHECK_MS = 5_000;
 
 type AutoUpdaterLike = {
   logger: typeof autoUpdater.logger;
@@ -46,7 +57,12 @@ type CreateAutoUpdateServiceArgs = {
   globalStatePath: string;
   updater?: AutoUpdaterLike;
   beforeQuitAndInstall?: () => void | Promise<void>;
+  rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
+  forceQuit?: (args: { blockedPhase: string; blockedMs: number }) => void;
+  getRuntimeActivitySummary?: () => Promise<{ idle: boolean }>;
+  productAnalyticsService?: Pick<ProductAnalyticsService, "captureInternal">;
   now?: () => string;
+  nowMs?: () => number;
   releaseNotesBaseUrl?: string;
   startupDelayMs?: number;
   periodicCheckMs?: number;
@@ -54,8 +70,13 @@ type CreateAutoUpdateServiceArgs = {
   installTargetPath?: string;
   getDiskSpace?: (targetPath: string) => DiskSpaceInfo;
   installWatchdogMs?: number;
-  nativeHandoffWatchdogMs?: number;
+  quitDeadlineMs?: number;
+  autoApplyIdleMs?: number;
+  autoApplyCountdownMs?: number;
+  autoApplySuppressionMs?: number;
+  activityCheckMs?: number;
   autoCheckEnabled?: boolean;
+  autoApplyEnabled?: boolean;
 };
 
 type UpdateCheckResultLike = {
@@ -79,6 +100,7 @@ export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSn
   return {
     status: "idle",
     currentVersion,
+    latestKnownVersion: null,
     version: null,
     progressPercent: null,
     bytesPerSecond: null,
@@ -88,58 +110,10 @@ export function createEmptyAutoUpdateSnapshot(currentVersion = ""): AutoUpdateSn
     error: null,
     errorDetails: null,
     recentlyInstalled: null,
+    parked: null,
+    autoApplyPending: null,
+    autoApplySuppressedUntil: null,
   };
-}
-
-function parseVersion(version: string): {
-  core: number[];
-  prerelease: string[];
-} {
-  const withoutBuild = version.trim().replace(/^v/i, "").split("+")[0] ?? "";
-  const [coreText = "", prereleaseText = ""] = withoutBuild.split("-", 2);
-  return {
-    core: coreText.split(".").map((part) => {
-      const parsed = Number.parseInt(part, 10);
-      return Number.isFinite(parsed) ? parsed : 0;
-    }),
-    prerelease: prereleaseText ? prereleaseText.split(".") : [],
-  };
-}
-
-function comparePrereleaseIdentifier(left: string, right: string): number {
-  const leftNumeric = /^\d+$/.test(left);
-  const rightNumeric = /^\d+$/.test(right);
-  if (leftNumeric && rightNumeric) {
-    return Number(left) - Number(right);
-  }
-  if (leftNumeric !== rightNumeric) {
-    return leftNumeric ? -1 : 1;
-  }
-  return left.localeCompare(right);
-}
-
-export function compareUpdateVersions(left: string, right: string): number {
-  const leftVersion = parseVersion(left);
-  const rightVersion = parseVersion(right);
-  const coreLength = Math.max(leftVersion.core.length, rightVersion.core.length, 3);
-  for (let index = 0; index < coreLength; index += 1) {
-    const delta = (leftVersion.core[index] ?? 0) - (rightVersion.core[index] ?? 0);
-    if (delta !== 0) return delta;
-  }
-
-  if (leftVersion.prerelease.length === 0 && rightVersion.prerelease.length > 0) return 1;
-  if (leftVersion.prerelease.length > 0 && rightVersion.prerelease.length === 0) return -1;
-  const prereleaseLength = Math.max(leftVersion.prerelease.length, rightVersion.prerelease.length);
-  for (let index = 0; index < prereleaseLength; index += 1) {
-    const leftPart = leftVersion.prerelease[index];
-    const rightPart = rightVersion.prerelease[index];
-    if (leftPart == null && rightPart == null) return 0;
-    if (leftPart == null) return -1;
-    if (rightPart == null) return 1;
-    const delta = comparePrereleaseIdentifier(leftPart, rightPart);
-    if (delta !== 0) return delta;
-  }
-  return 0;
 }
 
 function isUpdateCheckResultLike(result: unknown): result is UpdateCheckResultLike {
@@ -156,25 +130,6 @@ function extractDownloadPromise(result: unknown): Promise<unknown> | null {
   return downloadPromise && typeof (downloadPromise as Promise<unknown>).then === "function"
     ? downloadPromise
     : null;
-}
-
-export function buildReleaseNotesUrl(
-  version: string,
-  baseUrl = DEFAULT_RELEASE_NOTES_BASE_URL,
-): string | null {
-  const normalizedVersion = version.trim().replace(/^v/i, "");
-  const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
-  if (!normalizedVersion || !normalizedBaseUrl) return null;
-  return `${normalizedBaseUrl}/docs/changelog/${encodeURIComponent(`v${normalizedVersion}`)}`;
-}
-
-// Deterministic GitHub release page for a version tag, e.g.
-// https://github.com/arul28/ADE/releases/tag/v1.2.18 — the same repo the
-// updater feed points at above.
-export function buildGithubReleaseUrl(version: string): string | null {
-  const normalizedVersion = version.trim().replace(/^v/i, "");
-  if (!normalizedVersion) return null;
-  return `https://github.com/arul28/ADE/releases/tag/${encodeURIComponent(`v${normalizedVersion}`)}`;
 }
 
 function cloneRecentlyInstalledUpdate(
@@ -197,6 +152,8 @@ function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
   return {
     ...snapshot,
     recentlyInstalled: cloneRecentlyInstalledUpdate(snapshot.recentlyInstalled),
+    parked: snapshot.parked ? { ...snapshot.parked } : null,
+    autoApplyPending: snapshot.autoApplyPending ? { ...snapshot.autoApplyPending } : null,
   };
 }
 
@@ -298,6 +255,7 @@ function applyUpdateInfo(
   releaseNotesBaseUrl: string,
 ): Partial<AutoUpdateSnapshot> {
   return {
+    latestKnownVersion: info.version,
     version: info.version,
     releaseNotesUrl: buildReleaseNotesUrl(info.version, releaseNotesBaseUrl),
     error: null,
@@ -311,7 +269,12 @@ export function createAutoUpdateService({
   globalStatePath,
   updater = autoUpdater as unknown as AutoUpdaterLike,
   beforeQuitAndInstall,
+  rollbackQuitAndInstall,
+  forceQuit,
+  getRuntimeActivitySummary,
+  productAnalyticsService,
   now = () => new Date().toISOString(),
+  nowMs = () => Date.now(),
   releaseNotesBaseUrl = DEFAULT_RELEASE_NOTES_BASE_URL,
   startupDelayMs = 5_000,
   periodicCheckMs = 30 * 60 * 1_000,
@@ -319,8 +282,13 @@ export function createAutoUpdateService({
   installTargetPath = process.execPath,
   getDiskSpace = readDiskSpace,
   installWatchdogMs = DEFAULT_INSTALL_WATCHDOG_MS,
-  nativeHandoffWatchdogMs = DEFAULT_NATIVE_HANDOFF_WATCHDOG_MS,
+  quitDeadlineMs = DEFAULT_QUIT_DEADLINE_MS,
+  autoApplyIdleMs = DEFAULT_AUTO_APPLY_IDLE_MS,
+  autoApplyCountdownMs = DEFAULT_AUTO_APPLY_COUNTDOWN_MS,
+  autoApplySuppressionMs = DEFAULT_AUTO_APPLY_SUPPRESSION_MS,
+  activityCheckMs = DEFAULT_ACTIVITY_CHECK_MS,
   autoCheckEnabled = true,
+  autoApplyEnabled = autoCheckEnabled && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
   // Manual download is required so ADE can preflight the updater cache volume
@@ -379,6 +347,7 @@ export function createAutoUpdateService({
   // call sets this; subsequent calls return the same promise so we never
   // race the actual install.
   let quitAndInstallPromise: Promise<boolean> | null = null;
+  let installReadySnapshot: AutoUpdateSnapshot | null = null;
   let ignoredDownloadVersion: string | null = null;
   let readyRefreshInProgress = false;
   const readyRefreshFailure: {
@@ -388,7 +357,13 @@ export function createAutoUpdateService({
   let compressedUpdateBytes: number | null = null;
   let compressedUpdateVersion: string | null = null;
   let preservedDownloadRetry: PreservedDownloadRetry | null = null;
-  let installWatchdog: ReturnType<typeof setTimeout> | null = null;
+  let quitDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  let activityCheckTimer: ReturnType<typeof setTimeout> | null = null;
+  let autoApplyDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  let idleSinceMs: number | null = null;
+  let installQuitArmed = false;
+  let activityCheckFailed = false;
+  let activityCheckInProgress = false;
   const listeners = new Set<(snapshot: AutoUpdateSnapshot) => void>();
 
   function emit(): void {
@@ -399,8 +374,17 @@ export function createAutoUpdateService({
   }
 
   function patchSnapshot(partial: Partial<AutoUpdateSnapshot>): void {
-    snapshot = { ...snapshot, ...partial };
+    const previousStatus = snapshot.status;
+    let nextSnapshot = { ...snapshot, ...partial };
+    if (nextSnapshot.status !== "ready") {
+      resetAutoApplyTracking(false);
+      nextSnapshot = { ...nextSnapshot, autoApplyPending: null };
+    }
+    snapshot = nextSnapshot;
     emit();
+    if (snapshot.status === "ready" && previousStatus !== "ready") {
+      scheduleActivityCheck(0);
+    }
   }
 
   function clearPendingInstallUpdate(): void {
@@ -412,10 +396,22 @@ export function createAutoUpdateService({
     });
   }
 
-  function clearInstallWatchdog(): void {
-    if (!installWatchdog) return;
-    clearTimeout(installWatchdog);
-    installWatchdog = null;
+  function clearQuitDeadline(): void {
+    if (!quitDeadlineTimer) return;
+    clearTimeout(quitDeadlineTimer);
+    quitDeadlineTimer = null;
+  }
+
+  function clearAutoApplyDeadline(): void {
+    if (!autoApplyDeadlineTimer) return;
+    clearTimeout(autoApplyDeadlineTimer);
+    autoApplyDeadlineTimer = null;
+  }
+
+  function clearActivityCheck(): void {
+    if (!activityCheckTimer) return;
+    clearTimeout(activityCheckTimer);
+    activityCheckTimer = null;
   }
 
   function rememberUpdateSize(info: UpdateInfo | null | undefined): void {
@@ -566,6 +562,7 @@ export function createAutoUpdateService({
     if (isTerminalSnapshotStatus()) {
       return {
         status: snapshot.status,
+        latestKnownVersion: snapshot.latestKnownVersion,
         version: snapshot.version,
         progressPercent: snapshot.progressPercent,
         bytesPerSecond: snapshot.bytesPerSecond,
@@ -574,10 +571,14 @@ export function createAutoUpdateService({
         releaseNotesUrl: snapshot.releaseNotesUrl,
         error: null,
         errorDetails: null,
+        parked: snapshot.parked,
+        autoApplyPending: snapshot.autoApplyPending,
+        autoApplySuppressedUntil: snapshot.autoApplySuppressedUntil,
       };
     }
     return {
       status: idleStatus,
+      latestKnownVersion: snapshot.latestKnownVersion,
       version: null,
       progressPercent: null,
       bytesPerSecond: null,
@@ -586,6 +587,8 @@ export function createAutoUpdateService({
       releaseNotesUrl: null,
       error: null,
       errorDetails: null,
+      parked: null,
+      autoApplyPending: null,
     };
   }
 
@@ -608,16 +611,20 @@ export function createAutoUpdateService({
         });
         return;
       }
-      cleanupUpdaterCacheDir({
-        updaterCacheDir,
-        logger,
-        reason: "superseded_ready_update",
-      });
+      if (!readyRefreshInProgress) {
+        cleanupUpdaterCacheDir({
+          updaterCacheDir,
+          logger,
+          reason: "superseded_ready_update",
+        });
+      }
     }
     ignoredDownloadVersion = null;
     rememberUpdateSize(info);
     patchSnapshot({
       status: "checking",
+      parked: null,
+      autoApplyPending: null,
       progressPercent: null,
       bytesPerSecond: null,
       transferredBytes: null,
@@ -666,6 +673,8 @@ export function createAutoUpdateService({
     rememberUpdateSize(info);
     patchSnapshot({
       status: "ready",
+      parked: null,
+      autoApplyPending: null,
       progressPercent: 100,
       bytesPerSecond: null,
       transferredBytes: null,
@@ -674,8 +683,11 @@ export function createAutoUpdateService({
     });
   };
 
-  const onUpdateNotAvailable = () => {
+  const onUpdateNotAvailable = (info?: UpdateInfo) => {
     logger.info("autoUpdate.update_not_available");
+    if (info?.version) {
+      patchSnapshot({ latestKnownVersion: info.version });
+    }
     if (!isTerminalSnapshotStatus()) {
       compressedUpdateBytes = null;
       compressedUpdateVersion = null;
@@ -700,7 +712,9 @@ export function createAutoUpdateService({
     });
     patchSnapshot({
       ...createEmptyAutoUpdateSnapshot(currentVersion),
+      latestKnownVersion: snapshot.latestKnownVersion ?? info.version,
       recentlyInstalled: snapshot.recentlyInstalled,
+      autoApplySuppressedUntil: snapshot.autoApplySuppressedUntil,
     });
   };
 
@@ -720,9 +734,12 @@ export function createAutoUpdateService({
       };
       return;
     }
-    clearInstallWatchdog();
     if (snapshot.status === "installing") {
       clearPendingInstallUpdate();
+      clearQuitDeadline();
+      installQuitArmed = false;
+      void abortInstall("handoff_failed", installReadySnapshot ?? snapshot);
+      return;
     }
     const preservedUpdate = preservedUpdateForRetryError(err);
     setErrorSnapshot({
@@ -769,6 +786,9 @@ export function createAutoUpdateService({
           && (!snapshot.version || compareUpdateVersions(updateInfo.version, snapshot.version) >= 0)
         ) {
           rememberUpdateSize(updateInfo);
+        }
+        if (updateInfo?.version) {
+          patchSnapshot({ latestKnownVersion: updateInfo.version });
         }
         if (snapshot.status === "ready" || ignoredDownloadVersion) {
           ignoredDownloadVersion = null;
@@ -841,15 +861,9 @@ export function createAutoUpdateService({
     const refreshFailure = readReadyRefreshFailure();
     if (refreshFailure) {
       const failureMessage = formatErrorMessage(refreshFailure.error);
-      const error = `Could not verify the latest update before installing: ${failureMessage}`;
       logger.warn("autoUpdate.refresh_ready_before_install_failed", {
         version: readyVersion,
         message: failureMessage,
-      });
-      setErrorSnapshot({
-        error: refreshFailure.error,
-        fallbackPhase: refreshFailure.phase,
-        message: error,
       });
       return false;
     }
@@ -875,13 +889,6 @@ export function createAutoUpdateService({
           installWatchdogMs,
           message: timeoutMessage,
         });
-        clearPendingInstallUpdate();
-        setErrorSnapshot({
-          error: new Error(timeoutMessage),
-          fallbackPhase: phase,
-          message: timeoutMessage,
-          preservesDownload: true,
-        });
         resolve({ completed: false });
       }, installWatchdogMs);
     });
@@ -891,6 +898,208 @@ export function createAutoUpdateService({
     } finally {
       if (timeout) clearTimeout(timeout);
     }
+  }
+
+  function resetAutoApplyTracking(clearPending: boolean): void {
+    clearActivityCheck();
+    clearAutoApplyDeadline();
+    idleSinceMs = null;
+    if (clearPending && snapshot.autoApplyPending) {
+      patchSnapshot({ autoApplyPending: null });
+    }
+  }
+
+  function scheduleActivityCheck(delayMs: number): void {
+    if (
+      !autoApplyEnabled
+      || !getRuntimeActivitySummary
+      || snapshot.status !== "ready"
+      || quitAndInstallPromise != null
+      || installQuitArmed
+      || activityCheckInProgress
+      || activityCheckTimer
+    ) {
+      return;
+    }
+    activityCheckTimer = setTimeout(() => {
+      activityCheckTimer = null;
+      void checkAutoApplyActivity();
+    }, Math.max(0, delayMs));
+    activityCheckTimer.unref?.();
+  }
+
+  function clearPendingAutoApply(): void {
+    clearAutoApplyDeadline();
+    if (!snapshot.autoApplyPending) return;
+    patchSnapshot({ autoApplyPending: null });
+  }
+
+  async function applyAutoUpdateAtDeadline(deadlineAt: number): Promise<void> {
+    if (
+      !getRuntimeActivitySummary
+      || snapshot.status !== "ready"
+      || snapshot.autoApplyPending?.deadlineAt !== deadlineAt
+      || (snapshot.autoApplySuppressedUntil ?? 0) > nowMs()
+    ) {
+      return;
+    }
+    try {
+      const activity = await getRuntimeActivitySummary();
+      if (
+        snapshot.status !== "ready"
+        || snapshot.autoApplyPending?.deadlineAt !== deadlineAt
+        || (snapshot.autoApplySuppressedUntil ?? 0) > nowMs()
+      ) {
+        return;
+      }
+      if (!activity.idle) {
+        idleSinceMs = null;
+        clearPendingAutoApply();
+        scheduleActivityCheck(activityCheckMs);
+        return;
+      }
+      patchSnapshot({ autoApplyPending: null });
+      const started = await quitAndInstall();
+      if (!started) return;
+      productAnalyticsService?.captureInternal({
+        event: "ade_update_auto_applied",
+        surface: "desktop",
+      });
+    } catch (error) {
+      idleSinceMs = null;
+      clearPendingAutoApply();
+      logger.warn("autoUpdate.deadline_activity_check_failed", {
+        message: formatErrorMessage(error),
+      });
+      scheduleActivityCheck(activityCheckMs);
+    }
+  }
+
+  async function checkAutoApplyActivity(): Promise<void> {
+    if (
+      activityCheckInProgress
+      || !autoApplyEnabled
+      || !getRuntimeActivitySummary
+      || snapshot.status !== "ready"
+      || quitAndInstallPromise != null
+      || installQuitArmed
+    ) {
+      return;
+    }
+    const currentMs = nowMs();
+    const suppressedUntil = snapshot.autoApplySuppressedUntil;
+    if (suppressedUntil != null && suppressedUntil > currentMs) {
+      idleSinceMs = null;
+      clearPendingAutoApply();
+      scheduleActivityCheck(suppressedUntil - currentMs);
+      return;
+    }
+    if (suppressedUntil != null) {
+      patchSnapshot({ autoApplySuppressedUntil: null });
+    }
+
+    activityCheckInProgress = true;
+    try {
+      const activity = await getRuntimeActivitySummary();
+      if (snapshot.status !== "ready" || quitAndInstallPromise != null || installQuitArmed) return;
+      if (activityCheckFailed) {
+        activityCheckFailed = false;
+        logger.info("autoUpdate.activity_check_recovered");
+      }
+      if (!activity.idle) {
+        idleSinceMs = null;
+        clearPendingAutoApply();
+        return;
+      }
+      const checkedAt = nowMs();
+      idleSinceMs ??= checkedAt;
+      if (snapshot.autoApplyPending || checkedAt - idleSinceMs < autoApplyIdleMs) return;
+      const deadlineAt = checkedAt + autoApplyCountdownMs;
+      patchSnapshot({ autoApplyPending: { deadlineAt } });
+      autoApplyDeadlineTimer = setTimeout(() => {
+        autoApplyDeadlineTimer = null;
+        void applyAutoUpdateAtDeadline(deadlineAt);
+      }, autoApplyCountdownMs);
+      autoApplyDeadlineTimer.unref?.();
+    } catch (error) {
+      idleSinceMs = null;
+      clearPendingAutoApply();
+      if (!activityCheckFailed) {
+        activityCheckFailed = true;
+        logger.warn("autoUpdate.activity_check_failed", {
+          message: formatErrorMessage(error),
+        });
+      }
+    } finally {
+      activityCheckInProgress = false;
+      scheduleActivityCheck(activityCheckMs);
+    }
+  }
+
+  async function abortInstall(
+    reason: AutoUpdateInstallAbortReason,
+    readySnapshot: AutoUpdateSnapshot,
+  ): Promise<false> {
+    clearQuitDeadline();
+    installQuitArmed = false;
+    clearPendingInstallUpdate();
+    resetAutoApplyTracking(true);
+    try {
+      await rollbackQuitAndInstall?.(reason);
+    } catch (error) {
+      logger.error("autoUpdate.install_rollback_failed", {
+        reason,
+        message: formatErrorMessage(error),
+      });
+    }
+    logger.warn("autoUpdate.install_aborted", {
+      reason,
+      version: readySnapshot.version,
+    });
+    productAnalyticsService?.captureInternal({
+      event: "ade_update_install_aborted",
+      surface: "desktop",
+      properties: { reason },
+    });
+    patchSnapshot({
+      ...readySnapshot,
+      status: "ready",
+      latestKnownVersion: snapshot.latestKnownVersion ?? readySnapshot.latestKnownVersion,
+      progressPercent: 100,
+      bytesPerSecond: null,
+      transferredBytes: null,
+      totalBytes: null,
+      error: null,
+      errorDetails: null,
+      parked: { reason, at: nowMs() },
+      autoApplyPending: null,
+    });
+    installReadySnapshot = null;
+    scheduleActivityCheck(0);
+    return false;
+  }
+
+  function armQuitDeadline(): void {
+    clearQuitDeadline();
+    installQuitArmed = true;
+    const startedAt = nowMs();
+    quitDeadlineTimer = setTimeout(() => {
+      quitDeadlineTimer = null;
+      if (!installQuitArmed) return;
+      const blockedMs = Math.max(0, nowMs() - startedAt);
+      const blockedPhase = "app_quit";
+      logger.error("autoUpdate.quit_escalated", {
+        blockedPhase,
+        blockedMs,
+      });
+      productAnalyticsService?.captureInternal({
+        event: "ade_update_quit_escalated",
+        surface: "desktop",
+        properties: { blocked_ms: blockedMs },
+      });
+      forceQuit?.({ blockedPhase, blockedMs });
+    }, quitDeadlineMs);
+    quitDeadlineTimer.unref?.();
   }
 
   function dismissInstalledNotice(): void {
@@ -903,6 +1112,88 @@ export function createAutoUpdateService({
     patchSnapshot({
       recentlyInstalled: null,
     });
+  }
+
+  async function quitAndInstall(): Promise<boolean> {
+    // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
+    // transaction so cleanup, rollback, and native handoff cannot race.
+    if (quitAndInstallPromise) return quitAndInstallPromise;
+    if (snapshot.status !== "ready" || !snapshot.version) return false;
+    const originalReadySnapshot = cloneSnapshot(snapshot);
+    resetAutoApplyTracking(true);
+    const run = async (): Promise<boolean> => {
+      currentPhase = "verification";
+      const refreshSucceeded = await refreshReadyUpdateBeforeInstall();
+      if (!refreshSucceeded) {
+        return await abortInstall("refresh_failed", originalReadySnapshot);
+      }
+      const installVersion = snapshot.version;
+      if (!installVersion) {
+        return await abortInstall("refresh_failed", originalReadySnapshot);
+      }
+      installReadySnapshot = cloneSnapshot(snapshot);
+      currentPhase = "staging";
+      if (!preflightSpace("install", installTargetPath)) {
+        return await abortInstall("install_preflight_failed", installReadySnapshot);
+      }
+      try {
+        const prepareResult = await waitForInstallStep(
+          Promise.resolve(beforeQuitAndInstall?.()),
+          "install",
+          "ADE could not prepare to quit for the update. Try again.",
+        );
+        if (!prepareResult.completed) {
+          return await abortInstall("prepare_timeout", installReadySnapshot);
+        }
+      } catch (error) {
+        const message = formatErrorMessage(error);
+        logger.warn("autoUpdate.prepare_quit_and_install_failed", {
+          version: installVersion,
+          message,
+        });
+        return await abortInstall("prepare_failed", installReadySnapshot);
+      }
+      writeGlobalState(globalStatePath, {
+        ...readGlobalState(globalStatePath),
+        pendingInstallUpdate: {
+          fromVersion: currentVersion,
+          targetVersion: installVersion,
+          releaseNotesUrl: snapshot.releaseNotesUrl,
+          requestedAt: now(),
+        },
+        recentlyInstalledUpdate: undefined,
+      });
+      logger.info("autoUpdate.quit_and_install", { version: installVersion });
+      patchSnapshot({
+        status: "installing",
+        progressPercent: 100,
+        error: null,
+        errorDetails: null,
+        parked: null,
+        autoApplyPending: null,
+      });
+      try {
+        currentPhase = "install";
+        // Mark the quit before entering electron-updater: it calls app.quit()
+        // synchronously, and ADE's before-quit handler must recognize this
+        // consented path instead of opening the normal quit confirmation.
+        armQuitDeadline();
+        updater.quitAndInstall(false, true);
+        return true;
+      } catch (error) {
+        const message = formatErrorMessage(error);
+        logger.warn("autoUpdate.quit_and_install_failed", {
+          version: installVersion,
+          message,
+        });
+        return await abortInstall("handoff_failed", installReadySnapshot);
+      }
+    };
+    quitAndInstallPromise = run().finally(() => {
+      quitAndInstallPromise = null;
+      if (snapshot.status === "ready") scheduleActivityCheck(0);
+    });
+    return quitAndInstallPromise;
   }
 
   const startupTimer = autoCheckEnabled ? setTimeout(checkForUpdates, startupDelayMs) : null;
@@ -918,100 +1209,33 @@ export function createAutoUpdateService({
       return () => listeners.delete(cb);
     },
     dismissInstalledNotice,
-    async quitAndInstall(): Promise<boolean> {
-      // Mirrors checkPromise: collapse concurrent IPC calls onto one in-flight
-      // promise so two callers cannot race the refresh + quitAndInstall pair.
-      if (quitAndInstallPromise) return quitAndInstallPromise;
-      if (snapshot.status !== "ready" || !snapshot.version) return false;
-      const run = async (): Promise<boolean> => {
-        currentPhase = "verification";
-        const refreshSucceeded = await refreshReadyUpdateBeforeInstall();
-        if (!refreshSucceeded) return false;
-        // After refresh, snapshot may have been replaced; re-check version
-        // (refreshReadyUpdateBeforeInstall returns false if snapshot is no
-        // longer "ready" with a version, but be explicit for the narrowing).
-        const installVersion = snapshot.version;
-        if (!installVersion) return false;
-        currentPhase = "staging";
-        if (!preflightSpace("install", installTargetPath)) return false;
-        try {
-          const prepareResult = await waitForInstallStep(
-            Promise.resolve(beforeQuitAndInstall?.()),
-            "install",
-            "ADE could not prepare to quit for the update. Try again.",
-          );
-          if (!prepareResult.completed) return false;
-        } catch (error) {
-          const message = formatErrorMessage(error);
-          logger.warn("autoUpdate.prepare_quit_and_install_failed", {
-            version: installVersion,
-            message,
-          });
-          setErrorSnapshot({
-            error,
-            fallbackPhase: "install",
-          });
-          return false;
-        }
-        writeGlobalState(globalStatePath, {
-          ...readGlobalState(globalStatePath),
-          pendingInstallUpdate: {
-            fromVersion: currentVersion,
-            targetVersion: installVersion,
-            releaseNotesUrl: snapshot.releaseNotesUrl,
-            requestedAt: now(),
-          },
-          recentlyInstalledUpdate: undefined,
-        });
-        logger.info("autoUpdate.quit_and_install", { version: installVersion });
-        patchSnapshot({
-          status: "installing",
-          progressPercent: 100,
-          error: null,
-          errorDetails: null,
-        });
-        try {
-          currentPhase = "install";
-          updater.quitAndInstall(false, true);
-          clearInstallWatchdog();
-          installWatchdog = setTimeout(() => {
-            installWatchdog = null;
-            const message = "ADE did not quit for the update. Free space if needed, then try again.";
-            logger.warn("autoUpdate.quit_and_install_stalled", {
-              version: installVersion,
-              nativeHandoffWatchdogMs,
-            });
-            setErrorSnapshot({
-              error: new Error(message),
-              fallbackPhase: "install",
-              message,
-              preservesDownload: true,
-            });
-          }, nativeHandoffWatchdogMs);
-          return true;
-        } catch (error) {
-          const message = formatErrorMessage(error);
-          logger.warn("autoUpdate.quit_and_install_failed", {
-            version: installVersion,
-            message,
-          });
-          clearPendingInstallUpdate();
-          setErrorSnapshot({
-            error,
-            fallbackPhase: "install",
-          });
-          return false;
-        }
-      };
-      quitAndInstallPromise = run().finally(() => {
-        quitAndInstallPromise = null;
+    quitAndInstall,
+    cancelAutoApply(): boolean {
+      if (snapshot.status !== "ready" || !snapshot.autoApplyPending) return false;
+      const autoApplySuppressedUntil = nowMs() + autoApplySuppressionMs;
+      resetAutoApplyTracking(true);
+      patchSnapshot({ autoApplySuppressedUntil });
+      productAnalyticsService?.captureInternal({
+        event: "ade_update_auto_apply_cancelled",
+        surface: "desktop",
       });
-      return quitAndInstallPromise;
+      scheduleActivityCheck(autoApplySuppressionMs);
+      return true;
+    },
+    isInstallQuitArmed(): boolean {
+      return installQuitArmed;
+    },
+    notifyQuitHandoffStarted(): void {
+      installQuitArmed = false;
+      installReadySnapshot = null;
+      clearQuitDeadline();
     },
     dispose() {
       if (startupTimer) clearTimeout(startupTimer);
       if (periodicTimer) clearInterval(periodicTimer);
-      clearInstallWatchdog();
+      clearQuitDeadline();
+      clearActivityCheck();
+      clearAutoApplyDeadline();
       listeners.clear();
       updater.removeListener("checking-for-update", onCheckingForUpdate);
       updater.removeListener("update-available", onUpdateAvailable);

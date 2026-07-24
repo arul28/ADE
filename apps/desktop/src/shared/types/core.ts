@@ -3,6 +3,10 @@
 // ---------------------------------------------------------------------------
 
 import type { DeeplinkEnvelope } from "../deeplinks";
+import type {
+  SyncAccountDirectoryLegDurations,
+  SyncAccountDirectoryState,
+} from "./sync";
 
 export type LocalRuntimeServiceInstallState =
   | "not_attempted"
@@ -26,6 +30,18 @@ export type LocalRuntimeConnectionState =
 
 export type LocalRuntimeStatus = {
   connectionState: LocalRuntimeConnectionState;
+  pid?: number | null;
+  syncPort?: number | null;
+  publishHealth?: {
+    state: SyncAccountDirectoryState;
+    failingSinceMs: number | null;
+    lastLegDurations: SyncAccountDirectoryLegDurations;
+  } | null;
+  lastWedge?: {
+    lastCommand: string;
+    blockedMs: number;
+    ts: string;
+  } | null;
   /**
    * "isolated" means the desktop fell back to an app-owned no-sync brain
    * (phone sync and ADE Code attach to the channel service, which is down).
@@ -179,9 +195,22 @@ export type AutoUpdateErrorDetails = {
   preservesDownload: boolean;
 };
 
+export const AUTO_UPDATE_INSTALL_ABORT_REASONS = [
+  "refresh_failed",
+  "install_preflight_failed",
+  "prepare_failed",
+  "prepare_timeout",
+  "handoff_failed",
+] as const;
+
+export type AutoUpdateInstallAbortReason =
+  (typeof AUTO_UPDATE_INSTALL_ABORT_REASONS)[number];
+
 export type AutoUpdateSnapshot = {
   status: AutoUpdateStatus;
   currentVersion: string;
+  /** Latest version observed from electron-updater's configured feed. */
+  latestKnownVersion: string | null;
   version: string | null;
   progressPercent: number | null;
   bytesPerSecond: number | null;
@@ -191,6 +220,21 @@ export type AutoUpdateSnapshot = {
   error: string | null;
   errorDetails: AutoUpdateErrorDetails | null;
   recentlyInstalled: RecentlyInstalledUpdate | null;
+  /** A consented install that aborted before the native updater could take over. */
+  parked: { reason: AutoUpdateInstallAbortReason; at: number } | null;
+  /** Renderer-visible countdown before an idle update is applied. */
+  autoApplyPending: { deadlineAt: number } | null;
+  /** Explicit user cancellation suppresses another idle countdown until this epoch. */
+  autoApplySuppressedUntil: number | null;
+};
+
+export type RuntimeActivityCounts = {
+  activeAgentTurns: number;
+  activeWorkSessions: number;
+};
+
+export type RuntimeActivitySummary = RuntimeActivityCounts & {
+  idle: boolean;
 };
 
 export type UpdateInstallImpactPhone = {

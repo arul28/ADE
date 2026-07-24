@@ -152,7 +152,7 @@ import {
   getSharedAccountAuthService,
   registerAccountConfigProjectRoot,
 } from "../../../ade-cli/src/services/account/sharedAccountAuthService";
-import { uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
+import { installRuntimeService, uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
@@ -1390,6 +1390,9 @@ app.whenReady().then(async () => {
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
     desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
+    onRuntimeStatusChange: (status) => {
+      broadcast(IPC.appRuntimeStatusChanged, status);
+    },
     onRuntimeModeChange: (mode) => {
       localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
       if (!Notification.isSupported()) return;
@@ -2116,17 +2119,32 @@ app.whenReady().then(async () => {
     tempRoot: app.getPath("temp"),
     logger: updateLogger,
   });
+  let runtimeServiceUninstalledForUpdate = false;
+  let autoUpdateInstallRollbackReason: string | null = null;
+  const reinstallRuntimeServiceAfterUpdateAbort = async (reason: string): Promise<void> => {
+    if (!runtimeServiceUninstalledForUpdate) return;
+    const result = await installRuntimeService();
+    const payload = {
+      reason,
+      ok: result.ok,
+      serviceName: result.serviceName,
+      path: result.path,
+      message: result.message,
+      selfMutationBlocked: result.selfMutationBlocked === true,
+    };
+    if (!result.ok) {
+      updateLogger.error("autoUpdate.runtime_service_reinstall_after_abort_failed", payload);
+      throw new Error(result.message);
+    }
+    runtimeServiceUninstalledForUpdate = false;
+    updateLogger.info("autoUpdate.runtime_service_reinstalled_after_abort", payload);
+  };
   const prepareAutoUpdateInstall = async (): Promise<void> => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
     });
-    try {
-      localRuntimePool.dispose();
-    } catch (error) {
-      updateLogger.warn("autoUpdate.local_runtime_dispose_before_install_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    runtimeServiceUninstalledForUpdate = false;
+    autoUpdateInstallRollbackReason = null;
     if (!shouldRepairRuntimeServiceOnFallback) {
       updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
         serviceManaged: false,
@@ -2146,9 +2164,18 @@ app.whenReady().then(async () => {
       throw new Error(result.message);
     }
     updateLogger.info("autoUpdate.runtime_service_uninstalled_before_install", payload);
+    runtimeServiceUninstalledForUpdate = true;
+    if (autoUpdateInstallRollbackReason) {
+      await reinstallRuntimeServiceAfterUpdateAbort(autoUpdateInstallRollbackReason);
+      return;
+    }
     updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
       serviceManaged: true,
     });
+  };
+  const rollbackAutoUpdateInstall = async (reason: string): Promise<void> => {
+    autoUpdateInstallRollbackReason = reason;
+    await reinstallRuntimeServiceAfterUpdateAbort(reason);
   };
   const autoUpdateService = createAutoUpdateService({
     logger: updateLogger,
@@ -2158,6 +2185,19 @@ app.whenReady().then(async () => {
     installTargetPath: process.execPath,
     autoCheckEnabled: app.isPackaged,
     beforeQuitAndInstall: prepareAutoUpdateInstall,
+    rollbackQuitAndInstall: rollbackAutoUpdateInstall,
+    getRuntimeActivitySummary: () => localRuntimePool.activitySummary(),
+    productAnalyticsService,
+    forceQuit: () => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        try {
+          win.destroy();
+        } catch {
+          // Keep escalating through every window; app.exit is the hard bound.
+        }
+      }
+      app.exit(0);
+    },
   });
   const shouldRefreshRuntimeServiceAfterUpdate =
     app.isPackaged
@@ -6063,7 +6103,7 @@ app.whenReady().then(async () => {
     win: BrowserWindow,
     event: Electron.Event,
   ): void => {
-    if (shutdownRequested) return;
+    if (shutdownRequested || autoUpdateService.isInstallQuitArmed()) return;
     if (closeWindowWithoutQuitPrompt.delete(win.id)) return;
     event.preventDefault();
     if (BrowserWindow.getAllWindows().filter((openWindow) => !openWindow.isDestroyed()).length > 1) {
@@ -6134,6 +6174,7 @@ app.whenReady().then(async () => {
     runImmediateProcessCleanup("process_exit");
   });
   app.on("will-quit", () => {
+    autoUpdateService.notifyQuitHandoffStarted();
     runImmediateProcessCleanup("will_quit");
     disposeSharedTranscriptionService();
   });
@@ -6645,6 +6686,10 @@ app.whenReady().then(async () => {
 
   app.on("before-quit", (event) => {
     if (shutdownFinalized) return;
+    if (autoUpdateService.isInstallQuitArmed()) {
+      quitWarningAcknowledged = true;
+      return;
+    }
     event.preventDefault();
     if (shutdownRequested) return;
     requestQuitAfterWarnings(null, "before_quit");

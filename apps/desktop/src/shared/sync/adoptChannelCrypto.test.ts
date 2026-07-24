@@ -51,15 +51,55 @@ describe("adoptChannelCrypto", () => {
     expect(() => unseal(randomBytes(32), aad, sealed)).toThrow();
   });
 
-  it("builds the exact canonical challenge signature string", () => {
-    expect(buildAdoptChallengeSignatureInput({
+  it("seals with AES-256-GCM using AAD and rejects tampering", () => {
+    const key = randomBytes(32);
+    const nonce = Buffer.alloc(12, 7);
+    const aad = Buffer.from("ade-adopt-v1|aes-host|aes-client");
+    const plaintext = Buffer.from('{"accountToken":"aes-secret"}');
+    const sealed = seal(key, aad, plaintext, nonce, "aes-256-gcm");
+    const tampered = Buffer.from(sealed, "base64");
+    tampered[nonce.byteLength + 1] ^= 0x01;
+
+    expect(Buffer.from(sealed, "base64").subarray(0, nonce.byteLength))
+      .toEqual(nonce);
+    expect(unseal(key, aad, sealed, "aes-256-gcm")).toEqual(plaintext);
+    expect(() => unseal(
+      key,
+      aad,
+      tampered.toString("base64"),
+      "aes-256-gcm",
+    )).toThrow();
+    expect(() => unseal(
+      key,
+      Buffer.from("wrong aad"),
+      sealed,
+      "aes-256-gcm",
+    )).toThrow();
+  });
+
+  it("keeps the legacy signature input byte-identical and appends a negotiated AEAD", () => {
+    const args = {
       hostDeviceId: "host-device",
       nonce: "bm9uY2U=",
       clientEphemeralPublicKey: "Y2xpZW50",
       hostEphemeralPublicKey: "aG9zdA==",
       ts: 1_783_500_123_456,
-    })).toMatchInlineSnapshot(
-      `"ade-adopt-v1|host-device|bm9uY2U=|Y2xpZW50|aG9zdA==|1783500123456"`,
+    };
+    const legacyInput = buildAdoptChallengeSignatureInput(args);
+    const negotiatedInput = buildAdoptChallengeSignatureInput({
+      ...args,
+      aead: "aes-256-gcm",
+    });
+
+    expect(legacyInput).toBe(
+      "ade-adopt-v1|host-device|bm9uY2U=|Y2xpZW50|aG9zdA==|1783500123456",
+    );
+    expect(Buffer.from(legacyInput, "utf8")).toEqual(Buffer.from(
+      "ade-adopt-v1|host-device|bm9uY2U=|Y2xpZW50|aG9zdA==|1783500123456",
+      "utf8",
+    ));
+    expect(negotiatedInput).toBe(
+      "ade-adopt-v1|host-device|bm9uY2U=|Y2xpZW50|aG9zdA==|1783500123456|aes-256-gcm",
     );
   });
 

@@ -3303,6 +3303,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         env: {},
         localRuntime: {
           connectionState: "idle",
+          pid: null,
+          syncPort: null,
+          publishHealth: null,
+          lastWedge: null,
           runtimeMode: "primary",
           serviceInstall: {
             state: "skipped",
@@ -3324,6 +3328,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           },
         },
       }),
+      onRuntimeStatusChanged: () => () => {},
       getResourceUsage: resolved({
         sampledAt: now,
         processCount: 1,
@@ -6461,6 +6466,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     updateCheckForUpdates: resolved(undefined),
     updateGetState: resolved({
       status: "idle",
+      currentVersion: "0.0.0",
+      latestKnownVersion: null,
       version: null,
       progressPercent: null,
       bytesPerSecond: null,
@@ -6468,10 +6475,15 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       totalBytes: null,
       releaseNotesUrl: null,
       error: null,
+      errorDetails: null,
       recentlyInstalled: null,
+      parked: null,
+      autoApplyPending: null,
+      autoApplySuppressedUntil: null,
     }),
     updateGetInstallImpact: resolved({ connectedPhones: [] }),
     updateQuitAndInstall: resolved(true),
+    updateCancelAutoApply: resolved(false),
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,
   };

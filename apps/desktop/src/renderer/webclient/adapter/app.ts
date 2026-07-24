@@ -34,6 +34,10 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
         env: {},
         localRuntime: {
           connectionState: client.getStatus().state === "connected" ? "connected" : "idle",
+          pid: null,
+          syncPort: null,
+          publishHealth: null,
+          lastWedge: null,
           runtimeMode: "primary",
           versionSkew: {
             state: "none",
@@ -204,6 +208,8 @@ export const webUpdateMethods = {
   async updateGetState() {
     return {
       status: "idle",
+      currentVersion: "",
+      latestKnownVersion: null,
       version: null,
       progressPercent: null,
       bytesPerSecond: null,
@@ -211,12 +217,18 @@ export const webUpdateMethods = {
       totalBytes: null,
       releaseNotesUrl: null,
       error: null,
+      errorDetails: null,
       recentlyInstalled: null,
+      parked: null,
+      autoApplyPending: null,
+      autoApplySuppressedUntil: null,
     };
   },
   async updateCheckNow() {
     return {
       status: "idle",
+      currentVersion: "",
+      latestKnownVersion: null,
       version: null,
       progressPercent: null,
       bytesPerSecond: null,
@@ -224,13 +236,20 @@ export const webUpdateMethods = {
       totalBytes: null,
       releaseNotesUrl: null,
       error: null,
+      errorDetails: null,
       recentlyInstalled: null,
+      parked: null,
+      autoApplyPending: null,
+      autoApplySuppressedUntil: null,
     };
   },
   async updateGetInstallImpact(): Promise<UpdateInstallImpact> {
     return { connectedPhones: [] };
   },
   async updateQuitAndInstall() {
+    return false;
+  },
+  async updateCancelAutoApply() {
     return false;
   },
 };

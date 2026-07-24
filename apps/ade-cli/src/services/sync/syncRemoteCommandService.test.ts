@@ -16,6 +16,7 @@ function makePayload(
 
 function createService(options?: {
   agentChatService?: Record<string, unknown>;
+  aiIntegrationService?: Record<string, unknown>;
   conflictService?: Record<string, unknown>;
   diffService?: Record<string, unknown>;
   externalSessionsService?: Record<string, unknown>;
@@ -83,6 +84,7 @@ function createService(options?: {
     ...(options?.operationService ? { operationService: options.operationService } : {}),
     ...(options?.projectConfigService ? { projectConfigService: options.projectConfigService } : {}),
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
+    ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
     ...(options?.getPairingConnectInfo ? { getPairingConnectInfo: options.getPairingConnectInfo } : {}),
@@ -118,6 +120,101 @@ function makePairingConnectInfo(
 }
 
 describe("createSyncRemoteCommandService", () => {
+  it("preserves the exact remote-command set that observes execution aborts", () => {
+    const { service } = createService();
+
+    expect(new Set(service.getAbortObservingActions())).toEqual(new Set([
+      "chat.resolveSmartLinkPreview",
+      "chat.getChatEventHistory",
+      "chat.getTranscript",
+      "chat.getSubagentTranscript",
+      "chat.getMainTranscript",
+      "chat.getChatEventHistoryPage",
+      "agentChat.getEventHistoryPage",
+      "github.getStatus",
+      "github.getRemoteStatus",
+      "ai.getStatus",
+      "prs.list",
+      "prs.listOpenForRepo",
+      "prs.getForLane",
+      "prs.refresh",
+      "prs.getDetail",
+      "prs.getAiSummary",
+      "prs.getIntegrationResolutionState",
+      "prs.listProposals",
+      "prs.getQueueState",
+      "prs.listQueueStates",
+      "prs.getMergeContext",
+      "prs.getMergeContexts",
+      "prs.listWithConflicts",
+      "prs.listSnapshots",
+      "prs.getStatus",
+      "prs.getChecks",
+      "prs.getReviews",
+      "prs.getComments",
+      "prs.getFiles",
+      "prs.getGitHubSnapshot",
+      "prs.getReviewThreads",
+      "prs.getActionRuns",
+      "prs.getActivity",
+      "prs.getDeployments",
+      "prs.getDetailByGithub",
+      "prs.getFilesByGithub",
+      "prs.getCommitsByGithub",
+      "prs.getActionRunsByGithub",
+      "prs.getActivityByGithub",
+      "prs.getStatusByGithub",
+      "prs.getChecksByGithub",
+      "prs.getReviewsByGithub",
+      "prs.getCommentsByGithub",
+      "prs.getReviewThreadsByGithub",
+      "prs.getMobileGithubDetail",
+      "prs.preflightCreateLaneFromPrBranch",
+      "prs.listIntegrationWorkflows",
+      "prs.getMobileSnapshot",
+    ]));
+  });
+
+  it("caps ai.getStatus probes at 30 seconds", async () => {
+    vi.useFakeTimers();
+    const getStatus = vi.fn(() => new Promise<never>(() => {}));
+    const { service } = createService({
+      aiIntegrationService: {
+        getStatus,
+        getDailyUsageBatch: vi.fn(() => new Map()),
+        getFeatureFlag: vi.fn(() => false),
+        getDailyBudgetLimit: vi.fn(() => null),
+      },
+    });
+    try {
+      const result = expect(
+        service.execute(makePayload("ai.getStatus", { force: true })),
+      ).rejects.toThrow("ai.getStatus timed out after 30000ms");
+      await vi.advanceTimersByTimeAsync(30_000);
+      await result;
+      expect(getStatus).toHaveBeenCalledWith({
+        force: true,
+        refreshOpenCodeInventory: false,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops waiting for transcript pulls when the execution signal aborts", async () => {
+    const getChatTranscript = vi.fn(() => new Promise<never>(() => {}));
+    const { service } = createService({
+      agentChatService: { getChatTranscript },
+    });
+    const controller = new AbortController();
+    const pending = service.execute(
+      makePayload("chat.getTranscript", { sessionId: "chat-1" }),
+      { signal: controller.signal },
+    );
+    controller.abort(new Error("peer closed"));
+    await expect(pending).rejects.toThrow("peer closed");
+  });
+
   it("forwards bounded GitHub history pagination for mobile PR lists", async () => {
     const getGithubSnapshot = vi.fn().mockResolvedValue({ repoPullRequests: [] });
     const { service } = createService({ prService: { getGithubSnapshot } });

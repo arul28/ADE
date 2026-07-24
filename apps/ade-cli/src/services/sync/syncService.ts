@@ -70,7 +70,7 @@ import { createSyncCloudRelayStore, type SyncCloudRelayStore } from "./syncCloud
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
-import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
+import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import {
   buildAddressCandidates,
@@ -102,6 +102,7 @@ type SyncServiceArgs = {
   productAnalyticsService?: ProductAnalyticsService | null;
   logger: Logger;
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
+  requestAccountMachinePublish?: () => void | Promise<void>;
   accountAuthService?: Pick<AccountAuthService, "getStatus" | "getAccessToken">;
   getAccountAttestationConfig?: () => AccountAttestationConfig;
   projectId?: string | null;
@@ -370,9 +371,7 @@ function isChatToolType(toolType: string | null | undefined): boolean {
   return normalized === "cursor" || normalized.endsWith("-chat");
 }
 const LEGACY_SYNC_HOST_PORT_RETRY_WINDOW = 13;
-const SYNC_HOST_PORT_RETRY_WINDOW = 8999 - DEFAULT_SYNC_HOST_PORT;
 const LEGACY_SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + LEGACY_SYNC_HOST_PORT_RETRY_WINDOW;
-const SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + SYNC_HOST_PORT_RETRY_WINDOW;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
@@ -884,6 +883,13 @@ export function createSyncService(args: SyncServiceArgs) {
         lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
         lastPort: resolvedPort,
       });
+      if (localDevice.lastPort != null && localDevice.lastPort !== resolvedPort) {
+        args.logger.warn("sync_listener.port_drifted", {
+          from: localDevice.lastPort,
+          to: resolvedPort,
+        });
+        void args.requestAccountMachinePublish?.();
+      }
     };
     try {
       const portCandidates = buildHostPortCandidates(preferredPort);
@@ -1763,8 +1769,11 @@ export function createSyncService(args: SyncServiceArgs) {
       return remoteCommandService.getDescriptor(action);
     },
 
-    async executeRemoteCommand(payload: Parameters<SyncRemoteCommandService["execute"]>[0]): Promise<unknown> {
-      return await remoteCommandService.execute(payload);
+    async executeRemoteCommand(
+      payload: Parameters<SyncRemoteCommandService["execute"]>[0],
+      context?: Parameters<SyncRemoteCommandService["execute"]>[1],
+    ): Promise<unknown> {
+      return await remoteCommandService.execute(payload, context);
     },
 
     getDeviceRegistryService() {

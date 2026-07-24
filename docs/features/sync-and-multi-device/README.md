@@ -449,7 +449,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   a `hello` whose `auth.kind` is `account_sealed`: the host signs the client's
   nonce over an ephemeral X25519 exchange with its `machineIdentitySigningStore`
   key, derives the session key, unseals the account credentials from the sealed
-  hello, and returns the paired credentials in a sealed `hello_ok`; a completed
+  hello, and returns the paired credentials in a sealed `hello_ok`. The seal
+  AEAD is negotiated from the client's advertised `supportedAeads` against the
+  host's `supportedAdoptChannelAeads()` — the host picks the first mutual
+  choice, echoes it in the `account_challenge_ok`, and binds it into the
+  signature input, so a packaged Electron without ChaCha20-Poly1305 negotiates
+  `aes-256-gcm` instead of failing to connect; a client advertising an AEAD set
+  with no host overlap is rejected rather than silently downgraded. A completed
   single-use challenge is required, well-formed challenges feed no rate limiter
   while malformed/anomalous ones charge a per-IP + global cooldown, and unsealed
   `account_sealed` adoption is the one account path allowed over a direct
@@ -550,8 +556,17 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `sharedSyncListener.ts` — the brain-level WebSocket listener shared
   across per-project host services. Binds once (preferred-port retry:
   ~8 attempts over ~3.2 s on the saved port before falling back to a
-  port scan, so a brain restart does not drift the port phones saved)
-  and is handed between hosts on project switch: the new host adopts
+  port scan, so a brain restart does not drift the port phones saved).
+  On an `EADDRINUSE` for a port in the sync range (`DEFAULT_SYNC_HOST_PORT`
+  8787 through `SYNC_HOST_MAX_PORT` 8999) it runs **sync-port zombie
+  reaping**: it diagnoses the port's holders (`inspectSyncListenerPort`),
+  and if a stale ADE brain owns it, re-confirms the same pid + process
+  start-time on a second diagnosis (guarding against pid reuse), terminates
+  that holder, logs `sync_listener.zombie_reaped`, and retries the freed port
+  once — so a dead-but-port-holding sibling brain cannot force the new brain
+  onto a drifted port that phones never saved. The same diagnosis feeds the
+  `ade doctor` Sync-port row. The listener is
+  handed between hosts on project switch: the new host adopts
   the open sockets — peer metadata carried over, pairing auth
   re-validated against the pairing store, changeset cursors recomputed
   from the peer's per-site cursor map, chat/terminal/roster subscriptions
@@ -618,7 +633,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `envelope_chunk` frames for peers that declared the
   `chunkedEnvelopes` hello capability
   (`SYNC_CHUNKED_ENVELOPES_CAPABILITY`); legacy peers get the single
-  full frame. Protocol version is `1`. Default host port is `8787`.
+  full frame. Protocol version is `1`. Default host port is `8787`,
+  and `SYNC_HOST_MAX_PORT` (`8999`) bounds the sync range the shared
+  listener will zombie-reap a stale ADE holder from.
+- `abortSignal.ts` — the shared cancellation helper (`runWithAbortSignal`,
+  `abortSignalError`) used across the sync command paths so a registration- or
+  caller-carried `AbortSignal` rejects in-flight work with a consistent
+  `AbortError` instead of each call site re-implementing the wiring.
 - `syncRemoteCommandService.ts` (~4,600 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
   `usage.getAdeStats`, `usage.getQuotaSnapshot`, `usage.refreshQuota`,
@@ -730,9 +751,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `ade-adopt-v1` primitives used on both sides of sealed account adoption:
   X25519 ephemeral key generation, the canonical challenge signature input,
   HKDF-SHA256 session-key derivation over the X25519 shared secret + nonce,
-  ChaCha20-Poly1305 `seal`/`unseal` with context-bound AAD, and Ed25519
+  AEAD `seal`/`unseal` with context-bound AAD, and Ed25519
   sign/verify against the raw published key. Also imported by
-  `machineIdentitySigningStore.ts` for SPKI↔raw key conversion.
+  `machineIdentitySigningStore.ts` for SPKI↔raw key conversion. The AEAD is
+  **negotiated**: `ADOPT_CHANNEL_AEADS` lists `chacha20-poly1305` then
+  `aes-256-gcm`, and `supportedAdoptChannelAeads()` probes which of them the
+  running crypto backend can actually construct (cached). This is what lets a
+  packaged Electron whose bundled BoringSSL lacks ChaCha20-Poly1305 still
+  account-connect: the client advertises the AEADs it supports in the challenge,
+  the host picks the first it also supports, and the chosen AEAD is folded into
+  the challenge signature input (`aead` field) so it cannot be downgraded by an
+  on-path attacker. A client that sends no AEAD list, and both sides by default,
+  fall back to `chacha20-poly1305`.
 - `syncCloudRelayStore.ts` — persists the cloud tunnel-relay identity at
   `~/.ade/secrets/sync-cloud-relay.json` (lazily-minted 32-hex `machineKey` +
   HMAC `secret`, chmod `0600`). The identity is stable in normal operation.
@@ -1472,13 +1502,21 @@ feature is merged or because a deliberately isolated-port host is running.
   nonce and an ephemeral X25519 public key; the host replies
   `account_challenge_ok` with its own X25519 ephemeral key and an Ed25519
   signature (from `machineIdentitySigningStore`) over the canonical
-  `ade-adopt-v1 | hostDeviceId | nonce | clientEph | hostEph | ts` string. The
+  `ade-adopt-v1 | hostDeviceId | nonce | clientEph | hostEph | ts[ | aead]`
+  string. The
   client **verifies that signature against the directory-published `pubkey`
   before releasing any credential**, so a machine cannot be impersonated on a
-  LAN. Both sides derive the same ChaCha20-Poly1305 key via HKDF-SHA256 over the
+  LAN. Both sides derive the same AEAD session key via HKDF-SHA256 over the
   X25519 shared secret and nonce; the client then sends a `hello` with
   `auth.kind = "account_sealed"` carrying the sealed account attestation, and
   the host returns the minted paired credentials in a sealed `hello_ok`. The
+  seal cipher is **negotiated**: the client advertises the AEADs its crypto
+  backend supports (`chacha20-poly1305`, `aes-256-gcm`), the host chooses the
+  first it also supports, echoes it in `account_challenge_ok`, and **binds the
+  chosen AEAD into the signed challenge string** so it cannot be downgraded on
+  the wire — this is what lets a packaged Electron whose bundled BoringSSL lacks
+  ChaCha20-Poly1305 adopt over `aes-256-gcm` instead of failing. A client whose
+  advertised set does not overlap the host's is rejected. The
   challenge is single-use and TTL-bounded (60 s); it is required before a sealed
   hello is accepted. `ade-adopt-v1` protects the exchanged *credentials* (bearer,
   DPoP proof, minted secret), not the confidentiality of the subsequent session:
@@ -1617,7 +1655,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
 | Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented whenever the host is signed in, with no separate toggle and with same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
 | Relay end-to-end self-probe + zombie-control detection (honest relay publication) | Implemented (`syncRelaySelfProbe`, JSON control keepalive, `sync.runSelfProbe`, `ade doctor` relay check) |
-| Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, relay → tailnet → LAN fallback) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
+| Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, relay → tailnet → LAN fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
 | Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |

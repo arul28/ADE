@@ -49,6 +49,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  LocalRuntimeStatus,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -3274,6 +3275,14 @@ contextBridge.exposeInMainWorld("ade", {
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
     getInfo: async (): Promise<AppInfo> => ipcRenderer.invoke(IPC.appGetInfo),
+    onRuntimeStatusChanged: (cb: (status: LocalRuntimeStatus) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: LocalRuntimeStatus,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.appRuntimeStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.appRuntimeStatusChanged, listener);
+    },
     getResourceUsage: async (): Promise<AppResourceUsageSnapshot> =>
       ipcRenderer.invoke(IPC.appGetResourceUsage),
     getRuntimeHealth: async (): Promise<RuntimeHealthSnapshot> =>
@@ -9001,6 +9010,8 @@ contextBridge.exposeInMainWorld("ade", {
     ipcRenderer.invoke(IPC.updateGetInstallImpact),
   updateQuitAndInstall: (): Promise<boolean> =>
     ipcRenderer.invoke(IPC.updateQuitAndInstall),
+  updateCancelAutoApply: (): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.updateCancelAutoApply),
   updateDismissInstalledNotice: () =>
     ipcRenderer.invoke(IPC.updateDismissInstalledNotice),
   onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => {

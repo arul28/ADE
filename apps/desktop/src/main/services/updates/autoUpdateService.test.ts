@@ -3,7 +3,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildGithubReleaseUrl, buildReleaseNotesUrl, compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
+import { createAutoUpdateService } from "./autoUpdateService";
+import {
+  buildGithubReleaseUrl,
+  buildReleaseNotesUrl,
+  compareUpdateVersions,
+} from "./autoUpdateVersions";
 import { classifyUpdateError, estimateUpdateRequiredBytes } from "./autoUpdateErrors";
 import type { Logger } from "../logging/logger";
 
@@ -319,6 +324,7 @@ describe("createAutoUpdateService", () => {
 
     expect(service.getSnapshot()).toMatchObject({
       status: "ready",
+      latestKnownVersion: "1.2.3",
       version: "1.2.3",
       progressPercent: 100,
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
@@ -416,15 +422,8 @@ describe("createAutoUpdateService", () => {
     expect(getDiskSpace).toHaveBeenCalledWith("/Applications/ADE.app/Contents/MacOS/ADE");
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      errorDetails: {
-        kind: "insufficient_space",
-        phase: "install",
-        availableBytes: 1024 * 1024 * 1024,
-        requiredBytes: 2012 * 1024 * 1024,
-        volumePath: "/System/Volumes/Data",
-        preservesDownload: true,
-      },
+      status: "ready",
+      parked: { reason: "install_preflight_failed" },
     });
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
 
@@ -441,9 +440,10 @@ describe("createAutoUpdateService", () => {
     const updater = Object.assign(new FakeAutoUpdater(), {
       downloadUpdate: vi.fn(async () => undefined),
     });
+    let installSpaceAvailable = false;
     const getDiskSpace = vi.fn((targetPath: string) => ({
       availableBytes: targetPath === installTargetPath
-        ? 1024 * 1024 * 1024
+        ? (installSpaceAvailable ? 4 : 1) * 1024 * 1024 * 1024
         : 64 * 1024 * 1024,
       volumePath: targetPath === installTargetPath ? "/System/Volumes/Data" : "/Volumes/Cache",
     }));
@@ -461,30 +461,14 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(false);
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
+      status: "ready",
       version: "1.2.3",
-      errorDetails: {
-        kind: "insufficient_space",
-        phase: "install",
-        preservesDownload: true,
-      },
+      parked: { reason: "install_preflight_failed" },
     });
-
-    updater.checkForUpdates.mockImplementationOnce(async () => {
-      updater.emit("checking-for-update");
-      updater.emit("update-available", updateInfo);
-      return { updateInfo };
-    });
-    updater.downloadUpdate.mockImplementationOnce(async () => {
-      updater.emit("update-downloaded", updateInfo);
-    });
-
-    service.checkForUpdates();
-    service.checkForUpdates();
-
-    await vi.waitFor(() => expect(service.getSnapshot().status).toBe("ready"));
+    installSpaceAvailable = true;
+    await expect(service.quitAndInstall()).resolves.toBe(true);
     expect(updater.checkForUpdates).toHaveBeenCalledTimes(2);
-    expect(updater.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(updater.downloadUpdate).not.toHaveBeenCalled();
     expect(getDiskSpace).not.toHaveBeenCalledWith(updaterCacheDir);
 
     service.dispose();
@@ -513,7 +497,10 @@ describe("createAutoUpdateService", () => {
     updater.emit("update-downloaded", updateInfo);
 
     await expect(service.quitAndInstall()).resolves.toBe(false);
-    expect(service.getSnapshot().errorDetails?.preservesDownload).toBe(true);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      parked: { reason: "install_preflight_failed" },
+    });
 
     updater.checkForUpdates.mockImplementationOnce(async () => {
       updater.emit("checking-for-update");
@@ -522,20 +509,12 @@ describe("createAutoUpdateService", () => {
       throw error;
     });
 
-    service.checkForUpdates();
-
-    await vi.waitFor(() => {
-      expect(service.getSnapshot()).toMatchObject({
-        status: "error",
-        version: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
-        error: "network unavailable",
-        errorDetails: {
-          kind: "network",
-          phase: "download",
-          preservesDownload: true,
-        },
-      });
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      version: "1.2.3",
+      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+      parked: { reason: "refresh_failed" },
     });
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
 
@@ -567,12 +546,8 @@ describe("createAutoUpdateService", () => {
     await expect(service.quitAndInstall()).resolves.toBe(false);
 
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      errorDetails: {
-        kind: "disk_full",
-        phase: "install",
-        preservesDownload: true,
-      },
+      status: "ready",
+      parked: { reason: "handoff_failed" },
     });
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
 
@@ -722,10 +697,10 @@ describe("createAutoUpdateService", () => {
       status: "installing",
       version: "1.2.4",
     });
-    expectCacheEmpty(updaterCacheDir);
-    expect(logger.info).toHaveBeenCalledWith(
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
+    expect(logger.info).not.toHaveBeenCalledWith(
       "autoUpdate.cache_cleaned",
-      expect.objectContaining({ reason: "superseded_ready_update", entriesRemoved: 2 }),
+      expect.objectContaining({ reason: "superseded_ready_update" }),
     );
 
     service.dispose();
@@ -814,10 +789,10 @@ describe("createAutoUpdateService", () => {
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     expect(readState(globalStatePath)).toEqual({});
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      error: "Could not verify the latest update before installing: network unavailable",
+      status: "ready",
+      parked: { reason: "refresh_failed" },
     });
-    expectCacheEmpty(updaterCacheDir);
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
     expect(logger.warn).toHaveBeenCalledWith(
       "autoUpdate.refresh_ready_before_install_failed",
       expect.objectContaining({
@@ -866,15 +841,12 @@ describe("createAutoUpdateService", () => {
 
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      version: "1.2.4",
-      errorDetails: {
-        kind: "disk_full",
-        phase: "download",
-        preservesDownload: false,
-      },
+      status: "ready",
+      version: "1.2.3",
+      latestKnownVersion: "1.2.4",
+      parked: { reason: "refresh_failed" },
     });
-    expectCacheEmpty(updaterCacheDir);
+    expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
 
     service.dispose();
   });
@@ -913,13 +885,10 @@ describe("createAutoUpdateService", () => {
 
     expect(updater.downloadUpdate).not.toHaveBeenCalled();
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      version: "1.2.4",
-      errorDetails: {
-        kind: "insufficient_space",
-        phase: "download",
-        requiredBytes: 1536 * 1024 * 1024,
-      },
+      status: "ready",
+      version: "1.2.3",
+      latestKnownVersion: "1.2.4",
+      parked: { reason: "refresh_failed" },
     });
 
     service.dispose();
@@ -968,13 +937,9 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(false);
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
+      status: "ready",
       version: "1.2.4",
-      errorDetails: {
-        kind: "insufficient_space",
-        phase: "install",
-        requiredBytes: 2012 * 1024 * 1024,
-      },
+      parked: { reason: "install_preflight_failed" },
     });
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
 
@@ -1034,8 +999,8 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall()).resolves.toBe(false);
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      error: "The command is disabled and cannot be executed",
+      status: "ready",
+      parked: { reason: "handoff_failed" },
     });
     expect(readState(globalStatePath)).toEqual({});
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
@@ -1092,6 +1057,7 @@ describe("createAutoUpdateService", () => {
     const updaterCacheDir = makeUpdaterCacheDir();
     const logger = makeLogger();
     const updater = new FakeAutoUpdater();
+    const rollbackQuitAndInstall = vi.fn(async () => {});
     const beforeQuitAndInstall = vi.fn(async () => {
       throw new Error("Could not stop ADE service");
     });
@@ -1104,6 +1070,7 @@ describe("createAutoUpdateService", () => {
       periodicCheckMs: 60_000,
       updater,
       beforeQuitAndInstall,
+      rollbackQuitAndInstall,
     });
 
     updater.emit("update-downloaded", {
@@ -1114,15 +1081,24 @@ describe("createAutoUpdateService", () => {
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     expect(readState(globalStatePath)).toEqual({});
     expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      error: "Could not stop ADE service",
+      status: "ready",
+      version: "1.2.3",
+      parked: {
+        reason: "prepare_failed",
+        at: expect.any(Number),
+      },
     });
+    expect(rollbackQuitAndInstall).toHaveBeenCalledWith("prepare_failed");
     expect(logger.warn).toHaveBeenCalledWith(
       "autoUpdate.prepare_quit_and_install_failed",
       expect.objectContaining({
         version: "1.2.3",
         message: "Could not stop ADE service",
       }),
+    );
+    expect(logger.warn).toHaveBeenCalledWith(
+      "autoUpdate.install_aborted",
+      expect.objectContaining({ reason: "prepare_failed", version: "1.2.3" }),
     );
 
     service.dispose();
@@ -1157,14 +1133,11 @@ describe("createAutoUpdateService", () => {
 
     updater.emit("error", new Error("installer failed after launch"));
 
-    expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      error: "installer failed after launch",
-      errorDetails: {
-        kind: "installer",
-        phase: "install",
-        preservesDownload: true,
-      },
+    await vi.waitFor(() => {
+      expect(service.getSnapshot()).toMatchObject({
+        status: "ready",
+        parked: { reason: "handoff_failed" },
+      });
     });
     expect(readState(globalStatePath)).toEqual({});
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
@@ -1172,18 +1145,199 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
-  it("allows native handoff to outlive the prepare watchdog before reporting a stall", async () => {
+  it("auto-applies a ready update after two continuously idle minutes and the countdown", async () => {
     vi.useFakeTimers();
-    const globalStatePath = makeStatePath();
-    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const productAnalyticsService = { captureInternal: vi.fn() };
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: makeUpdaterCacheDir(),
+      getDiskSpace: () => ({
+        availableBytes: 20 * 1024 * 1024 * 1024,
+        volumePath: "/System/Volumes/Data",
+      }),
+      autoCheckEnabled: false,
+      autoApplyEnabled: true,
+      activityCheckMs: 5_000,
+      autoApplyIdleMs: 2 * 60_000,
+      autoApplyCountdownMs: 10_000,
+      getRuntimeActivitySummary: vi.fn(async () => ({ idle: true })),
+      productAnalyticsService: productAnalyticsService as never,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      autoApplyPending: { deadlineAt: expect.any(Number) },
+    });
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(productAnalyticsService.captureInternal).toHaveBeenCalledWith({
+      event: "ade_update_auto_applied",
+      surface: "desktop",
+    });
+
+    service.dispose();
+  });
+
+  it("rechecks activity at the deadline and rearms after newly active work becomes idle", async () => {
+    vi.useFakeTimers();
+    let idle = true;
+    const getRuntimeActivitySummary = vi.fn(async () => ({ idle }));
     const updater = new FakeAutoUpdater();
     const service = createAutoUpdateService({
       logger: makeLogger(),
       currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: makeUpdaterCacheDir(),
+      autoCheckEnabled: false,
+      autoApplyEnabled: true,
+      activityCheckMs: 1_000,
+      autoApplyIdleMs: 10_000,
+      autoApplyCountdownMs: 2_000,
+      getRuntimeActivitySummary,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(service.getSnapshot().autoApplyPending).toEqual({
+      deadlineAt: expect.any(Number),
+    });
+    const checksBeforeDeadline = getRuntimeActivitySummary.mock.calls.length;
+    idle = false;
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(getRuntimeActivitySummary.mock.calls.length).toBeGreaterThan(checksBeforeDeadline);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(service.getSnapshot().autoApplyPending).toBeNull();
+
+    idle = true;
+    await vi.advanceTimersByTimeAsync(13_000);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+
+    service.dispose();
+  });
+
+  it("restarts the idle window when runtime activity resumes", async () => {
+    vi.useFakeTimers();
+    let idle = true;
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: makeUpdaterCacheDir(),
+      autoCheckEnabled: false,
+      autoApplyEnabled: true,
+      activityCheckMs: 5_000,
+      autoApplyIdleMs: 2 * 60_000,
+      getRuntimeActivitySummary: vi.fn(async () => ({ idle })),
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    idle = false;
+    await vi.advanceTimersByTimeAsync(5_000);
+    idle = true;
+    await vi.advanceTimersByTimeAsync(124_999);
+
+    expect(service.getSnapshot().autoApplyPending).toBeNull();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(service.getSnapshot().autoApplyPending).toEqual({
+      deadlineAt: expect.any(Number),
+    });
+
+    service.dispose();
+  });
+
+  it("cancels an idle auto-apply countdown and suppresses it for four hours", async () => {
+    vi.useFakeTimers();
+    const updater = new FakeAutoUpdater();
+    const productAnalyticsService = { captureInternal: vi.fn() };
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: makeUpdaterCacheDir(),
+      autoCheckEnabled: false,
+      autoApplyEnabled: true,
+      activityCheckMs: 5_000,
+      autoApplyIdleMs: 2 * 60_000,
+      autoApplyCountdownMs: 10_000,
+      autoApplySuppressionMs: 4 * 60 * 60_000,
+      getRuntimeActivitySummary: vi.fn(async () => ({ idle: true })),
+      productAnalyticsService: productAnalyticsService as never,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    const beforeCancel = Date.now();
+
+    expect(service.cancelAutoApply()).toBe(true);
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "ready",
+      autoApplyPending: null,
+      autoApplySuppressedUntil: beforeCancel + 4 * 60 * 60_000,
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(productAnalyticsService.captureInternal).toHaveBeenCalledWith({
+      event: "ade_update_auto_apply_cancelled",
+      surface: "desktop",
+    });
+
+    service.dispose();
+  });
+
+  it("preserves the latest known version when an updater download is cancelled", () => {
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: makeUpdaterCacheDir(),
+      autoCheckEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    updater.emit("update-cancelled", { version: "1.2.3" });
+
+    expect(service.getSnapshot()).toMatchObject({
+      status: "idle",
+      latestKnownVersion: "1.2.3",
+    });
+
+    service.dispose();
+  });
+
+  it("force-quits when the native handoff does not reach will-quit by the hard deadline", async () => {
+    vi.useFakeTimers();
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const updater = new FakeAutoUpdater();
+    const logger = makeLogger();
+    const forceQuit = vi.fn();
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
       globalStatePath,
       updaterCacheDir,
       installWatchdogMs: 1_000,
-      nativeHandoffWatchdogMs: 5_000,
+      quitDeadlineMs: 5_000,
+      forceQuit,
       getDiskSpace: () => ({
         availableBytes: 20 * 1024 * 1024 * 1024,
         volumePath: "/System/Volumes/Data",
@@ -1205,15 +1359,15 @@ describe("createAutoUpdateService", () => {
 
     await vi.advanceTimersByTimeAsync(4_000);
 
-    expect(service.getSnapshot()).toMatchObject({
-      status: "error",
-      error: "ADE did not quit for the update. Free space if needed, then try again.",
-      errorDetails: {
-        kind: "installer",
-        phase: "install",
-        preservesDownload: true,
-      },
+    expect(forceQuit).toHaveBeenCalledWith({
+      blockedPhase: "app_quit",
+      blockedMs: 5_000,
     });
+    expect(logger.error).toHaveBeenCalledWith("autoUpdate.quit_escalated", {
+      blockedPhase: "app_quit",
+      blockedMs: 5_000,
+    });
+    expect(service.getSnapshot().status).toBe("installing");
     expect(readState(globalStatePath)).toMatchObject({
       pendingInstallUpdate: { targetVersion: "1.2.3" },
     });

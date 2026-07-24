@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   isCurrentProcessDescendantOfPid,
@@ -374,8 +374,14 @@ describe("launchd service install", () => {
     args: ["serve"],
     env: { NODE_PATH: "/opt/ade/node_modules" },
   };
+  const install = (
+    deps: NonNullable<Parameters<typeof installLaunchdService>[0]>,
+  ) => installLaunchdService({
+    responsivenessProbe: () => true,
+    ...deps,
+  });
 
-  it("writes the plist and loads the launch agent", () => {
+  it("writes the plist and loads the launch agent", async () => {
     const homeDir = makeTempHome("ade-launchd-install-");
     const servicePath = launchAgentPath(homeDir);
     const calls: Array<{ command: string; args: string[] }> = [];
@@ -386,7 +392,7 @@ describe("launchd service install", () => {
       { status: 0, stdout: "", stderr: "" },
     ]);
 
-    const result = installLaunchdService({ command: serviceCommand, spawnSync, homeDir });
+    const result = await install({ command: serviceCommand, spawnSync, homeDir });
 
     expect(result).toMatchObject({
       ok: true,
@@ -403,7 +409,7 @@ describe("launchd service install", () => {
     ]);
   });
 
-  it("leaves an unchanged running launch agent loaded", () => {
+  it("leaves an unchanged running launch agent loaded", async () => {
     const homeDir = makeTempHome("ade-launchd-running-");
     const servicePath = launchAgentPath(homeDir);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
@@ -413,7 +419,7 @@ describe("launchd service install", () => {
       { status: 0, stdout: "state = running\n", stderr: "" },
     ]);
 
-    const result = installLaunchdService({ command: serviceCommand, spawnSync, homeDir });
+    const result = await install({ command: serviceCommand, spawnSync, homeDir });
 
     expect(result).toMatchObject({
       ok: true,
@@ -427,7 +433,70 @@ describe("launchd service install", () => {
     ]);
   });
 
-  it("reloads an unchanged running launch agent when a packaged trust reset requests it", () => {
+  it("reinstalls an unchanged running launch agent when its runtime socket is wedged", async () => {
+    const homeDir = makeTempHome("ade-launchd-wedged-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 1234\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+    const responsivenessProbe = vi.fn()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe,
+      currentPid: 9999,
+      parentPid: () => null,
+      handoverPidAlive: () => false,
+      terminateDeps: { kill: () => {}, pidAlive: () => false },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(responsivenessProbe).toHaveBeenCalledTimes(2);
+    expect(calls.map((call) => call.args[0])).toEqual([
+      "print",
+      "unload",
+      "-axo",
+      "load",
+    ]);
+  });
+
+  it("returns a typed failure when the replacement never becomes responsive", async () => {
+    const homeDir = makeTempHome("ade-launchd-handover-fail-");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+
+    const result = await install({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      responsivenessProbe: () => false,
+      handoverPidAlive: () => false,
+      handoverTimeoutMs: 0,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      action: "install",
+      failureStep: "replacement_responsive",
+    });
+  });
+
+  it("reloads an unchanged running launch agent when a packaged trust reset requests it", async () => {
     const homeDir = makeTempHome("ade-launchd-trust-reset-");
     const servicePath = launchAgentPath(homeDir);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
@@ -440,7 +509,7 @@ describe("launchd service install", () => {
       { status: 0, stdout: "", stderr: "" },
     ]);
 
-    const result = installLaunchdService({
+    const result = await install({
       command: serviceCommand,
       spawnSync,
       homeDir,
@@ -459,7 +528,7 @@ describe("launchd service install", () => {
     ]);
   });
 
-  it("reloads an unchanged launch agent when it is loaded but stopped", () => {
+  it("reloads an unchanged launch agent when it is loaded but stopped", async () => {
     const homeDir = makeTempHome("ade-launchd-stopped-");
     const servicePath = launchAgentPath(homeDir);
     fs.mkdirSync(path.dirname(servicePath), { recursive: true });
@@ -471,7 +540,7 @@ describe("launchd service install", () => {
       { status: 0, stdout: "", stderr: "" },
     ]);
 
-    const result = installLaunchdService({ command: serviceCommand, spawnSync, homeDir });
+    const result = await install({ command: serviceCommand, spawnSync, homeDir });
 
     expect(result).toMatchObject({
       ok: true,
@@ -487,7 +556,7 @@ describe("launchd service install", () => {
     ]);
   });
 
-  it("does not load a launch agent when another channel's brain hosts sync", () => {
+  it("does not load a launch agent when another channel's brain hosts sync", async () => {
     const homeDir = makeTempHome("ade-launchd-conflict-");
     const servicePath = launchAgentPath(homeDir);
     const lockPath = path.join(homeDir, "sync-host-lock.json");
@@ -506,7 +575,7 @@ describe("launchd service install", () => {
     const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
     const spawnSync = spawnSequence(calls, []);
 
-    const result = installLaunchdService({
+    const result = await install({
       command: serviceCommand,
       spawnSync,
       homeDir,
@@ -538,7 +607,7 @@ describe("launchd service install", () => {
     expect(fs.readFileSync(servicePath, "utf8")).toBe(renderLaunchdPlist(serviceCommand, homeDir));
   });
 
-  it("reaps a stale same-channel sync brain and installs anyway", () => {
+  it("reaps a stale same-channel sync brain and installs anyway", async () => {
     const homeDir = makeTempHome("ade-launchd-reap-");
     const adeHome = path.join(homeDir, ".ade");
     const servicePath = launchAgentPath(homeDir);
@@ -556,7 +625,7 @@ describe("launchd service install", () => {
     const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
     const spawnSync = spawnSequence(calls, []);
 
-    const result = installLaunchdService({
+    const result = await install({
       command: serviceCommand,
       spawnSync,
       homeDir,
@@ -587,7 +656,7 @@ describe("launchd service install", () => {
     ]);
   });
 
-  it("terminates the previous service child and stale serve processes on restart", () => {
+  it("terminates the previous service child and stale serve processes on restart", async () => {
     const homeDir = makeTempHome("ade-launchd-sweep-");
     const adeHome = path.join(homeDir, ".ade");
     const staleServeLine = `  4242 ${serviceCommand.command} serve --socket ${path.join(adeHome, "sock", "ade.sock")}`;
@@ -600,7 +669,7 @@ describe("launchd service install", () => {
       { status: 0, stdout: "", stderr: "" },
     ]);
 
-    const result = installLaunchdService({
+    const result = await install({
       command: serviceCommand,
       spawnSync,
       homeDir,
@@ -619,7 +688,7 @@ describe("launchd service install", () => {
     ]);
   });
 
-  it("refuses to restart a launch agent from a descendant of the loaded service", () => {
+  it("refuses to restart a launch agent from a descendant of the loaded service", async () => {
     const homeDir = makeTempHome("ade-launchd-self-install-");
     const servicePath = launchAgentPath(homeDir);
     const calls: Array<{ command: string; args: string[] }> = [];
@@ -632,12 +701,16 @@ describe("launchd service install", () => {
       100: 1,
     })[pid] ?? null;
 
-    const result = installLaunchdService({
+    const result = await install({
       command: serviceCommand,
       spawnSync,
       homeDir,
       currentPid: 400,
       parentPid,
+      terminateDeps: {
+        kill: () => {},
+        pidAlive: () => false,
+      },
     });
 
     expect(result).toMatchObject({
@@ -653,7 +726,7 @@ describe("launchd service install", () => {
     expect(fs.existsSync(servicePath)).toBe(false);
   });
 
-  it("allows launch agent restart from a descendant when self-mutation is explicitly enabled", () => {
+  it("allows launch agent restart from a descendant when self-mutation is explicitly enabled", async () => {
     const homeDir = makeTempHome("ade-launchd-self-install-override-");
     const servicePath = launchAgentPath(homeDir);
     const calls: Array<{ command: string; args: string[] }> = [];
@@ -670,12 +743,16 @@ describe("launchd service install", () => {
     })[pid] ?? null;
     process.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION = "1";
 
-    const result = installLaunchdService({
+    const result = await install({
       command: serviceCommand,
       spawnSync,
       homeDir,
       currentPid: 400,
       parentPid,
+      terminateDeps: {
+        kill: () => {},
+        pidAlive: () => false,
+      },
     });
 
     expect(result).toMatchObject({
@@ -765,7 +842,7 @@ describe("launchd service install", () => {
     expect(fs.existsSync(servicePath)).toBe(false);
   });
 
-  it("surfaces launchctl load failures", () => {
+  it("surfaces launchctl load failures", async () => {
     const homeDir = makeTempHome("ade-launchd-fail-");
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
@@ -775,7 +852,7 @@ describe("launchd service install", () => {
       { status: 5, stdout: "", stderr: "Load failed" },
     ]);
 
-    const result = installLaunchdService({ command: serviceCommand, spawnSync, homeDir });
+    const result = await install({ command: serviceCommand, spawnSync, homeDir });
 
     expect(result.ok).toBe(false);
     expect(result.message).toBe("Load failed");
@@ -1044,8 +1121,19 @@ function spawnSequence(
   calls: Array<{ command: string; args: string[] }>,
   results: ServiceManagerProcessResult[],
 ): ServiceManagerSpawnSync {
+  let loadSeen = false;
   return (command, args) => {
+    const next = results.shift();
+    if (
+      !next
+      && loadSeen
+      && command === "launchctl"
+      && args[0] === "print"
+    ) {
+      return { status: 0, stdout: "state = running\npid = 7777\n", stderr: "" };
+    }
     calls.push({ command, args });
-    return results.shift() ?? { status: 0, stdout: "", stderr: "" };
+    if (command === "launchctl" && args[0] === "load") loadSeen = true;
+    return next ?? { status: 0, stdout: "", stderr: "" };
   };
 }

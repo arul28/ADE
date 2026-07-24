@@ -136,6 +136,39 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("accepts only coarse transactional update telemetry properties", () => {
+    const harness = makeHarness();
+
+    expect(harness.service.captureInternal({
+      event: "ade_update_install_aborted",
+      surface: "desktop",
+      properties: { reason: "prepare_failed", error: "private runtime message" },
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.service.captureInternal({
+      event: "ade_update_quit_escalated",
+      surface: "desktop",
+      properties: { blocked_ms: 10_000, blocked_phase: "private phase detail" },
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.service.captureInternal({
+      event: "ade_update_auto_applied",
+      surface: "desktop",
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.service.captureInternal({
+      event: "ade_update_auto_apply_cancelled",
+      surface: "desktop",
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    expect(harness.messages.map((message) => message.event)).toEqual([
+      "ade_update_install_aborted",
+      "ade_update_quit_escalated",
+      "ade_update_auto_applied",
+      "ade_update_auto_apply_cancelled",
+    ]);
+    expect(harness.messages[0]?.properties).toMatchObject({ reason: "prepare_failed" });
+    expect(harness.messages[1]?.properties).toMatchObject({ blocked_ms: 10_000 });
+    expect(JSON.stringify(harness.messages)).not.toContain("private");
+  });
+
   it("accepts the storage-doctor maintenance event with numeric aggregates and coarse outcome", () => {
     const harness = makeHarness();
     const result = harness.service.capture({
@@ -163,6 +196,43 @@ describe("productAnalyticsService", () => {
     // Non-allowlisted keys never cross the sanitizer.
     expect(message.properties).not.toHaveProperty("secret_path");
     expect(JSON.stringify(message)).not.toContain("secret-project");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("accepts only coarse reliability telemetry properties", () => {
+    const harness = makeHarness();
+
+    expect(harness.service.captureInternal({
+      event: "ade_brain_recovered",
+      surface: "api",
+      properties: {
+        blocked_ms: 125_000,
+        last_command: "sync.refresh",
+        payload: "/Users/alice/private-project",
+      },
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.service.captureInternal({
+      event: "ade_publish_failing",
+      surface: "api",
+      properties: {
+        failing_minutes: 3,
+        leg: "token",
+        code: "token_timeout",
+        endpoint: "https://private.example.test",
+      },
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    expect(harness.messages).toHaveLength(2);
+    expect(harness.messages[0]?.properties).toMatchObject({
+      blocked_ms: 125_000,
+      last_command: "sync.refresh",
+    });
+    expect(harness.messages[1]?.properties).toMatchObject({
+      failing_minutes: 3,
+      leg: "token",
+      code: "token_timeout",
+    });
+    expect(JSON.stringify(harness.messages)).not.toContain("private");
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 

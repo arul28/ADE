@@ -25,7 +25,7 @@ function findInsight(key) {
 }
 
 test("dashboard spec is valid and excludes replay queries", () => {
-  assert.deepEqual(validateDashboardSpec(), { dashboards: 5, insights: 30 });
+  assert.deepEqual(validateDashboardSpec(), { dashboards: 5, insights: 31 });
   assert.doesNotMatch(JSON.stringify(dashboardSpec), /\$snapshot|session replay|recording_property/i);
 });
 
@@ -76,8 +76,8 @@ test("dashboard queries match the bounded instrumentation semantics", () => {
 
   const ingestedVolume = findInsight("monthly-analytics-volume");
   assert.equal(ingestedVolume.name, "30-day ingested analytics volume");
-  assert.equal(ingestedVolume.query.source.series.length, 19);
-  assert.equal(ingestedVolume.query.source.trendsFilter.formula, "A+B+C+D+E+F+G+H+I+J+K+L+M+N+O+P+Q+R+S");
+  assert.equal(ingestedVolume.query.source.series.length, 25);
+  assert.equal(ingestedVolume.query.source.trendsFilter.formula, "A+B+C+D+E+F+G+H+I+J+K+L+M+N+O+P+Q+R+S+T+U+V+W+X+Y");
 });
 
 test("config requires HTTPS and a numeric project ID", () => {
@@ -169,7 +169,7 @@ test("dry run plans every object without issuing writes", async () => {
     output: { write(chunk) { output += chunk; } },
   });
 
-  assert.deepEqual(summary, { created: 35, updated: 0, unchanged: 0 });
+  assert.deepEqual(summary, { created: 36, updated: 0, unchanged: 0 });
   assert.equal(writes.length, 0);
   assert.match(output, /would create dashboard: ADE · Growth and retention/);
   assert.match(output, /would create dashboard: ADE · Marketing acquisition/);
@@ -223,11 +223,11 @@ test("managed objects that already match are not rewritten", async () => {
   };
 
   const first = await provisionDashboards({ api, output: { write() {} } });
-  assert.deepEqual(first, { created: 35, updated: 0, unchanged: 0 });
-  assert.equal(writes.length, 35);
+  assert.deepEqual(first, { created: 36, updated: 0, unchanged: 0 });
+  assert.equal(writes.length, 36);
 
   writes.length = 0;
   const second = await provisionDashboards({ api, output: { write() {} } });
-  assert.deepEqual(second, { created: 0, updated: 0, unchanged: 35 });
+  assert.deepEqual(second, { created: 0, updated: 0, unchanged: 36 });
   assert.equal(writes.length, 0);
 });

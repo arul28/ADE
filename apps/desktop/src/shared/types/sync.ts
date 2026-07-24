@@ -340,8 +340,16 @@ export type SyncAccountDirectoryState =
   | "token_unreadable"
   | "invalid_directory_url"
   | "http_error"
+  | "token_timeout"
+  | "http_timeout"
   | "timeout"
   | "transport_error";
+
+export type SyncAccountDirectoryLegDurations = {
+  snapshot: number | null;
+  token: number | null;
+  http: number | null;
+};
 
 /** Last account-directory publisher outcome for this machine brain. */
 export type SyncAccountDirectoryHealth = {
@@ -353,6 +361,8 @@ export type SyncAccountDirectoryHealth = {
   lastHttpStatus: number | null;
   lastHttpReason: string | null;
   reachableEndpointCount: number;
+  lastLegDurations: SyncAccountDirectoryLegDurations;
+  failingSinceMs: number | null;
 };
 
 export function createSyncAccountDirectoryHealth(
@@ -369,6 +379,12 @@ export function createSyncAccountDirectoryHealth(
     lastHttpStatus: null,
     lastHttpReason: null,
     reachableEndpointCount: 0,
+    lastLegDurations: {
+      snapshot: null,
+      token: null,
+      http: null,
+    },
+    failingSinceMs: null,
     ...overrides,
   };
 }
@@ -807,6 +823,7 @@ export type SyncAccountChallengePayload = {
   v: 1;
   nonce: string;
   clientEphemeralPublicKey: string;
+  supportedAeads?: string[];
 };
 
 export type SyncAccountChallengeOkPayload = {
@@ -815,6 +832,7 @@ export type SyncAccountChallengeOkPayload = {
   ts: number;
   hostEphemeralPublicKey: string;
   signature: string;
+  aead?: string;
 };
 
 export type SyncAccountChallengeErrorPayload = {

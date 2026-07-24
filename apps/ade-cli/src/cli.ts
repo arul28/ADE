@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
 import {
   CURSOR_CLOUD_HELP,
@@ -23,6 +23,12 @@ import {
   CliSkillUsageError,
   runSkillCommand,
 } from "./commands/skill";
+import {
+  resolveDefaultDesktopAppName,
+  runDoctorCommand,
+  type DoctorRow,
+} from "./commands/doctor";
+export { readInstalledDesktopVersion } from "./commands/doctor";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
@@ -42,6 +48,7 @@ import { browseProjectDirectories } from "../../desktop/src/main/services/projec
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
+import { createBrainLogger } from "./services/runtime/brainLogger";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -99,6 +106,7 @@ import {
 } from "../../desktop/src/shared/types/sync";
 import {
   isCurrentProcessDescendantOfPid,
+  resolveAdeServeCommand,
   type AdeServiceCommand,
 } from "./serviceManager/common";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
@@ -124,6 +132,10 @@ import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/s
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
 import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
+import {
+  readBrainLoopWatchdogLastWedge,
+  startBrainLoopWatchdog,
+} from "./services/runtime/brainLoopWatchdog";
 
 type JsonObject = Record<string, unknown>;
 
@@ -288,6 +300,7 @@ type CliPlan =
   | { kind: "desktop"; rest: string[] }
   | { kind: "runtime"; rest: string[] }
   | { kind: "brain"; rest: string[] }
+  | { kind: "doctor"; online: boolean }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -572,7 +585,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
     $ ade sync status | pin generate                Manage machine sync and phone pairing
-    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
+    $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -11886,29 +11899,8 @@ function buildCliPlan(
   }
   if (primary === "doctor") {
     return {
-      kind: "execute",
-      label: "doctor",
-      summary: "doctor",
-      steps: [
-        { key: "ping", method: "ping" },
-        { key: "rpcActions", method: "ade/actions/list" },
-        listActionsStep("actions"),
-        {
-          ...actionStep("projectConfig", "project_config", "get"),
-          optional: true,
-        },
-        {
-          key: "syncStatus",
-          method: "sync.getStatus",
-          params: { includeTransferReadiness: false },
-          optional: true,
-        },
-        {
-          key: "relaySelfProbe",
-          method: "sync.runSelfProbe",
-          optional: true,
-        },
-      ],
+      kind: "doctor",
+      online: readFlag(args, ["--online"]),
     };
   }
   if (primary === "auth") {
@@ -13085,6 +13077,10 @@ class SocketJsonRpcClient {
     this.socket.end();
   }
 
+  destroy(): void {
+    this.socket.destroy();
+  }
+
   private onData(chunk: Buffer): void {
     this.buffer = this.buffer.length
       ? Buffer.concat([this.buffer, chunk])
@@ -14202,6 +14198,7 @@ type MachineRuntimeInfo = {
   packageChannel: string | null;
   projectRoot: string | null;
   pid: number | null;
+  uptimeMs: number | null;
 };
 
 function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
@@ -14213,9 +14210,11 @@ function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
       packageChannel: null,
       projectRoot: null,
       pid: null,
+      uptimeMs: null,
     };
   }
   const pid = value.runtimeInfo.pid;
+  const uptimeMs = value.runtimeInfo.uptimeMs;
   return {
     version: asString(value.runtimeInfo.version),
     buildHash: asString(value.runtimeInfo.buildHash),
@@ -14225,6 +14224,10 @@ function readMachineRuntimeInfo(value: unknown): MachineRuntimeInfo {
     pid:
       typeof pid === "number" && Number.isFinite(pid) && pid > 0
         ? Math.floor(pid)
+        : null,
+    uptimeMs:
+      typeof uptimeMs === "number" && Number.isFinite(uptimeMs) && uptimeMs >= 0
+        ? Math.floor(uptimeMs)
         : null,
   };
 }
@@ -14287,20 +14290,14 @@ export function shouldEnforceMachineRuntimeBuildCompatibility(
   return !socketPathOverride?.trim();
 }
 
-function computeRuntimeBuildHash(filePath: string): string | null {
-  try {
-    return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-  } catch {
-    return null;
-  }
-}
-
 function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): {
   args: string[];
   buildHash: string | null;
+  filePath: string | null;
 } {
   const args = [...serviceCommand.args];
   let buildHash: string | null = null;
+  let filePath: string | null = null;
   if (
     serviceCommand.command === process.execPath &&
     args.length === 1 &&
@@ -14308,13 +14305,16 @@ function prepareMachineRuntimeDaemonCommand(serviceCommand: AdeServiceCommand): 
     fs.existsSync(CLI_DIST_PATH)
   ) {
     args.splice(0, 1, CLI_DIST_PATH, "serve");
-    buildHash = computeRuntimeBuildHash(CLI_DIST_PATH);
+    filePath = CLI_DIST_PATH;
+    buildHash = computeRuntimeBuildHash(filePath);
   } else if (serviceCommand.command === process.execPath && args[0]) {
-    buildHash = computeRuntimeBuildHash(path.resolve(args[0]));
+    filePath = path.resolve(args[0]);
+    buildHash = computeRuntimeBuildHash(filePath);
   } else if (fs.existsSync(serviceCommand.command)) {
-    buildHash = computeRuntimeBuildHash(path.resolve(serviceCommand.command));
+    filePath = path.resolve(serviceCommand.command);
+    buildHash = computeRuntimeBuildHash(filePath);
   }
-  return { args, buildHash };
+  return { args, buildHash, filePath };
 }
 
 async function resolveExpectedMachineRuntimeBuildHash(): Promise<string | null> {
@@ -14986,15 +14986,6 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
   };
 }
 
-function resolveDefaultDesktopAppName(): string {
-  const explicit = process.env.ADE_DESKTOP_APP_NAME?.trim();
-  if (explicit) return explicit;
-  const channel = process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
-  if (channel === "alpha") return "ADE Alpha";
-  if (channel === "beta") return "ADE Beta";
-  return "ADE";
-}
-
 async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
   const previousRole = process.env.ADE_DEFAULT_ROLE;
   process.env.ADE_DEFAULT_ROLE = options.role;
@@ -15102,6 +15093,8 @@ async function runServe(
     await new Promise<void>((resolve) => setTimeout(resolve, startupBackoffMs));
   }
   let serveStarted = false;
+  let stopBrainLoopWatchdog: (() => void) | null = null;
+  let stopBrainFreshnessMonitor: (() => void) | null = null;
   try {
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
@@ -15109,7 +15102,7 @@ async function runServe(
     { ProjectRegistry },
     { ProjectScopeRegistry },
     { PersonalChatScope },
-    { createMultiProjectRpcRequestHandler },
+    { createMultiProjectRpcRequestHandler, readMachineRuntimeActivitySummary },
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler },
@@ -15131,6 +15124,40 @@ async function runServe(
   ]);
 
   const layout = resolveMachineAdeLayout();
+  const headlessProjectLogger: Logger = createBrainLogger(
+    path.join(layout.runtimeDir, "brain.jsonl"),
+  );
+  const {
+    createProductAnalyticsService,
+    defaultProductAnalyticsStateFile,
+    getSharedProductAnalyticsService,
+  } = await import("../../desktop/src/main/services/analytics/productAnalyticsService");
+  const brainAnalyticsStateFile = defaultProductAnalyticsStateFile(layout.adeDir);
+  const brainProductAnalytics = getSharedProductAnalyticsService(
+    brainAnalyticsStateFile,
+    () => createProductAnalyticsService({
+      stateFilePath: brainAnalyticsStateFile,
+      logger: headlessProjectLogger,
+      appVersion: VERSION,
+      runtimeMode: "brain",
+    }),
+  );
+  stopBrainLoopWatchdog = startBrainLoopWatchdog({
+    runtimeDir: layout.runtimeDir,
+    warn: (event, meta) => headlessProjectLogger.warn(event, meta),
+    onRecovered: (breadcrumb) => {
+      brainProductAnalytics.captureInternal({
+        event: "ade_brain_recovered",
+        surface: "api",
+        properties: {
+          blocked_ms: breadcrumb.blockedMs,
+          last_command: breadcrumb.lastCommand,
+        },
+        dedupeKey: `brain-recovered:${breadcrumb.ts}`,
+        minimumIntervalMs: 24 * 60 * 60 * 1_000,
+      });
+    },
+  });
   const rawSocketPath =
     readValue(args, ["--socket"]) ??
     process.env.ADE_RPC_SOCKET_PATH?.trim() ??
@@ -15171,14 +15198,6 @@ async function runServe(
       overrides,
     );
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
-  const headlessProjectLogger: Logger = {
-    debug: () => {},
-    info: () => {},
-    warn: (event, meta) =>
-      process.stderr.write(`${event} ${JSON.stringify(meta ?? {})}\n`),
-    error: (event, meta) =>
-      process.stderr.write(`${event} ${JSON.stringify(meta ?? {})}\n`),
-  };
   const createHeadlessProjectScaffoldService = () => {
     const githubService = createHeadlessGitHubService(
       process.cwd(),
@@ -15458,7 +15477,7 @@ async function runServe(
     ? createSharedSyncListener({
         logger: {
           warn: (message, fields) =>
-            process.stderr.write(`${message} ${JSON.stringify(fields ?? {})}\n`),
+            headlessProjectLogger.warn(message, fields),
         },
       })
     : null;
@@ -15548,6 +15567,18 @@ async function runServe(
       scopeRegistry,
       personalChatScope,
       getAccountDirectoryHealth,
+      getRuntimeStatus: () => {
+        const publishHealth = getAccountDirectoryHealth();
+        return {
+          syncPort: sharedSyncListener?.getPort() ?? null,
+          publishHealth: {
+            state: publishHealth.state,
+            failingSinceMs: publishHealth.failingSinceMs,
+            lastLegDurations: { ...publishHealth.lastLegDurations },
+          },
+          lastWedge: readBrainLoopWatchdogLastWedge(layout.runtimeDir),
+        };
+      },
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
@@ -15729,6 +15760,9 @@ async function runServe(
       },
       getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
       directoryBaseUrl: () => process.env.ADE_ACCOUNT_DIRECTORY_URL?.trim() || undefined,
+      captureAnalytics: (input) => {
+        brainProductAnalytics.captureInternal(input);
+      },
     });
     accountMachinePublisher.start();
   }
@@ -15738,6 +15772,55 @@ async function runServe(
   );
   clearLastFailure({ kind: "machine" });
   serveStarted = true;
+
+  const serviceCommand = resolveAdeServeCommand();
+  const preparedServiceCommand = prepareMachineRuntimeDaemonCommand(serviceCommand);
+  const isPrimaryBrain =
+    syncEnabled
+    && socketPath === layout.socketPath
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  if (isPrimaryBrain && preparedServiceCommand.filePath) {
+    const [{ createBrainFreshnessMonitor }, { requestBrainServiceRestart }] = await Promise.all([
+      import("./services/runtime/brainFreshnessMonitor"),
+      import("./commands/brainUpdate"),
+    ]);
+    const freshnessMonitor = createBrainFreshnessMonitor({
+      filePath: preparedServiceCommand.filePath,
+      runningHash:
+        process.env.ADE_RUNTIME_BUILD_HASH?.trim()
+        || preparedServiceCommand.buildHash,
+      isIdle: async () => (
+        await readMachineRuntimeActivitySummary({
+          projectRegistry,
+          scopeRegistry,
+          personalChatScope,
+        })
+      ).idle,
+      logger: {
+        warn: (event, fields) =>
+          headlessProjectLogger.warn(event, fields),
+      },
+      restart: () => {
+        const result = requestBrainServiceRestart({
+          command: serviceCommand.command,
+          commandArgs: preparedServiceCommand.args,
+          env: {
+            ...process.env,
+            ...(serviceCommand.env ?? {}),
+          },
+        });
+        if (result.status !== 0) {
+          headlessProjectLogger.error("brain.freshness_restart_failed", {
+            status: result.status,
+            error: result.stderr || result.stdout || "service restart failed",
+          });
+          throw new Error(result.stderr || result.stdout || "service restart failed");
+        }
+      },
+    });
+    freshnessMonitor.start();
+    stopBrainFreshnessMonitor = () => freshnessMonitor.stop();
+  }
 
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
   const stopIdleMonitor = monitorRuntimeIdleExit(states, finish);
@@ -15815,6 +15898,9 @@ async function runServe(
       });
     }
     throw error;
+  } finally {
+    stopBrainFreshnessMonitor?.();
+    stopBrainLoopWatchdog?.();
   }
 }
 
@@ -17987,6 +18073,24 @@ function formatTextOutput(
         ["socket", isRecord(value) ? value.socketPath : null],
       ]);
     case "doctor": {
+      const doctorRows = isRecord(value) && Array.isArray(value.rows)
+        ? value.rows.filter(isRecord)
+        : [];
+      if (doctorRows.length > 0) {
+        return renderTable(
+          ["check", "status", "detail"],
+          doctorRows.map((row) => [
+            asString(row.label) ?? asString(row.key) ?? "Unknown",
+            row.status === "ok"
+              ? "green(ok)"
+              : row.status === "warn"
+                ? "yellow(warn)"
+                : "red(fail)",
+            asString(row.detail) ?? "",
+          ]),
+          "No health checks were returned.",
+        );
+      }
       const project =
         isRecord(value) && isRecord(value.project) ? value.project : {};
       const desktop =
@@ -19416,6 +19520,22 @@ async function runCli(
         }
         throw error;
       }
+    }
+    if (plan.kind === "doctor") {
+      const result = await runDoctorCommand(plan.online, parsed.options, {
+        resolveMachineRuntimeSocketPath,
+        connectRuntime: (socketPath, timeoutMs, label) =>
+          SocketJsonRpcClient.connect(socketPath, timeoutMs, label),
+        buildInitializeParams,
+        readMachineRuntimeInfo,
+        resolveExpectedMachineRuntimeBuildHash,
+        machineRuntimeMismatchReason,
+        unwrapActionEnvelope,
+      });
+      return {
+        output: formatOutput(result, parsed.options, "doctor"),
+        exitCode: result.ok ? 0 : 1,
+      };
     }
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);

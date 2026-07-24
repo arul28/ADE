@@ -13,6 +13,12 @@
 | `apps/desktop/src/main/services/runtime/lastFailureStore.ts` | Stores typed project/machine failures, keeps one previous report, counts repeated signatures, and computes crash-loop startup backoff. |
 | `apps/ade-cli/src/services/runtime/failureLogDeduper.ts` | Emits the first repeated brain failure immediately and only periodic occurrence summaries afterward. |
 | `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
+| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts` | Worker-thread **event-loop watchdog** for the machine brain. Heartbeats every second with the current command name; a stall past `ADE_LOOP_WATCHDOG_MS` (15 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb and `SIGKILL`s the brain. On next boot it promotes the breadcrumb to `last-wedge.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. |
+| `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
+| `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
+| `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
+| `apps/ade-cli/src/commands/doctor.ts` | `ade doctor [--online]` — connects to the brain over the local socket and prints one `ok`/`warn`/`fail` row per subsystem (App version, Brain, Wedge history, Sync port, Publish health, Relay, Account); exits non-zero on any `fail`. `evaluateDoctorRows` is pure and dependency-injected so the desktop connection-doctor card and the CLI share one verdict. |
+| `apps/desktop/src/shared/adeRuntimeProtocol.ts` | Shared runtime-protocol contract: `RUNTIME_COMPAT_LEVEL` + `isRuntimeProtocolCompatible` (the integer compatibility-window check), and the tolerant parsers `parseRuntimePublishHealth` / `parseRuntimeLastWedge` that decode `runtimeInfo.publishHealth` and `runtimeInfo.lastWedge` for the connection pool, the doctor, and the desktop status surfaces. |
 | `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` | Brain-independent diagnosis and ordered repair: space, ownership, database validation, migration recovery, service restart, endpoint/project verification, and chat reconciliation. |
 | `apps/desktop/src/main/services/storage/diskPressure.ts` | Samples all ADE storage roots, classifies pressure with recovery hysteresis, and gates write-producing operation classes via `canPerform(kind)`. Exports the `DiskPressureMonitor` type and refusal-message copy. |
 | `apps/desktop/src/main/services/storage/volume.ts` | `readVolumeSpace(dir)` (statfs free/total bytes) and `isNoSpaceError(err)` (ENOSPC/EDQUOT and disk-full message detection), shared by the pressure monitor and the database-open error classifier. |
@@ -102,6 +108,37 @@ The repair sequence stops at the first unsafe step. It checks free space,
 establishes exclusive ownership, runs `quick_check`, opens the database so the
 pre-migration recovery pass can resolve staging, restarts the service, verifies
 the endpoint and project RPC, then counts chat records and continuity warnings.
+
+### Brain resilience: watchdog, freshness, and recovery notice
+
+The machine brain guards its own liveness. The **event-loop watchdog**
+(`brainLoopWatchdog.ts`) runs an unref'd worker thread that the main thread
+heartbeats every second with the name of the command currently running
+(`trackBrainLoopWatchdogCommand`). If the heartbeat stalls past
+`ADE_LOOP_WATCHDOG_MS` (15 s default) — and the gap is a genuine wedge, not a
+laptop sleep/suspend, which the worker distinguishes by comparing wall-clock and
+monotonic deltas — the worker atomically writes an `event-loop-wedge.json`
+breadcrumb (wedged command, blocked ms, timestamp) under the runtime dir and
+`SIGKILL`s the brain so launchd restarts it. A hung command therefore recovers
+in seconds instead of stranding every client.
+
+On the next boot the watchdog promotes any breadcrumb to `last-wedge.json`,
+logs `brain.recovered_from_wedge`, and emits a deduped `ade_brain_recovered`
+analytics event. The recovered wedge is exposed to clients through
+`runtimeInfo.lastWedge` (parsed by `adeRuntimeProtocol.parseRuntimeLastWedge`,
+surfaced on `LocalRuntimeStatus.lastWedge`), and the desktop app shell shows it
+once per distinct `ts` in `BrainRecoveryNotice` ("ADE recovered from a
+background issue … a stuck task was restarted"). `ade doctor` reports the same
+`last-wedge.json` as its Wedge-history row.
+
+Separately, the **freshness monitor** (`brainFreshnessMonitor.ts`) keeps a
+long-lived login-service brain from drifting behind an in-place binary upgrade:
+it stats its own CLI entrypoint every 5 min, hashes only on a stat change
+(`runtimeBuildIdentity.computeRuntimeBuildHashAsync`), and when the disk hash no
+longer matches the baked runtime hash it waits for the brain to be idle (bounded
+by a max wait) before requesting the brain-update service restart. A transient
+restart failure keeps the previous stat baseline so the unchanged replacement is
+re-checked on the next probe rather than the check disabling itself.
 
 ### Disk pressure and enforcement
 

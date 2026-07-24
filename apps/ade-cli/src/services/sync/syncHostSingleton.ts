@@ -3,9 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
-
-const SYNC_HOST_MAX_PORT = 8999;
+import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 const LOCK_VERSION = 1;
 
 export type SyncHostSingletonOwner = {

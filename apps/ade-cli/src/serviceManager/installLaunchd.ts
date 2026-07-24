@@ -14,6 +14,7 @@ import {
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
   terminatePidGracefully,
+  terminatePidGracefullyAsync,
   type TerminatePidDeps,
 } from "./common";
 import {
@@ -32,6 +33,17 @@ type LaunchdServiceManagerDeps = {
   env?: NodeJS.ProcessEnv;
   currentPid?: number;
   parentPid?: (pid: number) => number | null;
+  /** Defaults on. Repair-only callers may skip the preflight RPC probe. */
+  probeResponsiveness?: boolean;
+  responsivenessProbe?: (args: {
+    socketPath: string;
+    timeoutMs: number;
+    command: AdeServiceCommand;
+  }) => boolean;
+  handoverTimeoutMs?: number;
+  handoverPollMs?: number;
+  handoverPidAlive?: (pid: number) => boolean;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 type LaunchdServiceUninstallDeps = {
@@ -189,19 +201,89 @@ function getLoadedLaunchdState(
   };
 }
 
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function sleepAsync(ms: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
+function runtimeStatusArgs(command: AdeServiceCommand, socketPath: string): string[] {
+  const args = [...command.args];
+  const serveIndex = args.lastIndexOf("serve");
+  if (serveIndex >= 0) {
+    args.splice(serveIndex, 1, "runtime", "status");
+  } else {
+    args.push("runtime", "status");
+  }
+  args.push("--socket", socketPath, "--timeout", "1500", "--text");
+  return args;
+}
+
+function defaultResponsivenessProbe(args: {
+  socketPath: string;
+  timeoutMs: number;
+  command: AdeServiceCommand;
+}): boolean {
+  const env = {
+    ...process.env,
+    ...(args.command.env ?? {}),
+    ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+  };
+  const result = spawnSync(
+    args.command.command,
+    runtimeStatusArgs(args.command, args.socketPath),
+    {
+      encoding: "utf8",
+      env,
+      timeout: args.timeoutMs,
+      stdio: "ignore",
+    },
+  );
+  return result.status === 0 && !result.error;
+}
+
+function handoverFailure(
+  servicePath: string,
+  failureStep: NonNullable<ServiceManagerResult["failureStep"]>,
+  message: string,
+): ServiceManagerResult {
+  return {
+    ok: false,
+    serviceName: ADE_RUNTIME_SERVICE_NAME,
+    action: "install",
+    path: servicePath,
+    failureStep,
+    message,
+  };
+}
+
 export function getLaunchdServiceMainPid(
   run: ServiceManagerSpawnSync = spawnSync,
 ): number | null {
   return getLoadedLaunchdState(run)?.pid ?? null;
 }
 
-export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): ServiceManagerResult {
+export async function installLaunchdService(
+  deps: LaunchdServiceManagerDeps = {},
+): Promise<ServiceManagerResult> {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
   const homeDir = deps.homeDir ?? os.homedir();
   const servicePath = launchAgentPath(homeDir);
   const command = deps.command ?? resolveAdeServeCommand();
   const adeHome = command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
+  const socketPath = path.join(adeHome, "sock", "ade.sock");
+  const probeResponsiveness = deps.responsivenessProbe ?? defaultResponsivenessProbe;
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   const plist = renderLaunchdPlist(command, homeDir);
   fs.mkdirSync(path.join(adeHome, "runtime"), { recursive: true });
@@ -212,13 +294,18 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
   const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
   const loaded = getLoadedLaunchdState(run);
   if (!forceRestart && plistUnchanged && loaded?.running === true) {
-    return {
-      ok: true,
-      serviceName: ADE_RUNTIME_SERVICE_NAME,
-      action: "install",
-      path: servicePath,
-      message: "ADE service launchd service is already installed and running.",
-    };
+    if (
+      deps.probeResponsiveness === false
+      || probeResponsiveness({ socketPath, timeoutMs: 1_500, command })
+    ) {
+      return {
+        ok: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: "ADE service launchd service is already installed and running.",
+      };
+    }
   }
   const selfBlock = selfServiceMutationBlock({
     action: "install",
@@ -249,7 +336,7 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
         fs.writeFileSync(servicePath, plist, "utf8");
         if (loaded?.running === true) {
           run("launchctl", ["unload", servicePath], { stdio: "ignore" });
-          terminatePidGracefully(loaded.pid, deps.terminateDeps);
+          await terminatePidGracefullyAsync(loaded.pid, deps.terminateDeps);
         }
       }
       return {
@@ -260,7 +347,7 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
         message: `${formatSyncHostSingletonConflictMessage(conflict)} The ${ADE_RUNTIME_SERVICE_NAME} launch agent was updated for this ADE channel and will start when mobile sync is available.`,
       };
     }
-    terminatePidGracefully(conflict.owner.pid, deps.terminateDeps);
+    await terminatePidGracefullyAsync(conflict.owner.pid, deps.terminateDeps);
   }
 
   if (!plistUnchanged) {
@@ -271,14 +358,14 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
   // orphaned brain keeps the channel socket and sync lock hostage. Reap the
   // previous service child plus any stale same-channel serve processes
   // before loading the replacement.
-  terminatePidGracefully(loaded?.pid ?? null, deps.terminateDeps);
+  await terminatePidGracefullyAsync(loaded?.pid ?? null, deps.terminateDeps);
   const stalePids = listStaleChannelServePids(run, {
     cliScriptPath: resolveAdeServeCliScriptPath(command),
-    primarySocketPath: path.join(adeHome, "sock", "ade.sock"),
+    primarySocketPath: socketPath,
     excludePids: loaded?.pid ? [loaded.pid] : [],
   });
   for (const pid of stalePids) {
-    terminatePidGracefully(pid, deps.terminateDeps);
+    await terminatePidGracefullyAsync(pid, deps.terminateDeps);
   }
   const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });
   if (load.status !== 0) {
@@ -289,6 +376,53 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
       path: servicePath,
       message: serviceManagerResultText(load) || "launchctl load failed.",
     };
+  }
+  const oldPid = loaded?.pid ?? null;
+  const isAlive = deps.handoverPidAlive ?? deps.terminateDeps?.pidAlive ?? pidAlive;
+  const sleep = deps.sleep ?? sleepAsync;
+  const timeoutMs = Math.max(0, deps.handoverTimeoutMs ?? 10_000);
+  const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
+  const deadline = Date.now() + timeoutMs;
+  let predecessorGone = oldPid == null || !isAlive(oldPid);
+  let replacementPid: number | null = null;
+  let replacementResponsive = false;
+  do {
+    predecessorGone = oldPid == null || !isAlive(oldPid);
+    const replacement = getLoadedLaunchdState(run);
+    replacementPid = replacement?.running === true ? replacement.pid : null;
+    const replacementDiffers = replacementPid != null && replacementPid !== oldPid;
+    if (predecessorGone && replacementDiffers) {
+      replacementResponsive = probeResponsiveness({
+        socketPath,
+        timeoutMs: Math.min(1_500, Math.max(1, deadline - Date.now())),
+        command,
+      });
+      if (replacementResponsive) break;
+    }
+    if (Date.now() >= deadline) break;
+    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+  } while (Date.now() <= deadline);
+
+  if (!predecessorGone) {
+    return handoverFailure(
+      servicePath,
+      "predecessor_exit",
+      `ADE service handover failed because predecessor pid ${oldPid} is still alive.`,
+    );
+  }
+  if (replacementPid == null || replacementPid === oldPid) {
+    return handoverFailure(
+      servicePath,
+      "replacement_pid",
+      `ADE service handover failed because launchd did not report a distinct replacement pid (old ${oldPid ?? "none"}, new ${replacementPid ?? "none"}).`,
+    );
+  }
+  if (!replacementResponsive) {
+    return handoverFailure(
+      servicePath,
+      "replacement_responsive",
+      `ADE service handover failed because replacement pid ${replacementPid} did not initialize over ${socketPath} within ${timeoutMs}ms.`,
+    );
   }
   return {
     ok: true,

@@ -3,10 +3,7 @@ import type {
   SyncDeviceRecord,
   SyncPairingConnectInfo,
 } from "../../../../desktop/src/shared/types";
-import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
-
-const SYNC_HOST_PORT_RETRY_WINDOW = 8999 - DEFAULT_SYNC_HOST_PORT;
-const SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + SYNC_HOST_PORT_RETRY_WINDOW;
+import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 
 function normalizeHost(host: string | null | undefined): string | null {
   if (!host) return null;

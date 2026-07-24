@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -9,6 +11,7 @@ import { createSyncCloudRelayStore } from "./syncCloudRelayStore";
 import { createSyncService, type SyncService } from "./syncService";
 import { probeAdeLoopbackListener, type SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import type { SyncTunnelClientStatus } from "./syncTunnelClientService";
+import { resolveMachineAdeLayout } from "../projects/machineLayout";
 
 const ORIGINAL_BIND_HOST = vi.hoisted(() => process.env.ADE_SYNC_BIND_HOST);
 vi.hoisted(() => {
@@ -163,6 +166,58 @@ describe("sync loopback collision recovery", () => {
     }));
   });
 
+  it("reaps a stale ADE holder and retries the occupied candidate", async () => {
+    const port = await findFreeLegacyPort();
+    const holder = spawn(process.execPath, [
+      "-e",
+      [
+        "const http=require('node:http');",
+        "const port=Number(process.argv[1]);",
+        "const server=http.createServer();",
+        "server.listen(port,'127.0.0.1',()=>process.stdout.write('ready\\n'));",
+        "process.on('SIGTERM',()=>server.close(()=>process.exit(0)));",
+      ].join(""),
+      String(port),
+    ], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    await once(holder.stdout!, "data");
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-zombie-"));
+    const previousAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = adeHome;
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger,
+      activeServicePid: () => null,
+      inspectPort: (candidate) => ({
+        port: candidate,
+        holders: [{
+          pid: holder.pid!,
+          command:
+            `apps/ade-cli/dist/cli.cjs serve --socket ${resolveMachineAdeLayout().socketPath}`,
+          startTime: "test-holder-birth",
+        }],
+      }),
+    });
+
+    try {
+      await expect(listener.ensureListening([port])).resolves.toBe(port);
+      expect(holder.pid).toBeGreaterThan(0);
+      expect(logger.info).toHaveBeenCalledWith("sync_listener.zombie_reaped", {
+        port,
+        pid: holder.pid,
+      });
+      if (holder.exitCode == null) await once(holder, "exit");
+    } finally {
+      await listener.close();
+      if (!holder.killed && holder.exitCode == null) holder.kill("SIGKILL");
+      if (previousAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
+  });
+
   it.runIf(process.platform === "darwin")(
     "scans past a foreign 127.0.0.1 listener and publishes only the ADE-validated port",
     async () => {
@@ -172,9 +227,15 @@ describe("sync loopback collision recovery", () => {
       process.env.ADE_SYNC_HOST_LOCK_PATH = lockPath;
       const foreign = await bindForeignLegacyListener();
       const listener = createSharedSyncListener({ bindHost: "0.0.0.0" });
+      const logger = createLogger();
+      const requestAccountMachinePublish = vi.fn();
       const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
       (db.sync as { isAvailable?: () => boolean }).isAvailable = () => true;
-      const service = createService(db, projectRoot, { sharedSyncListener: listener });
+      const service = createService(db, projectRoot, {
+        logger: logger as any,
+        sharedSyncListener: listener,
+        requestAccountMachinePublish,
+      });
       service.getDeviceRegistryService().touchLocalDevice({ lastPort: foreign.port });
 
       try {
@@ -196,6 +257,11 @@ describe("sync loopback collision recovery", () => {
         });
         expect(publishedPorts()).not.toContain(foreign.port);
         expect(new Set(publishedPorts())).toEqual(new Set([resolvedPort!]));
+        expect(logger.warn).toHaveBeenCalledWith("sync_listener.port_drifted", {
+          from: foreign.port,
+          to: resolvedPort,
+        });
+        expect(requestAccountMachinePublish).toHaveBeenCalledTimes(1);
         await expect(probeAdeLoopbackListener(
           foreign.port,
           listener.getExpectedLoopbackNonce(),
