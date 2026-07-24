@@ -624,11 +624,15 @@ Controls and summaries project this runtime state rather than owning it:
   the sidebar instead of the system browser. The broker uses
   Electron's stock Chrome User-Agent — header rewriting is gone. Pages
   that call `window.open()` are honoured via `setWindowOpenHandler`
-  returning `action: "allow"` with a `createWindow` factory that
-  produces a new internal tab and hands its `webContents` back to
-  Chromium; this preserves `window.opener` for OAuth `postMessage`
-  callbacks instead of denying the popup and re-navigating in the
-  background. Download requests are assigned sanitized, unique filenames
+  returning `action: "allow"` with a `createWindow` factory that adopts
+  Electron's pre-created `webContents` into a new internal tab; this
+  preserves Chromium's popup lifecycle and `window.opener` for OAuth
+  `postMessage` callbacks. Foreground popups end Inspect on the opener
+  before activating, while deferred `background-tab` popups use the same
+  secure browser preferences and load without stealing focus or clearing
+  the opener's selection. Every browser view uses a white backing canvas
+  so light sites with transparent roots remain readable. Download requests
+  are assigned sanitized, unique filenames
   in the user's Downloads folder by the Electron session so download
   buttons do not fall through to unstable default handling. The renderer
   panel hides the native view whenever ADE overlays overlap the browser
