@@ -15,8 +15,6 @@ type BuiltInBrowserNavigationFailureOptions = {
   onFailure?: () => void;
 };
 
-const BUILT_IN_BROWSER_NAVIGATION_FALLBACK_MS = 4_000;
-
 // Renderer-local event that routes an in-app `ade://` deeplink through ADE's
 // internal navigation. App.tsx listens for this, parses the URL, and dispatches
 // the resulting target through the same handler that inbound OS/CLI deeplinks
@@ -125,24 +123,11 @@ export function navigateUrlInAdeBrowser(
     return;
   }
 
-  let finished = false;
-  const finish = (fallback: boolean) => {
-    if (finished) return;
-    finished = true;
-    window.clearTimeout(fallbackTimer);
-    if (!fallback) return;
+  void browser.navigate({ url, ...options }).catch(() => {
     consumePendingBuiltInBrowserNavigation();
     failureOptions.onFailure?.();
     if (failureOptions.fallbackToExternal !== false) openExternalUrl(url);
-  };
-  const fallbackTimer = window.setTimeout(
-    () => finish(true),
-    BUILT_IN_BROWSER_NAVIGATION_FALLBACK_MS,
-  );
-  void browser.navigate({ url, ...options }).then(
-    () => finish(false),
-    () => finish(true),
-  );
+  });
 }
 
 export function openExternalUrl(url: string | undefined | null): void {

@@ -36,7 +36,7 @@ describe("openUrlInAdeBrowser", () => {
     expect(openExternal).toHaveBeenCalledWith("https://example.test/docs");
   });
 
-  it("falls back on a short deadline instead of waiting for a delayed rejection", async () => {
+  it("does not fall back solely because in-app navigation remains pending", async () => {
     vi.useFakeTimers();
     const openExternal = vi.fn(async () => undefined);
     const navigate = vi.fn(() => new Promise<void>(() => {}));
@@ -52,9 +52,8 @@ describe("openUrlInAdeBrowser", () => {
     openUrlInAdeBrowser("https://example.test/docs");
     expect(openExternal).not.toHaveBeenCalled();
 
-    await vi.advanceTimersByTimeAsync(5_000);
+    await vi.advanceTimersByTimeAsync(60_000);
 
-    expect(openExternal).toHaveBeenCalledOnce();
-    expect(openExternal).toHaveBeenCalledWith("https://example.test/docs");
+    expect(openExternal).not.toHaveBeenCalled();
   });
 });
