@@ -13,6 +13,7 @@ const fakes = vi.hoisted(() => {
   };
   type WindowOpenDetails = {
     url: string;
+    disposition?: "background-tab" | "foreground-tab" | "new-window";
     referrer?: { url: string; policy: string };
     postBody?: {
       boundary?: string;
@@ -142,12 +143,16 @@ const fakes = vi.hoisted(() => {
   }
 
   class FakeWebContentsView {
-    webContents = new FakeWebContents();
+    webContents: FakeWebContents;
     webPreferences: unknown;
-    constructor(options?: { webPreferences?: unknown }) {
+    backgroundColor: string | null = null;
+    constructor(options?: { webPreferences?: unknown; webContents?: FakeWebContents }) {
+      this.webContents = options?.webContents ?? new FakeWebContents();
       this.webPreferences = options?.webPreferences;
     }
-    setBackgroundColor = (_color: string): void => undefined;
+    setBackgroundColor = (color: string): void => {
+      this.backgroundColor = color;
+    };
     setBounds = (_rect: unknown): void => undefined;
     setVisible = (_visible: boolean): void => undefined;
   }
@@ -260,11 +265,13 @@ const fakes = vi.hoisted(() => {
     }
   }
   class TrackedFakeWebContentsView extends FakeWebContentsView {
-    constructor(options?: { webPreferences?: unknown }) {
+    constructor(options?: { webPreferences?: unknown; webContents?: FakeWebContents }) {
       super(options);
-      this.webContents = new TrackedFakeWebContents();
-      const partition = (options?.webPreferences as { partition?: string } | undefined)?.partition ?? "persist:ade-browser";
-      this.webContents.session = sessionForPartition(partition);
+      if (!options?.webContents) {
+        this.webContents = new TrackedFakeWebContents();
+        const partition = (options?.webPreferences as { partition?: string } | undefined)?.partition ?? "persist:ade-browser";
+        this.webContents.session = sessionForPartition(partition);
+      }
       webContentsViewInstances.push(this);
     }
   }
@@ -278,6 +285,7 @@ const fakes = vi.hoisted(() => {
 
   return {
     WebContentsView: TrackedFakeWebContentsView,
+    WebContents: TrackedFakeWebContents,
     debuggerInstances,
     webContentsInstances,
     webContentsViewInstances,
@@ -1251,6 +1259,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(fakes.webContentsViewInstances.at(-1)?.webPreferences).toMatchObject({
       partition: status.partition,
     });
+    expect(fakes.webContentsViewInstances.at(-1)?.backgroundColor).toBe("#ffffff");
   });
 
   it("targets browser events to the owning ADE window", async () => {
@@ -1456,6 +1465,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const firstTabId = service.getStatus().activeTabId;
     const firstWc = fakes.webContentsInstances[0];
     const postData = [{ bytes: Buffer.from("token=abc"), type: "rawData" }];
+    await service.startInspect();
+    expect(service.getStatus().isInspecting).toBe(true);
 
     const response = firstWc?.openWindow("https://accounts.google.com/gsi/select", {
       referrer: { url: "https://example.test/sign-in", policy: "strict-origin-when-cross-origin" },
@@ -1467,7 +1478,10 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     expect(response?.action).toBe("allow");
     expect(response?.createWindow).toEqual(expect.any(Function));
+    const electronPopupWc = new fakes.WebContents();
+    electronPopupWc.session = fakes.sessionForPartition(service.getStatus().partition);
     const popupWc = response?.createWindow?.({
+      webContents: electronPopupWc,
       webPreferences: {
         additionalArguments: ["--popup"],
         javascript: false,
@@ -1476,7 +1490,11 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         webviewTag: true,
       },
     });
-    expect(popupWc).toBe(fakes.webContentsInstances.at(-1));
+    expect(popupWc).toBe(electronPopupWc);
+    expect(fakes.webContentsViewInstances.at(-1)?.webContents).toBe(electronPopupWc);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(service.getStatus().isInspecting).toBe(false);
+    expect(firstWc?.debugger.isAttached()).toBe(false);
     await popupWc?.loadURL("https://accounts.google.com/gsi/select");
 
     expect(service.getStatus().tabs).toHaveLength(2);
@@ -1486,24 +1504,80 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerLaneId: null,
       ownerChatSessionId: null,
     });
-    const popupWebPreferences = fakes.webContentsViewInstances.at(-1)?.webPreferences as Record<string, unknown>;
-    expect(popupWebPreferences).toMatchObject({
-      partition: service.getStatus().partition,
-      nodeIntegration: false,
-      contextIsolation: true,
-      sandbox: true,
-      webSecurity: true,
-      backgroundThrottling: false,
-    });
-    expect(popupWebPreferences.additionalArguments).toBeUndefined();
-    expect(popupWebPreferences.javascript).toBeUndefined();
-    expect(popupWebPreferences.webviewTag).toBeUndefined();
+    expect(fakes.webContentsViewInstances.at(-1)?.webPreferences).toBeUndefined();
+    expect(fakes.webContentsViewInstances.at(-1)?.backgroundColor).toBe("#ffffff");
 
     const openEvent = collector.events.findLast((event) => event.type === "open-request");
     expect(openEvent).toMatchObject({
       type: "open-request",
       url: "https://accounts.google.com/gsi/select",
       tabId: service.getStatus().activeTabId,
+    });
+  });
+
+  it("loads deferred background popups without stealing focus", async () => {
+    fakes.setSendCommand(async (method) => {
+      switch (method) {
+        case "DOM.getNodeForLocation":
+          return { backendNodeId: 42 };
+        case "DOM.resolveNode":
+          return { object: { objectId: "background-popup-selection" } };
+        case "Runtime.callFunctionOn":
+          return {
+            result: {
+              value: {
+                tagName: "button",
+                selector: "button#keep-selected",
+                testId: null,
+                frame: { x: 0, y: 0, width: 10, height: 10 },
+                pixelRatio: 1,
+                url: "https://example.test/",
+                title: "test",
+                metadata: { viewport: { width: 100, height: 100 } },
+              },
+            },
+          };
+        default:
+          return {};
+      }
+    });
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({
+      url: "https://example.test",
+      activate: true,
+    });
+    const firstTabId = service.getStatus().activeTabId;
+    const firstWc = fakes.webContentsInstances[0];
+    await service.selectPoint({ x: 5, y: 5, includeScreenshot: false });
+    expect(service.getStatus().hasSelection).toBe(true);
+    collector.events.length = 0;
+
+    const response = firstWc?.openWindow("https://example.test/background", {
+      disposition: "background-tab",
+    });
+    const popupWc = response?.createWindow?.({});
+
+    expect(response?.action).toBe("allow");
+    expect(popupWc).toBe(fakes.webContentsInstances.at(-1));
+    expect(popupWc?.loadURLCalls).toEqual([{
+      url: "https://example.test/background",
+      options: undefined,
+    }]);
+    expect(service.getStatus()).toMatchObject({
+      activeTabId: firstTabId,
+      url: "https://example.test/",
+      hasSelection: true,
+    });
+    expect(service.getStatus().tabs).toHaveLength(2);
+    expect(service.getStatus().tabs.at(-1)?.url).toBe("https://example.test/background");
+    expect(collector.events.some((event) => event.type === "open-request")).toBe(false);
+    expect(collector.events.some((event) => event.type === "selection-cleared")).toBe(false);
+    expect(fakes.webContentsViewInstances.at(-1)?.webPreferences).toMatchObject({
+      partition: service.getStatus().partition,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      webSecurity: true,
     });
   });
 
@@ -3202,6 +3276,51 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
         }),
       }),
     ]));
+  });
+
+  it("keeps a new popup inspect session intact while the opener finishes inspect cleanup", async () => {
+    fakes.setSendCommand(async () => ({}));
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.navigate({ url: "https://example.test", newTab: true });
+    await service.startInspect();
+
+    const openerWc = fakes.webContentsInstances[0];
+    const cleanupDeferred = createDeferred<unknown>();
+    let delayedCleanup = false;
+    fakes.setSendCommand(async (method, params) => {
+      const expression = typeof params?.expression === "string" ? params.expression : "";
+      if (
+        !delayedCleanup
+        && method === "Runtime.evaluate"
+        && expression.includes("const current = window.__adeBuiltInBrowserInspector")
+      ) {
+        delayedCleanup = true;
+        return cleanupDeferred.promise;
+      }
+      return {};
+    });
+
+    const response = openerWc?.openWindow("https://accounts.google.com/signin", {
+      disposition: "foreground-tab",
+    });
+    const popupWc = new fakes.WebContents();
+    popupWc.session = fakes.sessionForPartition(service.getStatus().partition);
+    response?.createWindow?.({ webContents: popupWc });
+
+    await service.startInspect();
+    expect(service.getStatus().isInspecting).toBe(true);
+    expect(popupWc.debugger.isAttached()).toBe(true);
+
+    cleanupDeferred.resolve({});
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(service.getStatus().isInspecting).toBe(true);
+    expect(openerWc?.debugger.isAttached()).toBe(false);
+    expect(popupWc.debugger.isAttached()).toBe(true);
+
+    await service.stopInspect();
+    expect(service.getStatus().isInspecting).toBe(false);
+    expect(popupWc.debugger.isAttached()).toBe(false);
   });
 
   it("selects inspect clicks from the ADE overlay binding", async () => {

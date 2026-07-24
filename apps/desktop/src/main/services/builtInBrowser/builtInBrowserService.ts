@@ -1482,10 +1482,20 @@ function createBuiltInBrowserWindowService(args: {
       }
       return {
         action: "allow",
-        createWindow: () => {
-          const tab = createPopupTabStateFromView(popupUrl, opener, new WebContentsView({
-            webPreferences: browserWebPreferences(),
-          }));
+        createWindow: (options) => {
+          const activate = details.disposition !== "background-tab";
+          const popupWebContents = (
+            options as Electron.BrowserWindowConstructorOptions & { webContents?: WebContents }
+          ).webContents;
+          const nextView = popupWebContents
+            ? new WebContentsView({ webContents: popupWebContents })
+            : new WebContentsView({ webPreferences: browserWebPreferences() });
+          const tab = createPopupTabStateFromView(popupUrl, opener, nextView, { activate });
+          if (!popupWebContents) {
+            void tab.webContents.loadURL(popupUrl).catch((error) => {
+              emitError(new Error(`Could not load deferred browser popup: ${errorMessage(error)}`));
+            });
+          }
           return tab.webContents;
         },
       };
@@ -1544,13 +1554,19 @@ function createBuiltInBrowserWindowService(args: {
       emitStatus();
     });
     wc.on("did-navigate", () => {
-      notifyTabActivity(tabForWebContents(wc));
-      clearSelectionInternal();
+      const tab = tabForWebContents(wc);
+      notifyTabActivity(tab);
+      if (tab?.id === lastSelectedTabId) {
+        clearSelectionInternal();
+      }
       emitStatus();
     });
     wc.on("did-navigate-in-page", () => {
-      notifyTabActivity(tabForWebContents(wc));
-      clearSelectionInternal();
+      const tab = tabForWebContents(wc);
+      notifyTabActivity(tab);
+      if (tab?.id === lastSelectedTabId) {
+        clearSelectionInternal();
+      }
       emitStatus();
     });
     wc.on("page-title-updated", () => {
@@ -1610,7 +1626,10 @@ function createBuiltInBrowserWindowService(args: {
   });
 
   const createTabStateForView = (nextView: WebContentsView): BrowserTabState => {
-    nextView.setBackgroundColor("#111827");
+    // Match a normal browser canvas. Many sites leave their root background
+    // transparent, so a dark ADE-specific backing color makes light pages
+    // unreadable even though the site's own text remains dark.
+    nextView.setBackgroundColor("#ffffff");
     nextView.setBounds(toElectronRect(bounds));
     nextView.setVisible(false);
 
@@ -1659,15 +1678,29 @@ function createBuiltInBrowserWindowService(args: {
     popupUrl: string,
     opener: BrowserTabState | null,
     nextView: WebContentsView,
+    options: { activate: boolean },
   ): BrowserTabState => {
     configureBrowserSession();
     const tab = createTabStateForView(nextView);
     copyTabOwner(opener, tab);
     tabs = [...tabs, tab];
-    activeTabId = tab.id;
-    clearSelectionInternal();
+    const shouldActivate = options.activate || !activeTab();
+    if (shouldActivate) {
+      if (inspecting) {
+        inspecting = false;
+        void teardownInspectWebContents(inspectListenerWebContents).catch((error) => {
+          logger()?.debug("built_in_browser.popup_stop_inspect_failed", {
+            err: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+      activeTabId = tab.id;
+      clearSelectionInternal();
+    }
     attachViewsToCurrentWindow();
-    requestOpenPanel({ url: popupUrl, tabId: tab.id });
+    if (shouldActivate) {
+      requestOpenPanel({ url: popupUrl, tabId: tab.id });
+    }
     emitStatus();
     return tab;
   };
@@ -2390,6 +2423,23 @@ function createBuiltInBrowserWindowService(args: {
     const tab = wc ? tabForWebContents(wc) : null;
     if (tab) await prepareAgentReadTabAsync(tab, input, "The agent requested access to stop DOM inspection.");
     inspecting = false;
+    await teardownInspectWebContents(wc);
+    emitStatus();
+    return scopeStatusForInput(getStatus(), input);
+  }
+
+  const teardownInspectWebContents = async (wc: WebContents | null): Promise<void> => {
+    const ownsInspectDebugger = Boolean(
+      wc
+      && inspectListenerWebContents === wc
+      && debuggerAttachedForInspect,
+    );
+    if (wc && inspectListenerWebContents === wc) {
+      detachDebuggerListeners(wc);
+      if (ownsInspectDebugger) {
+        debuggerAttachedForInspect = false;
+      }
+    }
     if (wc?.debugger.isAttached()) {
       try {
         await sendDebuggerCommand(wc, "Runtime.evaluate", {
@@ -2404,11 +2454,15 @@ function createBuiltInBrowserWindowService(args: {
           err: error instanceof Error ? error.message : String(error),
         });
       }
-      detachDebuggerIfOwned(wc);
+      if (ownsInspectDebugger) {
+        try {
+          if (wc.debugger.isAttached()) wc.debugger.detach();
+        } catch {
+          // ignore debugger detach races
+        }
+      }
     }
-    emitStatus();
-    return scopeStatusForInput(getStatus(), input);
-  }
+  };
 
   async function captureScreenshot(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserScreenshot> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before capturing a screenshot.");
