@@ -33,7 +33,14 @@ private enum PrGitHubDescriptionRegex {
   static let blockquoteOpen = expression(#"<blockquote\b[^>]*>"#, options: [.caseInsensitive])
   static let blockquoteClose = expression(#"</blockquote\s*>"#, options: [.caseInsensitive])
   static let horizontalRule = expression(#"<hr\s*/?>"#, options: [.caseInsensitive])
-  static let anyTag = expression(#"<[^>]+>"#, options: [.caseInsensitive])
+  static let anyTag = expression(
+    #"</?(?:a|abbr|address|area|article|aside|audio|b|base|bdi|bdo|blockquote|body|br|button|canvas|caption|center|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|embed|fieldset|figcaption|figure|font|footer|form|h[1-6]|head|header|hgroup|hr|html|i|iframe|img|input|ins|kbd|label|legend|li|link|main|map|mark|menu|meta|meter|nav|noscript|object|ol|optgroup|option|output|p|picture|pre|progress|q|rp|rt|ruby|s|samp|script|search|section|select|slot|small|source|span|strong|style|sub|summary|sup|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|track|u|ul|var|video|wbr)(?=[\s/>])(?:[^>"']|"[^"]*"|'[^']*')*>"#,
+    options: [.caseInsensitive]
+  )
+  static let unsafeAngleExpression = expression(
+    #"<(?:javascript|data|vbscript)\s*:[^>\n]*>"#,
+    options: [.caseInsensitive]
+  )
   static let repeatedBlankLines = expression(#"\n{3,}"#)
   static let inlineCode = expression(#"(`+)[^\n]*?\1"#)
   static let safeAutolink = expression(
@@ -347,19 +354,39 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
   value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.blockquoteClose, replacement: "\n")
   value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.horizontalRule, replacement: "\n---\n")
   value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.anyTag, replacement: "")
+  value = prReplacingHtmlTag(
+    value,
+    regex: PrGitHubDescriptionRegex.unsafeAngleExpression,
+    replacement: ""
+  )
   value = prDecodeHtmlEntities(value)
 
   value = value
     .split(separator: "\n", omittingEmptySubsequences: false)
-    .map { $0.trimmingCharacters(in: .whitespaces) }
+    .map(prTrimmingTrailingHorizontalWhitespace)
     .joined(separator: "\n")
   value = PrGitHubDescriptionRegex.repeatedBlankLines.stringByReplacingMatches(
     in: value,
     range: NSRange(location: 0, length: (value as NSString).length),
     withTemplate: "\n\n"
   )
-  value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+  value = prTrimmingBlankLines(value)
   return prRestoreMarkdownSyntax(in: value, segments: protectedMarkdown.segments)
+}
+
+private func prTrimmingTrailingHorizontalWhitespace(_ line: Substring) -> String {
+  String(line.reversed().drop(while: { $0 == " " || $0 == "\t" }).reversed())
+}
+
+private func prTrimmingBlankLines(_ source: String) -> String {
+  var lines = source.split(separator: "\n", omittingEmptySubsequences: false)
+  while lines.first.map({ String($0).trimmingCharacters(in: .whitespaces).isEmpty }) == true {
+    lines.removeFirst()
+  }
+  while lines.last.map({ String($0).trimmingCharacters(in: .whitespaces).isEmpty }) == true {
+    lines.removeLast()
+  }
+  return lines.joined(separator: "\n")
 }
 
 private struct PrProtectedMarkdownSegment {

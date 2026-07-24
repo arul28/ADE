@@ -73,6 +73,44 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
     XCTAssertFalse(markdown.contains("<javascript:"))
   }
 
+  func testHtmlNormalizationPreservesAngleBracketProseAndStripsActualTags() {
+    let markdown = normalizePrGitHubHtmlFragment("""
+    Replace <placeholder> or <article-placeholder> when 1 < 2 and 3 > 2.
+    <iframe src="https://unsafe.example">Fallback</iframe>
+    <img src="invalid" onerror="alert(1)">
+    """)
+
+    XCTAssertTrue(
+      markdown.contains("Replace <placeholder> or <article-placeholder> when 1 < 2 and 3 > 2.")
+    )
+    XCTAssertTrue(markdown.contains("Fallback"))
+    XCTAssertFalse(markdown.contains("<iframe"))
+    XCTAssertFalse(markdown.contains("</iframe>"))
+    XCTAssertFalse(markdown.contains("<img"))
+    XCTAssertFalse(markdown.contains("onerror"))
+  }
+
+  func testHtmlNormalizationPreservesMarkdownIndentation() {
+    let markdown = normalizePrGitHubHtmlFragment("""
+    - Parent
+      - Nested
+
+        Indented code
+          continuation
+    """)
+
+    XCTAssertEqual(
+      markdown,
+      """
+      - Parent
+        - Nested
+
+          Indented code
+            continuation
+      """
+    )
+  }
+
   func testDescriptionParserDoesNotPromoteFencedDetailsExample() {
     let blocks = parsePrGitHubDescriptionBlocks("""
     Example:
