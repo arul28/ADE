@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
-import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openUrlInAdeBrowser } from "../../lib/openExternal";
 
 // Deliberately a LIGHT accent (Codex-style) so the contrast tests can tell the
 // colored path (dark glyph) apart from the neutral-tint path (white glyph).
@@ -123,6 +123,7 @@ describe("PersonalChatsPage", () => {
   beforeEach(() => {
     cleanup();
     vi.clearAllMocks();
+    delete window.__adeWebClient;
     state.sessions = [];
     state.catalogAvailable = true;
     state.historyEvents = [];
@@ -132,6 +133,7 @@ describe("PersonalChatsPage", () => {
 
   afterEach(() => {
     cleanup();
+    delete window.__adeWebClient;
   });
 
   it("renders the hero (greeting + composer + chips) with the composer inside the canvas and no shell footer", async () => {
@@ -292,6 +294,24 @@ describe("PersonalChatsPage", () => {
     expect(await screen.findByTestId("browser-panel")).toBeTruthy();
     expect(await screen.findByText("ADE Browser couldn't open that link. Try again.")).toBeTruthy();
     expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("leaves hosted-web link requests unclaimed so they can fall back externally", async () => {
+    const openExternal = vi.fn(async () => undefined);
+    const current = window.ade;
+    window.__adeWebClient = true;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ...current, app: { openExternal }, builtInBrowser: undefined },
+    });
+    await renderPage();
+
+    openUrlInAdeBrowser("https://example.test/docs");
+
+    expect(openExternal).toHaveBeenCalledWith("https://example.test/docs");
+    expect(screen.queryByTestId("browser-panel")).toBeNull();
+    expect(screen.queryByText("ADE Browser couldn't open that link. Try again.")).toBeNull();
   });
 
   it("shows an ADE error instead of surprise-opening Safari when personal link navigation fails", async () => {

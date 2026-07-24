@@ -253,7 +253,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   useEffect(() => {
     const openPersonalBrowser = (rawEvent: Event) => {
       const event = rawEvent as CustomEvent<OpenBuiltInBrowserDetail>;
-      if (!event.detail?.url) return;
+      if (!event.detail?.url || isWebClientMode()) return;
       event.preventDefault();
       setToolPanel("browser");
       navigateUrlInAdeBrowser(event.detail.url, {
