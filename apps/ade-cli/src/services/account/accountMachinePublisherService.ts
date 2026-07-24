@@ -35,6 +35,7 @@ export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
 export const ACCOUNT_MACHINE_RETRY_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 20_000] as const;
 const DEFAULT_REQUEST_TIMEOUT_MS = 8_000;
 const DEFAULT_TOKEN_TIMEOUT_MS = 10_000;
+const BODY_READ_TIMEOUT_MS = 5_000;
 const SLOW_PUBLISH_LEG_MS = 2_000;
 const PUBLISH_INFO_INTERVAL = 10;
 export const PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS = 120_000;
@@ -793,11 +794,32 @@ export function createAccountMachinePublisherService(options: {
       return;
     }
 
+    // The request timer is cleared once headers arrive, so a stalled BODY
+    // would otherwise pin the inFlight promise forever and silently stop the
+    // heartbeat. Bound every body read and cancel the stream on expiry.
+    const readHttpReasonBounded = async (response: Response): Promise<string | null> => {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const expiry = new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          void response.body?.cancel().catch(() => {});
+          resolve(null);
+        }, BODY_READ_TIMEOUT_MS);
+      });
+      try {
+        return await Promise.race([
+          readAccountDirectoryHttpReason(response).catch(() => null),
+          expiry,
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    };
+
     try {
       let response = await sendRegistration(accessToken, registration, baseUrl);
       let firstUnauthorizedReason: string | null = null;
       if (response.status === 401) {
-        firstUnauthorizedReason = await readAccountDirectoryHttpReason(response).catch(() => null);
+        firstUnauthorizedReason = await readHttpReasonBounded(response);
         let refreshedToken: string | null = null;
         try {
           refreshedToken = (await runTokenLeg("token_refresh_401", true))?.trim() || null;
@@ -832,7 +854,7 @@ export function createAccountMachinePublisherService(options: {
         // Always drain the final response, even when the first 401 already
         // supplied the user-facing reason. Leaving a replacement 401 body
         // unread can prevent the HTTP connection from being reused.
-        const responseReason = await readAccountDirectoryHttpReason(response).catch(() => null);
+        const responseReason = await readHttpReasonBounded(response);
         const httpReason = response.status === 401 && firstUnauthorizedReason
           ? firstUnauthorizedReason
           : responseReason;

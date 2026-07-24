@@ -11,6 +11,7 @@ import {
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
 import type { SyncCredentialStore } from "../credentials/credentialStore";
+import { runWithAbortSignal } from "../sync/abortSignal";
 
 export const ACCOUNT_SESSION_CREDENTIAL_KEY = "account.session.v1";
 
@@ -26,6 +27,10 @@ const USERINFO_REQUEST_TIMEOUT_MS = 5_000;
 // grant after invalid_grant. This path only runs after a definitive rejection.
 const REFRESH_ROTATION_WAIT_MS = 6_000;
 const REFRESH_ROTATION_POLL_MS = 50;
+// Upper bound for the process-wide coalesced token exchange. It is owned by
+// the service, not by any caller, so one caller's abort cannot cancel the
+// refresh other callers are awaiting.
+const SHARED_REFRESH_TIMEOUT_MS = 30_000;
 const ACCOUNT_TOKEN_ENV_KEY = "ADE_ACCOUNT_TOKEN";
 const PROVISIONED_ACCOUNT_TOKEN_PREFIX = "ade_account_v1.";
 const SUCCESS_HTML = `<!doctype html>
@@ -1748,6 +1753,15 @@ export function createAccountAuthService(args: {
         const credentialAtRefresh = envCredential;
         const epochAtRefresh = envCredentialEpoch;
         const refreshTokenAtRefresh = envRefreshToken ?? inspected.token;
+        // Same caller-isolation rule as the session refresh below: the shared
+        // env-token exchange runs under service-owned cancellation.
+        const envSharedRefresh = new AbortController();
+        const envSharedTimer = setTimeout(
+          () => envSharedRefresh.abort(new Error("The shared ADE_ACCOUNT_TOKEN refresh timed out.")),
+          SHARED_REFRESH_TIMEOUT_MS,
+        );
+        envSharedTimer.unref?.();
+        const envSharedSignal = envSharedRefresh.signal;
         let refreshPromise: Promise<string> | null = null;
         refreshPromise = (async (): Promise<string> => {
           let config: AccountOAuthConfig;
@@ -1767,7 +1781,7 @@ export function createAccountAuthService(args: {
             token = await postTokenForm({
               fetchImpl,
               tokenUrl: `${config.issuer}/oauth/token`,
-              signal,
+              signal: envSharedSignal,
               body: {
                 grant_type: "refresh_token",
                 refresh_token: refreshTokenAtRefresh,
@@ -1775,7 +1789,7 @@ export function createAccountAuthService(args: {
               },
             });
           } catch {
-            signal?.throwIfAborted();
+            envSharedSignal.throwIfAborted();
             throw new Error(
               "ADE_ACCOUNT_TOKEN refresh failed. Replace it with a newly provisioned token from `ade account token create`.",
             );
@@ -1797,16 +1811,24 @@ export function createAccountAuthService(args: {
             envSession,
             "loopback",
             config,
-            { signal },
+            { signal: envSharedSignal },
           );
           envSession = refreshed;
           return refreshed.accessToken;
-        })();
+        })().finally(() => {
+          clearTimeout(envSharedTimer);
+        });
         envRefreshInFlight = refreshPromise;
       }
       const refreshPromise = envRefreshInFlight;
       try {
-        return await refreshPromise;
+        // Race the caller's own signal; the shared exchange keeps running for
+        // every other caller when this one aborts.
+        return await runWithAbortSignal(
+          () => refreshPromise,
+          signal ?? undefined,
+          "The account token request was aborted.",
+        );
       } finally {
         if (envRefreshInFlight === refreshPromise) envRefreshInFlight = null;
       }
@@ -1830,6 +1852,16 @@ export function createAccountAuthService(args: {
 
     const epochAtJoin = authEpoch;
     if (!refreshInFlight) {
+      // The coalesced exchange is shared by every caller; a single caller's
+      // abort must not cancel it for the rest. It runs under service-owned
+      // cancellation, and each caller races its own signal at the join below.
+      const sharedRefresh = new AbortController();
+      const sharedRefreshTimer = setTimeout(
+        () => sharedRefresh.abort(new Error("The shared account token refresh timed out.")),
+        SHARED_REFRESH_TIMEOUT_MS,
+      );
+      sharedRefreshTimer.unref?.();
+      const sharedSignal = sharedRefresh.signal;
       refreshInFlight = (async () => {
         if (!sessionSnapshot.raw) return null;
         let refreshSnapshot = {
@@ -1866,7 +1898,7 @@ export function createAccountAuthService(args: {
             // rotating refresh exchange may not have persisted its replacement
             // by the time Clerk rejects our old token, so briefly poll before
             // declaring the grant dead.
-            const rotation = await waitForRefreshRotation(refreshSnapshot, signal);
+            const rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
             if (rotation.kind === "rotated" && attempt === 0) {
               refreshSnapshot = rotation.snapshot;
               continue;
@@ -1889,7 +1921,7 @@ export function createAccountAuthService(args: {
           refreshSnapshot.session,
           undefined,
           config,
-          { fetchUserinfo: false, obtainedAtMs, signal },
+          { fetchUserinfo: false, obtainedAtMs, signal: sharedSignal },
         );
         if (authEpoch !== epochAtJoin) return null;
         if (!persistRefreshedSessionIfCurrent(refreshed, refreshSnapshot.raw)) {
@@ -1907,10 +1939,10 @@ export function createAccountAuthService(args: {
             refreshSnapshot.session,
             undefined,
             config,
-            { obtainedAtMs, signal },
+            { obtainedAtMs, signal: sharedSignal },
           );
         } catch (error) {
-          if (signal?.aborted) throw error;
+          if (sharedSignal.aborted) throw error;
           // The rotated credential and verified prior subject are already
           // durable. Optional profile enrichment must not make that successful
           // refresh unusable.
@@ -1922,11 +1954,19 @@ export function createAccountAuthService(args: {
           ? enriched
           : readSession();
       })().finally(() => {
+        clearTimeout(sharedRefreshTimer);
         refreshInFlight = null;
       });
     }
 
-    const refreshed = await refreshInFlight;
+    // Join the shared exchange but race the caller's own signal: an aborting
+    // caller leaves; the refresh keeps running for everyone else.
+    const joinedRefresh = refreshInFlight;
+    const refreshed = await runWithAbortSignal(
+      () => joinedRefresh,
+      signal,
+      "The account token request was aborted.",
+    );
     if (authEpoch !== epochAtJoin || !refreshed) {
       // A peer process may have won the refresh CAS. Its replacement token
       // satisfies this forced refresh; forcing another exchange here would

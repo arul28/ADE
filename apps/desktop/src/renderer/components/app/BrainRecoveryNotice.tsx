@@ -65,7 +65,7 @@ export function BrainRecoveryNotice() {
   useEffect(() => {
     let cancelled = false;
     let statusRevision = 0;
-    const unsubscribe = window.ade.app.onRuntimeStatusChanged((status) => {
+    const unsubscribe = window.ade.app?.onRuntimeStatusChanged?.((status) => {
       statusRevision += 1;
       if (!cancelled) setLastWedge(status.lastWedge ?? null);
     });
@@ -84,7 +84,7 @@ export function BrainRecoveryNotice() {
     }
     return () => {
       cancelled = true;
-      unsubscribe();
+      unsubscribe?.();
     };
   }, []);
 

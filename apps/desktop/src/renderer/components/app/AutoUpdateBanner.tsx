@@ -79,10 +79,16 @@ export function AutoUpdateBanner() {
   const handleCancelAutoApply = useCallback(() => {
     cancelRequestedRef.current = true;
     dismissToast(AUTO_APPLY_TOAST_ID);
-    void window.ade.updateCancelAutoApply().catch(() => {
-      cancelRequestedRef.current = false;
-      // Main process logs cancellation failures; the snapshot event reconciles.
-    });
+    void window.ade.updateCancelAutoApply?.().then(
+      (accepted) => {
+        // A declined cancel must not leave the countdown invisible while
+        // auto-apply proceeds; the snapshot event reconciles accepted ones.
+        if (accepted === false) cancelRequestedRef.current = false;
+      },
+      () => {
+        cancelRequestedRef.current = false;
+      },
+    );
   }, []);
 
   // Drive the countdown toast off `autoApplyPending`. Re-render once a second so
