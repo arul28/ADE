@@ -211,9 +211,11 @@ function pidAlive(pid: number): boolean {
 }
 
 async function sleepAsync(ms: number): Promise<void> {
+  // Awaited lifecycle delays must stay referenced: in a standalone CLI the
+  // handover polling can be the only pending work, and an unref'd timer lets
+  // the process exit mid-repair (before SIGKILL escalation / launchctl load).
   await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    timer.unref?.();
+    setTimeout(resolve, ms);
   });
 }
 

@@ -1817,21 +1817,22 @@ export function createAccountAuthService(args: {
           return refreshed.accessToken;
         })().finally(() => {
           clearTimeout(envSharedTimer);
+          // Single-flight must be released by the SHARED exchange settling,
+          // never by an individual caller aborting out of the join below —
+          // otherwise a second caller starts a competing OAuth exchange with
+          // the same rotating refresh token.
+          if (envRefreshInFlight === refreshPromise) envRefreshInFlight = null;
         });
         envRefreshInFlight = refreshPromise;
       }
       const refreshPromise = envRefreshInFlight;
-      try {
-        // Race the caller's own signal; the shared exchange keeps running for
-        // every other caller when this one aborts.
-        return await runWithAbortSignal(
-          () => refreshPromise,
-          signal ?? undefined,
-          "The account token request was aborted.",
-        );
-      } finally {
-        if (envRefreshInFlight === refreshPromise) envRefreshInFlight = null;
-      }
+      // Race the caller's own signal; the shared exchange keeps running for
+      // every other caller when this one aborts.
+      return await runWithAbortSignal(
+        () => refreshPromise,
+        signal ?? undefined,
+        "The account token request was aborted.",
+      );
     }
 
     if (!record?.accessToken || !record.userId) {
@@ -1879,7 +1880,7 @@ export function createAccountAuthService(args: {
             token = await postTokenForm({
               fetchImpl,
               tokenUrl: `${config.issuer}/oauth/token`,
-              signal,
+              signal: sharedSignal,
               body: {
                 grant_type: "refresh_token",
                 refresh_token: refreshRecord.refreshToken!,
