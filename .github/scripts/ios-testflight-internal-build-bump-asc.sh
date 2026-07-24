@@ -62,6 +62,41 @@ internal_group_summaries_for_log() {
   printf '%s' "$json" | jq -r '(.data // [])[] | "- \(.attributes.name // "unnamed") (\(.id))"'
 }
 
+testflight_whats_new() {
+  local notes="${IOS_TESTFLIGHT_WHATS_NEW:-}"
+  if [[ -z "${notes//[[:space:]]/}" ]]; then
+    notes='Please test pairing with your ADE machine, browsing Work sessions, lanes, pull requests, and files, and report unexpected sync or UI behavior.'
+  fi
+  printf '%s' "$notes"
+}
+
+submit_for_app_review_if_requested() {
+  local app_id="$1" marketing="$2" build_id="$3"
+  local requested="${IOS_SUBMIT_FOR_APP_REVIEW:-false}"
+
+  case "$requested" in
+    false|'')
+      notice 'App Store review submission was not requested; this build remains an internal TestFlight build only.'
+      return 0
+      ;;
+    true)
+      ;;
+    *)
+      err "IOS_SUBMIT_FOR_APP_REVIEW must be true or false (received: ${requested})"
+      exit 1
+      ;;
+  esac
+
+  notice "Validating and submitting ${marketing} build ${build_id} to App Store review."
+  asc validate --app "${app_id}" --version "${marketing}" --platform IOS --output table
+  asc review submit \
+    --app "${app_id}" \
+    --version "${marketing}" \
+    --build "${build_id}" \
+    --confirm \
+    --output table
+}
+
 configure_api_key_for_xcode() {
   local key_path key_id issuer
 
@@ -239,7 +274,7 @@ main() {
   cleanup_posthog_xcconfig
   posthog_xcconfig=""
 
-  local builds_json build_id
+  local builds_json build_id test_notes test_notes_json test_notes_id
   builds_json="$(asc builds list --app "${app_id}" --platform IOS --version "${marketing}" --build-number "${build_number}" --limit 25 --output json)"
   build_id="$(printf '%s' "$builds_json" | jq -r --arg bn "${build_number}" '(.data // [])[] | select((.attributes.version | tostring) == $bn) | .id' | head -n1 || true)"
 
@@ -251,7 +286,18 @@ main() {
 
   asc builds update --build-id "${build_id}" --uses-non-exempt-encryption=false
 
+  test_notes="$(testflight_whats_new)"
+  test_notes_json="$(asc builds test-notes list --build-id "${build_id}" --locale en-US --output json)"
+  test_notes_id="$(printf '%s' "${test_notes_json}" | jq -r '(.data // [])[] | select(.attributes.locale == "en-US") | .id' | head -n1 || true)"
+  if [[ -n "${test_notes_id}" && "${test_notes_id}" != 'null' ]]; then
+    asc builds test-notes update --localization-id "${test_notes_id}" --whats-new "${test_notes}"
+  else
+    asc builds test-notes create --build-id "${build_id}" --locale en-US --whats-new "${test_notes}"
+  fi
+  asc validate testflight --app "${app_id}" --build "${build_id}" --output table
+
   asc builds add-groups --build-id "${build_id}" --group "${group_csv}" --submit --confirm
+  submit_for_app_review_if_requested "${app_id}" "${marketing}" "${build_id}"
 
   local summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
   {
@@ -260,6 +306,8 @@ main() {
     printf '- **Build number** always comes from `asc builds next-build-number` (**%s**).\n\n' "${build_number}"
     printf '- asc build id: `%s`\n' "${build_id}"
     printf '- IPA: `%s`\n\n' "${ipa_path}"
+    printf '- **What to Test:** %s\n\n' "${test_notes}"
+    printf '- **App Store review:** %s\n\n' "${IOS_SUBMIT_FOR_APP_REVIEW:-false}"
     printf '### Internal beta groups (all)\n\n'
     internal_group_summaries_for_log "${groups_json}"
     printf '\n\n'

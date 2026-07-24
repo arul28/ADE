@@ -31,6 +31,8 @@
   </array>
   <key>CFBundleVersion</key>
   <string>$(CURRENT_PROJECT_VERSION)</string>
+  <key>ITSAppUsesNonExemptEncryption</key>
+  <false/>
   <key>ADEPostHogHost</key>
   <string>$(ADE_POSTHOG_HOST)</string>
   <key>ADEPostHogProjectToken</key>

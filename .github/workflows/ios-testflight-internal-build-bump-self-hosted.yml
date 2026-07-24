@@ -10,6 +10,13 @@ on:
         required: false
         default: main
         type: string
+      submit_for_app_review:
+        description: >-
+          When true, validate the prepared App Store version and submit this newly-built
+          iOS build to Apple for review after internal TestFlight distribution.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -36,6 +43,7 @@ jobs:
         shell: bash --login -eo pipefail {0}
     env:
       ASC_PUBLISH_WAIT_TIMEOUT: 60m
+      IOS_SUBMIT_FOR_APP_REVIEW: ${{ inputs.submit_for_app_review }}
 
     steps:
       - uses: actions/checkout@v4
