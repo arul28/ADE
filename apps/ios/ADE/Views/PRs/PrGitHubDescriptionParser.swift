@@ -12,6 +12,57 @@ enum PrGitHubDescriptionBlock: Identifiable, Equatable {
   }
 }
 
+private enum PrGitHubDescriptionRegex {
+  static let details = expression(
+    #"<details\b[^>]*>(.*?)</details\s*>"#,
+    options: [.caseInsensitive, .dotMatchesLineSeparators]
+  )
+  static let summary = expression(
+    #"<summary\b[^>]*>(.*?)</summary\s*>"#,
+    options: [.caseInsensitive, .dotMatchesLineSeparators]
+  )
+  static let scriptOrStyle = htmlExpression(
+    #"<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>"#
+  )
+  static let code = htmlExpression(#"<code\b[^>]*>(.*?)</code\s*>"#)
+  static let strong = htmlExpression(#"<(?:strong|b)\b[^>]*>(.*?)</(?:strong|b)\s*>"#)
+  static let emphasis = htmlExpression(#"<(?:em|i)\b[^>]*>(.*?)</(?:em|i)\s*>"#)
+  static let link = htmlExpression(#"<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>"#)
+  static let heading = htmlExpression(#"<h([1-6])\b[^>]*>(.*?)</h[1-6]\s*>"#)
+  static let listItem = htmlExpression(#"<li\b[^>]*>(.*?)</li\s*>"#)
+  static let image = htmlExpression(#"<img\b[^>]*\balt\s*=\s*["']([^"']+)["'][^>]*>"#)
+  static let lineBreak = expression(#"<br\s*/?>"#, options: [.caseInsensitive])
+  static let paragraph = expression(#"</?p\b[^>]*>"#, options: [.caseInsensitive])
+  static let list = expression(#"</?(?:ul|ol)\b[^>]*>"#, options: [.caseInsensitive])
+  static let blockquoteOpen = expression(#"<blockquote\b[^>]*>"#, options: [.caseInsensitive])
+  static let blockquoteClose = expression(#"</blockquote\s*>"#, options: [.caseInsensitive])
+  static let horizontalRule = expression(#"<hr\s*/?>"#, options: [.caseInsensitive])
+  static let anyTag = expression(#"<[^>]+>"#, options: [.caseInsensitive])
+  static let repeatedBlankLines = expression(#"\n{3,}"#)
+  static let inlineCode = expression(#"(`+)[^\n]*?\1"#)
+  static let fenceOpening = expression(
+    #"^[ \t]*(`{3,}|~{3,})[^\n]*(?:\n|$)"#,
+    options: [.anchorsMatchLines]
+  )
+  static let fenceClosing = expression(
+    #"^[ \t]*(`{3,}|~{3,})[ \t]*(?=\n|$)"#,
+    options: [.anchorsMatchLines]
+  )
+  static let numericEntity = htmlExpression(#"&#(x?[0-9a-f]+);"#)
+
+  private static func htmlExpression(_ pattern: String) -> NSRegularExpression {
+    expression(pattern, options: [.caseInsensitive, .dotMatchesLineSeparators])
+  }
+
+  private static func expression(
+    _ pattern: String,
+    options: NSRegularExpression.Options = []
+  ) -> NSRegularExpression {
+    // All patterns are compile-time literals covered by parser tests.
+    try! NSRegularExpression(pattern: pattern, options: options)
+  }
+}
+
 /// GitHub PR bodies are Markdown with a small amount of embedded HTML. Apple's
 /// Markdown parser treats those tags as literal prose, so Dependabot release
 /// notes can render as a wall of `<details>`, `<li>`, and `<a>` tags. Split
@@ -28,15 +79,8 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
     )
   }
 
-  guard let detailsRegex = try? NSRegularExpression(
-    pattern: #"<details\b[^>]*>(.*?)</details\s*>"#,
-    options: [.caseInsensitive, .dotMatchesLineSeparators]
-  ) else {
-    return [.markdown(id: "description-markdown-0", markdown: normalizeFragment(source))]
-  }
-
   let nsSource = source as NSString
-  let matches = detailsRegex.matches(
+  let matches = PrGitHubDescriptionRegex.details.matches(
     in: source,
     range: NSRange(location: 0, length: nsSource.length)
   )
@@ -44,10 +88,6 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
     return [.markdown(id: "description-markdown-0", markdown: normalizeFragment(source))]
   }
 
-  let summaryRegex = try? NSRegularExpression(
-    pattern: #"<summary\b[^>]*>(.*?)</summary\s*>"#,
-    options: [.caseInsensitive, .dotMatchesLineSeparators]
-  )
   var blocks: [PrGitHubDescriptionBlock] = []
   var cursor = 0
 
@@ -68,7 +108,7 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
     let innerRange = match.range(at: 1)
     let inner = innerRange.location == NSNotFound ? "" : nsSource.substring(with: innerRange)
     let nsInner = inner as NSString
-    let summaryMatch = summaryRegex?.firstMatch(
+    let summaryMatch = PrGitHubDescriptionRegex.summary.firstMatch(
       in: inner,
       range: NSRange(location: 0, length: nsInner.length)
     )
@@ -116,11 +156,11 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
 
   value = prReplaceHtmlMatches(
     in: value,
-    pattern: #"<(?:script|style)\b[^>]*>.*?</(?:script|style)\s*>"#
+    regex: PrGitHubDescriptionRegex.scriptOrStyle
   ) { _, _ in "" }
   value = prReplaceHtmlMatches(
     in: value,
-    pattern: #"<code\b[^>]*>(.*?)</code\s*>"#
+    regex: PrGitHubDescriptionRegex.code
   ) { match, original in
     let inner = prHtmlCapture(match, in: original, index: 1)
     let code = prDecodeHtmlEntities(prStripHtmlTags(inner))
@@ -129,21 +169,21 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
   }
   value = prReplaceHtmlMatches(
     in: value,
-    pattern: #"<(?:strong|b)\b[^>]*>(.*?)</(?:strong|b)\s*>"#
+    regex: PrGitHubDescriptionRegex.strong
   ) { match, original in
     let inner = prDecodeHtmlEntities(prStripHtmlTags(prHtmlCapture(match, in: original, index: 1)))
     return inner.isEmpty ? "" : "**\(inner)**"
   }
   value = prReplaceHtmlMatches(
     in: value,
-    pattern: #"<(?:em|i)\b[^>]*>(.*?)</(?:em|i)\s*>"#
+    regex: PrGitHubDescriptionRegex.emphasis
   ) { match, original in
     let inner = prDecodeHtmlEntities(prStripHtmlTags(prHtmlCapture(match, in: original, index: 1)))
     return inner.isEmpty ? "" : "*\(inner)*"
   }
   value = prReplaceHtmlMatches(
     in: value,
-    pattern: #"<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>(.*?)</a\s*>"#
+    regex: PrGitHubDescriptionRegex.link
   ) { match, original in
     let href = prDecodeHtmlEntities(prHtmlCapture(match, in: original, index: 1))
     let label = prDecodeHtmlEntities(prStripHtmlTags(prHtmlCapture(match, in: original, index: 2)))
@@ -160,7 +200,7 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
   }
   value = prReplaceHtmlMatches(
     in: value,
-    pattern: #"<h([1-6])\b[^>]*>(.*?)</h[1-6]\s*>"#
+    regex: PrGitHubDescriptionRegex.heading
   ) { match, original in
     let level = Int(prHtmlCapture(match, in: original, index: 1)) ?? 2
     let title = prDecodeHtmlEntities(prStripHtmlTags(prHtmlCapture(match, in: original, index: 2)))
@@ -168,7 +208,7 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
   }
   value = prReplaceHtmlMatches(
     in: value,
-    pattern: #"<li\b[^>]*>(.*?)</li\s*>"#
+    regex: PrGitHubDescriptionRegex.listItem
   ) { match, original in
     let item = prDecodeHtmlEntities(prStripHtmlTags(prHtmlCapture(match, in: original, index: 1)))
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -176,29 +216,29 @@ func normalizePrGitHubHtmlFragment(_ source: String) -> String {
   }
   value = prReplaceHtmlMatches(
     in: value,
-    pattern: #"<img\b[^>]*\balt\s*=\s*["']([^"']+)["'][^>]*>"#
+    regex: PrGitHubDescriptionRegex.image
   ) { match, original in
     let alt = prDecodeHtmlEntities(prHtmlCapture(match, in: original, index: 1))
     return alt.isEmpty ? "" : "[Image: \(alt)]"
   }
 
-  value = prReplacingHtmlTag(value, pattern: #"<br\s*/?>"#, replacement: "\n")
-  value = prReplacingHtmlTag(value, pattern: #"</?p\b[^>]*>"#, replacement: "\n\n")
-  value = prReplacingHtmlTag(value, pattern: #"</?(?:ul|ol)\b[^>]*>"#, replacement: "\n")
-  value = prReplacingHtmlTag(value, pattern: #"<blockquote\b[^>]*>"#, replacement: "\n> ")
-  value = prReplacingHtmlTag(value, pattern: #"</blockquote\s*>"#, replacement: "\n")
-  value = prReplacingHtmlTag(value, pattern: #"<hr\s*/?>"#, replacement: "\n---\n")
-  value = prReplacingHtmlTag(value, pattern: #"<[^>]+>"#, replacement: "")
+  value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.lineBreak, replacement: "\n")
+  value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.paragraph, replacement: "\n\n")
+  value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.list, replacement: "\n")
+  value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.blockquoteOpen, replacement: "\n> ")
+  value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.blockquoteClose, replacement: "\n")
+  value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.horizontalRule, replacement: "\n---\n")
+  value = prReplacingHtmlTag(value, regex: PrGitHubDescriptionRegex.anyTag, replacement: "")
   value = prDecodeHtmlEntities(value)
 
   value = value
     .split(separator: "\n", omittingEmptySubsequences: false)
     .map { $0.trimmingCharacters(in: .whitespaces) }
     .joined(separator: "\n")
-  value = value.replacingOccurrences(
-    of: #"\n{3,}"#,
-    with: "\n\n",
-    options: .regularExpression
+  value = PrGitHubDescriptionRegex.repeatedBlankLines.stringByReplacingMatches(
+    in: value,
+    range: NSRange(location: 0, length: (value as NSString).length),
+    withTemplate: "\n\n"
   )
   value = value.trimmingCharacters(in: .whitespacesAndNewlines)
   return prRestoreMarkdownCode(in: value, segments: protectedCode.segments)
@@ -215,8 +255,7 @@ private func prProtectMarkdownCode(
   var text = source
   var segments: [PrProtectedMarkdownCode] = []
 
-  func protect(pattern: String, options: NSRegularExpression.Options) {
-    guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return }
+  func protect(regex: NSRegularExpression) {
     let original = text as NSString
     let matches = regex.matches(
       in: text,
@@ -236,10 +275,7 @@ private func prProtectMarkdownCode(
   }
 
   text = prProtectMarkdownFences(in: text, segments: &segments)
-  protect(
-    pattern: #"(`+)[^\n]*?\1"#,
-    options: []
-  )
+  protect(regex: PrGitHubDescriptionRegex.inlineCode)
   return (text, segments)
 }
 
@@ -247,14 +283,8 @@ private func prProtectMarkdownFences(
   in source: String,
   segments: inout [PrProtectedMarkdownCode]
 ) -> String {
-  guard let openingRegex = try? NSRegularExpression(
-    pattern: #"^[ \t]*(`{3,}|~{3,})[^\n]*(?:\n|$)"#,
-    options: [.anchorsMatchLines]
-  ),
-  let closingRegex = try? NSRegularExpression(
-    pattern: #"^[ \t]*(`{3,}|~{3,})[ \t]*(?=\n|$)"#,
-    options: [.anchorsMatchLines]
-  ) else { return source }
+  let openingRegex = PrGitHubDescriptionRegex.fenceOpening
+  let closingRegex = PrGitHubDescriptionRegex.fenceClosing
 
   let original = source as NSString
   var protectedRanges: [NSRange] = []
@@ -332,22 +362,18 @@ private func prGitHubHtmlPlainText(_ source: String) -> String {
 }
 
 private func prStripHtmlTags(_ source: String) -> String {
-  source.replacingOccurrences(
-    of: #"<[^>]+>"#,
-    with: "",
-    options: [.regularExpression, .caseInsensitive]
+  PrGitHubDescriptionRegex.anyTag.stringByReplacingMatches(
+    in: source,
+    range: NSRange(location: 0, length: (source as NSString).length),
+    withTemplate: ""
   )
 }
 
 private func prReplaceHtmlMatches(
   in source: String,
-  pattern: String,
+  regex: NSRegularExpression,
   transform: (NSTextCheckingResult, NSString) -> String
 ) -> String {
-  guard let regex = try? NSRegularExpression(
-    pattern: pattern,
-    options: [.caseInsensitive, .dotMatchesLineSeparators]
-  ) else { return source }
   let original = source as NSString
   let matches = regex.matches(
     in: source,
@@ -361,11 +387,15 @@ private func prReplaceHtmlMatches(
   return result as String
 }
 
-private func prReplacingHtmlTag(_ source: String, pattern: String, replacement: String) -> String {
-  source.replacingOccurrences(
-    of: pattern,
-    with: replacement,
-    options: [.regularExpression, .caseInsensitive]
+private func prReplacingHtmlTag(
+  _ source: String,
+  regex: NSRegularExpression,
+  replacement: String
+) -> String {
+  regex.stringByReplacingMatches(
+    in: source,
+    range: NSRange(location: 0, length: (source as NSString).length),
+    withTemplate: replacement
   )
 }
 
@@ -386,7 +416,10 @@ private func prDecodeHtmlEntities(_ source: String) -> String {
     .replacingOccurrences(of: "&gt;", with: ">", options: .caseInsensitive)
     .replacingOccurrences(of: "&amp;", with: "&", options: .caseInsensitive)
 
-  value = prReplaceHtmlMatches(in: value, pattern: #"&#(x?[0-9a-f]+);"#) { match, original in
+  value = prReplaceHtmlMatches(
+    in: value,
+    regex: PrGitHubDescriptionRegex.numericEntity
+  ) { match, original in
     let raw = prHtmlCapture(match, in: original, index: 1)
     let radix = raw.lowercased().hasPrefix("x") ? 16 : 10
     let digits = radix == 16 ? String(raw.dropFirst()) : raw

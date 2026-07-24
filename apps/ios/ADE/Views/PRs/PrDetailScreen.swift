@@ -812,6 +812,10 @@ struct PrDetailView: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .truncationMode(.tail)
+          .adeMatchedGeometry(
+            id: transitionNamespace == nil ? nil : "pr-title-\(prId)",
+            in: transitionNamespace
+          )
         Text(detailHeaderMetaText)
           .font(.system(size: 10.5, weight: .medium, design: .monospaced))
           .foregroundStyle(ADEColor.textSecondary)
