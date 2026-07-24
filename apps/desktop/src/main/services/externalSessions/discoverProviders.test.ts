@@ -252,6 +252,129 @@ describe("external session provider discovery", () => {
     });
   });
 
+  it("finds project-scoped Codex sessions beyond 2,000 newer rollouts", async () => {
+    const homeDir = path.join(root, "home");
+    const projectCwd = path.join(root, "repo");
+    const otherCwd = path.join(root, "other-repo");
+    const outsideDir = path.join(homeDir, ".codex", "sessions", "2026", "07", "08");
+    const insideDir = path.join(homeDir, ".codex", "sessions", "2026", "07", "07");
+    const outsideId = "26000000-0000-4000-8000-000000000000";
+    const insideId = "26000000-0000-4000-8000-000000000001";
+    fs.mkdirSync(projectCwd, { recursive: true });
+    fs.mkdirSync(otherCwd, { recursive: true });
+
+    const outsideTemplate = path.join(outsideDir, "rollout-outside-0000.jsonl");
+    writeJsonl(outsideTemplate, [
+      {
+        type: "session_meta",
+        payload: { id: outsideId, cwd: otherCwd, source: "cli", originator: "codex-tui" },
+      },
+      { type: "event_msg", payload: { type: "user_message", message: "outside project" } },
+    ]);
+    for (let index = 1; index <= 2_000; index += 1) {
+      fs.linkSync(outsideTemplate, path.join(outsideDir, `rollout-outside-${String(index).padStart(4, "0")}.jsonl`));
+    }
+    fs.utimesSync(
+      outsideTemplate,
+      new Date("2026-07-08T12:00:00.000Z"),
+      new Date("2026-07-08T12:00:00.000Z"),
+    );
+
+    const insidePath = path.join(insideDir, `rollout-${insideId}.jsonl`);
+    writeJsonl(insidePath, [
+      {
+        type: "session_meta",
+        payload: { id: insideId, cwd: projectCwd, source: "cli", originator: "codex-tui" },
+      },
+      { type: "event_msg", payload: { type: "user_message", message: "inside project" } },
+    ]);
+    fs.utimesSync(
+      insidePath,
+      new Date("2026-07-07T12:00:00.000Z"),
+      new Date("2026-07-07T12:00:00.000Z"),
+    );
+
+    const sessions = await discoverCodexSessions({
+      homeDir,
+      limit: 1,
+      scopeRoots: [projectCwd],
+    });
+
+    expect(sessions).toEqual([
+      expect.objectContaining({
+        id: insideId,
+        cwd: projectCwd,
+        preview: "inside project",
+      }),
+    ]);
+    const cacheDir = path.join(homeDir, ".ade", "cache", "external-sessions");
+    expect(fs.readdirSync(cacheDir)).toEqual([
+      expect.stringMatching(/^codex-cwd-index-[0-9a-f]{16}\.json$/u),
+    ]);
+
+    const openSync = vi.spyOn(fs, "openSync");
+    let openedPaths: string[] = [];
+    try {
+      await expect(discoverCodexSessions({
+        homeDir,
+        limit: 1,
+        scopeRoots: [projectCwd],
+      })).resolves.toEqual([
+        expect.objectContaining({ id: insideId }),
+      ]);
+      openedPaths = openSync.mock.calls.map((call) => String(call[0]));
+    } finally {
+      openSync.mockRestore();
+    }
+    expect(openedPaths.some((filePath) => filePath.startsWith(outsideDir))).toBe(false);
+  });
+
+  it("excludes Codex subagent rollouts with object-shaped source metadata", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    const parentId = "27000000-0000-4000-8000-000000000000";
+    const subagentId = "27000000-0000-4000-8000-000000000001";
+    fs.mkdirSync(cwd, { recursive: true });
+    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "08", `rollout-${parentId}.jsonl`), [
+      {
+        type: "session_meta",
+        payload: { id: parentId, cwd, source: "cli", originator: "codex-tui" },
+      },
+      { type: "event_msg", payload: { type: "user_message", message: "parent request" } },
+    ]);
+    writeJsonl(path.join(homeDir, ".codex", "sessions", "2026", "07", "08", `rollout-${subagentId}.jsonl`), [
+      {
+        type: "session_meta",
+        payload: {
+          id: subagentId,
+          cwd,
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: parentId,
+                depth: 1,
+                agent_path: "/root/reviewer",
+              },
+            },
+          },
+          originator: "codex-tui",
+        },
+      },
+      { type: "event_msg", payload: { type: "user_message", message: "worker request" } },
+    ]);
+
+    const sessions = await discoverCodexSessions({ homeDir, limit: 10 });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({
+      provider: "codex",
+      id: parentId,
+      cwd,
+      preview: "parent request",
+    });
+    expect(sessions.some((session) => session.id === subagentId)).toBe(false);
+  });
+
   it("finds and merges the latest Codex turn context beyond a 2 MiB tail", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "repo");
