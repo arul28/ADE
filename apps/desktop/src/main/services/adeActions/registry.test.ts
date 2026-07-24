@@ -882,6 +882,226 @@ describe("runtime Linear OAuth actions", () => {
 });
 
 describe("runtime session actions", () => {
+  it("projects provider pending input into runtime-bound Work session rows", async () => {
+    const providers = [
+      ["codex-chat", "codex"],
+      ["claude-chat", "claude"],
+      ["opencode-chat", "opencode"],
+      ["cursor", "cursor"],
+      ["droid-chat", "droid"],
+    ] as const;
+    const sessions = providers.map(([toolType, provider]) =>
+      makeSession({
+        id: `${provider}-chat`,
+        laneId: "lane-1",
+        toolType,
+      }));
+    sessions.push(makeSession({
+      id: "identity-chat",
+      laneId: "lane-1",
+      toolType: "claude-chat",
+    }));
+    const list = vi.fn(() => sessions);
+    const enrichSessions = vi.fn((rows: TerminalSessionSummary[]) => rows);
+    const listSessions = vi.fn(async () => [
+      ...providers.map(([, provider]) => ({
+        sessionId: `${provider}-chat`,
+        provider,
+        status: "active",
+        awaitingInput: true,
+        pendingInputItemId: `${provider}-question`,
+        identityKey: null,
+      })),
+      {
+        sessionId: "identity-chat",
+        provider: "claude",
+        status: "idle",
+        identityKey: "cto",
+      },
+    ]);
+    const runtime = {
+      sessionService: {
+        list,
+        get: vi.fn(),
+      },
+      ptyService: {
+        enrichSessions,
+      },
+      agentChatService: {
+        listSessions,
+      },
+      logger: {
+        warn: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as {
+      list: (args?: { laneId?: string }) => Promise<TerminalSessionSummary[]>;
+    };
+
+    const result = await sessionActions.list({ laneId: "lane-1" });
+
+    expect(list).toHaveBeenCalledWith({ laneId: "lane-1" });
+    expect(enrichSessions).toHaveBeenCalledWith(sessions);
+    expect(listSessions).toHaveBeenCalledWith("lane-1", {
+      includeIdentity: true,
+      includeAutomation: true,
+    });
+    expect(result).toHaveLength(providers.length);
+    expect(result.map((session) => session.id)).not.toContain("identity-chat");
+    for (const [, provider] of providers) {
+      expect(result.find((session) => session.id === `${provider}-chat`)).toMatchObject({
+        runtimeState: "waiting-input",
+        pendingInputItemId: `${provider}-question`,
+      });
+    }
+  });
+
+  it("clears stale pending input after the provider reports the chat active again", async () => {
+    const persisted = makeSession({
+      id: "codex-chat",
+      laneId: "lane-1",
+      toolType: "codex-chat",
+      runtimeState: "waiting-input",
+      pendingInputItemId: "resolved-question",
+    });
+    const get = vi.fn(() => persisted);
+    const enrichSessions = vi.fn((rows: TerminalSessionSummary[]) => rows);
+    const getSessionSummary = vi.fn(async () => ({
+      sessionId: "codex-chat",
+      provider: "codex",
+      status: "active",
+      awaitingInput: false,
+      pendingInputItemId: null,
+    }));
+    const runtime = {
+      sessionService: {
+        list: vi.fn(),
+        get,
+      },
+      ptyService: {
+        enrichSessions,
+      },
+      agentChatService: {
+        getSessionSummary,
+      },
+      logger: {
+        warn: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as {
+      get: (sessionId: string) => Promise<TerminalSessionSummary | null>;
+    };
+
+    const result = await sessionActions.get("codex-chat");
+
+    expect(get).toHaveBeenCalledWith("codex-chat");
+    expect(enrichSessions).toHaveBeenCalledWith([persisted]);
+    expect(getSessionSummary).toHaveBeenCalledWith("codex-chat");
+    expect(result).toMatchObject({
+      id: "codex-chat",
+      runtimeState: "running",
+      pendingInputItemId: null,
+    });
+  });
+
+  it("degrades an unprojectable chat row to quiet instead of false running", async () => {
+    const persisted = makeSession({
+      id: "claude-chat",
+      laneId: "lane-1",
+      toolType: "claude-chat",
+      runtimeState: "running",
+    });
+    const warn = vi.fn();
+    const runtime = {
+      sessionService: {
+        list: vi.fn(() => [persisted]),
+        get: vi.fn(),
+      },
+      ptyService: {
+        enrichSessions: vi.fn((rows: TerminalSessionSummary[]) => rows),
+      },
+      agentChatService: {
+        listSessions: vi.fn(async () => {
+          throw new Error("provider state unavailable");
+        }),
+      },
+      logger: {
+        warn,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as {
+      list: () => Promise<TerminalSessionSummary[]>;
+    };
+
+    const result = await sessionActions.list();
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      id: "claude-chat",
+      runtimeState: "idle",
+    });
+    expect(warn).toHaveBeenCalledWith("sessions.chat_projection_failed", {
+      laneId: null,
+      error: "provider state unavailable",
+    });
+  });
+
+  it("hydrates missing resume targets before runtime list and detail reads", async () => {
+    const persisted = makeSession({
+      id: "resumable-codex",
+      laneId: "lane-1",
+      toolType: "codex",
+      status: "completed",
+      runtimeState: "idle",
+      resumeMetadata: null,
+    });
+    const hydrated = {
+      ...persisted,
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetId: "thread-123",
+      },
+    };
+    const list = vi.fn()
+      .mockReturnValueOnce([persisted])
+      .mockReturnValueOnce([hydrated]);
+    const get = vi.fn()
+      .mockReturnValueOnce(persisted)
+      .mockReturnValueOnce(hydrated);
+    const ensureResumeTargets = vi.fn(async () => {});
+    const enrichSessions = vi.fn((rows: TerminalSessionSummary[]) => rows);
+    const runtime = {
+      sessionService: {
+        list,
+        get,
+      },
+      ptyService: {
+        ensureResumeTargets,
+        enrichSessions,
+      },
+      agentChatService: {
+        listSessions: vi.fn(async () => []),
+      },
+      logger: {
+        warn: vi.fn(),
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionActions = getAdeActionDomainServices(runtime).session as {
+      list: (args?: { laneId?: string }) => Promise<TerminalSessionSummary[]>;
+      get: (sessionId: string) => Promise<TerminalSessionSummary | null>;
+    };
+
+    await expect(sessionActions.list({ laneId: "lane-1" })).resolves.toEqual([hydrated]);
+    await expect(sessionActions.get("resumable-codex")).resolves.toEqual(hydrated);
+
+    expect(list).toHaveBeenCalledTimes(2);
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(ensureResumeTargets).toHaveBeenNthCalledWith(1, ["resumable-codex"]);
+    expect(ensureResumeTargets).toHaveBeenNthCalledWith(2, ["resumable-codex"]);
+    expect(enrichSessions).toHaveBeenNthCalledWith(1, [hydrated]);
+    expect(enrichSessions).toHaveBeenNthCalledWith(2, [hydrated]);
+  });
+
   it("launches tracked CLI agents through runtime chat actions", async () => {
     const ptyCreate = vi.fn(async (args: { sessionId: string }) => ({
       sessionId: args.sessionId,

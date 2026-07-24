@@ -35,9 +35,8 @@ import {
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
 import {
-  fallbackUnprojectedChatSession,
-  isChatToolType,
-  projectChatOntoSession,
+  getSessionWithChatProjection,
+  listSessionsWithChatProjection,
 } from "../sessions/chatSessionProjection";
 import {
   removeProjectIconOverride,
@@ -690,7 +689,6 @@ import type { createProjectScaffoldService } from "../projects/projectScaffoldSe
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { quoteWindowsCmdArg } from "../shared/processExecution";
-import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { openExternalUrl } from "../shared/externalLinks";
@@ -1372,22 +1370,6 @@ function formatLinearConnectionMessage(
     return "Linear rejected the API key. Paste a Linear personal API key from linear.app/settings/api; it should start with lin_api_.";
   }
   return trimmed || null;
-}
-
-function sessionNeedsResumeTargetHydration(session: {
-  tracked: boolean;
-  status: string;
-  toolType: string | null;
-  resumeMetadata?: { targetId?: string | null } | null;
-}): boolean {
-  if (!session.tracked || session.status === "running") return false;
-  if (sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null)) return false;
-  return (
-    session.toolType === "claude"
-    || session.toolType === "codex"
-    || session.toolType === "claude-orchestrated"
-    || session.toolType === "codex-orchestrated"
-  );
 }
 
 function inferPrAiProvider(modelId: string): "codex" | "claude" {
@@ -6365,58 +6347,7 @@ export function registerIpc({
     return await withIpcTiming(
       ctx,
       "sessions.list",
-      async () => {
-        let listedSessions = ctx.sessionService.list(arg);
-        const missingResumeTargetIds = listedSessions
-          .filter(sessionNeedsResumeTargetHydration)
-          .slice(0, 10)
-          .map((session) => session.id);
-        if (missingResumeTargetIds.length > 0) {
-          try {
-            await ptyService.ensureResumeTargets(missingResumeTargetIds);
-            listedSessions = ctx.sessionService.list(arg);
-          } catch (err) {
-            ctx.logger.warn("sessions.resume_target_hydration_failed", {
-              sessionIds: missingResumeTargetIds,
-              err: String(err),
-            });
-          }
-        }
-        let sessions = ptyService.enrichSessions(listedSessions);
-        const laneId = typeof arg?.laneId === "string" ? arg.laneId.trim() : "";
-        let allChats: AgentChatSessionSummary[] = [];
-        if (ctx.agentChatService) {
-          try {
-            allChats = await ctx.agentChatService.listSessions(laneId || undefined, {
-              includeIdentity: true,
-              includeAutomation: true,
-            });
-          } catch (error) {
-            allChats = [];
-            ctx.logger.warn("sessions.chat_projection_failed", {
-              laneId: laneId || null,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-        const identitySessionIds = new Set(
-          allChats
-            .filter((chat) => Boolean(chat.identityKey))
-            .map((chat) => chat.sessionId),
-        );
-        if (identitySessionIds.size > 0) {
-          sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
-        }
-        const chats = allChats.filter((chat) => !chat.identityKey);
-        const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
-        return sessions.map((session) => {
-          if (!isChatToolType(session.toolType)) return session;
-          const chat = chatSummaryBySessionId.get(session.id);
-          return chat
-            ? projectChatOntoSession(session, chat)
-            : fallbackUnprojectedChatSession(session);
-        });
-      },
+      () => listSessionsWithChatProjection(ctx, arg),
       {
         laneId: typeof arg?.laneId === "string" ? arg.laneId : null,
         limit: typeof arg?.limit === "number" ? arg.limit : null
@@ -6427,42 +6358,7 @@ export function registerIpc({
   ipcMain.handle(IPC.sessionsGet, async (_event, arg: { sessionId: string }): Promise<TerminalSessionDetail | null> => {
     const ctx = ensureSessionContext();
     const ptyService = requirePtyService();
-    let session = ctx.sessionService.get(arg.sessionId);
-    if (!session) return null;
-    if (sessionNeedsResumeTargetHydration(session)) {
-      const sessionId = session.id;
-      try {
-        await ptyService.ensureResumeTargets([sessionId]);
-        const hydratedSession = ctx.sessionService.get(arg.sessionId);
-        if (hydratedSession) session = hydratedSession;
-      } catch (err) {
-        ctx.logger.warn("sessions.resume_target_hydration_failed", {
-          sessionIds: [sessionId],
-          err: String(err),
-        });
-      }
-    }
-    let enriched = ptyService.enrichSessions([session])[0] ?? {
-      ...session,
-      runtimeState: ptyService.getRuntimeState(session.id, session.status)
-    };
-    if (enriched.status === "running" && isChatToolType(enriched.toolType)) {
-      try {
-        const chat = await ctx.agentChatService?.getSessionSummary(enriched.id);
-        enriched = chat
-          ? projectChatOntoSession(enriched, chat)
-          : fallbackUnprojectedChatSession(enriched);
-      } catch (error) {
-        // Detail reads should still return the persisted session if chat state
-        // hydration fails during runtime restart/recovery.
-        ctx.logger.warn("sessions.chat_projection_failed", {
-          sessionId: enriched.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        enriched = fallbackUnprojectedChatSession(enriched);
-      }
-    }
-    return enriched;
+    return getSessionWithChatProjection({ ...ctx, ptyService }, arg.sessionId);
   });
 
   ipcMain.handle(IPC.sessionsDelete, async (_event, arg: DeleteSessionArgs): Promise<void> => {
