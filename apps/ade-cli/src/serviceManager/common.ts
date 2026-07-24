@@ -261,9 +261,12 @@ export async function terminatePidGracefullyAsync(
   const deadline = Date.now() + (deps.graceTimeoutMs ?? 1_500);
   while (Date.now() < deadline) {
     if (!pidAlive(pid)) return;
+    // This timer is awaited: it must stay referenced, or a standalone CLI
+    // (e.g. `ade serve --install-service` repairing a wedged brain) can run
+    // out of referenced work and exit before the SIGKILL escalation and the
+    // subsequent `launchctl load` ever happen.
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 50);
-      timer.unref?.();
+      setTimeout(resolve, 50);
     });
   }
   try {
