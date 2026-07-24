@@ -145,6 +145,7 @@ private enum PrRowCardPreviewData {
 
 #Preview("GitHub PR list rows") {
   PrRowCardPreviewData.githubListRows
+    .preferredColorScheme(.dark)
 }
 
 #Preview("GitHub PR list rows · light") {

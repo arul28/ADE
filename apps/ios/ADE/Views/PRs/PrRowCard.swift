@@ -33,15 +33,14 @@ struct PrRowCard: View {
   var body: some View {
     let stateColors = PrRowDesktopPalette.stateColors(data.state)
 
-    HStack(alignment: .top, spacing: 12) {
+    HStack(alignment: .top, spacing: 11) {
       Image(systemName: stateSymbol)
-        .font(.body.weight(.semibold))
+        .font(.system(size: 17, weight: .semibold))
         .foregroundStyle(stateColors.text)
-        .frame(width: 22, height: 22)
-        .padding(.top, 1)
+        .frame(width: 20, height: 22)
 
-      VStack(alignment: .leading, spacing: 7) {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+      VStack(alignment: .leading, spacing: 5) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
           Text(data.title)
             .font(.body.weight(.semibold))
             .foregroundStyle(PrsGlass.textPrimary)
@@ -52,15 +51,15 @@ struct PrRowCard: View {
 
           if !data.timeAgo.isEmpty {
             Text(data.timeAgo)
-              .font(.caption2.monospaced())
+              .font(.caption)
               .foregroundStyle(PrsGlass.textMuted)
               .lineLimit(1)
-              .fixedSize()
+              .fixedSize(horizontal: true, vertical: false)
           }
         }
 
         metadataRow
-        signalsRow
+        branchAndSignalsRow
 
         if !data.isUnmapped, let warnMessage = data.warnMessage {
           PrWarnBanner(text: warnMessage)
@@ -68,7 +67,7 @@ struct PrRowCard: View {
       }
     }
     .padding(.horizontal, 16)
-    .padding(.vertical, 13)
+    .padding(.vertical, 12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background {
       if isSelectedTransitionSource {
@@ -92,7 +91,6 @@ struct PrRowCard: View {
         .frame(height: 1)
         .padding(.leading, 50)
     }
-    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "pr-container-\(data.id)" : nil, in: transitionNamespace)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilitySummary)
     .adeInspectable(
@@ -150,65 +148,72 @@ struct PrRowCard: View {
         Text("\(data.repoOwner)/\(data.repoName)")
           .lineLimit(1)
       }
+      if data.isUnmapped {
+        Text("Unmapped")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(PrsGlass.draftTop)
+          .padding(.horizontal, 7)
+          .padding(.vertical, 2)
+          .background(
+            Capsule(style: .continuous)
+              .fill(PrsGlass.draftTop.opacity(0.12))
+          )
+          .fixedSize(horizontal: true, vertical: false)
+      } else if let laneLabel = data.laneLabel, !laneLabel.isEmpty {
+        Label(laneLabel, systemImage: "rectangle.stack")
+          .font(.caption2.weight(.medium))
+          .foregroundStyle(PrsGlass.textSecondary)
+          .lineLimit(1)
+      }
       Spacer(minLength: 0)
     }
-    .font(.caption.monospaced())
+    .font(.caption)
     .foregroundStyle(PrsGlass.textMuted)
   }
 
   @ViewBuilder
-  private var signalsRow: some View {
-    HStack(spacing: 12) {
+  private var branchAndSignalsRow: some View {
+    HStack(spacing: 10) {
       if let head = data.headBranch, let base = data.baseBranch {
-        HStack(spacing: 4) {
-          Text(head)
-            .lineLimit(1)
-            .truncationMode(.middle)
-          Text("→")
-          Text(base)
-            .lineLimit(1)
-        }
-        .font(.caption2.monospaced())
-        .foregroundStyle(PrsGlass.textSecondary)
-        .layoutPriority(1)
+        Text("\(head) → \(base)")
+          .font(.caption2.monospaced())
+          .foregroundStyle(PrsGlass.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .layoutPriority(1)
       }
 
       Spacer(minLength: 0)
 
-      if let ci = data.ciIndicator {
-        Image(systemName: ci.symbol)
-          .foregroundStyle(ci.color)
-          .accessibilityLabel(ci.title)
-      }
-
-      if let review = data.reviewIndicator {
-        Image(systemName: reviewSymbol)
-          .foregroundStyle(review.color)
-          .accessibilityLabel(review.label)
-      }
-
-      if data.commentCount > 0 {
-        Label("\(data.commentCount)", systemImage: "text.bubble")
-          .labelStyle(.titleAndIcon)
-      }
-
-      if data.isUnmapped {
-        Label("Unmapped", systemImage: "link.badge.plus")
-          .foregroundStyle(PrsGlass.draftTop)
-      } else if let laneLabel = data.laneLabel {
-        Label(laneLabel, systemImage: "rectangle.stack")
-          .lineLimit(1)
-      }
-
-      if let groupId = data.stackGroupId, let groupCount = data.stackGroupCount, groupCount > 0 {
-        Button {
-          onShowStack(groupId, data.stackGroupName)
-        } label: {
-          Label("\(groupCount)", systemImage: "list.number")
+      HStack(spacing: 9) {
+        if let ci = data.ciIndicator {
+          Image(systemName: ci.symbol)
+            .foregroundStyle(ci.color)
+            .accessibilityLabel(ci.title)
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Open stack of \(groupCount) pull requests")
+
+        if let review = data.reviewIndicator {
+          Image(systemName: reviewSymbol)
+            .foregroundStyle(review.color)
+            .accessibilityLabel(review.label)
+        }
+
+        if data.commentCount > 0 {
+          Label("\(data.commentCount)", systemImage: "text.bubble")
+            .labelStyle(.titleAndIcon)
+        }
+
+        if let groupId = data.stackGroupId, let groupCount = data.stackGroupCount, groupCount > 0 {
+          Button {
+            onShowStack(groupId, data.stackGroupName)
+          } label: {
+            Label("\(groupCount)", systemImage: "list.number")
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Open stack of \(groupCount) pull requests")
+        }
       }
+      .fixedSize(horizontal: true, vertical: false)
     }
     .font(.caption2.weight(.medium))
     .foregroundStyle(PrsGlass.textMuted)
@@ -220,6 +225,34 @@ struct PrRowCard: View {
     case "changes_requested": return "exclamationmark.bubble"
     default: return "bubble.left.and.exclamationmark.bubble.right"
     }
+  }
+}
+
+struct PrRowCardSkeleton: View {
+  var body: some View {
+    HStack(alignment: .top, spacing: 11) {
+      ADESkeletonView(width: 20, height: 20, cornerRadius: 10)
+
+      VStack(alignment: .leading, spacing: 7) {
+        HStack(spacing: 10) {
+          ADESkeletonView(height: 16, cornerRadius: 5)
+          ADESkeletonView(width: 52, height: 12, cornerRadius: 4)
+        }
+        HStack(spacing: 8) {
+          ADESkeletonView(width: 42, height: 11, cornerRadius: 4)
+          ADESkeletonView(width: 86, height: 11, cornerRadius: 4)
+          ADESkeletonView(width: 58, height: 16, cornerRadius: 8)
+        }
+        HStack(spacing: 10) {
+          ADESkeletonView(width: 180, height: 10, cornerRadius: 4)
+          Spacer(minLength: 0)
+          ADESkeletonView(width: 42, height: 10, cornerRadius: 4)
+        }
+      }
+    }
+    .padding(.horizontal, 16)
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 }
 

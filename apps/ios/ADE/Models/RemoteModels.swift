@@ -3943,13 +3943,6 @@ struct PrDeployment: Codable, Identifiable, Equatable {
   var updatedAt: String?
 }
 
-struct AiReviewSummary: Codable, Equatable {
-  var summary: String
-  var potentialIssues: [String]
-  var recommendations: [String]
-  var mergeReadiness: String
-}
-
 struct PullRequestSnapshotHydration: Codable, Equatable, Identifiable {
   var id: String { prId }
   var prId: String

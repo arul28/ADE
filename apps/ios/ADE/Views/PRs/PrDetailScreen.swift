@@ -31,7 +31,6 @@ struct PrDetailView: View {
   @State private var actionRuns: [PrActionRun] = []
   @State private var activityEvents: [PrActivityEvent] = []
   @State private var deployments: [PrDeployment] = []
-  @State private var aiSummary: AiReviewSummary?
   @State private var groupMembers: [PrGroupMemberSummary] = []
   @State private var capabilities: PrActionCapabilities?
   @State private var unavailableDetailParts: [String] = []
@@ -55,6 +54,8 @@ struct PrDetailView: View {
   @State private var summaryCommitsExpanded = false
   @State private var pendingTimelineScrollId: String?
   @State private var timelineSectionMounted = false
+  @SceneStorage("ade.prs.expandedUnmappedPrIds")
+  private var expandedUnmappedPrIdsRaw = ""
 
   // MARK: - Derived models (computed off the render path)
   //
@@ -94,16 +95,35 @@ struct PrDetailView: View {
 
   /// Main action funnel key (merge/close/reopen/comment/edit/etc.).
   private var detailActionKey: String { "pr-detail:\(prId)" }
-  /// AI review-summary regeneration key.
-  private var aiSummaryKey: String { "pr-ai-summary:\(prId)" }
-
   /// In-flight label of the main detail action, if any (durable across tab
   /// switches via the service registry).
   private var detailBusyLabel: String? {
     syncService.prActionLabel(forKey: detailActionKey)
   }
   private var isDetailBusy: Bool { detailBusyLabel != nil }
-  private var isAiSummaryLoading: Bool { syncService.isPrActionInFlight(key: aiSummaryKey) }
+
+  private var unmappedBannerExpanded: Binding<Bool> {
+    Binding(
+      get: { expandedUnmappedPrIds.contains(prId) },
+      set: { expanded in
+        var ids = expandedUnmappedPrIds
+        if expanded {
+          ids.insert(prId)
+        } else {
+          ids.remove(prId)
+        }
+        expandedUnmappedPrIdsRaw = ids.sorted().joined(separator: "\n")
+      }
+    )
+  }
+
+  private var expandedUnmappedPrIds: Set<String> {
+    Set(
+      expandedUnmappedPrIdsRaw
+        .split(separator: "\n")
+        .map(String.init)
+    )
+  }
 
   private var prsStatus: SyncDomainStatus {
     syncService.status(for: .prs)
@@ -539,7 +559,7 @@ struct PrDetailView: View {
       }
 
       if isAwaitingInitialPrDetail {
-        ADECardSkeleton(rows: 4)
+        PrDetailSummarySkeleton()
           .prListRow()
       } else if isPrDetailUnavailable {
         ADENoticeCard(
@@ -559,7 +579,6 @@ struct PrDetailView: View {
           snapshot: snapshot,
           mergeGate: mergeGateInfo,
           commitsExpanded: $summaryCommitsExpanded,
-          onStatusTap: { selectedTab = .overview },
           onChecksTap: { selectedTab = .checks },
           onFilesTap: { selectedTab = .files },
           onCommitTap: focusCommitInTimeline
@@ -597,9 +616,10 @@ struct PrDetailView: View {
         .prListRow()
         }
       }
-      }
+    }
       .listStyle(.plain)
     .listRowSpacing(12)
+    .contentMargins(.bottom, 88, for: .scrollContent)
     .scrollContentBackground(.hidden)
     .background(prLiquidGlassBackdrop().ignoresSafeArea())
     .adeNavigationGlass()
@@ -618,7 +638,6 @@ struct PrDetailView: View {
     .refreshable {
       await reload(refreshRemote: true)
     }
-    .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
     .task(id: "\(syncService.prsProjectionRevision):\(syncService.prsRemoteRevision)") {
       // Seed from the warm cache first so an instant render is shown and, when
       // the cached entry is fresh, `hasLoadedLiveSidecars` is set BEFORE the
@@ -793,6 +812,10 @@ struct PrDetailView: View {
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .truncationMode(.tail)
+          .adeMatchedGeometry(
+            id: transitionNamespace == nil ? nil : "pr-title-\(prId)",
+            in: transitionNamespace
+          )
         Text(detailHeaderMetaText)
           .font(.system(size: 10.5, weight: .medium, design: .monospaced))
           .foregroundStyle(ADEColor.textSecondary)
@@ -964,8 +987,8 @@ struct PrDetailView: View {
 
   // MARK: - Overview thread rows (desktop Timeline+Rails, stacked for mobile)
   //
-  // Desktop reading order adapted to one column: AI summary → description →
-  // chronological event feed → review threads → composer → merge rail →
+  // Desktop reading order adapted to one column: description → chronological
+  // event feed → review threads → composer → merge rail →
   // metadata cards (checks / commits / files / people / stack). Every card is
   // its own List row.
   @ViewBuilder
@@ -974,6 +997,7 @@ struct PrDetailView: View {
       PrUnmappedThreadBanner(
         canAutoMap: canAutoMapCurrentPr,
         canMap: canMapCurrentPr,
+        isExpanded: unmappedBannerExpanded,
         onAutoMap: autoMapCurrentPr,
         onMap: {
           if let githubItem {
@@ -984,24 +1008,6 @@ struct PrDetailView: View {
       )
       .prListRow()
     }
-
-    // AI summary — desktop pins it at the top of the timeline. +/- totals come
-    // from the snapshot's file list (same source as the Files card) so the two
-    // never disagree; the PR-row totals are only a fallback when files haven't
-    // synced yet.
-    let summaryFiles = snapshot?.files ?? []
-    PrAiSummaryCard(
-      summary: aiSummary,
-      additions: summaryFiles.isEmpty ? currentPr.additions : summaryFiles.reduce(0) { $0 + $1.additions },
-      deletions: summaryFiles.isEmpty ? currentPr.deletions : summaryFiles.reduce(0) { $0 + $1.deletions },
-      fileCount: summaryFiles.count,
-      isLoading: isAiSummaryLoading,
-      isLive: canRunPrActions,
-      onRegenerate: refreshAiSummary
-    )
-    .padding(14)
-    .prGlassCard(cornerRadius: 16)
-    .prListRow()
 
     // Description (PR body) — the first card of the chronological thread.
     let descriptionText = (snapshot?.detail?.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1142,10 +1148,6 @@ struct PrDetailView: View {
       .prListRow()
     }
 
-    Color.clear
-      .frame(height: 88)
-      .accessibilityHidden(true)
-      .prListRow()
   }
 
   private func timelineAnchorId(for item: PrTimelineDisplayItem) -> String {
@@ -1427,10 +1429,9 @@ struct PrDetailView: View {
             activityEvents = mobileDetail.activity
           }
           unavailableDetailParts = mobileDetail.unavailableParts
-          deployments = []
-          aiSummary = nil
-          capabilities = nil
-          groupMembers = []
+          // The aggregate GitHub payload does not include deployments,
+          // capabilities, or group membership. Preserve any enrichment already
+          // loaded for this route instead of treating absent fields as empty.
           // Partial failures retain the last good values above and use the
           // normal 25-second freshness window as retry backoff. Explicit Retry
           // still bypasses the gate immediately.
@@ -1475,7 +1476,6 @@ struct PrDetailView: View {
       let actionRunsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActionRuns(prId: sidecarPrId) } : nil
       let activityTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActivity(prId: sidecarPrId) } : nil
       let deploymentsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestDeployments(prId: sidecarPrId) } : nil
-      let aiSummaryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestAiSummary(prId: sidecarPrId) } : nil
       if let reviewThreadsTask {
         reviewThreads = await reviewThreadsTask.value ?? []
       }
@@ -1487,9 +1487,6 @@ struct PrDetailView: View {
       }
       if let deploymentsTask {
         deployments = await deploymentsTask.value ?? []
-      }
-      if let summary = await aiSummaryTask?.value {
-        aiSummary = summary
       }
       if let capabilitiesTask {
         capabilities = await capabilitiesTask.value
@@ -1536,7 +1533,6 @@ struct PrDetailView: View {
     actionRuns = entry.actionRuns
     activityEvents = entry.activityEvents
     deployments = entry.deployments
-    aiSummary = entry.aiSummary
     groupMembers = entry.groupMembers
     capabilities = entry.capabilities
     unavailableDetailParts = entry.unavailableParts
@@ -1566,7 +1562,6 @@ struct PrDetailView: View {
         actionRuns: actionRuns,
         activityEvents: activityEvents,
         deployments: deployments,
-        aiSummary: aiSummary,
         groupMembers: groupMembers,
         capabilities: capabilities,
         unavailableParts: unavailableDetailParts,
@@ -1701,23 +1696,6 @@ struct PrDetailView: View {
 
   private func rerunChecks() {
     runPrAction("Re-running checks") { try await syncService.rerunPullRequestChecks(prId: effectivePrId) }
-  }
-
-  private func refreshAiSummary() {
-    guard canRunPrActions, !isAiSummaryLoading else { return }
-    let service = syncService
-    let key = aiSummaryKey
-    let actionablePrId = effectivePrId
-    let token = service.beginPrAction(key: key, label: "Regenerating AI summary")
-    Task { @MainActor in
-      defer { service.endPrAction(key: key, token: token) }
-      do {
-        let summary = try await service.fetchPullRequestAiSummary(prId: actionablePrId)
-        aiSummary = summary
-      } catch {
-        errorMessage = error.localizedDescription
-      }
-    }
   }
 
   private func submitComment() {

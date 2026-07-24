@@ -9747,7 +9747,6 @@ final class ADETests: XCTestCase {
       actionRuns: [],
       activityEvents: [],
       deployments: [],
-      aiSummary: nil,
       groupMembers: [],
       capabilities: nil,
       unavailableParts: [],
