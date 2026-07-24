@@ -13,10 +13,6 @@ enum PrGitHubDescriptionBlock: Identifiable, Equatable {
 }
 
 private enum PrGitHubDescriptionRegex {
-  static let details = expression(
-    #"<details\b[^>]*>(.*?)</details\s*>"#,
-    options: [.caseInsensitive, .dotMatchesLineSeparators]
-  )
   static let summary = expression(
     #"<summary\b[^>]*>(.*?)</summary\s*>"#,
     options: [.caseInsensitive, .dotMatchesLineSeparators]
@@ -67,6 +63,21 @@ private enum PrGitHubDescriptionRegex {
   }
 }
 
+private struct PrGitHubDetailsRange {
+  let full: NSRange
+  let inner: NSRange
+}
+
+private struct PrGitHubDetailsTag {
+  enum Kind {
+    case opening
+    case closing
+  }
+
+  let kind: Kind
+  let range: NSRange
+}
+
 /// GitHub PR bodies are Markdown with a small amount of embedded HTML. Apple's
 /// Markdown parser treats those tags as literal prose, so Dependabot release
 /// notes can render as a wall of `<details>`, `<li>`, and `<a>` tags. Split
@@ -84,10 +95,7 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
   }
 
   let nsSource = source as NSString
-  let matches = PrGitHubDescriptionRegex.details.matches(
-    in: source,
-    range: NSRange(location: 0, length: nsSource.length)
-  )
+  let matches = prGitHubDetailsRanges(in: nsSource)
   guard !matches.isEmpty else {
     return [.markdown(id: "description-markdown-0", markdown: normalizeFragment(source))]
   }
@@ -102,15 +110,14 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
   }
 
   for match in matches {
-    if match.range.location > cursor {
+    if match.full.location > cursor {
       appendMarkdown(nsSource.substring(with: NSRange(
         location: cursor,
-        length: match.range.location - cursor
+        length: match.full.location - cursor
       )))
     }
 
-    let innerRange = match.range(at: 1)
-    let inner = innerRange.location == NSNotFound ? "" : nsSource.substring(with: innerRange)
+    let inner = nsSource.substring(with: match.inner)
     let nsInner = inner as NSString
     let summaryMatch = PrGitHubDescriptionRegex.summary.firstMatch(
       in: inner,
@@ -142,7 +149,7 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
         markdown: markdown
       ))
     }
-    cursor = NSMaxRange(match.range)
+    cursor = NSMaxRange(match.full)
   }
 
   if cursor < nsSource.length {
@@ -152,6 +159,113 @@ func parsePrGitHubDescriptionBlocks(_ text: String) -> [PrGitHubDescriptionBlock
   return blocks.isEmpty
     ? [.markdown(id: "description-markdown-0", markdown: normalizeFragment(source))]
     : blocks
+}
+
+private func prGitHubDetailsRanges(in source: NSString) -> [PrGitHubDetailsRange] {
+  var ranges: [PrGitHubDetailsRange] = []
+  var cursor = 0
+  var depth = 0
+  var outerStart = 0
+  var innerStart = 0
+
+  while let tag = prNextGitHubDetailsTag(in: source, from: cursor) {
+    switch tag.kind {
+    case .opening:
+      if depth == 0 {
+        outerStart = tag.range.location
+        innerStart = NSMaxRange(tag.range)
+      }
+      depth += 1
+    case .closing:
+      guard depth > 0 else {
+        cursor = NSMaxRange(tag.range)
+        continue
+      }
+      depth -= 1
+      if depth == 0 {
+        ranges.append(PrGitHubDetailsRange(
+          full: NSRange(
+            location: outerStart,
+            length: NSMaxRange(tag.range) - outerStart
+          ),
+          inner: NSRange(
+            location: innerStart,
+            length: tag.range.location - innerStart
+          )
+        ))
+      }
+    }
+    cursor = NSMaxRange(tag.range)
+  }
+
+  return ranges
+}
+
+private func prNextGitHubDetailsTag(
+  in source: NSString,
+  from start: Int
+) -> PrGitHubDetailsTag? {
+  var cursor = start
+  while cursor < source.length {
+    let openingBracket = source.range(
+      of: "<",
+      options: [],
+      range: NSRange(location: cursor, length: source.length - cursor)
+    )
+    guard openingBracket.location != NSNotFound else { return nil }
+
+    var nameStart = NSMaxRange(openingBracket)
+    let isClosing = nameStart < source.length && source.character(at: nameStart) == 47
+    if isClosing {
+      nameStart += 1
+    }
+
+    let nameLength = 7
+    let nameEnd = nameStart + nameLength
+    guard nameEnd <= source.length,
+          source.substring(with: NSRange(location: nameStart, length: nameLength))
+            .caseInsensitiveCompare("details") == .orderedSame,
+          nameEnd == source.length || prIsGitHubHtmlTagBoundary(source.character(at: nameEnd))
+    else {
+      cursor = NSMaxRange(openingBracket)
+      continue
+    }
+
+    var tagEnd = nameEnd
+    var quote: unichar?
+    while tagEnd < source.length {
+      let character = source.character(at: tagEnd)
+      if let activeQuote = quote {
+        if character == activeQuote {
+          quote = nil
+        }
+      } else if character == 34 || character == 39 {
+        quote = character
+      } else if character == 62 {
+        return PrGitHubDetailsTag(
+          kind: isClosing ? .closing : .opening,
+          range: NSRange(
+            location: openingBracket.location,
+            length: tagEnd - openingBracket.location + 1
+          )
+        )
+      }
+      tagEnd += 1
+    }
+
+    return nil
+  }
+  return nil
+}
+
+private func prIsGitHubHtmlTagBoundary(_ character: unichar) -> Bool {
+  character == 9
+    || character == 10
+    || character == 12
+    || character == 13
+    || character == 32
+    || character == 47
+    || character == 62
 }
 
 func normalizePrGitHubHtmlFragment(_ source: String) -> String {

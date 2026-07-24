@@ -144,4 +144,56 @@ final class PrGitHubDescriptionParserTests: XCTestCase {
     XCTAssertEqual(markdown, "Body")
     XCTAssertFalse(title.contains("ADEPRCODE"))
   }
+
+  func testDescriptionParserKeepsNestedDetailsInsideOuterDisclosure() {
+    let blocks = parsePrGitHubDescriptionBlocks("""
+    Before
+    <details data-kind="outer">
+    <summary>Outer title</summary>
+    Outer beginning
+    <DETAILS data-label="1 > 0">
+    <summary>Inner title</summary>
+    Inner body
+    </DETAILS>
+    Outer end
+    </details>
+    After
+    """)
+
+    XCTAssertEqual(blocks.count, 3)
+    XCTAssertEqual(blocks[0], .markdown(id: "description-markdown-0", markdown: "Before"))
+    guard case .disclosure(_, let title, let markdown) = blocks[1] else {
+      return XCTFail("Expected the balanced outer details block to become a disclosure")
+    }
+    XCTAssertEqual(title, "Outer title")
+    XCTAssertTrue(markdown.contains("Outer beginning"))
+    XCTAssertTrue(markdown.contains("Inner title"))
+    XCTAssertTrue(markdown.contains("Inner body"))
+    XCTAssertTrue(markdown.contains("Outer end"))
+    XCTAssertFalse(markdown.contains("<details"))
+    XCTAssertEqual(blocks[2], .markdown(id: "description-markdown-2", markdown: "After"))
+  }
+
+  func testDescriptionParserDoesNotPromoteUnclosedOuterDetails() {
+    let blocks = parsePrGitHubDescriptionBlocks("""
+    Before
+    <details>
+    <summary>Outer title</summary>
+    Outer beginning
+    <details>
+    <summary>Inner title</summary>
+    Inner body
+    </details>
+    """)
+
+    XCTAssertEqual(blocks.count, 1)
+    guard case .markdown(_, let markdown) = blocks[0] else {
+      return XCTFail("Expected malformed details markup to remain Markdown")
+    }
+    XCTAssertTrue(markdown.contains("Outer title"))
+    XCTAssertTrue(markdown.contains("Outer beginning"))
+    XCTAssertTrue(markdown.contains("Inner title"))
+    XCTAssertTrue(markdown.contains("Inner body"))
+    XCTAssertFalse(markdown.localizedCaseInsensitiveContains("<details"))
+  }
 }
