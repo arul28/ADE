@@ -147,7 +147,8 @@ and in tests.
   session persistence tests.
 - `apps/desktop/src/main/services/sessions/chatSessionProjection.ts` —
   canonical bridge from `AgentChatSessionSummary` runtime truth to the
-  `terminal_sessions` row used by Work, detail reads, and lane snapshots.
+  `terminal_sessions` row used by Work, detail reads, ADE runtime actions,
+  and lane snapshots.
   It projects active/idle/waiting state, pending input, wake time, and
   orchestration lineage. If chat hydration fails, a persisted resumable
   `status = "running"` row falls back to quiet idle/waiting instead of
@@ -1003,10 +1004,11 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
 - **Session list cache** — the renderer shares `listSessionsCached()`
   (`sessionListCache.ts`) across Work, lanes, graph, and top-bar
   attention. Invalidate it when a new session is created or lifecycle metadata
-  changes outside the normal paths. Main-process list/get handlers and the
-  lane-list snapshot service all use `chatSessionProjection.ts`, include
-  automation chats when building the projection index, and fall back to quiet
-  chat state if runtime hydration fails.
+  changes outside the normal paths. Main-process IPC handlers, runtime action
+  `session.list` / `session.get`, and the lane-list snapshot service all use
+  `chatSessionProjection.ts`, include automation chats when building the
+  projection index, and fall back to quiet chat state if runtime hydration
+  fails.
 - **Two-tier attention** — the Your move bucket contains loud `needs_you` rows
   and quiet resting chats/idle CLIs. Only canonical `needs_you` increments the
   Work-tab highlight, notification count, and macOS Dock badge. A ready chat is
@@ -1118,9 +1120,9 @@ Processes (managed):
   `settleTerminalSession`, and keep raw native CLI prompts non-dismissible.
 - **Persisted chat `running` is not UI running.** Chat rows remain resumable
   across provider restarts, so the database status alone cannot drive the
-  green/running projection. Route list, detail, lane snapshot, and automation
-  rows through `chatSessionProjection.ts`; hydration failure must degrade to
-  quiet idle/waiting.
+  green/running projection. Route IPC and runtime-action list/detail reads,
+  lane snapshots, and automation rows through `chatSessionProjection.ts`;
+  hydration failure must degrade to quiet idle/waiting.
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.

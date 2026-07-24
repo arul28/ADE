@@ -1,7 +1,29 @@
 import type {
   AgentChatSessionSummary,
+  ListSessionsArgs,
   TerminalSessionSummary,
 } from "../../../shared/types";
+import { getErrorMessage } from "../shared/utils";
+
+type ChatProjectionServices = {
+  sessionService: {
+    list(args?: ListSessionsArgs): TerminalSessionSummary[];
+    get(sessionId: string): TerminalSessionSummary | null;
+  };
+  ptyService?: {
+    enrichSessions(sessions: TerminalSessionSummary[]): TerminalSessionSummary[];
+  } | null;
+  agentChatService?: {
+    listSessions(
+      laneId?: string,
+      options?: { includeIdentity?: boolean; includeAutomation?: boolean },
+    ): Promise<AgentChatSessionSummary[]>;
+    getSessionSummary(sessionId: string): Promise<AgentChatSessionSummary | null>;
+  } | null;
+  logger: {
+    warn(event: string, data: Record<string, unknown>): void;
+  };
+};
 
 export function isChatToolType(toolType: string | null | undefined): boolean {
   if (!toolType) return false;
@@ -59,10 +81,94 @@ export function projectChatOntoSession(
     };
   }
   if (chat.status === "active") {
-    return { ...base, runtimeState: "running", chatIdleSinceAt: null };
+    return {
+      ...base,
+      runtimeState: "running",
+      chatIdleSinceAt: null,
+      pendingInputItemId: null,
+    };
   }
   if (chat.status === "idle" || chat.status === "ended") {
-    return { ...base, runtimeState: "idle", chatIdleSinceAt: chat.idleSinceAt ?? null };
+    return {
+      ...base,
+      runtimeState: "idle",
+      chatIdleSinceAt: chat.idleSinceAt ?? null,
+      pendingInputItemId: null,
+    };
   }
   return fallbackUnprojectedChatSession(base);
+}
+
+export function projectChatSummariesOntoSessions(
+  sessions: TerminalSessionSummary[],
+  allChats: AgentChatSessionSummary[],
+): TerminalSessionSummary[] {
+  const identitySessionIds = new Set(
+    allChats
+      .filter((chat) => Boolean(chat.identityKey))
+      .map((chat) => chat.sessionId),
+  );
+  const chatSummaryBySessionId = new Map(
+    allChats
+      .filter((chat) => !chat.identityKey)
+      .map((chat) => [chat.sessionId, chat] as const),
+  );
+
+  return sessions
+    .filter((session) => !identitySessionIds.has(session.id))
+    .map((session) => {
+      if (!isChatToolType(session.toolType)) return session;
+      const chat = chatSummaryBySessionId.get(session.id);
+      return chat
+        ? projectChatOntoSession(session, chat)
+        : fallbackUnprojectedChatSession(session);
+    });
+}
+
+export async function listSessionsWithChatProjection(
+  services: ChatProjectionServices,
+  args: ListSessionsArgs = {},
+): Promise<TerminalSessionSummary[]> {
+  const listedSessions = services.sessionService.list(args);
+  const sessions = services.ptyService
+    ? services.ptyService.enrichSessions(listedSessions)
+    : listedSessions;
+  const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
+  let allChats: AgentChatSessionSummary[] = [];
+  if (services.agentChatService) {
+    try {
+      allChats = await services.agentChatService.listSessions(laneId || undefined, {
+        includeIdentity: true,
+        includeAutomation: true,
+      });
+    } catch (error) {
+      services.logger.warn("sessions.chat_projection_failed", {
+        laneId: laneId || null,
+        error: getErrorMessage(error),
+      });
+    }
+  }
+  return projectChatSummariesOntoSessions(sessions, allChats);
+}
+
+export async function getSessionWithChatProjection(
+  services: ChatProjectionServices,
+  sessionId: string,
+): Promise<TerminalSessionSummary | null> {
+  const persisted = services.sessionService.get(sessionId);
+  if (!persisted) return null;
+  const session = services.ptyService?.enrichSessions([persisted])[0] ?? persisted;
+  if (!isChatToolType(session.toolType)) return session;
+  try {
+    const chat = await services.agentChatService?.getSessionSummary(sessionId);
+    return chat
+      ? projectChatOntoSession(session, chat)
+      : fallbackUnprojectedChatSession(session);
+  } catch (error) {
+    services.logger.warn("sessions.chat_projection_failed", {
+      sessionId,
+      error: getErrorMessage(error),
+    });
+    return fallbackUnprojectedChatSession(session);
+  }
 }

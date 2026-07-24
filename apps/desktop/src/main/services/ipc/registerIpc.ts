@@ -38,6 +38,7 @@ import {
   fallbackUnprojectedChatSession,
   isChatToolType,
   projectChatOntoSession,
+  projectChatSummariesOntoSessions,
 } from "../sessions/chatSessionProjection";
 import {
   removeProjectIconOverride,
@@ -6399,23 +6400,7 @@ export function registerIpc({
             });
           }
         }
-        const identitySessionIds = new Set(
-          allChats
-            .filter((chat) => Boolean(chat.identityKey))
-            .map((chat) => chat.sessionId),
-        );
-        if (identitySessionIds.size > 0) {
-          sessions = sessions.filter((session) => !identitySessionIds.has(session.id));
-        }
-        const chats = allChats.filter((chat) => !chat.identityKey);
-        const chatSummaryBySessionId = new Map(chats.map((chat) => [chat.sessionId, chat] as const));
-        return sessions.map((session) => {
-          if (!isChatToolType(session.toolType)) return session;
-          const chat = chatSummaryBySessionId.get(session.id);
-          return chat
-            ? projectChatOntoSession(session, chat)
-            : fallbackUnprojectedChatSession(session);
-        });
+        return projectChatSummariesOntoSessions(sessions, allChats);
       },
       {
         laneId: typeof arg?.laneId === "string" ? arg.laneId : null,

@@ -54,6 +54,7 @@ import type {
   LaneListSnapshot,
   LaneOverlayOverrides,
   LanePreviewInfo,
+  ListSessionsArgs,
   ListLanesArgs,
   PortLease,
   PrAgentPermissionMode,
@@ -87,6 +88,10 @@ import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
+import {
+  getSessionWithChatProjection,
+  listSessionsWithChatProjection,
+} from "../sessions/chatSessionProjection";
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import { createAccountActionDomainService } from "../../../../../ade-cli/src/services/account/accountAuthService";
 
@@ -1658,6 +1663,13 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
   if (!sessionService) return null;
   return {
     ...(sessionService as unknown as OpaqueService),
+    async list(args?: ListSessionsArgs | null) {
+      return listSessionsWithChatProjection(runtime, args ?? {});
+    },
+    async get(arg?: unknown) {
+      const sessionId = readStringActionArg(arg, "sessionId");
+      return getSessionWithChatProjection(runtime, sessionId);
+    },
     requestSessionAttention: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.requestSessionAttention");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
