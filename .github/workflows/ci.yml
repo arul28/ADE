@@ -21,7 +21,7 @@ jobs:
 
       - name: Restore node_modules cache
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -75,7 +75,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -94,7 +94,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -115,7 +115,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -136,7 +136,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -157,7 +157,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -176,7 +176,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -199,7 +199,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -218,7 +218,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -237,7 +237,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -258,7 +258,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -332,7 +332,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
@@ -415,7 +415,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         with:
           path: |
             apps/desktop/node_modules
