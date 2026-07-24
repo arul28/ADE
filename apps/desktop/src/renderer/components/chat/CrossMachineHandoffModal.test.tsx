@@ -207,6 +207,54 @@ describe("CrossMachineHandoffModal", () => {
     expect(onFinished).toHaveBeenCalledTimes(1);
   });
 
+  it.each([
+    [
+      "an interrupted connection",
+      "Remote ADE service connection was interrupted before ADE could confirm the action result. "
+        + "ADE could not reconnect to the machine; check the destination before retrying the action.",
+    ],
+    [
+      "a request timeout",
+      "Remote ADE service timed out waiting for method ade/actions/call (180000ms).",
+    ],
+  ])("reports %s as still completing instead of a hard failure", async (_case, failureMessage) => {
+    callAction.mockReset();
+    callAction.mockImplementation(async (
+      _target: string,
+      _project: string,
+      payload: { action: string },
+    ) => {
+      if (payload.action === "preflightCrossMachineDestination") {
+        return { result: preflightResult() };
+      }
+      throw new Error(failureMessage);
+    });
+
+    render(
+      <CrossMachineHandoffModal
+        open
+        sourceSessionId="session-1"
+        sourceLaneId="lane-1"
+        target={{ targetModelId: "openai/gpt-5.5" }}
+        turnActive={false}
+        awaitingInput={false}
+        onStopTurn={vi.fn()}
+        onClose={vi.fn()}
+        onFinished={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /^continue$/i }));
+    expect(await screen.findByText(/Ready to continue on Studio/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /send chat/i }));
+
+    const notice = await screen.findByText(/lost confirmation from the destination/i);
+    expect(notice.textContent).toMatch(/new chat may still appear there/i);
+    expect(notice.className).toContain("text-amber");
+    expect(screen.queryByText(failureMessage)).toBeNull();
+    expect(screen.getByRole("button", { name: /send chat/i })).toHaveProperty("disabled", false);
+  });
+
   it("reconciles a repository clone whose success response was lost during disconnect", async () => {
     const recoveredProject = {
       projectId: "remote-project-recovered",

@@ -17,6 +17,7 @@ import type {
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
+import { isRemoteRuntimeConnectionError } from "../../../shared/runtimeErrors";
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
@@ -114,12 +115,7 @@ function assertRequiredActionRoute(
   );
 }
 
-export function isRemoteRuntimeConnectionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /remote (?:runtime|ADE service) connection (?:closed|failed)|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
-    message,
-  );
-}
+export { isRemoteRuntimeConnectionError };
 
 const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
 const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
@@ -1120,7 +1116,16 @@ export class RemoteConnectionPool {
       }
       this.disconnect(target.id);
       const reconnectTarget = this.registry.get(target.id) ?? target;
-      const nextEntry = await this.connectEntry(reconnectTarget);
+      let nextEntry: PoolEntry;
+      try {
+        nextEntry = await this.connectEntry(reconnectTarget);
+      } catch (reconnectError) {
+        if (options.retryOnConnectionError) throw reconnectError;
+        throw new Error(
+          "Remote ADE service connection was interrupted before ADE could confirm the action result. " +
+            "ADE could not reconnect to the machine; check the destination before retrying the action.",
+        );
+      }
       if (options.retryOnConnectionError) {
         return await operation(nextEntry);
       }

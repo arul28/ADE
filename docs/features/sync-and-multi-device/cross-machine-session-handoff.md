@@ -20,6 +20,13 @@ The action lives in the chat actions drawer under **Handoff** as **Send to machi
 
 The setup modal can be opened while a turn is active. It explains the block and offers to stop the current response. Pending approvals or questions must be resolved in the source chat.
 
+Once destination acceptance has been dispatched, a requester timeout or
+connection loss does not prove that destination work stopped. The modal reports
+that ADE lost confirmation, that the destination chat may still appear, and
+that the user should check the other machine before retrying. Preflight and
+source-validation failures that happen before destination acceptance starts
+remain ordinary hard failures.
+
 ## Source contract
 
 V1 intentionally requires a clean, published Git branch:
@@ -123,6 +130,13 @@ This covers process restarts and mid-transfer disconnects at each boundary:
 
 Partial destination resources are never anonymous: they remain associated with the durable handoff record until the transaction completes or is retried.
 
+The destination acceptance call is not cancellable through the paired runtime
+transport. A request-local timeout or interrupted connection therefore leaves
+the caller with an unknown outcome rather than a truthful cancellation. ADE
+does not convert that state into a hard failure: the source UI uses the
+still-completing notice above, and a user retry reconciles through the durable
+handoff record instead of creating a second lane or chat.
+
 ## Transport and security
 
 The handoff uses the existing authenticated remote runtime connection selected by ADE:
@@ -132,6 +146,14 @@ The handoff uses the existing authenticated remote runtime connection selected b
 - LAN/relay routes require an additional explicit confirmation before the capsule is sent.
 
 The renderer follows live connection snapshots while setup is open. Final acceptance is bound to the exact reviewed route kind, and this sensitive action is not automatically replayed after a disconnect. A route change—especially an encrypted-to-LAN/relay downgrade—returns the user to review instead of sending silently.
+
+For a paired desktop destination, the action is multi-project runtime JSON-RPC
+carried through the sync WebSocket's `rpc_data` channel. The sync host forwards
+those channel frames; its remote-command responder timeout does not wrap the
+full `chat.acceptCrossMachineHandoff` execution. SSH destinations use the same
+runtime RPC contract over `ade rpc --stdio`. In both cases the desktop applies
+the request-local handoff timeout and preserves the unknown-outcome contract
+when confirmation is lost.
 
 The UI names what is included and excluded before final confirmation. Handoff clone authentication is always resolved on the destination: the main process strips renderer-supplied auth headers and disables ADE's normal one-shot source-token forwarding for this path. ADE does not put GitHub tokens in the capsule or the machine RPC. Artifact references are contextual text only and do not grant cross-machine file access.
 
@@ -151,5 +173,7 @@ Tests should cover:
 - existing clean destination lane and conflicting local branch;
 - destination provider/model auth failure;
 - incompatible destination runtime;
-- disconnect after lane, chat, or first-turn creation; and
+- timeout or disconnect after destination acceptance starts, including an
+  unsuccessful reconnect, with unknown-outcome copy and no automatic replay;
+  and
 - capsule tampering, embedded remote credentials, size limits, and secret redaction.

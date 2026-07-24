@@ -1269,6 +1269,36 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call.mock.calls.some(([method]) => method === "ade/actions/call")).toBe(false);
   });
 
+  it("preserves the unknown destination outcome when reconnecting also fails", async () => {
+    const firstClient = createClient();
+    firstClient.call.mockRejectedValueOnce(new Error("Remote runtime connection failed: channel closed"));
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: createSsh(),
+      result: {
+        ...connectResult("1.0.0"),
+        route: { kind: "tailnet", endpoint: "100.64.0.2", latencyMs: 1 },
+      },
+    });
+    bootstrapRemoteRuntimeMock.mockRejectedValueOnce(
+      new Error("Could not reach the paired ADE runtime over LAN, tailnet, or relay."),
+    );
+    const pool = new RemoteConnectionPool(
+      { get: () => null } as unknown as RemoteTargetRegistry,
+      "1.0.0",
+    );
+
+    await expect(pool.callActionForTarget(target, "project-1", {
+      domain: "chat",
+      action: "acceptCrossMachineHandoff",
+      args: { capsule: {}, capsuleFingerprint: "a".repeat(64) },
+      requiredRouteKind: "tailnet",
+    })).rejects.toThrow(/could not reconnect.*check the destination/i);
+
+    expect(firstClient.call.mock.calls.filter(([method]) => method === "ade/actions/call")).toHaveLength(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+  });
+
   it("extends remote lane naming actions without adding a timeout to unrelated mutations", async () => {
     const client = createClient();
     client.call.mockResolvedValue({
