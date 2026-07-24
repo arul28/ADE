@@ -1429,9 +1429,9 @@ struct PrDetailView: View {
             activityEvents = mobileDetail.activity
           }
           unavailableDetailParts = mobileDetail.unavailableParts
-          deployments = []
-          capabilities = nil
-          groupMembers = []
+          // The aggregate GitHub payload does not include deployments,
+          // capabilities, or group membership. Preserve any enrichment already
+          // loaded for this route instead of treating absent fields as empty.
           // Partial failures retain the last good values above and use the
           // normal 25-second freshness window as retry backoff. Explicit Retry
           // still bypasses the gate immediately.
