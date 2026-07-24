@@ -33,7 +33,7 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 | `apps/desktop/src/main/services/externalSessions/externalSessionsService.ts` | Service entry point. Runs provider discovery, applies the capabilities matrix, filters project/all scope, detects already-imported sessions, validates import ids, enforces optional lane cwd scope, builds CLI resume/fork commands, delegates chat import, and creates tracked PTYs. |
 | `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, semantic user-prompt extraction/counting, provider-wrapper cleanup, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
 | `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads `ai-title`/custom titles and excludes SDK entrypoints. |
-| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex rollout JSONL files under `CODEX_HOME/sessions/YYYY/MM/DD/` (default `~/.codex`) and enriches them from `session_index.jsonl`. |
+| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex rollout JSONL files under `CODEX_HOME/sessions/YYYY/MM/DD/` (default `~/.codex`), enriches them from `session_index.jsonl`, and maintains the rebuildable cwd/importability index used by project-scoped discovery. |
 | `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Discovers current Cursor sessions from `~/.cursor/chats/<workspace-md5>/<agentId>/store.db`, merges legacy transcript previews from `~/.cursor/projects/.../agent-transcripts`, uses `.workspace-trusted` for exact cwd recovery, and excludes SDK `agent-<uuid>` sessions. |
 | `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `~/.factory/sessions/<escaped-cwd>/`, using the `session_start` row for id/cwd/title. |
 | `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts` | Discovers OpenCode sessions by running `opencode session list --pure --format json --max-count <N>` in the requested/project cwd. |
@@ -75,8 +75,12 @@ current project scope unless `scope: "all"` is requested, and returns
 File-backed providers are stat-first. Discovery gathers candidate files, sorts
 by mtime, and reads a bounded recent candidate window. Claude keeps scanning
 past filtered SDK transcripts until it has filled the requested CLI-session
-limit; Codex uses a larger bounded window so non-interactive rollouts cannot
-starve valid CLI results. The cheap JSONL read is bounded by
+limit. Codex all-history discovery uses a larger bounded window so
+non-interactive rollouts cannot starve valid CLI results. Codex project-scoped
+discovery instead refreshes a rebuildable cwd/importability index under
+`$ADE_HOME/cache/external-sessions/`: it stats the rollout inventory, reads the
+`session_meta` prefix only for new or changed files, and filters the complete
+index without a fixed file-count ceiling. The cheap JSONL read is bounded by
 `JSONL_SCAN_BYTE_LIMIT` and `JSONL_SCAN_LINE_LIMIT`; meaningful user prompt
 counts are only computed for files under `MESSAGE_COUNT_MAX_BYTES`.
 Provider metadata, assistant/tool rows, local-command wrappers, and duplicate
@@ -300,7 +304,9 @@ app-server `thread/read`, `thread/fork`, `thread/archive`, resume, and fork
 surfaces.
 
 Only interactive CLI rollouts are importable. ADE excludes exec, VS Code,
-desktop/ADE-originated, and subagent rollouts. For preview/count it prefers the
+desktop/ADE-originated, and subagent rollouts. Structured/unknown `source`
+metadata fails closed; current Codex subagents use an object-shaped source
+record rather than the older string form. For preview/count ADE prefers the
 canonical `event_msg.payload.type = user_message` row so duplicated
 `response_item` rows and synthetic environment instructions are not shown.
 
