@@ -3690,6 +3690,9 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.appGetInfo, async (): Promise<AppInfo> => {
+    const localRuntimeStatus = localRuntimeConnectionPool
+      ? await localRuntimeConnectionPool.getFreshStatus()
+      : null;
     return {
       appVersion: app.getVersion(),
       isPackaged: app.isPackaged,
@@ -3706,7 +3709,7 @@ export function registerIpc({
         nodeEnv: process.env.NODE_ENV,
         viteDevServerUrl: process.env.VITE_DEV_SERVER_URL
       },
-      localRuntime: localRuntimeConnectionPool?.getStatus() ?? null
+      localRuntime: localRuntimeStatus
     };
   });
 

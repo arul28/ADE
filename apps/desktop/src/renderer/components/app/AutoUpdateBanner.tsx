@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowsClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
@@ -54,6 +54,7 @@ export function AutoUpdateBanner() {
   const snapshot = useAutoUpdateSnapshot();
   const [dismissedSignature, setDismissedSignature] = useState<string | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const cancelRequestedRef = useRef(false);
 
   const banner = describeStalenessBanner(snapshot);
   const signature = banner?.signature ?? null;
@@ -76,8 +77,10 @@ export function AutoUpdateBanner() {
   }, []);
 
   const handleCancelAutoApply = useCallback(() => {
+    cancelRequestedRef.current = true;
     dismissToast(AUTO_APPLY_TOAST_ID);
     void window.ade.updateCancelAutoApply().catch(() => {
+      cancelRequestedRef.current = false;
       // Main process logs cancellation failures; the snapshot event reconciles.
     });
   }, []);
@@ -89,9 +92,11 @@ export function AutoUpdateBanner() {
   useEffect(() => {
     if (!pending) {
       dismissToast(AUTO_APPLY_TOAST_ID);
+      cancelRequestedRef.current = false;
       return;
     }
     const renderToast = () => {
+      if (cancelRequestedRef.current) return;
       const secondsLeft = Math.max(0, Math.ceil((pending.deadlineAt - Date.now()) / 1000));
       showToast({
         id: AUTO_APPLY_TOAST_ID,

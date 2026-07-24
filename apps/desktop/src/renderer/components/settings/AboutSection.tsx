@@ -113,6 +113,29 @@ function formatReleasedAgo(iso: string | null): string | null {
   return `released ${years} year${years === 1 ? "" : "s"} ago`;
 }
 
+export function resolveAboutVersionState(
+  appVersion: string,
+  snapshot: Pick<AutoUpdateSnapshot, "status" | "version" | "parked">,
+): {
+  runningVersion: string;
+  installedVersion: string;
+  downloadedVersion: string | null;
+  restartPending: boolean;
+} {
+  const hasDownloadedUpdate = snapshot.status === "ready" || Boolean(snapshot.parked);
+  const downloadedVersion = hasDownloadedUpdate && snapshot.version
+    ? snapshot.version
+    : null;
+  return {
+    runningVersion: appVersion,
+    // electron-updater's ready state is only a cached download. Until the
+    // native installer succeeds, the app bundle on disk remains appVersion.
+    installedVersion: appVersion,
+    downloadedVersion,
+    restartPending: downloadedVersion != null && downloadedVersion !== appVersion,
+  };
+}
+
 export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) {
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [latest, setLatest] = useState<LatestReleaseInfo | null>(null);
@@ -181,18 +204,13 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
     ? null
     : info.localRuntime.versionSkew;
 
-  // Truthful version split: "Running" is the version of the process the user is
-  // actually using (getInfo); "Installed" is what is staged on disk and will run
-  // after a restart; "Latest" is what the update feed advertises. When a
-  // consented install parked or a download is ready, the running process lags
-  // what is staged — that is the state the incident hid behind an "up to date".
-  const hasStagedUpdate = updateSnapshot.status === "ready" || Boolean(updateSnapshot.parked);
-  const runningVersion = info.appVersion;
-  const installedVersion = hasStagedUpdate && updateSnapshot.version
-    ? updateSnapshot.version
-    : info.appVersion;
+  const {
+    runningVersion,
+    installedVersion,
+    downloadedVersion,
+    restartPending,
+  } = resolveAboutVersionState(info.appVersion, updateSnapshot);
   const latestVersion = updateSnapshot.latestKnownVersion ?? latest?.version ?? info.appVersion;
-  const restartPending = hasStagedUpdate && installedVersion !== runningVersion;
 
   let pill: React.ReactNode = null;
   if (isDev) {
@@ -244,12 +262,26 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
           <span style={labelStyle}>Installed</span>
           <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
             <span style={valueStyle}>{installedVersion}</span>
-            <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-              · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
-              {releasedAgo && latest != null && latestVersion === latest.version ? ` · ${releasedAgo}` : ""}
-            </span>
+            {!downloadedVersion ? (
+              <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
+                {releasedAgo && latest != null && latestVersion === latest.version ? ` · ${releasedAgo}` : ""}
+              </span>
+            ) : null}
           </span>
         </div>
+        {downloadedVersion ? (
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+            <span style={labelStyle}>Downloaded</span>
+            <span style={{ display: "inline-flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+              <span style={valueStyle}>{downloadedVersion}</span>
+              <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                · Latest <span style={{ ...valueStyle, fontSize: 11 }}>{latestVersion}</span>
+                {releasedAgo && latest != null && latestVersion === latest.version ? ` · ${releasedAgo}` : ""}
+              </span>
+            </span>
+          </div>
+        ) : null}
       </div>
 
       {(updateAvailable || !isDev) ? (

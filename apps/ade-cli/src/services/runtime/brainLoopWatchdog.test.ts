@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
   BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE,
+  buildBrainLoopWatchdogWorkerSource,
   evaluateBrainLoopWatchdog,
   readBrainLoopWatchdogLastWedge,
   recoverBrainLoopWatchdogBreadcrumb,
@@ -12,6 +13,10 @@ import {
 } from "./brainLoopWatchdog";
 
 describe("brainLoopWatchdog", () => {
+  it("builds a valid worker program from the tested watchdog evaluator", () => {
+    expect(() => new Function(buildBrainLoopWatchdogWorkerSource())).not.toThrow();
+  });
+
   it("detects a main-thread heartbeat gap while the worker check cadence stays healthy", () => {
     expect(evaluateBrainLoopWatchdog({
       nowWallMs: 20_000,

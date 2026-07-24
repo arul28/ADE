@@ -37,10 +37,11 @@ describe("brain freshness monitor", () => {
     const sleep = vi.fn(async () => {
       idle = true;
     });
+    const isIdle = vi.fn(async () => idle);
     const monitor = createBrainFreshnessMonitor({
       filePath: "/tmp/cli.cjs",
       runningHash: "running-hash",
-      isIdle: () => idle,
+      isIdle,
       restart,
       logger: { warn },
       stat,
@@ -59,6 +60,7 @@ describe("brain freshness monitor", () => {
 
     expect(computeHash).toHaveBeenCalledTimes(1);
     expect(sleep).toHaveBeenCalledTimes(1);
+    expect(isIdle).toHaveBeenCalledTimes(2);
     expect(restart).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith("brain.freshness_mismatch", {
       runningHash: "running-hash",

@@ -208,7 +208,7 @@ export function doctorRuntimeStatusFromInitialize(value: unknown): {
   };
 }
 
-async function probeDoctorBrain<Options extends DoctorCommandOptions>(
+export async function probeDoctorBrain<Options extends DoctorCommandOptions>(
   options: Options,
   dependencies: DoctorCommandDependencies<Options>,
 ): Promise<DoctorBrainProbe> {
@@ -250,7 +250,16 @@ async function probeDoctorBrain<Options extends DoctorCommandOptions>(
       ]),
       remaining(),
       "ADE brain health reads",
-    );
+    ).catch((error): [
+      PromiseRejectedResult,
+      PromiseRejectedResult,
+    ] => {
+      const reason = error instanceof Error ? error : new Error(String(error));
+      return [
+        { status: "rejected", reason },
+        { status: "rejected", reason },
+      ];
+    });
     const syncStatus = syncResult.status === "fulfilled" && isRecord(syncResult.value)
       ? syncResult.value
       : null;

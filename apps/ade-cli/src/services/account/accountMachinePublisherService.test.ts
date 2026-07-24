@@ -423,6 +423,42 @@ describe("account machine publisher health", () => {
     expect(captureAnalytics).toHaveBeenCalledTimes(2);
   });
 
+  it("starts a new publish-failure analytics episode after a benign skip", async () => {
+    let clock = 0;
+    let syncEnabled = true;
+    const captureAnalytics = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      isSyncEnabled: () => syncEnabled,
+      fetchImpl: vi.fn(async () => new Response(null, { status: 503 })),
+      now: () => clock,
+      captureAnalytics,
+    });
+
+    await service.publishNow();
+    clock = 121_000;
+    await service.publishNow();
+    syncEnabled = false;
+    clock = 130_000;
+    await service.publishNow();
+    expect(service.getPublisherHealth()).toMatchObject({
+      state: "sync_disabled",
+      failingSinceMs: null,
+    });
+
+    syncEnabled = true;
+    clock = 200_000;
+    await service.publishNow();
+    clock = 321_000;
+    await service.publishNow();
+
+    expect(captureAnalytics).toHaveBeenCalledTimes(2);
+  });
+
   it("bounds a stalled token leg and reports token_timeout without starting HTTP", async () => {
     vi.useFakeTimers();
     const warn = vi.fn();

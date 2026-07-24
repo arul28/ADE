@@ -135,11 +135,13 @@ export function trackBrainLoopWatchdogCommand(action: string): () => void {
   };
 }
 
-function buildWorkerSource(): string {
+export function buildBrainLoopWatchdogWorkerSource(): string {
   return String.raw`
     const fs = require("node:fs");
     const path = require("node:path");
     const { parentPort, workerData } = require("node:worker_threads");
+    const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = ${BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS};
+    const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
 
     const monotonicMs = () => Number(process.hrtime.bigint() / 1000000n);
     let lastHeartbeatWallMs = null;
@@ -154,24 +156,38 @@ function buildWorkerSource(): string {
         blockedMs: Math.max(0, Math.floor(blockedMs)),
         ts: new Date().toISOString(),
       };
-      fs.mkdirSync(workerData.runtimeDir, { recursive: true, mode: 0o700 });
       const breadcrumbPath = path.join(workerData.runtimeDir, workerData.breadcrumbFile);
-      const tempPath = breadcrumbPath + "." + process.pid + "." + Date.now() + ".tmp";
-      fs.writeFileSync(tempPath, JSON.stringify(breadcrumb) + "\n", {
-        encoding: "utf8",
-        mode: 0o600,
-      });
+      let tempPath = null;
       try {
+        fs.mkdirSync(workerData.runtimeDir, { recursive: true, mode: 0o700 });
+        tempPath = breadcrumbPath + "." + process.pid + "." + Date.now() + ".tmp";
+        fs.writeFileSync(tempPath, JSON.stringify(breadcrumb) + "\n", {
+          encoding: "utf8",
+          mode: 0o600,
+        });
         if (process.platform === "win32" && fs.existsSync(breadcrumbPath)) {
           fs.unlinkSync(breadcrumbPath);
         }
         fs.renameSync(tempPath, breadcrumbPath);
       } catch (error) {
-        try { fs.unlinkSync(tempPath); } catch {}
-        throw error;
+        if (tempPath) {
+          try { fs.unlinkSync(tempPath); } catch {}
+        }
+        try {
+          fs.writeSync(
+            2,
+            "brain.event_loop_breadcrumb_failed " +
+              JSON.stringify({ error: error instanceof Error ? error.message : String(error) }) +
+              "\n",
+          );
+        } catch {}
+      } finally {
+        try {
+          fs.writeSync(2, "brain.event_loop_blocked " + JSON.stringify(breadcrumb) + "\n");
+        } finally {
+          process.kill(process.pid, "SIGKILL");
+        }
       }
-      fs.writeSync(2, "brain.event_loop_blocked " + JSON.stringify(breadcrumb) + "\n");
-      process.kill(process.pid, "SIGKILL");
     };
 
     parentPort.on("message", (message) => {
@@ -192,33 +208,26 @@ function buildWorkerSource(): string {
         return;
       }
 
-      const wallSinceCheck = Math.max(0, nowWallMs - previousCheckWallMs);
-      const monotonicSinceCheck = Math.max(0, nowMonotonicMs - previousCheckMonotonicMs);
-      const sleepGapFloorMs = Math.max(
-        workerData.thresholdMs,
-        workerData.checkIntervalMs * 4,
-      );
-      const checkGapDeltaMs = Math.abs(wallSinceCheck - monotonicSinceCheck);
-      const slept = wallSinceCheck > sleepGapFloorMs
-        && monotonicSinceCheck > sleepGapFloorMs
-        && checkGapDeltaMs <= Math.max(
-          2000,
-          Math.max(wallSinceCheck, monotonicSinceCheck) * 0.25,
-        );
+      const evaluation = evaluateBrainLoopWatchdog({
+        nowWallMs,
+        nowMonotonicMs,
+        lastHeartbeatWallMs,
+        lastHeartbeatMonotonicMs,
+        previousCheckWallMs,
+        previousCheckMonotonicMs,
+        thresholdMs: workerData.thresholdMs,
+        checkIntervalMs: workerData.checkIntervalMs,
+      });
       previousCheckWallMs = nowWallMs;
       previousCheckMonotonicMs = nowMonotonicMs;
-      if (slept) {
+      if (evaluation.slept) {
         lastHeartbeatWallMs = nowWallMs;
         lastHeartbeatMonotonicMs = nowMonotonicMs;
         return;
       }
 
-      const blockedMs = Math.floor(Math.min(
-        Math.max(0, nowWallMs - lastHeartbeatWallMs),
-        Math.max(0, nowMonotonicMs - lastHeartbeatMonotonicMs),
-      ));
-      if (blockedMs > workerData.thresholdMs) {
-        writeBreadcrumbAndKill(blockedMs);
+      if (evaluation.blocked) {
+        writeBreadcrumbAndKill(evaluation.blockedMs);
       }
     }, workerData.checkIntervalMs);
   `;
@@ -250,7 +259,7 @@ export function startBrainLoopWatchdog(args: {
   let disposed = false;
   let worker: Worker;
   try {
-    worker = new Worker(buildWorkerSource(), {
+    worker = new Worker(buildBrainLoopWatchdogWorkerSource(), {
       eval: true,
       workerData: {
         runtimeDir: args.runtimeDir,

@@ -1,7 +1,13 @@
-import { describe, expect, it } from "vitest";
+/* @vitest-environment jsdom */
+
+import React from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import {
+  BrainRecoveryNotice,
   formatRecoveryCommand,
   formatRecoveryTime,
+  RECOVERY_ACK_STORAGE_KEY,
   shouldShowRecoveryNotice,
 } from "./BrainRecoveryNotice";
 
@@ -9,6 +15,54 @@ const wedge = (ts: string, lastCommand = "npm run build") => ({
   ts,
   lastCommand,
   blockedMs: 4200,
+});
+
+afterEach(() => {
+  cleanup();
+  window.localStorage.removeItem(RECOVERY_ACK_STORAGE_KEY);
+  Reflect.deleteProperty(window, "ade");
+});
+
+describe("BrainRecoveryNotice lifecycle", () => {
+  it("subscribes before the initial read and preserves a reconnect event that wins the race", async () => {
+    const order: string[] = [];
+    let statusListener: ((status: never) => void) | null = null;
+    let resolveInfo: ((info: never) => void) | null = null;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        app: {
+          onRuntimeStatusChanged: vi.fn((listener: (status: never) => void) => {
+            order.push("subscribe");
+            statusListener = listener;
+            return vi.fn();
+          }),
+          getInfo: vi.fn(() => {
+            order.push("read");
+            return new Promise((resolve) => {
+              resolveInfo = resolve;
+            });
+          }),
+        },
+      },
+    });
+
+    render(React.createElement(BrainRecoveryNotice));
+    await waitFor(() => expect(order).toEqual(["subscribe", "read"]));
+
+    act(() => {
+      statusListener?.({
+        lastWedge: wedge("2026-07-23T11:00:00Z", "chat.send"),
+      } as never);
+    });
+    expect(await screen.findByText(/chat\.send/)).toBeTruthy();
+
+    await act(async () => {
+      resolveInfo?.({ localRuntime: { lastWedge: null } } as never);
+      await Promise.resolve();
+    });
+    expect(screen.getByText(/chat\.send/)).toBeTruthy();
+  });
 });
 
 describe("shouldShowRecoveryNotice", () => {

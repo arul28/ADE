@@ -934,6 +934,47 @@ export function createAutoUpdateService({
     patchSnapshot({ autoApplyPending: null });
   }
 
+  async function applyAutoUpdateAtDeadline(deadlineAt: number): Promise<void> {
+    if (
+      !getRuntimeActivitySummary
+      || snapshot.status !== "ready"
+      || snapshot.autoApplyPending?.deadlineAt !== deadlineAt
+      || (snapshot.autoApplySuppressedUntil ?? 0) > nowMs()
+    ) {
+      return;
+    }
+    try {
+      const activity = await getRuntimeActivitySummary();
+      if (
+        snapshot.status !== "ready"
+        || snapshot.autoApplyPending?.deadlineAt !== deadlineAt
+        || (snapshot.autoApplySuppressedUntil ?? 0) > nowMs()
+      ) {
+        return;
+      }
+      if (!activity.idle) {
+        idleSinceMs = null;
+        clearPendingAutoApply();
+        scheduleActivityCheck(activityCheckMs);
+        return;
+      }
+      patchSnapshot({ autoApplyPending: null });
+      const started = await quitAndInstall();
+      if (!started) return;
+      productAnalyticsService?.captureInternal({
+        event: "ade_update_auto_applied",
+        surface: "desktop",
+      });
+    } catch (error) {
+      idleSinceMs = null;
+      clearPendingAutoApply();
+      logger.warn("autoUpdate.deadline_activity_check_failed", {
+        message: formatErrorMessage(error),
+      });
+      scheduleActivityCheck(activityCheckMs);
+    }
+  }
+
   async function checkAutoApplyActivity(): Promise<void> {
     if (
       activityCheckInProgress
@@ -977,21 +1018,7 @@ export function createAutoUpdateService({
       patchSnapshot({ autoApplyPending: { deadlineAt } });
       autoApplyDeadlineTimer = setTimeout(() => {
         autoApplyDeadlineTimer = null;
-        if (
-          snapshot.status !== "ready"
-          || snapshot.autoApplyPending?.deadlineAt !== deadlineAt
-          || (snapshot.autoApplySuppressedUntil ?? 0) > nowMs()
-        ) {
-          return;
-        }
-        patchSnapshot({ autoApplyPending: null });
-        void quitAndInstall().then((started) => {
-          if (!started) return;
-          productAnalyticsService?.captureInternal({
-            event: "ade_update_auto_applied",
-            surface: "desktop",
-          });
-        });
+        void applyAutoUpdateAtDeadline(deadlineAt);
       }, autoApplyCountdownMs);
       autoApplyDeadlineTimer.unref?.();
     } catch (error) {

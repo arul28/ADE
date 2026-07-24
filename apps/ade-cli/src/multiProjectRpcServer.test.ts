@@ -7,6 +7,7 @@ import { createEventBuffer } from "./eventBuffer";
 import {
   createMultiProjectRpcRequestHandler,
   decorateProjectListWithIcons,
+  readMachineRuntimeActivitySummary,
 } from "./multiProjectRpcServer";
 import * as gitModule from "../../desktop/src/main/services/git/git";
 import { ProjectRegistry } from "./services/projects/projectRegistry";
@@ -125,6 +126,39 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("summarizes booted project and personal-chat work independently of client sockets", async () => {
+    const summary = await readMachineRuntimeActivitySummary({
+      projectRegistry: {
+        list: () => [{ projectId: "project-1" }],
+      } as never,
+      scopeRegistry: {
+        getIfBooted: () => Promise.resolve({
+          runtime: {
+            agentChatService: { hasActiveWorkloads: () => true },
+            ptyService: {
+              list: () => [
+                { runtimeState: "running" },
+                { runtimeState: "exited" },
+              ],
+            },
+          },
+        }),
+      } as never,
+      personalChatScope: {
+        activitySummary: async () => ({
+          activeAgentTurns: 0,
+          activeWorkSessions: 1,
+        }),
+      },
+    });
+
+    expect(summary).toEqual({
+      idle: false,
+      activeAgentTurns: 1,
+      activeWorkSessions: 2,
+    });
+  });
+
   it("keeps the complete inline icon catalog below its hard wire budget", async () => {
     const records = Array.from({ length: 8 }, (_, index) => ({
       rootPath: `/project-${index}`,

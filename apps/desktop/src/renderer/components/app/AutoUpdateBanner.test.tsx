@@ -80,6 +80,7 @@ describe("AutoUpdateBanner", () => {
   afterEach(() => {
     cleanup();
     for (const toast of getToasts()) dismissToast(toast.id);
+    vi.useRealTimers();
     vi.restoreAllMocks();
     Reflect.deleteProperty(window, "ade");
   });
@@ -155,5 +156,43 @@ describe("AutoUpdateBanner", () => {
     await waitFor(() => {
       expect(screen.queryByText(/Updating to 1\.2\.35/)).toBeNull();
     });
+  });
+
+  it("does not let a countdown tick restore the toast while cancellation is in flight", async () => {
+    vi.useFakeTimers();
+    let resolveCancel!: (value: boolean) => void;
+    const cancelPromise = new Promise<boolean>((resolve) => {
+      resolveCancel = resolve;
+    });
+    const mock = installAdeMock(
+      snapshot({
+        status: "ready",
+        version: "1.2.35",
+        autoApplyPending: { deadlineAt: Date.now() + 10_000 },
+      }),
+    );
+    mock.updateCancelAutoApply.mockImplementation(() => cancelPromise);
+    render(
+      <>
+        <AutoUpdateBanner />
+        <ToastStack />
+      </>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Updating to 1\.2\.35 in \d+s/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(screen.queryByText(/Updating to 1\.2\.35/)).toBeNull();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    expect(screen.queryByText(/Updating to 1\.2\.35/)).toBeNull();
+
+    mock.emit(snapshot({ status: "ready", version: "1.2.35" }));
+    resolveCancel(true);
   });
 });

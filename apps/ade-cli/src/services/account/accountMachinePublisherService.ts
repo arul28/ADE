@@ -446,11 +446,10 @@ export function createAccountMachinePublisherService(options: {
           ? health.failingSinceMs ?? args.attemptAt
           : null,
     };
-    if (state === "published") {
+    if (health.failingSinceMs == null) {
       publishFailureAnalyticsEmitted = false;
     } else if (
-      health.failingSinceMs != null
-      && !publishFailureAnalyticsEmitted
+      !publishFailureAnalyticsEmitted
       && args.attemptAt - health.failingSinceMs >= PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS
     ) {
       publishFailureAnalyticsEmitted = true;

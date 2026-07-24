@@ -25,6 +25,7 @@ import type {
   AdoptAttachedLaneArgs,
   UnregisteredLaneCandidate,
   AppInfo,
+  LocalRuntimeStatus,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
@@ -704,6 +705,9 @@ declare global {
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
+        onRuntimeStatusChanged: (
+          cb: (status: LocalRuntimeStatus) => void,
+        ) => () => void;
         getResourceUsage: () => Promise<AppResourceUsageSnapshot>;
         getRuntimeHealth: () => Promise<RuntimeHealthSnapshot>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;

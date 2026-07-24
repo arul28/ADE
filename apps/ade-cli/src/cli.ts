@@ -15102,7 +15102,7 @@ async function runServe(
     { ProjectRegistry },
     { ProjectScopeRegistry },
     { PersonalChatScope },
-    { createMultiProjectRpcRequestHandler },
+    { createMultiProjectRpcRequestHandler, readMachineRuntimeActivitySummary },
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler },
@@ -15789,7 +15789,13 @@ async function runServe(
       runningHash:
         process.env.ADE_RUNTIME_BUILD_HASH?.trim()
         || preparedServiceCommand.buildHash,
-      isIdle: () => !hasActiveHeadlessConnections(states),
+      isIdle: async () => (
+        await readMachineRuntimeActivitySummary({
+          projectRegistry,
+          scopeRegistry,
+          personalChatScope,
+        })
+      ).idle,
       logger: {
         warn: (event, fields) =>
           headlessProjectLogger.warn(event, fields),

@@ -19,6 +19,7 @@ import type {
   ListMyGitHubReposInput,
   ProjectBrowseInput,
   RuntimeActivityCounts,
+  RuntimeActivitySummary,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
@@ -114,6 +115,38 @@ export type MultiProjectRpcHandlerOptions = {
   registerAccountConfigRoot?: typeof registerAccountConfigProjectRoot;
   reconcileAccountOwnership?: typeof reconcileAccountOwnedMachineTrust;
 };
+
+export async function readMachineRuntimeActivitySummary(args: {
+  projectRegistry: Pick<ProjectRegistry, "list">;
+  scopeRegistry: Pick<ProjectScopeRegistry, "getIfBooted">;
+  personalChatScope: Partial<Pick<PersonalChatScope, "activitySummary">>;
+}): Promise<RuntimeActivitySummary> {
+  const projectActivity = await Promise.all(
+    args.projectRegistry.list().map(async (record) => {
+      const pendingScope = args.scopeRegistry.getIfBooted(record.projectId);
+      if (!pendingScope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
+      const scope = await pendingScope.catch(() => null);
+      if (!scope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
+      return summarizeRuntimeActivity(scope.runtime);
+    }),
+  );
+  const personalActivity = typeof args.personalChatScope.activitySummary === "function"
+    ? await args.personalChatScope.activitySummary()
+    : { activeAgentTurns: 0, activeWorkSessions: 0 };
+  const activeAgentTurns = projectActivity.reduce<number>(
+    (total, activity) => total + activity.activeAgentTurns,
+    personalActivity.activeAgentTurns,
+  );
+  const activeWorkSessions = projectActivity.reduce<number>(
+    (total, activity) => total + activity.activeWorkSessions,
+    personalActivity.activeWorkSessions,
+  );
+  return {
+    idle: activeAgentTurns === 0 && activeWorkSessions === 0,
+    activeAgentTurns,
+    activeWorkSessions,
+  };
+}
 
 const RUNTIME_METHODS = new Set([
   "ade/initialize",
@@ -1193,31 +1226,11 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "runtime.activitySummary") {
-      const projectActivity = await Promise.all(
-        projectRegistry.list().map(async (record) => {
-          const pendingScope = scopeRegistry.getIfBooted(record.projectId);
-          if (!pendingScope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
-          const scope = await pendingScope.catch(() => null);
-          if (!scope) return { activeAgentTurns: 0, activeWorkSessions: 0 };
-          return summarizeRuntimeActivity(scope.runtime);
-        }),
-      );
-      const personalActivity = typeof personalChatScope.activitySummary === "function"
-        ? await personalChatScope.activitySummary()
-        : { activeAgentTurns: 0, activeWorkSessions: 0 };
-      const activeAgentTurns = projectActivity.reduce<number>(
-        (total, activity) => total + activity.activeAgentTurns,
-        personalActivity.activeAgentTurns,
-      );
-      const activeWorkSessions = projectActivity.reduce<number>(
-        (total, activity) => total + activity.activeWorkSessions,
-        personalActivity.activeWorkSessions,
-      );
-      return {
-        idle: activeAgentTurns === 0 && activeWorkSessions === 0,
-        activeAgentTurns,
-        activeWorkSessions,
-      };
+      return await readMachineRuntimeActivitySummary({
+        projectRegistry,
+        scopeRegistry,
+        personalChatScope,
+      });
     }
 
     if (method === "projects.list") {

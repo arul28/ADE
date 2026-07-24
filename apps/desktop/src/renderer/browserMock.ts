@@ -3328,6 +3328,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           },
         },
       }),
+      onRuntimeStatusChanged: () => () => {},
       getResourceUsage: resolved({
         sampledAt: now,
         processCount: 1,

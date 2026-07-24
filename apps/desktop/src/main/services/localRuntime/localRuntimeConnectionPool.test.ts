@@ -153,6 +153,18 @@ function startServeProcess(args: {
   });
 }
 
+function runningTestServiceStatus() {
+  return {
+    ok: true,
+    serviceName: "com.ade.runtime",
+    action: "status" as const,
+    installed: true,
+    running: true,
+    path: "/test/com.ade.runtime",
+    message: "ADE test service is running.",
+  };
+}
+
 function removeTempDir(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
 }
@@ -399,6 +411,10 @@ describe("local runtime connection pool", () => {
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       ADE_CLI_VERSION: "2.0.0",
+      // A real desktop-spawned brain always runs with the CTO role. Pin it
+      // here instead of inheriting ADE_DEFAULT_ROLE from the test host: ADE
+      // sessions set it on macOS, while GitHub's Linux runner does not.
+      ADE_DEFAULT_ROLE: "cto",
       NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
     };
     const daemon = startServeProcess({
@@ -413,7 +429,9 @@ describe("local runtime connection pool", () => {
       warn: vi.fn(),
       error: vi.fn(),
     };
-    const pool = new LocalRuntimeConnectionPool("1.0.0", logger as never);
+    const pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, {
+      queryServiceStatus: runningTestServiceStatus,
+    });
 
     try {
       await waitForRuntimeSocket(socketPath);
@@ -627,6 +645,60 @@ describe("local runtime connection pool", () => {
         ts: "2026-07-23T12:00:00.000Z",
       },
     });
+    pool.dispose();
+  });
+
+  it("refreshes live publish and wedge health when status is read", async () => {
+    const onRuntimeStatusChange = vi.fn();
+    const call = vi.fn(async () => ({
+      runtimeInfo: {
+        version: "1.2.35",
+        pid: 4321,
+        syncPort: 8789,
+        publishHealth: {
+          state: "http_timeout",
+          failingSinceMs: 456_000,
+          lastLegDurations: { snapshot: 15, token: 45, http: 9_500 },
+        },
+        lastWedge: {
+          lastCommand: "chat.send",
+          blockedMs: 17_000,
+          ts: "2026-07-23T13:00:00.000Z",
+        },
+      },
+    }));
+    const pool = new LocalRuntimeConnectionPool("1.2.35", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, {
+      queryServiceStatus: runningTestServiceStatus,
+      onRuntimeStatusChange,
+    });
+    (pool as unknown as { activeClient: unknown }).activeClient = { call };
+
+    const status = await pool.getFreshStatus();
+
+    expect(call).toHaveBeenCalledWith("runtime/info", {}, { timeoutMs: 2_000 });
+    expect(status).toMatchObject({
+      connectionState: "connected",
+      pid: 4321,
+      syncPort: 8789,
+      publishHealth: {
+        state: "http_timeout",
+        failingSinceMs: 456_000,
+        lastLegDurations: { snapshot: 15, token: 45, http: 9_500 },
+      },
+      lastWedge: {
+        lastCommand: "chat.send",
+        blockedMs: 17_000,
+        ts: "2026-07-23T13:00:00.000Z",
+      },
+    });
+    expect(onRuntimeStatusChange).toHaveBeenCalledWith(expect.objectContaining({
+      lastWedge: expect.objectContaining({ lastCommand: "chat.send" }),
+    }));
     pool.dispose();
   });
 
@@ -2081,6 +2153,7 @@ describe("local runtime connection pool", () => {
       ADE_HOME: adeHome,
       ADE_RUNTIME_SOCKET_PATH: socketPath,
       ADE_CLI_VERSION: "2.0.0",
+      ADE_DEFAULT_ROLE: "cto",
       NODE_OPTIONS: withTsxNodeOptions(originalEnv.NODE_OPTIONS, tsxLoaderPath),
     };
     const daemon = startServeProcess({
@@ -2110,6 +2183,7 @@ describe("local runtime connection pool", () => {
       pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, {
         disableSync: true,
         preferServiceRepair: true,
+        queryServiceStatus: runningTestServiceStatus,
       });
       const internals = pool as unknown as {
         tryConnect: (socketPath: string) => Promise<{ socketPath: string } | null>;

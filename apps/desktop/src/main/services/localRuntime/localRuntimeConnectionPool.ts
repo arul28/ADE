@@ -86,6 +86,7 @@ type LocalRuntimeConnectionPoolOptions = {
   preferServiceRepair?: boolean;
   desktopBridgeAuthToken?: string | null;
   queryServiceStatus?: () => ServiceManagerStatusResult;
+  onRuntimeStatusChange?: (status: LocalRuntimeStatus) => void;
   /**
    * Invoked when the pool enters or leaves isolated (no-sync fallback) mode.
    * "isolated" fires once per degradation, "primary" once per recovery.
@@ -96,6 +97,7 @@ type LocalRuntimeConnectionPoolOptions = {
 type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
 const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
+const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
@@ -792,6 +794,7 @@ export class LocalRuntimeConnectionPool {
   };
   private serviceHealthCheckedAtMs = 0;
   private serviceInstallPromise: Promise<void> | null = null;
+  private runtimeStatusRefreshPromise: Promise<void> | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private slowActionSamples: SlowActionSample[] = [];
@@ -808,6 +811,10 @@ export class LocalRuntimeConnectionPool {
 
   getStatus(): LocalRuntimeStatus {
     this.refreshServiceHealthIfStale();
+    return this.statusSnapshot();
+  }
+
+  private statusSnapshot(): LocalRuntimeStatus {
     return {
       connectionState: this.activeClient
         ? "connected"
@@ -828,6 +835,55 @@ export class LocalRuntimeConnectionPool {
       serviceInstall: { ...this.serviceInstallStatus },
       serviceHealth: { ...this.serviceHealthStatus },
     };
+  }
+
+  async getFreshStatus(): Promise<LocalRuntimeStatus> {
+    await this.refreshRuntimeDiagnostics();
+    return this.getStatus();
+  }
+
+  private async refreshRuntimeDiagnostics(): Promise<void> {
+    if (this.runtimeStatusRefreshPromise) {
+      await this.runtimeStatusRefreshPromise;
+      return;
+    }
+    const client = this.activeClient;
+    if (!client) return;
+    const refresh = (async () => {
+      try {
+        const value = await client.call("runtime/info", {}, {
+          timeoutMs: LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS,
+        });
+        if (this.activeClient !== client) return;
+        const runtimeInfo = readLocalRuntimeInfo(value);
+        if (runtimeInfo.version == null && runtimeInfo.pid == null) return;
+        this.activeRuntimePid = runtimeInfo.pid;
+        this.activeRuntimeSyncPort = runtimeInfo.syncPort;
+        this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
+        this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+        this.emitRuntimeStatusChange();
+      } catch (error) {
+        this.logger.debug("local_runtime.status_refresh_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })().finally(() => {
+      if (this.runtimeStatusRefreshPromise === refresh) {
+        this.runtimeStatusRefreshPromise = null;
+      }
+    });
+    this.runtimeStatusRefreshPromise = refresh;
+    await refresh;
+  }
+
+  private emitRuntimeStatusChange(): void {
+    try {
+      this.options.onRuntimeStatusChange?.(this.statusSnapshot());
+    } catch (error) {
+      this.logger.warn("local_runtime.status_listener_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   getRuntimeProcessIds(): number[] {
@@ -2044,6 +2100,7 @@ export class LocalRuntimeConnectionPool {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+    this.emitRuntimeStatusChange();
   }
 
   private async tryRecoverFromIsolatedRuntime(primarySocketPath: string): Promise<void> {
@@ -2152,6 +2209,7 @@ export class LocalRuntimeConnectionPool {
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
     this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
     this.activeRuntimeLastWedge = runtimeInfo.lastWedge;
+    this.emitRuntimeStatusChange();
     client.onDisconnect((error) => {
       if (this.activeClient !== client && this.activeConnection?.client !== client) return;
       this.logger.warn("local_runtime.disconnected", {
@@ -2166,6 +2224,7 @@ export class LocalRuntimeConnectionPool {
       this.activeRuntimePublishHealth = null;
       this.activeRuntimeLastWedge = null;
       this.projectsByRoot.clear();
+      this.emitRuntimeStatusChange();
     });
     return client;
   }

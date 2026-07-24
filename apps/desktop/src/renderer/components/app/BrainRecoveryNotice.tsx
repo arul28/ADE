@@ -56,8 +56,7 @@ function writeAckedTs(ts: string): void {
 
 /**
  * App-shell banner announcing that the brain recovered from a background
- * event-loop wedge. Reads the one-shot `lastWedge` from runtime status; a wedge
- * is a past event so there is no need to subscribe to changes.
+ * event-loop wedge.
  */
 export function BrainRecoveryNotice() {
   const [lastWedge, setLastWedge] = useState<LastWedge | null>(null);
@@ -65,15 +64,27 @@ export function BrainRecoveryNotice() {
 
   useEffect(() => {
     let cancelled = false;
+    let statusRevision = 0;
+    const unsubscribe = window.ade.app.onRuntimeStatusChanged((status) => {
+      statusRevision += 1;
+      if (!cancelled) setLastWedge(status.lastWedge ?? null);
+    });
+    const readRevision = statusRevision;
     const infoPromise = window.ade.app?.getInfo?.();
-    if (!infoPromise) return;
-    void infoPromise
-      .then((info) => {
-        if (!cancelled) setLastWedge(info.localRuntime?.lastWedge ?? null);
-      })
-      .catch(() => {});
+    if (infoPromise) {
+      void infoPromise
+        .then((info) => {
+          // Subscribe before reading. If a reconnect status arrived while the
+          // snapshot was in flight, do not let that older read erase it.
+          if (!cancelled && statusRevision === readRevision) {
+            setLastWedge(info.localRuntime?.lastWedge ?? null);
+          }
+        })
+        .catch(() => {});
+    }
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 

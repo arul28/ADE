@@ -1390,6 +1390,9 @@ app.whenReady().then(async () => {
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
     desktopBridgeAuthToken: builtInBrowserBridgeServer?.authToken ?? null,
+    onRuntimeStatusChange: (status) => {
+      broadcast(IPC.appRuntimeStatusChanged, status);
+    },
     onRuntimeModeChange: (mode) => {
       localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
       if (!Notification.isSupported()) return;

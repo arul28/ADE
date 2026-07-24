@@ -1188,6 +1188,45 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("rechecks activity at the deadline and rearms after newly active work becomes idle", async () => {
+    vi.useFakeTimers();
+    let idle = true;
+    const getRuntimeActivitySummary = vi.fn(async () => ({ idle }));
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir: makeUpdaterCacheDir(),
+      autoCheckEnabled: false,
+      autoApplyEnabled: true,
+      activityCheckMs: 1_000,
+      autoApplyIdleMs: 10_000,
+      autoApplyCountdownMs: 2_000,
+      getRuntimeActivitySummary,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(service.getSnapshot().autoApplyPending).toEqual({
+      deadlineAt: expect.any(Number),
+    });
+    const checksBeforeDeadline = getRuntimeActivitySummary.mock.calls.length;
+    idle = false;
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(getRuntimeActivitySummary.mock.calls.length).toBeGreaterThan(checksBeforeDeadline);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(service.getSnapshot().autoApplyPending).toBeNull();
+
+    idle = true;
+    await vi.advanceTimersByTimeAsync(13_000);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+
+    service.dispose();
+  });
+
   it("restarts the idle window when runtime activity resumes", async () => {
     vi.useFakeTimers();
     let idle = true;

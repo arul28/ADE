@@ -2,6 +2,7 @@ export const IPC = {
   appPing: "ade.app.ping",
   appSetDockBadgeCount: "ade.app.setDockBadgeCount",
   appGetInfo: "ade.app.getInfo",
+  appRuntimeStatusChanged: "ade.app.runtimeStatusChanged",
   appGetResourceUsage: "ade.app.getResourceUsage",
   appGetRuntimeHealth: "ade.app.getRuntimeHealth",
   storageGetPressure: "ade.storage.getPressure",

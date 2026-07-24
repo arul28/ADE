@@ -17,7 +17,7 @@ type BrainFileStat = {
 export type BrainFreshnessMonitorOptions = {
   filePath: string;
   runningHash: string | null;
-  isIdle: () => boolean;
+  isIdle: () => boolean | Promise<boolean>;
   restart: () => void | Promise<void>;
   logger: BrainFreshnessLogger;
   env?: NodeJS.ProcessEnv;
@@ -87,11 +87,13 @@ export function createBrainFreshnessMonitor(
     diskHash: string,
   ): Promise<void> => {
     const deadline = now() + maxIdleWaitMs;
-    while (!stopped && !options.isIdle() && now() < deadline) {
+    let idle = await options.isIdle();
+    while (!stopped && !idle && now() < deadline) {
       await sleep(Math.min(idlePollMs, Math.max(1, deadline - now())));
+      idle = await options.isIdle();
     }
     if (stopped) return;
-    if (!options.isIdle()) {
+    if (!idle) {
       options.logger.warn("brain.freshness_restart_forced", {
         runningHash,
         diskHash,

@@ -1,13 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   compareDoctorVersions,
   doctorRuntimeStatusFromInitialize,
   evaluateDoctorRows,
+  probeDoctorBrain,
   type DoctorInput,
 } from "./doctor";
 import { createSyncAccountDirectoryHealth } from "../../../desktop/src/shared/types/sync";
 
 const NOW = Date.parse("2026-07-23T12:00:00.000Z");
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function healthyInput(): DoctorInput {
   return {
@@ -55,6 +60,58 @@ function healthyInput(): DoctorInput {
 }
 
 describe("doctor row evaluation", () => {
+  it("keeps an initialized brain reachable when later health reads time out", async () => {
+    vi.useFakeTimers();
+    const never = new Promise<unknown>(() => {});
+    const request = vi.fn((method: string) => method === "ade/initialize"
+      ? Promise.resolve({
+          runtimeInfo: {
+            version: "1.2.35",
+            buildHash: "build",
+            pid: 123,
+            uptimeMs: 90_000,
+            syncPort: 8787,
+          },
+        })
+      : never);
+    const resultPromise = probeDoctorBrain(
+      { role: "cto", socketPath: null },
+      {
+        resolveMachineRuntimeSocketPath: async () => "/tmp/ade.sock",
+        connectRuntime: async () => ({ request, destroy: vi.fn() }),
+        buildInitializeParams: () => ({}),
+        readMachineRuntimeInfo: () => ({
+          version: "1.2.35",
+          buildHash: "build",
+          defaultRole: "cto",
+          packageChannel: null,
+          projectRoot: null,
+          pid: 123,
+          uptimeMs: 90_000,
+        }),
+        resolveExpectedMachineRuntimeBuildHash: async () => "build",
+        machineRuntimeMismatchReason: () => null,
+        unwrapActionEnvelope: (value) => value,
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(2_000);
+    const result = await resultPromise;
+
+    expect(result.brain).toMatchObject({
+      running: true,
+      version: "1.2.35",
+      pid: 123,
+      error: null,
+    });
+    expect(result.runtimeSyncPort).toBe(8787);
+    expect(result.syncStatus).toBeNull();
+    expect(result.account).toMatchObject({
+      signedIn: null,
+      error: "ADE brain health reads timed out.",
+    });
+  });
+
   it("parses the complete runtime publish and wedge health envelope", () => {
     expect(doctorRuntimeStatusFromInitialize({
       runtimeInfo: {
