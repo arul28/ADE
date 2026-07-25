@@ -1,5 +1,6 @@
 export type ClaudeCliModelAlias =
   | "claude-fable-5"
+  | "claude-opus-5"
   | "claude-opus-4-8"
   | "claude-sonnet-5"
   | "claude-haiku-4-5"
@@ -10,7 +11,13 @@ export const CLAUDE_CLI_MODEL_ALIAS_MAP: Readonly<Record<string, ClaudeCliModelA
   "claude-fable-5": "claude-fable-5",
   "anthropic/claude-fable-5": "claude-fable-5",
   "anthropic/claude-fable-5-api": "claude-fable-5",
-  opus: "claude-opus-4-8",
+  opus: "claude-opus-5",
+  "opus-5": "claude-opus-5",
+  "opus-5.0": "claude-opus-5",
+  "opus-5-0": "claude-opus-5",
+  "claude-opus-5": "claude-opus-5",
+  "anthropic/claude-opus-5": "claude-opus-5",
+  "anthropic/claude-opus-5-api": "claude-opus-5",
   "opus-4.8": "claude-opus-4-8",
   "opus-4-8": "claude-opus-4-8",
   "opus-4.8-1m": "claude-opus-4-8",
@@ -70,6 +77,7 @@ export function resolveClaudeCliModelAlias(
   }
   if (normalized.includes("fable")) return "claude-fable-5";
   if (normalized.includes("sonnet")) return "claude-sonnet-5";
+  if (normalized.includes("opus-5") || normalized.includes("opus 5")) return "claude-opus-5";
   if (normalized.includes("opus")) return "claude-opus-4-8";
   if (normalized.includes("haiku")) return "claude-haiku-4-5";
 

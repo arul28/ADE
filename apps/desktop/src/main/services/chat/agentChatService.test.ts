@@ -2751,7 +2751,7 @@ describe("createAgentChatService", () => {
     });
 
     it.each([
-      { reportedModel: "opus", usageModel: "claude-opus-4-8", expectedModel: "opus" },
+      { reportedModel: "opus", usageModel: "claude-opus-4-8", expectedModel: "claude-opus-4-8" },
       { reportedModel: "claude-opus-4-7-1m", usageModel: "claude-opus-4-7-1m", expectedModel: "claude-opus-4-8" },
     ])("preserves the Claude Opus 4.8 modelId in done events when the SDK reports $reportedModel", async ({
       reportedModel,

@@ -2489,6 +2489,47 @@ describe("ADE CLI", () => {
     expect(value.input).not.toHaveProperty("title");
   });
 
+  it("prints a non-billing Claude Opus 5 launch plan with effort and fast mode", () => {
+    const staticPlan = expectStaticPlan(buildCliPlan([
+      "chat",
+      "create",
+      "--lane",
+      "lane-1",
+      "--provider",
+      "claude",
+      "--model",
+      "anthropic/claude-opus-5",
+      "--reasoning-effort",
+      "high",
+      "--fast",
+      "--dry-run",
+    ]));
+    const value = staticPlan.value as {
+      input: Record<string, unknown>;
+      resolved: Record<string, unknown>;
+    };
+
+    expect(value).toMatchObject({
+      ok: true,
+      dryRun: true,
+      action: "chat.createSession",
+    });
+    expect(value.input).toMatchObject({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "anthropic/claude-opus-5",
+      modelId: "anthropic/claude-opus-5",
+      reasoningEffort: "high",
+      fastMode: true,
+    });
+    expect(value.resolved).toMatchObject({
+      provider: "claude",
+      model: "anthropic/claude-opus-5",
+      reasoningEffort: "high",
+      fastMode: true,
+    });
+  });
+
   describe("chat create parent lineage", () => {
     const savedParentEnv = process.env.ADE_CHAT_SESSION_ID;
     afterEach(() => {

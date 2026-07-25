@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { resolveClaudeCliModel } from "./claudeModelUtils";
 
 describe("resolveClaudeCliModel", () => {
+  it("normalizes Opus 5 ids and the current Opus alias", () => {
+    expect(resolveClaudeCliModel("claude-opus-5")).toBe("claude-opus-5");
+    expect(resolveClaudeCliModel("anthropic/claude-opus-5")).toBe("claude-opus-5");
+    expect(resolveClaudeCliModel("opus")).toBe("claude-opus-5");
+  });
+
   it("normalizes Opus 4.8 1M aliases to the exact Opus 4.8 model", () => {
     expect(resolveClaudeCliModel("claude-opus-4-8")).toBe("claude-opus-4-8");
     expect(resolveClaudeCliModel("opus-4.8-1m")).toBe("claude-opus-4-8");

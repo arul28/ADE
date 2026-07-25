@@ -94,14 +94,20 @@ defaults to `guarded` unless explicitly whitelisted.
 ### Reasoning tiers (Claude)
 
 Claude's global quick-pick vocabulary is `low | medium | high | max`
-(`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`), while Opus
-registry rows can advertise the richer `low|medium|high|xhigh|max`
-set for model-specific pickers. The Claude registry is ordered as
-Fable 5, Opus 4.8 1M, Sonnet 5, Haiku 4.5, then Opus 4.7 1M.
+(`CLAUDE_THINKING_LEVELS` in `shared/modelProfiles.ts`), while model
+descriptors advertise their provider-native ladders to model-specific
+pickers. Opus 5 and Opus 4.7 expose `low|medium|high|xhigh|max`; Fable
+and Opus 4.8 add `ultracode`; Sonnet 5 exposes
+`low|medium|high|max`; Haiku 4.5 has no reasoning control. The Claude
+registry is ordered as
+Fable 5, Opus 5, Sonnet 5, Haiku 4.5, Opus 4.8 1M, then Opus 4.7 1M.
+Opus 5 selects provider model `claude-opus-5`, defaults to `high`
+effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode.
 Sonnet 5 selects provider model `claude-sonnet-5`; retired Sonnet 4.6
 ids resolve forward for compatibility and no longer appear as picker
 rows. The basic Opus 4.7 row is also removed; its old aliases resolve
-to Opus 4.8, while `opus[1m]` / `opus-1m` still target Opus 4.7 1M.
+to Opus 4.8, while the generic `opus` alias selects Opus 5 and
+`opus[1m]` / `opus-1m` still target Opus 4.7 1M.
 Passthrough to the provider config is unchanged (the tier string is
 forwarded directly to the CLI / SDK, with no synthesized token budgets).
 
@@ -281,12 +287,12 @@ clients.
 
 Codex forwards Fast as `serviceTier: "fast" | null` on every
 `turn/start` and `thread/start` JSON-RPC call (an explicit `null` clears
-any app-server default). Claude Opus descriptors advertise
+any app-server default). Claude Fable and Opus descriptors advertise
 `serviceTiers: ["fast"]`; Claude chat sends the effective flag through
 the Agent SDK `settings.fastMode` layer, and Claude CLI launches/resumes
 pass `--settings '{"fastMode":true|false}'` so ADE can explicitly
 override user/project Claude settings when the chip is on or off. Claude
-non-Opus rows do not advertise Fast, and ADE leaves Claude's native
+Sonnet and Haiku rows do not advertise Fast, and ADE leaves Claude's native
 `/fast` slash command to the runtime instead of intercepting it.
 
 Cursor SDK sessions resolve the flag through `cursorModelsDiscovery`
@@ -304,9 +310,11 @@ pre-marks GPT-5.6 and older fast-capable Codex CLI entries. Cursor discovery
 populates `serviceTiers` from SDK/CLI parameters and folds CLI
 `*-fast` rows into their base descriptors as aliases. OpenCode maps Fast
 to the provider variant `fast` for both chat and Work CLI launches.
-Droid does not populate `serviceTiers`: Factory exposes fast choices as
-concrete model IDs such as `claude-opus-4-6-fast`, so ADE launches that
-selected model instead of showing an independent Fast toggle.
+Droid preserves Factory's concrete fast model IDs when they are reported,
+and its canonical Anthropic normalization also publishes `serviceTiers:
+["fast"]` for fast-capable rows such as Opus 5. The former launch as the
+selected concrete model; the latter use the same independent Fast toggle as
+the other provider surfaces.
 
 Codex plan mode uses the native app-server planning flow. ADE passes its
 runtime guidance as an ordinary system-context input item and keeps

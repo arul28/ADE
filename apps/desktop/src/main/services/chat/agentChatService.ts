@@ -4316,6 +4316,12 @@ function isBareClaudeOpus47RuntimeValue(model: string): boolean {
     || normalized === "opus-4.7";
 }
 
+function isBareClaudeOpusRuntimeAlias(model: string): boolean {
+  return model.trim().toLowerCase()
+    .replace(/^anthropic\//, "")
+    .replace(/-api$/, "") === "opus";
+}
+
 function resolveModelIdFromStoredValue(
   model: string,
   providerHint?: AgentChatProvider,
@@ -4399,9 +4405,7 @@ function resolveClaudeTurnModelPayload(
     if (!reportedModelId || reportedModelId === session.modelId) return false;
     const reportedDescriptor = getModelById(reportedModelId) ?? resolveModelAlias(reportedModelId);
     if (selectedIsOpus48) {
-      return (
-        reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m"
-      );
+      return reportedDescriptor?.id === "anthropic/claude-opus-4-7-1m";
     }
     if (!selectedIsOpusOneMillion) return false;
     if (reportedModel && isBareClaudeOpus47RuntimeValue(reportedModel)) return true;
@@ -4416,6 +4420,9 @@ function resolveClaudeTurnModelPayload(
       resolveClaudeCliModelIdFromRuntimeValue(normalized)
       ?? resolveClaudeCliModelIdFromRuntimeValue(normalizedCliModel);
     if (resolvedCliModelId) {
+      if (selectedIsOpus48 && isBareClaudeOpusRuntimeAlias(normalized)) {
+        return sessionPayload;
+      }
       if (shouldPreserveSelectedModel(resolvedCliModelId, normalized)) return sessionPayload;
       const descriptor = getModelById(resolvedCliModelId);
       const reportedMatchesCanonical = descriptor?.providerModelId === normalizedCliModel;

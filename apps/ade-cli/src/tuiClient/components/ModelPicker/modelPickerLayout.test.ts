@@ -96,9 +96,15 @@ describe("buildModelPickerLayout", () => {
       focusedIndex: 0,
       searchMode: false,
     });
-    expect(layout.entries.length).toBeGreaterThan(0);
+    expect(layout.entries.map((entry) => entry.modelId)).toEqual([
+      "anthropic/claude-fable-5",
+      "anthropic/claude-opus-5",
+      "anthropic/claude-sonnet-5",
+      "anthropic/claude-haiku-4-5",
+      "anthropic/claude-opus-4-8",
+      "anthropic/claude-opus-4-7-1m",
+    ]);
     expect(layout.entries.every((entry) => entry.family === "claude")).toBe(true);
-    expect(layout.entries.some((entry) => entry.displayName.includes("Claude"))).toBe(true);
   });
 
   it("normalizes catalog provider aliases like anthropic into the Anthropic rail", () => {

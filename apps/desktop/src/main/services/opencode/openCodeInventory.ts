@@ -273,6 +273,7 @@ function normalizeOpenCodeProviderModel(
   contextWindow?: number;
   maxOutputTokens?: number;
   reasoningTiers?: string[];
+  defaultReasoningEffort?: string;
   serviceTiers?: string[];
   capabilities?: ModelCapabilities;
   preferredDuplicateSource: boolean;
@@ -281,7 +282,10 @@ function normalizeOpenCodeProviderModel(
     return { modelId, ...(displayName ? { displayName } : {}), preferredDuplicateSource: true };
   }
   const normalized = modelId.trim().toLowerCase();
-  const preferredDuplicateSource = normalized === "claude-sonnet-5" || normalized === "claude-opus-4-8";
+  const preferredDuplicateSource =
+    normalized === "claude-sonnet-5"
+    || normalized === "claude-opus-5"
+    || normalized === "claude-opus-4-8";
   if (normalized === "claude-sonnet-5") {
     return {
       modelId: "claude-sonnet-5",
@@ -300,6 +304,15 @@ function normalizeOpenCodeProviderModel(
       preferredDuplicateSource,
     };
   }
+  if (normalized === "claude-opus-5") {
+    return {
+      modelId: "claude-opus-5",
+      displayName: displayName ?? "Claude Opus 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      preferredDuplicateSource,
+    };
+  }
   if (normalized === "claude-sonnet-4-6" || normalized === "sonnet-4-6") {
     return {
       modelId: "claude-sonnet-5",
@@ -312,12 +325,26 @@ function normalizeOpenCodeProviderModel(
     };
   }
   if (
+    normalized === "opus"
+  ) {
+    return {
+      modelId: "claude-opus-5",
+      displayName: "Claude Opus 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: CANONICAL_ANTHROPIC_MODEL_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+      serviceTiers: ["fast"],
+      preferredDuplicateSource,
+    };
+  }
+  if (
     normalized === "claude-opus-4-7"
     || normalized === "opus-4-7"
     || normalized === "claude-opus-4-6"
     || normalized === "opus-4-6"
     || normalized === "opus-4.6"
-    || normalized === "opus"
   ) {
     return {
       modelId: "claude-opus-4-8",
@@ -482,6 +509,9 @@ export async function probeOpenCodeProviderInventory(args: {
               ...(variants.reasoningTiers.length ? { reasoningTiers: variants.reasoningTiers } : {}),
               ...(variants.serviceTiers.length ? { serviceTiers: variants.serviceTiers } : {}),
               ...(normalizedModel.reasoningTiers?.length ? { reasoningTiers: normalizedModel.reasoningTiers } : {}),
+              ...(normalizedModel.defaultReasoningEffort
+                ? { defaultReasoningEffort: normalizedModel.defaultReasoningEffort }
+                : {}),
               ...(normalizedModel.serviceTiers?.length ? { serviceTiers: normalizedModel.serviceTiers } : {}),
               capabilities: normalizedModel.capabilities ?? readOpenCodeModelCapabilities(modelRecord),
             });

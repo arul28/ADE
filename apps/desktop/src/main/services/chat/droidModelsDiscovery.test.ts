@@ -156,14 +156,17 @@ describe("discoverDroidCliModelDescriptors", () => {
 
     expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
       "droid/claude-opus-4-8",
+      "droid/claude-opus-5",
       "droid/claude-sonnet-5",
     ]);
     expect(descriptors.map((descriptor) => descriptor.displayName)).toEqual([
       "Opus 4.8 1M",
+      "Opus 5",
       "Sonnet 5 (1.2x)",
     ]);
     expect(descriptors.map((descriptor) => descriptor.providerModelId)).toEqual([
       "claude-opus-4-8",
+      "claude-opus-5",
       "claude-sonnet-5",
     ]);
   });
@@ -193,16 +196,17 @@ describe("discoverDroidCliModelDescriptors", () => {
       }),
       reasoningTiers: ["low", "medium", "high", "max"],
     });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-4-8")).toMatchObject({
-      displayName: "Opus 4.8 1M",
-      providerModelId: "claude-opus-4-8",
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-5")).toMatchObject({
+      displayName: "Opus 5",
+      providerModelId: "claude-opus-5",
       capabilities: expect.objectContaining({
         vision: true,
         reasoning: true,
       }),
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
-      serviceTiers: ["fast"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
     });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/claude-opus-5")?.serviceTiers).toBeUndefined();
   });
 
   it("prefers canonical Droid rows over normalized retired aliases", async () => {
@@ -322,6 +326,10 @@ describe("discoverDroidCliModelDescriptors", () => {
             model_display_name: "Retired Opus custom alias",
           },
           {
+            model: "opus",
+            model_display_name: "Current Opus custom alias",
+          },
+          {
             model: "custom-real-model",
             model_display_name: "Custom Real Model",
           },
@@ -340,6 +348,7 @@ describe("discoverDroidCliModelDescriptors", () => {
 
     expect(new Set(descriptors.map((descriptor) => descriptor.id))).toEqual(new Set([
       "droid/custom:claude-opus-4-8",
+      "droid/custom:claude-opus-5",
       "droid/custom:claude-sonnet-5",
       "droid/custom:custom-real-model",
     ]));
@@ -360,6 +369,18 @@ describe("discoverDroidCliModelDescriptors", () => {
       serviceTiers: ["fast"],
       reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
     });
+    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5")).toMatchObject({
+      providerModelId: "custom:claude-opus-5",
+      displayName: "Opus 5",
+      customProxy: true,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+    });
+    expect(
+      descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5")?.serviceTiers,
+    ).toBeUndefined();
     expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:custom-real-model")).toMatchObject({
       displayName: "Custom Real Model",
       customProxy: true,

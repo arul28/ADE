@@ -1386,7 +1386,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
     $ ade new chat --mode chat --auto-create-lane --prompt "Fix login"
-    $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort ultracode --prompt "Review the diff"
+    $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --prompt "Review the diff"
 
   Flags:
     --mode <chat|cli>      Select a persistent ADE chat or tracked provider CLI session.
@@ -1654,7 +1654,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --prompt "fix the tests"
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat note "running e2e shard 2/4"         Update this session's Work sidebar status line
@@ -1744,8 +1744,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Create a persistent ADE Work chat session with provider/model/runtime settings.
 
     $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort high --permissions plan
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-4-8 --effort ultracode --prompt "fix"
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --permissions plan
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort max --prompt "fix"
     $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --print-config --json
     $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.6-sol --prompt "Work this issue"
 
@@ -1839,7 +1839,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   reasoning/fast launch settings. This command does not support reasoning effort.
 
     $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.6-sol --permissions full-auto --prompt "Fix the failing test"
-    $ ade agent spawn --lane <lane> --provider claude --model claude-opus-4-8 --permissions plan --prompt "Review the diff"
+    $ ade agent spawn --lane <lane> --provider claude --model claude-opus-5 --permissions plan --prompt "Review the diff"
 
   Flags:
     --lane <lane>           Required lane/worktree.

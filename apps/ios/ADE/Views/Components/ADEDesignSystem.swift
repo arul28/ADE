@@ -121,6 +121,9 @@ enum ADEColor {
     "anthropic/claude-fable-5-api": 0xD97706,
     "claude-fable-5": 0xD97706,
     "fable": 0xD97706,
+    "anthropic/claude-opus-5": 0xD97706,
+    "claude-opus-5": 0xD97706,
+    "opus": 0xD97706,
     "anthropic/claude-opus-4-8": 0xD97706,
     "claude-opus-4-8": 0xD97706,
     "anthropic/claude-opus-4-7-1m": 0xB45309,
@@ -202,12 +205,17 @@ enum ADEColor {
       append("anthropic/claude-fable-5-api")
       append("claude-fable-5")
       append("fable")
-    case "anthropic/claude-opus-4-8", "claude-opus-4-8",
+    case "opus", "opus-5", "opus-5.0", "opus-5-0",
+         "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5":
+      append("anthropic/claude-opus-5")
+      append("claude-opus-5")
+      append("opus")
+    case "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api", "claude-opus-4-8",
          "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
          "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
       append("anthropic/claude-opus-4-8")
       append("claude-opus-4-8")
-    case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7":
+    case "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api", "claude-opus-4-7":
       append("anthropic/claude-opus-4-8")
       append("claude-opus-4-8")
     case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
@@ -265,6 +273,9 @@ enum ADEColor {
     "anthropic/claude-fable-5-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-fable-5": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "fable": ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    "anthropic/claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
+    "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
+    "opus": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "anthropic/claude-opus-4-7-1m": ["low", "medium", "high", "xhigh", "max"],
