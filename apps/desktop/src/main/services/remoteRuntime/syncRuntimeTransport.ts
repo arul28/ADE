@@ -54,10 +54,26 @@ export type AuthenticatedSyncConnection = SyncEnvelopeConnection & {
 
 export type OpenSyncEnvelopeConnectionOptions = {
   endpoint: string;
+  /** Safe operation identifier appended only to Relay URLs as `cid`. */
+  correlationId?: string;
   connectTimeoutMs?: number;
   signal?: AbortSignal;
   createWebSocket?: (endpoint: string) => WebSocket;
 };
+
+const CORRELATION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export function withSyncRelayCorrelationId(endpoint: string, correlationId?: string): string {
+  const normalized = correlationId?.trim() ?? "";
+  if (!normalized) return endpoint;
+  if (!CORRELATION_ID_PATTERN.test(normalized)) {
+    throw new Error("Sync connection correlationId must be a canonical UUID v4.");
+  }
+  const url = new URL(endpoint);
+  url.searchParams.set("cid", normalized.toLowerCase());
+  return url.toString();
+}
 
 export type OpenPairedSyncConnectionOptions = OpenSyncEnvelopeConnectionOptions & {
   credentials: DesktopPairedMachineCredentials;
@@ -244,9 +260,10 @@ export async function openSyncEnvelopeConnection(
   options: OpenSyncEnvelopeConnectionOptions,
 ): Promise<SyncEnvelopeConnection> {
   const endpoint = normalizeSyncEndpoint(options.endpoint);
+  const socketEndpoint = withSyncRelayCorrelationId(endpoint, options.correlationId);
   const timeoutMs = normalizeTimeout(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS);
   if (options.signal?.aborted) throw abortError(options.signal);
-  const ws = options.createWebSocket?.(endpoint) ?? new WebSocket(endpoint);
+  const ws = options.createWebSocket?.(socketEndpoint) ?? new WebSocket(socketEndpoint);
   const connection = createConnection(endpoint, ws);
 
   if (options.signal?.aborted) {

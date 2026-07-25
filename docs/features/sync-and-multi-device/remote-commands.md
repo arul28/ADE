@@ -250,8 +250,25 @@ the cursor opaque and use `cursorKind` only to select their local merge
 strategy.
 - `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
+- `recoverTurn`, legacy `recoverCodexTurn`, `resolveUnprocessedMessage`
 - `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,
   `modelCatalog`
+
+`chat.recoverTurn` is the provider-neutral stall-recovery action. It takes
+`{ sessionId, turnId, action }`, where `action` is `wait`, `nudge`,
+`retry_same_runtime`, or `restart_resume`. It is viewer-allowed and
+non-queueable: recovery must be applied to the currently active turn, never
+replayed after reconnect. Older hosts may advertise only
+`chat.recoverCodexTurn`; clients map the same four controls to its legacy
+action names without rendering duplicate recovery cards.
+
+`chat.resolveUnprocessedMessage` takes
+`{ sessionId, steerId, action: "run_next" | "dismiss" }`. It is also
+viewer-allowed and non-queueable. The runtime persists a terminal
+`user_message_resolution` receipt and makes both actions idempotent across
+client retries and runtime restarts. `run_next` is accepted only while the
+session is idle and commits only after the replacement turn is dispatched;
+`dismiss` never sends a turn.
 
 `chat.resolveSmartLinkPreview` is a viewer-allowed, non-mutating enrichment
 read. Its `{ url }` payload returns the shared deterministic provider/kind/label

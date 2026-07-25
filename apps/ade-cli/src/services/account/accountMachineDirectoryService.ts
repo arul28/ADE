@@ -14,6 +14,7 @@ import type {
 } from "../../../../desktop/src/shared/types/account";
 import {
   accountMachineSecureSyncEndpoints,
+  createAccountDirectoryCorrelationId,
   fetchAccountMachines,
   resolveTrustedAccountDirectoryBaseUrl,
   selectAccountMachine,
@@ -54,8 +55,10 @@ export type AccountMachineTrustReconciliationResult = {
 };
 
 /**
- * Remove client-side machine trust that belongs to a different (or signed-out)
- * ADE account. Ownerless PIN/address/SSH credentials are deliberately kept.
+ * Remove client-side machine trust that belongs to a different signed-in ADE
+ * account. Sign-out keeps host-issued paired secrets for LAN/Tailscale while
+ * Relay and directory access remain disabled. Ownerless PIN/address/SSH
+ * credentials are deliberately kept.
  * Any target left pointing at a removed credential is unusable and is removed
  * in the same pass so a partial historical write cannot leak its machine name.
  */
@@ -69,7 +72,9 @@ export function reconcileAccountOwnedMachineTrust(
   const currentOwnerUserId = currentOwnerUserIdValue?.trim() || null;
   const pairedStore = options.pairedStore ?? new DesktopPairedMachineStore();
   const targetRegistry = options.targetRegistry ?? new RemoteTargetRegistry();
-  const removedCredentials = pairedStore.pruneAccountOwned(currentOwnerUserId);
+  const removedCredentials = currentOwnerUserId
+    ? pairedStore.pruneAccountOwned(currentOwnerUserId)
+    : [];
   const removedCredentialIds = new Set<string>();
   for (const credentials of removedCredentials) {
     removedCredentialIds.add(credentials.hostIdentity.deviceId);
@@ -77,7 +82,9 @@ export function reconcileAccountOwnedMachineTrust(
   }
 
   const removedTargetIds = new Set(
-    targetRegistry.pruneAccountOwned(currentOwnerUserId).map((target) => target.id),
+    currentOwnerUserId
+      ? targetRegistry.pruneAccountOwned(currentOwnerUserId).map((target) => target.id)
+      : [],
   );
   for (const target of targetRegistry.list()) {
     const reference = target.pairedMachine;
@@ -202,6 +209,7 @@ export class AccountMachineDirectoryService {
       controller.abort();
     }, timeoutMs);
     timer.unref?.();
+    const correlationId = createAccountDirectoryCorrelationId();
     try {
       const sendDelete = (accessToken: string): Promise<Response> =>
         (this.options.fetchImpl ?? fetch)(
@@ -211,6 +219,7 @@ export class AccountMachineDirectoryService {
             headers: {
               accept: "application/json",
               authorization: `Bearer ${accessToken}`,
+              "x-ade-correlation-id": correlationId,
             },
             credentials: "omit",
             referrerPolicy: "no-referrer",

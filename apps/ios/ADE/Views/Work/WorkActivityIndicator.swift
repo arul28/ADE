@@ -111,24 +111,45 @@ struct WorkActivityIndicator: View {
     }
   }
 
-  /// Timestamp of the last user message / turn-start boundary, i.e. when the
-  /// currently-streaming turn began.
+  /// Timestamp of the active turn's start boundary. Follow-up steers are user
+  /// messages too, but they must not reset this anchor — doing so made a
+  /// four-hour stalled turn appear to have started seconds ago after a nudge.
   static func activeTurnStartTimestamp(from transcript: [WorkChatEnvelope]) -> String? {
-    var latestActiveStatus: String?
-    for envelope in transcript.reversed() {
-      switch envelope.event {
-      case .userMessage:
-        return envelope.timestamp
-      case .status(let turnStatus, _, _):
-        if latestActiveStatus == nil,
-           ["started", "active", "running"].contains(turnStatus.lowercased()) {
-          latestActiveStatus = envelope.timestamp
-        }
-      default:
-        continue
+    let ordered = sortedWorkChatEnvelopes(transcript)
+    let endedTurnIds = Set(ordered.compactMap(Self.endedTurnId(from:)))
+
+    if let activeBoundary = ordered.reversed().first(where: { envelope in
+      guard case .status(let turnStatus, _, let turnId) = envelope.event,
+            Self.isActiveStatus(turnStatus)
+      else {
+        return false
       }
+      guard let turnId = normalizedActivityTurnId(turnId) else { return true }
+      return !endedTurnIds.contains(turnId)
+    }) {
+      return activeBoundary.timestamp
     }
-    return latestActiveStatus ?? transcript.last?.timestamp
+
+    let lastTerminalIndex = ordered.lastIndex(where: { envelope in
+      switch envelope.event {
+      case .done:
+        return true
+      case .status(let turnStatus, _, _):
+        return Self.isTerminalStatus(turnStatus)
+      default:
+        return false
+      }
+    })
+    let activeStartIndex = lastTerminalIndex.map { ordered.index(after: $0) } ?? ordered.startIndex
+    if activeStartIndex < ordered.endIndex,
+       let primaryMessage = ordered[activeStartIndex...].first(where: { envelope in
+         if case .userMessage = envelope.event { return true }
+         return false
+       }) {
+      return primaryMessage.timestamp
+    }
+
+    return ordered.last?.timestamp
   }
 
   struct Presentation: Equatable {
@@ -152,6 +173,9 @@ struct WorkActivityIndicator: View {
       switch envelope.event {
       case .done:
         return nil
+
+      case .userMessageResolution:
+        continue
 
       case .userMessage:
         return workingFallback
@@ -257,7 +281,7 @@ struct WorkActivityIndicator: View {
            .todoUpdate, .approvalRequest, .structuredQuestion, .toolUseSummary,
            .systemNotice, .error, .promptSuggestion, .contextCompact,
            .autoApprovalReview, .pendingInputResolved, .subagentResult,
-           .codexState, .codexTurnStalled,
+           .codexState, .turnDiagnostics, .codexTurnStalled, .codexTurnRecovery,
            .scheduledWorkUpdate, .transcriptRetraction,
            .completionReport, .tokens, .claudeGoalUpdated,
            .claudeGoalCleared, .unknown:
@@ -339,7 +363,7 @@ func workChatShouldShowInterruptControl(isStreamingTurn: Bool, transcript: [Work
 /// Parse an ISO-8601 timestamp (with or without fractional seconds) into a
 /// `Date` for elapsed-time math. Returns nil on host quirks so callers can fall
 /// back gracefully.
-private func workActivityTimestamp(_ iso: String) -> Date? {
+func workActivityTimestamp(_ iso: String) -> Date? {
   if let date = workActivityIsoFormatter.date(from: iso) { return date }
   return workActivityIsoFallbackFormatter.date(from: iso)
 }

@@ -1040,6 +1040,77 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText(/df: \/: 100% used \(0 bytes free\)/)).toBeTruthy();
   });
 
+  it("shows bounded privacy-safe route diagnostics without endpoint paths", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "studio.local",
+      sshUser: null,
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+      transport: "paired" as const,
+    };
+    Object.defineProperty(remoteRuntimeMock, "getConnectionSnapshot", {
+      configurable: true,
+      value: vi.fn().mockResolvedValue({
+        connections: [
+          {
+            target,
+            state: "error",
+            arch: null,
+            version: null,
+            projects: [],
+            lastError: "Connection failed",
+            lastErrorInfo: {
+              kind: "generic",
+              message: "ADE could not reach this machine.",
+              correlationId: "123e4567-e89b-42d3-a456-426614174000",
+              attempts: [
+                {
+                  kind: "lan",
+                  host: "studio.local:8787",
+                  startedAt: 1,
+                  durationMs: 250.4,
+                  outcome: "failed",
+                  failure: "timeout",
+                },
+                {
+                  kind: "relay",
+                  host: "wss://relay.example/connect/machine?token=secret",
+                  startedAt: 2,
+                  durationMs: 81.2,
+                  outcome: "failed",
+                  failure: "unreachable",
+                },
+              ],
+            },
+            lastAttemptedAt: 1,
+            connectedAt: null,
+          },
+        ],
+        connectedCount: 0,
+        updatedAt: 1,
+      }),
+    });
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    fireEvent.click(await screen.findByText("Route details"));
+    expect(screen.getByText("studio.local:8787 · 250ms · Failed (timeout)")).toBeTruthy();
+    expect(screen.getByText("relay.example · 81ms · Failed (unreachable)")).toBeTruthy();
+    expect(screen.getByText("123e4567-e89b-42d3-a456-426614174000")).toBeTruthy();
+    expect(screen.queryByText(/connect\/machine/)).toBeNull();
+    expect(screen.queryByText(/token=secret/)).toBeNull();
+  });
+
   it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({

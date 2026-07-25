@@ -132,6 +132,8 @@ export type DesktopPairedMachineCredentials = {
 export type DesktopPairedMachineEndpointState = {
   endpoint: string;
   lastSucceededAt: number | null;
+  /** Fresh discovery wins within a route kind before historical success. */
+  lastDiscoveredAt?: number | null;
 };
 
 export type DesktopPairedMachinesFile = {

@@ -889,6 +889,55 @@ describe("createSyncRemoteCommandService", () => {
     ]);
   });
 
+  it("routes provider-neutral recovery and durable unprocessed-message actions", async () => {
+    const recoverTurn = vi.fn(async (args) => ({
+      action: args.action,
+      turnId: args.turnId,
+      status: args.action === "nudge" ? "nudged" : "waiting",
+    }));
+    const resolveUnprocessedMessage = vi.fn(async (args) => ({
+      steerId: args.steerId,
+      action: args.action,
+      status: "completed",
+    }));
+    const { service } = createService({
+      agentChatService: { recoverTurn, resolveUnprocessedMessage },
+    });
+
+    expect(service.getDescriptor("chat.recoverTurn")).toEqual({
+      action: "chat.recoverTurn",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+    expect(service.getDescriptor("chat.resolveUnprocessedMessage")).toEqual({
+      action: "chat.resolveUnprocessedMessage",
+      scope: "project",
+      policy: { viewerAllowed: true, queueable: false },
+    });
+
+    await service.execute(makePayload("chat.recoverTurn", {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "nudge",
+    }));
+    await service.execute(makePayload("chat.resolveUnprocessedMessage", {
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      action: "run_next",
+    }));
+
+    expect(recoverTurn).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "nudge",
+    });
+    expect(resolveUnprocessedMessage).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      action: "run_next",
+    });
+  });
+
   it("routes scheduled-work cancellation through the non-queueable mobile command", async () => {
     const cancelScheduledWork = vi.fn(async ({ sessionId, scheduleId }: {
       sessionId: string;
@@ -1036,6 +1085,27 @@ describe("createSyncRemoteCommandService", () => {
       action: "replace",
     }))).rejects.toThrow("unsupported action 'replace'");
     expect(recoverCodexTurn).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported provider-neutral recovery and message-resolution actions", async () => {
+    const recoverTurn = vi.fn();
+    const resolveUnprocessedMessage = vi.fn();
+    const { service } = createService({
+      agentChatService: { recoverTurn, resolveUnprocessedMessage },
+    });
+
+    await expect(service.execute(makePayload("chat.recoverTurn", {
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action: "replace",
+    }))).rejects.toThrow("unsupported action 'replace'");
+    await expect(service.execute(makePayload("chat.resolveUnprocessedMessage", {
+      sessionId: "chat-1",
+      steerId: "steer-1",
+      action: "retry",
+    }))).rejects.toThrow("unsupported action 'retry'");
+    expect(recoverTurn).not.toHaveBeenCalled();
+    expect(resolveUnprocessedMessage).not.toHaveBeenCalled();
   });
 
   it("preserves Claude priority steering and guarded queue cancellation", async () => {

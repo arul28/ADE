@@ -191,6 +191,8 @@ import type {
   AgentChatClaudePluginsArgs,
   AgentChatReloadClaudePluginsArgs,
   AgentChatReloadClaudePluginsResult,
+  AgentChatRecoverTurnArgs,
+  AgentChatRecoverTurnResult,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
   AgentChatClaudePermissionMode,
@@ -255,6 +257,8 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatRespondToInputArgs,
+  AgentChatResolveUnprocessedMessageArgs,
+  AgentChatResolveUnprocessedMessageResult,
   AgentChatRewindFilesArgs,
   AgentChatRewindFilesResult,
   AgentChatSession,
@@ -1127,10 +1131,18 @@ type CodexRuntime = {
   noFirstEventWatchdog: {
     turnId: string;
     timer: NodeJS.Timeout;
+    startedAt: number;
+    lastProgressAt: number;
+    firstUsefulProgressSeen: boolean;
   } | null;
   stalledTurnIds: Set<string>;
   stallReconcileInFlight: Set<string>;
   mcpStartupNoticeKeys: Set<string>;
+  acceptedSteersByTurnId: Map<string, Map<string, AcceptedCodexSteer>>;
+  turnDiagnosticStateByTurnId: Map<string, {
+    moderationChecks: number;
+    optionalIntegrationFailures: Map<string, string | null>;
+  }>;
   /**
    * Plan-approval follow-ups deferred until the planning turn idles. Calling
    * sendMessage while a planning turn is still active would race the busy
@@ -1172,6 +1184,17 @@ type QueuedSteer = {
   reasoningEffort?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
+};
+
+type AcceptedCodexSteer = {
+  steerId: string;
+  text: string;
+  displayText: string;
+  attachments: AgentChatFileRef[];
+  contextAttachments: AgentChatContextAttachment[];
+  metadata?: AgentChatEventMetadata | null | undefined;
+  turnId: string;
+  acceptedAt: string;
 };
 
 type ClaudeActiveSubagent = {
@@ -2634,6 +2657,7 @@ const CODEX_INTERRUPT_REQUEST_TIMEOUT_MS = 2_500;
 const CODEX_SUBAGENT_INTERRUPT_FALLBACK_MS = 1_000;
 const CODEX_ARCHIVE_REQUEST_TIMEOUT_MS = 3_000;
 const CODEX_NO_FIRST_EVENT_WATCHDOG_MS = 120_000;
+const CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS = 10 * 60_000;
 const CODEX_GOAL_OBJECTIVE_MAX_CHARS = 4_000;
 const CODEX_GOAL_OBJECTIVE_REQUIRED_MESSAGE = "Goal text is required.";
 const CODEX_GOAL_OBJECTIVE_TOO_LONG_MESSAGE = "Goal is too long. Keep it under 4,000 characters.";
@@ -7162,7 +7186,12 @@ export function createAgentChatService(args: {
   const managedSessions = new Map<string, ManagedChatSession>();
   const lastPersistedPointerFingerprints = new Map<string, string>();
   const codexRecoveryInFlight = new Set<string>();
+  const codexAutomaticRecoveryAttemptedBySession = new Set<string>();
   const continuityRecoveryInFlight = new Set<string>();
+  const unprocessedMessageResolutionInFlight = new Map<
+    string,
+    Promise<AgentChatResolveUnprocessedMessageResult>
+  >();
 
   const recordLinearIssueContextForLane = (
     managed: ManagedChatSession,
@@ -14152,6 +14181,51 @@ export function createAgentChatService(args: {
     runtime.noFirstEventWatchdog = null;
   };
 
+  const armCodexTurnProgressWatchdog = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    state: Omit<NonNullable<CodexRuntime["noFirstEventWatchdog"]>, "timer">,
+    delayMs: number,
+  ): void => {
+    const timer = setTimeout(() => {
+      if (
+        managed.deleted
+        || managed.closed
+        || managed.runtime !== runtime
+        || (runtime.activeTurnId ?? runtime.startedTurnId) !== state.turnId
+      ) {
+        if (runtime.noFirstEventWatchdog?.turnId === state.turnId) {
+          runtime.noFirstEventWatchdog = null;
+        }
+        return;
+      }
+      runtime.noFirstEventWatchdog = null;
+      void reconcileCodexSilentTurn(
+        managed,
+        runtime,
+        state.turnId,
+        state.firstUsefulProgressSeen ? "no_progress" : "no_output",
+        state.startedAt,
+        state.lastProgressAt,
+      ).catch((error) => {
+        logger.warn("agent_chat.codex_stall_reconcile_failed", {
+          sessionId: managed.session.id,
+          turnId: state.turnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        emitCodexTurnStalled(managed, runtime, {
+          turnId: state.turnId,
+          reason: "app_server_state_unknown",
+          message: "ADE could not confirm the Codex app-server state. Keep waiting or restart and resume the thread.",
+          turnStartedAt: state.startedAt,
+          lastProgressAt: state.lastProgressAt,
+        });
+      });
+    }, Math.max(1, delayMs));
+    timer.unref?.();
+    runtime.noFirstEventWatchdog = { ...state, timer };
+  };
+
   const scheduleCodexNoFirstEventWatchdog = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -14161,48 +14235,59 @@ export function createAgentChatService(args: {
     if (!normalizedTurnId) return;
     if (runtime.noFirstEventWatchdog?.turnId === normalizedTurnId) return;
     clearCodexNoFirstEventWatchdog(runtime);
-    const timer = setTimeout(() => {
-      if (
-        managed.deleted
-        || managed.closed
-        || managed.runtime !== runtime
-        || (runtime.activeTurnId ?? runtime.startedTurnId) !== normalizedTurnId
-      ) {
-        if (runtime.noFirstEventWatchdog?.turnId === normalizedTurnId) {
-          runtime.noFirstEventWatchdog = null;
-        }
-        return;
-      }
-      runtime.noFirstEventWatchdog = null;
-      void reconcileCodexSilentTurn(managed, runtime, normalizedTurnId).catch((error) => {
-        logger.warn("agent_chat.codex_stall_reconcile_failed", {
-          sessionId: managed.session.id,
-          turnId: normalizedTurnId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        emitCodexTurnStalled(managed, runtime, {
-          turnId: normalizedTurnId,
-          reason: "app_server_state_unknown",
-          message: "Codex accepted this turn but ADE could not confirm its app-server state. You can keep waiting, send a status nudge, or interrupt and retry this thread if it stays stalled.",
-        });
-      });
-    }, CODEX_NO_FIRST_EVENT_WATCHDOG_MS);
-    timer.unref?.();
-    runtime.noFirstEventWatchdog = {
+    const now = Date.now();
+    armCodexTurnProgressWatchdog(managed, runtime, {
       turnId: normalizedTurnId,
-      timer,
-    };
+      startedAt: now,
+      lastProgressAt: now,
+      firstUsefulProgressSeen: false,
+    }, CODEX_NO_FIRST_EVENT_WATCHDOG_MS);
   };
 
   const markCodexTurnProgress = (
+    managed: ManagedChatSession,
     runtime: CodexRuntime,
     turnId: string | null | undefined,
   ): void => {
     const normalizedTurnId = turnId?.trim() || runtime.activeTurnId || runtime.startedTurnId || null;
-    if (!runtime.noFirstEventWatchdog) return;
-    if (!normalizedTurnId || runtime.noFirstEventWatchdog.turnId === normalizedTurnId) {
-      clearCodexNoFirstEventWatchdog(runtime);
+    const watchdog = runtime.noFirstEventWatchdog;
+    if (!watchdog || (normalizedTurnId && watchdog.turnId !== normalizedTurnId)) return;
+    clearTimeout(watchdog.timer);
+    armCodexTurnProgressWatchdog(managed, runtime, {
+      turnId: watchdog.turnId,
+      startedAt: watchdog.startedAt,
+      lastProgressAt: Date.now(),
+      firstUsefulProgressSeen: true,
+    }, CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS);
+  };
+
+  const resumeCodexTurnWatchdogAfterInput = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+  ): void => {
+    const normalizedTurnId = turnId?.trim()
+      || runtime.activeTurnId
+      || runtime.startedTurnId
+      || null;
+    if (
+      !normalizedTurnId
+      || managed.runtime !== runtime
+      || (runtime.activeTurnId ?? runtime.startedTurnId) !== normalizedTurnId
+    ) {
+      return;
     }
+    const prior = runtime.noFirstEventWatchdog?.turnId === normalizedTurnId
+      ? runtime.noFirstEventWatchdog
+      : null;
+    clearCodexNoFirstEventWatchdog(runtime);
+    const now = Date.now();
+    armCodexTurnProgressWatchdog(managed, runtime, {
+      turnId: normalizedTurnId,
+      startedAt: prior?.startedAt ?? now,
+      lastProgressAt: now,
+      firstUsefulProgressSeen: true,
+    }, CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS);
   };
 
   const isCodexUsefulProgressNotification = (
@@ -14273,6 +14358,51 @@ export function createAgentChatService(args: {
     return { serverName, status, message, failed };
   };
 
+  const emitCodexTurnDiagnostics = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+  ): void => {
+    const key = turnId?.trim() || "__session_startup__";
+    const state = runtime.turnDiagnosticStateByTurnId.get(key);
+    if (!state) return;
+    emitChatEvent(managed, {
+      type: "turn_diagnostics",
+      ...(turnId?.trim() ? { turnId: turnId.trim() } : {}),
+      ...(state.moderationChecks > 0 ? { moderationChecks: state.moderationChecks } : {}),
+      ...(state.optionalIntegrationFailures.size > 0
+        ? {
+            optionalIntegrationFailures: Array.from(state.optionalIntegrationFailures, ([integration, message]) => ({
+              integration,
+              message,
+            })),
+          }
+        : {}),
+    });
+  };
+
+  const codexTurnDiagnosticState = (
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+  ): {
+    moderationChecks: number;
+    optionalIntegrationFailures: Map<string, string | null>;
+  } => {
+    const key = turnId?.trim() || "__session_startup__";
+    const existing = runtime.turnDiagnosticStateByTurnId.get(key);
+    if (existing) return existing;
+    const created = {
+      moderationChecks: 0,
+      optionalIntegrationFailures: new Map<string, string | null>(),
+    };
+    runtime.turnDiagnosticStateByTurnId.set(key, created);
+    evictOldestEntries(
+      runtime.turnDiagnosticStateByTurnId,
+      MAX_SESSION_MAP_ENTRIES,
+    );
+    return created;
+  };
+
   const handleCodexMcpStartupStatus = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -14294,20 +14424,16 @@ export function createAgentChatService(args: {
       const [first] = runtime.mcpStartupNoticeKeys;
       if (first) runtime.mcpStartupNoticeKeys.delete(first);
     }
-    const suffix = status.message ? `: ${status.message}` : status.status ? ` (${status.status})` : "";
     logger.warn("agent_chat.codex_mcp_startup_failed", {
       sessionId: managed.session.id,
       serverName: status.serverName,
       status: status.status,
       message: status.message,
     });
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "warning",
-      severity: "warning",
-      message: `Codex MCP server '${status.serverName}' is unavailable${suffix}.`,
-      ...(runtime.activeTurnId ? { turnId: runtime.activeTurnId } : {}),
-    });
+    const turnId = runtime.activeTurnId ?? runtime.startedTurnId;
+    const diagnosticState = codexTurnDiagnosticState(runtime, turnId);
+    diagnosticState.optionalIntegrationFailures.set(status.serverName, status.message ?? status.status);
+    emitCodexTurnDiagnostics(managed, runtime, turnId);
     persistChatState(managed);
   };
 
@@ -14998,6 +15124,7 @@ export function createAgentChatService(args: {
       runtime.approvals.clear();
       runtime.codexAgentIndexByTurn.clear();
       if (shouldMarkInterrupted) {
+        markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
         emitChatEvent(managed, {
           type: "system_notice",
           noticeKind: "info",
@@ -21397,7 +21524,7 @@ export function createAgentChatService(args: {
         elicitationSchema: requestedSchema,
         elicitationPersistenceAllowed: persistenceAllowed,
       });
-      markCodexTurnProgress(runtime, requestTurnId);
+      markCodexTurnProgress(managed, runtime, requestTurnId);
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: message,
@@ -21460,7 +21587,7 @@ export function createAgentChatService(args: {
         turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "command", request });
-      markCodexTurnProgress(runtime, request.turnId);
+      markCodexTurnProgress(managed, runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "command",
         description,
@@ -21509,7 +21636,7 @@ export function createAgentChatService(args: {
         turnId: requestTurnId,
       };
       runtime.approvals.set(itemId, { requestId: id, kind: "file_change", request });
-      markCodexTurnProgress(runtime, request.turnId);
+      markCodexTurnProgress(managed, runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "file_change",
         description,
@@ -21603,7 +21730,7 @@ export function createAgentChatService(args: {
         permissions: params.permissions ?? null,
         request,
       });
-      markCodexTurnProgress(runtime, request.turnId);
+      markCodexTurnProgress(managed, runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description,
@@ -21688,7 +21815,7 @@ export function createAgentChatService(args: {
         request,
         questionResponseKind: "native_request_user_input",
       });
-      markCodexTurnProgress(runtime, request.turnId);
+      markCodexTurnProgress(managed, runtime, request.turnId);
       emitPendingInputRequest(managed, request, {
         kind: "tool_call",
         description: request.description ?? "Codex requested input",
@@ -21841,7 +21968,7 @@ export function createAgentChatService(args: {
       kind: "plan_approval",
       request,
     });
-    markCodexTurnProgress(runtime, request.turnId);
+    markCodexTurnProgress(managed, runtime, request.turnId);
     emitPendingInputRequest(managed, request, {
       kind: "tool_call",
       description: "Plan ready for approval",
@@ -21930,7 +22057,7 @@ export function createAgentChatService(args: {
       kind: "plan_approval",
       request,
     });
-    markCodexTurnProgress(runtime, request.turnId);
+    markCodexTurnProgress(managed, runtime, request.turnId);
     emitPendingInputRequest(managed, request, {
       kind: "tool_call",
       description: "Plan ready for approval",
@@ -22061,6 +22188,7 @@ export function createAgentChatService(args: {
   ): void => {
     const interruptedTurnId = turnId?.trim() || runtime.activeTurnId || runtime.startedTurnId || randomUUID();
     clearCodexNoFirstEventWatchdog(runtime);
+    markAcceptedCodexSteersUnprocessed(managed, runtime, interruptedTurnId);
     rememberInterruptedCodexTurn(runtime, interruptedTurnId);
     rememberTerminalCodexTurn(runtime, interruptedTurnId, managed);
     runtime.awaitingTurnStart = false;
@@ -23072,6 +23200,134 @@ export function createAgentChatService(args: {
     return true;
   }
 
+  const codexUserMessageItemText = (item: Record<string, unknown>): string => {
+    const direct = stringOrNull(item.text);
+    if (direct) return direct;
+    if (!Array.isArray(item.content)) return "";
+    return item.content
+      .flatMap((entry) => {
+        if (typeof entry === "string") return [entry];
+        const record = asRecord(entry);
+        const text = stringOrNull(record?.text ?? record?.content);
+        return text ? [text] : [];
+      })
+      .join("\n")
+      .trim();
+  };
+
+  const emitAcceptedCodexSteerState = (
+    managed: ManagedChatSession,
+    steer: AcceptedCodexSteer,
+    deliveryState: "accepted" | "processed" | "unprocessed",
+  ): void => {
+    emitChatEvent(managed, {
+      type: "user_message",
+      text: steer.text,
+      ...(steer.displayText !== steer.text ? { displayText: steer.displayText } : {}),
+      ...(steer.attachments.length ? { attachments: steer.attachments } : {}),
+      ...(steer.contextAttachments.length ? { contextAttachments: steer.contextAttachments } : {}),
+      ...(steer.metadata ? { metadata: steer.metadata } : {}),
+      steerId: steer.steerId,
+      deliveryState,
+      processed: deliveryState === "processed",
+      turnId: steer.turnId,
+    });
+  };
+
+  const markAcceptedCodexSteerProcessed = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+    providerText: string,
+  ): boolean => {
+    const normalizedTurnId = turnId?.trim();
+    if (!normalizedTurnId) return false;
+    const accepted = runtime.acceptedSteersByTurnId.get(normalizedTurnId);
+    if (!accepted?.size) return false;
+    const normalizedProviderText = providerText.trim();
+    const matched = Array.from(accepted.values()).find((candidate) => {
+      const candidateText = candidate.text.trim();
+      return !normalizedProviderText
+        || normalizedProviderText === candidateText
+        || normalizedProviderText.endsWith(candidateText);
+    }) ?? accepted.values().next().value;
+    if (!matched) return false;
+    accepted.delete(matched.steerId);
+    if (accepted.size === 0) runtime.acceptedSteersByTurnId.delete(normalizedTurnId);
+    emitAcceptedCodexSteerState(managed, matched, "processed");
+    return true;
+  };
+
+  const markAcceptedCodexSteersUnprocessed = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    turnId: string | null | undefined,
+  ): void => {
+    const normalizedTurnId = turnId?.trim();
+    if (!normalizedTurnId) return;
+    const accepted = runtime.acceptedSteersByTurnId.get(normalizedTurnId);
+    if (!accepted?.size) return;
+    runtime.acceptedSteersByTurnId.delete(normalizedTurnId);
+    for (const steer of accepted.values()) {
+      emitAcceptedCodexSteerState(managed, steer, "unprocessed");
+    }
+  };
+
+  const hydrateAcceptedCodexSteers = async (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+  ): Promise<void> => {
+    const history = await readTranscriptEnvelopesForSessionIdAsync(
+      managed.session.id,
+      8 * 1024 * 1024,
+    ).catch(() => ({ envelopes: [] as AgentChatEventEnvelope[] }));
+    const latestBySteerId = new Map<string, {
+      steer: AcceptedCodexSteer;
+      state: string;
+    }>();
+    const terminalTurnIds = new Set<string>();
+    const resolvedSteerIds = new Set<string>();
+
+    for (const envelope of history.envelopes) {
+      const event = envelope.event;
+      if (event.type === "done" && event.turnId) {
+        terminalTurnIds.add(event.turnId);
+        continue;
+      }
+      if (event.type === "user_message_resolution") {
+        resolvedSteerIds.add(event.steerId);
+        continue;
+      }
+      if (event.type !== "user_message" || !event.steerId || !event.turnId) continue;
+      latestBySteerId.set(event.steerId, {
+        steer: {
+          steerId: event.steerId,
+          turnId: event.turnId,
+          text: event.text,
+          displayText: event.displayText ?? event.text,
+          attachments: event.attachments ?? [],
+          contextAttachments: event.contextAttachments ?? [],
+          ...(event.metadata ? { metadata: event.metadata } : {}),
+          acceptedAt: envelope.timestamp,
+        },
+        state: event.deliveryState ?? "",
+      });
+    }
+
+    for (const { steer, state } of latestBySteerId.values()) {
+      if (state !== "accepted" || resolvedSteerIds.has(steer.steerId)) continue;
+      if (terminalTurnIds.has(steer.turnId)) {
+        emitAcceptedCodexSteerState(managed, steer, "unprocessed");
+        continue;
+      }
+      const acceptedForTurn = runtime.acceptedSteersByTurnId.get(steer.turnId)
+        ?? new Map<string, AcceptedCodexSteer>();
+      acceptedForTurn.set(steer.steerId, steer);
+      runtime.acceptedSteersByTurnId.set(steer.turnId, acceptedForTurn);
+    }
+    evictOldestEntries(runtime.acceptedSteersByTurnId, 64);
+  };
+
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
@@ -23099,6 +23355,16 @@ export function createAgentChatService(args: {
       runtime.itemTurnIdByItemId.delete(itemId);
       return completedTurnId;
     })();
+
+    if (itemType === "userMessage") {
+      markAcceptedCodexSteerProcessed(
+        managed,
+        runtime,
+        turnId,
+        codexUserMessageItemText(item),
+      );
+      return;
+    }
 
     if (itemType === "contextCompaction") {
       const compactionTurnId = turnId ?? "";
@@ -23965,6 +24231,8 @@ export function createAgentChatService(args: {
       turnId: string;
       reason: Extract<AgentChatEvent, { type: "codex_turn_stalled" }>["reason"];
       message: string;
+      turnStartedAt?: number;
+      lastProgressAt?: number;
     },
   ): void {
     if (runtime.stalledTurnIds.has(args.turnId)) return;
@@ -23975,12 +24243,37 @@ export function createAgentChatService(args: {
       "interrupt_retry_same_thread",
       "restart_resume_thread",
     ];
+    const detectedAt = nowIso();
+    const turnStartedAt = new Date(args.turnStartedAt ?? Date.now()).toISOString();
+    const lastProgressAt = new Date(args.lastProgressAt ?? args.turnStartedAt ?? Date.now()).toISOString();
+    const automaticRecoveryAttempted = codexAutomaticRecoveryAttemptedBySession.has(managed.session.id);
+    const providerNeutralReason = args.reason === "app_server_state_unknown"
+      ? "runtime_state_unknown"
+      : args.reason;
     logger.warn("agent_chat.codex_turn_stalled", {
       sessionId: managed.session.id,
       threadId: managed.session.threadId ?? null,
       turnId: args.turnId,
       reason: args.reason,
-      timeoutMs: CODEX_NO_FIRST_EVENT_WATCHDOG_MS,
+      timeoutMs: args.reason === "no_progress"
+        ? CODEX_MID_TURN_INACTIVITY_WATCHDOG_MS
+        : CODEX_NO_FIRST_EVENT_WATCHDOG_MS,
+      automaticRecoveryAttempted,
+    });
+    emitChatEvent(managed, {
+      type: "turn_health",
+      provider: managed.session.provider,
+      turnId: args.turnId,
+      state: "stalled",
+      reason: providerNeutralReason,
+      message: args.message,
+      turnStartedAt,
+      lastProgressAt,
+      detectedAt,
+      recoveryCount: automaticRecoveryAttempted ? 1 : 0,
+      supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+      automaticRecoveryAttempted,
+      sourceSessionId: managed.session.id,
     });
     emitChatEvent(managed, {
       type: "codex_turn_stalled",
@@ -23991,20 +24284,31 @@ export function createAgentChatService(args: {
       recoveryOptions,
       sourceSessionId: managed.session.id,
       ...(managed.session.orchestrationParentSessionId ? { parentSessionId: managed.session.orchestrationParentSessionId } : {}),
-    });
-    emitChatEvent(managed, {
-      type: "system_notice",
-      noticeKind: "warning",
-      severity: "warning",
-      message: args.message,
-      turnId: args.turnId,
+      detectedAt,
+      turnStartedAt,
+      lastProgressAt,
+      automaticRecoveryAttempted,
     });
     const parentSessionId = managed.session.orchestrationParentSessionId;
     if (parentSessionId && parentSessionId !== managed.session.id) {
       try {
         const parent = managedSessions.get(parentSessionId) ?? (sessionService.get(parentSessionId) ? ensureManagedSession(parentSessionId) : null);
         if (parent) {
-          const childLabel = managed.preview?.trim() || managed.session.id;
+          emitChatEvent(parent, {
+            type: "turn_health",
+            provider: managed.session.provider,
+            turnId: args.turnId,
+            state: "stalled",
+            reason: providerNeutralReason,
+            message: args.message,
+            turnStartedAt,
+            lastProgressAt,
+            detectedAt,
+            recoveryCount: automaticRecoveryAttempted ? 1 : 0,
+            supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+            automaticRecoveryAttempted,
+            sourceSessionId: managed.session.id,
+          });
           emitChatEvent(parent, {
             type: "codex_turn_stalled",
             turnId: args.turnId,
@@ -24014,13 +24318,10 @@ export function createAgentChatService(args: {
             recoveryOptions,
             sourceSessionId: managed.session.id,
             parentSessionId,
-          });
-          emitChatEvent(parent, {
-            type: "system_notice",
-            noticeKind: "warning",
-            severity: "warning",
-            message: `Child Codex session '${childLabel}' stalled: ${args.message}`,
-            turnId: args.turnId,
+            detectedAt,
+            turnStartedAt,
+            lastProgressAt,
+            automaticRecoveryAttempted,
           });
           persistChatState(parent);
         }
@@ -24033,6 +24334,39 @@ export function createAgentChatService(args: {
       }
     }
     persistChatState(managed);
+  }
+
+  function emitCodexTurnRecovery(
+    managed: ManagedChatSession,
+    args: {
+      turnId: string;
+      action: "restart_resume_thread";
+      state: "recovering" | "recovered" | "failed";
+      message: string;
+      automatic: boolean;
+    },
+  ): void {
+    const at = nowIso();
+    emitChatEvent(managed, {
+      type: "turn_recovery",
+      provider: managed.session.provider,
+      turnId: args.turnId,
+      action: "restart_resume",
+      state: args.state,
+      message: args.message,
+      automatic: args.automatic,
+      at,
+      recoveryCount: 1,
+    });
+    emitChatEvent(managed, {
+      type: "codex_turn_recovery",
+      turnId: args.turnId,
+      action: args.action,
+      state: args.state,
+      message: args.message,
+      automatic: args.automatic,
+      at,
+    });
   }
 
   function emitCodexErrorOnce(
@@ -24074,6 +24408,7 @@ export function createAgentChatService(args: {
     fallbackTurnId: string,
   ): Promise<void> {
     const turnId = stringOrNull(turn.id) ?? fallbackTurnId;
+    markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
     rememberTerminalCodexTurn(runtime, turnId, managed);
     runtime.awaitingTurnStart = false;
     runtime.canAttachResumedTurnStart = false;
@@ -24159,11 +24494,22 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: CodexRuntime,
     turnId: string,
+    stallReason: "no_output" | "no_progress",
+    turnStartedAt: number,
+    lastProgressAt: number,
   ): Promise<void> {
     if (runtime.stallReconcileInFlight.has(turnId)) return;
     runtime.stallReconcileInFlight.add(turnId);
     try {
       if (!isCodexSilentTurnStillCurrent(managed, runtime, turnId)) {
+        return;
+      }
+      if (runtime.approvals.size > 0 || managed.localPendingInputs.size > 0) {
+        logger.info("agent_chat.codex_watchdog_suspended", {
+          sessionId: managed.session.id,
+          turnId,
+          reason: "waiting_on_local_input",
+        });
         return;
       }
       const threadId = managed.session.threadId?.trim();
@@ -24231,6 +24577,7 @@ export function createAgentChatService(args: {
           });
           persistChatState(managed);
           scheduleCodexNoFirstEventWatchdog(managed, runtime, turnId);
+          markCodexTurnProgress(managed, runtime, turnId);
           return;
         }
       }
@@ -24240,26 +24587,59 @@ export function createAgentChatService(args: {
       }
 
       if (activeFlags.includes("waitingOnApproval")) {
-        emitCodexTurnStalled(managed, runtime, {
+        logger.info("agent_chat.codex_watchdog_suspended", {
+          sessionId: managed.session.id,
           turnId,
           reason: "waiting_on_approval",
-          message: "Codex is waiting for an approval decision, but ADE did not receive a visible approval item yet. You can keep waiting, send a status nudge, or interrupt and retry this thread.",
         });
         return;
       }
       if (activeFlags.includes("waitingOnUserInput")) {
-        emitCodexTurnStalled(managed, runtime, {
+        logger.info("agent_chat.codex_watchdog_suspended", {
+          sessionId: managed.session.id,
           turnId,
           reason: "waiting_on_input",
-          message: "Codex is waiting for user input, but ADE did not receive a visible input request yet. You can answer with a status nudge, keep waiting, or interrupt and retry this thread.",
         });
         return;
       }
 
+      if (
+        stallReason === "no_output"
+        && !codexAutomaticRecoveryAttemptedBySession.has(managed.session.id)
+      ) {
+        codexAutomaticRecoveryAttemptedBySession.add(managed.session.id);
+        emitCodexTurnRecovery(managed, {
+          turnId,
+          action: "restart_resume_thread",
+          state: "recovering",
+          message: "No Codex output arrived. ADE is restarting the app-server and resuming this thread once.",
+          automatic: true,
+        });
+        persistChatState(managed);
+        try {
+          await recoverCodexTurn({
+            sessionId: managed.session.id,
+            turnId,
+            action: "restart_resume_thread",
+          }, { automatic: true });
+          return;
+        } catch (error) {
+          logger.warn("agent_chat.codex_automatic_recovery_failed", {
+            sessionId: managed.session.id,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+
       emitCodexTurnStalled(managed, runtime, {
         turnId,
-        reason: threadId && !stateProbeFailed ? "no_output" : "app_server_state_unknown",
-        message: "Codex accepted this turn but has not streamed model or tool output yet. You can keep waiting, send a status nudge, or interrupt and retry this thread if it stays stalled.",
+        reason: threadId && !stateProbeFailed ? stallReason : "app_server_state_unknown",
+        message: stallReason === "no_progress"
+          ? "Codex has not produced model or tool activity for 10 minutes. ADE left the turn running so long work is not destroyed."
+          : "Codex still has not produced output after ADE's one automatic restart. Restart and resume again, or keep waiting.",
+        turnStartedAt,
+        lastProgressAt,
       });
     } finally {
       runtime.stallReconcileInFlight.delete(turnId);
@@ -24308,11 +24688,13 @@ export function createAgentChatService(args: {
         for (const [itemId, pending] of runtime.approvals) {
           if (String(pending.requestId) !== String(requestId)) continue;
           runtime.approvals.delete(itemId);
+          const resolvedTurnId = pending.request?.turnId ?? turnIdFromParams;
           emitPendingInputResolved(managed, {
             itemId,
             decision: "cancel",
-            turnId: pending.request?.turnId ?? turnIdFromParams,
+            turnId: resolvedTurnId,
           });
+          resumeCodexTurnWatchdogAfterInput(managed, runtime, resolvedTurnId);
           persistChatState(managed);
           break;
         }
@@ -24442,7 +24824,7 @@ export function createAgentChatService(args: {
     }
 
     if (isCodexUsefulProgressNotification(method, params)) {
-      markCodexTurnProgress(runtime, turnIdFromParams);
+      markCodexTurnProgress(managed, runtime, turnIdFromParams);
     }
 
     if (method === "turn/started") {
@@ -24511,6 +24893,7 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedTurnId ?? randomUUID();
+      markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
       rememberTerminalCodexTurn(runtime, turnId, managed);
       runtime.awaitingTurnStart = false;
       runtime.canAttachResumedTurnStart = false;
@@ -24808,6 +25191,7 @@ export function createAgentChatService(args: {
         return;
       }
       const turnId = resolvedAbortTurnId ?? randomUUID();
+      markAcceptedCodexSteersUnprocessed(managed, runtime, turnId);
       rememberInterruptedCodexTurn(runtime, turnId);
       rememberTerminalCodexTurn(runtime, turnId, managed);
       runtime.awaitingTurnStart = false;
@@ -24915,11 +25299,18 @@ export function createAgentChatService(args: {
 
     if (method === "turn/moderationMetadata") {
       const metadata = normalizeCodexModerationMetadataPayload(params);
+      if (!metadata.metadata || Object.keys(metadata.metadata).length === 0) {
+        return;
+      }
+      const turnId = metadata.turnId ?? turnIdFromParams ?? runtime.activeTurnId ?? undefined;
       emitChatEvent(managed, {
         type: "codex_moderation_metadata",
         metadata,
-        turnId: metadata.turnId ?? turnIdFromParams ?? runtime.activeTurnId ?? undefined,
+        turnId,
       });
+      const diagnosticState = codexTurnDiagnosticState(runtime, turnId);
+      diagnosticState.moderationChecks += 1;
+      emitCodexTurnDiagnostics(managed, runtime, turnId);
       return;
     }
 
@@ -25199,6 +25590,8 @@ export function createAgentChatService(args: {
       stalledTurnIds: new Set<string>(),
       stallReconcileInFlight: new Set<string>(),
       mcpStartupNoticeKeys: new Set<string>(),
+      acceptedSteersByTurnId: new Map<string, Map<string, AcceptedCodexSteer>>(),
+      turnDiagnosticStateByTurnId: new Map(),
       pendingPlanFollowups: [],
       pendingSteers: [],
       slashCommands: [],
@@ -25431,6 +25824,12 @@ export function createAgentChatService(args: {
     ]).then(() => undefined);
 
     runtime.notify("initialized");
+    await hydrateAcceptedCodexSteers(managed, runtime).catch((error) => {
+      logger.warn("agent_chat.codex_accepted_steer_hydration_failed", {
+        sessionId: managed.session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     return runtime;
   };
 
@@ -33436,6 +33835,7 @@ export function createAgentChatService(args: {
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
       preparedMessage?: PreparedSendMessage;
+      automaticRecovery?: boolean;
       routeActiveToSteer: true;
     },
   ): Promise<void | AgentChatSteerResult>;
@@ -33446,6 +33846,7 @@ export function createAgentChatService(args: {
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
       preparedMessage?: PreparedSendMessage;
+      automaticRecovery?: boolean;
       routeActiveToSteer?: false;
     },
   ): Promise<void>;
@@ -33456,6 +33857,7 @@ export function createAgentChatService(args: {
       awaitBackendDispatch?: boolean;
       onBackendDispatched?: () => void;
       preparedMessage?: PreparedSendMessage;
+      automaticRecovery?: boolean;
       routeActiveToSteer?: boolean;
     },
   ): Promise<void | AgentChatSteerResult> {
@@ -33466,6 +33868,9 @@ export function createAgentChatService(args: {
     const routableText = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
       || (args.contextAttachments?.length ?? 0) > 0;
+    if (routableText && !options?.automaticRecovery) {
+      codexAutomaticRecoveryAttemptedBySession.delete(args.sessionId);
+    }
     // Gate BEFORE routing to steer: a send to an already-active chat becomes a
     // steer() (which has no disk gate of its own), so checking after the route
     // would let critical/exhausted pressure keep appending user input and
@@ -33969,16 +34374,22 @@ export function createAgentChatService(args: {
         deliveredTurnId = mismatch.foundTurnId;
         await steerActiveTurn(deliveredTurnId);
       }
-      emitChatEvent(managed, {
-        type: "user_message",
-        text: preparedSteer.visibleText,
-        ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
-        ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
-        ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+      const acceptedSteer: AcceptedCodexSteer = {
         steerId,
-        deliveryState: "delivered",
         turnId: deliveredTurnId,
-      });
+        text: preparedSteer.visibleText,
+        displayText: preparedSteer.visibleText,
+        attachments: preparedSteer.attachments,
+        contextAttachments: preparedSteer.contextAttachments,
+        ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+        acceptedAt: nowIso(),
+      };
+      const acceptedForTurn = runtime.acceptedSteersByTurnId.get(deliveredTurnId)
+        ?? new Map<string, AcceptedCodexSteer>();
+      acceptedForTurn.set(steerId, acceptedSteer);
+      runtime.acceptedSteersByTurnId.set(deliveredTurnId, acceptedForTurn);
+      evictOldestEntries(runtime.acceptedSteersByTurnId, 64);
+      emitAcceptedCodexSteerState(managed, acceptedSteer, "accepted");
       return { steerId, queued: false };
     }
 
@@ -35281,7 +35692,9 @@ export function createAgentChatService(args: {
     sessionId,
     turnId,
     action,
-  }: AgentChatRecoverCodexTurnArgs): Promise<AgentChatRecoverCodexTurnResult> => {
+  }: AgentChatRecoverCodexTurnArgs, internal?: {
+    automatic?: boolean;
+  }): Promise<AgentChatRecoverCodexTurnResult> => {
     const normalizedTurnId = turnId.trim();
     if (!normalizedTurnId) throw new Error("Codex recovery requires a turn id.");
     const managed = ensureManagedSession(sessionId);
@@ -35302,6 +35715,9 @@ export function createAgentChatService(args: {
 
     try {
       if (action === "wait") {
+        // The user explicitly chose to keep this exact turn alive. Do not
+        // surprise them with ADE's automatic restart on the next watch cycle.
+        codexAutomaticRecoveryAttemptedBySession.add(sessionId);
         scheduleCodexNoFirstEventWatchdog(managed, runtime, normalizedTurnId);
         emitChatEvent(managed, {
           type: "system_notice",
@@ -35349,14 +35765,241 @@ export function createAgentChatService(args: {
         text: action === "restart_resume_thread"
           ? "Resume the interrupted work from the user's last request. Re-check the current workspace state, continue safely, and report progress."
           : "Retry the interrupted work from the user's last request in this thread. Re-check the current workspace state, continue safely, and report progress.",
-      }, { awaitDispatch: true });
+      }, { awaitDispatch: true, automaticRecovery: internal?.automatic === true });
+      if (action === "restart_resume_thread") {
+        emitCodexTurnRecovery(managed, {
+          turnId: normalizedTurnId,
+          action,
+          state: "recovered",
+          message: internal?.automatic
+            ? "ADE restarted the Codex app-server and resumed the thread."
+            : "Codex restarted and the thread resumed.",
+          automatic: internal?.automatic === true,
+        });
+        persistChatState(managed);
+      }
       return {
         action,
         turnId: normalizedTurnId,
         status: action === "restart_resume_thread" ? "resumed" : "retrying",
       };
+    } catch (error) {
+      if (action === "restart_resume_thread") {
+        emitCodexTurnRecovery(managed, {
+          turnId: normalizedTurnId,
+          action,
+          state: "failed",
+          message: error instanceof Error ? error.message : String(error),
+          automatic: internal?.automatic === true,
+        });
+        persistChatState(managed);
+      }
+      throw error;
     } finally {
       codexRecoveryInFlight.delete(recoveryKey);
+    }
+  };
+
+  const recoverTurn = async (
+    args: AgentChatRecoverTurnArgs,
+  ): Promise<AgentChatRecoverTurnResult> => {
+    const legacyAction = {
+      wait: "wait",
+      nudge: "steer",
+      retry_same_runtime: "interrupt_retry_same_thread",
+      restart_resume: "restart_resume_thread",
+    }[args.action] as AgentChatRecoverCodexTurnArgs["action"];
+    const result = await recoverCodexTurn({
+      sessionId: args.sessionId,
+      turnId: args.turnId,
+      action: legacyAction,
+    });
+    return {
+      action: args.action,
+      turnId: result.turnId,
+      status: result.status,
+    };
+  };
+
+  const resolveUnprocessedMessage = async (
+    args: AgentChatResolveUnprocessedMessageArgs,
+  ): Promise<AgentChatResolveUnprocessedMessageResult> => {
+    const sessionId = args.sessionId.trim();
+    const steerId = args.steerId.trim();
+    if (!sessionId || !steerId) {
+      throw new Error("Resolving an unprocessed message requires a session and steer id.");
+    }
+    // Run-next and dismiss are mutually exclusive terminal actions for the
+    // same durable message. Serialize by steer id so two clients cannot race
+    // different choices and accidentally dispatch after a dismissal.
+    const resolutionKey = `${sessionId}:${steerId}`;
+    const existing = unprocessedMessageResolutionInFlight.get(resolutionKey);
+    if (existing) return await existing;
+
+    const resolution = (async (): Promise<AgentChatResolveUnprocessedMessageResult> => {
+      const managed = ensureManagedSession(sessionId);
+      const history = await readTranscriptEnvelopesForSessionIdAsync(
+        sessionId,
+        8 * 1024 * 1024,
+      );
+      let original: Extract<AgentChatEvent, { type: "user_message" }> | null = null;
+      let alreadyCompleted: Extract<AgentChatEvent, { type: "user_message_resolution" }> | null = null;
+      let replacementMessageId: string | undefined;
+      let pendingReplacementMessageId: string | undefined;
+
+      for (const envelope of history.envelopes) {
+        const event = envelope.event;
+        if (event.type === "user_message" && event.steerId === steerId) {
+          original = event;
+        }
+        if (
+          event.type === "user_message_resolution"
+          && event.steerId === steerId
+        ) {
+          alreadyCompleted = event;
+        }
+        if (event.type === "user_message") {
+          const replayMetadata = event.metadata?.replayedFromUnprocessedSteer;
+          if (
+            replayMetadata?.sourceSteerId === steerId
+            && replayMetadata.action === "run_next"
+          ) {
+            pendingReplacementMessageId = replayMetadata.replacementMessageId;
+          }
+        }
+        if (
+          pendingReplacementMessageId
+          && event.type === "status"
+          && event.turnStatus === "started"
+          && event.turnId?.trim()
+        ) {
+          replacementMessageId = pendingReplacementMessageId;
+          pendingReplacementMessageId = undefined;
+        }
+        if (
+          pendingReplacementMessageId
+          && (
+            (event.type === "status" && event.turnStatus === "failed")
+            || (event.type === "done" && event.status === "failed")
+          )
+        ) {
+          pendingReplacementMessageId = undefined;
+        }
+      }
+
+      // The replacement user message is the durable dispatch commit point. If
+      // the brain stopped before writing the matching resolution receipt, any
+      // later retry must converge on Run next even when another client asks to
+      // dismiss the original in the meantime.
+      if (replacementMessageId) {
+        if (alreadyCompleted?.action !== "run_next") {
+          emitChatEvent(managed, {
+            type: "user_message_resolution",
+            steerId,
+            action: "run_next",
+            state: "completed",
+            resolvedAt: nowIso(),
+            replacementMessageId,
+          });
+          persistChatState(managed);
+        }
+        return {
+          steerId,
+          action: "run_next",
+          status: "already_completed",
+          replacementMessageId,
+        };
+      }
+
+      if (alreadyCompleted) {
+        return {
+          steerId,
+          action: alreadyCompleted.action,
+          status: "already_completed",
+          ...(alreadyCompleted.replacementMessageId
+            ? { replacementMessageId: alreadyCompleted.replacementMessageId }
+            : {}),
+        };
+      }
+
+      if (!original || original.deliveryState !== "unprocessed") {
+        throw new Error("This follow-up is no longer waiting to be resolved.");
+      }
+
+      if (args.action === "dismiss") {
+        emitChatEvent(managed, {
+          type: "user_message_resolution",
+          steerId,
+          action: "dismiss",
+          state: "completed",
+          resolvedAt: nowIso(),
+        });
+        persistChatState(managed);
+        return { steerId, action: args.action, status: "completed" };
+      }
+
+      const runtime = managed.runtime;
+      const activeTurnId = runtime?.kind === "codex"
+        ? runtime.activeTurnId ?? runtime.startedTurnId
+        : null;
+      if (managed.session.status === "active" || activeTurnId) {
+        throw new Error("A turn is already active. Wait for it to finish, then run this message.");
+      }
+
+      const dispatchedReplacementMessageId = randomUUID();
+      let dispatchReceiptWritten = false;
+      await sendMessage({
+        sessionId,
+        text: original.text,
+        ...(original.displayText ? { displayText: original.displayText } : {}),
+        ...(original.attachments?.length ? { attachments: original.attachments } : {}),
+        ...(original.contextAttachments?.length ? { contextAttachments: original.contextAttachments } : {}),
+        metadata: {
+          ...(original.metadata ?? {}),
+          replayedFromUnprocessedSteer: {
+            sourceSteerId: steerId,
+            action: "run_next",
+            replacementMessageId: dispatchedReplacementMessageId,
+          },
+        },
+      }, {
+        awaitBackendDispatch: true,
+        onBackendDispatched: () => {
+          emitChatEvent(managed, {
+            type: "user_message_resolution",
+            steerId,
+            action: "run_next",
+            state: "completed",
+            resolvedAt: nowIso(),
+            replacementMessageId: dispatchedReplacementMessageId,
+          });
+          persistChatState(managed);
+          dispatchReceiptWritten = true;
+        },
+      });
+      if (!dispatchReceiptWritten) {
+        emitChatEvent(managed, {
+          type: "user_message_resolution",
+          steerId,
+          action: "run_next",
+          state: "completed",
+          resolvedAt: nowIso(),
+          replacementMessageId: dispatchedReplacementMessageId,
+        });
+        persistChatState(managed);
+      }
+      return {
+        steerId,
+        action: args.action,
+        status: "completed",
+        replacementMessageId: dispatchedReplacementMessageId,
+      };
+    })();
+    unprocessedMessageResolutionInFlight.set(resolutionKey, resolution);
+    try {
+      return await resolution;
+    } finally {
+      unprocessedMessageResolutionInFlight.delete(resolutionKey);
     }
   };
 
@@ -36445,6 +37088,13 @@ export function createAgentChatService(args: {
         turnId: localPending.request.turnId ?? null,
       });
       localPending.resolve({ decision: resolvedDecision, answers, responseText });
+      if (managed.runtime?.kind === "codex") {
+        resumeCodexTurnWatchdogAfterInput(
+          managed,
+          managed.runtime,
+          localPending.request.turnId,
+        );
+      }
       return;
     }
 
@@ -36487,6 +37137,19 @@ export function createAgentChatService(args: {
           throw new Error("Codex app-server connection is unavailable. Retry after the session reconnects.");
         }
       };
+      const completeCodexPendingInput = (): void => {
+        runtime.approvals.delete(itemId);
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision: resolvedDecision,
+          turnId: pending.request?.turnId ?? null,
+        });
+        resumeCodexTurnWatchdogAfterInput(
+          managed,
+          runtime,
+          pending.request?.turnId,
+        );
+      };
 
       // Plan approval is created locally (not a JSON-RPC server request).
       // The planning turn may still be running when the user decides, so we
@@ -36524,12 +37187,7 @@ export function createAgentChatService(args: {
             ? { persist: "always" }
             : null,
         });
-        runtime.approvals.delete(itemId);
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: resolvedDecision,
-          turnId: pending.request?.turnId ?? null,
-        });
+        completeCodexPendingInput();
         return;
       }
 
@@ -36540,12 +37198,7 @@ export function createAgentChatService(args: {
           permissions: approved ? (pending.permissions ?? {}) : {},
           scope: resolvedDecision === "accept_for_session" ? "session" : "turn",
         });
-        runtime.approvals.delete(itemId);
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: resolvedDecision,
-          turnId: pending.request?.turnId ?? null,
-        });
+        completeCodexPendingInput();
         return;
       }
       if (pending.kind === "structured_question") {
@@ -36555,12 +37208,7 @@ export function createAgentChatService(args: {
           // interrupting the surrounding turn.
           ensureWritable();
           runtime.sendResponse(pending.requestId, { answers: {} });
-          runtime.approvals.delete(itemId);
-          emitPendingInputResolved(managed, {
-            itemId,
-            decision: resolvedDecision,
-            turnId: pending.request?.turnId ?? null,
-          });
+          completeCodexPendingInput();
           return;
         }
         const normalizedAnswers = normalizePendingInputAnswers(pending.request, answers, responseText);
@@ -36570,24 +37218,14 @@ export function createAgentChatService(args: {
             Object.entries(normalizedAnswers).map(([questionId, values]) => [questionId, { answers: values }]),
           ),
         });
-        runtime.approvals.delete(itemId);
-        emitPendingInputResolved(managed, {
-          itemId,
-          decision: resolvedDecision,
-          turnId: pending.request?.turnId ?? null,
-        });
+        completeCodexPendingInput();
         return;
       }
 
       const mapped = mapApprovalDecisionForCodex(resolvedDecision);
       ensureWritable();
       runtime.sendResponse(pending.requestId, { decision: mapped });
-      runtime.approvals.delete(itemId);
-      emitPendingInputResolved(managed, {
-        itemId,
-        decision: resolvedDecision,
-        turnId: pending.request?.turnId ?? null,
-      });
+      completeCodexPendingInput();
       return;
     }
 
@@ -40636,7 +41274,9 @@ export function createAgentChatService(args: {
     dispatchSteer,
     cancelDispatchedSteer,
     interrupt,
+    recoverTurn,
     recoverCodexTurn,
+    resolveUnprocessedMessage,
     recoverContinuity,
     resumeSession,
     listSessions,

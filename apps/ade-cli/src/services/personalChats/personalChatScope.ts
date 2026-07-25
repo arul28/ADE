@@ -229,6 +229,14 @@ export class PersonalChatScope {
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.interrupt(args as never);
         break;
+      case "recoverTurn":
+        await this.requirePersonalSession(service, readSessionId(args));
+        result = await service.recoverTurn(args as never);
+        break;
+      case "resolveUnprocessedMessage":
+        await this.requirePersonalSession(service, readSessionId(args));
+        result = await service.resolveUnprocessedMessage(args as never);
+        break;
       case "respondToInput":
         await this.requirePersonalSession(service, readSessionId(args));
         result = await service.respondToInput(args as never);

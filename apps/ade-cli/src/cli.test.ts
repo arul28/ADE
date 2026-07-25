@@ -2986,11 +2986,11 @@ describe("ADE CLI", () => {
 
   it.each([
     ["wait", "wait"],
-    ["nudge", "steer"],
-    ["retry", "interrupt_retry_same_thread"],
-    ["resume", "restart_resume_thread"],
+    ["nudge", "nudge"],
+    ["retry", "retry_same_runtime"],
+    ["resume", "restart_resume"],
   ] as const)("maps chat recovery action %s to %s", (cliAction, action) => {
-    const executePlan = expectExecutePlan(buildCliPlan([
+    const plan = buildCliPlan([
       "chat",
       "recover",
       "chat-1",
@@ -2998,20 +2998,44 @@ describe("ADE CLI", () => {
       "turn-1",
       "--action",
       cliAction,
-    ]));
+    ]);
 
-    expect(executePlan.label).toBe("chat recover");
-    expect(executePlan.steps[0]?.params).toMatchObject({
+    expect(plan).toEqual({
+      kind: "chat-recover",
+      sessionId: "chat-1",
+      turnId: "turn-1",
+      action,
+    });
+  });
+
+  it("builds durable unprocessed-message resolution actions", () => {
+    const runNext = expectExecutePlan(buildCliPlan([
+      "chat",
+      "resolve-unprocessed",
+      "chat-1",
+      "--steer",
+      "steer-1",
+      "--action",
+      "run-next",
+    ]));
+    expect(runNext.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "chat",
-        action: "recoverCodexTurn",
+        action: "resolveUnprocessedMessage",
         args: {
           sessionId: "chat-1",
-          turnId: "turn-1",
-          action,
+          steerId: "steer-1",
+          action: "run_next",
         },
       },
     });
+
+    expect(() => buildCliPlan([
+      "chat", "resolve-unprocessed", "chat-1", "--action", "dismiss",
+    ])).toThrow(/steerId/);
+    expect(() => buildCliPlan([
+      "chat", "resolve-unprocessed", "chat-1", "--steer", "steer-1", "--action", "retry",
+    ])).toThrow(/run-next or dismiss/);
   });
 
   it("rejects incomplete or unknown chat recovery requests", () => {
@@ -3021,6 +3045,81 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan([
       "chat", "recover", "chat-1", "--turn", "turn-1", "--action", "replace",
     ])).toThrow(/wait, nudge, retry, or resume/);
+  });
+
+  posixIt("prefers provider-neutral recovery and falls back for an older Codex brain", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-chat-recover-sock-"));
+    const socketPath = path.join(root, "ade.sock");
+    const actions: Array<{ action: string; args: unknown }> = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "ade/actions/call") {
+          const action = request.params?.arguments?.action;
+          const args = request.params?.arguments?.args;
+          actions.push({ action, args });
+          if (action === "recoverTurn") {
+            throw new Error("Unknown chat action: recoverTurn");
+          }
+          if (action === "recoverCodexTurn") {
+            return {
+              domain: "chat",
+              action,
+              result: {
+                turnId: "turn-1",
+                action: "interrupt_retry_same_thread",
+                status: "retrying",
+              },
+            };
+          }
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await runCli([
+        "--socket",
+        socketPath,
+        "chat",
+        "recover",
+        "chat-1",
+        "--turn",
+        "turn-1",
+        "--action",
+        "retry",
+        "--json",
+      ]);
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.output)).toMatchObject({
+        turnId: "turn-1",
+        action: "retry_same_runtime",
+        status: "retrying",
+      });
+      expect(actions).toEqual([
+        {
+          action: "recoverTurn",
+          args: {
+            sessionId: "chat-1",
+            turnId: "turn-1",
+            action: "retry_same_runtime",
+          },
+        },
+        {
+          action: "recoverCodexTurn",
+          args: {
+            sessionId: "chat-1",
+            turnId: "turn-1",
+            action: "interrupt_retry_same_thread",
+          },
+        },
+      ]);
+    } finally {
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("filters the typed chat model inventory by provider", () => {
@@ -3376,6 +3475,48 @@ describe("ADE CLI", () => {
             url: "https://example.test/image.png",
             path: "https://example.test/image.png",
           }],
+        },
+      },
+    });
+
+    const recover = expectExecutePlan(buildCliPlan([
+      "chat",
+      "recover",
+      "personal-1",
+      "--personal",
+      "--turn",
+      "turn-1",
+      "--action",
+      "retry",
+    ]));
+    expect(recover.steps[0]).toMatchObject({
+      params: {
+        action: "recoverTurn",
+        args: {
+          sessionId: "personal-1",
+          turnId: "turn-1",
+          action: "retry_same_runtime",
+        },
+      },
+    });
+
+    const resolveUnprocessed = expectExecutePlan(buildCliPlan([
+      "chat",
+      "resolve-unprocessed",
+      "personal-1",
+      "--personal",
+      "--steer",
+      "steer-1",
+      "--action",
+      "dismiss",
+    ]));
+    expect(resolveUnprocessed.steps[0]).toMatchObject({
+      params: {
+        action: "resolveUnprocessedMessage",
+        args: {
+          sessionId: "personal-1",
+          steerId: "steer-1",
+          action: "dismiss",
         },
       },
     });
@@ -6092,6 +6233,7 @@ describe("ADE CLI", () => {
     expect(chatHelp.text).toContain("ade chat steer <session>");
     expect(chatHelp.text).toContain("ade chat wait <session>");
     expect(chatHelp.text).toContain("ade chat recover <session>");
+    expect(chatHelp.text).toContain("ade chat resolve-unprocessed <session>");
     expect(chatHelp.text).toContain("ade chat models --provider codex");
     expect(chatHelp.text).toContain("ade chat read <session>");
     expect(chatHelp.text).toContain("ade new chat --mode cli");
@@ -6119,8 +6261,14 @@ describe("ADE CLI", () => {
     const chatRecoveryHelp = buildCliPlan(["help", "chat", "recover"]);
     expect(chatRecoveryHelp.kind).toBe("help");
     if (chatRecoveryHelp.kind !== "help") return;
-    expect(chatRecoveryHelp.text).toContain("same actions as the desktop");
+    expect(chatRecoveryHelp.text).toContain("desktop and mobile recovery cards");
     expect(chatRecoveryHelp.text).toContain("--action resume");
+
+    const chatResolutionHelp = buildCliPlan(["help", "chat", "resolve-unprocessed"]);
+    expect(chatResolutionHelp.kind).toBe("help");
+    if (chatResolutionHelp.kind !== "help") return;
+    expect(chatResolutionHelp.text).toContain("durable and idempotent");
+    expect(chatResolutionHelp.text).toContain("--action dismiss");
 
     const agentSpawnHelp = buildCliPlan(["agent", "spawn", "--help"]);
     expect(agentSpawnHelp.kind).toBe("help");

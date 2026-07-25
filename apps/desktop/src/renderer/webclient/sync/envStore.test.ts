@@ -132,7 +132,7 @@ describe("web-client trust reset migration", () => {
     await expect(store.listEnvironments()).resolves.toHaveLength(2);
   });
 
-  it("prunes signed-out and wrong-account environments before launch", async () => {
+  it("preserves signed-out direct trust but prunes a different signed-in account", async () => {
     const storage = new MemoryStorage();
     const store = new WebClientEnvStore(storage);
     await store.saveEnvironment(legacyEnvironment("manual"));
@@ -159,11 +159,12 @@ describe("web-client trust reset migration", () => {
       ]),
     );
     await expect(store.pruneAccountOwnedEnvironments(null)).resolves.toEqual({
-      removedIds: ["current"],
-      environments: [expect.objectContaining({ envId: "manual" })],
+      removedIds: [],
+      environments: expect.arrayContaining([
+        expect.objectContaining({ envId: "manual" }),
+        expect.objectContaining({ envId: "current" }),
+      ]),
     });
-    await expect(store.listEnvironments()).resolves.toEqual([
-      expect.objectContaining({ envId: "manual" }),
-    ]);
+    await expect(store.listEnvironments()).resolves.toHaveLength(2);
   });
 });

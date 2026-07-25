@@ -14,6 +14,10 @@ import type {
   AgentChatCodexConfigSource,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatRecoverTurnArgs,
+  AgentChatRecoverTurnResult,
+  AgentChatResolveUnprocessedMessageArgs,
+  AgentChatResolveUnprocessedMessageResult,
   AgentChatCodexSandbox,
   AgentChatContextUsage,
   AgentChatCursorConfigValue,
@@ -786,6 +790,69 @@ export async function recoverCodexTurn(
   return await connection.action<AgentChatRecoverCodexTurnResult>(
     "chat",
     "recoverCodexTurn",
+    args,
+  );
+}
+
+function isUnsupportedRecoveryActionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /\b(?:unsupported|unknown)\s+(?:chat\s+)?(?:method|action|command)\b/i.test(message)
+    || /\b(?:method|action|command)\s+(?:is\s+)?not supported\b/i.test(message)
+    || /\b(?:recoverTurn|chat\.recoverTurn)\b.*\b(?:not supported|not available)\b/i.test(message)
+    || /\b(?:not supported|not available)\b.*\b(?:recoverTurn|chat\.recoverTurn)\b/i.test(message)
+  );
+}
+
+const LEGACY_RECOVERY_ACTION_BY_NEUTRAL: Readonly<Record<
+  AgentChatRecoverTurnArgs["action"],
+  AgentChatRecoverCodexTurnArgs["action"]
+>> = {
+  wait: "wait",
+  nudge: "steer",
+  retry_same_runtime: "interrupt_retry_same_thread",
+  restart_resume: "restart_resume_thread",
+};
+
+/**
+ * Prefer the provider-neutral recovery action, while retaining compatibility
+ * with brains that predate chat.recoverTurn.
+ */
+export async function recoverTurn(
+  connection: AdeCodeConnection,
+  args: AgentChatRecoverTurnArgs,
+  options: { allowLegacyCodexFallback?: boolean } = {},
+): Promise<AgentChatRecoverTurnResult> {
+  try {
+    return await connection.action<AgentChatRecoverTurnResult>("chat", "recoverTurn", args);
+  } catch (error) {
+    if (
+      options.allowLegacyCodexFallback !== true
+      || !isUnsupportedRecoveryActionError(error)
+    ) {
+      throw error;
+    }
+    const legacyAction = LEGACY_RECOVERY_ACTION_BY_NEUTRAL[args.action];
+    const result = await recoverCodexTurn(connection, {
+      sessionId: args.sessionId,
+      turnId: args.turnId,
+      action: legacyAction,
+    });
+    return {
+      action: args.action,
+      turnId: result.turnId,
+      status: result.status,
+    };
+  }
+}
+
+export async function resolveUnprocessedMessage(
+  connection: AdeCodeConnection,
+  args: AgentChatResolveUnprocessedMessageArgs,
+): Promise<AgentChatResolveUnprocessedMessageResult> {
+  return await connection.action<AgentChatResolveUnprocessedMessageResult>(
+    "chat",
+    "resolveUnprocessedMessage",
     args,
   );
 }

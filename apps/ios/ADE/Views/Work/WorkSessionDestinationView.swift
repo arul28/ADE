@@ -1200,6 +1200,17 @@ struct WorkSessionDestinationView: View {
     } else {
       loadOlderTranscriptAction = { await loadOlderTranscriptEntries() }
     }
+    let supportsRecovery = syncService.supportsChatRemoteAction(
+      "chat.recoverTurn",
+      sessionId: session.id
+    ) || syncService.supportsChatRemoteAction(
+      "chat.recoverCodexTurn",
+      sessionId: session.id
+    )
+    let supportsUnprocessedResolution = syncService.supportsChatRemoteAction(
+      "chat.resolveUnprocessedMessage",
+      sessionId: session.id
+    )
     return WorkChatSessionView(
       session: WorkChatSessionRenderContext(session),
       chatSummaryContext: WorkChatSummaryRenderContext(composerChatSummary),
@@ -1288,9 +1299,16 @@ struct WorkSessionDestinationView: View {
       personalSessionUpdatesAvailable: !personalChat
         || syncService.canInvokeRemoteAction("personalChats.updateSession"),
       onRecoverCodexTurn: workChatCodexRecoveryAvailable(
-        hostSupportsRecovery: syncService.supportsRemoteAction("chat.recoverCodexTurn"),
+        hostSupportsRecovery: supportsRecovery,
         viewingSubagent: viewingSubagent
-      ) ? recoverCodexTurn : nil
+      ) ? recoverCodexTurn : nil,
+      onRunUnprocessedMessage: !viewingSubagent && supportsUnprocessedResolution
+        ? runUnprocessedMessage
+        : nil,
+      onEditUnprocessedMessage: !viewingSubagent ? editUnprocessedMessage : nil,
+      onDismissUnprocessedMessage: !viewingSubagent && supportsUnprocessedResolution
+        ? dismissUnprocessedMessage
+        : nil
     )
   }
 

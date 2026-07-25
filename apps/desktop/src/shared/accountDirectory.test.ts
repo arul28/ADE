@@ -5,7 +5,7 @@ import {
 import type { AdeAccountMachine } from "./types/account";
 
 describe("accountMachineAdoptionRoutes", () => {
-  it("orders validated relay, tailnet, and LAN routes", () => {
+  it("orders validated LAN, tailnet, and relay routes", () => {
     const machine: AdeAccountMachine = {
       machineKey: "machine-studio",
       deviceId: "device-studio",
@@ -29,16 +29,16 @@ describe("accountMachineAdoptionRoutes", () => {
     expect(accountMachineAdoptionRoutes(machine, ["https://relay.example"]))
       .toEqual([
         {
-          endpoint: "wss://relay.example/connect/machine-studio",
-          kind: "relay",
+          endpoint: "ws://studio.local:8787/",
+          kind: "lan",
         },
         {
           endpoint: "ws://100.75.20.63:8787/",
           kind: "tailnet",
         },
         {
-          endpoint: "ws://studio.local:8787/",
-          kind: "lan",
+          endpoint: "wss://relay.example/connect/machine-studio",
+          kind: "relay",
         },
       ]);
   });

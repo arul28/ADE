@@ -23,7 +23,7 @@ import {
 import { findSmartLinks } from "../../../desktop/src/shared/smartLinks";
 import type {
   AgentChatClaudePlugin,
-  AgentChatCodexRecoveryAction,
+  AgentChatTurnRecoveryAction,
   AgentChatReloadClaudePluginsResult,
   AgentChatEventEnvelope,
   AgentChatFileRef,
@@ -94,7 +94,8 @@ import {
   normalizeChatTerminalSession,
   previewTerminal,
   renameChat,
-  recoverCodexTurn,
+  recoverTurn,
+  resolveUnprocessedMessage,
   requestSessionAttention,
   resumeTerminalSession,
   resizeTerminal,
@@ -1718,47 +1719,113 @@ function splitFirstArg(input: string): { first: string; rest: string } {
   };
 }
 
-const CODEX_RECOVERY_ACTION_ALIASES: Readonly<Record<string, AgentChatCodexRecoveryAction>> = {
+const TURN_RECOVERY_ACTION_ALIASES: Readonly<Record<string, AgentChatTurnRecoveryAction>> = {
   wait: "wait",
-  nudge: "steer",
-  steer: "steer",
-  retry: "interrupt_retry_same_thread",
-  interrupt_retry_same_thread: "interrupt_retry_same_thread",
-  resume: "restart_resume_thread",
-  restart_resume_thread: "restart_resume_thread",
+  nudge: "nudge",
+  steer: "nudge",
+  retry: "retry_same_runtime",
+  retry_same_runtime: "retry_same_runtime",
+  interrupt_retry_same_thread: "retry_same_runtime",
+  resume: "restart_resume",
+  restart_resume: "restart_resume",
+  restart_resume_thread: "restart_resume",
 };
 
-export function resolveTuiCodexRecoveryRequest(args: {
+export function resolveTuiRecoveryRequest(args: {
   input: string;
   sessionId: string;
   events: readonly AgentChatEventEnvelope[];
-}): { action: AgentChatCodexRecoveryAction; turnId: string; sessionId: string } | null {
+}): {
+  action: AgentChatTurnRecoveryAction;
+  turnId: string;
+  sessionId: string;
+  provider: string | null;
+} | null {
   const parsed = splitFirstArg(args.input);
-  const action = CODEX_RECOVERY_ACTION_ALIASES[parsed.first.trim().toLowerCase().replace(/-/g, "_")];
+  const action = TURN_RECOVERY_ACTION_ALIASES[parsed.first.trim().toLowerCase().replace(/-/g, "_")];
   if (!action) return null;
   const explicitTurnId = splitFirstArg(parsed.rest).first;
   if (explicitTurnId) {
     const matchingEnvelope = [...args.events].reverse().find((envelope) =>
-      envelope.event.type === "codex_turn_stalled" && envelope.event.turnId === explicitTurnId
+      (envelope.event.type === "turn_health" || envelope.event.type === "codex_turn_stalled")
+      && envelope.event.turnId === explicitTurnId
     );
     const targetSessionId = matchingEnvelope?.event.type === "codex_turn_stalled"
       ? matchingEnvelope.event.sourceSessionId?.trim() || matchingEnvelope.sessionId
+      : matchingEnvelope?.event.type === "turn_health"
+        ? matchingEnvelope.event.sourceSessionId?.trim() || matchingEnvelope.sessionId
       : args.sessionId;
-    return { action, turnId: explicitTurnId, sessionId: targetSessionId };
+    const provider = matchingEnvelope?.event.type === "turn_health"
+      ? matchingEnvelope.event.provider
+      : matchingEnvelope?.event.type === "codex_turn_stalled"
+        ? "codex"
+        : null;
+    return {
+      action,
+      turnId: explicitTurnId,
+      sessionId: targetSessionId,
+      provider,
+    };
   }
   for (let index = args.events.length - 1; index >= 0; index -= 1) {
     const envelope = args.events[index];
-    if (envelope?.event.type !== "codex_turn_stalled") continue;
+    if (
+      envelope?.event.type !== "turn_health"
+      && envelope?.event.type !== "codex_turn_stalled"
+    ) continue;
     return {
       action,
       turnId: envelope.event.turnId,
-      sessionId: envelope.event.sourceSessionId?.trim() || envelope.sessionId,
+      sessionId: envelope.event.type === "codex_turn_stalled"
+        ? envelope.event.sourceSessionId?.trim() || envelope.sessionId
+        : envelope.event.sourceSessionId?.trim() || envelope.sessionId,
+      provider: envelope.event.type === "turn_health"
+        ? envelope.event.provider
+        : "codex",
     };
   }
   return null;
 }
 
-export function resolveTuiCodexRecoveryTargetProvider(args: {
+export function resolveTuiUnprocessedMessageRequest(args: {
+  input: string;
+  sessionId: string | null;
+}): { steerId: string; sessionId: string } | null {
+  const steer = splitFirstArg(args.input);
+  if (!steer.first) return null;
+  const session = splitFirstArg(steer.rest);
+  if (session.rest) return null;
+  const targetSessionId = session.first || args.sessionId?.trim() || "";
+  if (!targetSessionId) return null;
+  return { steerId: steer.first, sessionId: targetSessionId };
+}
+
+export function resolveTuiUnprocessedMessageDraft(args: {
+  steerId: string;
+  events: readonly AgentChatEventEnvelope[];
+}): string | null {
+  for (let index = args.events.length - 1; index >= 0; index -= 1) {
+    const event = args.events[index]?.event;
+    if (
+      event?.type === "user_message_resolution"
+      && event.steerId === args.steerId
+    ) {
+      return null;
+    }
+    if (
+      event?.type !== "user_message"
+      || event.steerId !== args.steerId
+      || event.deliveryState !== "unprocessed"
+    ) {
+      continue;
+    }
+    const text = event.displayText?.trim() || event.text.trim();
+    return text || null;
+  }
+  return null;
+}
+
+export function resolveTuiRecoveryTargetProvider(args: {
   targetSessionId: string;
   visibleSessionId: string;
   visibleProvider: AgentChatSessionSummary["provider"] | null | undefined;
@@ -1767,8 +1834,7 @@ export function resolveTuiCodexRecoveryTargetProvider(args: {
   const targetSession = args.sessions.find((session) => session.sessionId === args.targetSessionId);
   if (targetSession) return targetSession.provider;
   // An orchestration child may not have reached the TUI's session inventory yet.
-  // In that case the forwarded stalled event remains authoritative and the
-  // service performs the final Codex-provider validation.
+  // The forwarded health event remains authoritative for that case.
   return args.targetSessionId === args.visibleSessionId ? args.visibleProvider ?? null : null;
 }
 
@@ -9994,16 +10060,83 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       return;
     }
+    if (
+      name === "/run-next"
+      || name === "/edit-message"
+      || name === "/dismiss-message"
+    ) {
+      if (activeTerminalSessionRef.current) {
+        setRightPane({
+          kind: "details",
+          title: "Unprocessed message",
+          body: "Message recovery is available for Work chats, not CLI terminals.",
+        });
+        return;
+      }
+      const request = resolveTuiUnprocessedMessageRequest({
+        input: args,
+        sessionId,
+      });
+      if (!request) {
+        setRightPane({
+          kind: "details",
+          title: "Unprocessed message",
+          body: `Usage: ${name} <steer-id> [session-id]`,
+        });
+        return;
+      }
+      if (name === "/edit-message") {
+        const targetEvents = eventsBySessionIdRef.current[request.sessionId]
+          ?? (request.sessionId === sessionId ? eventsRef.current : []);
+        const restoredText = resolveTuiUnprocessedMessageDraft({
+          steerId: request.steerId,
+          events: targetEvents,
+        });
+        if (!restoredText) {
+          const message = "That unresolved message is not available in the loaded chat transcript.";
+          setRightPane({ kind: "details", title: "Unprocessed message", body: message });
+          addNotice(message, "error");
+          return;
+        }
+        chatDraftRef.current = restoredText;
+        focusChat();
+        addNotice("Restored unprocessed message to the composer.", "success");
+        return;
+      }
+      const action = name === "/run-next" ? "run_next" : "dismiss";
+      try {
+        const result = await resolveUnprocessedMessage(conn, { ...request, action });
+        const label = action === "run_next"
+          ? result.status === "already_completed"
+            ? "Message was already started as the next turn"
+            : "Started message as the next turn"
+          : result.status === "already_completed"
+            ? "Message was already dismissed"
+            : "Dismissed unprocessed message";
+        setRightPane({
+          kind: "details",
+          title: "Unprocessed message",
+          body: `${label}\nMessage ${result.steerId}`,
+        });
+        addNotice(label, "success");
+        await refreshState();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setRightPane({ kind: "details", title: "Unprocessed message", body: message });
+        addNotice(message, "error");
+      }
+      return;
+    }
     if (name === "/recover") {
       if (!sessionId || activeTerminalSessionRef.current) {
         setRightPane({
           kind: "details",
-          title: "Codex recovery",
-          body: "Recovery is available for an active Codex Work chat, not a CLI terminal.",
+          title: "Turn recovery",
+          body: "Recovery is available for an active Work chat, not a CLI terminal.",
         });
         return;
       }
-      const request = resolveTuiCodexRecoveryRequest({
+      const request = resolveTuiRecoveryRequest({
         input: args,
         sessionId,
         events: eventsRef.current,
@@ -10011,48 +10144,48 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (!request) {
         setRightPane({
           kind: "details",
-          title: "Codex recovery",
+          title: "Turn recovery",
           body: [
             "Usage: /recover <wait|nudge|retry|resume> [turn-id]",
             "",
+            "resume restarts the provider runtime and resumes the turn.",
+            "retry keeps the current provider runtime and retries the same turn.",
             "The turn id is optional when this chat has a recent stalled-turn notice.",
           ].join("\n"),
         });
         return;
       }
-      const targetProvider = resolveTuiCodexRecoveryTargetProvider({
+      const targetProvider = request.provider ?? resolveTuiRecoveryTargetProvider({
         targetSessionId: request.sessionId,
         visibleSessionId: sessionId,
         visibleProvider: activeSession?.provider,
         sessions,
       });
-      if (targetProvider && targetProvider !== "codex") {
-        setRightPane({
-          kind: "details",
-          title: "Codex recovery",
-          body: "/recover target is not a Codex chat.",
-        });
-        return;
-      }
       try {
-        const result = await recoverCodexTurn(conn, request);
+        const result = await recoverTurn(conn, {
+          sessionId: request.sessionId,
+          turnId: request.turnId,
+          action: request.action,
+        }, {
+          allowLegacyCodexFallback: targetProvider === "codex",
+        });
         const label = request.action === "wait"
-          ? "Waiting"
-          : request.action === "steer"
+          ? "Keeping the current turn open"
+          : request.action === "nudge"
             ? "Status nudge sent"
-            : request.action === "interrupt_retry_same_thread"
-              ? "Retrying the same thread"
-              : "App server restarted; thread resumed";
+            : request.action === "retry_same_runtime"
+              ? "Retrying on the same provider runtime"
+              : "Provider runtime restarted; turn resumed";
         setRightPane({
           kind: "details",
-          title: "Codex recovery",
+          title: "Turn recovery",
           body: `${label} · ${result.status}\nTurn ${result.turnId}`,
         });
         addNotice(label, "success");
         await refreshState();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        setRightPane({ kind: "details", title: "Codex recovery", body: message });
+        setRightPane({ kind: "details", title: "Turn recovery", body: message });
         addNotice(message, "error");
       }
       return;

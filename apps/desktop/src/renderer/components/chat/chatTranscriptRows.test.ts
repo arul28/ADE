@@ -2613,6 +2613,82 @@ describe("subagent two-row rendering", () => {
     });
     expect(rows[1]?.event.type).toBe("user_message");
   });
+
+  it("folds durable steer and diagnostic lifecycle snapshots into stable rows", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T09:00:00.000Z", {
+        type: "user_message",
+        text: "Check the release.",
+        steerId: "steer-1",
+        deliveryState: "accepted",
+        turnId: "turn-1",
+      }),
+      env("2026-06-01T09:00:01.000Z", {
+        type: "user_message",
+        text: "Check the release.",
+        steerId: "steer-1",
+        deliveryState: "processed",
+        processed: true,
+        turnId: "turn-1",
+      }),
+      env("2026-06-01T09:00:02.000Z", {
+        type: "turn_diagnostics",
+        turnId: "turn-1",
+        moderationChecks: 1,
+      }),
+      env("2026-06-01T09:00:03.000Z", {
+        type: "turn_diagnostics",
+        turnId: "turn-1",
+        moderationChecks: 2,
+        optionalIntegrationFailures: [{ integration: "unityMCP" }],
+      }),
+    ]);
+
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      event: {
+        type: "user_message",
+        steerId: "steer-1",
+        deliveryState: "processed",
+        processed: true,
+      },
+    });
+    expect(rows[1]).toMatchObject({
+      event: {
+        type: "turn_diagnostics",
+        moderationChecks: 2,
+        optionalIntegrationFailures: [{ integration: "unityMCP" }],
+      },
+    });
+  });
+
+  it("preserves the child session when adapting provider-neutral turn health for recovery UI", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T09:00:00.000Z", {
+        type: "turn_health",
+        provider: "codex",
+        turnId: "turn-child",
+        state: "stalled",
+        reason: "no_output",
+        message: "The child turn accepted the request but has not produced output.",
+        detectedAt: "2026-06-01T09:00:00.000Z",
+        turnStartedAt: "2026-06-01T08:58:00.000Z",
+        lastProgressAt: "2026-06-01T08:58:00.000Z",
+        recoveryCount: 1,
+        supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+        automaticRecoveryAttempted: true,
+        sourceSessionId: "child-session",
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event).toMatchObject({
+      type: "codex_turn_stalled",
+      turnId: "turn-child",
+      sourceSessionId: "child-session",
+      recoveryOptions: ["wait", "steer", "interrupt_retry_same_thread", "restart_resume_thread"],
+    });
+  });
 });
 
 describe("interrupt-stopped subagent grouping", () => {

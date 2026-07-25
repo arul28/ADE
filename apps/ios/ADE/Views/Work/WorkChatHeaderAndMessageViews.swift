@@ -293,6 +293,9 @@ struct WorkChatMessageBubble: View {
   /// Computed once by the parent transcript view. Avoids installing one
   /// GeometryReader per user row while preserving the desktop-style max width.
   var maxUserBubbleWidth: CGFloat? = nil
+  var onRunUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
+  var onEditUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
+  var onDismissUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
   @State private var assistantLineBudget = workAssistantMessageInitialLineBudget
 
   /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
@@ -455,8 +458,9 @@ struct WorkChatMessageBubble: View {
       Spacer(minLength: 0)
       VStack(alignment: .trailing, spacing: 6) {
         if let deliveryBadge {
-          // Delivery badges only render when a non-default state applies
-          // (queued/sending/failed). Successful deliveries stay silent.
+          // Follow-up delivery is a durable lifecycle. Showing the precise
+          // state prevents "accepted by the server" from being mistaken for
+          // "the agent actually processed this message."
           WorkDeliveryBadge(state: deliveryBadge)
         }
         if hasText || hasAttachments {
@@ -487,6 +491,17 @@ struct WorkChatMessageBubble: View {
           )
           .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
           .fixedSize(horizontal: false, vertical: true)
+          .accessibilityElement(children: .combine)
+          .accessibilityLabel(userMessageAccessibilityLabel)
+        }
+        if message.deliveryState == "unprocessed" {
+          WorkUnprocessedMessageActions(
+            message: message,
+            onRun: onRunUnprocessed,
+            onEdit: onEditUnprocessed,
+            onDismiss: onDismissUnprocessed
+          )
+          .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
         }
       }
     }
@@ -498,8 +513,7 @@ struct WorkChatMessageBubble: View {
         Label("Copy message", systemImage: "doc.on.doc")
       }
     }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(userMessageAccessibilityLabel)
+    .accessibilityElement(children: .contain)
     .adeInspectable(
       "Work.Chat.MessageBubble.User",
       metadata: [
@@ -539,18 +553,10 @@ struct WorkChatMessageBubble: View {
 
   var deliveryBadge: WorkDeliveryBadge.State? {
     guard message.role == "user" else { return nil }
-    if let state = message.deliveryState {
-      switch state {
-      case "queued": return .queued
-      case "delivered":
-        return message.processed == true ? nil : .delivered
-      case "inline": return .inline
-      case "failed": return .failed
-      case "sending": return .sending
-      default: return nil
-      }
-    }
-    return nil
+    return workDeliveryBadgeState(
+      deliveryState: message.deliveryState,
+      processed: message.processed
+    )
   }
 
   @ViewBuilder
@@ -1044,13 +1050,13 @@ struct WorkTurnEndMarkerView: View {
 
   private var markerAccessibilityLabel: String {
     if completed {
-      return "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Worked for \(marker.workedDurationLabel)"
+      return "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Ran for \(marker.workedDurationLabel)"
     }
     return [
       "Turn \(status)",
       marker.terminalReasonLabel,
       marker.modelLabel.isEmpty ? nil : marker.modelLabel,
-      "Worked for \(marker.workedDurationLabel)",
+      "Elapsed \(marker.workedDurationLabel)",
     ].compactMap { $0 }.joined(separator: ". ")
   }
 
@@ -1069,7 +1075,7 @@ struct WorkTurnEndMarkerView: View {
   @ViewBuilder
   private var content: some View {
     if completed {
-      Text("\(workTurnSeparatorTimeLabel(marker.time)) · Worked for \(marker.workedDurationLabel)")
+      Text("\(workTurnSeparatorTimeLabel(marker.time)) · Ran for \(marker.workedDurationLabel)")
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
         .lineLimit(1)
@@ -1094,7 +1100,7 @@ struct WorkTurnEndMarkerView: View {
         }
         Text("·")
           .opacity(0.42)
-        Text("Worked for \(marker.workedDurationLabel)")
+        Text("Elapsed \(marker.workedDurationLabel)")
           .font(.caption2)
       }
       .foregroundStyle(statusTint.opacity(0.9))
@@ -1226,15 +1232,16 @@ extension EnvironmentValues {
 }
 
 struct WorkDeliveryBadge: View {
-  enum State {
-    case queued, sending, delivered, inline, failed
+  enum State: Equatable {
+    case queued, sending, accepted, processed, unprocessed, failed
 
     var label: String {
       switch self {
       case .queued: return "Queued"
       case .sending: return "Sending"
-      case .delivered: return "Delivered"
-      case .inline: return "During turn"
+      case .accepted: return "Accepted"
+      case .processed: return "Processed"
+      case .unprocessed: return "Not processed"
       case .failed: return "Failed"
       }
     }
@@ -1243,8 +1250,9 @@ struct WorkDeliveryBadge: View {
       switch self {
       case .queued: return "clock"
       case .sending: return "arrow.up.circle"
-      case .delivered: return "checkmark.circle"
-      case .inline: return "arrow.turn.down.right"
+      case .accepted: return "tray.and.arrow.down"
+      case .processed: return "checkmark.circle"
+      case .unprocessed: return "arrow.clockwise.circle"
       case .failed: return "exclamationmark.triangle"
       }
     }
@@ -1253,8 +1261,9 @@ struct WorkDeliveryBadge: View {
       switch self {
       case .queued: return ADEColor.accent
       case .sending: return ADEColor.accent
-      case .delivered: return ADEColor.success
-      case .inline: return ADEColor.accent
+      case .accepted: return ADEColor.accent
+      case .processed: return ADEColor.success
+      case .unprocessed: return ADEColor.warning
       case .failed: return ADEColor.danger
       }
     }
@@ -1273,5 +1282,154 @@ struct WorkDeliveryBadge: View {
     .padding(.vertical, 2)
     .background(state.tint.opacity(0.12), in: Capsule(style: .continuous))
     .accessibilityLabel("Delivery state: \(state.label)")
+  }
+}
+
+private struct WorkUnprocessedMessageActions: View {
+  let message: WorkChatMessage
+  let onRun: (@MainActor (WorkChatMessage) async throws -> Void)?
+  let onEdit: (@MainActor (WorkChatMessage) async throws -> Void)?
+  let onDismiss: (@MainActor (WorkChatMessage) async throws -> Void)?
+
+  @State private var pendingAction: String?
+  @State private var optimisticResolution: String?
+  @State private var errorMessage: String?
+
+  private var settledAction: String? {
+    message.unprocessedResolution?.action ?? optimisticResolution
+  }
+
+  var body: some View {
+    if let settledAction {
+      Text(settledAction == "run_next" ? "Started as the next turn" : "Dismissed")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+        .accessibilityLabel(
+          settledAction == "run_next"
+            ? "This message started as the next turn."
+            : "This message was dismissed."
+        )
+    } else {
+      VStack(alignment: .trailing, spacing: 6) {
+        ViewThatFits(in: .horizontal) {
+          HStack(spacing: 6) { actionButtons }
+          VStack(alignment: .trailing, spacing: 6) { actionButtons }
+        }
+        if let errorMessage {
+          Text(errorMessage)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.danger)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityAddTraits(.isStaticText)
+        }
+      }
+    }
+  }
+
+  @ViewBuilder
+  private var actionButtons: some View {
+    if onRun != nil {
+      actionButton(
+        title: pendingAction == "run_next" ? "Starting…" : "Run next",
+        systemImage: "play.fill",
+        action: "run_next",
+        primary: true,
+        accessibilityHint: "Starts this message as a new turn when the current turn is idle."
+      )
+    }
+    if onEdit != nil {
+      actionButton(
+        title: "Edit",
+        systemImage: "pencil",
+        action: "edit",
+        primary: false,
+        accessibilityHint: "Replaces the composer draft with this message for editing."
+      )
+    }
+    if onDismiss != nil {
+      actionButton(
+        title: "Dismiss",
+        systemImage: "xmark",
+        action: "dismiss",
+        primary: false,
+        accessibilityHint: "Marks this unprocessed message as dismissed."
+      )
+    }
+  }
+
+  private func actionButton(
+    title: String,
+    systemImage: String,
+    action: String,
+    primary: Bool,
+    accessibilityHint: String
+  ) -> some View {
+    Button {
+      Task { await perform(action) }
+    } label: {
+      Label(title, systemImage: systemImage)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(primary ? Color.white : ADEColor.textSecondary)
+        .frame(minWidth: 44, minHeight: 44)
+        .padding(.horizontal, 10)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .background(
+      primary ? ADEColor.warning : ADEColor.cardBackground.opacity(0.42),
+      in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(primary ? ADEColor.warning.opacity(0.4) : ADEColor.glassBorder, lineWidth: 0.8)
+    )
+    .disabled(pendingAction != nil)
+    .accessibilityLabel(title)
+    .accessibilityHint(accessibilityHint)
+  }
+
+  @MainActor
+  private func perform(_ action: String) async {
+    guard pendingAction == nil else { return }
+    let handler: (@MainActor (WorkChatMessage) async throws -> Void)?
+    switch action {
+    case "run_next": handler = onRun
+    case "edit": handler = onEdit
+    case "dismiss": handler = onDismiss
+    default: return
+    }
+    guard let handler else { return }
+    pendingAction = action
+    errorMessage = nil
+    defer { pendingAction = nil }
+    do {
+      try await handler(message)
+      if action == "run_next" || action == "dismiss" {
+        optimisticResolution = action
+      }
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+}
+
+func workDeliveryBadgeState(
+  deliveryState: String?,
+  processed: Bool?
+) -> WorkDeliveryBadge.State? {
+  switch deliveryState {
+  case "queued": return .queued
+  case "accepted": return .accepted
+  case "processed": return .processed
+  case "unprocessed": return .unprocessed
+  case "delivered":
+    return processed == true ? .processed : .accepted
+  case "inline":
+    return .processed
+  case "failed": return .failed
+  case "sending": return .sending
+  default:
+    return processed == true ? .processed : nil
   }
 }

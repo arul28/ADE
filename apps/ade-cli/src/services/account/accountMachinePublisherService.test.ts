@@ -1178,6 +1178,8 @@ describe("account machine registration publisher", () => {
     const [url, init] = fetchImpl.mock.calls[0]!;
     expect(url).toBe("https://directory.example/account/machines/register");
     expect(new Headers(init?.headers).get("authorization")).toBe("Bearer account-secret-token");
+    expect(new Headers(init?.headers).get("x-ade-correlation-id"))
+      .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     expect(init).toMatchObject({
       method: "POST",
       credentials: "omit",

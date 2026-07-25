@@ -57,6 +57,8 @@ import type {
   AgentChatCancelDispatchedSteerArgs,
   AgentChatInterruptArgs,
   AgentChatRecoverCodexTurnArgs,
+  AgentChatRecoverTurnArgs,
+  AgentChatResolveUnprocessedMessageArgs,
   AgentChatUpdateSessionArgs,
   AddPrCommentArgs,
   AiReviewSummaryArgs,
@@ -2310,6 +2312,46 @@ function parseAgentChatRecoverCodexTurnArgs(value: Record<string, unknown>): Age
   };
 }
 
+function parseAgentChatRecoverTurnArgs(value: Record<string, unknown>): AgentChatRecoverTurnArgs {
+  const action = requireString(value.action, "chat.recoverTurn requires action.");
+  if (
+    action !== "wait"
+    && action !== "nudge"
+    && action !== "retry_same_runtime"
+    && action !== "restart_resume"
+  ) {
+    throw new Error(`chat.recoverTurn received unsupported action '${action}'.`);
+  }
+  return {
+    sessionId: requireString(value.sessionId, "chat.recoverTurn requires sessionId."),
+    turnId: requireString(value.turnId, "chat.recoverTurn requires turnId."),
+    action,
+  };
+}
+
+function parseAgentChatResolveUnprocessedMessageArgs(
+  value: Record<string, unknown>,
+): AgentChatResolveUnprocessedMessageArgs {
+  const action = requireString(
+    value.action,
+    "chat.resolveUnprocessedMessage requires action.",
+  );
+  if (action !== "run_next" && action !== "dismiss") {
+    throw new Error(`chat.resolveUnprocessedMessage received unsupported action '${action}'.`);
+  }
+  return {
+    sessionId: requireString(
+      value.sessionId,
+      "chat.resolveUnprocessedMessage requires sessionId.",
+    ),
+    steerId: requireString(
+      value.steerId,
+      "chat.resolveUnprocessedMessage requires steerId.",
+    ),
+    action,
+  };
+}
+
 function parseAgentChatApproveArgs(value: Record<string, unknown>): AgentChatApproveArgs {
   return {
     sessionId: requireString(value.sessionId, "chat.approve requires sessionId."),
@@ -4190,6 +4232,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.recoverCodexTurn", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.")
       .recoverCodexTurn(parseAgentChatRecoverCodexTurnArgs(payload)));
+  register("chat.recoverTurn", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.")
+      .recoverTurn(parseAgentChatRecoverTurnArgs(payload)));
+  register("chat.resolveUnprocessedMessage", { viewerAllowed: true, queueable: false }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.")
+      .resolveUnprocessedMessage(parseAgentChatResolveUnprocessedMessageArgs(payload)));
   register("chat.steer", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").steer(parseAgentChatSteerArgs(payload));
     return isRecord(result) ? { ...result, ok: true } : { ok: true };

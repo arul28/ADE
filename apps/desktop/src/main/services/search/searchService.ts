@@ -203,9 +203,24 @@ function withQueryParam(link: string, key: string, value: string | number): stri
 }
 
 function chatEventSearchText(envelope: AgentChatEventEnvelope): string | null {
-  const event = envelope.event as { type?: string; text?: unknown; displayText?: unknown };
+  const event = envelope.event as {
+    type?: string;
+    text?: unknown;
+    displayText?: unknown;
+    deliveryState?: unknown;
+  };
   if (!event || typeof event !== "object") return null;
   if (event.type === "user_message") {
+    // Accepted steers are persisted again when they become processed or
+    // terminally unprocessed so every transcript surface can fold the latest
+    // delivery state. The first accepted event already owns the searchable
+    // message body; lifecycle snapshots must not create duplicate hits.
+    if (
+      event.deliveryState === "processed"
+      || event.deliveryState === "unprocessed"
+    ) {
+      return null;
+    }
     const display = typeof event.displayText === "string" ? event.displayText : "";
     const text = typeof event.text === "string" ? event.text : "";
     return display.trim() || text.trim() || null;
@@ -1418,6 +1433,37 @@ export function createSearchService(deps: SearchServiceDeps) {
     );
 
     const delegated: Candidate[] = [];
+    // `session:<id>` is also an exact lookup contract, not merely an FTS
+    // filter. Resolve the owning session directly so a newly-created chat is
+    // findable before the background indexer has written its metadata row.
+    if (parsed.sessionId && matchAll && !excludeSessionContent) {
+      const session = await resolveSession(parsed.sessionId);
+      if (session) {
+        const kind: "chat" | "terminal" = isChatSession(session) ? "chat" : "terminal";
+        const scopeAllowsSession = !scopeChatSessionId
+          || session.id === scopeChatSessionId
+          || session.chatSessionId === scopeChatSessionId;
+        const laneMatches = !laneId || session.laneId === laneId;
+        const kindMatches = kinds.includes(kind);
+        const sinceMatches = !parsed.sinceIso || sessionUpdatedAt(session) >= parsed.sinceIso;
+        if (scopeAllowsSession && laneMatches && kindMatches && sinceMatches) {
+          delegated.push({
+            docId: `${kind === "chat" ? "chat" : "term"}:${session.id}:meta`,
+            kind,
+            title: session.title,
+            rankTitle: session.title,
+            laneId: session.laneId || null,
+            laneName: session.laneName || null,
+            sessionId: session.id,
+            deepLink: sessionDeepLink(session, await envelopeForLane(session.laneId)),
+            updatedAt: sessionUpdatedAt(session),
+            bm25: 0,
+            snippet: (session.summary || session.lastOutputPreview || session.goal || session.title).slice(0, 240),
+            matchRanges: [],
+          });
+        }
+      }
+    }
     if (!parsed.sessionId) {
       if (kinds.includes("lane") && !laneId) {
         delegated.push(...(await delegatedLaneCandidates(parsed, matchAll)));
@@ -1433,11 +1479,19 @@ export function createSearchService(deps: SearchServiceDeps) {
       }
     }
 
-    for (const candidate of delegated) {
-      totals[candidate.kind] = (totals[candidate.kind] ?? 0) + 1;
+    const candidatesById = new Map<string, Candidate>();
+    for (const candidate of ftsCandidates) {
+      if (!candidatesById.has(candidate.docId)) candidatesById.set(candidate.docId, candidate);
     }
-
-    const tiered = rankCandidates([...ftsCandidates, ...delegated], parsed);
+    for (const candidate of delegated) {
+      // Exact-session lookup is live session state and should replace a stale
+      // background-index metadata row with the same id.
+      const alreadyIndexed = candidatesById.has(candidate.docId);
+      if (parsed.sessionId || !alreadyIndexed) candidatesById.set(candidate.docId, candidate);
+      if (!alreadyIndexed) totals[candidate.kind] = (totals[candidate.kind] ?? 0) + 1;
+    }
+    const candidates = Array.from(candidatesById.values());
+    const tiered = rankCandidates(candidates, parsed);
 
     const page = tiered.slice(offset, offset + limit);
     const results: SearchResultItem[] = page.map((candidate) => ({

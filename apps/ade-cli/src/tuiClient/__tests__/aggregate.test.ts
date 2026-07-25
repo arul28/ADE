@@ -806,4 +806,31 @@ describe("aggregateChatBlocks claude history accuracy", () => {
     expect(texts).toHaveLength(1);
     expect(texts[0]!.line.body).toBe("Both explorations are complete — what docs exist.");
   });
+
+  it("folds a durable resolution into its original unprocessed user block", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "user_message",
+        text: "Continue",
+        steerId: "steer-1",
+        deliveryState: "unprocessed",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "user_message_resolution",
+        steerId: "steer-1",
+        action: "dismiss",
+        state: "completed",
+        resolvedAt: "2026-01-01T12:00:01.000Z",
+      }),
+    ];
+
+    const blocks = aggregate(events);
+    expect(blocks).toEqual([expect.objectContaining({
+      kind: "user-bubble",
+      line: expect.objectContaining({
+        header: "not processed · dismissed",
+        body: "Continue",
+      }),
+    })]);
+  });
 });

@@ -3,6 +3,7 @@ import type {
   SyncAddressCandidate,
   SyncPairingQrPayload,
 } from "../../../shared/types/sync";
+import { isTailnetHostname } from "../../../shared/tailnet";
 import type { WebClientEnvironmentRecord } from "./envStore";
 
 export type BrowserDialCandidate = {
@@ -20,6 +21,23 @@ export type BrowserDialCandidate = {
  */
 export function browserEndpointRequiresRelayAccess(candidate: BrowserDialCandidate): boolean {
   return candidate.kind === "relay" || candidate.kind === "lastGood";
+}
+
+export function browserDialCandidateRouteKind(
+  candidate: BrowserDialCandidate,
+): "lan" | "tailnet" | "relay" {
+  if (browserEndpointRequiresRelayAccess(candidate)) return "relay";
+  if (
+    candidate.source?.kind === "tailscale"
+    || (() => {
+      try {
+        return isTailnetHostname(new URL(candidate.url).hostname);
+      } catch {
+        return false;
+      }
+    })()
+  ) return "tailnet";
+  return "lan";
 }
 
 export type EndpointDerivationInput = {
@@ -149,5 +167,13 @@ export function deriveBrowserSyncEndpoints(input: EndpointDerivationInput): Brow
     }
   }
 
-  return candidates;
+  const rank = { lan: 0, tailnet: 1, relay: 2 } as const;
+  return candidates
+    .map((candidate, order) => ({ candidate, order }))
+    .sort((left, right) => (
+      rank[browserDialCandidateRouteKind(left.candidate)]
+      - rank[browserDialCandidateRouteKind(right.candidate)]
+      || left.order - right.order
+    ))
+    .map(({ candidate }) => candidate);
 }

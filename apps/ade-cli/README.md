@@ -418,7 +418,8 @@ ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "Check 
 ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --once                         # five-field cron uses the ADE brain machine's local timezone
 ade chat scheduled-work cancel session-id job-id    # cancel one job; Claude-native jobs request CronDelete in the owning chat
 ade chat wait session-id --for idle --timeout-ms 600000
-ade chat recover session-id --turn turn-id --action nudge        # wait | nudge | retry | resume
+ade chat recover session-id --turn turn-id --action nudge        # provider-neutral wait | nudge | retry | resume; falls back for older Codex brains
+ade chat resolve-unprocessed session-id --steer steer-id --action run-next  # durable/idempotent; action is run-next | dismiss
 ade chat handoff session-id --model openai/gpt-5.6-sol --note "focus on tests"   # brief handoff; add --target-lane <lane-id> to hand off into another lane
 ade chat fork session-id --model openai/gpt-5.6-sol              # fork provider history (claude/codex/opencode/droid); stays in source lane
 ade chat models --provider codex --json                          # model order + supported reasoning tiers

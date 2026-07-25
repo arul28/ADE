@@ -222,10 +222,14 @@ struct WorkChatSessionView: View {
   var attachmentsAvailable: Bool = true
   var personalModelCatalogAvailable: Bool = true
   var personalSessionUpdatesAvailable: Bool = true
-  /// Present only when the paired host advertises `chat.recoverCodexTurn`.
+  /// Present only when the paired host advertises provider-neutral
+  /// `chat.recoverTurn` or the legacy Codex-specific recovery action.
   /// Keeping this optional prevents a new phone build from offering controls
   /// that an older ADE brain cannot execute.
   var onRecoverCodexTurn: (@MainActor (String, String, String) async throws -> String)? = nil
+  var onRunUnprocessedMessage: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
+  var onEditUnprocessedMessage: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
+  var onDismissUnprocessedMessage: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -1440,6 +1444,12 @@ private func workTimelinePresentationSignature(
       if case .message(let message) = timelineEntry.payload {
         hasher.combine(message.id)
         hasher.combine(message.role)
+        hasher.combine(message.steerId)
+        hasher.combine(message.deliveryState)
+        hasher.combine(message.processed)
+        hasher.combine(message.unprocessedResolution?.action)
+        hasher.combine(message.unprocessedResolution?.state)
+        hasher.combine(message.unprocessedResolution?.resolvedAt)
         workTimelineCombineTextSignature(message.markdown, into: &hasher)
         if let preview = message.assistantPreview {
           workTimelineCombineTextSignature(preview.text, into: &hasher)
@@ -2153,10 +2163,16 @@ private struct WorkContextUsagePopover: View {
 struct WorkChatComposerDraftRestore: Equatable, Identifiable {
   let id: UUID
   let text: String
+  let replacesExistingDraft: Bool
 
-  init(text: String, id: UUID = UUID()) {
+  init(
+    text: String,
+    id: UUID = UUID(),
+    replacesExistingDraft: Bool = false
+  ) {
     self.id = id
     self.text = text
+    self.replacesExistingDraft = replacesExistingDraft
   }
 }
 
@@ -2195,7 +2211,12 @@ final class WorkChatComposerDraftState: ObservableObject {
   func applyRestore(_ restore: WorkChatComposerDraftRestore?) {
     guard let restore, appliedRestoreId != restore.id else { return }
     appliedRestoreId = restore.id
-    restoreUnsentText(restore.text)
+    if restore.replacesExistingDraft {
+      text = restore.text
+      isFocused = true
+    } else {
+      restoreUnsentText(restore.text)
+    }
   }
 }
 

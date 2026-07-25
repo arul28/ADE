@@ -323,8 +323,12 @@ import type {
   AgentChatPrepareCrossMachineHandoffResult,
   AgentChatValidateCrossMachineSourceArgs,
   AgentChatInterruptArgs,
+  AgentChatRecoverTurnArgs,
+  AgentChatRecoverTurnResult,
   AgentChatRecoverCodexTurnArgs,
   AgentChatRecoverCodexTurnResult,
+  AgentChatResolveUnprocessedMessageArgs,
+  AgentChatResolveUnprocessedMessageResult,
   AgentChatRecoverContinuityArgs,
   AgentChatContinuityRecoveryResult,
   AgentChatListArgs,
@@ -6755,12 +6759,28 @@ export function registerIpc({
     await ctx.agentChatService.interrupt(arg);
   });
 
+  ipcMain.handle(IPC.agentChatRecoverTurn, async (
+    _event,
+    arg: AgentChatRecoverTurnArgs,
+  ): Promise<AgentChatRecoverTurnResult> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.recoverTurn(arg);
+  });
+
   ipcMain.handle(IPC.agentChatRecoverCodexTurn, async (
     _event,
     arg: AgentChatRecoverCodexTurnArgs,
   ): Promise<AgentChatRecoverCodexTurnResult> => {
     const ctx = ensureAgentChatContext();
     return await ctx.agentChatService.recoverCodexTurn(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatResolveUnprocessedMessage, async (
+    _event,
+    arg: AgentChatResolveUnprocessedMessageArgs,
+  ): Promise<AgentChatResolveUnprocessedMessageResult> => {
+    const ctx = ensureAgentChatContext();
+    return await ctx.agentChatService.resolveUnprocessedMessage(arg);
   });
 
   ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {

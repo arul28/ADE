@@ -132,6 +132,37 @@ describe("searchService", () => {
     expect(hit!.deepLink).toContain("event=0");
   });
 
+  it("indexes one searchable hit across accepted steer lifecycle snapshots", async () => {
+    const session = makeSession({ id: "chat-steer-lifecycle", title: "Steer lifecycle" });
+    sessions.push(session);
+    for (const [sequence, deliveryState] of [
+      [1, "accepted"],
+      [2, "processed"],
+      [3, "unprocessed"],
+    ] as const) {
+      writeChatLine(
+        session.id,
+        {
+          type: "user_message",
+          text: "only one searchable follow-up",
+          steerId: "steer-1",
+          turnId: "turn-1",
+          deliveryState,
+          processed: deliveryState === "processed",
+        },
+        `2026-07-05T10:00:0${sequence}.000Z`,
+        sequence,
+      );
+    }
+    service.notifyChatEvent(session.id);
+    await service.processPendingNow();
+
+    const result = await service.query({ query: "searchable follow-up" });
+    expect(result.results.filter((item) =>
+      item.kind === "chat" && item.sessionId === session.id
+    )).toHaveLength(1);
+  });
+
   it("rebuilds searchable chat and terminal history from compressed transcripts", async () => {
     const chat = makeSession({ id: "chat-gz", title: "Compressed chat" });
     const terminalPath = path.join(root, "transcripts", "terminal-gz.log");
@@ -1160,6 +1191,76 @@ describe("searchService owner-scoped attached terminals", () => {
     expect(bySession.results.some((r) => r.sessionId === "attached-term")).toBe(true);
     expect(bySession.results.some((r) => r.sessionId === "foreign-term")).toBe(false);
 
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("searchService exact session filters", () => {
+  it("resolves a newly-created chat before the background indexer runs", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-session-direct-"));
+    const session = makeSession({
+      id: "fresh-chat",
+      title: "Fresh reliability chat",
+      toolType: "codex-chat",
+      status: "running",
+      startedAt: "2026-07-05T12:00:00.000Z",
+    });
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => [session],
+        get: async (id) => id === session.id ? session : null,
+      },
+      now: () => NOW,
+    });
+
+    const result = await service.query({ query: "session:fresh-chat" });
+
+    expect(result.results).toEqual([
+      expect.objectContaining({
+        kind: "chat",
+        sessionId: "fresh-chat",
+        title: "Fresh reliability chat",
+      }),
+    ]);
+    service.dispose();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it("prefers live session metadata without double-counting an indexed row", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-search-session-live-"));
+    const session = makeSession({
+      id: "indexed-chat",
+      title: "Stale indexed title",
+      toolType: "codex-chat",
+      status: "running",
+      startedAt: "2026-07-05T12:00:00.000Z",
+    });
+    const service = createSearchService({
+      cacheDir: path.join(root, "cache"),
+      transcriptsDir: path.join(root, "transcripts"),
+      chatTranscriptsDir: path.join(root, "transcripts", "chat"),
+      sessions: {
+        list: async () => [session],
+        get: async (id) => id === session.id ? session : null,
+      },
+      now: () => NOW,
+    });
+    service.notifyChatEvent(session.id);
+    await service.processPendingNow();
+    session.title = "Live reliability title";
+
+    const result = await service.query({ query: `session:${session.id}` });
+
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({
+      sessionId: session.id,
+      title: "Live reliability title",
+    });
+    expect(result.totalByKind.chat).toBe(1);
     service.dispose();
     fs.rmSync(root, { recursive: true, force: true });
   });

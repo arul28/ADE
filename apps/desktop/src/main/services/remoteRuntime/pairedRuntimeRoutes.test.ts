@@ -34,6 +34,39 @@ describe("paired runtime endpoint routes", () => {
     ]);
   });
 
+  it("prefers a freshly discovered bound port within its route kind without jumping ahead of LAN", () => {
+    const candidates = buildPairedEndpointCandidates({
+      endpoints: [
+        "ws://studio.local:8787",
+        "ws://studio.local:8805",
+        "ws://studio.example.ts.net:8805",
+      ],
+      endpointStates: [
+        {
+          endpoint: "ws://studio.local:8787",
+          lastSucceededAt: 300,
+          lastDiscoveredAt: 100,
+        },
+        {
+          endpoint: "ws://studio.local:8805",
+          lastSucceededAt: null,
+          lastDiscoveredAt: 400,
+        },
+        {
+          endpoint: "ws://studio.example.ts.net:8805",
+          lastSucceededAt: null,
+          lastDiscoveredAt: 500,
+        },
+      ],
+    });
+
+    expect(candidates.map((candidate) => candidate.endpoint)).toEqual([
+      "ws://studio.local:8805/",
+      "ws://studio.local:8787/",
+      "ws://studio.example.ts.net:8805/",
+    ]);
+  });
+
   it("classifies normalized CGNAT and ts.net hostnames as tailnet", () => {
     expect(classifyPairedRuntimeEndpoint("ws://100.127.255.254:8787")).toBe(
       "tailnet",

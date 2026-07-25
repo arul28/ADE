@@ -123,6 +123,7 @@ struct WorkChatMessage: Identifiable, Equatable {
   var deliveryState: String? = nil
   var processed: Bool? = nil
   var attachments: [AgentChatFileRef]? = nil
+  var unprocessedResolution: WorkUserMessageResolution? = nil
 }
 
 struct WorkLocalEchoMessage: Identifiable, Equatable {
@@ -358,6 +359,34 @@ struct WorkCompletionArtifactModel: Equatable {
   let reference: String?
 }
 
+struct WorkCodexStallContext: Equatable {
+  let reason: String
+  let detectedAt: String?
+  let turnStartedAt: String?
+  let lastProgressAt: String?
+  let automaticRecoveryAttempted: Bool
+  var provider: String? = nil
+  var recoveryCount: Int = 0
+  var providerNeutral: Bool = false
+}
+
+struct WorkUserMessageResolution: Equatable {
+  let action: String
+  let state: String
+  let resolvedAt: String
+  let replacementMessageId: String?
+}
+
+struct WorkCodexRecoveryReceipt: Equatable {
+  let action: String
+  let state: String
+  let automatic: Bool
+  let at: String
+  var provider: String? = nil
+  var recoveryCount: Int = 0
+  var providerNeutral: Bool = false
+}
+
 struct WorkCommandCardModel: Identifiable, Equatable {
   let id: String
   let command: String
@@ -408,7 +437,8 @@ enum WorkTimelinePayload: Equatable {
   /// transcript's turn separators.
   case turnSeparator(WorkTurnSeparator)
   /// Centered end-of-turn completion row rendered after a terminal `done`
-  /// event, matching desktop's "time · Worked for ..." divider.
+  /// event. Completed turns say "Ran for"; interrupted/failed turns say
+  /// "Elapsed" so wall time is never presented as continuous agent work.
   case turnEndMarker(WorkTurnEndMarker)
   case pendingQuestion(WorkPendingQuestionModel)
   case pendingPermission(WorkPendingPermissionModel)
@@ -751,6 +781,12 @@ struct WorkEventCardModel: Identifiable, Equatable {
   let recoveryOptions: [String]
   let recoveryTurnId: String?
   let recoverySessionId: String?
+  let recoveryContext: WorkCodexStallContext?
+  let recoveryReceipt: WorkCodexRecoveryReceipt?
+  /// Aggregated, low-noise diagnostics disclosed from "Turn details" instead
+  /// of rendering each routine moderation or optional integration event.
+  let diagnosticModerationChecks: Int
+  let diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure]
 
   init(
     id: String,
@@ -769,7 +805,11 @@ struct WorkEventCardModel: Identifiable, Equatable {
     resolution: String? = nil,
     recoveryOptions: [String] = [],
     recoveryTurnId: String? = nil,
-    recoverySessionId: String? = nil
+    recoverySessionId: String? = nil,
+    recoveryContext: WorkCodexStallContext? = nil,
+    recoveryReceipt: WorkCodexRecoveryReceipt? = nil,
+    diagnosticModerationChecks: Int = 0,
+    diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = []
   ) {
     self.id = id
     self.kind = kind
@@ -788,6 +828,10 @@ struct WorkEventCardModel: Identifiable, Equatable {
     self.recoveryOptions = recoveryOptions
     self.recoveryTurnId = recoveryTurnId
     self.recoverySessionId = recoverySessionId
+    self.recoveryContext = recoveryContext
+    self.recoveryReceipt = recoveryReceipt
+    self.diagnosticModerationChecks = diagnosticModerationChecks
+    self.diagnosticIntegrationFailures = diagnosticIntegrationFailures
   }
 }
 
@@ -896,6 +940,14 @@ struct WorkChatEnvelope: Identifiable, Equatable {
 
 enum WorkChatEvent: Equatable {
   case userMessage(text: String, attachments: [AgentChatFileRef]?, turnId: String?, steerId: String?, deliveryState: String?, processed: Bool?)
+  case userMessageResolution(
+    steerId: String,
+    action: String,
+    state: String,
+    resolvedAt: String,
+    replacementMessageId: String?,
+    turnId: String?
+  )
   case assistantText(text: String, turnId: String?, itemId: String?)
   case toolCall(tool: String, argsText: String, itemId: String, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus)
@@ -921,7 +973,23 @@ enum WorkChatEvent: Equatable {
   case autoApprovalReview(summary: String, turnId: String?)
   case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, results: [CodexWebSearchResult]?, status: WorkToolCardStatus, itemId: String, turnId: String?)
   case codexState(title: String, message: String, icon: String, turnId: String?)
-  case codexTurnStalled(message: String, recoveryOptions: [String], turnId: String?, sourceSessionId: String?)
+  case turnDiagnostics(
+    moderationChecks: Int,
+    optionalIntegrationFailures: [AgentChatOptionalIntegrationFailure],
+    turnId: String?
+  )
+  case codexTurnStalled(
+    message: String,
+    recoveryOptions: [String],
+    turnId: String?,
+    sourceSessionId: String?,
+    context: WorkCodexStallContext
+  )
+  case codexTurnRecovery(
+    message: String,
+    receipt: WorkCodexRecoveryReceipt,
+    turnId: String?
+  )
   case planText(text: String, turnId: String?)
   case toolUseSummary(text: String, turnId: String?)
   case status(turnStatus: String, message: String?, turnId: String?)
@@ -934,6 +1002,7 @@ enum WorkChatEvent: Equatable {
   var typeKey: String {
     switch self {
     case .userMessage: return "user_message"
+    case .userMessageResolution: return "user_message_resolution"
     case .assistantText: return "text"
     case .toolCall: return "tool_call"
     case .toolResult: return "tool_result"
@@ -959,7 +1028,9 @@ enum WorkChatEvent: Equatable {
     case .autoApprovalReview: return "auto_approval_review"
     case .webSearch: return "web_search"
     case .codexState: return "codex_state"
+    case .turnDiagnostics: return "turn_diagnostics"
     case .codexTurnStalled: return "codex_turn_stalled"
+    case .codexTurnRecovery: return "codex_turn_recovery"
     case .planText: return "plan_text"
     case .toolUseSummary: return "tool_use_summary"
     case .status: return "status"

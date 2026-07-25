@@ -60,8 +60,10 @@ import {
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolvePromptChatSubmitTarget,
-  resolveTuiCodexRecoveryRequest,
-  resolveTuiCodexRecoveryTargetProvider,
+  resolveTuiRecoveryRequest,
+  resolveTuiRecoveryTargetProvider,
+  resolveTuiUnprocessedMessageRequest,
+  resolveTuiUnprocessedMessageDraft,
   shouldHandlePendingQuestionKey,
   resolveModelPickerEscape,
   nextModelPickerProviderTabKey,
@@ -1271,47 +1273,134 @@ describe("interface draft setup", () => {
       },
     ];
 
-    expect(resolveTuiCodexRecoveryRequest({ input: "nudge", sessionId: "chat-1", events })).toEqual({
-      action: "steer",
+    expect(resolveTuiRecoveryRequest({ input: "nudge", sessionId: "chat-1", events })).toEqual({
+      action: "nudge",
       turnId: "turn-1",
       sessionId: "chat-1",
+      provider: "codex",
     });
-    expect(resolveTuiCodexRecoveryRequest({ input: "resume explicit-turn", sessionId: "chat-1", events })).toEqual({
-      action: "restart_resume_thread",
+    expect(resolveTuiRecoveryRequest({ input: "resume explicit-turn", sessionId: "chat-1", events })).toEqual({
+      action: "restart_resume",
       turnId: "explicit-turn",
       sessionId: "chat-1",
+      provider: null,
     });
-    expect(resolveTuiCodexRecoveryRequest({
+    expect(resolveTuiRecoveryRequest({
       input: "retry",
       sessionId: "chat-1",
       events: events.slice(0, 1),
     })).toEqual({
-      action: "interrupt_retry_same_thread",
+      action: "retry_same_runtime",
       turnId: "child-turn",
       sessionId: "child-chat",
+      provider: "codex",
     });
-    expect(resolveTuiCodexRecoveryRequest({ input: "unknown", sessionId: "chat-1", events })).toBeNull();
+    expect(resolveTuiRecoveryRequest({ input: "unknown", sessionId: "chat-1", events })).toBeNull();
   });
 
-  it("gates recovery on the resolved Codex child instead of its visible Claude parent", () => {
+  it("prefers provider-neutral turn health when resolving recovery", () => {
+    const events: AgentChatEventEnvelope[] = [{
+      sessionId: "chat-1",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "turn_health",
+        provider: "codex",
+        turnId: "turn-1",
+        state: "stalled",
+        reason: "no_output",
+        message: "No output",
+        turnStartedAt: "2026-01-01T00:00:00.000Z",
+        lastProgressAt: "2026-01-01T00:00:00.000Z",
+        detectedAt: "2026-01-01T00:02:00.000Z",
+        recoveryCount: 0,
+        supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+        automaticRecoveryAttempted: false,
+        sourceSessionId: "chat-child",
+      },
+    }];
+
+    expect(resolveTuiRecoveryRequest({ input: "retry", sessionId: "chat-1", events })).toEqual({
+      action: "retry_same_runtime",
+      turnId: "turn-1",
+      sessionId: "chat-child",
+      provider: "codex",
+    });
+  });
+
+  it("resolves unprocessed-message commands against the active or explicit session", () => {
+    expect(resolveTuiUnprocessedMessageRequest({
+      input: "steer-1",
+      sessionId: "chat-1",
+    })).toEqual({ steerId: "steer-1", sessionId: "chat-1" });
+    expect(resolveTuiUnprocessedMessageRequest({
+      input: "steer-1 chat-2",
+      sessionId: "chat-1",
+    })).toEqual({ steerId: "steer-1", sessionId: "chat-2" });
+    expect(resolveTuiUnprocessedMessageRequest({
+      input: "steer-1 chat-2 extra",
+      sessionId: "chat-1",
+    })).toBeNull();
+    expect(resolveTuiUnprocessedMessageRequest({ input: "", sessionId: "chat-1" })).toBeNull();
+    expect(resolveTuiUnprocessedMessageRequest({ input: "steer-1", sessionId: null })).toBeNull();
+  });
+
+  it("restores only unresolved unprocessed messages to the composer", () => {
+    const message = {
+      sessionId: "chat-1",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "user_message" as const,
+        text: "original text",
+        displayText: "editable text",
+        steerId: "steer-1",
+        deliveryState: "unprocessed" as const,
+      },
+    };
+    expect(resolveTuiUnprocessedMessageDraft({
+      steerId: "steer-1",
+      events: [message],
+    })).toBe("editable text");
+    expect(resolveTuiUnprocessedMessageDraft({
+      steerId: "steer-1",
+      events: [
+        message,
+        {
+          sessionId: "chat-1",
+          timestamp: "2026-01-01T00:00:01.000Z",
+          sequence: 2,
+          event: {
+            type: "user_message_resolution" as const,
+            steerId: "steer-1",
+            action: "dismiss" as const,
+            state: "completed" as const,
+            resolvedAt: "2026-01-01T00:00:01.000Z",
+          },
+        },
+      ],
+    })).toBeNull();
+  });
+
+  it("resolves the recovery provider from a child or visible chat", () => {
     const sessions = [
       { sessionId: "parent-chat", provider: "claude" as const },
       { sessionId: "child-chat", provider: "codex" as const },
     ];
 
-    expect(resolveTuiCodexRecoveryTargetProvider({
+    expect(resolveTuiRecoveryTargetProvider({
       targetSessionId: "child-chat",
       visibleSessionId: "parent-chat",
       visibleProvider: "claude",
       sessions,
     })).toBe("codex");
-    expect(resolveTuiCodexRecoveryTargetProvider({
+    expect(resolveTuiRecoveryTargetProvider({
       targetSessionId: "parent-chat",
       visibleSessionId: "parent-chat",
       visibleProvider: "claude",
       sessions,
     })).toBe("claude");
-    expect(resolveTuiCodexRecoveryTargetProvider({
+    expect(resolveTuiRecoveryTargetProvider({
       targetSessionId: "child-not-yet-listed",
       visibleSessionId: "parent-chat",
       visibleProvider: "claude",

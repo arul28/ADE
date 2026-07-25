@@ -56,6 +56,7 @@ import { runRemoteRuntimeDoctor } from "./connectionDoctor";
 import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
+  PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
 import {
   getSshHostKeyTrustForTarget,
@@ -75,8 +76,9 @@ type RemoteConnectionServiceOptions = {
   } | null>;
   /**
    * Returns the refresh-verified account owner allowed to use account-created
-   * machine trust. `null` means account-owned trust must be removed before use.
-   * Omit only in isolated callers that do not participate in account lifecycle.
+   * Relay trust. `null` disables directory/Relay access while preserving
+   * host-issued LAN/Tailscale paired trust. Omit only in isolated callers that
+   * do not participate in account lifecycle.
    */
   getAuthorizedAccountOwnerId?: () => Promise<string | null>;
 };
@@ -96,6 +98,7 @@ type RemoteConnectionConnectOptions = {
 
 const AUTOMATIC_RECONNECT_FAILURE_LIMIT = 10;
 const MAX_LAST_ERROR_CHARS = 500;
+const DISCOVERED_ENDPOINT_REFRESH_INTERVAL_MS = 60_000;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -128,6 +131,17 @@ function errorInfo(
     return {
       kind: "auth_required",
       message,
+    };
+  }
+  if (
+    error instanceof PairedRuntimeTransportUnavailableError
+    && error.diagnostic
+  ) {
+    return {
+      kind: "generic",
+      message,
+      correlationId: error.diagnostic.correlationId,
+      attempts: error.diagnostic.attempts,
     };
   }
   return {
@@ -232,10 +246,11 @@ export class RemoteConnectionService {
   }
 
   /**
-   * Canonical account-trust reconciliation command. Account-owned target and
-   * credential records are one lifecycle boundary: prune them together, close
-   * any live transport immediately, clear all reconnect/trust state, then emit
-   * one authoritative snapshot. Ownerless PIN/link/SSH trust is untouched.
+   * Canonical account-trust reconciliation command. Sign-out revokes Relay
+   * leases but preserves host-issued paired secrets so LAN/Tailscale remain
+   * available. Switching to a different signed-in account prunes the previous
+   * account's records as one lifecycle boundary. Ownerless PIN/link/SSH trust
+   * is always untouched.
    */
   reconcileAccountOwnership(
     currentOwnerUserIdValue: string | null,
@@ -244,8 +259,12 @@ export class RemoteConnectionService {
     const disconnectedRelayTargetIds = this.pool.reconcileAccountRelayOwner?.(
       currentOwnerUserId,
     ) ?? [];
-    const removedTargets = this.registry.pruneAccountOwned(currentOwnerUserId);
-    const removedCredentials = this.pairedStore.pruneAccountOwned(currentOwnerUserId);
+    const removedTargets = currentOwnerUserId
+      ? this.registry.pruneAccountOwned(currentOwnerUserId)
+      : [];
+    const removedCredentials = currentOwnerUserId
+      ? this.pairedStore.pruneAccountOwned(currentOwnerUserId)
+      : [];
     const removedCredentialIds = new Set<string>();
     for (const credentials of removedCredentials) {
       removedCredentialIds.add(credentials.hostIdentity.deviceId);
@@ -334,12 +353,10 @@ export class RemoteConnectionService {
       const paired = this.pairedStore.get(discoveredMachine.hostIdentity);
       const discoveredEndpoints = syncEndpointsForDiscoveredRuntime(discoveredMachine);
       if (paired && discoveredEndpoints.length > 0) {
-        const saved = discoveredEndpoints.some((endpoint) => !paired.endpoints.includes(endpoint))
-          ? this.pairedStore.save({
-              ...paired,
-              endpoints: [...discoveredEndpoints, ...paired.endpoints],
-            })
-          : paired;
+        const saved = this.pairedStore.markEndpointsDiscovered(
+          paired.hostIdentity.deviceId,
+          discoveredEndpoints,
+        );
         normalizedInput = {
           ...input,
           transport: "paired",
@@ -356,19 +373,27 @@ export class RemoteConnectionService {
   }
 
   rememberDiscoveredMachines(machines: RemoteRuntimeDiscoveredMachine[]): void {
+    const discoveredAt = Date.now();
     for (const machine of machines) {
       if (!machine.hostIdentity) continue;
       const paired = this.pairedStore.get(machine.hostIdentity);
       if (!paired) continue;
       const endpoints = syncEndpointsForDiscoveredRuntime(machine);
       if (endpoints.length === 0) continue;
-      if (endpoints.every((endpoint) => paired.endpoints.includes(endpoint))) {
-        continue;
-      }
-      this.pairedStore.save({
-        ...paired,
-        endpoints: [...endpoints, ...paired.endpoints],
+      const discoveryIsFresh = endpoints.every((endpoint) => {
+        const state = paired.endpointStates?.find(
+          (candidate) => candidate.endpoint === endpoint,
+        );
+        return state?.lastDiscoveredAt != null
+          && discoveredAt - state.lastDiscoveredAt
+            < DISCOVERED_ENDPOINT_REFRESH_INTERVAL_MS;
       });
+      if (discoveryIsFresh) continue;
+      this.pairedStore.markEndpointsDiscovered(
+        paired.hostIdentity.deviceId,
+        endpoints,
+        discoveredAt,
+      );
     }
   }
 
@@ -1110,6 +1135,10 @@ export class RemoteConnectionService {
     const currentOwnerUserId = await this.options.getAuthorizedAccountOwnerId()
       .catch(() => null);
     if (currentOwnerUserId?.trim() === expectedOwnerUserId) return;
+    // Signed-out callers may still use the persisted host-issued secret over
+    // LAN/Tailscale. Relay remains unavailable because it separately requires
+    // a fresh matching account proof.
+    if (!currentOwnerUserId?.trim()) return;
     this.reconcileAccountOwnership(currentOwnerUserId);
     throw new PairedRuntimeRelayAuthRequiredError(
       "Sign in with the same ADE account as this machine to connect.",

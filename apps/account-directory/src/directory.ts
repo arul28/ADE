@@ -64,6 +64,8 @@ type AccountRoute =
 export const DEFAULT_ONLINE_WINDOW_MS = 90_000;
 const MAX_PUBKEY_CHARS = 128;
 const remoteJwksByUrl = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+const CORRELATION_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type CallerTokenFailureReason =
   | "authentication unavailable"
@@ -464,9 +466,54 @@ function trustedWebClientOrigin(env: Env): string | null {
 function withCors(response: Response, origin: string): Response {
   const headers = new Headers(response.headers);
   headers.set("access-control-allow-origin", origin);
-  headers.set("access-control-expose-headers", "Server-Timing");
+  headers.set(
+    "access-control-expose-headers",
+    "Server-Timing, X-ADE-Correlation-ID",
+  );
   headers.set("vary", "Origin");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+function requestCorrelationId(request: Request): string {
+  const provided = request.headers.get("x-ade-correlation-id")?.trim() ?? "";
+  return CORRELATION_ID_PATTERN.test(provided)
+    ? provided.toLowerCase()
+    : crypto.randomUUID();
+}
+
+function withCorrelationId(response: Response, correlationId: string): Response {
+  const headers = new Headers(response.headers);
+  headers.set("x-ade-correlation-id", correlationId);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function logDirectoryLifecycle(args: {
+  correlationId: string;
+  route: AccountRoute | null;
+  method: string;
+  status: number;
+  durationMs: number;
+}): void {
+  const outcome = args.status < 400
+    ? "ok"
+    : args.status < 500
+      ? "client_error"
+      : "server_error";
+  console.log(JSON.stringify({
+    ts: new Date().toISOString(),
+    svc: "ade-account-directory",
+    kind: "request_completed",
+    correlationId: args.correlationId,
+    route: args.route?.kind ?? "other",
+    method: args.method,
+    status: args.status,
+    outcome,
+    durationMs: Math.max(0, Math.round(args.durationMs)),
+  }));
 }
 
 async function handleRequestCore(
@@ -511,42 +558,60 @@ export async function handleRequest(
   env: Env,
   options: DeviceAuthorizationRequestOptions = {},
 ): Promise<Response> {
+  const startedAt = performance.now();
+  const correlationId = requestCorrelationId(request);
   const url = new URL(request.url);
+  const route = routeAccount(url.pathname);
   const requestOrigin = request.headers.get("origin");
   const allowedOrigin = trustedWebClientOrigin(env);
   const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin
     ? allowedOrigin
     : null;
+  const finish = (response: Response, applyCors = false): Response => {
+    const correlatedResponse = withCorrelationId(response, correlationId);
+    logDirectoryLifecycle({
+      correlationId,
+      route,
+      method: request.method,
+      status: correlatedResponse.status,
+      durationMs: performance.now() - startedAt,
+    });
+    return applyCors && corsOrigin
+      ? withCors(correlatedResponse, corsOrigin)
+      : correlatedResponse;
+  };
   if (request.method === "OPTIONS") {
-    const route = routeAccount(url.pathname);
-    if (!route || route.kind !== "list") return text("not found", 404);
-    if (!corsOrigin) return text("origin not allowed", 403);
+    if (!route || route.kind !== "list") return finish(text("not found", 404));
+    if (!corsOrigin) return finish(text("origin not allowed", 403));
     if (request.headers.get("access-control-request-method")?.toUpperCase() !== "GET") {
-      return text("method not allowed", 405);
+      return finish(text("method not allowed", 405));
     }
     const requestedHeaders = (request.headers.get("access-control-request-headers") ?? "")
       .split(",")
       .map((header) => header.trim().toLowerCase())
       .filter(Boolean);
-    if (requestedHeaders.some((header) => header !== "authorization")) {
-      return text("headers not allowed", 403);
+    if (requestedHeaders.some((header) =>
+      header !== "authorization" && header !== "x-ade-correlation-id"
+    )) {
+      return finish(text("headers not allowed", 403));
     }
-    return new Response(null, {
+    return finish(new Response(null, {
       status: 204,
       headers: {
         "access-control-allow-origin": corsOrigin,
-        "access-control-allow-headers": "authorization",
+        "access-control-allow-headers": "authorization, x-ade-correlation-id",
+        "access-control-expose-headers": "X-ADE-Correlation-ID",
         "access-control-allow-methods": "GET, OPTIONS",
         "access-control-max-age": "600",
         vary: "Origin",
       },
-    });
+    }));
   }
   // Daemon/native callers omit Origin. Browser callers must match the one
   // configured hosted client exactly; reject hostile origins before auth or D1.
   if (requestOrigin && routeAccount(url.pathname) && !corsOrigin) {
-    return text("origin not allowed", 403);
+    return finish(text("origin not allowed", 403));
   }
   const response = await handleRequestCore(request, env, options);
-  return corsOrigin ? withCors(response, corsOrigin) : response;
+  return finish(response, Boolean(corsOrigin));
 }

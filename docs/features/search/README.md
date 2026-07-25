@@ -29,7 +29,8 @@ Main-process service (`apps/desktop/src/main/services/search/`):
   `sources` table, the deferred `startBackfill` reconcile pass, and `query`
   (FTS candidate fetch + query-time delegation + deterministic ranking +
   cursor pagination). Public surface: `query`, `indexStatus`, `rebuildIndex`,
-  `startBackfill`, the `notify*` hooks (`notifyChatEvent`,
+  `startBackfill`, exact-session live lookup (which overrides stale indexed
+  metadata for the same document), the `notify*` hooks (`notifyChatEvent`,
   `notifyTerminalData`, `notifySessionChanged`, `notifyPrChanged`,
   `notifyLaneActivity`), `processPendingNow` (tests/rebuild), `dispose`.
 - `searchIndexDb.ts` — opens/creates the disposable index DB. Owns the DDL
@@ -159,6 +160,11 @@ re-derive their docs wholesale each run. `startBackfill` runs once, well past
 the host boot window, enqueues every session/PR/lane, and reconciles docs whose
 sessions were deleted while the service was down.
 
+For chat, the accepted user-message event owns the searchable message body.
+Later processed/unprocessed lifecycle snapshots update delivery state but do
+not create another searchable document, so reconnect replay and resolution
+events cannot duplicate one message in search.
+
 ### Deterministic ranking tiers
 
 Ranking is exactly specifiable and stable — the same query over the same corpus
@@ -182,13 +188,22 @@ validated form and can be mixed with inline filters. Linear is opt-in: it can
 hit the network, so it is excluded from the default kind set and only consulted
 when a caller explicitly asks for `kind:linear`.
 
+An exact `session:<id>` filter is also a freshness contract. The service reads
+the owning session directly before relying on the disposable index, replaces
+stale FTS metadata for that same document with the live result, and deduplicates
+the merged candidate set and totals. A just-accepted or just-resolved message
+therefore appears once even when the background ingestion debounce has not run.
+
 ### Query-time delegation vs. FTS
 
 Only chat, terminal, PR, commit, and branch text is FTS-indexed. Lanes, files,
 artifacts, and Linear issues are **delegated at query time** to their owning
 service so results are always fresh and nothing duplicates an authoritative
-store. FTS candidates and delegated candidates are ranked together through the
-one comparator, then paginated with an opaque base64 cursor.
+store. Exact session lookup is a narrow live-source exception for indexed chat
+and terminal ownership: it supplements the FTS cache, then replaces stale
+same-document metadata rather than appending a duplicate. FTS candidates and
+delegated candidates are ranked together through the one comparator, then
+paginated with an opaque base64 cursor.
 
 ### Caller scoping policy
 

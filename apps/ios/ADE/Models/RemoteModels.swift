@@ -1911,6 +1911,11 @@ struct CodexModerationMetadata: Codable, Equatable {
   var metadata: RemoteJSONValue?
 }
 
+struct AgentChatOptionalIntegrationFailure: Codable, Equatable, Hashable {
+  var integration: String
+  var message: String?
+}
+
 struct AgentChatEventProvenance: Decodable, Equatable {
   var messageId: String?
   var threadId: String?
@@ -2054,6 +2059,14 @@ struct AgentChatFileRef: Codable, Equatable, Hashable {
 
 enum AgentChatEvent: Decodable, Equatable {
   case userMessage(text: String, attachments: [AgentChatFileRef]?, turnId: String?, steerId: String?, deliveryState: String?, processed: Bool?)
+  case userMessageResolution(
+    steerId: String,
+    action: String,
+    state: String,
+    resolvedAt: String,
+    replacementMessageId: String?,
+    turnId: String?
+  )
   case text(text: String, messageId: String?, turnId: String?, itemId: String?)
   case toolCall(tool: String, args: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?)
@@ -2104,8 +2117,56 @@ enum AgentChatEvent: Decodable, Equatable {
   )
   case codexSafetyBuffering(state: CodexSafetyBufferingState, turnId: String?)
   case codexModerationMetadata(metadata: CodexModerationMetadata, turnId: String?)
+  case turnDiagnostics(
+    turnId: String?,
+    moderationChecks: Int?,
+    optionalIntegrationFailures: [AgentChatOptionalIntegrationFailure]?
+  )
   case codexSleep(itemId: String, turnId: String?, durationMs: Int?, status: String)
-  case codexTurnStalled(turnId: String, threadId: String?, reason: String, message: String, recoveryOptions: [String]?, sourceSessionId: String?)
+  case codexTurnStalled(
+    turnId: String,
+    threadId: String?,
+    reason: String,
+    message: String,
+    recoveryOptions: [String]?,
+    sourceSessionId: String?,
+    detectedAt: String?,
+    turnStartedAt: String?,
+    lastProgressAt: String?,
+    automaticRecoveryAttempted: Bool?
+  )
+  case turnHealth(
+    provider: String,
+    turnId: String,
+    state: String,
+    reason: String,
+    message: String,
+    turnStartedAt: String,
+    lastProgressAt: String,
+    detectedAt: String,
+    recoveryCount: Int,
+    supportedActions: [String],
+    automaticRecoveryAttempted: Bool,
+    sourceSessionId: String?
+  )
+  case codexTurnRecovery(
+    turnId: String,
+    action: String,
+    state: String,
+    message: String,
+    automatic: Bool,
+    at: String
+  )
+  case turnRecovery(
+    provider: String,
+    turnId: String,
+    action: String,
+    state: String,
+    message: String,
+    automatic: Bool,
+    at: String,
+    recoveryCount: Int
+  )
   case codexThreadDeleted(threadId: String, turnId: String?)
   case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
   case completionReport(report: ChatCompletionReport, turnId: String?)
@@ -2128,6 +2189,8 @@ extension AgentChatEvent {
     case steerId
     case deliveryState
     case processed
+    case resolvedAt
+    case replacementMessageId
     case messageId
     case itemId
     case logicalItemId
@@ -2201,7 +2264,6 @@ extension AgentChatEvent {
     case sourceTaskId
     case error
     case messageIds
-    case replacementMessageId
     case toolUseIds
     case trigger
     case preTokens
@@ -2211,9 +2273,19 @@ extension AgentChatEvent {
     case compactionId
     case state
     case reasons
+    case moderationChecks
+    case optionalIntegrationFailures
     case recoveryOptions
     case sourceSessionId
     case threadId
+    case detectedAt
+    case turnStartedAt
+    case lastProgressAt
+    case automaticRecoveryAttempted
+    case automatic
+    case at
+    case recoveryCount
+    case supportedActions
     case metadata
     case noticeKind
     case report
@@ -2259,6 +2331,15 @@ extension AgentChatEvent {
         steerId: try container.decodeIfPresent(String.self, forKey: .steerId),
         deliveryState: try container.decodeIfPresent(String.self, forKey: .deliveryState),
         processed: try container.decodeIfPresent(Bool.self, forKey: .processed)
+      )
+    case "user_message_resolution":
+      self = .userMessageResolution(
+        steerId: try container.decode(String.self, forKey: .steerId),
+        action: try container.decode(String.self, forKey: .action),
+        state: try container.decode(String.self, forKey: .state),
+        resolvedAt: try container.decode(String.self, forKey: .resolvedAt),
+        replacementMessageId: try container.decodeIfPresent(String.self, forKey: .replacementMessageId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "text":
       self = .text(
@@ -2599,6 +2680,15 @@ extension AgentChatEvent {
         metadata: try container.decode(CodexModerationMetadata.self, forKey: .metadata),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
+    case "turn_diagnostics":
+      self = .turnDiagnostics(
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        moderationChecks: try container.decodeIfPresent(Int.self, forKey: .moderationChecks),
+        optionalIntegrationFailures: try container.decodeIfPresent(
+          [AgentChatOptionalIntegrationFailure].self,
+          forKey: .optionalIntegrationFailures
+        )
+      )
     case "codex_sleep":
       self = .codexSleep(
         itemId: try container.decode(String.self, forKey: .itemId),
@@ -2618,7 +2708,46 @@ extension AgentChatEvent {
         reason: reason,
         message: message,
         recoveryOptions: recoveryOptions,
+        sourceSessionId: try container.decodeIfPresent(String.self, forKey: .sourceSessionId),
+        detectedAt: try container.decodeIfPresent(String.self, forKey: .detectedAt),
+        turnStartedAt: try container.decodeIfPresent(String.self, forKey: .turnStartedAt),
+        lastProgressAt: try container.decodeIfPresent(String.self, forKey: .lastProgressAt),
+        automaticRecoveryAttempted: try container.decodeIfPresent(Bool.self, forKey: .automaticRecoveryAttempted)
+      )
+    case "turn_health":
+      self = .turnHealth(
+        provider: try container.decode(String.self, forKey: .provider),
+        turnId: try container.decode(String.self, forKey: .turnId),
+        state: try container.decode(String.self, forKey: .state),
+        reason: try container.decode(String.self, forKey: .reason),
+        message: try container.decode(String.self, forKey: .message),
+        turnStartedAt: try container.decode(String.self, forKey: .turnStartedAt),
+        lastProgressAt: try container.decode(String.self, forKey: .lastProgressAt),
+        detectedAt: try container.decode(String.self, forKey: .detectedAt),
+        recoveryCount: try container.decode(Int.self, forKey: .recoveryCount),
+        supportedActions: try container.decode([String].self, forKey: .supportedActions),
+        automaticRecoveryAttempted: try container.decode(Bool.self, forKey: .automaticRecoveryAttempted),
         sourceSessionId: try container.decodeIfPresent(String.self, forKey: .sourceSessionId)
+      )
+    case "codex_turn_recovery":
+      self = .codexTurnRecovery(
+        turnId: try container.decode(String.self, forKey: .turnId),
+        action: try container.decode(String.self, forKey: .action),
+        state: try container.decode(String.self, forKey: .state),
+        message: try container.decode(String.self, forKey: .message),
+        automatic: try container.decode(Bool.self, forKey: .automatic),
+        at: try container.decode(String.self, forKey: .at)
+      )
+    case "turn_recovery":
+      self = .turnRecovery(
+        provider: try container.decode(String.self, forKey: .provider),
+        turnId: try container.decode(String.self, forKey: .turnId),
+        action: try container.decode(String.self, forKey: .action),
+        state: try container.decode(String.self, forKey: .state),
+        message: try container.decode(String.self, forKey: .message),
+        automatic: try container.decode(Bool.self, forKey: .automatic),
+        at: try container.decode(String.self, forKey: .at),
+        recoveryCount: try container.decode(Int.self, forKey: .recoveryCount)
       )
     case "codex_thread_deleted":
       self = .codexThreadDeleted(
@@ -2701,6 +2830,7 @@ extension AgentChatEvent {
   var typeName: String {
     switch self {
     case .userMessage: return "user_message"
+    case .userMessageResolution: return "user_message_resolution"
     case .text: return "text"
     case .toolCall: return "tool_call"
     case .toolResult: return "tool_result"
@@ -2736,8 +2866,12 @@ extension AgentChatEvent {
     case .codexContextCompaction: return "codex_context_compaction"
     case .codexSafetyBuffering: return "codex_safety_buffering"
     case .codexModerationMetadata: return "codex_moderation_metadata"
+    case .turnDiagnostics: return "turn_diagnostics"
     case .codexSleep: return "codex_sleep"
     case .codexTurnStalled: return "codex_turn_stalled"
+    case .turnHealth: return "turn_health"
+    case .codexTurnRecovery: return "codex_turn_recovery"
+    case .turnRecovery: return "turn_recovery"
     case .codexThreadDeleted: return "codex_thread_deleted"
     case .systemNotice: return "system_notice"
     case .completionReport: return "completion_report"
@@ -2818,6 +2952,31 @@ struct AgentChatRecoverCodexTurnResult: Codable, Equatable {
   var action: String
   var turnId: String
   var status: String
+}
+
+struct AgentChatRecoverTurnRequest: Codable, Equatable {
+  var sessionId: String
+  var turnId: String
+  var action: String
+}
+
+struct AgentChatRecoverTurnResult: Codable, Equatable {
+  var action: String
+  var turnId: String
+  var status: String
+}
+
+struct AgentChatResolveUnprocessedMessageRequest: Codable, Equatable {
+  var sessionId: String
+  var steerId: String
+  var action: String
+}
+
+struct AgentChatResolveUnprocessedMessageResult: Codable, Equatable {
+  var steerId: String
+  var action: String
+  var status: String
+  var replacementMessageId: String?
 }
 
 struct AgentChatSessionIdRequest: Codable, Equatable {

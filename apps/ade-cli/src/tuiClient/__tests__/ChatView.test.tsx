@@ -491,6 +491,64 @@ describe("ChatView", () => {
     expect(frame).not.toContain("queued version");
     expect(frame).not.toContain("staged message");
     expect(frame).toContain("delivered version");
+    expect(frame).toContain("accepted · waiting to be processed");
+  });
+
+  it("renders one user bubble for steer lifecycle updates with the latest state", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "run release checks", steerId: "steer-1", deliveryState: "accepted", turnId: "turn-active" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "user_message", text: "run release checks", steerId: "steer-1", deliveryState: "processed", processed: true, turnId: "turn-active" },
+      },
+    ], { width: 80 });
+
+    expect(frame.match(/run release checks/g)).toHaveLength(1);
+    expect(frame).toContain("processed");
+    expect(frame).not.toContain("accepted · waiting");
+  });
+
+  it("keeps raw moderation quiet and renders cumulative turn diagnostics", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "codex_moderation_metadata",
+          metadata: { turnId: "turn-1", metadata: { is_blocked: false } },
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "turn_diagnostics",
+          turnId: "turn-1",
+          moderationChecks: 3,
+          optionalIntegrationFailures: [{ integration: "unityMCP" }],
+        },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:02.000Z",
+        sequence: 3,
+        event: { type: "user_message", text: "continue", turnId: "turn-1" },
+      },
+    ], { width: 80 });
+
+    expect(frame).not.toContain("moderation checked");
+    expect(frame).toContain("turn details · 3 safety checks");
+    expect(frame).toContain("unityMCP");
   });
 
   it("keeps steer lifecycle notices out of visible chat blocks", () => {

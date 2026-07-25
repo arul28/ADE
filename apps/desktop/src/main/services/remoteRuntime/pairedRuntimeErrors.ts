@@ -1,4 +1,12 @@
-import type { RemoteRuntimeSshHostKeyTrustStatus } from "../../../shared/types/remoteRuntime";
+import type {
+  RemoteRuntimeConnectionAttempt,
+  RemoteRuntimeSshHostKeyTrustStatus,
+} from "../../../shared/types/remoteRuntime";
+
+export type PairedRuntimeRouteDiagnostic = {
+  correlationId: string;
+  attempts: RemoteRuntimeConnectionAttempt[];
+};
 
 function assignCause(target: Error, cause: unknown): void {
   if (cause === undefined) return;
@@ -12,7 +20,11 @@ function assignCause(target: Error, cause: unknown): void {
 export class PairedRuntimeTransportUnavailableError extends Error {
   readonly code = "PAIRED_RUNTIME_TRANSPORT_UNAVAILABLE" as const;
 
-  constructor(message: string, cause?: unknown) {
+  constructor(
+    message: string,
+    cause?: unknown,
+    readonly diagnostic?: PairedRuntimeRouteDiagnostic,
+  ) {
     super(message);
     this.name = "PairedRuntimeTransportUnavailableError";
     assignCause(this, cause);

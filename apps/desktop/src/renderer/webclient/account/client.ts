@@ -4,6 +4,7 @@ import {
   DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
   DEVELOPMENT_ADE_CLERK_ISSUER,
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
+  createAccountDirectoryCorrelationId,
   fetchAccountMachines,
   parseTrustedAccountDirectoryBaseUrl,
   resolveTrustedAccountDirectoryBaseUrl,
@@ -672,6 +673,7 @@ export class BrowserAccountClient {
     const accessToken = await this.getAccessToken();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DIRECTORY_MUTATION_TIMEOUT_MS);
+    const correlationId = createAccountDirectoryCorrelationId();
     try {
       const response = await (this.options.fetchImpl ?? fetch)(
         `${config.directoryBaseUrl}/account/machines/${encodeURIComponent(machineKey)}`,
@@ -680,6 +682,7 @@ export class BrowserAccountClient {
           headers: {
             accept: "application/json",
             authorization: `Bearer ${accessToken}`,
+            "x-ade-correlation-id": correlationId,
           },
           credentials: "omit",
           referrerPolicy: "no-referrer",

@@ -110,18 +110,36 @@ describe("commands", () => {
     }));
   });
 
-  it("routes Codex stalled-turn recovery from Codex or orchestration-parent chats", () => {
+  it("routes provider-neutral stalled-turn recovery", () => {
     const parsed = parseCommand("/recover nudge turn-1");
     expect(parsed?.name).toBe("/recover");
     expect(parsed?.args).toBe("nudge turn-1");
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
     expect(paletteCommands("/rec", [], { provider: "codex" })).toContainEqual(expect.objectContaining({
       name: "/recover",
-      description: "Recover the latest stalled Codex turn",
+      description: "Recover the latest stalled turn",
     }));
     expect(paletteCommands("/rec", [], { provider: "claude" })).toContainEqual(expect.objectContaining({
       name: "/recover",
     }));
+  });
+
+  it("routes durable unprocessed-message actions through the ADE right pane", () => {
+    expect(parseCommand("/run-next steer-1 chat-2")).toMatchObject({
+      name: "/run-next",
+      args: "steer-1 chat-2",
+      spec: { placement: "right" },
+    });
+    expect(parseCommand("/edit-message steer-1")).toMatchObject({
+      name: "/edit-message",
+      args: "steer-1",
+      spec: { placement: "right" },
+    });
+    expect(parseCommand("/dismiss-message steer-1")).toMatchObject({
+      name: "/dismiss-message",
+      args: "steer-1",
+      spec: { placement: "right" },
+    });
   });
 
   it("routes /feedback to the ADE Code right pane", () => {

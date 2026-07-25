@@ -14,6 +14,10 @@ import type {
   AgentChatEditSteerArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
+  AgentChatRecoverTurnArgs,
+  AgentChatRecoverTurnResult,
+  AgentChatResolveUnprocessedMessageArgs,
+  AgentChatResolveUnprocessedMessageResult,
   AgentChatRespondToInputArgs,
   AgentChatSendArgs,
   AgentChatSession,
@@ -38,6 +42,8 @@ export const PERSONAL_CHAT_ACTIONS = [
   "dispatchSteer",
   "cancelDispatchedSteer",
   "interrupt",
+  "recoverTurn",
+  "resolveUnprocessedMessage",
   "respondToInput",
   "approve",
   "createScheduledWork",
@@ -106,6 +112,8 @@ export type PersonalChatCallArgs =
   | { action: "dispatchSteer"; args: AgentChatDispatchSteerArgs }
   | { action: "cancelDispatchedSteer"; args: AgentChatCancelDispatchedSteerArgs }
   | { action: "interrupt"; args: AgentChatInterruptArgs }
+  | { action: "recoverTurn"; args: AgentChatRecoverTurnArgs }
+  | { action: "resolveUnprocessedMessage"; args: AgentChatResolveUnprocessedMessageArgs }
   | { action: "respondToInput"; args: AgentChatRespondToInputArgs }
   | { action: "approve"; args: AgentChatApproveArgs }
   | { action: "createScheduledWork"; args: AgentChatCreateScheduledWorkArgs }
@@ -143,6 +151,8 @@ export type PersonalChatCallResult =
   | AgentChatCreateScheduledWorkResult
   | AgentChatCancelScheduledWorkResult
   | AgentChatSetScheduledWorkPausedResult
+  | AgentChatRecoverTurnResult
+  | AgentChatResolveUnprocessedMessageResult
   | AgentChatModelCatalog
   | PtyCreateResult
   | PtyDisposeResult

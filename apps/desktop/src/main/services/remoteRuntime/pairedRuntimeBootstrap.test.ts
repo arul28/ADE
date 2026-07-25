@@ -27,6 +27,7 @@ import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
+  PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
 
 const credentials: DesktopPairedMachineCredentials = {
@@ -266,5 +267,94 @@ describe("bootstrapPairedRuntime", () => {
       relayAccountToken: "short-lived-account-token",
     }));
     expect(result.result.route?.kind).toBe("relay");
+  });
+
+  it("never sends a different account's bearer to the paired machine Relay", async () => {
+    const relayCredentials = {
+      ...credentials,
+      accountOwnerUserId: "account-a",
+      endpoints: ["wss://relay.example/connect/host-1"],
+      relayUrl: "wss://relay.example/connect/host-1",
+    };
+    const openTransport = vi.fn(async () => transport());
+
+    await expect(bootstrapPairedRuntime({
+      target,
+      registry: { update: vi.fn(() => target) } as any,
+      pairedStore: {
+        getForReference: vi.fn(() => relayCredentials),
+        save: vi.fn(),
+        markEndpointSucceeded: vi.fn(),
+      } as any,
+      appVersion: "1.0.0",
+      options: {
+        openTransport,
+        getAccountRelayProof: vi.fn(async () => ({
+          userId: "account-b",
+          token: "must-not-leave-this-process",
+        })),
+      },
+    })).rejects.toThrow(/same ADE account/i);
+
+    expect(openTransport).not.toHaveBeenCalled();
+  });
+
+  it("tries direct routes before Relay and returns bounded privacy-safe diagnostics", async () => {
+    const routedCredentials = {
+      ...credentials,
+      accountOwnerUserId: "account-a",
+      endpoints: [
+        "wss://relay.example/connect/private-machine-key?secret=query",
+        "ws://studio.example.ts.net:8787",
+        "ws://studio.local:8787",
+      ],
+      relayUrl: "wss://relay.example/connect/private-machine-key?secret=query",
+    };
+    const openTransport = vi.fn(async (_args: { endpoint?: string }) => {
+      throw new Error("socket failed with secret diagnostic-token");
+    });
+    let captured: unknown;
+
+    try {
+      await bootstrapPairedRuntime({
+        target,
+        registry: { update: vi.fn(() => target) } as any,
+        pairedStore: {
+          getForReference: vi.fn(() => routedCredentials),
+          save: vi.fn(),
+          markEndpointSucceeded: vi.fn(),
+        } as any,
+        appVersion: "1.0.0",
+        options: {
+          openTransport,
+          getAccountRelayProof: vi.fn(async () => ({
+            userId: "account-a",
+            token: "ephemeral-account-token",
+          })),
+        },
+      });
+    } catch (error) {
+      captured = error;
+    }
+
+    expect(openTransport.mock.calls.map(([args]) => args.endpoint)).toEqual([
+      "ws://studio.local:8787/",
+      "ws://studio.example.ts.net:8787/",
+      "wss://relay.example/connect/private-machine-key?secret=query",
+    ]);
+    expect(captured).toBeInstanceOf(PairedRuntimeTransportUnavailableError);
+    const unavailable = captured as PairedRuntimeTransportUnavailableError;
+    expect(unavailable.diagnostic).toMatchObject({
+      correlationId: expect.any(String),
+      attempts: [
+        { kind: "lan", host: "studio.local:8787", outcome: "failed" },
+        { kind: "tailnet", host: "studio.example.ts.net:8787", outcome: "failed" },
+        { kind: "relay", host: "relay.example", outcome: "failed" },
+      ],
+    });
+    expect(unavailable.diagnostic?.attempts.length).toBeLessThanOrEqual(8);
+    expect(unavailable.message).not.toContain("private-machine-key");
+    expect(unavailable.message).not.toContain("diagnostic-token");
+    expect(JSON.stringify(unavailable.diagnostic)).not.toContain("ephemeral-account-token");
   });
 });

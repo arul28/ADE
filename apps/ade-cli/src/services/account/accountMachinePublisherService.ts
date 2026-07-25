@@ -9,6 +9,7 @@ import {
 } from "../../../../desktop/src/shared/types";
 import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import {
+  createAccountDirectoryCorrelationId,
   readAccountDirectoryHttpReason,
   resolveTrustedAccountDirectoryBaseUrl,
   shouldIgnoreDevelopmentAccountDirectoryUrl,
@@ -528,6 +529,7 @@ export function createAccountMachinePublisherService(options: {
         addLegDuration("token", startedAt);
       }
     };
+    const correlationId = createAccountDirectoryCorrelationId();
     const sendRegistration = async (
       token: string,
       registration: AccountMachineRegistration,
@@ -562,6 +564,7 @@ export function createAccountMachinePublisherService(options: {
               accept: "application/json",
               authorization: `Bearer ${token}`,
               "content-type": "application/json",
+              "x-ade-correlation-id": correlationId,
             },
             body: JSON.stringify(registration),
             credentials: "omit",

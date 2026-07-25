@@ -457,7 +457,7 @@ enum SyncRequestTimeout {
 
 private struct LaneDeletionFailure: Equatable {
   let projectId: String
-  let projectRootPath: String
+  let projectRootPath: String?
   let message: String
 }
 
@@ -855,6 +855,27 @@ func syncRelayAuthorizationState(
     return .requires(.signInRequired)
   }
   return relayOwner == currentOwner ? .eligible : .requires(.sameAccountRequired)
+}
+
+func syncRelayReconnectAuthorizationRequirement(
+  usedAuthorization: AccountPairingAuthorization?,
+  currentAuthorization: AccountPairingAuthorization?,
+  relayAccountOwnerId: String?
+) -> SyncRelayAuthorizationRequirement? {
+  guard let usedAuthorization, let currentAuthorization else {
+    return .signInRequired
+  }
+  let storedOwner = relayAccountOwnerId?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  let expectedOwner = (storedOwner?.isEmpty == false ? storedOwner : nil)
+    ?? usedAuthorization.ownerId
+  if currentAuthorization.ownerId != expectedOwner {
+    return .sameAccountRequired
+  }
+  guard currentAuthorization == usedAuthorization else {
+    return .signInRequired
+  }
+  return nil
 }
 
 func syncEligibleRelayCandidates(
@@ -2401,6 +2422,27 @@ private struct SyncHydrationProjectScope: Equatable {
 private struct SyncDomainHydrationAttempt {
   let id: UUID
   let domains: [SyncDomain]
+}
+
+func syncProviderNeutralRecoveryAction(_ legacyAction: String) -> String? {
+  switch legacyAction {
+  case "wait": return "wait"
+  case "steer": return "nudge"
+  case "interrupt_retry_same_thread": return "retry_same_runtime"
+  case "restart_resume_thread": return "restart_resume"
+  default: return nil
+  }
+}
+
+func syncPreferredRecoveryActionName(
+  supportsProviderNeutral: Bool,
+  supportsLegacyCodex: Bool,
+  providerNeutralActionName: String = "chat.recoverTurn",
+  legacyCodexActionName: String = "chat.recoverCodexTurn"
+) -> String? {
+  if supportsProviderNeutral { return providerNeutralActionName }
+  if supportsLegacyCodex { return legacyCodexActionName }
+  return nil
 }
 
 @MainActor
@@ -4713,7 +4755,10 @@ final class SyncService: ObservableObject {
     for machine: AccountMachine,
     hasSigningKey: Bool
   ) -> [AccountAdoptionRoute] {
-    let orderedKinds: [AccountMachineEndpoint.Kind] = [.relay, .tailnet, .lan]
+    // Match desktop paired-runtime routing. Eligible device-bound routes are
+    // attempted before the authenticated relay; an unsigned legacy host stays
+    // relay-only so account credentials never reach an unverified endpoint.
+    let orderedKinds: [AccountMachineEndpoint.Kind] = [.lan, .tailnet, .relay]
     var seen = Set<SyncConnectionEndpointAttempt>()
     var routes: [AccountAdoptionRoute] = []
     for kind in orderedKinds {
@@ -6162,11 +6207,9 @@ final class SyncService: ObservableObject {
     objectWillChange.send()
   }
 
-  /// Removes only pairings created through a specific ADE account. Directly
-  /// paired machines intentionally have no owner id and remain available after
-  /// sign-out. This is also called when Clerk reports a session switch or
-  /// expiry, so another person cannot reopen this ADE install and see the
-  /// previous account's machines.
+  /// Explicitly revokes pairings created through one ADE account. Ordinary
+  /// sign-out uses `removeAccountOwnedPairings(exceptOwnerId:)` and preserves
+  /// the host-issued device credential for direct routes.
   func removeAccountOwnedPairings(ownerId: String) {
     let owner = ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !owner.isEmpty else { return }
@@ -6174,21 +6217,24 @@ final class SyncService: ObservableObject {
     removeAccountOwnedPairings(matching: { $0 == owner })
   }
 
-  /// On cold launch, Clerk may already be signed out and there is no in-memory
-  /// "previous" identity to compare. Prune every account-owned profile except
-  /// the currently authenticated owner so stale sessions never leak machines.
+  /// Reconcile saved account-adopted pairings with the current account.
+  /// Signing out preserves the host-issued, device-bound paired secret so
+  /// LAN/Tailscale remain available; Relay still requires a fresh matching
+  /// account proof. Switching directly to another account removes pairings
+  /// owned by the previous account, matching desktop.
   func removeAccountOwnedPairings(exceptOwnerId ownerId: String?) {
     let allowedOwner = ownerId?.trimmingCharacters(in: .whitespacesAndNewlines)
-    removeAccountOwnedPairings { owner in
-      !owner.isEmpty && owner != allowedOwner
+    if let allowedOwner, !allowedOwner.isEmpty {
+      removeAccountOwnedPairings { owner in
+        !owner.isEmpty && owner != allowedOwner
+      }
     }
     enforceRelayAuthorization(currentOwnerId: allowedOwner)
   }
 
-  /// A direct-owned pairing may have a relay learned through an account without
-  /// becoming account-owned itself. When that account signs out or changes, end
-  /// an active relay session immediately, keep the local credential, and try the
-  /// direct LAN/Tailscale routes instead.
+  /// Any paired profile may have Relay metadata learned through an account.
+  /// When that account signs out or changes, end an active Relay session
+  /// immediately, keep the device credential, and try LAN/Tailscale instead.
   private func enforceRelayAuthorization(currentOwnerId: String?) {
     guard currentAddress.map(syncIsFullWebSocketRoute) == true,
           let profile = activeHostProfile ?? loadProfile() else { return }
@@ -9603,10 +9649,17 @@ final class SyncService: ObservableObject {
       throw NSError(
         domain: "ADE",
         code: 24,
-        userInfo: [NSLocalizedDescriptionKey: "This Codex recovery action is not supported."]
+        userInfo: [NSLocalizedDescriptionKey: "This recovery action is not supported."]
       )
     }
-    guard supportsRemoteAction("chat.recoverCodexTurn") else {
+    let neutralActionName = chatActionName("chat.recoverTurn", sessionId: sessionId)
+    let legacyActionName = chatActionName("chat.recoverCodexTurn", sessionId: sessionId)
+    guard let selectedActionName = syncPreferredRecoveryActionName(
+      supportsProviderNeutral: supportsRemoteAction(neutralActionName),
+      supportsLegacyCodex: supportsRemoteAction(legacyActionName),
+      providerNeutralActionName: neutralActionName,
+      legacyCodexActionName: legacyActionName
+    ) else {
       throw NSError(
         domain: "ADE",
         code: 17,
@@ -9614,8 +9667,33 @@ final class SyncService: ObservableObject {
       )
     }
     let scope = chatCommandScope(for: sessionId)
+    if selectedActionName == neutralActionName {
+      guard let neutralAction = syncProviderNeutralRecoveryAction(action) else {
+        throw NSError(
+          domain: "ADE",
+          code: 24,
+          userInfo: [NSLocalizedDescriptionKey: "This recovery action is not supported."]
+        )
+      }
+      let result = try await sendDecodableChatCommand(
+        action: neutralActionName,
+        payload: AgentChatRecoverTurnRequest(
+          sessionId: sessionId,
+          turnId: turnId,
+          action: neutralAction
+        ),
+        targetProjectId: scope.projectId,
+        targetProjectRootPath: scope.rootPath,
+        as: AgentChatRecoverTurnResult.self
+      )
+      return AgentChatRecoverCodexTurnResult(
+        action: action,
+        turnId: result.turnId,
+        status: result.status
+      )
+    }
     return try await sendDecodableChatCommand(
-      action: "chat.recoverCodexTurn",
+      action: legacyActionName,
       payload: AgentChatRecoverCodexTurnRequest(
         sessionId: sessionId,
         turnId: turnId,
@@ -9624,6 +9702,48 @@ final class SyncService: ObservableObject {
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
       as: AgentChatRecoverCodexTurnResult.self
+    )
+  }
+
+  func resolveUnprocessedMessage(
+    sessionId: String,
+    steerId: String,
+    action: String
+  ) async throws -> AgentChatResolveUnprocessedMessageResult {
+    guard action == "run_next" || action == "dismiss" else {
+      throw NSError(
+        domain: "ADE",
+        code: 24,
+        userInfo: [NSLocalizedDescriptionKey: "This unprocessed-message action is not supported."]
+      )
+    }
+    let normalizedSteerId = steerId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalizedSteerId.isEmpty else {
+      throw NSError(
+        domain: "ADE",
+        code: 25,
+        userInfo: [NSLocalizedDescriptionKey: "This message is missing its durable delivery identifier."]
+      )
+    }
+    let actionName = chatActionName("chat.resolveUnprocessedMessage", sessionId: sessionId)
+    guard supportsRemoteAction(actionName) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [NSLocalizedDescriptionKey: "Message recovery is not available on this machine version. Update ADE on the machine and reconnect."]
+      )
+    }
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: actionName,
+      payload: AgentChatResolveUnprocessedMessageRequest(
+        sessionId: sessionId,
+        steerId: normalizedSteerId,
+        action: action
+      ),
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatResolveUnprocessedMessageResult.self
     )
   }
 
@@ -11278,6 +11398,7 @@ final class SyncService: ObservableObject {
     var scheduled: SyncConnectionRaceScheduledCandidate
     var task: URLSessionWebSocketTask
     var helloPayload: [String: Any]
+    var relayAuthorization: AccountPairingAuthorization?
   }
 
   private enum AuthenticatedConnectionRaceEvent: @unchecked Sendable {
@@ -11310,8 +11431,7 @@ final class SyncService: ObservableObject {
       ? automaticReconnectAddresses(for: profile)
       : prioritizedAddresses(for: profile)
     // Relay routes (full wss:// URLs) carry their own path and port. Keep them
-    // out of the direct port sweep, but race them as first-class authenticated
-    // candidates rather than waiting for stale direct timeouts.
+    // out of the direct port sweep and reserve them for the fallback phase.
     let relayRoutes = rawAddresses.filter(syncIsFullWebSocketRoute)
     let usableRelayRoutes = AccountService.shared.currentPairingAuthorization == nil ? [] : relayRoutes
     let addresses = connectableAddresses(from: rawAddresses.filter { !syncIsFullWebSocketRoute($0) })
@@ -11360,18 +11480,53 @@ final class SyncService: ObservableObject {
     }
 
     guard !orderedEndpointAttempts.isEmpty else { throw noConnectableAddressError() }
-    let racePlan = syncConnectionRaceCandidatePlan(rankedAttempts: orderedEndpointAttempts)
-    if publishConnecting, let first = racePlan.first {
+    let directRacePlan = syncConnectionRaceCandidatePlan(
+      rankedAttempts: orderedEndpointAttempts.filter {
+        !syncIsFullWebSocketRoute($0.address)
+      }
+    )
+    let relayRacePlan = syncConnectionRaceCandidatePlan(
+      rankedAttempts: orderedEndpointAttempts.filter {
+        syncIsFullWebSocketRoute($0.address)
+      }
+    )
+    if publishConnecting, let first = directRacePlan.first ?? relayRacePlan.first {
       publishSocketConnecting(to: first.endpoint.address)
     }
     let connectedCandidate: AuthenticatedConnectionCandidate
     do {
-      connectedCandidate = try await raceAuthenticatedConnectionCandidates(
-        racePlan,
-        profile: profile,
-        pairedSecret: token,
-        connectAttemptGeneration: connectAttemptGeneration
-      )
+      if directRacePlan.isEmpty {
+        connectedCandidate = try await raceAuthenticatedConnectionCandidates(
+          relayRacePlan,
+          profile: profile,
+          pairedSecret: token,
+          connectAttemptGeneration: connectAttemptGeneration
+        )
+      } else {
+        do {
+          connectedCandidate = try await raceAuthenticatedConnectionCandidates(
+            directRacePlan,
+            profile: profile,
+            pairedSecret: token,
+            connectAttemptGeneration: connectAttemptGeneration
+          )
+        } catch {
+          guard !relayRacePlan.isEmpty,
+                isCurrentConnectAttempt(connectAttemptGeneration),
+                !Task.isCancelled else {
+            throw error
+          }
+          syncConnectLog.notice(
+            "ADE_SYNC_TRACE direct routes exhausted; beginning authenticated relay fallback"
+          )
+          connectedCandidate = try await raceAuthenticatedConnectionCandidates(
+            relayRacePlan,
+            profile: profile,
+            pairedSecret: token,
+            connectAttemptGeneration: connectAttemptGeneration
+          )
+        }
+      }
     } catch {
       if !shouldInvalidateSavedPairing(for: error),
          case .requires(let requirement) = relayAuthorizationState(for: profile) {
@@ -11382,6 +11537,15 @@ final class SyncService: ObservableObject {
     guard isCurrentConnectAttempt(connectAttemptGeneration) else {
       connectedCandidate.task.cancel(with: .goingAway, reason: nil)
       throw CancellationError()
+    }
+    if syncIsFullWebSocketRoute(connectedCandidate.scheduled.endpoint.address),
+       let requirement = syncRelayReconnectAuthorizationRequirement(
+         usedAuthorization: connectedCandidate.relayAuthorization,
+         currentAuthorization: AccountService.shared.currentPairingAuthorization,
+         relayAccountOwnerId: profile.relayAccountOwnerId
+       ) {
+      connectedCandidate.task.cancel(with: .goingAway, reason: nil)
+      throw requirement
     }
     if socket != nil {
       failPendingRequests(with: NSError(
@@ -11563,7 +11727,12 @@ final class SyncService: ObservableObject {
     guard let rawURLString = syncWebSocketURLString(host: urlHost, port: socketPort) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
-    let legacyURLString = isRelay ? syncRelayLegacyURL(rawURLString) : rawURLString
+    let legacyURLString = isRelay
+      ? syncRelayCorrelatedURL(
+        syncRelayLegacyURL(rawURLString),
+        correlationID: connectionAttempt.id
+      )
+      : rawURLString
     guard let legacyURL = URL(string: legacyURLString) else {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
@@ -11652,6 +11821,7 @@ final class SyncService: ObservableObject {
         }
 
         var auth: [String: Any]
+        var relayAuthorization: AccountPairingAuthorization?
         if profile.authKind == "paired", let pairedDeviceId = profile.pairedDeviceId {
           let proof = DpopKeyService.shared.buildProof(deviceId: pairedDeviceId, secret: pairedSecret)
           if isRelay, proof == nil {
@@ -11669,6 +11839,7 @@ final class SyncService: ObservableObject {
           if let proof { auth["dpop"] = proof }
           if isRelay {
             let relaySession = try await AccountService.shared.freshRelaySession()
+            relayAuthorization = relaySession.authorization
             guard profile.relayAccountOwnerId == nil
               || profile.relayAccountOwnerId == relaySession.authorization.ownerId else {
               throw SyncRelayAuthorizationRequirement.sameAccountRequired
@@ -11709,7 +11880,8 @@ final class SyncService: ObservableObject {
             return AuthenticatedConnectionCandidate(
               scheduled: candidate,
               task: candidateTask,
-              helloPayload: payload
+              helloPayload: payload,
+              relayAuthorization: relayAuthorization
             )
           case "hello_error":
             throw candidateHelloError(preprocessed.payload, profile: profile)
@@ -12344,7 +12516,13 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
     let isRelay = syncIsFullWebSocketRoute(host)
-    let legacyURLString = isRelay ? syncRelayLegacyURL(rawURLString) : rawURLString
+    let correlationID = UUID().uuidString
+    let legacyURLString = isRelay
+      ? syncRelayCorrelatedURL(
+        syncRelayLegacyURL(rawURLString),
+        correlationID: correlationID
+      )
+      : rawURLString
     let socketAttempts: [(urlString: String, awaitsRelayReadyV2: Bool)] = isRelay
       ? [(syncRelayReadyV2URL(legacyURLString), true), (legacyURLString, false)]
       : [(legacyURLString, false)]

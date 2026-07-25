@@ -131,6 +131,7 @@ function renderMessageList(
     onInsertDraft?: (text: string) => void;
     onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
+    onRunUnprocessedMessage?: (event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>) => void | Promise<void>;
     scrollToRowKeyRequest?: { key: string; requestId: number } | null;
     hasOlderHistory?: boolean;
     loadingOlderHistory?: boolean;
@@ -149,6 +150,7 @@ function renderMessageList(
         onInsertDraft={options?.onInsertDraft}
         onApproval={options?.onApproval as any}
         onCodexRecovery={options?.onCodexRecovery}
+        onRunUnprocessedMessage={options?.onRunUnprocessedMessage}
         scrollToRowKeyRequest={options?.scrollToRowKeyRequest}
         hasOlderHistory={options?.hasOlderHistory}
         loadingOlderHistory={options?.loadingOlderHistory}
@@ -894,6 +896,24 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByText("interrupted")).toBeTruthy();
   });
 
+  it("labels end-of-turn wall time as ran for, not worked for", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: { type: "user_message", text: "Run the checks.", turnId: "turn-1" },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:02:00.000Z",
+        event: { type: "done", turnId: "turn-1", status: "interrupted" },
+      },
+    ]);
+
+    expect(screen.getByText("Ran for 2m")).toBeTruthy();
+    expect(screen.queryByText(/Worked for/)).toBeNull();
+  });
+
   it("renders provider health and thread error notices distinctly", () => {
     renderMessageList([
       {
@@ -1091,7 +1111,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ], { sessionId: "parent-session", onCodexRecovery });
 
-    fireEvent.click(screen.getByRole("button", { name: "Wait" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep waiting" }));
     await waitFor(() => {
       expect(onCodexRecovery).toHaveBeenCalledWith({
         sessionId: "child-session",
@@ -1100,9 +1120,10 @@ describe("AgentChatMessageList transcript rendering", () => {
       });
     });
     expect(await screen.findByText("Waiting for Codex output…")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Nudge" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Restart & resume" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "More" }));
+    expect(screen.getByRole("button", { name: "Send nudge" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry same server" })).toBeTruthy();
   });
 
   it("shows a Codex recovery error without making the card inert", async () => {
@@ -1121,9 +1142,120 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ], { sessionId: "session-1", onCodexRecovery });
 
-    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart & resume" }));
     expect((await screen.findByRole("alert")).textContent).toContain("no longer active");
-    expect((screen.getByRole("button", { name: "Resume" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Restart & resume" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("hides raw moderation rows and keeps cumulative diagnostics behind turn details", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "codex_moderation_metadata",
+          metadata: { turnId: "turn-1", metadata: { is_blocked: false } },
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "turn_diagnostics",
+          turnId: "turn-1",
+          moderationChecks: 1,
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:02.000Z",
+        event: {
+          type: "turn_diagnostics",
+          turnId: "turn-1",
+          moderationChecks: 3,
+          optionalIntegrationFailures: [{ integration: "unityMCP", message: "not configured" }],
+        },
+      },
+    ]);
+
+    expect(screen.queryByText("Moderation")).toBeNull();
+    expect(screen.getAllByText("Turn details")).toHaveLength(1);
+    expect(screen.getByText(/3 safety checks/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByText("unityMCP")).toBeTruthy();
+  });
+
+  it("merges steer lifecycle updates and can run an unprocessed message next", async () => {
+    const onRunUnprocessedMessage = vi.fn().mockResolvedValue(undefined);
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "Check the release.",
+          steerId: "steer-1",
+          deliveryState: "accepted",
+          turnId: "turn-1",
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "user_message",
+          text: "Check the release.",
+          steerId: "steer-1",
+          deliveryState: "unprocessed",
+          turnId: "turn-1",
+        },
+      },
+    ], { onRunUnprocessedMessage });
+
+    expect(screen.getAllByText("Check the release.")).toHaveLength(1);
+    expect(screen.getByText("not processed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Run next" }));
+    await waitFor(() => {
+      expect(onRunUnprocessedMessage).toHaveBeenCalledWith(expect.objectContaining({
+        steerId: "steer-1",
+        deliveryState: "unprocessed",
+      }));
+    });
+    expect(await screen.findByText("Started as the next turn")).toBeTruthy();
+  });
+
+  it("collapses a resolved Codex recovery card into an audit receipt", () => {
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "codex_turn_stalled",
+          turnId: "turn-stalled",
+          reason: "no_output",
+          message: "No output arrived.",
+          recoveryOptions: ["restart_resume_thread", "wait"],
+        },
+      },
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:01.000Z",
+        event: {
+          type: "codex_turn_recovery",
+          turnId: "turn-stalled",
+          action: "restart_resume_thread",
+          state: "recovered",
+          message: "ADE restarted the Codex app-server and resumed the thread.",
+          automatic: true,
+          at: "2026-03-17T10:00:01.000Z",
+        },
+      },
+    ]);
+
+    expect(screen.queryByRole("button", { name: "Restart & resume" })).toBeNull();
+    expect(screen.getByText("Recovered")).toBeTruthy();
+    expect(screen.getByText(/restarted the Codex app-server/)).toBeTruthy();
   });
 
   it("keeps non-rate-limit notice details in collapsible cards", () => {

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { Lexer, type Token, type Tokens } from "marked";
-import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
@@ -556,6 +556,35 @@ export function renderChatLines(args: {
     if (a.kind !== b.kind) return a.kind === "event" ? -1 : 1;
     return a.index - b.index;
   });
+  const latestUserMessageIndexBySteer = new Map<string, number>();
+  const latestUserMessageResolutionBySteer = new Map<
+    string,
+    Extract<AgentChatEvent, { type: "user_message_resolution" }>
+  >();
+  const latestDiagnosticsIndexByTurn = new Map<string, number>();
+  const latestLegacyRecoveryIndexByTurn = new Map<string, number>();
+  const latestNeutralRecoveryIndexByTurn = new Map<string, number>();
+  const latestRecoveryStateByTurn = new Map<string, "recovering" | "recovered" | "failed">();
+  const neutralHealthTurnIds = new Set<string>();
+  for (const entry of timeline) {
+    if (entry.kind !== "event") continue;
+    const event = entry.envelope.event;
+    if (event.type === "user_message" && event.steerId) {
+      latestUserMessageIndexBySteer.set(event.steerId, entry.index);
+    } else if (event.type === "user_message_resolution") {
+      latestUserMessageResolutionBySteer.set(event.steerId, event);
+    } else if (event.type === "turn_diagnostics") {
+      latestDiagnosticsIndexByTurn.set(event.turnId ?? "__session_startup__", entry.index);
+    } else if (event.type === "codex_turn_recovery") {
+      latestLegacyRecoveryIndexByTurn.set(event.turnId, entry.index);
+      latestRecoveryStateByTurn.set(event.turnId, event.state);
+    } else if (event.type === "turn_recovery") {
+      latestNeutralRecoveryIndexByTurn.set(event.turnId, entry.index);
+      latestRecoveryStateByTurn.set(event.turnId, event.state);
+    } else if (event.type === "turn_health") {
+      neutralHealthTurnIds.add(event.turnId);
+    }
+  }
 
   const pushLine = (line: RenderedChatLine): void => {
     const last = lines[lines.length - 1];
@@ -586,11 +615,38 @@ export function renderChatLines(args: {
     const id = chatEventLineId(envelope, index);
     const expanded = args.expandedLineIds?.has(id) ?? false;
     if (event.type === "user_message") {
+      if (event.steerId && latestUserMessageIndexBySteer.get(event.steerId) !== index) {
+        continue;
+      }
+      const resolution = event.steerId
+        ? latestUserMessageResolutionBySteer.get(event.steerId)
+        : undefined;
+      const deliveryHeader = resolution?.action === "run_next"
+        ? "not processed · started as the next turn"
+        : resolution?.action === "dismiss"
+          ? "not processed · dismissed"
+          : event.deliveryState === "processed" || event.processed
+        ? "processed"
+          : event.deliveryState === "unprocessed"
+          ? event.steerId
+            ? `not processed · /run-next ${event.steerId} · /edit-message ${event.steerId} · /dismiss-message ${event.steerId}`
+            : "not processed · send again when ready"
+          : event.deliveryState === "accepted" || event.deliveryState === "delivered"
+            ? "accepted · waiting to be processed"
+            : event.deliveryState === "inline"
+              ? "accepted during active turn"
+              : event.deliveryState === "failed"
+                ? "send failed"
+                : undefined;
       lines.push({
         id,
         tone: "user",
+        header: deliveryHeader,
         body: event.displayText ?? event.text,
       });
+      continue;
+    }
+    if (event.type === "user_message_resolution") {
       continue;
     }
     if (event.type === "transcript_retraction") {
@@ -712,7 +768,58 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "codex_moderation_metadata") {
-      lines.push({ id, tone: "notice", body: "moderation checked" });
+      continue;
+    }
+    if (event.type === "turn_diagnostics") {
+      if (latestDiagnosticsIndexByTurn.get(event.turnId ?? "__session_startup__") !== index) {
+        continue;
+      }
+      const checks = Math.max(0, event.moderationChecks ?? 0);
+      const integrations = event.optionalIntegrationFailures ?? [];
+      const parts = [
+        checks ? `${checks} safety ${checks === 1 ? "check" : "checks"}` : null,
+        integrations.length
+          ? `optional integrations unavailable: ${integrations.map((entry) => entry.integration).join(", ")}`
+          : null,
+      ].filter((part): part is string => Boolean(part));
+      if (parts.length) {
+        lines.push({ id, tone: "notice", body: `turn details · ${parts.join(" · ")}` });
+      }
+      continue;
+    }
+    if (event.type === "turn_recovery") {
+      if (latestNeutralRecoveryIndexByTurn.get(event.turnId) !== index) {
+        continue;
+      }
+      const label = event.state === "recovered"
+        ? "recovered"
+        : event.state === "failed"
+          ? "recovery failed"
+          : "recovering";
+      lines.push({
+        id,
+        tone: event.state === "failed" ? "error" : "notice",
+        body: `${label}${event.automatic ? " automatically" : ""} · ${singleLine(event.message, 140)}`,
+      });
+      continue;
+    }
+    if (event.type === "codex_turn_recovery") {
+      if (
+        latestNeutralRecoveryIndexByTurn.has(event.turnId)
+        || latestLegacyRecoveryIndexByTurn.get(event.turnId) !== index
+      ) {
+        continue;
+      }
+      const label = event.state === "recovered"
+        ? "recovered"
+        : event.state === "failed"
+          ? "recovery failed"
+          : "recovering";
+      lines.push({
+        id,
+        tone: event.state === "failed" ? "error" : "notice",
+        body: `${label}${event.automatic ? " automatically" : ""} · ${singleLine(event.message, 140)}`,
+      });
       continue;
     }
     if (event.type === "codex_sleep") {
@@ -732,11 +839,36 @@ export function renderChatLines(args: {
       lines.push({ id, tone: "error", body: "thread deleted upstream · next message starts fresh" });
       continue;
     }
-    if (event.type === "codex_turn_stalled") {
+    if (event.type === "turn_health") {
+      if (latestRecoveryStateByTurn.get(event.turnId) === "recovered") {
+        continue;
+      }
       lines.push({
         id,
         tone: "error",
-        body: `recovery · ${singleLine(event.message, 140)}\n   /recover wait · nudge · retry · resume`,
+        body: [
+          `recovery · ${singleLine(event.message, 140)}`,
+          "   primary: /recover resume (restart runtime + resume) · /recover wait",
+          "   more: /recover nudge · /recover retry (keep current runtime)",
+        ].join("\n"),
+      });
+      continue;
+    }
+    if (event.type === "codex_turn_stalled") {
+      if (neutralHealthTurnIds.has(event.turnId)) {
+        continue;
+      }
+      if (latestRecoveryStateByTurn.get(event.turnId) === "recovered") {
+        continue;
+      }
+      lines.push({
+        id,
+        tone: "error",
+        body: [
+          `recovery · ${singleLine(event.message, 140)}`,
+          "   primary: /recover resume (restart runtime + resume) · /recover wait",
+          "   more: /recover nudge · /recover retry (keep current runtime)",
+        ].join("\n"),
       });
       continue;
     }

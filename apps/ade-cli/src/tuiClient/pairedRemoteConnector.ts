@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
 } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import {
   buildPairedEndpointCandidates,
+  classifyPairedRuntimeFailure,
+  pairedRuntimeRouteHost,
   type PairedRuntimeEndpointCandidate,
 } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
 import { DesktopPairedMachineStore } from "../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
@@ -11,7 +14,10 @@ import {
   openSyncRuntimeTransport,
   type SyncRuntimeTransport,
 } from "../../../desktop/src/main/services/remoteRuntime/syncRuntimeTransport";
-import type { RemoteRuntimeTarget } from "../../../desktop/src/shared/types/remoteRuntime";
+import type {
+  RemoteRuntimeConnectionAttempt,
+  RemoteRuntimeTarget,
+} from "../../../desktop/src/shared/types/remoteRuntime";
 import type { DesktopPairedMachineCredentials } from "../../../desktop/src/shared/types/pairedRuntime";
 import {
   withBoundedAttempt,
@@ -109,6 +115,10 @@ export class PairedRemoteConnectionUnavailableError extends Error {
     readonly reason: PairedConnectionFailureReason,
     readonly failures: readonly string[],
     message: string,
+    readonly diagnostic?: {
+      correlationId: string;
+      attempts: RemoteRuntimeConnectionAttempt[];
+    },
   ) {
     super(message);
     this.name = "PairedRemoteConnectionUnavailableError";
@@ -119,6 +129,8 @@ export type OpenedPairedCandidate<T> = {
   value: T;
   candidate: PairedRuntimeEndpointCandidate;
   connectedAt: number;
+  correlationId: string;
+  attempts: RemoteRuntimeConnectionAttempt[];
 };
 
 export async function openPairedCandidate<T>(args: {
@@ -156,9 +168,20 @@ export async function openPairedCandidate<T>(args: {
     );
   }
 
+  const correlationId = randomUUID();
   const failures: string[] = [];
+  const attempts: RemoteRuntimeConnectionAttempt[] = [];
+  const recordAttempt = (attempt: RemoteRuntimeConnectionAttempt): void => {
+    if (attempts.length < 8) attempts.push(attempt);
+  };
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
-  for (const candidate of candidates) {
+  const orderedCandidates = [
+    ...candidates.filter((candidate) => candidate.kind !== "relay"),
+    ...candidates.filter((candidate) => candidate.kind === "relay"),
+  ];
+  for (const candidate of orderedCandidates) {
+    const attemptStartedAt = Date.now();
+    const safeHost = pairedRuntimeRouteHost(candidate.endpoint);
     let transport: SyncRuntimeTransport | null = null;
     try {
       const relayProof = await pairedRouteAccountProof({
@@ -175,6 +198,7 @@ export async function openPairedCandidate<T>(args: {
           authTimeoutMs: attempt.timeoutMs,
           signal: attempt.signal,
           relayAccountToken: relayProof?.token ?? null,
+          ...(candidate.kind === "relay" ? { correlationId } : {}),
         })
       );
       await assertRelayAccountUnchanged(
@@ -194,15 +218,41 @@ export async function openPairedCandidate<T>(args: {
           `Warning: could not save paired endpoint metadata: ${errorMessage(error)}\n`,
         );
       }
-      return { value, candidate, connectedAt };
+      recordAttempt({
+        kind: candidate.kind,
+        host: safeHost,
+        startedAt: attemptStartedAt,
+        durationMs: Math.max(0, connectedAt - attemptStartedAt),
+        outcome: "connected",
+      });
+      return { value, candidate, connectedAt, correlationId, attempts };
     } catch (error) {
       try { transport?.close(); } catch {}
       if (error instanceof PairedRuntimeRelayAuthRequiredError) {
         relayAuthError = error;
+        recordAttempt({
+          kind: candidate.kind,
+          host: safeHost,
+          startedAt: attemptStartedAt,
+          durationMs: Math.max(0, Date.now() - attemptStartedAt),
+          outcome: "skipped",
+          failure: "authentication",
+        });
         continue;
       }
       if (error instanceof PairedRuntimeCompatibilityError) throw error;
-      failures.push(`${pairedConnectionLabel(candidate)}: ${errorMessage(error)}`);
+      const failure = classifyPairedRuntimeFailure(error);
+      recordAttempt({
+        kind: candidate.kind,
+        host: safeHost,
+        startedAt: attemptStartedAt,
+        durationMs: Math.max(0, Date.now() - attemptStartedAt),
+        outcome: "failed",
+        failure,
+      });
+      if (failures.length < 8) {
+        failures.push(`${pairedConnectionLabel(candidate)}: ${failure}`);
+      }
     }
   }
   if (relayAuthError) throw relayAuthError;
@@ -212,5 +262,6 @@ export async function openPairedCandidate<T>(args: {
     `Could not open a paired ADE runtime connection to ${args.target.name}. ${failures
       .slice(0, 4)
       .join(" | ")}`,
+    { correlationId, attempts },
   );
 }

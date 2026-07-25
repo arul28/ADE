@@ -143,6 +143,8 @@ type WorkspacePathLocation = {
 };
 
 type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
+type CodexTurnRecoveryEvent = Extract<AgentChatEvent, { type: "codex_turn_recovery" }>;
+type UserMessageEvent = Extract<AgentChatEvent, { type: "user_message" }>;
 
 function CodexTurnRecoveryCard({
   event,
@@ -156,12 +158,13 @@ function CodexTurnRecoveryCard({
   const [pendingAction, setPendingAction] = useState<AgentChatRecoverCodexTurnArgs["action"] | null>(null);
   const [resultMessage, setResultMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
   const targetSessionId = event.sourceSessionId?.trim() || sessionId?.trim() || "";
   const optionLabels: Record<AgentChatRecoverCodexTurnArgs["action"], string> = {
-    wait: "Wait",
-    steer: "Nudge",
-    interrupt_retry_same_thread: "Retry",
-    restart_resume_thread: "Resume",
+    wait: "Keep waiting",
+    steer: "Send nudge",
+    interrupt_retry_same_thread: "Retry same server",
+    restart_resume_thread: "Restart & resume",
   };
   const resultLabels: Record<AgentChatRecoverCodexTurnResult["status"], string> = {
     waiting: "Waiting for Codex output…",
@@ -169,6 +172,36 @@ function CodexTurnRecoveryCard({
     retrying: "Retry started in this thread.",
     resumed: "Codex app-server restarted and the thread resumed.",
   };
+  const recoveryOptions = event.recoveryOptions ?? [
+    "restart_resume_thread",
+    "wait",
+    "steer",
+    "interrupt_retry_same_thread",
+  ];
+  const primaryOptions = (["restart_resume_thread", "wait"] as const)
+    .filter((option) => recoveryOptions.includes(option));
+  const secondaryOptions = (["steer", "interrupt_retry_same_thread"] as const)
+    .filter((option) => recoveryOptions.includes(option));
+  const title = event.reason === "waiting_on_approval"
+    ? "Codex is waiting for approval"
+    : event.reason === "waiting_on_input"
+      ? "Codex is waiting for your input"
+      : event.reason === "no_progress"
+        ? "Codex stopped making progress"
+        : "Codex did not start responding";
+  const timing = (() => {
+    const detectedAt = event.detectedAt ? Date.parse(event.detectedAt) : Number.NaN;
+    const turnStartedAt = event.turnStartedAt ? Date.parse(event.turnStartedAt) : Number.NaN;
+    const lastProgressAt = event.lastProgressAt ? Date.parse(event.lastProgressAt) : Number.NaN;
+    const parts: string[] = [];
+    if (Number.isFinite(detectedAt) && Number.isFinite(turnStartedAt) && detectedAt > turnStartedAt) {
+      parts.push(`Elapsed ${formatTurnDuration(detectedAt - turnStartedAt)}`);
+    }
+    if (Number.isFinite(detectedAt) && Number.isFinite(lastProgressAt) && detectedAt > lastProgressAt) {
+      parts.push(`inactive ${formatTurnDuration(detectedAt - lastProgressAt)}`);
+    }
+    return parts.join(" · ");
+  })();
 
   const recover = useCallback(async (action: AgentChatRecoverCodexTurnArgs["action"]) => {
     if (!targetSessionId || !onRecover || pendingAction) return;
@@ -190,24 +223,67 @@ function CodexTurnRecoveryCard({
       <div className="flex items-center gap-2">
         <Warning size={13} weight="duotone" className="shrink-0 text-amber-200/75" />
         <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-amber-200/55">recovery</span>
-        <span className="min-w-0 truncate">Codex paused unexpectedly</span>
+        <span className="min-w-0 truncate">{title}</span>
       </div>
       <div className="mt-1.5 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/64">
         {event.message}
       </div>
-      {event.recoveryOptions?.length ? (
+      {event.automaticRecoveryAttempted ? (
+        <div className="mt-1 text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48">
+          ADE already tried one automatic restart. It will not restart again without you.
+        </div>
+      ) : null}
+      {timing ? (
+        <div className="mt-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] text-amber-100/42">
+          {timing}
+        </div>
+      ) : null}
+      {primaryOptions.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {event.recoveryOptions.slice(0, 4).map((option) => (
+          {primaryOptions.map((option) => (
             <button
               key={option}
               type="button"
               disabled={!targetSessionId || !onRecover || pendingAction != null}
-              className="rounded-md border border-amber-200/12 bg-amber-300/[0.055] px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-100/65 transition-colors hover:border-amber-200/25 hover:bg-amber-300/[0.11] hover:text-amber-50 disabled:pointer-events-none disabled:opacity-45"
+              className={cn(
+                "rounded-md border px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-semibold transition-colors disabled:pointer-events-none disabled:opacity-45",
+                option === "restart_resume_thread"
+                  ? "border-amber-200/24 bg-amber-300/[0.14] text-amber-50 hover:border-amber-100/40 hover:bg-amber-300/[0.2]"
+                  : "border-amber-200/12 bg-transparent text-amber-100/68 hover:border-amber-200/25 hover:bg-amber-300/[0.08]",
+              )}
               onClick={() => void recover(option)}
             >
               {pendingAction === option ? `${optionLabels[option]}…` : optionLabels[option]}
             </button>
           ))}
+        </div>
+      ) : null}
+      {secondaryOptions.length ? (
+        <div className="mt-1.5">
+          <button
+            type="button"
+            aria-expanded={moreOpen}
+            className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48 transition-colors hover:bg-amber-300/[0.07] hover:text-amber-50/75"
+            onClick={() => setMoreOpen((open) => !open)}
+          >
+            More
+            {moreOpen ? <CaretDown size={10} weight="bold" /> : <CaretRight size={10} weight="bold" />}
+          </button>
+          {moreOpen ? (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {secondaryOptions.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  disabled={!targetSessionId || !onRecover || pendingAction != null}
+                  className="rounded-md border border-amber-200/10 bg-transparent px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/55 transition-colors hover:border-amber-200/22 hover:bg-amber-300/[0.07] hover:text-amber-50 disabled:pointer-events-none disabled:opacity-45"
+                  onClick={() => void recover(option)}
+                >
+                  {pendingAction === option ? `${optionLabels[option]}…` : optionLabels[option]}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
       {resultMessage ? (
@@ -221,6 +297,73 @@ function CodexTurnRecoveryCard({
         </div>
       ) : null}
     </div>
+  );
+}
+
+function CodexTurnRecoveryReceipt({ event }: { event: CodexTurnRecoveryEvent }) {
+  const tone = event.state === "failed"
+    ? "border-red-300/14 bg-red-500/[0.04] text-red-100/70"
+    : event.state === "recovered"
+      ? "border-emerald-300/12 bg-emerald-500/[0.035] text-emerald-100/68"
+      : "border-amber-300/12 bg-amber-500/[0.035] text-amber-100/68";
+  const label = event.state === "recovered"
+    ? "Recovered"
+    : event.state === "failed"
+      ? "Recovery failed"
+      : "Recovering";
+  return (
+    <div className={cn("inline-flex max-w-[min(100%,44rem)] items-center gap-2 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]", tone)}>
+      {event.state === "recovered"
+        ? <CheckCircle size={12} weight="duotone" className="shrink-0" />
+        : <Warning size={12} weight="duotone" className="shrink-0" />}
+      <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] opacity-65">{label}</span>
+      <span className="min-w-0 truncate">{event.message}</span>
+      {event.automatic ? <span className="shrink-0 opacity-45">automatic</span> : null}
+    </div>
+  );
+}
+
+function TurnDiagnosticsDisclosure({
+  event,
+}: {
+  event: Extract<AgentChatEvent, { type: "turn_diagnostics" }>;
+}) {
+  const moderationChecks = Math.max(0, event.moderationChecks ?? 0);
+  const integrations = event.optionalIntegrationFailures ?? [];
+  if (!moderationChecks && !integrations.length) return null;
+  const summaryParts = [
+    moderationChecks ? `${moderationChecks} safety ${moderationChecks === 1 ? "check" : "checks"}` : null,
+    integrations.length ? `${integrations.length} optional ${integrations.length === 1 ? "integration warning" : "integration warnings"}` : null,
+  ].filter((part): part is string => Boolean(part));
+  return (
+    <InlineDisclosureRow
+      summary={(
+        <div className="flex min-w-0 items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/42">
+          <ShieldCheck size={11} weight="duotone" className="shrink-0 text-fg/36" />
+          <span className="font-medium text-fg/52">Turn details</span>
+          <span className="min-w-0 truncate">{summaryParts.join(" · ")}</span>
+        </div>
+      )}
+    >
+      <div className="space-y-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-fg/58">
+        {moderationChecks ? (
+          <div>Safety checks recorded: {moderationChecks}.</div>
+        ) : null}
+        {integrations.length ? (
+          <div>
+            <div className="font-medium text-fg/68">Optional integrations unavailable</div>
+            <ul className="mt-1 space-y-1">
+              {integrations.map((integration) => (
+                <li key={integration.integration}>
+                  <span className="text-fg/70">{integration.integration}</span>
+                  {integration.message ? <span className="text-fg/42"> · {integration.message}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+      </div>
+    </InlineDisclosureRow>
   );
 }
 
@@ -545,23 +688,29 @@ function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_
       className: "ade-chat-status-pill border-red-500/25 text-red-300",
     };
   }
+  if (event.deliveryState === "unprocessed") {
+    return {
+      label: "not processed",
+      className: "ade-chat-status-pill border-amber-500/25 text-amber-200",
+    };
+  }
   // Queued user_messages render in the staging area only, not in the chat
   // thread, so we never need a "queued" delivery chip in the bubble itself.
   if (event.deliveryState === "inline") {
     return {
-      label: "during turn",
+      label: "accepted during turn",
       className: "ade-chat-status-pill border-violet-500/15 text-violet-300/70",
     };
   }
-  if (event.processed) {
+  if (event.deliveryState === "processed" || event.processed) {
     return {
       label: "processed",
       className: "ade-chat-status-pill border-emerald-500/25 text-emerald-300",
     };
   }
-  if (event.deliveryState === "delivered") {
+  if (event.deliveryState === "accepted" || event.deliveryState === "delivered") {
     return {
-      label: "sent",
+      label: "accepted · waiting",
       className: "ade-chat-status-pill border-sky-500/25 text-sky-300",
     };
   }
@@ -672,6 +821,96 @@ function UserMessageSendConfirmations({
           <Bug size={12} weight="regular" className="shrink-0 text-emerald-400/85" aria-hidden />
           <span>Issue context analyzed</span>
         </motion.div>
+      ) : null}
+    </div>
+  );
+}
+
+function UnprocessedMessageAction({
+  event,
+  onRun,
+  onEdit,
+  onDismiss,
+}: {
+  event: UserMessageEvent;
+  onRun?: (event: UserMessageEvent) => void | Promise<void>;
+  onEdit?: (event: UserMessageEvent) => void;
+  onDismiss?: (event: UserMessageEvent) => void | Promise<void>;
+}) {
+  const [running, setRunning] = useState(false);
+  const [resolved, setResolved] = useState<"run_next" | "dismiss" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const durableAction =
+    event.metadata?.unprocessedMessageResolution?.action ?? null;
+  const settledAction = durableAction ?? resolved;
+  if (event.deliveryState !== "unprocessed") return null;
+  const run = async () => {
+    if (!onRun || running || settledAction) return;
+    setRunning(true);
+    setError(null);
+    try {
+      await onRun(event);
+      setResolved("run_next");
+    } catch (runError) {
+      setError(runError instanceof Error ? runError.message : String(runError));
+    } finally {
+      setRunning(false);
+    }
+  };
+  const dismiss = async () => {
+    if (!onDismiss || running || settledAction) return;
+    setRunning(true);
+    setError(null);
+    try {
+      await onDismiss(event);
+      setResolved("dismiss");
+    } catch (dismissError) {
+      setError(dismissError instanceof Error ? dismissError.message : String(dismissError));
+    } finally {
+      setRunning(false);
+    }
+  };
+  if (settledAction) {
+    return (
+      <div className="mt-2 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/55">
+        {settledAction === "run_next" ? "Started as the next turn" : "Dismissed"}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      <button
+        type="button"
+        disabled={running || !onRun}
+        className="rounded-md border border-amber-200/22 bg-amber-300/[0.1] px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-semibold text-amber-50/88 transition-colors hover:border-amber-100/35 hover:bg-amber-300/[0.16] disabled:pointer-events-none disabled:opacity-55"
+        onClick={() => void run()}
+      >
+        {running ? "Working…" : "Run next"}
+      </button>
+      {onEdit ? (
+        <button
+          type="button"
+          disabled={running}
+          className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/58 transition-colors hover:bg-white/[0.06] hover:text-fg/82 disabled:pointer-events-none disabled:opacity-55"
+          onClick={() => onEdit(event)}
+        >
+          Edit
+        </button>
+      ) : null}
+      {onDismiss ? (
+        <button
+          type="button"
+          disabled={running}
+          className="rounded-md px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/45 transition-colors hover:bg-white/[0.06] hover:text-fg/72 disabled:pointer-events-none disabled:opacity-55"
+          onClick={() => void dismiss()}
+        >
+          Dismiss
+        </button>
+      ) : null}
+      {error ? (
+        <div className="w-full text-[length:calc(var(--chat-font-size)*9.5/14)] text-red-200/78" role="alert">
+          {error}
+        </div>
       ) : null}
     </div>
   );
@@ -2786,6 +3025,9 @@ function renderEvent(
     onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
     onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
     onChooseProviderFailureModel?: () => void;
+    onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+    onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
+    onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
     turnModel?: { label: string; modelId?: string; model?: string } | null;
     surfaceMode?: ChatSurfaceMode;
     surfaceProfile?: ChatSurfaceProfile;
@@ -2987,6 +3229,12 @@ function renderEvent(
             />
           ) : null}
           <UserMessageSendConfirmations event={event} />
+          <UnprocessedMessageAction
+            event={event}
+            onRun={options?.onRunUnprocessedMessage}
+            onEdit={options?.onEditUnprocessedMessage}
+            onDismiss={options?.onDismissUnprocessedMessage}
+          />
         </div>
       </motion.div>
     );
@@ -3329,13 +3577,15 @@ function renderEvent(
   }
 
   if (event.type === "codex_moderation_metadata") {
-    return (
-      <div className="inline-flex max-w-[min(100%,34rem)] items-center gap-2 rounded-lg border border-emerald-300/12 bg-emerald-500/[0.04] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-emerald-100/72">
-        <ShieldCheck size={12} weight="duotone" className="shrink-0 text-emerald-200/65" />
-        <span className="shrink-0 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-emerald-200/50">moderation</span>
-        <span className="min-w-0 truncate">Checked</span>
-      </div>
-    );
+    return null;
+  }
+
+  if (event.type === "turn_diagnostics") {
+    return <TurnDiagnosticsDisclosure event={event} />;
+  }
+
+  if (event.type === "codex_turn_recovery") {
+    return <CodexTurnRecoveryReceipt event={event} />;
   }
 
   if (event.type === "codex_sleep") {
@@ -4402,8 +4652,8 @@ function DoneTurnDivider({
   const completed = event.status === "completed";
   const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
   const reasonLabel = completed ? null : terminalReasonLabel(event.terminalReason);
-  const workedFor = durationMs !== null && durationMs > 1500
-    ? `Worked for ${formatTurnDuration(durationMs)}`
+  const ranFor = durationMs !== null && durationMs > 1500
+    ? `Ran for ${formatTurnDuration(durationMs)}`
     : null;
   return (
     <div className="my-4 flex items-center gap-3">
@@ -4431,10 +4681,10 @@ function DoneTurnDivider({
             <span className="normal-case">{reasonLabel}</span>
           </>
         ) : null}
-        {workedFor ? (
+        {ranFor ? (
           <>
             <span className="opacity-40">·</span>
-            <span>{workedFor}</span>
+            <span>{ranFor}</span>
           </>
         ) : null}
       </span>
@@ -4538,6 +4788,9 @@ type EventRowProps = {
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   onChooseProviderFailureModel?: () => void;
+  onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+  onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
+  onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -4577,6 +4830,9 @@ const EventRow = React.memo(function EventRow({
   onCodexRecovery,
   onRetryProviderFailure,
   onChooseProviderFailureModel,
+  onRunUnprocessedMessage,
+  onEditUnprocessedMessage,
+  onDismissUnprocessedMessage,
   surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -4659,9 +4915,12 @@ const EventRow = React.memo(function EventRow({
           ? <ChatActivityBundle event={envelope.event} sessionId={sessionId} />
         : renderEvent(envelope as RenderEnvelope, {
             onApproval,
-            onCodexRecovery,
-            onRetryProviderFailure,
-            onChooseProviderFailureModel,
+              onCodexRecovery,
+              onRetryProviderFailure,
+              onChooseProviderFailureModel,
+              onRunUnprocessedMessage,
+              onEditUnprocessedMessage,
+              onDismissUnprocessedMessage,
             turnModel,
             surfaceMode,
             surfaceProfile,
@@ -4995,6 +5254,9 @@ function AgentChatMessageListMain({
   onCodexRecovery,
   onRetryProviderFailure,
   onChooseProviderFailureModel,
+  onRunUnprocessedMessage,
+  onEditUnprocessedMessage,
+  onDismissUnprocessedMessage,
     surfaceMode = "standard",
   surfaceProfile = "standard",
   assistantLabel,
@@ -5025,6 +5287,9 @@ function AgentChatMessageListMain({
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
   onRetryProviderFailure?: (turnId: string | null) => Promise<string | null>;
   onChooseProviderFailureModel?: () => void;
+  onRunUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
+  onEditUnprocessedMessage?: (event: UserMessageEvent) => void;
+  onDismissUnprocessedMessage?: (event: UserMessageEvent) => void | Promise<void>;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
   assistantLabel?: string;
@@ -5928,6 +6193,9 @@ function AgentChatMessageListMain({
           onCodexRecovery={onCodexRecovery}
           onRetryProviderFailure={onRetryProviderFailure}
           onChooseProviderFailureModel={onChooseProviderFailureModel}
+          onRunUnprocessedMessage={onRunUnprocessedMessage}
+          onEditUnprocessedMessage={onEditUnprocessedMessage}
+          onDismissUnprocessedMessage={onDismissUnprocessedMessage}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
           assistantLabel={assistantLabel}
@@ -5964,10 +6232,14 @@ function AgentChatMessageListMain({
         turnDividerLabel={turnDividerLabel}
         showForkHistoryDivider={showForkHistoryDivider}
         turnModel={turnModel}
+        turnEndDurationMs={turnEndDurationMs}
         onApproval={handleApproval}
         onCodexRecovery={onCodexRecovery}
         onRetryProviderFailure={onRetryProviderFailure}
         onChooseProviderFailureModel={onChooseProviderFailureModel}
+        onRunUnprocessedMessage={onRunUnprocessedMessage}
+        onEditUnprocessedMessage={onEditUnprocessedMessage}
+        onDismissUnprocessedMessage={onDismissUnprocessedMessage}
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
         assistantLabel={assistantLabel}
@@ -5996,7 +6268,7 @@ function AgentChatMessageListMain({
         onCancelQueuedMessage={onCancelQueuedMessage}
       />
     );
-  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, onCancelQueuedMessage]);
+  }, [activeTurnId, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, surfaceMode, surfaceProfile, groupedRows, latestWorkLogIndex, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, laneId, sessionId, sessionTurnActive, sessionEnded, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, onCancelQueuedMessage]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

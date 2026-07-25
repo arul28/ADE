@@ -148,6 +148,15 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           deliveryState: optionalString(eventDict["deliveryState"]),
           processed: eventDict["processed"] as? Bool
         )
+      case "user_message_resolution":
+        event = .userMessageResolution(
+          steerId: stringValue(eventDict["steerId"]),
+          action: stringValue(eventDict["action"]),
+          state: optionalString(eventDict["state"]) ?? "completed",
+          resolvedAt: optionalString(eventDict["resolvedAt"]) ?? timestamp,
+          replacementMessageId: optionalString(eventDict["replacementMessageId"]),
+          turnId: turnId
+        )
       case "text":
         event = .assistantText(
           text: stringValue(eventDict["text"]),
@@ -475,12 +484,78 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: turnId ?? "",
           itemId: nil
         )
+      case "codex_moderation_metadata":
+        event = .unknown(type: "codex_moderation_metadata")
+      case "turn_diagnostics":
+        let integrationFailures = (eventDict["optionalIntegrationFailures"] as? [[String: Any]] ?? [])
+          .compactMap { failure -> AgentChatOptionalIntegrationFailure? in
+            guard let integration = optionalString(failure["integration"]) else { return nil }
+            return AgentChatOptionalIntegrationFailure(
+              integration: integration,
+              message: optionalString(failure["message"])
+            )
+          }
+        event = .turnDiagnostics(
+          moderationChecks: max(0, optionalWorkInt(eventDict["moderationChecks"]) ?? 0),
+          optionalIntegrationFailures: integrationFailures,
+          turnId: turnId
+        )
       case "codex_turn_stalled":
         event = .codexTurnStalled(
           message: stringValue(eventDict["message"]),
           recoveryOptions: eventDict["recoveryOptions"] as? [String] ?? [],
           turnId: turnId,
-          sourceSessionId: optionalString(eventDict["sourceSessionId"])
+          sourceSessionId: optionalString(eventDict["sourceSessionId"]),
+          context: WorkCodexStallContext(
+            reason: optionalString(eventDict["reason"]) ?? "no_output",
+            detectedAt: optionalString(eventDict["detectedAt"]),
+            turnStartedAt: optionalString(eventDict["turnStartedAt"]),
+            lastProgressAt: optionalString(eventDict["lastProgressAt"]),
+            automaticRecoveryAttempted: eventDict["automaticRecoveryAttempted"] as? Bool ?? false
+          )
+        )
+      case "turn_health":
+        let supportedActions = eventDict["supportedActions"] as? [String] ?? []
+        event = .codexTurnStalled(
+          message: stringValue(eventDict["message"]),
+          recoveryOptions: supportedActions.compactMap(workLegacyRecoveryAction),
+          turnId: turnId,
+          sourceSessionId: optionalString(eventDict["sourceSessionId"]),
+          context: WorkCodexStallContext(
+            reason: optionalString(eventDict["reason"]) ?? "runtime_state_unknown",
+            detectedAt: optionalString(eventDict["detectedAt"]),
+            turnStartedAt: optionalString(eventDict["turnStartedAt"]),
+            lastProgressAt: optionalString(eventDict["lastProgressAt"]),
+            automaticRecoveryAttempted: eventDict["automaticRecoveryAttempted"] as? Bool ?? false,
+            provider: optionalString(eventDict["provider"]),
+            recoveryCount: max(0, optionalWorkInt(eventDict["recoveryCount"]) ?? 0),
+            providerNeutral: true
+          )
+        )
+      case "codex_turn_recovery":
+        event = .codexTurnRecovery(
+          message: stringValue(eventDict["message"]),
+          receipt: WorkCodexRecoveryReceipt(
+            action: optionalString(eventDict["action"]) ?? "restart_resume_thread",
+            state: optionalString(eventDict["state"]) ?? "recovering",
+            automatic: eventDict["automatic"] as? Bool ?? false,
+            at: optionalString(eventDict["at"]) ?? timestamp
+          ),
+          turnId: turnId
+        )
+      case "turn_recovery":
+        event = .codexTurnRecovery(
+          message: stringValue(eventDict["message"]),
+          receipt: WorkCodexRecoveryReceipt(
+            action: optionalString(eventDict["action"]) ?? "restart_resume",
+            state: optionalString(eventDict["state"]) ?? "recovering",
+            automatic: eventDict["automatic"] as? Bool ?? false,
+            at: optionalString(eventDict["at"]) ?? timestamp,
+            provider: optionalString(eventDict["provider"]),
+            recoveryCount: max(0, optionalWorkInt(eventDict["recoveryCount"]) ?? 0),
+            providerNeutral: true
+          ),
+          turnId: turnId
         )
       case "completion_report":
         let report = eventDict["report"] as? [String: Any] ?? [:]

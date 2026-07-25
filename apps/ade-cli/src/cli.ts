@@ -317,6 +317,12 @@ type CliPlan =
       timeoutMs: number;
       pollIntervalMs: number;
     }
+  | {
+      kind: "chat-recover";
+      sessionId: string;
+      turnId: string;
+      action: ChatRecoveryCliAction;
+    }
   | { kind: "github-app-login"; maxWaitSec: number | null }
   | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean }
   | { kind: "account-machine-connect"; machine: string; remoteArgs: string[] };
@@ -1673,7 +1679,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat wait <session> --for idle --timeout-ms 600000
                                                     Wait for idle, active, awaiting-input, or terminal
     $ ade chat recover <session> --turn <turn-id> --action nudge
-                                                    Recover a stalled Codex turn: wait, nudge, retry, or resume
+                                                    Recover a stalled provider turn: wait, nudge, retry, or resume
+    $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
+                                                    Run an accepted-but-unprocessed follow-up next, or dismiss it
     $ ade chat models --provider codex --json       List models and supported reasoning tiers
     $ ade chat read <session> --limit 20 --text     Read recent chat messages
     $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
@@ -1792,8 +1800,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
   "chat recover": `${ADE_BANNER}
   Chat recovery
 
-  Recover a stalled Codex Work-chat turn using the same actions as the desktop
-  recovery card. The session and turn must still be the active Codex turn.
+  Recover a stalled Work-chat turn using the same provider-neutral actions as
+  the desktop and mobile recovery cards. Older Codex brains automatically use
+  the compatible legacy action.
 
     $ ade chat recover <session> --turn <turn-id> --action wait
     $ ade chat recover <session> --turn <turn-id> --action nudge
@@ -1802,9 +1811,22 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Actions:
     wait    Keep the current turn alive and restart its stalled-turn watchdog.
-    nudge   Steer a short status request into the current turn.
-    retry   Interrupt, then retry on the same Codex thread.
-    resume  Restart the app server, resume the thread, then retry the turn.
+    nudge   Ask the current provider turn for a short status update.
+    retry   Interrupt, then retry on the same provider runtime.
+    resume  Restart the provider runtime, resume its thread, then retry.
+`,
+  "chat resolve-unprocessed": `${ADE_BANNER}
+  Resolve an unprocessed chat message
+
+  Resolve a message ADE accepted while a turn was active but the provider did
+  not process. The operation is durable and idempotent across retries.
+
+    $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
+    $ ade chat resolve-unprocessed <session> --steer <steer-id> --action dismiss
+
+  Actions:
+    run-next  Send the accepted message as the next turn.
+    dismiss   Mark the message handled without sending it.
 `,
   agent: `${ADE_BANNER}
   Agent sessions
@@ -2679,37 +2701,69 @@ type ToolClaimArgs = {
 
 type CodexGoalCliStatus = "active" | "paused" | "blocked" | "complete";
 
-type CodexRecoveryCliAction =
+type ChatRecoveryCliAction =
   | "wait"
-  | "steer"
-  | "interrupt_retry_same_thread"
-  | "restart_resume_thread";
+  | "nudge"
+  | "retry_same_runtime"
+  | "restart_resume";
+
+type UnprocessedMessageCliAction = "run_next" | "dismiss";
+
+const LEGACY_CODEX_RECOVERY_ACTION_BY_NEUTRAL: Readonly<Record<
+  ChatRecoveryCliAction,
+  "wait" | "steer" | "interrupt_retry_same_thread" | "restart_resume_thread"
+>> = {
+  wait: "wait",
+  nudge: "steer",
+  retry_same_runtime: "interrupt_retry_same_thread",
+  restart_resume: "restart_resume_thread",
+};
 
 function isCodexGoalCliStatus(value: string | null): value is CodexGoalCliStatus {
   return value === "active" || value === "paused" || value === "blocked" || value === "complete";
 }
 
-function normalizeCodexRecoveryCliAction(value: string | null): CodexRecoveryCliAction {
+function normalizeChatRecoveryCliAction(value: string | null): ChatRecoveryCliAction {
   const normalized = value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
   if (normalized === "wait") return "wait";
-  if (normalized === "nudge" || normalized === "steer") return "steer";
+  if (normalized === "nudge" || normalized === "steer") return "nudge";
   if (
     normalized === "retry"
     || normalized === "interrupt_retry"
     || normalized === "interrupt_retry_same_thread"
+    || normalized === "retry_same_runtime"
   ) {
-    return "interrupt_retry_same_thread";
+    return "retry_same_runtime";
   }
   if (
     normalized === "resume"
     || normalized === "restart_resume"
     || normalized === "restart_resume_thread"
   ) {
-    return "restart_resume_thread";
+    return "restart_resume";
   }
   throw new CliUsageError(
     "chat recover --action must be wait, nudge, retry, or resume.",
   );
+}
+
+function normalizeUnprocessedMessageCliAction(
+  value: string | null,
+): UnprocessedMessageCliAction {
+  const normalized = value?.trim().toLowerCase().replace(/-/g, "_") ?? "";
+  if (normalized === "run_next" || normalized === "run" || normalized === "next") {
+    return "run_next";
+  }
+  if (normalized === "dismiss") return "dismiss";
+  throw new CliUsageError(
+    "chat resolve-unprocessed --action must be run-next or dismiss.",
+  );
+}
+
+function isUnsupportedChatRecoveryActionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /\brecoverTurn\b/i.test(message)
+    && /\b(?:unsupported|not supported|unknown|not available|not found)\b/i.test(message);
 }
 
 function readToolClaimArgs(args: string[]): ToolClaimArgs {
@@ -7253,21 +7307,41 @@ function buildChatPlan(args: string[]): CliPlan {
     };
   if (sub === "recover" || sub === "recovery") {
     const turnId = requireValue(readValue(args, ["--turn", "--turn-id"]), "turnId");
-    const action = normalizeCodexRecoveryCliAction(
+    const action = normalizeChatRecoveryCliAction(
       readValue(args, ["--action", "--recovery-action"])
         ?? firstStandalonePositional(args),
     );
     return {
+      kind: "chat-recover",
+      sessionId: requireValue(sessionId, "sessionId"),
+      turnId,
+      action,
+    };
+  }
+  if (
+    sub === "resolve-unprocessed"
+    || sub === "resolve-message"
+    || sub === "unprocessed"
+  ) {
+    const steerId = requireValue(
+      readValue(args, ["--steer", "--steer-id", "--message", "--message-id"]),
+      "steerId",
+    );
+    const action = normalizeUnprocessedMessageCliAction(
+      readValue(args, ["--action", "--resolution-action"])
+        ?? firstStandalonePositional(args),
+    );
+    return {
       kind: "execute",
-      label: "chat recover",
+      label: "chat resolve unprocessed message",
       steps: [
         actionStep(
           "result",
           "chat",
-          "recoverCodexTurn",
+          "resolveUnprocessedMessage",
           withSession({
             sessionId: requireValue(sessionId, "sessionId"),
-            turnId,
+            steerId,
             action,
           }),
         ),
@@ -7735,6 +7809,11 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "configure",
     "interrupt",
     "stop",
+    "recover",
+    "recovery",
+    "resolve-unprocessed",
+    "resolve-message",
+    "unprocessed",
     "archive",
     "unarchive",
     "delete",
@@ -7743,7 +7822,7 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     "status",
   ]);
   if (!sessionSubcommands.has(sub)) {
-    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, archive, unarchive, or delete; got '${sub}'.`);
+    throw new CliUsageError(`Personal chats support actions, action, list, create, show, read, send, steer, update, models, model-catalog, interrupt, recover, resolve-unprocessed, archive, unarchive, or delete; got '${sub}'.`);
   }
 
   const sessionId = requireValue(
@@ -7820,6 +7899,45 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
       ...base,
       label: "personal chat interrupt",
       steps: [personalChatStep("interrupt", collectGenericObjectArgs(args, { sessionId }))],
+    };
+  }
+  if (sub === "recover" || sub === "recovery") {
+    const turnId = requireValue(readValue(args, ["--turn", "--turn-id"]), "turnId");
+    const action = normalizeChatRecoveryCliAction(
+      readValue(args, ["--action", "--recovery-action"])
+        ?? firstStandalonePositional(args),
+    );
+    return {
+      ...base,
+      label: "personal chat recover",
+      steps: [personalChatStep("recoverTurn", collectGenericObjectArgs(args, {
+        sessionId,
+        turnId,
+        action,
+      }))],
+    };
+  }
+  if (
+    sub === "resolve-unprocessed"
+    || sub === "resolve-message"
+    || sub === "unprocessed"
+  ) {
+    const steerId = requireValue(
+      readValue(args, ["--steer", "--steer-id", "--message", "--message-id"]),
+      "steerId",
+    );
+    const action = normalizeUnprocessedMessageCliAction(
+      readValue(args, ["--action", "--resolution-action"])
+        ?? firstStandalonePositional(args),
+    );
+    return {
+      ...base,
+      label: "personal chat resolve unprocessed message",
+      steps: [personalChatStep("resolveUnprocessedMessage", collectGenericObjectArgs(args, {
+        sessionId,
+        steerId,
+        action,
+      }))],
     };
   }
   if (sub === "archive" || sub === "unarchive" || sub === "delete" || sub === "rm") {
@@ -19331,6 +19449,64 @@ async function runChatWaitCommand(
   }
 }
 
+async function runChatRecoverCommand(
+  plan: CliPlan & { kind: "chat-recover" },
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  let connection: CliConnection;
+  try {
+    connection = await createConnection(options, { autoRegisterProject: true });
+  } catch (error) {
+    throw new CliExecutionError(
+      "Failed to initialize ADE CLI connection for chat recovery.",
+      {
+        cause: error instanceof Error ? error.message : String(error),
+        nextAction:
+          "Verify --project-root points at an ADE project and run ade doctor --json.",
+      },
+    );
+  }
+
+  const runRecoveryAction = async (
+    action: "recoverTurn" | "recoverCodexTurn",
+    args: JsonObject,
+  ): Promise<unknown> => {
+    const raw = await connection.request("ade/actions/call", {
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action,
+        args,
+      },
+    });
+    return unwrapActionEnvelope(unwrapToolResult(raw));
+  };
+
+  try {
+    let result: unknown;
+    try {
+      result = await runRecoveryAction("recoverTurn", {
+        sessionId: plan.sessionId,
+        turnId: plan.turnId,
+        action: plan.action,
+      });
+    } catch (error) {
+      if (!isUnsupportedChatRecoveryActionError(error)) throw error;
+      const legacyResult = await runRecoveryAction("recoverCodexTurn", {
+        sessionId: plan.sessionId,
+        turnId: plan.turnId,
+        action: LEGACY_CODEX_RECOVERY_ACTION_BY_NEUTRAL[plan.action],
+      });
+      result = isRecord(legacyResult)
+        ? { ...legacyResult, action: plan.action }
+        : legacyResult;
+    }
+    return { output: formatOutput(result, options), exitCode: 0 };
+  } finally {
+    await connection.close();
+  }
+}
+
 function formatOutput(
   value: unknown,
   options: GlobalOptions,
@@ -19563,6 +19739,9 @@ async function runCli(
     }
     if (plan.kind === "chat-wait") {
       return await runChatWaitCommand(plan, parsed.options);
+    }
+    if (plan.kind === "chat-recover") {
+      return await runChatRecoverCommand(plan, parsed.options);
     }
     if (plan.kind === "init") {
       const result = await runInit(plan.targetPath);

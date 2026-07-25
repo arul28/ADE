@@ -14,6 +14,7 @@ import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import {
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
+  PairedRuntimeTransportUnavailableError,
 } from "./pairedRuntimeErrors";
 
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
@@ -220,7 +221,10 @@ describe("RemoteConnectionService", () => {
     } as unknown as RemoteConnectionPool;
     const pairedStore = {
       get: vi.fn(() => savedCredentials),
-      save: vi.fn((value) => value),
+      markEndpointsDiscovered: vi.fn((_hostId, endpoints) => ({
+        ...savedCredentials,
+        endpoints: [...endpoints, ...savedCredentials.endpoints],
+      })),
     };
     const service = new RemoteConnectionService(
       registry,
@@ -261,14 +265,14 @@ describe("RemoteConnectionService", () => {
         machineKey: "machine-1",
       },
     });
-    expect(pairedStore.save).toHaveBeenCalledWith(expect.objectContaining({
-      endpoints: [
+    expect(pairedStore.markEndpointsDiscovered).toHaveBeenCalledWith(
+      "host-1",
+      [
         "ws://192.168.1.20:8787/",
         "ws://100.70.0.2:8787/",
         "ws://studio.local:8787/",
-        "wss://relay.example/connect/machine-1",
       ],
-    }));
+    );
   });
 
   it("stores structured connect errors with bounded detail and legacy text", async () => {
@@ -307,6 +311,49 @@ describe("RemoteConnectionService", () => {
     expect(status.lastErrorInfo?.detail?.length).toBeLessThanOrEqual(4_000);
     expect(status.lastErrorInfo?.detail).toContain("truncated");
     expect(status.lastErrorInfo?.detail).toContain("TAIL");
+  });
+
+  it("publishes bounded privacy-safe route diagnostics for a failed paired connection", async () => {
+    const remote = target("route-failed", null);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+    } as unknown as RemoteTargetRegistry;
+    const error = new PairedRuntimeTransportUnavailableError(
+      "Could not reach the paired ADE runtime.",
+      undefined,
+      {
+        correlationId: "route-correlation",
+        attempts: [{
+          kind: "lan",
+          host: "studio.local:8805",
+          startedAt: 100,
+          durationMs: 50,
+          outcome: "failed",
+          failure: "unreachable",
+        }],
+      },
+    );
+    const pool = {
+      connect: vi.fn(async () => {
+        throw error;
+      }),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+
+    await expect(service.connect(remote.id, { explicit: true })).rejects.toBe(error);
+    expect(service.snapshot().connections[0]?.lastErrorInfo).toMatchObject({
+      correlationId: "route-correlation",
+      attempts: [{
+        kind: "lan",
+        host: "studio.local:8805",
+        outcome: "failed",
+        failure: "unreachable",
+      }],
+    });
+    expect(service.snapshot().connections[0]?.lastErrorInfo?.detail).toBeUndefined();
   });
 
   it("publishes the transport route and connect latency in connection status", async () => {
@@ -478,7 +525,7 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).toHaveBeenCalledWith(previouslyConnected);
   });
 
-  it("reconciles account-owned target, credentials, and live pool entry as one command", () => {
+  it("reconciles a different account's target, credentials, and live pool entry as one command", () => {
     const accountOwned = {
       ...target("account-owned", 1_700_000_000),
       transport: "paired" as const,
@@ -522,7 +569,7 @@ describe("RemoteConnectionService", () => {
     const snapshots: unknown[] = [];
     service.onSnapshotChanged((snapshot) => snapshots.push(snapshot));
 
-    expect(service.reconcileAccountOwnership(null)).toEqual({
+    expect(service.reconcileAccountOwnership("account-b")).toEqual({
       removedTargetIds: [accountOwned.id],
       removedCredentialHostIds: ["owned-host"],
     });
@@ -530,6 +577,37 @@ describe("RemoteConnectionService", () => {
     expect(pool.disconnect).not.toHaveBeenCalledWith(localOwned.id);
     expect(targets).toEqual([localOwned]);
     expect(snapshots).toHaveLength(1);
+  });
+
+  it("preserves account-created paired trust on sign-out while revoking live Relay", () => {
+    const accountOwned = {
+      ...target("account-owned", null),
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: "owned-host", machineKey: "owned-key" },
+      accountOwnerUserId: "account-a",
+    };
+    const registry = {
+      list: vi.fn(() => [accountOwned]),
+      get: vi.fn(() => accountOwned),
+      pruneAccountOwned: vi.fn(),
+      remove: vi.fn(),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      reconcileAccountRelayOwner: vi.fn(() => [accountOwned.id]),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const pairedStore = { pruneAccountOwned: vi.fn() };
+    const service = new RemoteConnectionService(registry, pool, {}, pairedStore as any);
+
+    expect(service.reconcileAccountOwnership(null)).toEqual({
+      removedTargetIds: [],
+      removedCredentialHostIds: [],
+    });
+    expect(pool.reconcileAccountRelayOwner).toHaveBeenCalledWith(null);
+    expect(registry.pruneAccountOwned).not.toHaveBeenCalled();
+    expect(pairedStore.pruneAccountOwned).not.toHaveBeenCalled();
+    expect(registry.remove).not.toHaveBeenCalled();
   });
 
   it("keeps snapshot pure when a target disappears outside a service command", async () => {
@@ -589,7 +667,7 @@ describe("RemoteConnectionService", () => {
     const service = new RemoteConnectionService(
       registry,
       pool,
-      { getAuthorizedAccountOwnerId: vi.fn(async () => null) },
+      { getAuthorizedAccountOwnerId: vi.fn(async () => "different-account") },
       pairedStore as any,
     );
 
@@ -603,6 +681,40 @@ describe("RemoteConnectionService", () => {
     expect(pool.disconnect).toHaveBeenCalledWith(accountOwned.id);
     expect(pool.connect).toHaveBeenCalledTimes(1);
     expect(pool.connect).toHaveBeenCalledWith(localOwned);
+  });
+
+  it("allows a signed-out account-created target to reconnect over device-bound trust", async () => {
+    const accountOwned = {
+      ...target("account-owned", 1_700_000_000),
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: "owned-host", machineKey: "owned-key" },
+      accountOwnerUserId: "expired-account",
+    };
+    const registry = {
+      list: vi.fn(() => [accountOwned]),
+      get: vi.fn(() => accountOwned),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async () => ({
+        ...connectResult(accountOwned),
+        route: {
+          kind: "lan" as const,
+          endpoint: "ws://studio.local:8805/",
+        },
+      })),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(
+      registry,
+      pool,
+      { getAuthorizedAccountOwnerId: vi.fn(async () => null) },
+    );
+
+    await expect(service.connect(accountOwned.id)).resolves.toMatchObject({
+      route: { kind: "lan" },
+    });
+    expect(pool.connect).toHaveBeenCalledWith(accountOwned);
   });
 
   it("does not autoconnect a manually disconnected saved target", async () => {
