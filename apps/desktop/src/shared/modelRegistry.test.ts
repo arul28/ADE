@@ -53,6 +53,7 @@ describe("modelRegistry", () => {
 
   it("canonicalizes persisted OpenCode Anthropic aliases before launch", () => {
     const sonnet = getModelById("opencode/anthropic/claude-sonnet-4-6");
+    const currentOpus = getModelById("opencode/anthropic/opus");
     const opus = getModelById("opencode/anthropic/opus-4.6");
 
     expect(sonnet).toMatchObject({
@@ -74,6 +75,16 @@ describe("modelRegistry", () => {
       maxOutputTokens: 128_000,
       capabilities: expect.objectContaining({ tools: true, vision: true, reasoning: true }),
       reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      serviceTiers: ["fast"],
+    });
+    expect(currentOpus).toMatchObject({
+      id: "opencode/anthropic/claude-opus-5",
+      displayName: "Claude Opus 5",
+      providerModelId: "anthropic/claude-opus-5",
+      openCodeModelId: "claude-opus-5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       serviceTiers: ["fast"],
     });
   });
@@ -316,11 +327,12 @@ describe("modelRegistry", () => {
 
   describe("Claude descriptors", () => {
     it("orders the Claude model registry for picker display", () => {
-      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 5).map((model) => model.id)).toEqual([
+      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 6).map((model) => model.id)).toEqual([
         "anthropic/claude-fable-5",
-        "anthropic/claude-opus-4-8",
+        "anthropic/claude-opus-5",
         "anthropic/claude-sonnet-5",
         "anthropic/claude-haiku-4-5",
+        "anthropic/claude-opus-4-8",
         "anthropic/claude-opus-4-7-1m",
       ]);
       const fable = getModelById("anthropic/claude-fable-5");
@@ -339,9 +351,28 @@ describe("modelRegistry", () => {
       expect(fable?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(resolveModelAlias("fable")?.id).toBe("anthropic/claude-fable-5");
 
-      const opus = getModelById("anthropic/claude-opus-4-8");
-      expect(opus).toBeTruthy();
-      expect(opus).toMatchObject({
+      const opus5 = getModelById("anthropic/claude-opus-5");
+      expect(opus5).toBeTruthy();
+      expect(opus5).toMatchObject({
+        displayName: "Claude Opus 5",
+        shortId: "opus",
+        family: "anthropic",
+        providerRoute: "claude-cli",
+        providerModelId: "claude-opus-5",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        inputPricePer1M: 5,
+        outputPricePer1M: 25,
+        defaultReasoningEffort: "high",
+      });
+      expect(opus5?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus5?.serviceTiers).toEqual(["fast"]);
+      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-5");
+      expect(getRuntimeModelRefForDescriptor(opus5!, "claude")).toBe("claude-opus-5");
+
+      const opus48 = getModelById("anthropic/claude-opus-4-8");
+      expect(opus48).toBeTruthy();
+      expect(opus48).toMatchObject({
         displayName: "Claude Opus 4.8 1M",
         shortId: "opus-4.8-1m",
         family: "anthropic",
@@ -352,8 +383,8 @@ describe("modelRegistry", () => {
         inputPricePer1M: 5,
         outputPricePer1M: 25,
       });
-      expect(opus?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
-      expect(opus?.serviceTiers).toEqual(["fast"]);
+      expect(opus48?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
+      expect(opus48?.serviceTiers).toEqual(["fast"]);
       expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-fable-5");
     });
 
@@ -379,7 +410,6 @@ describe("modelRegistry", () => {
         contextWindow: 1_000_000,
         serviceTiers: ["fast"],
       });
-      expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-4-8");
       expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-4-7-1m");
       expect(resolveModelAlias("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-8");
       expect(resolveModelAlias("anthropic/claude-opus-4-7")?.id).toBe("anthropic/claude-opus-4-8");

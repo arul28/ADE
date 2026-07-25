@@ -14280,6 +14280,16 @@ final class ADETests: XCTestCase {
       model: "opus",
       status: "idle"
     )
+    let claudeOpus5 = makeAgentChatSessionSummary(
+      provider: "claude",
+      model: "claude-opus-5",
+      status: "idle"
+    )
+    let claudeOpus48 = makeAgentChatSessionSummary(
+      provider: "claude",
+      model: "claude-opus-4-8",
+      status: "idle"
+    )
     let claude = makeAgentChatSessionSummary(
       provider: "claude",
       model: "sonnet",
@@ -14299,6 +14309,8 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(workChatComposerSupportsFastMode(codex))
     XCTAssertFalse(workChatComposerSupportsFastMode(codexMini))
     XCTAssertTrue(workChatComposerSupportsFastMode(claudeOpus))
+    XCTAssertTrue(workChatComposerSupportsFastMode(claudeOpus5))
+    XCTAssertTrue(workChatComposerSupportsFastMode(claudeOpus48))
     XCTAssertFalse(workChatComposerSupportsFastMode(claude))
     XCTAssertTrue(workChatComposerSupportsFastMode(openCode))
     XCTAssertTrue(workChatComposerSupportsFastMode(openCodeLegacyOpus))
@@ -15703,19 +15715,46 @@ final class ADETests: XCTestCase {
     let claudeGroup = groups.first(where: { $0.key == "claude" })
     let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
     let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5" })
+    let opus5 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-5" })
     let opus48 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-4-8" })
+    let openCodeAnthropic = groups
+      .first(where: { $0.key == "opencode" })?
+      .providers
+      .first(where: { $0.key == "anthropic" })
     let codexGroup = groups.first(where: { $0.key == "codex" })
     let openAIProvider = codexGroup?.providers.first(where: { $0.key == "openai" })
     let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
 
-    XCTAssertEqual(anthropicProvider?.models.first?.id, "claude-fable-5")
+    XCTAssertEqual(anthropicProvider?.models.map(\.id), [
+      "claude-fable-5",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5",
+      "claude-opus-4-8",
+      "claude-opus-4-7-1m",
+    ])
+    XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
+      "opencode/anthropic/claude-fable-5",
+      "opencode/anthropic/claude-opus-5",
+      "opencode/anthropic/claude-sonnet-5",
+      "opencode/anthropic/claude-haiku-4-5",
+      "opencode/anthropic/claude-opus-4-8",
+      "opencode/anthropic/claude-opus-4-7-1m",
+    ])
+    XCTAssertEqual(workDefaultCatalogModelId(provider: "claude"), "claude-fable-5")
     XCTAssertEqual(fable?.displayName, "Claude Fable 5")
     XCTAssertEqual(fable?.tier, .flagship)
     XCTAssertEqual(fable?.tagline, "Flagship · 1M context")
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-fable-5"))
+    XCTAssertEqual(opus5?.displayName, "Claude Opus 5")
+    XCTAssertEqual(opus5?.tagline, "Agentic coding · 1M context")
+    XCTAssertEqual(opus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(opus5?.defaultReasoningEffort, "high")
+    XCTAssertTrue(opus5?.supportsCodexFastMode == true)
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-5"))
     XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8 1M")
     XCTAssertEqual(opus48?.tier, .flagship)
-    XCTAssertEqual(opus48?.tagline, "Flagship · 1M context")
+    XCTAssertEqual(opus48?.tagline, "Previous Opus · 1M context")
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-4-8"))
     XCTAssertEqual(gpt55?.displayName, "GPT-5.5")
     XCTAssertEqual(gpt55?.tier, .flagship)
@@ -15768,11 +15807,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-fable-5"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "fable"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-5"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "opus[1m]"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-5"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
@@ -16078,8 +16120,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(prettyWorkChatModelName("openai/gpt-5.5"), "GPT-5.5")
   }
 
-  func testWorkModelCatalogTreatsOpus46AliasesAsMigratedRows() {
+  func testWorkModelCatalogMapsCurrentAndMigratedOpusAliases() {
+    XCTAssertTrue(workModelIdsEquivalent("opus", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-5-api", "claude-opus-5"))
+    XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-5-api"), "Claude Opus 5")
+    XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/opus"), "Claude Opus 5")
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6", "claude-opus-4-8"))
+    XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-8-api", "claude-opus-4-8"))
     XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-4-6", "anthropic/claude-opus-4-8"))
     XCTAssertTrue(workModelIdsEquivalent("opus-4-6", "claude-opus-4-8"))
     XCTAssertTrue(workModelIdsEquivalent("opus-4.6", "claude-opus-4-8"))

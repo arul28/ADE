@@ -6,7 +6,7 @@ import SwiftUI
 /// keeps the picker-facing tier, reasoning, and service metadata needed to
 /// render a branded row and send a valid selection to the paired runtime.
 struct WorkModelOption: Identifiable, Hashable {
-  /// Stable sync-contract id the host accepts (e.g. "claude-opus-4-8").
+  /// Stable sync-contract id the host accepts (e.g. "claude-opus-5").
   let id: String
   let displayName: String
   let tier: Tier
@@ -230,6 +230,16 @@ struct WorkModelCatalogGroupLegacyView: Identifiable, Hashable {
 
 private let workModelGroupOrder = ["claude", "codex", "cursor", "droid", "opencode", "ollama", "lmstudio"]
 
+private func workClaudeOpus5ReasoningEfforts() -> [AgentChatModelReasoningEffort] {
+  [
+    AgentChatModelReasoningEffort(effort: "low", description: "Fast answers with light reasoning"),
+    AgentChatModelReasoningEffort(effort: "medium", description: "Balanced speed and reasoning"),
+    AgentChatModelReasoningEffort(effort: "high", description: "Recommended for complex agentic work"),
+    AgentChatModelReasoningEffort(effort: "xhigh", description: "Extended reasoning for difficult work"),
+    AgentChatModelReasoningEffort(effort: "max", description: "Maximum reasoning depth for the hardest problems"),
+  ]
+}
+
 private func workCodex56ReasoningEfforts(includeUltra: Bool) -> [AgentChatModelReasoningEffort] {
   var efforts = [
     AgentChatModelReasoningEffort(effort: "low", description: "Fast answers with light reasoning"),
@@ -348,9 +358,19 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "Anthropic",
         models: [
           WorkModelOption(id: "claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(
+            id: "claude-opus-5",
+            displayName: "Claude Opus 5",
+            tier: .flagship,
+            tagline: "Agentic coding · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "high",
+            serviceTiers: ["fast"]
+          ),
           WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
           WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
+          WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Previous Opus · 1M context", provider: "claude", serviceTiers: ["fast"]),
           WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude", serviceTiers: ["fast"]),
         ]
       )
@@ -497,9 +517,19 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         displayName: "Anthropic",
         models: [
           WorkModelOption(id: "opencode/anthropic/claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
-          WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship reasoning · 1M context", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(
+            id: "opencode/anthropic/claude-opus-5",
+            displayName: "Claude Opus 5",
+            tier: .flagship,
+            tagline: "Agentic coding · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "high",
+            serviceTiers: ["fast"]
+          ),
           WorkModelOption(id: "opencode/anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced coder · 1M context", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
+          WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Previous Opus · 1M context", provider: "claude", serviceTiers: ["fast"]),
           WorkModelOption(id: "opencode/anthropic/claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude", serviceTiers: ["fast"]),
         ]
       ),
@@ -769,11 +799,14 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "fable", "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api":
     return "anthropic/claude-fable-5"
-  case "claude-opus-4-8", "anthropic/claude-opus-4-8",
+  case "opus", "opus-5", "opus-5.0", "opus-5-0",
+       "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api":
+    return "anthropic/claude-opus-5"
+  case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
     return "anthropic/claude-opus-4-8"
-  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7",
+  case "claude-opus-4-7", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api",
        "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
     return "anthropic/claude-opus-4-8"
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
@@ -793,11 +826,14 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
   case "fable", "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api":
     return "claude-fable-5"
-  case "claude-opus-4-8", "anthropic/claude-opus-4-8",
+  case "opus", "opus-5", "opus-5.0", "opus-5-0",
+       "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api":
+    return "claude-opus-5"
+  case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
     return "claude-opus-4-8"
-  case "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7",
+  case "claude-opus-4-7", "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api",
        "opus-4.6", "opus-4-6", "claude-opus-4-6", "anthropic/claude-opus-4-6":
     return "claude-opus-4-8"
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
@@ -873,11 +909,15 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
   switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
   case "fable", "anthropic/claude-fable-5", "claude-fable-5", "opencode/anthropic/claude-fable-5":
     return "Claude Fable 5"
-  case "anthropic/claude-opus-4-8", "claude-opus-4-8",
+  case "opus", "opus-5", "opus-5.0", "opus-5-0",
+       "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "claude-opus-5",
+       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
+    return "Claude Opus 5"
+  case "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api", "claude-opus-4-8",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
     return "Claude Opus 4.8 1M"
-  case "opus", "anthropic/claude-opus-4-7", "claude-opus-4-7",
+  case "anthropic/claude-opus-4-7", "anthropic/claude-opus-4-7-api", "claude-opus-4-7",
        "opus-4.6", "opus-4-6", "anthropic/claude-opus-4-6", "claude-opus-4-6":
     return "Claude Opus 4.8 1M"
   case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]",

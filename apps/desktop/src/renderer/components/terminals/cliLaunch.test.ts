@@ -430,6 +430,29 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("claude-opus-4-8");
     });
 
+    it("launches Claude Opus 5 with its supported effort and fast-mode settings", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "claude",
+        permissionMode: "default",
+        sessionId: "00000000-0000-0000-0000-000000000001",
+        model: "anthropic/claude-opus-5",
+        reasoningEffort: "high",
+        fastMode: true,
+      });
+
+      expect(launch.args).toEqual(expect.arrayContaining([
+        "--model",
+        "claude-opus-5",
+        "--effort",
+        "high",
+        "--settings",
+        JSON.stringify({ fastMode: true }),
+      ]));
+      expect(launch.startupCommand).toContain("--model claude-opus-5");
+      expect(launch.startupCommand).toContain("--effort high");
+      expect(launch.startupCommand).toContain("fastMode");
+    });
+
     it("passes Claude fast mode as per-session settings for fresh launches", () => {
       const fastLaunch = buildTrackedCliLaunchCommand({
         provider: "claude",

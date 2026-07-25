@@ -847,6 +847,14 @@ describe("resolveTokenPrice", () => {
     expect(price.output).toBe(75 / 1_000_000);
   });
 
+  it("uses Opus 5 pricing for the static fallback", () => {
+    const price = resolveTokenPrice("claude-opus-5");
+    expect(price.input).toBe(5 / 1_000_000);
+    expect(price.output).toBe(25 / 1_000_000);
+    expect(price.cacheRead).toBe(0.5 / 1_000_000);
+    expect(price.cacheWrite).toBe(6.25 / 1_000_000);
+  });
+
   it("returns sonnet pricing for sonnet models", () => {
     const price = resolveTokenPrice("claude-3-5-sonnet");
     expect(price.input).toBe(3 / 1_000_000);

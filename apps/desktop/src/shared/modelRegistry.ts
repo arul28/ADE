@@ -270,42 +270,28 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "very_high",
   },
   {
-    id: "anthropic/claude-opus-4-8",
-    shortId: "opus-4.8-1m",
+    id: "anthropic/claude-opus-5",
+    shortId: "opus",
     aliases: [
-      "claude-opus-4-8",
       "opus",
-      "opus-4.8",
-      "opus-4-8",
-      "opus-4.8-1m",
-      "opus-4.8[1m]",
-      "opus-4-8-1m",
-      "claude-opus-4-8-1m",
-      "claude-opus-4-8[1m]",
-      "anthropic/claude-opus-4-8-1m",
-      "anthropic/claude-opus-4-8-api",
-      "opus-4.7",
-      "opus-4-7",
-      "opus-4.6",
-      "opus-4-6",
-      "claude-opus-4-6",
-      "claude-opus-4-7",
-      "anthropic/claude-opus-4-6",
-      "anthropic/claude-opus-4-6-api",
-      "anthropic/claude-opus-4-7",
-      "anthropic/claude-opus-4-7-api",
+      "opus-5",
+      "opus-5.0",
+      "opus-5-0",
+      "claude-opus-5",
+      "anthropic/claude-opus-5-api",
     ],
-    displayName: "Claude Opus 4.8 1M",
+    displayName: "Claude Opus 5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "high",
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
-    providerModelId: "claude-opus-4-8",
+    providerModelId: "claude-opus-5",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 5,
@@ -359,6 +345,48 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 1,
     outputPricePer1M: 5,
     costTier: "low",
+  },
+  {
+    id: "anthropic/claude-opus-4-8",
+    shortId: "opus-4.8-1m",
+    aliases: [
+      "claude-opus-4-8",
+      "opus-4.8",
+      "opus-4-8",
+      "opus-4.8-1m",
+      "opus-4.8[1m]",
+      "opus-4-8-1m",
+      "claude-opus-4-8-1m",
+      "claude-opus-4-8[1m]",
+      "anthropic/claude-opus-4-8-1m",
+      "anthropic/claude-opus-4-8-api",
+      "opus-4.7",
+      "opus-4-7",
+      "opus-4.6",
+      "opus-4-6",
+      "claude-opus-4-6",
+      "claude-opus-4-7",
+      "anthropic/claude-opus-4-6",
+      "anthropic/claude-opus-4-6-api",
+      "anthropic/claude-opus-4-7",
+      "anthropic/claude-opus-4-7-api",
+    ],
+    displayName: "Claude Opus 4.8 1M",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    serviceTiers: ["fast"],
+    color: "#D97706",
+    providerRoute: "claude-cli",
+    providerModelId: "claude-opus-4-8",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 5,
+    outputPricePer1M: 25,
+    costTier: "very_high",
   },
   {
     id: "anthropic/claude-opus-4-7-1m",
@@ -760,6 +788,7 @@ export type DynamicOpenCodeModelDescriptorOptions = {
   maxOutputTokens?: number;
   capabilities?: Partial<ModelCapabilities>;
   reasoningTiers?: string[];
+  defaultReasoningEffort?: string;
   serviceTiers?: string[];
   aliases?: string[];
   color?: string;
@@ -801,6 +830,7 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
   maxOutputTokens: number;
   capabilities: ModelCapabilities;
   reasoningTiers?: string[];
+  defaultReasoningEffort?: string;
   serviceTiers?: string[];
   wasAlias: boolean;
 } | null {
@@ -822,6 +852,25 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
     };
   }
   if (
+    normalized === "claude-opus-5"
+    || normalized === "opus-5"
+    || normalized === "opus-5.0"
+    || normalized === "opus-5-0"
+    || normalized === "opus"
+  ) {
+    return {
+      modelId: "claude-opus-5",
+      displayName: "Claude Opus 5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+      serviceTiers: ["fast"],
+      wasAlias: normalized !== "claude-opus-5",
+    };
+  }
+  if (
     normalized === "claude-opus-4-8"
     || normalized === "claude-opus-4-7"
     || normalized === "opus-4-7"
@@ -830,7 +879,6 @@ function normalizeAnthropicRuntimeAlias(modelId: string): {
     || normalized === "claude-opus-4-6-fast"
     || normalized === "opus-4-6"
     || normalized === "opus-4.6"
-    || normalized === "opus"
   ) {
     return {
       modelId: "claude-opus-4-8",
@@ -949,6 +997,9 @@ export function createDynamicOpenCodeModelDescriptor(
     providerModelId,
     ...(usesPairedIds ? { openCodeProviderId: opPid, openCodeModelId: opMid } : {}),
     ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
+    ...((options?.defaultReasoningEffort ?? anthropicRuntime?.defaultReasoningEffort)
+      ? { defaultReasoningEffort: options?.defaultReasoningEffort ?? anthropicRuntime?.defaultReasoningEffort }
+      : {}),
     ...(serviceTiers?.length ? { serviceTiers: [...serviceTiers] } : {}),
     ...(aliases.length ? { aliases } : {}),
     ...(isLocal || options?.harnessProfile ? { harnessProfile: options?.harnessProfile ?? "guarded" } : {}),
@@ -1219,6 +1270,7 @@ function normalizeDroidEffortLabel(value: string): string {
 
 const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
   "claude-fable-5": "Fable 5",
+  "claude-opus-5": "Opus 5",
   "claude-opus-4-8": "Opus 4.8 1M",
   "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
   "claude-opus-4-6": "Opus 4.6 (2x)",
@@ -1294,6 +1346,7 @@ export function createDynamicDroidCliModelDescriptor(
   options?: {
     customProxy?: boolean;
     reasoningTiers?: string[];
+    defaultReasoningEffort?: string;
     serviceTiers?: string[];
     contextWindow?: number;
     maxOutputTokens?: number;
@@ -1337,6 +1390,9 @@ export function createDynamicDroidCliModelDescriptor(
     providerModelId: trimmedProviderModelId,
     cliCommand: "droid",
     ...(reasoningTiers?.length ? { reasoningTiers: [...reasoningTiers] } : {}),
+    ...((options?.defaultReasoningEffort ?? canonicalDroid?.defaultReasoningEffort)
+      ? { defaultReasoningEffort: options?.defaultReasoningEffort ?? canonicalDroid?.defaultReasoningEffort }
+      : {}),
     ...(serviceTiers?.length ? { serviceTiers: [...serviceTiers] } : {}),
     isCliWrapped: true,
     ...(options?.customProxy ? { customProxy: true } : {}),

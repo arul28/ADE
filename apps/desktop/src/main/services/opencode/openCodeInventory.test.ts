@@ -331,6 +331,30 @@ describe("openCodeInventory", () => {
                   stale: {},
                 },
               },
+              opus: {
+                id: "opus",
+                name: "Opus",
+                capabilities: {
+                  reasoning: false,
+                  toolcall: false,
+                },
+                variants: {
+                  stale: {},
+                },
+              },
+              "claude-opus-5": {
+                id: "claude-opus-5",
+                name: "Claude Opus 5",
+                capabilities: {
+                  reasoning: true,
+                  toolcall: true,
+                  input: { image: true },
+                },
+                variants: {
+                  high: {},
+                  fast: {},
+                },
+              },
               "claude-opus-4-8": {
                 id: "claude-opus-4-8",
                 name: "Claude Opus 4.8 1M",
@@ -358,8 +382,10 @@ describe("openCodeInventory", () => {
     });
 
     const descriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5");
+    const opus5Descriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5");
     const opusDescriptor = result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8");
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toHaveLength(1);
+    expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-5")).toHaveLength(1);
     expect(result.descriptors.filter((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toHaveLength(1);
     expect(result.modelIds).not.toContain("opencode/anthropic/claude-opus-4-6");
     expect(result.modelIds).not.toContain("opencode/anthropic/opus-4-6");
@@ -371,6 +397,16 @@ describe("openCodeInventory", () => {
     });
     expect(descriptor?.reasoningTiers).toEqual(["high"]);
     expect(descriptor?.serviceTiers).toEqual(["fast"]);
+    expect(opus5Descriptor).toMatchObject({
+      displayName: "Claude Opus 5",
+      openCodeModelId: "claude-opus-5",
+      providerModelId: "anthropic/claude-opus-5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      reasoningTiers: ["high"],
+      defaultReasoningEffort: "high",
+      serviceTiers: ["fast"],
+    });
     expect(opusDescriptor?.capabilities).toMatchObject({
       tools: true,
       vision: true,
@@ -420,7 +456,7 @@ describe("openCodeInventory", () => {
     });
 
     expect(result.modelIds).toContain("opencode/anthropic/claude-sonnet-5");
-    expect(result.modelIds).toContain("opencode/anthropic/claude-opus-4-8");
+    expect(result.modelIds).toContain("opencode/anthropic/claude-opus-5");
     expect(result.modelIds).not.toContain("opencode/anthropic/claude-sonnet-4-6");
     expect(result.modelIds).not.toContain("opencode/anthropic/opus");
     expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-sonnet-5")).toMatchObject({
@@ -436,8 +472,8 @@ describe("openCodeInventory", () => {
       }),
       reasoningTiers: ["low", "medium", "high", "max"],
     });
-    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-4-8")).toMatchObject({
-      displayName: "Claude Opus 4.8 1M",
+    expect(result.descriptors.find((entry) => entry.id === "opencode/anthropic/claude-opus-5")).toMatchObject({
+      displayName: "Claude Opus 5",
       openCodeModelId: "opus",
       providerModelId: "anthropic/opus",
       contextWindow: 1_000_000,
@@ -447,7 +483,8 @@ describe("openCodeInventory", () => {
         vision: true,
         reasoning: true,
       }),
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
       serviceTiers: ["fast"],
     });
   });

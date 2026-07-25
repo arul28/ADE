@@ -16,6 +16,7 @@ export type DroidExecHelpModelRow = {
   /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
   customProxy?: boolean;
   reasoningTiers?: string[];
+  defaultReasoningEffort?: string;
   serviceTiers?: string[];
   contextWindow?: number;
   maxOutputTokens?: number;
@@ -277,6 +278,22 @@ function canonicalDroidReplacementForAlias(
     };
   }
   if (
+    normalized === "opus"
+    || (options?.customProxy && normalized === "claude-opus-5")
+  ) {
+    return {
+      id: `${idPrefix}claude-opus-5`,
+      displayName: "Opus 5",
+      ...customProxy,
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+      serviceTiers: ["fast"],
+    };
+  }
+  if (
     normalized === "claude-opus-4-7"
     || normalized === "opus-4-7"
     || normalized === "opus-4.7"
@@ -284,7 +301,6 @@ function canonicalDroidReplacementForAlias(
     || normalized === "claude-opus-4-6-fast"
     || normalized === "opus-4-6"
     || normalized === "opus-4.6"
-    || normalized === "opus"
     || (options?.customProxy && normalized === "claude-opus-4-8")
   ) {
     return {
@@ -441,6 +457,7 @@ export async function discoverDroidCliModelDescriptors(
     const descriptor = createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
       customProxy: row.customProxy,
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
+      ...(row.defaultReasoningEffort ? { defaultReasoningEffort: row.defaultReasoningEffort } : {}),
       ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
       ...(row.contextWindow ? { contextWindow: row.contextWindow } : {}),
       ...(row.maxOutputTokens ? { maxOutputTokens: row.maxOutputTokens } : {}),
