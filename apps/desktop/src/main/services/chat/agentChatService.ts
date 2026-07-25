@@ -837,6 +837,14 @@ type PersistedRecentConversationEntry = {
   turnId?: string;
 };
 
+type PersistedUnprocessedMessageResolutionReceipt = {
+  steerId: string;
+  action: "run_next" | "dismiss";
+  state: "completed";
+  resolvedAt: string;
+  replacementMessageId?: string;
+};
+
 type PersistedChatState = {
   version: 1 | 2;
   sessionId: string;
@@ -908,6 +916,12 @@ type PersistedChatState = {
   runtimeMode?: AgentChatRuntimeMode;
   /** Recent terminal Codex turn ids, used to suppress late replayed lifecycle events. */
   codexTerminalTurnIds?: string[];
+  /**
+   * Fsynced terminal receipts for accepted-but-unprocessed message recovery.
+   * These close the crash window between provider dispatch and the async
+   * transcript append that normally carries user_message_resolution.
+   */
+  unprocessedMessageResolutionReceipts?: PersistedUnprocessedMessageResolutionReceipt[];
   /** Persisted "Allow for Session" tool approval overrides (Claude runtime). */
   approvalOverrides?: string[];
   /** Queued mid-turn steers for the Claude runtime, restored on app restart. */
@@ -963,6 +977,35 @@ function isPersistedChatStateShape(value: unknown): value is PersistedChatState 
   return (record.version === 1 || record.version === 2)
     && typeof record.sessionId === "string"
     && record.sessionId.trim().length > 0;
+}
+
+function normalizeUnprocessedMessageResolutionReceipts(
+  value: unknown,
+): PersistedUnprocessedMessageResolutionReceipt[] {
+  if (!Array.isArray(value)) return [];
+  const bySteerId = new Map<string, PersistedUnprocessedMessageResolutionReceipt>();
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const record = candidate as Record<string, unknown>;
+    const steerId = typeof record.steerId === "string" ? record.steerId.trim() : "";
+    const action = record.action === "run_next" || record.action === "dismiss"
+      ? record.action
+      : null;
+    const resolvedAt = typeof record.resolvedAt === "string" ? record.resolvedAt.trim() : "";
+    const replacementMessageId = typeof record.replacementMessageId === "string"
+      ? record.replacementMessageId.trim()
+      : "";
+    if (!steerId || !action || !resolvedAt || record.state !== "completed") continue;
+    bySteerId.delete(steerId);
+    bySteerId.set(steerId, {
+      steerId,
+      action,
+      state: "completed",
+      resolvedAt,
+      ...(replacementMessageId ? { replacementMessageId } : {}),
+    });
+  }
+  return [...bySteerId.values()].slice(-64);
 }
 
 function normalizedPersistedPointer(value: unknown): string | null {
@@ -2431,6 +2474,7 @@ type ManagedChatSession = {
   /** Set after we've emitted the once-per-session Claude plan-limit notice. */
   claudeRateLimitWarningEmitted: boolean;
   codexTerminalTurnIds: Set<string>;
+  unprocessedMessageResolutionReceipts: Map<string, PersistedUnprocessedMessageResolutionReceipt>;
   todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
   localPendingInputs: Map<string, {
     request: PendingInputRequest;
@@ -11218,10 +11262,13 @@ export function createAgentChatService(args: {
     }
   };
 
-  const persistChatState = (managed: ManagedChatSession): void => {
+  const persistChatState = (
+    managed: ManagedChatSession,
+    options: { fsync?: boolean } = {},
+  ): boolean => {
     // Tombstoned sessions (deleted while async work was in flight) must not be
     // re-persisted — otherwise the file recreates after deleteSession removed it.
-    if (managed.deleted) return;
+    if (managed.deleted) return false;
     // When runtime has been torn down (null) but NOT intentionally invalidated,
     // fall back to the last persisted state so that provider session ids and
     // lastLaneDirectiveKey survive a transient teardown (e.g. app backgrounding).
@@ -11384,6 +11431,13 @@ export function createAgentChatService(args: {
       ...(managed.codexTerminalTurnIds.size
         ? { codexTerminalTurnIds: [...managed.codexTerminalTurnIds].slice(-64) }
         : prevPersisted?.codexTerminalTurnIds?.length ? { codexTerminalTurnIds: prevPersisted.codexTerminalTurnIds.slice(-64) } : {}),
+      ...(managed.unprocessedMessageResolutionReceipts.size
+        ? {
+            unprocessedMessageResolutionReceipts: [
+              ...managed.unprocessedMessageResolutionReceipts.values(),
+            ].slice(-64),
+          }
+        : {}),
       ...collectOrchestrationFields(managed.session, prevPersisted),
       updatedAt: nowIso()
     };
@@ -11408,12 +11462,14 @@ export function createAgentChatService(args: {
     }
     const pointerChanged = currentPointerFingerprint !== previousPointerFingerprint;
     let lkgUpdated = false;
+    let persisted = false;
     try {
       fs.mkdirSync(path.dirname(managed.metadataPath), { recursive: true });
       lkgUpdated = writeJsonWithPrevious(managed.metadataPath, payload, {
         validate: isPersistedChatStateShape,
-        fsync: pointerChanged,
+        fsync: pointerChanged || options.fsync === true,
       });
+      persisted = true;
       if (pointerChanged) {
         lastPersistedPointerFingerprints.set(managed.session.id, currentPointerFingerprint);
         try {
@@ -11450,6 +11506,21 @@ export function createAgentChatService(args: {
     }
 
     mirrorClaudeSessionPointer(managed, payload.sdkSessionId);
+    return persisted;
+  };
+
+  const persistUnprocessedMessageResolutionReceipt = (
+    managed: ManagedChatSession,
+    receipt: PersistedUnprocessedMessageResolutionReceipt,
+  ): void => {
+    managed.unprocessedMessageResolutionReceipts.delete(receipt.steerId);
+    managed.unprocessedMessageResolutionReceipts.set(receipt.steerId, receipt);
+    evictOldestEntries(managed.unprocessedMessageResolutionReceipts, 64);
+    if (!persistChatState(managed, { fsync: true })) {
+      throw new Error(
+        "The provider accepted this message, but ADE could not save its delivery receipt. Retry without closing this chat.",
+      );
+    }
   };
 
   const readPersistedState = (sessionId: string): PersistedChatState | null => {
@@ -11591,6 +11662,10 @@ export function createAgentChatService(args: {
             64,
           )
         : undefined;
+      const unprocessedMessageResolutionReceipts =
+        normalizeUnprocessedMessageResolutionReceipts(
+          record.unprocessedMessageResolutionReceipts,
+        );
       const approvalOverrides = Array.isArray(record.approvalOverrides)
         ? record.approvalOverrides.filter((v): v is string => typeof v === "string" && v.trim().length > 0)
         : undefined;
@@ -11694,6 +11769,9 @@ export function createAgentChatService(args: {
             ? { idleSinceAt: null }
             : {}),
         ...(codexTerminalTurnIds?.length ? { codexTerminalTurnIds } : {}),
+        ...(unprocessedMessageResolutionReceipts.length
+          ? { unprocessedMessageResolutionReceipts }
+          : {}),
         ...(record.runtimeMode === "print" || record.runtimeMode === "interactive"
           ? { runtimeMode: record.runtimeMode }
           : {}),
@@ -15604,6 +15682,11 @@ export function createAgentChatService(args: {
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(persisted?.codexTerminalTurnIds ?? []),
+      unprocessedMessageResolutionReceipts: new Map(
+        normalizeUnprocessedMessageResolutionReceipts(
+          persisted?.unprocessedMessageResolutionReceipts,
+        ).map((receipt) => [receipt.steerId, receipt]),
+      ),
       todoItems: [],
       activeAssistantMessageId: null,
       lastActivitySignature: null,
@@ -27460,6 +27543,7 @@ export function createAgentChatService(args: {
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(),
+      unprocessedMessageResolutionReceipts: new Map(),
       todoItems: [],
       activeAssistantMessageId: null,
       previewTextBuffer: null,
@@ -28126,6 +28210,7 @@ export function createAgentChatService(args: {
       runtimeInvalidated: false,
       claudeRateLimitWarningEmitted: false,
       codexTerminalTurnIds: new Set<string>(),
+      unprocessedMessageResolutionReceipts: new Map(),
       todoItems: [],
       activeAssistantMessageId: null,
       lastActivitySignature: null,
@@ -35908,13 +35993,26 @@ export function createAgentChatService(args: {
         }
       }
 
-      if (alreadyCompleted) {
+      const persistedReceipt = managed.unprocessedMessageResolutionReceipts.get(steerId) ?? null;
+      const existingResolution = alreadyCompleted ?? (persistedReceipt
+        ? {
+            type: "user_message_resolution" as const,
+            ...persistedReceipt,
+          }
+        : null);
+      if (existingResolution) {
+        if (!alreadyCompleted) {
+          // The provider acknowledgement was fsynced before the asynchronous
+          // transcript append. Rebuild the missing terminal row after a crash
+          // without dispatching the replacement message a second time.
+          emitChatEvent(managed, existingResolution);
+        }
         return {
           steerId,
-          action: alreadyCompleted.action,
+          action: existingResolution.action,
           status: "already_completed",
-          ...(alreadyCompleted.replacementMessageId
-            ? { replacementMessageId: alreadyCompleted.replacementMessageId }
+          ...(existingResolution.replacementMessageId
+            ? { replacementMessageId: existingResolution.replacementMessageId }
             : {}),
         };
       }
@@ -35924,14 +36022,15 @@ export function createAgentChatService(args: {
       }
 
       if (args.action === "dismiss") {
-        emitChatEvent(managed, {
+        const completedResolution = {
           type: "user_message_resolution",
           steerId,
           action: "dismiss",
           state: "completed",
           resolvedAt: nowIso(),
-        });
-        persistChatState(managed);
+        } as const;
+        persistUnprocessedMessageResolutionReceipt(managed, completedResolution);
+        emitChatEvent(managed, completedResolution);
         return { steerId, action: args.action, status: "completed" };
       }
 
@@ -35962,15 +36061,16 @@ export function createAgentChatService(args: {
       }, {
         awaitBackendDispatch: true,
         onBackendDispatched: () => {
-          emitChatEvent(managed, {
+          const replayResolutionReceipt = {
             type: "user_message_resolution",
             steerId,
             action: "run_next",
             state: "completed",
             resolvedAt: nowIso(),
             replacementMessageId: dispatchedReplacementMessageId,
-          });
-          persistChatState(managed);
+          } as const;
+          persistUnprocessedMessageResolutionReceipt(managed, replayResolutionReceipt);
+          emitChatEvent(managed, replayResolutionReceipt);
           dispatchReceiptWritten = true;
         },
       });

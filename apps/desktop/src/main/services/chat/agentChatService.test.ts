@@ -24582,6 +24582,118 @@ describe("createAgentChatService", () => {
         .filter((payload) => payload.method === "turn/start")).toHaveLength(turnStartsBefore + 1);
     });
 
+    it("reconstructs a missing replay resolution from the durable backend dispatch receipt", async () => {
+      installRealTranscriptParser();
+      const firstEvents: AgentChatEventEnvelope[] = [];
+      const first = createService({
+        onEvent: (event: AgentChatEventEnvelope) => firstEvents.push(event),
+      });
+      const session = await first.service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await first.service.sendMessage(
+        { sessionId: session.id, text: "Start." },
+        { awaitDispatch: true },
+      );
+      const followUp = await first.service.steer({
+        sessionId: session.id,
+        text: "Run this once after restart.",
+      });
+      mockState.emitCodexPayload({
+        method: "turn/aborted",
+        params: { turnId: "turn-1" },
+      });
+      await vi.waitFor(() => {
+        expect(firstEvents.some((entry) =>
+          entry.event.type === "user_message"
+          && entry.event.steerId === followUp.steerId
+          && entry.event.deliveryState === "unprocessed"
+        )).toBe(true);
+      });
+
+      const dispatched = await first.service.resolveUnprocessedMessage({
+        sessionId: session.id,
+        steerId: followUp.steerId,
+        action: "run_next",
+      });
+      const persistedReceipt = readPersistedChatState(session.id)
+        .unprocessedMessageResolutionReceipts
+        ?.find((receipt: Record<string, unknown>) => receipt.steerId === followUp.steerId);
+      expect(persistedReceipt).toMatchObject({
+        steerId: followUp.steerId,
+        action: "run_next",
+        state: "completed",
+        replacementMessageId: dispatched.replacementMessageId,
+      });
+
+      first.service.forceDisposeAll();
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      writeTestTranscriptEnvelopes(session.id, [
+        {
+          sessionId: session.id,
+          timestamp: "2026-07-25T05:20:00.000Z",
+          sequence: 1,
+          event: {
+            type: "user_message",
+            text: "Run this once after restart.",
+            steerId: followUp.steerId,
+            deliveryState: "unprocessed",
+            processed: false,
+            turnId: "turn-old",
+          },
+        },
+        {
+          sessionId: session.id,
+          timestamp: "2026-07-25T05:20:01.000Z",
+          sequence: 2,
+          event: {
+            type: "user_message",
+            text: "Run this once after restart.",
+            metadata: {
+              replayedFromUnprocessedSteer: {
+                sourceSteerId: followUp.steerId,
+                action: "run_next",
+                replacementMessageId: dispatched.replacementMessageId!,
+              },
+            },
+          },
+        },
+      ]);
+
+      const restartedEvents: AgentChatEventEnvelope[] = [];
+      const restarted = createService({
+        onEvent: (event: AgentChatEventEnvelope) => restartedEvents.push(event),
+      });
+      const turnStartsBeforeRetry = mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start").length;
+      const retried = await restarted.service.resolveUnprocessedMessage({
+        sessionId: session.id,
+        steerId: followUp.steerId,
+        action: "run_next",
+      });
+
+      expect(retried).toEqual({
+        steerId: followUp.steerId,
+        action: "run_next",
+        status: "already_completed",
+        replacementMessageId: dispatched.replacementMessageId,
+      });
+      expect(mockState.codexRequestPayloads
+        .filter((payload) => payload.method === "turn/start")).toHaveLength(turnStartsBeforeRetry);
+      expect(restartedEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "user_message_resolution",
+            steerId: followUp.steerId,
+            action: "run_next",
+            replacementMessageId: dispatched.replacementMessageId,
+          }),
+        }),
+      ]));
+    });
+
     it("allows Run next to retry when the optimistic replacement never reached the provider", async () => {
       installRealTranscriptParser();
       const events: AgentChatEventEnvelope[] = [];
