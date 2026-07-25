@@ -810,7 +810,8 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   case "fable", "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api":
     return "anthropic/claude-fable-5"
   case "opus", "opus-5", "opus-5.0", "opus-5-0",
-       "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api":
+       "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api",
+       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
     return "anthropic/claude-opus-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
@@ -837,7 +838,8 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   case "fable", "claude-fable-5", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api":
     return "claude-fable-5"
   case "opus", "opus-5", "opus-5.0", "opus-5-0",
-       "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api":
+       "claude-opus-5", "anthropic/claude-opus-5", "anthropic/claude-opus-5-api",
+       "opencode/anthropic/opus", "opencode/anthropic/claude-opus-5":
     return "claude-opus-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",

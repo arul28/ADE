@@ -16133,6 +16133,8 @@ final class ADETests: XCTestCase {
   func testWorkModelCatalogMapsCurrentAndMigratedOpusAliases() {
     XCTAssertTrue(workModelIdsEquivalent("opus", "claude-opus-5"))
     XCTAssertTrue(workModelIdsEquivalent("anthropic/claude-opus-5-api", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/opus", "claude-opus-5"))
+    XCTAssertTrue(workModelIdsEquivalent("opencode/anthropic/claude-opus-5", "claude-opus-5"))
     XCTAssertEqual(workKnownModelDisplayName("anthropic/claude-opus-5-api"), "Claude Opus 5")
     XCTAssertEqual(workKnownModelDisplayName("opencode/anthropic/opus"), "Claude Opus 5")
     XCTAssertTrue(workModelIdsEquivalent("claude-opus-4-6", "claude-opus-4-8"))
