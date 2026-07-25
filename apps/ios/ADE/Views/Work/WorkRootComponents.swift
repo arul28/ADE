@@ -504,6 +504,7 @@ struct WorkSessionListRow: View {
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
   var compact: Bool = false
+  var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
   let isChecked: Bool
@@ -646,6 +647,21 @@ struct WorkSessionListRow: View {
         }
       }
     }
+    .overlay {
+      if isLaneDeleting {
+        HStack(spacing: 6) {
+          ProgressView().controlSize(.small)
+          Text("Updating lane…")
+            .font(.caption.weight(.semibold))
+        }
+        .foregroundStyle(ADEColor.textSecondary)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(ADEColor.pageBackground.opacity(0.94), in: Capsule())
+      }
+    }
+    .disabled(isLaneDeleting)
+    .accessibilityHint(isLaneDeleting ? "This lane is being deleted" : "")
   }
 
   private var shouldShowDeleteAction: Bool {

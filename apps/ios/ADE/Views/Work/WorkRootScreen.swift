@@ -73,6 +73,7 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let activeRosterRevision: Int
   let activeProjectId: String?
   let loadedProjectionProjectId: String?
+  let pendingLaneDeletionIds: Set<String>
 }
 
 struct WorkRootScreen: View {
@@ -290,7 +291,8 @@ struct WorkRootScreen: View {
       sessionOrganizationRaw: sessionOrganizationRaw,
       activeRosterRevision: syncService.rosterRevision(for: syncService.activeProject),
       activeProjectId: syncService.activeProjectId,
-      loadedProjectionProjectId: loadedProjectionProjectId
+      loadedProjectionProjectId: loadedProjectionProjectId,
+      pendingLaneDeletionIds: syncService.pendingLaneDeletionIds
     )
   }
 
@@ -400,8 +402,10 @@ struct WorkRootScreen: View {
             let rowCollapsedSectionIds = collapsedSectionIds
             let rowTopLevelDisplaySessionIds = sessionPresentation.topLevelDisplaySessionIds
             let rowChildGroupsByParentId = sessionPresentation.childGroupsByParentId
+            let rowDeletingLaneIds = syncService.pendingLaneDeletionIds
 
             ForEach(sessionGroups) { group in
+              let isLaneDeleting = group.laneId.map(rowDeletingLaneIds.contains) ?? false
               WorkSidebarSectionHeader(
                 group: group,
                 collapsed: rowCollapsedSectionIds.contains(group.id),
@@ -415,6 +419,8 @@ struct WorkRootScreen: View {
                   openLanePullRequest(tag: tag, laneId: group.laneId)
                 }
               )
+              .disabled(isLaneDeleting)
+              .redacted(reason: isLaneDeleting ? .placeholder : [])
               .id(group.id)
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
@@ -432,6 +438,7 @@ struct WorkRootScreen: View {
                       ?? rowPrTagsByLaneId[resolvedWorkNavigationLaneId(for: session, lanes: lanes)],
                     chatSummary: chatSummaries[session.id],
                     isArchived: rowArchivedSessionIds.contains(session.id),
+                    isLaneDeleting: rowDeletingLaneIds.contains(session.laneId),
                     transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,
                     selectedSessionId: $selectedSessionTransitionId,
                     isSelecting: isSelecting,
@@ -471,6 +478,7 @@ struct WorkRootScreen: View {
                             ?? rowPrTagsByLaneId[resolvedWorkNavigationLaneId(for: child, lanes: lanes)],
                           chatSummary: chatSummaries[child.id],
                           isArchived: rowArchivedSessionIds.contains(child.id),
+                          isLaneDeleting: rowDeletingLaneIds.contains(child.laneId),
                           transitionNamespace: nil,
                           compact: true,
                           selectedSessionId: $selectedSessionTransitionId,

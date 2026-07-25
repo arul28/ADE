@@ -694,26 +694,25 @@ struct LaneManageSheet: View {
       errorMessage = "Reconnect to machine before you delete lane."
       return
     }
-    do {
-      busyAction = "delete lane"
-      errorMessage = nil
-      try await syncService.deleteLane(
-        snapshot.lane.id,
-        deleteBranch: deleteSelection.localBranch,
-        deleteRemoteBranch: deleteSelection.remoteBranch,
-        force: deleteForce
-      )
-      dismiss()
-      if let onDeleted {
-        await onDeleted()
-      } else {
-        await onComplete()
-      }
-    } catch {
-      ADEHaptics.error()
-      errorMessage = error.localizedDescription
+    errorMessage = nil
+    guard syncService.beginLaneDeletion(
+      snapshot.lane.id,
+      deleteBranch: deleteSelection.localBranch,
+      deleteRemoteBranch: deleteSelection.remoteBranch,
+      force: deleteForce
+    ) else {
+      return
     }
-    busyAction = nil
+
+    // Host cleanup stops sessions and removes the worktree, so it can be much
+    // slower than a UI transition. Leave this sheet and the lane detail now;
+    // SyncService owns the request until the host finishes.
+    dismiss()
+    if let onDeleted {
+      await onDeleted()
+    } else {
+      await onComplete()
+    }
   }
 
   @MainActor

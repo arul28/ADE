@@ -94,6 +94,17 @@ struct LanesTabView: View {
             )
             .transition(.opacity)
           }
+          if let laneDeletionError = syncService.activeLaneDeletionError {
+            ADENoticeCard(
+              title: "Lane deletion failed",
+              message: laneDeletionError,
+              icon: "exclamationmark.triangle.fill",
+              tint: ADEColor.danger,
+              actionTitle: "Dismiss",
+              action: { syncService.clearLaneDeletionFailure() }
+            )
+            .transition(.opacity)
+          }
           if let primaryBranchError,
             laneStatus.phase == .ready,
             !syncService.connectionState.isHostUnreachable
@@ -182,6 +193,14 @@ struct LanesTabView: View {
       .onChange(of: runtimeFilter) { _, _ in refreshLaneListPresentation() }
       .onChange(of: pinnedLaneIdsStorage) { _, _ in refreshLaneListPresentation() }
       .onChange(of: syncService.laneGithubPrItems) { _, _ in refreshLaneListPresentation() }
+      .onChange(of: syncService.pendingLaneDeletionIds) { _, _ in
+        refreshLaneListPresentation()
+        let pendingIds = syncService.pendingLaneDeletionIds
+        openLaneIds.removeAll { pendingIds.contains($0) }
+        if let selectedLaneTransitionId, pendingIds.contains(selectedLaneTransitionId) {
+          self.selectedLaneTransitionId = nil
+        }
+      }
       .onChange(of: isActive) { _, active in
         guard active, syncService.requestedLaneNavigation != nil else { return }
         Task { await handleRequestedLaneNavigation() }

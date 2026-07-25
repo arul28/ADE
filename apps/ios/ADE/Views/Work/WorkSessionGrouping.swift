@@ -228,7 +228,8 @@ func buildWorkRootSessionPresentation(
   organization: WorkSessionOrganization,
   orderedLanes: [LaneSummary],
   pullRequests: [PullRequestListItem] = [],
-  githubPrs: [GitHubPrListItem] = []
+  githubPrs: [GitHubPrListItem] = [],
+  deletingLaneIds: Set<String> = []
 ) -> WorkRootSessionPresentation {
   let committedIds = Set(sessions.map(\.id))
   let draftValues = optimisticSessions.values.filter { !committedIds.contains($0.id) }
@@ -300,7 +301,8 @@ func buildWorkRootSessionPresentation(
     chatSummaries: chatSummaries,
     statusBySessionId: statusBySessionId,
     archivedSessionIds: archivedSessionIds,
-    orderedLanes: workOrderedLanes
+    orderedLanes: workOrderedLanes,
+    deletingLaneIds: deletingLaneIds
   )
 
   return WorkRootSessionPresentation(
@@ -509,7 +511,8 @@ func workSessionGroups(
   chatSummaries: [String: AgentChatSessionSummary],
   statusBySessionId: [String: String] = [:],
   archivedSessionIds: Set<String>,
-  orderedLanes: [LaneSummary]
+  orderedLanes: [LaneSummary],
+  deletingLaneIds: Set<String> = []
 ) -> [WorkSessionGroup] {
   switch organization {
   case .byStatus:
@@ -522,7 +525,8 @@ func workSessionGroups(
   case .byLane:
     return workSessionGroupsByLane(
       sessions: sessions,
-      orderedLanes: orderedLanes
+      orderedLanes: orderedLanes,
+      deletingLaneIds: deletingLaneIds
     )
   case .byTime:
     return workSessionGroupsByTime(sessions: sessions)
@@ -595,7 +599,8 @@ func workSessionGroupsByStatus(
 
 func workSessionGroupsByLane(
   sessions: [TerminalSessionSummary],
-  orderedLanes: [LaneSummary]
+  orderedLanes: [LaneSummary],
+  deletingLaneIds: Set<String> = []
 ) -> [WorkSessionGroup] {
   var byLaneId: [String: [TerminalSessionSummary]] = [:]
   for session in sessions {
@@ -639,7 +644,9 @@ func workSessionGroupsByLane(
       return leftName.localizedCaseInsensitiveCompare(rightName) == .orderedAscending
     }
   for (laneId, list) in orphanEntries {
-    let label = orphanLabel(list.first?.laneName, fallback: laneId)
+    let label = deletingLaneIds.contains(laneId)
+      ? "Updating lane…"
+      : orphanLabel(list.first?.laneName, fallback: laneId)
     groups.append(WorkSessionGroup(id: "lane:\(laneId)", label: label, icon: .laneBranch, tint: ADEColor.textMuted, sessions: list))
   }
   return groups
