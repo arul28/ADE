@@ -290,7 +290,6 @@ function canonicalDroidReplacementForAlias(
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "high",
-      serviceTiers: ["fast"],
     };
   }
   if (

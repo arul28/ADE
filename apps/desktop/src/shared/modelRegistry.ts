@@ -1369,9 +1369,17 @@ export function createDynamicDroidCliModelDescriptor(
   const reasoningTiers = options?.reasoningTiers?.length
     ? options.reasoningTiers
     : canonicalDroid?.reasoningTiers;
-  const serviceTiers = options?.serviceTiers?.length
-    ? options.serviceTiers
-    : canonicalDroid?.serviceTiers;
+  const canonicalDroidModelId = normalizeAnthropicRuntimeAlias(
+    rawProviderModelId.replace(/^custom:/i, ""),
+  )?.modelId;
+  // Droid's SDK and CLI launch contracts do not consume a Fast toggle. Keep
+  // Opus 5 reasoning metadata, but never surface an inert service-tier control
+  // for built-in aliases, direct ids, or custom-proxy ids.
+  const serviceTiers = canonicalDroidModelId === "claude-opus-5"
+    ? undefined
+    : options?.serviceTiers?.length
+      ? options.serviceTiers
+      : canonicalDroid?.serviceTiers;
   return {
     id,
     shortId: trimmedProviderModelId,

@@ -15761,7 +15761,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(droidOpus5?.displayName, "Opus 5")
     XCTAssertEqual(droidOpus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(droidOpus5?.defaultReasoningEffort, "high")
-    XCTAssertTrue(droidOpus5?.supportsCodexFastMode == true)
+    XCTAssertFalse(droidOpus5?.supportsCodexFastMode == true)
     XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8 1M")
     XCTAssertEqual(opus48?.tier, .flagship)
     XCTAssertEqual(opus48?.tagline, "Previous Opus · 1M context")

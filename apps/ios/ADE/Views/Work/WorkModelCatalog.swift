@@ -472,8 +472,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             tagline: "Agentic coding · 1M context",
             provider: "claude",
             reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
-            defaultReasoningEffort: "high",
-            serviceTiers: ["fast"]
+            defaultReasoningEffort: "high"
           ),
           WorkModelOption(id: "claude-opus-4-6", displayName: "Opus 4.6 (2x)", tier: .flagship, tagline: "Flagship reasoning · 2x usage", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-6-fast", displayName: "Opus 4.6 Fast Mode (12x)", tier: .flagship, tagline: "Faster Opus · 12x usage", provider: "claude"),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createDynamicDroidCliModelDescriptor,
   createDynamicLocalModelDescriptor,
   createDynamicOpenCodeModelDescriptor,
   decodeOpenCodeRegistryId,
@@ -476,6 +477,7 @@ describe("modelRegistry", () => {
   it("canonicalizes persisted Droid Anthropic aliases before launch", () => {
     const sonnet = getModelById("droid/claude-sonnet-4-6");
     const opus = getModelById("droid/opus-4-6");
+    const opus5 = getModelById("droid/opus");
 
     expect(sonnet).toMatchObject({
       id: "droid/claude-sonnet-5",
@@ -499,6 +501,36 @@ describe("modelRegistry", () => {
       providerModelId: "claude-opus-4-8",
       displayName: "Opus 4.8 1M",
     });
+    expect(opus5).toMatchObject({
+      id: "droid/claude-opus-5",
+      providerModelId: "claude-opus-5",
+      displayName: "Opus 5",
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+    });
+    expect(opus5?.serviceTiers).toBeUndefined();
+  });
+
+  it("does not advertise unsupported Fast mode for Droid Opus 5 custom proxies", () => {
+    const descriptor = createDynamicDroidCliModelDescriptor(
+      "custom:claude-opus-5",
+      "Opus 5",
+      {
+        customProxy: true,
+        reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningEffort: "high",
+        serviceTiers: ["fast"],
+      },
+    );
+
+    expect(descriptor).toMatchObject({
+      id: "droid/custom:claude-opus-5",
+      providerModelId: "custom:claude-opus-5",
+      customProxy: true,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+    });
+    expect(descriptor.serviceTiers).toBeUndefined();
   });
 
 
