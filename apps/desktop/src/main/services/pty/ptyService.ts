@@ -21,7 +21,6 @@ import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { DiskPressureMonitor } from "../storage/diskPressure";
 import { readHistoryFileSync, reinflateHistoryFile } from "../storage/historyCompression";
-import { writeFileAtomic } from "../state/durableFile";
 import {
   resolveCodexComputerUseMcpConfig,
   type CodexComputerUseMcpConfig,
@@ -4359,8 +4358,13 @@ export function createPtyService({
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
       const explicitNoColor = hasEnvKey(args.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const explicitForceColor = hasEnvKey(args.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
+      const inheritedProcessEnv = { ...process.env };
+      // The desktop/runtime itself may be launched from an agent shell. Do not
+      // leak that host role into an ordinary terminal; tracked agent CLIs set
+      // their role explicitly below.
+      delete inheritedProcessEnv.ADE_DEFAULT_ROLE;
       const baseLaunchEnv = {
-        ...process.env,
+        ...inheritedProcessEnv,
         ...laneRuntimeEnv,
         ...sessionLinearEnv,
         ...(args.env ?? {})

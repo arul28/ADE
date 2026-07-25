@@ -4020,6 +4020,26 @@ describe("createAgentChatService", () => {
       expect(persisted.provider).toBe("opencode");
     });
 
+    it("preserves the personal surface when reconstructing a persisted session", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/anthropic/claude-sonnet-5",
+        surface: "personal",
+      });
+
+      await service.dispose({ sessionId: session.id });
+      await service.updateSession({ sessionId: session.id, title: "Reopened personal chat" });
+
+      await expect(service.getSessionSummary(session.id)).resolves.toMatchObject({
+        sessionId: session.id,
+        surface: "personal",
+      });
+      expect(readPersistedChatState(session.id).surface).toBe("personal");
+    });
+
     it("writes a chat transcript init record", async () => {
       const { service } = createService();
       const session = await service.createSession({

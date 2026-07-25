@@ -82,6 +82,7 @@ describe("PersonalChatScope", () => {
         paused: boolean;
       }) => ({ sessionId, paused, nextWakeAt: null })),
       updateSession: vi.fn(async () => summary),
+      ensureSessionSurface: vi.fn(),
       archiveSession: vi.fn(async () => undefined),
       unarchiveSession: vi.fn(async () => undefined),
       deleteSession: vi.fn(async () => undefined),
@@ -124,6 +125,23 @@ describe("PersonalChatScope", () => {
     await scope.dispose();
   });
 
+  it("repairs legacy surface metadata for transcript and activity subscriptions", async () => {
+    const { summary, service, runtime, createRuntime } = fixture("work");
+    service.getSessionSummary.mockResolvedValue({
+      ...summary,
+      status: "active",
+    } as never);
+    const durablePath = path.join(runtime.projectRoot, ".ade", "transcripts", "chat", "chat-1.jsonl");
+    fs.mkdirSync(path.dirname(durablePath), { recursive: true });
+    fs.writeFileSync(durablePath, "history\n");
+    const scope = new PersonalChatScope({ createRuntime });
+
+    await expect(scope.transcriptPath("chat-1")).resolves.toBe(durablePath);
+    await expect(scope.isTurnActive("chat-1")).resolves.toBe(true);
+    expect(service.ensureSessionSurface).toHaveBeenCalledWith("chat-1", "personal");
+    await scope.dispose();
+  });
+
   it("creates a hidden personal session and dispatches an optional kickoff", async () => {
     const { service, createRuntime } = fixture();
     const scope = new PersonalChatScope({ createRuntime });
@@ -159,7 +177,7 @@ describe("PersonalChatScope", () => {
     expect(runtimeArgs.publishPushEvents).toBe(false);
   });
 
-  it("filters the hidden scope list to personal sessions", async () => {
+  it("repairs legacy surface metadata while listing the hidden scope", async () => {
     const personal = fixture("personal");
     const scope = new PersonalChatScope({ createRuntime: personal.createRuntime });
     await expect(scope.call("list", { includeArchived: false })).resolves.toMatchObject({
@@ -169,20 +187,47 @@ describe("PersonalChatScope", () => {
 
     const work = fixture("work");
     const workScope = new PersonalChatScope({ createRuntime: work.createRuntime });
-    await expect(workScope.call("list", {})).resolves.toMatchObject({ result: [] });
+    await expect(workScope.call("list", {})).resolves.toMatchObject({
+      result: [{ sessionId: "chat-1", surface: "personal" }],
+    });
+    expect(work.service.ensureSessionSurface).toHaveBeenCalledWith("chat-1", "personal");
     expect(personal.service.listSessions).toHaveBeenCalledWith(
       undefined,
       expect.objectContaining({ includeArchived: false }),
     );
   });
 
-  it("rejects session-scoped calls when the session is not personal", async () => {
+  it("repairs legacy surface metadata before a session-scoped call", async () => {
     const { createRuntime, service } = fixture("work");
     const scope = new PersonalChatScope({ createRuntime });
-    await expect(scope.call("send", { sessionId: "chat-1", text: "nope" }))
-      .rejects.toThrow("Personal chat session 'chat-1' was not found");
+    await expect(scope.call("send", { sessionId: "chat-1", text: "continue" }))
+      .resolves.toMatchObject({ action: "send" });
     expect(service.getSessionSummary).toHaveBeenCalledWith("chat-1");
+    expect(service.ensureSessionSurface).toHaveBeenCalledWith("chat-1", "personal");
+    expect(service.sendMessage).toHaveBeenCalledWith({ sessionId: "chat-1", text: "continue" });
+  });
+
+  it("rejects session-scoped calls when the session row is missing", async () => {
+    const { createRuntime, service } = fixture();
+    service.getSessionSummary.mockResolvedValueOnce(null as never);
+    const scope = new PersonalChatScope({ createRuntime });
+    await expect(scope.call("send", { sessionId: "missing", text: "nope" }))
+      .rejects.toThrow("Personal chat session 'missing' was not found");
     expect(service.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("prewarms only when personal-chat state already exists", async () => {
+    const { createRuntime } = fixture();
+    const scope = new PersonalChatScope({ createRuntime });
+    await scope.warmExisting();
+    expect(createRuntime).not.toHaveBeenCalled();
+
+    const dbPath = path.join(adeHome, "personal-chats", "state", ".ade", "ade.db");
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    fs.writeFileSync(dbPath, "");
+
+    await scope.warmExisting();
+    expect(createRuntime).toHaveBeenCalledTimes(1);
   });
 
   it("cancels scheduled work only for an owned personal session", async () => {

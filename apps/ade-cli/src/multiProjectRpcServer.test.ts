@@ -2,10 +2,11 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer } from "./eventBuffer";
 import {
   createMultiProjectRpcRequestHandler,
+  createPersonalChatScope,
   decorateProjectListWithIcons,
   readMachineRuntimeActivitySummary,
 } from "./multiProjectRpcServer";
@@ -14,6 +15,21 @@ import { ProjectRegistry } from "./services/projects/projectRegistry";
 import { ProjectScopeRegistry } from "./services/projects/projectScope";
 import type { SyncRoleSnapshot } from "../../desktop/src/shared/types";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+import { PersonalChatScope } from "./services/personalChats/personalChatScope";
+
+const originalAdeHome = process.env.ADE_HOME;
+let isolatedAdeHome = "";
+
+beforeEach(() => {
+  isolatedAdeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-home-"));
+  process.env.ADE_HOME = isolatedAdeHome;
+});
+
+afterEach(() => {
+  if (originalAdeHome === undefined) delete process.env.ADE_HOME;
+  else process.env.ADE_HOME = originalAdeHome;
+  fs.rmSync(isolatedAdeHome, { recursive: true, force: true });
+});
 
 function createRegistry() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-multi-project-rpc-"));
@@ -126,6 +142,30 @@ function makeRuntime(label: string) {
 }
 
 describe("multi-project RPC server", () => {
+  it("prewarms the production shared personal-chat scope only at creation", () => {
+    const warmExisting = vi.spyOn(PersonalChatScope.prototype, "warmExisting")
+      .mockResolvedValue();
+    try {
+      const personalChatScope = createPersonalChatScope();
+      const firstHandler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        personalChatScope,
+      });
+      const secondHandler = createMultiProjectRpcRequestHandler({
+        serverVersion: "test",
+        personalChatScope,
+      });
+
+      expect(warmExisting).toHaveBeenCalledTimes(1);
+
+      firstHandler.dispose();
+      secondHandler.dispose();
+      expect(warmExisting).toHaveBeenCalledTimes(1);
+    } finally {
+      warmExisting.mockRestore();
+    }
+  });
+
   it("summarizes booted project and personal-chat work independently of client sockets", async () => {
     const summary = await readMachineRuntimeActivitySummary({
       projectRegistry: {

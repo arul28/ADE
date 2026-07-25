@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatSessionSummary } from "../../../shared/types";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openUrlInAdeBrowser } from "../../lib/openExternal";
 
 // Deliberately a LIGHT accent (Codex-style) so the contrast tests can tell the
 // colored path (dark glyph) apart from the neutral-tint path (white glyph).
@@ -122,6 +123,7 @@ describe("PersonalChatsPage", () => {
   beforeEach(() => {
     cleanup();
     vi.clearAllMocks();
+    delete window.__adeWebClient;
     state.sessions = [];
     state.catalogAvailable = true;
     state.historyEvents = [];
@@ -131,6 +133,7 @@ describe("PersonalChatsPage", () => {
 
   afterEach(() => {
     cleanup();
+    delete window.__adeWebClient;
   });
 
   it("renders the hero (greeting + composer + chips) with the composer inside the canvas and no shell footer", async () => {
@@ -230,6 +233,112 @@ describe("PersonalChatsPage", () => {
 
     resolveList([]);
     await waitFor(() => expect(screen.getByText(/No chats yet/)).toBeTruthy());
+  });
+
+  it("finishes chat-list loading without waiting for the model catalog", async () => {
+    state.sessions = [makeSession({ title: "Ready chat" })];
+    const pendingCatalog = new Promise<never>(() => {});
+    const bridge = (window as unknown as { ade: { personalChats: { call: ReturnType<typeof vi.fn> } } });
+    bridge.ade.personalChats.call.mockImplementation(async ({ action }: CallArgs) => {
+      if (action === "list") return { result: state.sessions };
+      if (action === "modelCatalog") return await pendingCatalog;
+      return { result: undefined };
+    });
+
+    await renderPage();
+
+    expect(await screen.findByText("Ready chat")).toBeTruthy();
+    const sidebar = screen.getByText("Chats").closest("aside");
+    await waitFor(() => expect(sidebar?.querySelector(".animate-spin")).toBeNull());
+  });
+
+  it("routes transcript link requests into the visible personal browser collection", async () => {
+    const navigate = vi.fn(async () => undefined);
+    const current = window.ade;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ...current, builtInBrowser: { navigate } },
+    });
+    await renderPage();
+
+    window.dispatchEvent(new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
+      detail: { url: "https://example.test/docs" },
+      cancelable: true,
+    }));
+
+    expect(await screen.findByTestId("browser-panel")).toBeTruthy();
+    expect(navigate).toHaveBeenCalledWith({
+      url: "https://example.test/docs",
+      newTab: true,
+      tabCollection: "personal",
+    });
+  });
+
+  it("claims valid link requests and shows an ADE error when the browser bridge is missing", async () => {
+    const openExternal = vi.fn(async () => undefined);
+    const current = window.ade;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ...current, app: { openExternal }, builtInBrowser: undefined },
+    });
+    await renderPage();
+
+    const handled = !window.dispatchEvent(new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
+      detail: { url: "https://example.test/docs" },
+      cancelable: true,
+    }));
+
+    expect(handled).toBe(true);
+    expect(await screen.findByTestId("browser-panel")).toBeTruthy();
+    expect(await screen.findByText("ADE Browser couldn't open that link. Try again.")).toBeTruthy();
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("leaves hosted-web link requests unclaimed so they can fall back externally", async () => {
+    const openExternal = vi.fn(async () => undefined);
+    const current = window.ade;
+    window.__adeWebClient = true;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ...current, app: { openExternal }, builtInBrowser: undefined },
+    });
+    await renderPage();
+
+    openUrlInAdeBrowser("https://example.test/docs");
+
+    expect(openExternal).toHaveBeenCalledWith("https://example.test/docs");
+    expect(screen.queryByTestId("browser-panel")).toBeNull();
+    expect(screen.queryByText("ADE Browser couldn't open that link. Try again.")).toBeNull();
+  });
+
+  it("shows an ADE error instead of surprise-opening Safari when personal link navigation fails", async () => {
+    const openExternal = vi.fn(async () => undefined);
+    const navigate = vi.fn(async () => {
+      throw new Error("browser unavailable");
+    });
+    const current = window.ade;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { ...current, app: { openExternal }, builtInBrowser: { navigate } },
+    });
+    await renderPage();
+
+    window.dispatchEvent(new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
+      detail: { url: "https://example.test/docs" },
+      cancelable: true,
+    }));
+
+    expect(await screen.findByText("ADE Browser couldn't open that link. Try again.")).toBeTruthy();
+    expect(navigate).toHaveBeenCalledWith({
+      url: "https://example.test/docs",
+      newTab: true,
+      tabCollection: "personal",
+    });
+    expect(openExternal).not.toHaveBeenCalled();
   });
 
   it("docks (not hero) when selecting a session whose events have not loaded yet", async () => {

@@ -9,7 +9,7 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 
 | Path | Role |
 |---|---|
-| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Lazy machine-owned chat runtime, hidden persistence/scratch roots, action allowlist (including scheduled-work create/cancel/pause), attachment confinement, terminal ownership, and event stream. |
+| `apps/ade-cli/src/services/personalChats/personalChatScope.ts` | Machine-owned chat runtime, existing-state background prewarm, hidden persistence/scratch roots, personal-surface recovery for legacy session rows, action allowlist (including scheduled-work create/cancel/pause), attachment confinement, terminal ownership, and event stream. |
 | `apps/ade-cli/src/services/imageAttachment.ts` | Shared image validation, MIME sniffing, and bounded temporary-attachment persistence used by project and personal chat ingress. |
 | `apps/ade-cli/src/services/projects/machineLayout.ts` | Resolves the channel-local `$ADE_HOME/personal-chats/{state,workspaces}` roots. |
 | `apps/ade-cli/src/multiProjectRpcServer.ts` | Project-independent `personalChats.call` and `personalChats.streamEvents` machine RPC methods plus capability advertisement. |
@@ -17,8 +17,8 @@ desktop, the hosted web client, mobile, and the ADE CLI.
 | `apps/ade-cli/src/services/sync/` | Runtime-scoped personal-chat commands, feature advertisement, policy descriptors, and personal transcript subscriptions for controllers. Primary files: `syncService.ts`, `syncHostService.ts`, and `syncRemoteCommandService.ts`. |
 | `apps/desktop/src/shared/types/personalChats.ts` | Cross-process action, result, capability, queue-policy, scope, and event contracts, including the scheduled-work create/cancel/pause actions shared with project chat. |
 | `apps/desktop/src/main/services/ipc/runtimeBridge.ts` | Routes a local/no-project window to the local brain and a remotely bound project window to that remote machine's personal-chat scope. |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Durable `personal` chat surface and neutral provider guidance/environment. |
-| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop projectless surface: conversation load/stream, the hero-vs-docked composer switch once a session is selected, transcript, and compact Browser/Terminal tool panels. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Durable `personal` chat surface, persisted-surface reconstruction/repair support, and neutral provider guidance/environment. |
+| `apps/desktop/src/renderer/components/personalChats/PersonalChatsPage.tsx` | Desktop projectless surface: independently loaded conversation list and model catalog, conversation stream, the hero-vs-docked composer switch once a session is selected, transcript, personal-scoped link routing, and compact Browser/Terminal tool panels. |
 | `apps/desktop/src/renderer/components/personalChats/ProjectlessHero.tsx` | Empty-state hero shown before a session is picked — heading, verb-first suggestion chips that prefill the draft, and the docked composer slot. |
 | `apps/desktop/src/renderer/components/personalChats/ProjectlessComposer.tsx` | Shared composer rendered in `hero` or `docked` variant, with model/reasoning/permission controls, send/interrupt, and provider-accent send button (`chatAccentContrast`). |
 | `apps/desktop/src/renderer/components/personalChats/ProjectlessSidebar.tsx` | Stateful conversation rail: recency-grouped, searchable session list with new-chat and per-session selection state. |
@@ -47,9 +47,11 @@ implementation details only:
 
 The runtime is channel-scoped with the rest of ADE machine state, so stable,
 beta, alpha, and isolated development homes do not share conversations. It is
-lazy and chat-only, does not run its own sync listener, and suppresses the
-project-oriented push/deeplink publisher because those links would otherwise
-open a project Work surface.
+chat-only and remains lazy for fresh installs; when existing personal-chat
+state is present, the brain prewarms it in the background so opening Chats does
+not pay the cold-start cost. It does not run its own sync listener and
+suppresses the project-oriented push/deeplink publisher because those links
+would otherwise open a project Work surface.
 
 Personal-chat provider processes run from the separate workspace root. Their
 environment retains the session identity needed by the provider bridge but
@@ -133,6 +135,12 @@ guidance rather than ADE's coding-agent prompt. The environment exposes the
 chat session and personal scope, but omits project/lane/workspace identity
 variables.
 
+The hidden runtime is authoritative for personal-chat ownership. Session
+reconstruction must preserve the persisted `surface`, and the personal scope
+repairs older non-automation rows whose marker is missing or stale before
+listing, reading, or continuing them. A missing marker must not hide an intact
+transcript from the conversation rail.
+
 Personal chat creation strips or overrides project-only fields such as a
 caller-supplied lane/cwd, orchestration metadata, automation ownership, and
 persistent project identity. The CLI separately rejects Linear attachment
@@ -144,7 +152,7 @@ domains into the hidden runtime.
 | Surface | Entry and behavior |
 |---|---|
 | Desktop | **Chats** sits above the profile control and stays enabled with no project selected. The welcome screen has a **Start a chat** action. Visiting `/chats` from the projectless shell opens a real machine-level **Chats** top tab (backed by `personalChatsTabOpen`) that stays present as a clickable tab across project open/switch/close. The "+" on `/chats` opens and activates Home/New Tab while the Chats tab stays as an inactive tab; closing New Tab returns to `/chats` when projectless; closing an inactive Chats tab does not navigate. The surface itself is a hero empty state — heading plus verb-first suggestion chips — whose composer docks to the bottom once a session is selected, alongside a stateful searchable recency-grouped conversation rail, shared model/reasoning/permission controls, provider-accent send button, transcript/approval handling, and compact Browser and Terminal buttons. |
-| ADE Browser | Personal chat uses the global authenticated browser profile and an explicit personal tab collection (`tabCollection: "personal"`). Cookies and site storage are shared across ADE, while personal visible tabs remain separate from project/window tabs. |
+| ADE Browser | Personal chat uses the global authenticated browser profile and an explicit personal tab collection (`tabCollection: "personal"`). HTTP(S) links in the transcript are intercepted by the active personal-chat surface, open its Browser panel, and navigate with projectless scope so they cannot land invisibly in a retained project's collection. Navigation failures stay in ADE as a visible error instead of surprise-opening the system browser later. Cookies and site storage are shared across ADE, while personal visible tabs remain separate from project/window tabs. |
 | Hosted web | The project picker and shell can enter `/chats` without selecting a project. The adapter uses runtime-scoped commands and personal chat subscriptions; browser-native ADE Browser is absent, while terminal IO runs on the paired machine. |
 | iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Chat Info uses the personal action descriptors for durable-schedule Cancel and per-chat Pause/Resume; schedule creation remains an API capability rather than a native control. Personal summaries are cached per paired host for offline list display; create and schedule mutations require a live host, while sends may queue. |
 | ADE CLI | `ade chat ... --personal` reaches the machine RPC directly. `--personal` is mutually exclusive with lane/Linear project context and requires a running brain. |
@@ -173,6 +181,9 @@ domains into the hidden runtime.
 - Keep personal browser calls on `tabCollection: "personal"`; omitting it routes
   the call to the source window's active project tab collection. This changes
   visible tab routing only, never the global authentication storage profile.
+- Preserve `surface: "personal"` whenever a persisted session is reconstructed.
+  The hidden personal runtime may repair missing legacy markers, but regular
+  project runtimes must never relabel a session across surfaces.
 - Older runtimes should report the feature as unavailable. Do not silently
   create a normal project chat.
 - The hosted web client has no local database. Lists and transcript updates

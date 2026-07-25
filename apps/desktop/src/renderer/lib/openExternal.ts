@@ -4,6 +4,17 @@ export type OpenBuiltInBrowserDetail = {
   url: string;
 };
 
+type BuiltInBrowserNavigationOptions = {
+  newTab: boolean;
+  projectRoot?: string | null;
+  tabCollection?: "personal";
+};
+
+type BuiltInBrowserNavigationFailureOptions = {
+  fallbackToExternal?: boolean;
+  onFailure?: () => void;
+};
+
 // Renderer-local event that routes an in-app `ade://` deeplink through ADE's
 // internal navigation. App.tsx listens for this, parses the URL, and dispatches
 // the resulting target through the same handler that inbound OS/CLI deeplinks
@@ -90,22 +101,33 @@ export function openUrlInAdeBrowser(url: string | undefined | null): void {
   // which the event causes to mount via TerminalsPage — sees the flag in its
   // first default-tab effect and skips creating a Google tab.
   markPendingBuiltInBrowserNavigation();
-  window.dispatchEvent(new CustomEvent<OpenBuiltInBrowserDetail>(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
+  const openEvent = new CustomEvent<OpenBuiltInBrowserDetail>(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
     detail: { url: normalized },
-  }));
-  const browser = window.ade?.builtInBrowser;
-  if (browser) {
-    void browser.navigate({ url: normalized, newTab: true }).catch(() => {
-      // Navigation failed: clear the flag so a subsequent panel open can still
-      // surface the default tab.
-      consumePendingBuiltInBrowserNavigation();
-      openExternalUrl(normalized);
-    });
+    cancelable: true,
+  });
+  const handledBySurface = !window.dispatchEvent(openEvent);
+  if (handledBySurface) return;
+  navigateUrlInAdeBrowser(normalized, { newTab: true });
+}
+
+export function navigateUrlInAdeBrowser(
+  url: string,
+  options: BuiltInBrowserNavigationOptions,
+  failureOptions: BuiltInBrowserNavigationFailureOptions = {},
+): void {
+  const browser = typeof window !== "undefined" ? window.ade?.builtInBrowser : undefined;
+  if (!browser) {
+    consumePendingBuiltInBrowserNavigation();
+    failureOptions.onFailure?.();
+    if (failureOptions.fallbackToExternal !== false) openExternalUrl(url);
     return;
   }
-  // No bridge — clear the flag we just set since no IPC navigation will arrive.
-  consumePendingBuiltInBrowserNavigation();
-  openExternalUrl(normalized);
+
+  void browser.navigate({ url, ...options }).catch(() => {
+    consumePendingBuiltInBrowserNavigation();
+    failureOptions.onFailure?.();
+    if (failureOptions.fallbackToExternal !== false) openExternalUrl(url);
+  });
 }
 
 export function openExternalUrl(url: string | undefined | null): void {
