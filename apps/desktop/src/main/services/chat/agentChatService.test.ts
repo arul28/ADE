@@ -24310,6 +24310,78 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("correlates combined Codex user-message content without consuming another accepted steer", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await service.sendMessage({ sessionId: session.id, text: "Start." }, { awaitDispatch: true });
+
+      const first = await service.steer({ sessionId: session.id, text: "First follow-up." });
+      const second = await service.steer({ sessionId: session.id, text: "Second follow-up." });
+
+      mockState.emitCodexPayload({
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "unmatched-user-followup",
+            type: "userMessage",
+            content: [{ type: "text", text: "A provider message unrelated to either steer." }],
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "combined-user-followup",
+            type: "userMessage",
+            content: [
+              { type: "text", text: "System context supplied by ADE." },
+              { type: "text", text: "Second follow-up." },
+            ],
+          },
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message"
+          && event.event.steerId === second.steerId
+          && event.event.deliveryState === "processed"
+        )).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.steerId === first.steerId
+        && event.event.deliveryState === "processed"
+      )).toBe(false);
+
+      mockState.emitCodexPayload({
+        method: "turn/aborted",
+        params: { turnId: "turn-1" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "user_message"
+          && event.event.steerId === first.steerId
+          && event.event.deliveryState === "unprocessed"
+        )).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.event.type === "user_message"
+        && event.event.steerId === second.steerId
+        && event.event.deliveryState === "unprocessed"
+      )).toBe(false);
+    });
+
     it("restores accepted Codex follow-ups from durable history after a runtime restart", async () => {
       installRealTranscriptParser();
       const first = createService();

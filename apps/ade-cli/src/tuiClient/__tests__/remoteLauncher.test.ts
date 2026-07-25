@@ -2,7 +2,9 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { PairedRuntimeRelayAuthRequiredError } from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import type { RemoteRuntimeTarget } from "../../../../desktop/src/shared/types/remoteRuntime";
+import { relayAuthErrorWithDiagnostic } from "../pairedRemoteConnector";
 import {
   assertRelayAccountUnchanged,
   buildSshArgs,
@@ -235,6 +237,38 @@ describe("ade code remote launcher", () => {
       { userId: "account-a", token: "token-a" },
       async () => ({ userId: "account-b", token: "token-b" }),
     )).rejects.toThrow(/account changed.*same account/i);
+  });
+
+  it("preserves Relay auth semantics and bounded route diagnostics", () => {
+    const cause = new Error("account proof expired");
+    const authError = new PairedRuntimeRelayAuthRequiredError(
+      "Sign in to ADE to connect through Relay.",
+      cause,
+    );
+    const attempts = [{
+      kind: "relay" as const,
+      host: "relay.example",
+      startedAt: 100,
+      durationMs: 25,
+      outcome: "failed" as const,
+      failure: "authentication" as const,
+    }];
+
+    const diagnosed = relayAuthErrorWithDiagnostic(authError, {
+      correlationId: "connection-reference",
+      attempts,
+      omittedAttemptCount: 3,
+    });
+
+    expect(diagnosed).toBeInstanceOf(PairedRuntimeRelayAuthRequiredError);
+    expect(diagnosed.code).toBe("PAIRED_RUNTIME_RELAY_AUTH_REQUIRED");
+    expect(diagnosed.message).toBe(authError.message);
+    expect(diagnosed.cause).toBe(cause);
+    expect(diagnosed.diagnostic).toEqual({
+      correlationId: "connection-reference",
+      attempts,
+      omittedAttemptCount: 3,
+    });
   });
 
   it("never invents SSH fallback from a paired LAN or Tailscale route", () => {

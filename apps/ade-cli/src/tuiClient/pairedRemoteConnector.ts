@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
+  type PairedRuntimeRouteDiagnostic,
 } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import {
   buildPairedEndpointCandidates,
@@ -127,6 +128,17 @@ export class PairedRemoteConnectionUnavailableError extends Error {
     super(message);
     this.name = "PairedRemoteConnectionUnavailableError";
   }
+}
+
+export function relayAuthErrorWithDiagnostic(
+  error: PairedRuntimeRelayAuthRequiredError,
+  diagnostic: PairedRuntimeRouteDiagnostic,
+): PairedRuntimeRelayAuthRequiredError {
+  return new PairedRuntimeRelayAuthRequiredError(
+    error.message,
+    error.cause,
+    diagnostic,
+  );
 }
 
 export type OpenedPairedCandidate<T> = {
@@ -262,7 +274,15 @@ export async function openPairedCandidate<T>(args: {
       }
     }
   }
-  if (relayAuthError) throw relayAuthError;
+  if (relayAuthError) {
+    throw relayAuthErrorWithDiagnostic(relayAuthError, {
+      correlationId,
+      attempts,
+      ...(attemptRecorder.omittedAttemptCount > 0
+        ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
+        : {}),
+    });
+  }
   throw new PairedRemoteConnectionUnavailableError(
     "all_paths_failed",
     failures,

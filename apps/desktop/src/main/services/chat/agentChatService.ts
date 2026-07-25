@@ -23247,13 +23247,20 @@ export function createAgentChatService(args: {
     const accepted = runtime.acceptedSteersByTurnId.get(normalizedTurnId);
     if (!accepted?.size) return false;
     const normalizedProviderText = providerText.trim();
-    const matched = Array.from(accepted.values()).find((candidate) => {
-      const candidateText = candidate.text.trim();
-      return !normalizedProviderText
-        || normalizedProviderText === candidateText
-        || normalizedProviderText.endsWith(candidateText);
-    }) ?? accepted.values().next().value;
-    if (!matched) return false;
+    if (!normalizedProviderText) return false;
+    const candidates = Array.from(accepted.values());
+    const exactMatches = candidates.filter(
+      (candidate) => candidate.text.trim() === normalizedProviderText,
+    );
+    const matches = exactMatches.length
+      ? exactMatches
+      : candidates.filter((candidate) => {
+          const candidateText = candidate.text.trim();
+          return candidateText.length > 0
+            && normalizedProviderText.endsWith(`\n${candidateText}`);
+        });
+    if (matches.length !== 1) return false;
+    const [matched] = matches;
     accepted.delete(matched.steerId);
     if (accepted.size === 0) runtime.acceptedSteersByTurnId.delete(normalizedTurnId);
     emitAcceptedCodexSteerState(managed, matched, "processed");

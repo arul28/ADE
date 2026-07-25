@@ -45,7 +45,11 @@ export class PairedRuntimeCompatibilityError extends Error {
 export class PairedRuntimeRelayAuthRequiredError extends Error {
   readonly code = "PAIRED_RUNTIME_RELAY_AUTH_REQUIRED" as const;
 
-  constructor(message = "Sign in to ADE to connect through ADE Relay.", cause?: unknown) {
+  constructor(
+    message = "Sign in to ADE to connect through ADE Relay.",
+    cause?: unknown,
+    readonly diagnostic?: PairedRuntimeRouteDiagnostic,
+  ) {
     super(message);
     this.name = "PairedRuntimeRelayAuthRequiredError";
     assignCause(this, cause);
