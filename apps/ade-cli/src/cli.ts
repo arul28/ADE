@@ -15101,8 +15101,11 @@ async function runServe(
     { resolveMachineAdeLayout },
     { ProjectRegistry },
     { ProjectScopeRegistry },
-    { PersonalChatScope },
-    { createMultiProjectRpcRequestHandler, readMachineRuntimeActivitySummary },
+    {
+      createMultiProjectRpcRequestHandler,
+      createPersonalChatScope,
+      readMachineRuntimeActivitySummary,
+    },
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
     { createBrainProjectActionsSyncHandler },
@@ -15113,7 +15116,6 @@ async function runServe(
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
     import("./services/projects/projectScope"),
-    import("./services/personalChats/personalChatScope"),
     import("./multiProjectRpcServer"),
     import("./services/sync/sharedSyncListener"),
     import("../../desktop/src/main/services/projects/projectIconThumbnail"),
@@ -15168,7 +15170,7 @@ async function runServe(
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncEnabled = !readFlag(args, ["--no-sync"]);
   const projectRegistry = new ProjectRegistry(layout);
-  const personalChatScope = new PersonalChatScope();
+  const personalChatScope = createPersonalChatScope();
   let preferredSyncProjectId: string | null = null;
   const preferredSyncProjectRoot = process.env.ADE_PROJECT_ROOT?.trim();
   if (preferredSyncProjectRoot) {
