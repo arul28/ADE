@@ -4421,7 +4421,7 @@ function resolveClaudeTurnModelPayload(
       ?? resolveClaudeCliModelIdFromRuntimeValue(normalizedCliModel);
     if (resolvedCliModelId) {
       if (selectedIsOpus48 && isBareClaudeOpusRuntimeAlias(normalized)) {
-        return { model: normalized, ...(sessionModelId ? { modelId: sessionModelId } : {}) };
+        return sessionPayload;
       }
       if (shouldPreserveSelectedModel(resolvedCliModelId, normalized)) return sessionPayload;
       const descriptor = getModelById(resolvedCliModelId);

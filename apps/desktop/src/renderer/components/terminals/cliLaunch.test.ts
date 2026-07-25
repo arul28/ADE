@@ -445,12 +445,15 @@ describe("buildTrackedCliStartupCommand", () => {
         "claude-opus-5",
         "--effort",
         "high",
+      ]));
+      const settingsIndex = launch.args.indexOf("--settings");
+      expect(launch.args.slice(settingsIndex, settingsIndex + 2)).toEqual([
         "--settings",
         JSON.stringify({ fastMode: true }),
-      ]));
+      ]);
       expect(launch.startupCommand).toContain("--model claude-opus-5");
       expect(launch.startupCommand).toContain("--effort high");
-      expect(launch.startupCommand).toContain("fastMode");
+      expect(launch.startupCommand).toContain('--settings "{\\"fastMode\\":true}"');
     });
 
     it("passes Claude fast mode as per-session settings for fresh launches", () => {

@@ -214,13 +214,12 @@ private func workModelRefsLookFastCapable(_ rawRefs: [String?]) -> Bool {
     "fable", "claude-fable-5", "anthropic/claude-fable-5", "opencode/anthropic/claude-fable-5",
     "opus", "opus-5", "opus-5.0", "opus-5-0", "claude-opus-5",
     "anthropic/claude-opus-5", "anthropic/claude-opus-5-api", "opencode/anthropic/claude-opus-5",
-    "claude-opus-4-8", "anthropic/claude-opus-4-8", "anthropic/claude-opus-4-8-api",
-    "opencode/anthropic/claude-opus-4-8",
     "opus-4-7", "claude-opus-4-7", "anthropic/claude-opus-4-7",
     "anthropic/claude-opus-4-7-api", "opencode/anthropic/claude-opus-4-7",
     "opencode/anthropic/opus",
     "opus-1m", "opus[1m]", "claude-opus-4-7-1m", "anthropic/claude-opus-4-7-1m",
     "opus-4.8", "opus-4-8", "claude-opus-4-8", "anthropic/claude-opus-4-8",
+    "anthropic/claude-opus-4-8-api",
     "opencode/anthropic/claude-opus-4-8",
   ]
   return refs.contains { fastRefs.contains($0) || $0.hasSuffix("-fast") }
