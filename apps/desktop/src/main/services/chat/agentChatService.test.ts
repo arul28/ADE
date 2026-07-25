@@ -24423,7 +24423,7 @@ describe("createAgentChatService", () => {
       )).toHaveLength(1);
     });
 
-    it("keeps a persisted Run next dispatch authoritative over a conflicting retry after restart", async () => {
+    it("does not treat optimistic replay rows as a durable backend dispatch after restart", async () => {
       installRealTranscriptParser();
       const first = createService();
       const session = await first.service.createSession({
@@ -24431,74 +24431,83 @@ describe("createAgentChatService", () => {
         provider: "codex",
         model: "gpt-5.5",
       });
-      await first.service.sendMessage(
-        { sessionId: session.id, text: "Start." },
-        { awaitDispatch: true },
-      );
-      const followUp = await first.service.steer({
-        sessionId: session.id,
-        text: "Run this after the current turn.",
-      });
-      mockState.emitCodexPayload({
-        method: "turn/aborted",
-        params: { turnId: "turn-1" },
-      });
-      await vi.waitFor(() => {
-        const transcriptPath = first.sessionService.get(session.id)?.transcriptPath;
-        expect(transcriptPath && fs.readFileSync(transcriptPath, "utf8"))
-          .toContain(`"steerId":"${followUp.steerId}"`);
-      });
-      const firstResolution = await first.service.resolveUnprocessedMessage({
-        sessionId: session.id,
-        steerId: followUp.steerId,
-        action: "run_next",
-      });
-      const transcriptPath = first.sessionService.get(session.id)?.transcriptPath;
-      expect(transcriptPath).toBeTruthy();
       first.service.forceDisposeAll();
 
-      // Simulate the precise crash window: the replacement user message was
-      // durably appended and dispatched, but the terminal resolution receipt
-      // was not written.
-      const retainedLines = fs.readFileSync(String(transcriptPath), "utf8")
-        .trimEnd()
-        .split("\n")
-        .filter((line) => {
-          const envelope = JSON.parse(line) as AgentChatEventEnvelope;
-          return envelope.event.type !== "user_message_resolution";
-        });
-      fs.writeFileSync(String(transcriptPath), `${retainedLines.join("\n")}\n`, "utf8");
+      const sourceSteerId = "steer-restart-1";
+      const optimisticReplacementMessageId = "replacement-before-backend-ack";
+      writeTestTranscriptEnvelopes(session.id, [
+        {
+          sessionId: session.id,
+          timestamp: "2026-07-25T05:20:00.000Z",
+          sequence: 1,
+          event: {
+            type: "user_message",
+            text: "Run this after the current turn.",
+            steerId: sourceSteerId,
+            deliveryState: "unprocessed",
+            processed: false,
+            turnId: "turn-old",
+          },
+        },
+        {
+          sessionId: session.id,
+          timestamp: "2026-07-25T05:20:01.000Z",
+          sequence: 2,
+          event: {
+            type: "user_message",
+            text: "Run this after the current turn.",
+            turnId: "optimistic-turn",
+            metadata: {
+              replayedFromUnprocessedSteer: {
+                sourceSteerId,
+                action: "run_next",
+                replacementMessageId: optimisticReplacementMessageId,
+              },
+            },
+          },
+        },
+        {
+          sessionId: session.id,
+          timestamp: "2026-07-25T05:20:01.001Z",
+          sequence: 3,
+          event: {
+            type: "status",
+            turnStatus: "started",
+            turnId: "optimistic-turn",
+          },
+        },
+      ]);
 
-      const second = createService();
+      const emitted: AgentChatEventEnvelope[] = [];
+      const second = createService({
+        onEvent: (event: AgentChatEventEnvelope) => emitted.push(event),
+      });
       const turnStartsBefore = mockState.codexRequestPayloads
         .filter((payload) => payload.method === "turn/start").length;
       const retried = await second.service.resolveUnprocessedMessage({
         sessionId: session.id,
-        steerId: followUp.steerId,
-        action: "dismiss",
+        steerId: sourceSteerId,
+        action: "run_next",
       });
 
-      expect(retried).toEqual({
-        steerId: followUp.steerId,
+      expect(retried).toMatchObject({
+        steerId: sourceSteerId,
         action: "run_next",
-        status: "already_completed",
-        replacementMessageId: firstResolution.replacementMessageId,
+        status: "completed",
+        replacementMessageId: expect.any(String),
       });
-      const recoveredTranscript = fs.readFileSync(String(transcriptPath), "utf8")
-        .trimEnd()
-        .split("\n")
-        .map((line) => JSON.parse(line) as AgentChatEventEnvelope);
-      expect(recoveredTranscript.some((entry) =>
+      expect(retried.replacementMessageId).not.toBe(optimisticReplacementMessageId);
+      expect(emitted.some((entry) =>
         entry.event.type === "user_message_resolution"
-        && entry.event.steerId === followUp.steerId
+        && entry.event.steerId === sourceSteerId
         && entry.event.action === "run_next"
       )).toBe(true);
-      expect(recoveredTranscript.some((entry) =>
+      expect(emitted.some((entry) =>
         entry.event.type === "user_message_resolution"
-        && entry.event.action === "dismiss"
-      )).toBe(false);
+        && entry.event.replacementMessageId === retried.replacementMessageId
+      )).toBe(true);
       expect(mockState.codexRequestPayloads
-        .filter((payload) => payload.method === "turn/start")).toHaveLength(turnStartsBefore);
+        .filter((payload) => payload.method === "turn/start")).toHaveLength(turnStartsBefore + 1);
     });
 
     it("allows Run next to retry when the optimistic replacement never reached the provider", async () => {
@@ -24562,6 +24571,71 @@ describe("createAgentChatService", () => {
       });
       expect(mockState.codexRequestPayloads
         .filter((payload) => payload.method === "turn/start")).toHaveLength(turnStartsBeforeRetry + 1);
+    });
+
+    it("keeps Run next retryable when storage pressure prevents backend dispatch", async () => {
+      installRealTranscriptParser();
+      let allowTurns = true;
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        diskPressureMonitor: {
+          canPerform: vi.fn(() => allowTurns
+            ? { allowed: true, state: "normal" }
+            : {
+                allowed: false,
+                state: "exhausted",
+                code: "disk_full",
+                message: "Your Mac is almost out of storage.",
+              }),
+        },
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+      await service.sendMessage(
+        { sessionId: session.id, text: "Start." },
+        { awaitDispatch: true },
+      );
+      const followUp = await service.steer({
+        sessionId: session.id,
+        text: "Run this when storage is ready.",
+      });
+      mockState.emitCodexPayload({
+        method: "turn/aborted",
+        params: { turnId: "turn-1" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((entry) =>
+          entry.event.type === "user_message"
+          && entry.event.steerId === followUp.steerId
+          && entry.event.deliveryState === "unprocessed"
+        )).toBe(true);
+      });
+
+      allowTurns = false;
+      await expect(service.resolveUnprocessedMessage({
+        sessionId: session.id,
+        steerId: followUp.steerId,
+        action: "run_next",
+      })).rejects.toThrow(/provider did not accept/i);
+      expect(events.some((entry) =>
+        entry.event.type === "user_message_resolution"
+        && entry.event.steerId === followUp.steerId
+      )).toBe(false);
+
+      allowTurns = true;
+      await expect(service.resolveUnprocessedMessage({
+        sessionId: session.id,
+        steerId: followUp.steerId,
+        action: "run_next",
+      })).resolves.toMatchObject({
+        steerId: followUp.steerId,
+        action: "run_next",
+        status: "completed",
+      });
     });
 
     it("dismisses an unprocessed Codex follow-up idempotently without starting a turn", async () => {

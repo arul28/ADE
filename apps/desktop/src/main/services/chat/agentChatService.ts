@@ -35887,8 +35887,6 @@ export function createAgentChatService(args: {
       );
       let original: Extract<AgentChatEvent, { type: "user_message" }> | null = null;
       let alreadyCompleted: Extract<AgentChatEvent, { type: "user_message_resolution" }> | null = null;
-      let replacementMessageId: string | undefined;
-      let pendingReplacementMessageId: string | undefined;
 
       for (const envelope of history.envelopes) {
         const event = envelope.event;
@@ -35901,57 +35899,6 @@ export function createAgentChatService(args: {
         ) {
           alreadyCompleted = event;
         }
-        if (event.type === "user_message") {
-          const replayMetadata = event.metadata?.replayedFromUnprocessedSteer;
-          if (
-            replayMetadata?.sourceSteerId === steerId
-            && replayMetadata.action === "run_next"
-          ) {
-            pendingReplacementMessageId = replayMetadata.replacementMessageId;
-          }
-        }
-        if (
-          pendingReplacementMessageId
-          && event.type === "status"
-          && event.turnStatus === "started"
-          && event.turnId?.trim()
-        ) {
-          replacementMessageId = pendingReplacementMessageId;
-          pendingReplacementMessageId = undefined;
-        }
-        if (
-          pendingReplacementMessageId
-          && (
-            (event.type === "status" && event.turnStatus === "failed")
-            || (event.type === "done" && event.status === "failed")
-          )
-        ) {
-          pendingReplacementMessageId = undefined;
-        }
-      }
-
-      // The replacement user message is the durable dispatch commit point. If
-      // the brain stopped before writing the matching resolution receipt, any
-      // later retry must converge on Run next even when another client asks to
-      // dismiss the original in the meantime.
-      if (replacementMessageId) {
-        if (alreadyCompleted?.action !== "run_next") {
-          emitChatEvent(managed, {
-            type: "user_message_resolution",
-            steerId,
-            action: "run_next",
-            state: "completed",
-            resolvedAt: nowIso(),
-            replacementMessageId,
-          });
-          persistChatState(managed);
-        }
-        return {
-          steerId,
-          action: "run_next",
-          status: "already_completed",
-          replacementMessageId,
-        };
       }
 
       if (alreadyCompleted) {
@@ -36021,15 +35968,7 @@ export function createAgentChatService(args: {
         },
       });
       if (!dispatchReceiptWritten) {
-        emitChatEvent(managed, {
-          type: "user_message_resolution",
-          steerId,
-          action: "run_next",
-          state: "completed",
-          resolvedAt: nowIso(),
-          replacementMessageId: dispatchedReplacementMessageId,
-        });
-        persistChatState(managed);
+        throw new Error("The provider did not accept this replay. Run the message again when the chat is ready.");
       }
       return {
         steerId,
