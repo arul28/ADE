@@ -15721,6 +15721,11 @@ final class ADETests: XCTestCase {
       .first(where: { $0.key == "opencode" })?
       .providers
       .first(where: { $0.key == "anthropic" })
+    let droidAnthropic = groups
+      .first(where: { $0.key == "droid" })?
+      .providers
+      .first(where: { $0.key == "anthropic" })
+    let droidOpus5 = droidAnthropic?.models.first(where: { $0.id == "claude-opus-5" })
     let codexGroup = groups.first(where: { $0.key == "codex" })
     let openAIProvider = codexGroup?.providers.first(where: { $0.key == "openai" })
     let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
@@ -15752,6 +15757,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(opus5?.defaultReasoningEffort, "high")
     XCTAssertTrue(opus5?.supportsCodexFastMode == true)
     XCTAssertNotNil(ADEColor.modelBrand(for: "claude-opus-5"))
+    XCTAssertEqual(droidAnthropic?.models.first?.id, "claude-opus-5")
+    XCTAssertEqual(droidOpus5?.displayName, "Opus 5")
+    XCTAssertEqual(droidOpus5?.reasoningEfforts.map(\.effort), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(droidOpus5?.defaultReasoningEffort, "high")
+    XCTAssertTrue(droidOpus5?.supportsCodexFastMode == true)
     XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8 1M")
     XCTAssertEqual(opus48?.tier, .flagship)
     XCTAssertEqual(opus48?.tagline, "Previous Opus · 1M context")

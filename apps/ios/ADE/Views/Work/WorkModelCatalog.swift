@@ -465,6 +465,16 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic (Droid)",
         models: [
+          WorkModelOption(
+            id: "claude-opus-5",
+            displayName: "Opus 5",
+            tier: .flagship,
+            tagline: "Agentic coding · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "high",
+            serviceTiers: ["fast"]
+          ),
           WorkModelOption(id: "claude-opus-4-6", displayName: "Opus 4.6 (2x)", tier: .flagship, tagline: "Flagship reasoning · 2x usage", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-6-fast", displayName: "Opus 4.6 Fast Mode (12x)", tier: .flagship, tagline: "Faster Opus · 12x usage", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-5-20251101", displayName: "Opus 4.5 (2x)", tier: .flagship, tagline: "Prior-gen Opus", provider: "claude"),
