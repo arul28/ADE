@@ -50,6 +50,7 @@ import {
   type OpenSyncEnvelopeConnectionOptions,
   type SyncEnvelopeConnection,
 } from "./syncRuntimeTransport";
+import { MAX_ROUTE_ATTEMPTS } from "./pairedRuntimeRoutes";
 
 const STORE_FILE_NAME = "desktop-paired-machines.json";
 const DEFAULT_PAIRING_TIMEOUT_MS = 15_000;
@@ -1077,17 +1078,19 @@ export class DesktopPairedMachineStore {
     }
     console.warn("[account] Account machine adoption failed on every route.", {
       correlationId,
-      attempts: failures.slice(0, 8).map((failure) => ({
+      attempts: failures.slice(0, MAX_ROUTE_ATTEMPTS).map((failure) => ({
         kind: failure.route.kind,
         host: accountMachineAdoptionRouteHost(failure.route),
         failure: classifyAccountMachineAdoptionFailure(failure.reason),
       })),
-      omittedAttemptCount: Math.max(0, failures.length - 8),
+      omittedAttemptCount: Math.max(0, failures.length - MAX_ROUTE_ATTEMPTS),
     });
-    const visibleFailures = failures.slice(0, 8)
+    const visibleFailures = failures.slice(0, MAX_ROUTE_ATTEMPTS)
       .map(formatAccountMachineAdoptionFailure);
-    if (failures.length > 8) {
-      visibleFailures.push(`${failures.length - 8} more route attempts failed`);
+    if (failures.length > MAX_ROUTE_ATTEMPTS) {
+      visibleFailures.push(
+        `${failures.length - MAX_ROUTE_ATTEMPTS} more route attempts failed`,
+      );
     }
     throw new Error(
       `Could not connect to ${machine.name ?? machine.machineKey} with your ADE account. ${

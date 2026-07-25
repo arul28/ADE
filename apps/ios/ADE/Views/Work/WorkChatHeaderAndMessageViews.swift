@@ -1299,6 +1299,10 @@ private struct WorkUnprocessedMessageActions: View {
     message.unprocessedResolution?.action ?? optimisticResolution
   }
 
+  private var hasDurableSteerId: Bool {
+    !(message.steerId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+  }
+
   var body: some View {
     if let settledAction {
       Text(settledAction == "run_next" ? "Started as the next turn" : "Dismissed")
@@ -1328,7 +1332,7 @@ private struct WorkUnprocessedMessageActions: View {
 
   @ViewBuilder
   private var actionButtons: some View {
-    if onRun != nil {
+    if hasDurableSteerId, onRun != nil {
       actionButton(
         title: pendingAction == "run_next" ? "Starting…" : "Run next",
         systemImage: "play.fill",
@@ -1346,7 +1350,7 @@ private struct WorkUnprocessedMessageActions: View {
         accessibilityHint: "Replaces the composer draft with this message for editing."
       )
     }
-    if onDismiss != nil {
+    if hasDurableSteerId, onDismiss != nil {
       actionButton(
         title: "Dismiss",
         systemImage: "xmark",

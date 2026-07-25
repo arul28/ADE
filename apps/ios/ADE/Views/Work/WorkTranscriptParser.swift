@@ -547,7 +547,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         event = .codexTurnRecovery(
           message: stringValue(eventDict["message"]),
           receipt: WorkCodexRecoveryReceipt(
-            action: optionalString(eventDict["action"]) ?? "restart_resume",
+            action: optionalString(eventDict["action"]) ?? "restart_resume_thread",
             state: optionalString(eventDict["state"]) ?? "recovering",
             automatic: eventDict["automatic"] as? Bool ?? false,
             at: optionalString(eventDict["at"]) ?? timestamp,

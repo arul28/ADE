@@ -2407,11 +2407,32 @@ export type AgentChatCodexRecoveryAction =
   | "interrupt_retry_same_thread"
   | "restart_resume_thread";
 
+export const AGENT_CHAT_TURN_RECOVERY_ACTIONS = [
+  "wait",
+  "nudge",
+  "retry_same_runtime",
+  "restart_resume",
+] as const;
+
 export type AgentChatTurnRecoveryAction =
-  | "wait"
-  | "nudge"
-  | "retry_same_runtime"
-  | "restart_resume";
+  (typeof AGENT_CHAT_TURN_RECOVERY_ACTIONS)[number];
+
+export function isAgentChatTurnRecoveryAction(
+  value: unknown,
+): value is AgentChatTurnRecoveryAction {
+  return typeof value === "string"
+    && (AGENT_CHAT_TURN_RECOVERY_ACTIONS as readonly string[]).includes(value);
+}
+
+export function isUnsupportedAgentChatRecoveryActionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /\b(?:unsupported|unknown)\s+(?:chat\s+)?(?:method|action|command)\b/i.test(message)
+    || /\b(?:method|action|command)\s+(?:is\s+)?not supported\b/i.test(message)
+    || /\b(?:recoverTurn|chat\.recoverTurn)\b.*\b(?:not supported|not available|not found)\b/i.test(message)
+    || /\b(?:not supported|not available|not found)\b.*\b(?:recoverTurn|chat\.recoverTurn)\b/i.test(message)
+  );
+}
 
 export type AgentChatRecoverTurnArgs = {
   sessionId: string;

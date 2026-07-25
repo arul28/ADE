@@ -1,5 +1,6 @@
 import type { DesktopPairedMachineEndpointState } from "../../../shared/types/pairedRuntime";
 import type {
+  RemoteRuntimeConnectionAttempt,
   RemoteRuntimeConnectionAttemptFailure,
   RemoteRuntimeRouteKind,
 } from "../../../shared/types/remoteRuntime";
@@ -12,6 +13,51 @@ export type PairedRuntimeEndpointCandidate = {
   lastSucceededAt: number | null;
   lastDiscoveredAt?: number | null;
 };
+
+export const MAX_ROUTE_ATTEMPTS = 8;
+
+export type PairedRouteAttemptRecorder = {
+  attempts: RemoteRuntimeConnectionAttempt[];
+  omittedAttemptCount: number;
+  record: (attempt: RemoteRuntimeConnectionAttempt) => void;
+};
+
+export function createRouteAttemptRecorder(
+  maxAttempts = MAX_ROUTE_ATTEMPTS,
+): PairedRouteAttemptRecorder {
+  const recorder: PairedRouteAttemptRecorder = {
+    attempts: [],
+    omittedAttemptCount: 0,
+    record: (attempt) => {
+      if (recorder.attempts.length < maxAttempts) {
+        recorder.attempts.push(attempt);
+        return;
+      }
+      if (attempt.outcome !== "skipped") {
+        const skippedIndex = recorder.attempts.findIndex(
+          (recorded) => recorded.outcome === "skipped",
+        );
+        if (skippedIndex >= 0) {
+          recorder.attempts.splice(skippedIndex, 1);
+          recorder.attempts.push(attempt);
+          recorder.omittedAttemptCount += 1;
+          return;
+        }
+      }
+      recorder.omittedAttemptCount += 1;
+    },
+  };
+  return recorder;
+}
+
+export function orderPairedCandidates(
+  candidates: readonly PairedRuntimeEndpointCandidate[],
+): PairedRuntimeEndpointCandidate[] {
+  return [
+    ...candidates.filter((candidate) => candidate.kind !== "relay"),
+    ...candidates.filter((candidate) => candidate.kind === "relay"),
+  ];
+}
 
 function normalizedEndpointOrNull(
   value: string | null | undefined,
@@ -140,7 +186,10 @@ export function classifyPairedRuntimeFailure(
 ): RemoteRuntimeConnectionAttemptFailure {
   const message = error instanceof Error ? error.message : String(error);
   if (/timed? out|timeout/i.test(message)) return "timeout";
-  if (/auth|sign in|token|credential|proof|forbidden|unauthorized/i.test(message)) {
+  if (/ECONN|EHOST|ENET|\bunreach|\boffline\b|\bsocket (?:error|failed)|failed to connect/i.test(message)) {
+    return "unreachable";
+  }
+  if (/\bauth(?:entication|orization)?\b|\bauthori[sz]ed\b|\bsign in\b|\btoken\b|\bcredential|\bproof\b|\bforbidden\b|\bunauthorized\b/i.test(message)) {
     return "authentication";
   }
   if (/identity|signature|host key|device id|certificate/i.test(message)) {
@@ -152,8 +201,6 @@ export function classifyPairedRuntimeFailure(
   if (/protocol|initialize|version|incompatib|malformed|invalid payload/i.test(message)) {
     return "protocol";
   }
-  if (/ECONN|EHOST|ENET|unreach|offline|closed|socket|websocket|failed to connect/i.test(message)) {
-    return "unreachable";
-  }
+  if (/closed|socket|websocket/i.test(message)) return "unreachable";
   return "unknown";
 }

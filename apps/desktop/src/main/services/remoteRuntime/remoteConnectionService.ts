@@ -142,6 +142,9 @@ function errorInfo(
       message,
       correlationId: error.diagnostic.correlationId,
       attempts: error.diagnostic.attempts,
+      ...(error.diagnostic.omittedAttemptCount != null
+        ? { omittedAttemptCount: error.diagnostic.omittedAttemptCount }
+        : {}),
     };
   }
   return {

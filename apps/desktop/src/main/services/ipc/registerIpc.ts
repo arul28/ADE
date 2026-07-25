@@ -21,6 +21,7 @@ import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
+import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey, isAdeUsageRangePreset, isAdeUsageScope } from "../../../shared/types";
 import { detectCliAuthStatuses } from "../ai/authDetector";
@@ -6138,6 +6139,68 @@ export function registerIpc({
     return { sessionId: record.sessionId.trim(), steerId: record.steerId.trim() };
   };
 
+  const parseAgentChatRecoveryIdentifier = (
+    value: unknown,
+    label: "sessionId" | "turnId" | "steerId",
+  ): string => {
+    const normalized = typeof value === "string" ? value.trim() : "";
+    if (
+      !normalized
+      || normalized.length > 256
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(normalized)
+    ) {
+      throw new Error(`Agent chat recovery ${label} is malformed`);
+    }
+    return normalized;
+  };
+
+  const parseAgentChatRecoverTurnArgs = (
+    value: unknown,
+  ): AgentChatRecoverTurnArgs => {
+    const record = requireRecord(value, "Agent chat recovery request");
+    if (!isAgentChatTurnRecoveryAction(record.action)) {
+      throw new Error("Agent chat recovery action is unsupported");
+    }
+    return {
+      sessionId: parseAgentChatRecoveryIdentifier(record.sessionId, "sessionId"),
+      turnId: parseAgentChatRecoveryIdentifier(record.turnId, "turnId"),
+      action: record.action,
+    };
+  };
+
+  const parseAgentChatRecoverCodexTurnArgs = (
+    value: unknown,
+  ): AgentChatRecoverCodexTurnArgs => {
+    const record = requireRecord(value, "Agent chat Codex recovery request");
+    if (
+      record.action !== "wait"
+      && record.action !== "steer"
+      && record.action !== "interrupt_retry_same_thread"
+      && record.action !== "restart_resume_thread"
+    ) {
+      throw new Error("Agent chat Codex recovery action is unsupported");
+    }
+    return {
+      sessionId: parseAgentChatRecoveryIdentifier(record.sessionId, "sessionId"),
+      turnId: parseAgentChatRecoveryIdentifier(record.turnId, "turnId"),
+      action: record.action,
+    };
+  };
+
+  const parseAgentChatResolveUnprocessedMessageArgs = (
+    value: unknown,
+  ): AgentChatResolveUnprocessedMessageArgs => {
+    const record = requireRecord(value, "Agent chat unprocessed message request");
+    if (record.action !== "run_next" && record.action !== "dismiss") {
+      throw new Error("Agent chat unprocessed message action is unsupported");
+    }
+    return {
+      sessionId: parseAgentChatRecoveryIdentifier(record.sessionId, "sessionId"),
+      steerId: parseAgentChatRecoveryIdentifier(record.steerId, "steerId"),
+      action: record.action,
+    };
+  };
+
   const parseAgentChatSuggestLaneNameArgs = (value: unknown): AgentChatSuggestLaneNameArgs => {
     const record = requireRecord(value, "Agent chat suggest lane name request");
     if (typeof record.prompt !== "string" || !record.prompt.trim()) {
@@ -6761,26 +6824,41 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatRecoverTurn, async (
     _event,
-    arg: AgentChatRecoverTurnArgs,
+    arg: unknown,
   ): Promise<AgentChatRecoverTurnResult> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.recoverTurn(arg);
+    const request = parseAgentChatRecoverTurnArgs(arg);
+    await ctx.agentChatService.assertRecoveryTargetOwned({
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+    });
+    return await ctx.agentChatService.recoverTurn(request);
   });
 
   ipcMain.handle(IPC.agentChatRecoverCodexTurn, async (
     _event,
-    arg: AgentChatRecoverCodexTurnArgs,
+    arg: unknown,
   ): Promise<AgentChatRecoverCodexTurnResult> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.recoverCodexTurn(arg);
+    const request = parseAgentChatRecoverCodexTurnArgs(arg);
+    await ctx.agentChatService.assertRecoveryTargetOwned({
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+    });
+    return await ctx.agentChatService.recoverCodexTurn(request);
   });
 
   ipcMain.handle(IPC.agentChatResolveUnprocessedMessage, async (
     _event,
-    arg: AgentChatResolveUnprocessedMessageArgs,
+    arg: unknown,
   ): Promise<AgentChatResolveUnprocessedMessageResult> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.resolveUnprocessedMessage(arg);
+    const request = parseAgentChatResolveUnprocessedMessageArgs(arg);
+    await ctx.agentChatService.assertRecoveryTargetOwned({
+      sessionId: request.sessionId,
+      steerId: request.steerId,
+    });
+    return await ctx.agentChatService.resolveUnprocessedMessage(request);
   });
 
   ipcMain.handle(IPC.agentChatApprove, async (_event, arg: AgentChatApproveArgs): Promise<void> => {

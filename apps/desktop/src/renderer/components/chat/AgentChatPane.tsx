@@ -49,7 +49,10 @@ import {
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
-import { providerSupportsHandoffFork } from "../../../shared/types/chat";
+import {
+  isUnsupportedAgentChatRecoveryActionError,
+  providerSupportsHandoffFork,
+} from "../../../shared/types/chat";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import {
@@ -9607,8 +9610,7 @@ export function AgentChatPane({
           action: args.action,
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (!/unsupported|not supported|unknown action|not available/i.test(message)) throw error;
+        if (!isUnsupportedAgentChatRecoveryActionError(error)) throw error;
         return window.ade.agentChat.recoverCodexTurn(args);
       }
     },
@@ -9650,9 +9652,9 @@ export function AgentChatPane({
   );
   const handleEditUnprocessedMessage = useCallback(
     (event: Extract<AgentChatEvent, { type: "user_message" }>) => {
-      updateComposerDraft(event.displayText?.trim() || event.text);
+      insertComposerDraft(event.displayText?.trim() || event.text);
     },
-    [updateComposerDraft],
+    [insertComposerDraft],
   );
   const handleDismissUnprocessedMessage = useCallback(
     async (event: Extract<AgentChatEvent, { type: "user_message" }>) => {

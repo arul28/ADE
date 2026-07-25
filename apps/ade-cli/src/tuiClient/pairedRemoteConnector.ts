@@ -6,6 +6,9 @@ import {
 import {
   buildPairedEndpointCandidates,
   classifyPairedRuntimeFailure,
+  createRouteAttemptRecorder,
+  MAX_ROUTE_ATTEMPTS,
+  orderPairedCandidates,
   pairedRuntimeRouteHost,
   type PairedRuntimeEndpointCandidate,
 } from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
@@ -118,6 +121,7 @@ export class PairedRemoteConnectionUnavailableError extends Error {
     readonly diagnostic?: {
       correlationId: string;
       attempts: RemoteRuntimeConnectionAttempt[];
+      omittedAttemptCount?: number;
     },
   ) {
     super(message);
@@ -131,6 +135,7 @@ export type OpenedPairedCandidate<T> = {
   connectedAt: number;
   correlationId: string;
   attempts: RemoteRuntimeConnectionAttempt[];
+  omittedAttemptCount: number;
 };
 
 export async function openPairedCandidate<T>(args: {
@@ -170,15 +175,10 @@ export async function openPairedCandidate<T>(args: {
 
   const correlationId = randomUUID();
   const failures: string[] = [];
-  const attempts: RemoteRuntimeConnectionAttempt[] = [];
-  const recordAttempt = (attempt: RemoteRuntimeConnectionAttempt): void => {
-    if (attempts.length < 8) attempts.push(attempt);
-  };
+  const attemptRecorder = createRouteAttemptRecorder();
+  const { attempts, record: recordAttempt } = attemptRecorder;
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
-  const orderedCandidates = [
-    ...candidates.filter((candidate) => candidate.kind !== "relay"),
-    ...candidates.filter((candidate) => candidate.kind === "relay"),
-  ];
+  const orderedCandidates = orderPairedCandidates(candidates);
   for (const candidate of orderedCandidates) {
     const attemptStartedAt = Date.now();
     const safeHost = pairedRuntimeRouteHost(candidate.endpoint);
@@ -225,7 +225,14 @@ export async function openPairedCandidate<T>(args: {
         durationMs: Math.max(0, connectedAt - attemptStartedAt),
         outcome: "connected",
       });
-      return { value, candidate, connectedAt, correlationId, attempts };
+      return {
+        value,
+        candidate,
+        connectedAt,
+        correlationId,
+        attempts,
+        omittedAttemptCount: attemptRecorder.omittedAttemptCount,
+      };
     } catch (error) {
       try { transport?.close(); } catch {}
       if (error instanceof PairedRuntimeRelayAuthRequiredError) {
@@ -235,7 +242,7 @@ export async function openPairedCandidate<T>(args: {
           host: safeHost,
           startedAt: attemptStartedAt,
           durationMs: Math.max(0, Date.now() - attemptStartedAt),
-          outcome: "skipped",
+          outcome: "failed",
           failure: "authentication",
         });
         continue;
@@ -250,7 +257,7 @@ export async function openPairedCandidate<T>(args: {
         outcome: "failed",
         failure,
       });
-      if (failures.length < 8) {
+      if (failures.length < MAX_ROUTE_ATTEMPTS) {
         failures.push(`${pairedConnectionLabel(candidate)}: ${failure}`);
       }
     }
@@ -262,6 +269,12 @@ export async function openPairedCandidate<T>(args: {
     `Could not open a paired ADE runtime connection to ${args.target.name}. ${failures
       .slice(0, 4)
       .join(" | ")}`,
-    { correlationId, attempts },
+    {
+      correlationId,
+      attempts,
+      ...(attemptRecorder.omittedAttemptCount > 0
+        ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
+        : {}),
+    },
   );
 }

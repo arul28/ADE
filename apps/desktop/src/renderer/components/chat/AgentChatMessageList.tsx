@@ -143,7 +143,10 @@ type WorkspacePathLocation = {
 };
 
 type CodexTurnStalledEvent = Extract<AgentChatEvent, { type: "codex_turn_stalled" }>;
-type CodexTurnRecoveryEvent = Extract<AgentChatEvent, { type: "codex_turn_recovery" }>;
+type CodexTurnRecoveryEvent = Extract<
+  AgentChatEvent,
+  { type: "codex_turn_recovery" | "turn_recovery" }
+>;
 type UserMessageEvent = Extract<AgentChatEvent, { type: "user_message" }>;
 
 function CodexTurnRecoveryCard({
@@ -246,7 +249,7 @@ function CodexTurnRecoveryCard({
               type="button"
               disabled={!targetSessionId || !onRecover || pendingAction != null}
               className={cn(
-                "rounded-md border px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-semibold transition-colors disabled:pointer-events-none disabled:opacity-45",
+                "rounded-md border px-2.5 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45 disabled:pointer-events-none disabled:opacity-45",
                 option === "restart_resume_thread"
                   ? "border-amber-200/24 bg-amber-300/[0.14] text-amber-50 hover:border-amber-100/40 hover:bg-amber-300/[0.2]"
                   : "border-amber-200/12 bg-transparent text-amber-100/68 hover:border-amber-200/25 hover:bg-amber-300/[0.08]",
@@ -263,7 +266,7 @@ function CodexTurnRecoveryCard({
           <button
             type="button"
             aria-expanded={moreOpen}
-            className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48 transition-colors hover:bg-amber-300/[0.07] hover:text-amber-50/75"
+            className="inline-flex items-center gap-1 rounded-md px-1 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/48 transition-colors hover:bg-amber-300/[0.07] hover:text-amber-50/75 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45"
             onClick={() => setMoreOpen((open) => !open)}
           >
             More
@@ -276,7 +279,7 @@ function CodexTurnRecoveryCard({
                   key={option}
                   type="button"
                   disabled={!targetSessionId || !onRecover || pendingAction != null}
-                  className="rounded-md border border-amber-200/10 bg-transparent px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/55 transition-colors hover:border-amber-200/22 hover:bg-amber-300/[0.07] hover:text-amber-50 disabled:pointer-events-none disabled:opacity-45"
+                  className="rounded-md border border-amber-200/10 bg-transparent px-2 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-100/55 transition-colors hover:border-amber-200/22 hover:bg-amber-300/[0.07] hover:text-amber-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-300/45 disabled:pointer-events-none disabled:opacity-45"
                   onClick={() => void recover(option)}
                 >
                   {pendingAction === option ? `${optionLabels[option]}…` : optionLabels[option]}
@@ -3584,7 +3587,7 @@ function renderEvent(
     return <TurnDiagnosticsDisclosure event={event} />;
   }
 
-  if (event.type === "codex_turn_recovery") {
+  if (event.type === "codex_turn_recovery" || event.type === "turn_recovery") {
     return <CodexTurnRecoveryReceipt event={event} />;
   }
 

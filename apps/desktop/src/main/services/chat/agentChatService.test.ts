@@ -24355,11 +24355,13 @@ describe("createAgentChatService", () => {
       });
       await second.service.resumeSession({ sessionId: session.id });
 
-      expect(events.some((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.steerId === "steer-restart-1"
-        && entry.event.deliveryState === "unprocessed"
-      )).toBe(true);
+      await vi.waitFor(() => {
+        expect(events.some((entry) =>
+          entry.event.type === "user_message"
+          && entry.event.steerId === "steer-restart-1"
+          && entry.event.deliveryState === "unprocessed"
+        )).toBe(true);
+      });
     });
 
     it("runs an unprocessed Codex follow-up once and records an idempotent durable resolution", async () => {
@@ -24719,6 +24721,72 @@ describe("createAgentChatService", () => {
           itemId: "cmd-rearm-1",
           decision: "accept",
         });
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "codex_turn_stalled"
+            && event.event.turnId === "turn-1"
+            && event.event.reason === "no_progress"
+          )).toBe(true);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("re-arms the Codex watchdog after full-auto resolves a suspended approval", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+          if (mode === "full-auto") {
+            return { approvalPolicy: "never", sandbox: "danger-full-access" };
+          }
+          return { approvalPolicy: "on-request", sandbox: "workspace-write" };
+        });
+        const events: AgentChatEventEnvelope[] = [];
+        const { service } = createService({
+          onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        });
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "codex",
+          model: "gpt-5.5",
+          permissionMode: "edit",
+        });
+        await service.sendMessage(
+          { sessionId: session.id, text: "Keep working." },
+          { awaitDispatch: true },
+        );
+        mockState.emitCodexPayload({
+          id: "auto-resolved-approval-1",
+          method: "item/commandExecution/requestApproval",
+          params: {
+            itemId: "cmd-auto-resolved-1",
+            turnId: "turn-1",
+            command: "npm test",
+            cwd: tmpRoot,
+            reason: "Run tests",
+          },
+        });
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "approval_request"
+            && event.event.itemId === "cmd-auto-resolved-1"
+          )).toBe(true);
+        });
+
+        await service.updateSession({
+          sessionId: session.id,
+          permissionMode: "full-auto",
+        });
+        await vi.waitFor(() => {
+          expect(events.some((event) =>
+            event.event.type === "pending_input_resolved"
+            && event.event.itemId === "cmd-auto-resolved-1"
+            && event.event.resolution === "accepted"
+          )).toBe(true);
+        });
+
         await vi.advanceTimersByTimeAsync(10 * 60_000);
         await vi.waitFor(() => {
           expect(events.some((event) =>

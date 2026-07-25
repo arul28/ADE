@@ -1139,6 +1139,7 @@ type CodexRuntime = {
   stallReconcileInFlight: Set<string>;
   mcpStartupNoticeKeys: Set<string>;
   acceptedSteersByTurnId: Map<string, Map<string, AcceptedCodexSteer>>;
+  acceptedSteersHydrationReady: Promise<void>;
   turnDiagnosticStateByTurnId: Map<string, {
     moderationChecks: number;
     optionalIntegrationFailures: Map<string, string | null>;
@@ -14589,6 +14590,7 @@ export function createAgentChatService(args: {
       decision: "accept",
       turnId: pendingTurnId,
     });
+    resumeCodexTurnWatchdogAfterInput(managed, runtime, pendingTurnId);
   };
 
   const autoApprovePendingCodexRuntimeApprovals = (
@@ -23314,6 +23316,13 @@ export function createAgentChatService(args: {
       });
     }
 
+    if (
+      managed.deleted
+      || managed.closed
+      || (managed.runtime && managed.runtime !== runtime)
+    ) {
+      return;
+    }
     for (const { steer, state } of latestBySteerId.values()) {
       if (state !== "accepted" || resolvedSteerIds.has(steer.steerId)) continue;
       if (terminalTurnIds.has(steer.turnId)) {
@@ -25591,6 +25600,7 @@ export function createAgentChatService(args: {
       stallReconcileInFlight: new Set<string>(),
       mcpStartupNoticeKeys: new Set<string>(),
       acceptedSteersByTurnId: new Map<string, Map<string, AcceptedCodexSteer>>(),
+      acceptedSteersHydrationReady: Promise.resolve(),
       turnDiagnosticStateByTurnId: new Map(),
       pendingPlanFollowups: [],
       pendingSteers: [],
@@ -25824,7 +25834,10 @@ export function createAgentChatService(args: {
     ]).then(() => undefined);
 
     runtime.notify("initialized");
-    await hydrateAcceptedCodexSteers(managed, runtime).catch((error) => {
+    runtime.acceptedSteersHydrationReady = hydrateAcceptedCodexSteers(
+      managed,
+      runtime,
+    ).catch((error) => {
       logger.warn("agent_chat.codex_accepted_steer_hydration_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
@@ -34298,6 +34311,7 @@ export function createAgentChatService(args: {
     if (managed.session.provider === "codex") {
       const runtime = await ensureCodexSessionRuntime(managed);
       await runtime.collaborationModesReady?.catch(() => {});
+      await runtime.acceptedSteersHydrationReady;
 
       const preparedSteer = prepareSendMessage({
         sessionId,
@@ -35821,6 +35835,35 @@ export function createAgentChatService(args: {
     };
   };
 
+  const assertRecoveryTargetOwned = async (args: {
+    sessionId: string;
+    turnId?: string;
+    steerId?: string;
+  }): Promise<void> => {
+    const managed = ensureManagedSession(args.sessionId);
+    if (args.turnId) {
+      const activeTurnId = managed.runtime?.kind === "codex"
+        ? managed.runtime.activeTurnId ?? managed.runtime.startedTurnId
+        : null;
+      if (activeTurnId !== args.turnId) {
+        throw new Error("This recovery turn does not belong to the active chat session.");
+      }
+    }
+    if (args.steerId) {
+      const history = await readTranscriptEnvelopesForSessionIdAsync(
+        managed.session.id,
+        8 * 1024 * 1024,
+      );
+      const belongsToSession = history.envelopes.some((envelope) =>
+        envelope.event.type === "user_message"
+        && envelope.event.steerId === args.steerId
+      );
+      if (!belongsToSession) {
+        throw new Error("This unprocessed message does not belong to the chat session.");
+      }
+    }
+  };
+
   const resolveUnprocessedMessage = async (
     args: AgentChatResolveUnprocessedMessageArgs,
   ): Promise<AgentChatResolveUnprocessedMessageResult> => {
@@ -36695,6 +36738,7 @@ export function createAgentChatService(args: {
 
   const forceDisposeManagedSession = (managed: ManagedChatSession, reason: string): void => {
     const sessionId = managed.session.id;
+    codexAutomaticRecoveryAttemptedBySession.delete(sessionId);
     rejectActiveSessionTurnCollector(sessionId, reason);
     clearSubagentSnapshots(sessionId);
     for (const pending of managed.localPendingInputs.values()) {
@@ -38059,6 +38103,7 @@ export function createAgentChatService(args: {
     { sessionId }: AgentChatDisposeArgs,
     terminalStatus: "disposed" | "detached",
   ): Promise<void> => {
+    codexAutomaticRecoveryAttemptedBySession.delete(sessionId);
     const managed = ensureManagedSession(sessionId);
     abortActiveBashControllers(managed, "Session disposed.");
 
@@ -38163,6 +38208,7 @@ export function createAgentChatService(args: {
     if (!trimmedSessionId.length) {
       throw new Error("Chat session id is required.");
     }
+    codexAutomaticRecoveryAttemptedBySession.delete(trimmedSessionId);
 
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) {
@@ -38306,6 +38352,7 @@ export function createAgentChatService(args: {
         // ignore shutdown errors
       }
     }
+    codexAutomaticRecoveryAttemptedBySession.clear();
     await flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("dispose_all");
   };
@@ -38318,6 +38365,7 @@ export function createAgentChatService(args: {
     }
     for (const [sessionId, managed] of managedSessions) {
       try {
+        codexAutomaticRecoveryAttemptedBySession.delete(sessionId);
         clearSubagentSnapshots(sessionId);
         for (const pending of managed.localPendingInputs.values()) {
           pending.resolve({ decision: "cancel" });
@@ -38337,6 +38385,7 @@ export function createAgentChatService(args: {
       revokeBuiltInBrowserActorCapability(sessionId);
     }
     managedSessions.clear();
+    codexAutomaticRecoveryAttemptedBySession.clear();
     void flushAllQueuedTranscriptWrites();
     claudeSubprocessReaper.reapAll("force_dispose_all");
   };
@@ -41276,6 +41325,7 @@ export function createAgentChatService(args: {
     interrupt,
     recoverTurn,
     recoverCodexTurn,
+    assertRecoveryTargetOwned,
     resolveUnprocessedMessage,
     recoverContinuity,
     resumeSession,

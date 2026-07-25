@@ -86,6 +86,10 @@ import {
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
 import {
+  isUnsupportedRecoveryActionError,
+  LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
+} from "./chatRecovery";
+import {
   isLaunchProfile,
   isTrackedCliPermissionMode,
   LAUNCH_PROFILE_TITLE,
@@ -2709,16 +2713,6 @@ type ChatRecoveryCliAction =
 
 type UnprocessedMessageCliAction = "run_next" | "dismiss";
 
-const LEGACY_CODEX_RECOVERY_ACTION_BY_NEUTRAL: Readonly<Record<
-  ChatRecoveryCliAction,
-  "wait" | "steer" | "interrupt_retry_same_thread" | "restart_resume_thread"
->> = {
-  wait: "wait",
-  nudge: "steer",
-  retry_same_runtime: "interrupt_retry_same_thread",
-  restart_resume: "restart_resume_thread",
-};
-
 function isCodexGoalCliStatus(value: string | null): value is CodexGoalCliStatus {
   return value === "active" || value === "paused" || value === "blocked" || value === "complete";
 }
@@ -2758,12 +2752,6 @@ function normalizeUnprocessedMessageCliAction(
   throw new CliUsageError(
     "chat resolve-unprocessed --action must be run-next or dismiss.",
   );
-}
-
-function isUnsupportedChatRecoveryActionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /\brecoverTurn\b/i.test(message)
-    && /\b(?:unsupported|not supported|unknown|not available|not found)\b/i.test(message);
 }
 
 function readToolClaimArgs(args: string[]): ToolClaimArgs {
@@ -19491,11 +19479,11 @@ async function runChatRecoverCommand(
         action: plan.action,
       });
     } catch (error) {
-      if (!isUnsupportedChatRecoveryActionError(error)) throw error;
+      if (!isUnsupportedRecoveryActionError(error)) throw error;
       const legacyResult = await runRecoveryAction("recoverCodexTurn", {
         sessionId: plan.sessionId,
         turnId: plan.turnId,
-        action: LEGACY_CODEX_RECOVERY_ACTION_BY_NEUTRAL[plan.action],
+        action: LEGACY_RECOVERY_ACTION_BY_NEUTRAL[plan.action],
       });
       result = isRecord(legacyResult)
         ? { ...legacyResult, action: plan.action }

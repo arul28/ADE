@@ -216,7 +216,8 @@ function chatEventSearchText(envelope: AgentChatEventEnvelope): string | null {
     // delivery state. The first accepted event already owns the searchable
     // message body; lifecycle snapshots must not create duplicate hits.
     if (
-      event.deliveryState === "processed"
+      event.deliveryState === "queued"
+      || event.deliveryState === "processed"
       || event.deliveryState === "unprocessed"
     ) {
       return null;

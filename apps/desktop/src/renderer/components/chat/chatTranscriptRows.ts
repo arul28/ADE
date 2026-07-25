@@ -327,6 +327,11 @@ type CollapseTranscriptContext = {
   errorKeysByTurn: Set<string>;
   /** Durable user-message lifecycle rows keyed by ADE steer id. */
   userMessageRowIndexBySteer: Map<string, number>;
+  /** Resolution events that arrived before their durable user-message row. */
+  unmatchedUserMessageResolutionsBySteer: Map<
+    string,
+    Extract<AgentChatEvent, { type: "user_message_resolution" }>
+  >;
   /** Latest cumulative diagnostic snapshot keyed by turn id. */
   diagnosticsRowIndexByTurn: Map<string, number>;
   /** Latest recovery receipt keyed by turn id. */
@@ -341,6 +346,7 @@ export function createCollapseTranscriptContext(): CollapseTranscriptContext {
     subagentAnchors: new Map(),
     errorKeysByTurn: new Set(),
     userMessageRowIndexBySteer: new Map(),
+    unmatchedUserMessageResolutionsBySteer: new Map(),
     diagnosticsRowIndexByTurn: new Map(),
     recoveryRowIndexByTurn: new Map(),
     stalledRowIndexByTurn: new Map(),
@@ -1284,6 +1290,9 @@ export function appendCollapsedChatTranscriptEvent(
 
   if (event.type === "user_message") {
     const steerId = event.steerId?.trim();
+    const pendingResolution = steerId
+      ? context?.unmatchedUserMessageResolutionsBySteer.get(steerId)
+      : undefined;
     const existingIndex = steerId ? context?.userMessageRowIndexBySteer.get(steerId) : undefined;
     const existing = existingIndex != null ? rows[existingIndex] : null;
     if (existingIndex != null && existing?.event.type === "user_message") {
@@ -1296,10 +1305,30 @@ export function appendCollapsedChatTranscriptEvent(
           displayText: event.displayText ?? existing.event.displayText,
           attachments: event.attachments ?? existing.event.attachments,
           contextAttachments: event.contextAttachments ?? existing.event.contextAttachments,
-          metadata: event.metadata ?? existing.event.metadata,
+          metadata: event.metadata || existing.event.metadata || pendingResolution
+            ? {
+                ...(existing.event.metadata ?? {}),
+                ...(event.metadata ?? {}),
+                ...(pendingResolution
+                  ? {
+                      unprocessedMessageResolution: {
+                        action: pendingResolution.action,
+                        state: pendingResolution.state,
+                        resolvedAt: pendingResolution.resolvedAt,
+                        ...(pendingResolution.replacementMessageId
+                          ? { replacementMessageId: pendingResolution.replacementMessageId }
+                          : {}),
+                      },
+                    }
+                  : {}),
+              }
+            : existing.event.metadata,
           turnId: event.turnId ?? existing.event.turnId,
         },
       };
+      if (steerId && pendingResolution) {
+        context?.unmatchedUserMessageResolutionsBySteer.delete(steerId);
+      }
       return;
     }
     const wake = event.metadata?.scheduledWake;
@@ -1355,7 +1384,8 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "user_message_resolution") {
-    const existingIndex = context?.userMessageRowIndexBySteer.get(event.steerId.trim());
+    const steerId = event.steerId.trim();
+    const existingIndex = context?.userMessageRowIndexBySteer.get(steerId);
     const existing = existingIndex != null ? rows[existingIndex] : null;
     if (existingIndex != null && existing?.event.type === "user_message") {
       rows[existingIndex] = {
@@ -1374,6 +1404,8 @@ export function appendCollapsedChatTranscriptEvent(
           },
         },
       };
+    } else if (steerId) {
+      context?.unmatchedUserMessageResolutionsBySteer.set(steerId, event);
     }
     return;
   }
@@ -1410,21 +1442,35 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "turn_recovery") {
-    const legacyRecovery: Extract<AgentChatEvent, { type: "codex_turn_recovery" }> = {
-      type: "codex_turn_recovery",
-      turnId: event.turnId,
-      action: "restart_resume_thread",
-      state: event.state,
-      message: event.message,
-      automatic: event.automatic,
-      at: event.at,
-    };
-    appendCollapsedChatTranscriptEvent(
-      rows,
-      { ...envelope, event: legacyRecovery },
-      sequence,
-      context,
-    );
+    const turnKey = event.turnId.trim();
+    if (event.state === "recovered" && context) {
+      const stalledIndex = context.stalledRowIndexByTurn.get(turnKey);
+      if (stalledIndex != null && rows[stalledIndex]?.event.type === "codex_turn_stalled") {
+        removeCollapsedTranscriptRow(rows, context, stalledIndex);
+      }
+    }
+    const existingIndex = context?.recoveryRowIndexByTurn.get(turnKey);
+    if (
+      existingIndex != null
+      && (
+        rows[existingIndex]?.event.type === "turn_recovery"
+        || rows[existingIndex]?.event.type === "codex_turn_recovery"
+      )
+    ) {
+      rows[existingIndex] = {
+        ...rows[existingIndex]!,
+        timestamp: envelope.timestamp,
+        event,
+      };
+      return;
+    }
+    const rowIndex = rows.length;
+    rows.push({
+      key: `turn-recovery:${turnKey}`,
+      timestamp: envelope.timestamp,
+      event,
+    });
+    context?.recoveryRowIndexByTurn.set(turnKey, rowIndex);
     return;
   }
 
@@ -1437,6 +1483,10 @@ export function appendCollapsedChatTranscriptEvent(
       }
     }
     const existingIndex = context?.recoveryRowIndexByTurn.get(turnKey);
+    if (existingIndex != null && rows[existingIndex]?.event.type === "turn_recovery") {
+      // Provider-neutral receipts are canonical when a legacy alias arrives too.
+      return;
+    }
     if (existingIndex != null && rows[existingIndex]?.event.type === "codex_turn_recovery") {
       rows[existingIndex] = {
         ...rows[existingIndex]!,
@@ -1459,7 +1509,10 @@ export function appendCollapsedChatTranscriptEvent(
     const turnKey = event.turnId.trim();
     const recoveryIndex = context?.recoveryRowIndexByTurn.get(turnKey);
     const recoveryEvent = recoveryIndex != null ? rows[recoveryIndex]?.event : null;
-    if (recoveryEvent?.type === "codex_turn_recovery" && recoveryEvent.state === "recovered") {
+    if (
+      (recoveryEvent?.type === "codex_turn_recovery" || recoveryEvent?.type === "turn_recovery")
+      && recoveryEvent.state === "recovered"
+    ) {
       return;
     }
     const existingIndex = context?.stalledRowIndexByTurn.get(turnKey);
@@ -1811,14 +1864,37 @@ export function appendCollapsedChatTranscriptEvent(
     return;
   }
 
+  const pendingResolution = event.type === "user_message" && event.steerId?.trim()
+    ? context?.unmatchedUserMessageResolutionsBySteer.get(event.steerId.trim())
+    : undefined;
+  const renderEvent: ChatTranscriptVisibleEvent = event.type === "user_message" && pendingResolution
+    ? {
+        ...event,
+        metadata: {
+          ...(event.metadata ?? {}),
+          unprocessedMessageResolution: {
+            action: pendingResolution.action,
+            state: pendingResolution.state,
+            resolvedAt: pendingResolution.resolvedAt,
+            ...(pendingResolution.replacementMessageId
+              ? { replacementMessageId: pendingResolution.replacementMessageId }
+              : {}),
+          },
+        },
+      }
+    : event as ChatTranscriptVisibleEvent;
   const rowIndex = rows.length;
   rows.push({
     key: event.type === "text" ? buildTextRenderKey(event, envelope, sequence) : buildRenderKey(envelope, sequence),
     timestamp: envelope.timestamp,
-    event,
+    event: renderEvent,
   });
   if (event.type === "user_message" && event.steerId?.trim()) {
-    context?.userMessageRowIndexBySteer.set(event.steerId.trim(), rowIndex);
+    const steerId = event.steerId.trim();
+    context?.userMessageRowIndexBySteer.set(steerId, rowIndex);
+    if (pendingResolution) {
+      context?.unmatchedUserMessageResolutionsBySteer.delete(steerId);
+    }
   }
 }
 

@@ -197,6 +197,8 @@ export type RemoteRuntimeConnectionRoute = {
   correlationId?: string;
   /** At most eight privacy-safe attempts, ordered exactly as they were tried. */
   attempts?: RemoteRuntimeConnectionAttempt[];
+  /** Number of route attempts omitted from the bounded diagnostic list. */
+  omittedAttemptCount?: number;
 };
 
 export type RemoteRuntimeConnectErrorInfo = {
@@ -207,6 +209,7 @@ export type RemoteRuntimeConnectErrorInfo = {
   requiredBytes?: number;
   correlationId?: string;
   attempts?: RemoteRuntimeConnectionAttempt[];
+  omittedAttemptCount?: number;
 };
 
 const REMOTE_RUNTIME_ERROR_DETAIL_MAX_CHARS = 4_000;

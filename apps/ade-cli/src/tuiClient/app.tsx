@@ -1750,11 +1750,16 @@ export function resolveTuiRecoveryRequest(args: {
       (envelope.event.type === "turn_health" || envelope.event.type === "codex_turn_stalled")
       && envelope.event.turnId === explicitTurnId
     );
-    const targetSessionId = matchingEnvelope?.event.type === "codex_turn_stalled"
-      ? matchingEnvelope.event.sourceSessionId?.trim() || matchingEnvelope.sessionId
-      : matchingEnvelope?.event.type === "turn_health"
-        ? matchingEnvelope.event.sourceSessionId?.trim() || matchingEnvelope.sessionId
-      : args.sessionId;
+    const sourceSessionId = matchingEnvelope
+      && (
+        matchingEnvelope.event.type === "turn_health"
+        || matchingEnvelope.event.type === "codex_turn_stalled"
+      )
+      ? matchingEnvelope.event.sourceSessionId?.trim()
+      : "";
+    const targetSessionId = sourceSessionId
+      || matchingEnvelope?.sessionId
+      || args.sessionId;
     const provider = matchingEnvelope?.event.type === "turn_health"
       ? matchingEnvelope.event.provider
       : matchingEnvelope?.event.type === "codex_turn_stalled"

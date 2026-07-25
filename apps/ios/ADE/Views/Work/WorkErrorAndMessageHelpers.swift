@@ -36,7 +36,8 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
   var messages: [WorkChatMessage] = []
   let metadataByTurn = workTurnModelMetadataByTurn(from: transcript)
   var resolutionBySteerId: [String: WorkUserMessageResolution] = [:]
-  for envelope in sortedWorkChatEnvelopes(transcript) {
+  var resolutionOrderBySteerId: [String: (timestamp: String, sequence: Int)] = [:]
+  for envelope in transcript {
     guard case .userMessageResolution(
       let steerId,
       let action,
@@ -49,12 +50,19 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
     }
     let normalizedSteerId = steerId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !normalizedSteerId.isEmpty else { continue }
+    let sequence = envelope.sequence ?? 0
+    if let existing = resolutionOrderBySteerId[normalizedSteerId],
+       envelope.timestamp < existing.timestamp
+        || (envelope.timestamp == existing.timestamp && sequence <= existing.sequence) {
+      continue
+    }
     resolutionBySteerId[normalizedSteerId] = WorkUserMessageResolution(
       action: action,
       state: state,
       resolvedAt: resolvedAt,
       replacementMessageId: replacementMessageId
     )
+    resolutionOrderBySteerId[normalizedSteerId] = (envelope.timestamp, sequence)
   }
   // Tracks whether the previous envelope was assistantText so nil-itemId
   // streaming fragments can merge into it. MUST be reset to false on every
@@ -1862,13 +1870,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["web_search", turnId ?? "", itemId, query, actionKey, status.rawValue].joined(separator: "|")
   case .codexState(let title, let message, _, let turnId):
     return ["codex_state", turnId ?? "", title, message].joined(separator: "|")
-  case .turnDiagnostics(let moderationChecks, let failures, let turnId):
-    return [
-      "turn_diagnostics",
-      turnId ?? "",
-      String(moderationChecks),
-      failures.map { "\($0.integration):\($0.message ?? "")" }.joined(separator: ","),
-    ].joined(separator: "|")
+  case .turnDiagnostics(_, _, let turnId):
+    return ["turn_diagnostics", turnId ?? ""].joined(separator: "|")
   case .codexTurnStalled(let message, _, let turnId, let sourceSessionId, let context):
     return [
       "codex_turn_stalled",
@@ -1877,14 +1880,11 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
       turnId ?? "",
       message,
     ].joined(separator: "|")
-  case .codexTurnRecovery(let message, let receipt, let turnId):
+  case .codexTurnRecovery(_, let receipt, let turnId):
     return [
       "codex_turn_recovery",
       receipt.providerNeutral ? "provider_neutral" : "legacy",
       turnId ?? "",
-      receipt.state,
-      receipt.at,
-      message,
     ].joined(separator: "|")
   case .planText(let text, let turnId):
     return ["plan_text", turnId ?? "", text].joined(separator: "|")

@@ -73,6 +73,10 @@ import type {
 } from "../../../desktop/src/shared/types";
 import { discoverAllProjectSlashCommands } from "../../../desktop/src/main/services/chat/projectSlashCommandDiscovery";
 import type { AdeCodeConnection, AdeCodeInterfaceMode, AdeCodeProvider, ChatHistorySnapshot, CreatedChat, NavigateRequest, NavigateResult } from "./types";
+import {
+  isUnsupportedRecoveryActionError,
+  LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
+} from "../chatRecovery";
 
 export const DEFAULT_CODEX_REASONING_EFFORT = "low";
 export { buildPtyContinuationLaunchFields };
@@ -793,26 +797,6 @@ export async function recoverCodexTurn(
     args,
   );
 }
-
-function isUnsupportedRecoveryActionError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    /\b(?:unsupported|unknown)\s+(?:chat\s+)?(?:method|action|command)\b/i.test(message)
-    || /\b(?:method|action|command)\s+(?:is\s+)?not supported\b/i.test(message)
-    || /\b(?:recoverTurn|chat\.recoverTurn)\b.*\b(?:not supported|not available)\b/i.test(message)
-    || /\b(?:not supported|not available)\b.*\b(?:recoverTurn|chat\.recoverTurn)\b/i.test(message)
-  );
-}
-
-const LEGACY_RECOVERY_ACTION_BY_NEUTRAL: Readonly<Record<
-  AgentChatRecoverTurnArgs["action"],
-  AgentChatRecoverCodexTurnArgs["action"]
->> = {
-  wait: "wait",
-  nudge: "steer",
-  retry_same_runtime: "interrupt_retry_same_thread",
-  restart_resume: "restart_resume_thread",
-};
 
 /**
  * Prefer the provider-neutral recovery action, while retaining compatibility

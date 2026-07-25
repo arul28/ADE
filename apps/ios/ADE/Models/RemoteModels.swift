@@ -2724,9 +2724,9 @@ extension AgentChatEvent {
         turnStartedAt: try container.decode(String.self, forKey: .turnStartedAt),
         lastProgressAt: try container.decode(String.self, forKey: .lastProgressAt),
         detectedAt: try container.decode(String.self, forKey: .detectedAt),
-        recoveryCount: try container.decode(Int.self, forKey: .recoveryCount),
-        supportedActions: try container.decode([String].self, forKey: .supportedActions),
-        automaticRecoveryAttempted: try container.decode(Bool.self, forKey: .automaticRecoveryAttempted),
+        recoveryCount: try container.decodeIfPresent(Int.self, forKey: .recoveryCount) ?? 0,
+        supportedActions: try container.decodeIfPresent([String].self, forKey: .supportedActions) ?? [],
+        automaticRecoveryAttempted: try container.decodeIfPresent(Bool.self, forKey: .automaticRecoveryAttempted) ?? false,
         sourceSessionId: try container.decodeIfPresent(String.self, forKey: .sourceSessionId)
       )
     case "codex_turn_recovery":
@@ -2745,9 +2745,9 @@ extension AgentChatEvent {
         action: try container.decode(String.self, forKey: .action),
         state: try container.decode(String.self, forKey: .state),
         message: try container.decode(String.self, forKey: .message),
-        automatic: try container.decode(Bool.self, forKey: .automatic),
+        automatic: try container.decodeIfPresent(Bool.self, forKey: .automatic) ?? false,
         at: try container.decode(String.self, forKey: .at),
-        recoveryCount: try container.decode(Int.self, forKey: .recoveryCount)
+        recoveryCount: try container.decodeIfPresent(Int.self, forKey: .recoveryCount) ?? 0
       )
     case "codex_thread_deleted":
       self = .codexThreadDeleted(

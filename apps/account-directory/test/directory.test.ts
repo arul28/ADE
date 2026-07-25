@@ -1008,6 +1008,22 @@ describe("machine directory", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
 
+    const deletePreflight = await handleRequest(new Request(
+      "https://directory.test/account/machines/machine-a",
+      {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://app.ade.dev",
+          "access-control-request-method": "DELETE",
+          "access-control-request-headers": "authorization, x-ade-correlation-id",
+        },
+      },
+    ), env);
+    expect(deletePreflight.status).toBe(204);
+    expect(deletePreflight.headers.get("access-control-allow-methods")).toBe(
+      "DELETE, OPTIONS",
+    );
+
     const allowed = await handleRequest(new Request("https://directory.test/account/machines", {
       headers: { origin: "https://app.ade.dev", authorization: `Bearer ${token}` },
     }), env);

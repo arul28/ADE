@@ -566,6 +566,7 @@ export function renderChatLines(args: {
   const latestNeutralRecoveryIndexByTurn = new Map<string, number>();
   const latestRecoveryStateByTurn = new Map<string, "recovering" | "recovered" | "failed">();
   const neutralHealthTurnIds = new Set<string>();
+  const latestHealthIndexByTurn = new Map<string, number>();
   for (const entry of timeline) {
     if (entry.kind !== "event") continue;
     const event = entry.envelope.event;
@@ -583,6 +584,7 @@ export function renderChatLines(args: {
       latestRecoveryStateByTurn.set(event.turnId, event.state);
     } else if (event.type === "turn_health") {
       neutralHealthTurnIds.add(event.turnId);
+      latestHealthIndexByTurn.set(event.turnId, entry.index);
     }
   }
 
@@ -840,6 +842,9 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "turn_health") {
+      if (latestHealthIndexByTurn.get(event.turnId) !== index) {
+        continue;
+      }
       if (latestRecoveryStateByTurn.get(event.turnId) === "recovered") {
         continue;
       }

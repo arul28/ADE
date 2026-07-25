@@ -2550,9 +2550,10 @@ private func normalizedWorkIntegrationFailures(
     let integration = failure.integration.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !integration.isEmpty else { continue }
     let message = failure.message?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolvedMessage = message?.isEmpty == false ? message : byIntegration[integration]?.message
     byIntegration[integration] = AgentChatOptionalIntegrationFailure(
       integration: integration,
-      message: message?.isEmpty == false ? message : nil
+      message: resolvedMessage
     )
   }
   return byIntegration.values.sorted {

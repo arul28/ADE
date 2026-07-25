@@ -3,7 +3,6 @@ import type {
   DesktopPairedMachineCredentials,
 } from "../../../shared/types/pairedRuntime";
 import type {
-  RemoteRuntimeConnectionAttempt,
   RemoteRuntimeConnectResult,
   RemoteRuntimeTarget,
 } from "../../../shared/types/remoteRuntime";
@@ -25,6 +24,9 @@ import {
 import {
   buildPairedEndpointCandidates,
   classifyPairedRuntimeFailure,
+  createRouteAttemptRecorder,
+  MAX_ROUTE_ATTEMPTS,
+  orderPairedCandidates,
   pairedRuntimeRouteHost,
 } from "./pairedRuntimeRoutes";
 import {
@@ -49,8 +51,6 @@ type PairedRuntimeBootstrapOptions = {
     token: string;
   } | null>;
 };
-
-const MAX_ROUTE_ATTEMPTS = 8;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -125,19 +125,12 @@ export async function bootstrapPairedRuntime(args: {
     omittedRouteErrorCount += 1;
   };
   const correlationId = randomUUID();
-  const attempts: RemoteRuntimeConnectionAttempt[] = [];
-  const recordAttempt = (
-    attempt: RemoteRuntimeConnectionAttempt,
-  ): void => {
-    if (attempts.length < MAX_ROUTE_ATTEMPTS) attempts.push(attempt);
-  };
+  const attemptRecorder = createRouteAttemptRecorder();
+  const { attempts, record: recordAttempt } = attemptRecorder;
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   // Keep the phases explicit even if a future candidate-builder change
   // accidentally reorders endpoints.
-  const orderedCandidates = [
-    ...candidates.filter((candidate) => candidate.kind !== "relay"),
-    ...candidates.filter((candidate) => candidate.kind === "relay"),
-  ];
+  const orderedCandidates = orderPairedCandidates(candidates);
   for (const candidate of orderedCandidates) {
     const attemptStartedAt = Date.now();
     const safeHost = pairedRuntimeRouteHost(candidate.endpoint);
@@ -359,6 +352,9 @@ export async function bootstrapPairedRuntime(args: {
             latencyMs,
             correlationId,
             attempts,
+            ...(attemptRecorder.omittedAttemptCount > 0
+              ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
+              : {}),
           },
           capabilities: initializeInfo.capabilities,
           compatibilityWarnings: initializeInfo.compatibilityWarnings,
@@ -382,6 +378,12 @@ export async function bootstrapPairedRuntime(args: {
           : ""
       ),
     undefined,
-    { correlationId, attempts },
+    {
+      correlationId,
+      attempts,
+      ...(attemptRecorder.omittedAttemptCount > 0
+        ? { omittedAttemptCount: attemptRecorder.omittedAttemptCount }
+        : {}),
+    },
   );
 }

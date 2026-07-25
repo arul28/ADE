@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { isAgentChatTurnRecoveryAction } from "../../../../desktop/src/shared/types/chat";
 import { runWithAbortSignal } from "./abortSignal";
 import type {
   AgentChatCreateArgs,
@@ -2314,12 +2315,7 @@ function parseAgentChatRecoverCodexTurnArgs(value: Record<string, unknown>): Age
 
 function parseAgentChatRecoverTurnArgs(value: Record<string, unknown>): AgentChatRecoverTurnArgs {
   const action = requireString(value.action, "chat.recoverTurn requires action.");
-  if (
-    action !== "wait"
-    && action !== "nudge"
-    && action !== "retry_same_runtime"
-    && action !== "restart_resume"
-  ) {
+  if (!isAgentChatTurnRecoveryAction(action)) {
     throw new Error(`chat.recoverTurn received unsupported action '${action}'.`);
   }
   return {

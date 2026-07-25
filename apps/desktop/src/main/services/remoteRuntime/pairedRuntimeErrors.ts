@@ -6,6 +6,7 @@ import type {
 export type PairedRuntimeRouteDiagnostic = {
   correlationId: string;
   attempts: RemoteRuntimeConnectionAttempt[];
+  omittedAttemptCount?: number;
 };
 
 function assignCause(target: Error, cause: unknown): void {

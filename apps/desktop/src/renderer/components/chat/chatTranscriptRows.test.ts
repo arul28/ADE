@@ -2662,6 +2662,85 @@ describe("subagent two-row rendering", () => {
     });
   });
 
+  it("keeps durable message resolution across out-of-order hydration and later metadata", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T09:00:00.000Z", {
+        type: "user_message_resolution",
+        steerId: "steer-early-resolution",
+        action: "run_next",
+        state: "completed",
+        resolvedAt: "2026-06-01T09:00:00.000Z",
+        replacementMessageId: "message-2",
+      }),
+      env("2026-06-01T09:00:01.000Z", {
+        type: "user_message",
+        text: "Run this next.",
+        steerId: "steer-early-resolution",
+        deliveryState: "unprocessed",
+        processed: false,
+        metadata: {
+          scheduledWake: {
+            scheduleId: "wake-1",
+            kind: "wakeup",
+            firedAt: "2026-06-01T09:00:01.000Z",
+          },
+        },
+      }),
+      env("2026-06-01T09:00:02.000Z", {
+        type: "user_message",
+        text: "Run this next.",
+        steerId: "steer-early-resolution",
+        deliveryState: "unprocessed",
+        processed: false,
+        metadata: {
+          spawnCompletion: {
+            childSessionId: "child-1",
+            childTitle: "Child",
+            spawnKind: "subagent",
+            status: "completed",
+          },
+        },
+      }),
+    ]);
+
+    const userMessage = rows.find((row) => row.event.type === "user_message");
+    expect(userMessage?.event).toMatchObject({
+      type: "user_message",
+      metadata: {
+        scheduledWake: { scheduleId: "wake-1" },
+        spawnCompletion: { childSessionId: "child-1" },
+        unprocessedMessageResolution: {
+          action: "run_next",
+          state: "completed",
+          replacementMessageId: "message-2",
+        },
+      },
+    });
+  });
+
+  it("preserves the actual provider-neutral recovery action", () => {
+    const rows = collapseChatTranscriptEvents([
+      env("2026-06-01T09:00:00.000Z", {
+        type: "turn_recovery",
+        provider: "claude",
+        turnId: "turn-1",
+        action: "nudge",
+        state: "recovered",
+        message: "The provider resumed.",
+        automatic: false,
+        at: "2026-06-01T09:00:00.000Z",
+        recoveryCount: 1,
+      }),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event).toMatchObject({
+      type: "turn_recovery",
+      action: "nudge",
+      state: "recovered",
+    });
+  });
+
   it("preserves the child session when adapting provider-neutral turn health for recovery UI", () => {
     const rows = collapseChatTranscriptEvents([
       env("2026-06-01T09:00:00.000Z", {

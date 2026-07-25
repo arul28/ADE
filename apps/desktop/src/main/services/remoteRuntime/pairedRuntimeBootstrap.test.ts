@@ -347,9 +347,9 @@ describe("bootstrapPairedRuntime", () => {
     expect(unavailable.diagnostic).toMatchObject({
       correlationId: expect.any(String),
       attempts: [
-        { kind: "lan", host: "studio.local:8787", outcome: "failed" },
-        { kind: "tailnet", host: "studio.example.ts.net:8787", outcome: "failed" },
-        { kind: "relay", host: "relay.example", outcome: "failed" },
+        { kind: "lan", host: "studio.local:8787", outcome: "failed", failure: "unreachable" },
+        { kind: "tailnet", host: "studio.example.ts.net:8787", outcome: "failed", failure: "unreachable" },
+        { kind: "relay", host: "relay.example", outcome: "failed", failure: "unreachable" },
       ],
     });
     expect(unavailable.diagnostic?.attempts.length).toBeLessThanOrEqual(8);

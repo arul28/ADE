@@ -332,6 +332,7 @@ describe("RemoteConnectionService", () => {
           outcome: "failed",
           failure: "unreachable",
         }],
+        omittedAttemptCount: 3,
       },
     );
     const pool = {
@@ -352,6 +353,7 @@ describe("RemoteConnectionService", () => {
         outcome: "failed",
         failure: "unreachable",
       }],
+      omittedAttemptCount: 3,
     });
     expect(service.snapshot().connections[0]?.lastErrorInfo?.detail).toBeUndefined();
   });

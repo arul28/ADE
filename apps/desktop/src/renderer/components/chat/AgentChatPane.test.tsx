@@ -1454,7 +1454,7 @@ describe("AgentChatPane companion drawers", () => {
 });
 
 describe("AgentChatPane durable recovery actions", () => {
-  it("restores an unprocessed message for editing and can run it next", async () => {
+  it("appends an unprocessed message for editing without replacing the current draft", async () => {
     const session = buildSession("session-1", { status: "idle" });
     const transcript = `${JSON.stringify({
       sessionId: session.sessionId,
@@ -1476,8 +1476,11 @@ describe("AgentChatPane durable recovery actions", () => {
 
     renderPane(session);
 
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Keep this draft." } });
     fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
-    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Edit this follow-up.");
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "Keep this draft.\n\nEdit this follow-up.",
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Run next" }));
     await waitFor(() => {
@@ -1560,6 +1563,41 @@ describe("AgentChatPane durable recovery actions", () => {
         turnId: "turn-1",
         action: "restart_resume_thread",
       });
+    });
+  });
+
+  it("does not hide a chat-service outage behind the legacy recovery fallback", async () => {
+    const session = buildSession("session-1", { status: "active" });
+    const transcript = `${JSON.stringify({
+      sessionId: session.sessionId,
+      timestamp: "2026-07-25T05:20:00.000Z",
+      event: {
+        type: "turn_health",
+        provider: "codex",
+        turnId: "turn-1",
+        state: "stalled",
+        reason: "no_output",
+        message: "Codex accepted the turn but has not streamed output.",
+        turnStartedAt: "2026-07-25T05:18:00.000Z",
+        lastProgressAt: "2026-07-25T05:18:00.000Z",
+        detectedAt: "2026-07-25T05:20:00.000Z",
+        recoveryCount: 0,
+        supportedActions: ["restart_resume"],
+        automaticRecoveryAttempted: false,
+      },
+    })}\n`;
+    const { recoverTurn, recoverCodexTurn } = installAdeMocks({
+      sessions: [session],
+      transcript,
+      recoverTurnError: new Error("Agent chat service not available."),
+    });
+
+    renderPane(session);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Restart & resume" }));
+    await waitFor(() => {
+      expect(recoverTurn).toHaveBeenCalledOnce();
+      expect(recoverCodexTurn).not.toHaveBeenCalled();
     });
   });
 });

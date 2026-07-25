@@ -581,9 +581,14 @@ export async function handleRequest(
       : correlatedResponse;
   };
   if (request.method === "OPTIONS") {
-    if (!route || route.kind !== "list") return finish(text("not found", 404));
+    const allowedMethod = route?.kind === "list"
+      ? "GET"
+      : route?.kind === "delete"
+        ? "DELETE"
+        : null;
+    if (!allowedMethod) return finish(text("not found", 404));
     if (!corsOrigin) return finish(text("origin not allowed", 403));
-    if (request.headers.get("access-control-request-method")?.toUpperCase() !== "GET") {
+    if (request.headers.get("access-control-request-method")?.toUpperCase() !== allowedMethod) {
       return finish(text("method not allowed", 405));
     }
     const requestedHeaders = (request.headers.get("access-control-request-headers") ?? "")
@@ -601,7 +606,7 @@ export async function handleRequest(
         "access-control-allow-origin": corsOrigin,
         "access-control-allow-headers": "authorization, x-ade-correlation-id",
         "access-control-expose-headers": "X-ADE-Correlation-ID",
-        "access-control-allow-methods": "GET, OPTIONS",
+        "access-control-allow-methods": `${allowedMethod}, OPTIONS`,
         "access-control-max-age": "600",
         vary: "Origin",
       },

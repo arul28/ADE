@@ -606,6 +606,25 @@ describe("renderChatLines", () => {
           timestamp: "2026-01-01T12:00:00.001Z",
           sequence: 2,
           event: {
+            type: "turn_health",
+            provider: "codex",
+            turnId: "turn-1",
+            state: "stalled",
+            reason: "no_progress",
+            message: "Still no output",
+            turnStartedAt: "2026-01-01T11:58:00.000Z",
+            lastProgressAt: "2026-01-01T11:58:00.000Z",
+            detectedAt: "2026-01-01T12:00:00.001Z",
+            recoveryCount: 0,
+            supportedActions: ["wait", "nudge", "retry_same_runtime", "restart_resume"],
+            automaticRecoveryAttempted: false,
+          },
+        },
+        {
+          sessionId: "s1",
+          timestamp: "2026-01-01T12:00:00.002Z",
+          sequence: 3,
+          event: {
             type: "codex_turn_stalled",
             turnId: "turn-1",
             reason: "no_output",
@@ -615,6 +634,7 @@ describe("renderChatLines", () => {
       ],
     });
     expect(healthLines.filter((line) => line.body.startsWith("recovery ·"))).toHaveLength(1);
+    expect(healthLines[0]?.body).toContain("Still no output");
     expect(healthLines[0]?.body).toContain("keep current runtime");
 
     const recoveryLines = renderChatLines({

@@ -136,9 +136,10 @@ describe("searchService", () => {
     const session = makeSession({ id: "chat-steer-lifecycle", title: "Steer lifecycle" });
     sessions.push(session);
     for (const [sequence, deliveryState] of [
-      [1, "accepted"],
-      [2, "processed"],
-      [3, "unprocessed"],
+      [1, "queued"],
+      [2, "accepted"],
+      [3, "processed"],
+      [4, "unprocessed"],
     ] as const) {
       writeChatLine(
         session.id,

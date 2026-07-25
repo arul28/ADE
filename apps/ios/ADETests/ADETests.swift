@@ -15285,6 +15285,102 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(cards[0].recoveryContext?.providerNeutral == true)
   }
 
+  func testProviderNeutralRecoveryEventsDefaultOmittedCompatibilityFields() throws {
+    let health = try AgentChatEvent.decode(from: [
+      "type": "turn_health",
+      "provider": "claude",
+      "turnId": "turn-compat",
+      "state": "stalled",
+      "reason": "no_output",
+      "message": "Waiting for output.",
+      "turnStartedAt": "2026-07-09T00:00:00.000Z",
+      "lastProgressAt": "2026-07-09T00:00:10.000Z",
+      "detectedAt": "2026-07-09T00:01:00.000Z",
+    ])
+    guard case .turnHealth(
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+      _,
+      let recoveryCount,
+      let supportedActions,
+      let automaticRecoveryAttempted,
+      _
+    ) = health else {
+      return XCTFail("Expected provider-neutral turn health.")
+    }
+    XCTAssertEqual(recoveryCount, 0)
+    XCTAssertEqual(supportedActions, [])
+    XCTAssertFalse(automaticRecoveryAttempted)
+
+    let recovery = try AgentChatEvent.decode(from: [
+      "type": "turn_recovery",
+      "provider": "claude",
+      "turnId": "turn-compat",
+      "action": "wait",
+      "state": "recovered",
+      "message": "Output resumed.",
+      "at": "2026-07-09T00:02:00.000Z",
+    ])
+    guard case .turnRecovery(_, _, _, _, _, let automatic, _, let count) = recovery else {
+      return XCTFail("Expected provider-neutral turn recovery.")
+    }
+    XCTAssertFalse(automatic)
+    XCTAssertEqual(count, 0)
+  }
+
+  func testUnprocessedResolutionUsesNewestTimestampInsteadOfArrayOrder() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:00:00.000Z",
+        sequence: 1,
+        event: .userMessage(
+          text: "Run this next.",
+          attachments: nil,
+          turnId: "turn-1",
+          steerId: "steer-1",
+          deliveryState: "unprocessed",
+          processed: false
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:03:00.000Z",
+        sequence: 3,
+        event: .userMessageResolution(
+          steerId: "steer-1",
+          action: "run_next",
+          state: "completed",
+          resolvedAt: "2026-07-09T00:03:00.000Z",
+          replacementMessageId: "message-2",
+          turnId: "turn-2"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-07-09T00:02:00.000Z",
+        sequence: 2,
+        event: .userMessageResolution(
+          steerId: "steer-1",
+          action: "dismiss",
+          state: "completed",
+          resolvedAt: "2026-07-09T00:02:00.000Z",
+          replacementMessageId: nil,
+          turnId: "turn-1"
+        )
+      ),
+    ]
+
+    let message = buildWorkChatMessages(from: transcript).first
+    XCTAssertEqual(message?.unprocessedResolution?.action, "run_next")
+    XCTAssertEqual(message?.unprocessedResolution?.replacementMessageId, "message-2")
+  }
+
   func testProviderNeutralRecoveryReceiptWinsWhenLegacyAliasAlsoArrives() throws {
     let decoded = try AgentChatEvent.decode(from: [
       "type": "turn_recovery",
@@ -15325,6 +15421,14 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards[0].recoveryReceipt?.provider, "claude")
     XCTAssertEqual(cards[0].recoveryReceipt?.recoveryCount, 3)
     XCTAssertTrue(cards[0].recoveryReceipt?.providerNeutral == true)
+  }
+
+  func testProviderNeutralRecoveryFallbackUsesNormalizedDefaultAction() {
+    let raw = #"{"sessionId":"chat-1","timestamp":"2026-07-09T00:02:00.000Z","sequence":1,"event":{"type":"turn_recovery","provider":"claude","turnId":"turn-1","state":"recovered","message":"Recovered.","automatic":false,"at":"2026-07-09T00:02:00.000Z"}}"#
+    guard case .codexTurnRecovery(_, let receipt, _) = parseWorkChatTranscript(raw).first?.event else {
+      return XCTFail("Expected fallback recovery receipt.")
+    }
+    XCTAssertEqual(receipt.action, "restart_resume_thread")
   }
 
   func testCodexTurnDiagnosticsCollapseRoutineModerationAndIntegrationNoise() throws {
