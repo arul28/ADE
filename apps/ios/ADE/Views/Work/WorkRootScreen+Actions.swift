@@ -32,7 +32,8 @@ extension WorkRootScreen {
     )
     let sessionsSnapshot = rosterProjection.sessions
     let chatSummariesSnapshot = localProjectionIsCurrent ? chatSummaries : [:]
-    let lanesSnapshot = rosterProjection.lanes
+    let deletingLaneIds = syncService.pendingLaneDeletionIds
+    let lanesSnapshot = rosterProjection.lanes.filter { !deletingLaneIds.contains($0.id) }
     let pullRequestsSnapshot = localProjectionIsCurrent ? pullRequests : []
     let githubPrsSnapshot = localProjectionIsCurrent ? syncService.laneGithubPrItems : []
     // Fold offline "Pending sync" chat-creation rows into the optimistic set so
@@ -68,7 +69,8 @@ extension WorkRootScreen {
         organization: organization,
         orderedLanes: lanesSnapshot,
         pullRequests: pullRequestsSnapshot,
-        githubPrs: githubPrsSnapshot
+        githubPrs: githubPrsSnapshot,
+        deletingLaneIds: deletingLaneIds
       )
       await MainActor.run {
         guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }

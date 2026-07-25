@@ -23,7 +23,14 @@ extension LanesTabView {
   }
 
   var primaryLane: LaneSummary? {
-    laneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane
+    visibleLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane
+  }
+
+  /// A host-side lane delete may take several minutes. Keep its stale local
+  /// snapshot out of navigation and list affordances while SyncService owns
+  /// that cleanup request.
+  var visibleLaneSnapshots: [LaneListSnapshot] {
+    laneSnapshots.filter { !syncService.isLaneDeletionPending($0.lane.id) }
   }
 
   var manageableVisibleLaneIds: [String] {
@@ -35,7 +42,7 @@ extension LanesTabView {
 
   var openLaneSnapshots: [LaneListSnapshot] {
     openLaneIds.compactMap { laneId in
-      laneSnapshots.first(where: { $0.lane.id == laneId })
+      visibleLaneSnapshots.first(where: { $0.lane.id == laneId })
     }
   }
 
@@ -135,7 +142,7 @@ extension LanesTabView {
   @MainActor
   func refreshLaneListPresentation() {
     let filtered = laneListFilteredSnapshots(
-      laneSnapshots,
+      visibleLaneSnapshots,
       scope: scope,
       runtimeFilter: runtimeFilter,
       searchText: searchText,

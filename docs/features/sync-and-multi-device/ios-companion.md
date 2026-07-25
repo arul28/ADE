@@ -219,7 +219,9 @@ apps/ios/
 │   │                                # provider-aware scheduled-work cancel,
 │   │                                # machine project browse/open/create/clone,
 │   │                                # lane reparent stack-base override payloads,
-│   │                                # Linear read/launch RPC wrappers, worktree
+│   │                                # Linear read/launch RPC wrappers, retained
+│   │                                # background lane-deletion tasks + scoped
+│   │                                # completion refresh, worktree
 │   │                                # discovery, personal-chat cache/actions/
 │   │                                # subscription routing
 │   ├── Shared/

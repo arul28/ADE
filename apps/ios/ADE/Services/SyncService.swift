@@ -455,6 +455,12 @@ enum SyncRequestTimeout {
   }
 }
 
+private struct LaneDeletionFailure: Equatable {
+  let projectId: String
+  let projectRootPath: String
+  let message: String
+}
+
 private let syncTerminalSubscriptionMaxBytes = 240_000
 /// Snapshot budget for the full-screen SwiftTerm session view, which renders
 /// real scrollback instead of a trimmed preview string.
@@ -2462,6 +2468,11 @@ final class SyncService: ObservableObject {
   @Published private(set) var pendingChatCreations: [PendingChatCreation] = []
   @Published private(set) var localStateRevision = 0
   @Published private(set) var lanesProjectionRevision = 0
+  /// Lane deletion can take several minutes while the host stops sessions and
+  /// removes a worktree. Keep that work out of the navigation path, but publish
+  /// the pending ids so lane-bound UI can stop presenting stale controls.
+  @Published private(set) var pendingLaneDeletionIds: Set<String> = []
+  @Published private var laneDeletionFailure: LaneDeletionFailure?
   @Published private(set) var laneDetailProjectionRevision = 0
   /// Per-lane detail revisions bumped only for local `lane_detail_snapshots`
   /// writes with a known lane id, so an open lane detail stops reloading when an
@@ -2765,6 +2776,7 @@ final class SyncService: ObservableObject {
   /// Coalesces bursty `adeDatabaseDidChange` notifications so SwiftUI projection
   /// reloads do not fire on every CRDT row during host sync.
   private var databaseRevisionDebounceTask: Task<Void, Never>?
+  private var laneDeletionTasks: [String: Task<Void, Never>] = [:]
   private var pendingDatabaseTouchedTables: Set<String> = []
   private var pendingLaneDetailIds: Set<String> = []
   private var pendingDatabaseChangeAffectsAll = false
@@ -8471,6 +8483,74 @@ final class SyncService: ObservableObject {
       "remoteName": remoteName,
       "force": force,
     ], targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath)
+  }
+
+  /// Starts a destructive lane cleanup without keeping the caller's sheet or
+  /// navigation stack alive for the host-side teardown. The task is retained by
+  /// the service (rather than a disappearing view) and a single lane can only
+  /// have one in-flight deletion request.
+  @discardableResult
+  func beginLaneDeletion(
+    _ laneId: String,
+    deleteBranch: Bool = true,
+    deleteRemoteBranch: Bool = false,
+    remoteName: String = "origin",
+    force: Bool = false
+  ) -> Bool {
+    guard !pendingLaneDeletionIds.contains(laneId) else { return false }
+    guard let scope = try? captureHydrationProjectScope() else { return false }
+
+    laneDeletionFailure = nil
+    pendingLaneDeletionIds.insert(laneId)
+    laneDeletionTasks[laneId] = Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer {
+        self.pendingLaneDeletionIds.remove(laneId)
+        self.laneDeletionTasks[laneId] = nil
+      }
+
+      do {
+        try await self.deleteLane(
+          laneId,
+          deleteBranch: deleteBranch,
+          deleteRemoteBranch: deleteRemoteBranch,
+          remoteName: remoteName,
+          force: force,
+          targetProjectId: scope.projectId,
+          targetProjectRootPath: scope.rootPath
+        )
+      } catch {
+        self.laneDeletionFailure = LaneDeletionFailure(
+          projectId: scope.projectId,
+          projectRootPath: scope.rootPath,
+          message: "Couldn’t delete lane: \(SyncUserFacingError.message(for: error))"
+        )
+      }
+      // Restore the optimistic lane UI on failure, or converge promptly after
+      // success when CRR delivery is delayed.
+      try? await self.refreshLaneSnapshots(
+        includeStatus: true,
+        includeDecorations: true,
+        expectedScope: scope
+      )
+    }
+    return true
+  }
+
+  func isLaneDeletionPending(_ laneId: String) -> Bool {
+    pendingLaneDeletionIds.contains(laneId)
+  }
+
+  var activeLaneDeletionError: String? {
+    guard let laneDeletionFailure,
+          laneDeletionFailure.projectId == activeProjectId,
+          laneDeletionFailure.projectRootPath == activeProjectRootPath
+    else { return nil }
+    return laneDeletionFailure.message
+  }
+
+  func clearLaneDeletionFailure() {
+    laneDeletionFailure = nil
   }
 
   func fetchLaneTemplates() async throws -> [LaneTemplate] {

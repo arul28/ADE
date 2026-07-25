@@ -170,7 +170,14 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   its stack tab keeps the parent-lane picker, optional base-branch
   override, "Runs git rebase" disclosure, dirty/rebase-in-progress
   guards, and `lanes.reparent` payloads that omit `stackBaseBranchRef`
-  when the override is blank. `LaneDeeplinkHelpers.swift` mints the
+  when the override is blank. A confirmed delete dismisses the manage
+  sheet and lane detail immediately: `SyncService` retains the host
+  teardown task, publishes only the pending lane ids, and performs one
+  scoped snapshot refresh when it finishes. While pending, the Lanes
+  list removes the stale lane from navigation and the Work tab replaces
+  its lane-bound header and rows with a non-interactive updating state,
+  so long worktree cleanup never traps the user in the deletion UI or
+  causes polling-driven projection churn. `LaneDeeplinkHelpers.swift` mints the
   shareable `ade://lane/<id>` and
   `ade://repo/<owner>/<repo>/branch/<branch>` links the lane options
   menu copies to the pasteboard.

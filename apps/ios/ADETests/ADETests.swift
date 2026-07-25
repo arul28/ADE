@@ -13197,6 +13197,52 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(groups.last?.sessions.count, 2)
   }
 
+  func testWorkSessionGroupsByLaneShowsUpdatingPlaceholderForPendingLaneDeletion() {
+    let deletingSession = makeTerminalSessionSummary(
+      id: "session-deleting",
+      laneId: "lane-deleting",
+      laneName: "Feature cleanup",
+      toolType: "codex-chat",
+      startedAt: "2026-03-25T12:00:00.000Z"
+    )
+
+    let groups = workSessionGroupsByLane(
+      sessions: [deletingSession],
+      orderedLanes: [],
+      deletingLaneIds: ["lane-deleting"]
+    )
+
+    XCTAssertEqual(groups.map(\.id), ["lane:lane-deleting"])
+    XCTAssertEqual(groups.first?.label, "Updating lane…")
+  }
+
+  func testWorkRootPresentationForwardsPendingLaneDeletionToLaneGroups() {
+    let deletingSession = makeTerminalSessionSummary(
+      id: "session-deleting",
+      laneId: "lane-deleting",
+      laneName: "Feature cleanup",
+      toolType: "codex-chat",
+      startedAt: "2026-03-25T12:00:00.000Z"
+    )
+
+    let presentation = buildWorkRootSessionPresentation(
+      sessions: [deletingSession],
+      optimisticSessions: [:],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      selectedStatus: .all,
+      selectedLaneId: "all",
+      searchText: "",
+      organization: .byLane,
+      orderedLanes: [],
+      deletingLaneIds: ["lane-deleting"]
+    )
+
+    XCTAssertEqual(presentation.sessionGroups.map(\.id), ["lane:lane-deleting"])
+    XCTAssertEqual(presentation.sessionGroups.first?.label, "Updating lane…")
+    XCTAssertEqual(presentation.displaySessionIds, ["session-deleting"])
+  }
+
   func testWorkChatTranscriptPreservesReasoningIdentity() {
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-04-22T21:11:58.154Z","sequence":6,"event":{"type":"reasoning","text":"The user wants","turnId":"turn-1","itemId":"claude-thinking:turn-1:0","summaryIndex":0}}
