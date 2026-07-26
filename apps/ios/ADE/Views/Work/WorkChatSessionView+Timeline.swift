@@ -163,7 +163,9 @@ extension WorkChatSessionView {
           }
         },
         fallbackProvider: chatSummaryContext.provider,
-        viewportHeight: scrollViewportHeight
+        // Inline-in-transcript variant: the transcript viewport is the budget
+        // here, not the whole surface (the composer sits below it either way).
+        maxCardHeight: max(240, scrollViewportHeight * 0.62)
       )
       .id("pending-question-\(question.id)")
     case .pendingPermission(let permission):
@@ -419,22 +421,28 @@ extension WorkChatSessionView {
   @ViewBuilder
   func consolidatedPendingInputStrip(_ item: WorkPendingInputItem) -> some View {
     VStack(alignment: .leading, spacing: 8) {
-      if pendingInputCount > 1 {
+      if pendingInputCollapsed {
+        pendingInputCollapsedPill(item)
+      } else {
         pendingInputQueueHeader
+        consolidatedPendingInputBody(item)
       }
-      consolidatedPendingInputBody(item)
     }
+    .animation(.smooth(duration: 0.22), value: pendingInputCollapsed)
   }
 
-  /// "Request 1 of N" + optional "Accept all". The primary request is always the
-  /// first in the queue, so the leading index is fixed at 1.
+  /// "Request 1 of N" + optional "Accept all" + the minimize control. Previously
+  /// this row only rendered for queued requests; it is now always present
+  /// because it carries the minimize affordance, which every gate needs.
   @ViewBuilder
   private var pendingInputQueueHeader: some View {
     HStack(spacing: 8) {
-      Text("Request 1 of \(pendingInputCount)")
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(ADEColor.textMuted)
-        .accessibilityLabel("Request 1 of \(pendingInputCount) pending.")
+      if pendingInputCount > 1 {
+        Text("Request 1 of \(pendingInputCount)")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(ADEColor.textMuted)
+          .accessibilityLabel("Request 1 of \(pendingInputCount) pending.")
+      }
       Spacer(minLength: 0)
       if canAcceptAllPendingInputs {
         Button {
@@ -448,12 +456,87 @@ extension WorkChatSessionView {
         .disabled(actionInFlight || !isLive)
         .accessibilityLabel("Accept all \(acceptAllSweepableInputs.count) pending approvals")
       }
+      Button {
+        pendingInputCollapsed = true
+      } label: {
+        Image(systemName: "chevron.down")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 26, height: 22)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Minimize request")
+      .accessibilityHint("Keeps the request open so you can scroll the conversation.")
     }
     .padding(.horizontal, 4)
+    .frame(minHeight: 22)
+  }
+
+  /// Minimized state: a single tappable line that keeps the gate visible (and
+  /// says what it is) while giving the transcript the screen back.
+  @ViewBuilder
+  private func pendingInputCollapsedPill(_ item: WorkPendingInputItem) -> some View {
+    let provider = workPendingInputProvider(item) ?? chatSummaryContext.provider
+    let accent = ADEColor.providerChatAccent(for: provider)
+    let summary = workPendingInputCollapsedSummary(item)
+    Button {
+      pendingInputCollapsed = false
+    } label: {
+      HStack(spacing: 8) {
+        WorkProviderBareLogo(
+          provider: provider,
+          fallbackSymbol: providerIcon(provider),
+          tint: accent,
+          size: 15
+        )
+        Text(summary)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 4)
+        if pendingInputCount > 1 {
+          Text("\(pendingInputCount)")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(accent)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(accent.opacity(0.16), in: Capsule())
+        }
+        Image(systemName: "chevron.up")
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .padding(.horizontal, 12)
+      .padding(.vertical, 9)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(accent.opacity(0.35), lineWidth: 1)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(summary). Minimized.")
+    .accessibilityHint("Expand to answer.")
   }
 
   @ViewBuilder
   private func consolidatedPendingInputBody(_ item: WorkPendingInputItem) -> some View {
+    // The question card budgets itself (its footer has to stay pinned outside
+    // the scroll region); every other kind is capped by the shared wrapper.
+    if case .question = item {
+      pendingInputCard(item)
+    } else {
+      WorkPendingInputHeightBoundedCard(maxHeight: pendingInputMaxHeight) {
+        pendingInputCard(item)
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func pendingInputCard(_ item: WorkPendingInputItem) -> some View {
     switch item {
     case .planApproval(let model):
       WorkPlanComposerStrip(
@@ -512,7 +595,7 @@ extension WorkChatSessionView {
           }
         },
         fallbackProvider: chatSummaryContext.provider,
-        viewportHeight: scrollViewportHeight
+        maxCardHeight: pendingInputMaxHeight
       )
     case .modelSelection(let model):
       WorkModelSelectionPendingCard(

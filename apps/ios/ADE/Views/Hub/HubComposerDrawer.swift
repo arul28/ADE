@@ -274,6 +274,22 @@ struct HubInlineComposer: View {
         }
     )
     .onAppear { onAppearSetup() }
+    // Restore whatever the user last typed here but never sent. Guarded on
+    // empty so a re-appear (or an init-seeded value) can't clobber live text.
+    .task {
+      if draft.isEmpty {
+        draft = WorkComposerDraftStore.load(WorkComposerDraftStore.hubNewChatKey)
+      }
+    }
+    // Debounced autosave: each keystroke restarts this task, and the cancelled
+    // sleep throws before the write, so only a typing pause hits UserDefaults.
+    .task(id: draft) {
+      try? await Task.sleep(for: .milliseconds(400))
+      guard !Task.isCancelled else { return }
+      WorkComposerDraftStore.save(draft, for: WorkComposerDraftStore.hubNewChatKey)
+    }
+    // The debounce dies with the view, so flush the final text on teardown.
+    .onDisappear { WorkComposerDraftStore.save(draft, for: WorkComposerDraftStore.hubNewChatKey) }
     .onChange(of: composerFocused) { _, focused in
       if focused { withAnimation(hubComposerSpring) { expanded = true } }
     }
@@ -770,6 +786,9 @@ struct HubInlineComposer: View {
     collapse()
     draft = ""
     attachments.removeAll()
+    // Drop the persisted draft synchronously — the collapse must not race the
+    // 400ms autosave debounce and leave the just-sent text behind.
+    WorkComposerDraftStore.clear(WorkComposerDraftStore.hubNewChatKey)
     Task {
       let started = await submit(opener: restoredDraft, attachments: outgoingAttachments)
       if !started {
